@@ -663,12 +663,21 @@ const SLEditedCaption = () => (
 // between Edit summary and Corrections. Floating popover -> earns the hud glass.
 const SLHeaderMenu = () => {
   const items = [
-    { icon: "pencil", label: "Rename…" },
-    { icon: "file-text", label: "Edit summary…" },
+    { icon: "pencil", label: "Rename" },
+    { divider: true },
+    { icon: "file-text", label: "Edit summary" },
     { icon: "refresh", label: "Reprocess…", mark: true },
+    { icon: "mic", label: "Re-transcribe…" },
     { icon: "checklist", label: "Corrections…" },
     { divider: true },
-    { icon: "folder", label: "Reveal raw files" },
+    { icon: "external", label: "Republish" },
+    { divider: true },
+    { icon: "file-text", label: "Copy summary (formatted)" },
+    { icon: "message", label: "Copy transcript (formatted)" },
+    { divider: true },
+    { icon: "tray", label: "Open meta.json" },
+    { icon: "tag", label: "Copy meeting ID" },
+    { divider: true },
     { icon: "trash", label: "Delete…", danger: true },
   ];
   return (

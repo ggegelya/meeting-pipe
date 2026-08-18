@@ -341,11 +341,21 @@ const PWIntegrationsPane = () => (
       <PWStackRow first label="API key"><PWSecretField placeholder="sk-ant-…"/></PWStackRow>
       <PWRow label="Status"><PWStatusPill tone="granted" icon="check-circle" text="Configured"/></PWRow>
     </PWGroup>
-    <PWGroup label="Notion" footer="Create the integration at notion.so/profile/integrations, share your Meetings database with it, and paste the database ID here.">
+    <PWGroup label="OpenAI" footer="Only needed for the OpenAI summarization backend. Get a key at platform.openai.com. Anthropic, local, and Claude CLI backends don't need this.">
+      <PWStackRow first label="API key"><PWSecretField placeholder="sk-…"/></PWStackRow>
+      <PWRow label="Status"><PWStatusPill tone="needed" icon="alert-triangle" text="Not configured"/></PWRow>
+    </PWGroup>
+    <PWGroup label="Notion" footer="Create the integration at notion.so/profile/integrations and share your Meetings database with it. Fetch pulls your databases to pick from; paste a database ID if it is not listed.">
       <PWStackRow first label="Integration token"><PWSecretField placeholder="ntn_…"/></PWStackRow>
-      <PWStackRow label="Database ID"><PWField placeholder="32-char hex from your database URL" mono/></PWStackRow>
+      <PWStackRow label="Database"><PWField value="(none)" mono/><PWSmallButton>Fetch databases</PWSmallButton></PWStackRow>
       <PWToggleRow on label="Include the full transcript" sublabel="Every word spoken is sent to Notion and stored on the page. Off publishes the summary and actions only; the transcript stays on this Mac."/>
       <PWRow label="Status"><PWStatusPill tone="needed" icon="alert-triangle" text="Not configured"/></PWRow>
+    </PWGroup>
+    <PWGroup label="Model Context Protocol" footer="Off by default. A tool you configure launches the server itself; nothing runs until it does.">
+      <PWToggleRow first label="Let AI tools read your meetings" sublabel="Runs a read-only server on standard input and output when a tool you configured launches it. No port is opened and nothing on your network can reach it."/>
+      <PWRow label="Reachable" sublabel="What a connected tool can search and read."><PWStatusPill tone="granted" icon="check-circle" text="184 meetings"/></PWRow>
+      <PWRow label="Withheld" sublabel="NDA meetings, and meetings recorded before workflows existed, are never exposed."><PWStatusPill tone="needed" icon="alert-triangle" text="65 meetings"/></PWRow>
+      <PWRow label="Tools" sublabel="Read-only. There is no tool that can change, publish, or delete anything."><span style={{ fontFamily: "var(--mp-font-mono)", fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-muted)" }}>search, read, list</span></PWRow>
     </PWGroup>
     {/* UX45 publish targets. No heading of their own: DSN28 locks one type
         anchor per surface, so the group eyebrows carry the level and the pane

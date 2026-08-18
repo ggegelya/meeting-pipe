@@ -58,7 +58,7 @@ web UI.
 | `assets/` | Logos, wordmark, app icon, menu-bar template icons. |
 | `fonts/` | Webfonts (loaded from Google Fonts in CSS — see Caveats). |
 | `preview/` | Cards rendered in the Design System tab — palette, type, components, foundations. |
-| `ui_kits/macos_app/` | Pixel-faithful recreations of the Swift/SwiftUI surfaces. |
+| `ui_kits/macos_app/` | Recreations of the Swift/SwiftUI surfaces, faithful to structure, labels, layout and tokens rather than byte-identical to AppKit. That is the kit README's own promise; this table said "pixel-faithful", which is a stronger claim than the kit makes or keeps (DSN30). |
 | `SKILL.md` | Cross-compatible Agent Skill descriptor. |
 
 ---

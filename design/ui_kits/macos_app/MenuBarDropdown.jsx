@@ -45,7 +45,14 @@ const MenuBarDropdown = ({ state = "idle", source, file }) => {
       {state === "recording" && <MenuItem><span style={{ color: "var(--mp-pulse-600)" }}>● </span>Stop Recording</MenuItem>}
       {state === "recording" && file && <MenuItem disabled mono>{file}</MenuItem>}
       <MenuSep/>
+      <MenuItem shortcut="⌘L">Open Library…</MenuItem>
+      <MenuItem shortcut="⌘K">Quick Find…</MenuItem>
+      <MenuItem>Manage Workflows…</MenuItem>
+      <MenuItem submenu>Recent meetings…</MenuItem>
       <MenuItem>Open Logs Folder</MenuItem>
+      <MenuItem>Diagnostics…</MenuItem>
+      <MenuItem>Guide…</MenuItem>
+      <MenuItem>Tutorial…</MenuItem>
       <MenuItem>Open Recordings Folder</MenuItem>
       <MenuSep/>
       <MenuItem shortcut="⌘,">Preferences…</MenuItem>
@@ -55,7 +62,7 @@ const MenuBarDropdown = ({ state = "idle", source, file }) => {
   );
 };
 
-const MenuItem = ({ children, shortcut, header, disabled, mono }) => (
+const MenuItem = ({ children, shortcut, header, disabled, mono, submenu }) => (
   <div style={{
     display: "flex", justifyContent: "space-between", alignItems: "center",
     padding: "4px 10px", borderRadius: 4,
@@ -70,6 +77,7 @@ const MenuItem = ({ children, shortcut, header, disabled, mono }) => (
   onMouseLeave={(e) => { if (!header && !disabled) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--mp-fg)"; } }}>
     <span>{children}</span>
     {shortcut && <span style={{ opacity: 0.6, fontFamily: "var(--mp-font-mono)", fontSize: "var(--mp-text-sm)" }}>{shortcut}</span>}
+    {submenu && <span style={{ opacity: 0.6, display: "flex" }}><Icon name="chevron-right" size={12}/></span>}
   </div>
 );
 
