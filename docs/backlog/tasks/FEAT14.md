@@ -49,7 +49,7 @@ Two of them are load-bearing and read as arbitrary from the outside, which is ho
 
 **Owner decision 2026-08-18: build the probe first, and do not spend the re-transcribe.**
 
-A read-only probe over the existing `<stem>.embeddings.json` corpus plus `roster.json`, recomputing `match_detail` for every unnamed label and counting how many of the 207 summarized meetings would have offered a suggestion, and to whom. No re-transcribe, no UI, no owner time. Filed separately (`/spike` shaped), not part of this task.
+A read-only probe over the existing `<stem>.embeddings.json` corpus plus `roster.json`, recomputing `match_detail` for every unnamed label and counting how many of the 207 summarized meetings would have offered a suggestion, and to whom. No re-transcribe, no UI, no owner time. Filed separately as [FEAT17](FEAT17.md) (`/spike` shaped, with its verdict thresholds pre-registered), not part of this task.
 
 It comes first because **no owner check can answer the question it answers.** The walkthrough below passes whether or not a near miss exists in the owner's data, by design, since "no invented guess" is a correct outcome. That makes it unable to distinguish "this works" from "this never fires on this library", and the second is a live possibility: 11 people at 1 or 2 samples each is exactly the regime where scores may sit below `SUGGEST_MIN` rather than in the band between the two floors. Spending a re-transcribe to learn nothing about that is the wrong order.
 
