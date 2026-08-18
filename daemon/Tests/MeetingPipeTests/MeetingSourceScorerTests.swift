@@ -71,13 +71,14 @@ final class MeetingSourceScorerTests: XCTestCase {
 
     func test_score_sums_individual_weights() {
         let signals = MeetingSourceCandidate.Signals(
-            callingControlsToolbar: true,  // +4
-            leaveButton: true,             // +3
-            muteButton: true,              // +2
-            titleMatch: true,              // +2
-            shareableContentActive: true   // +2
+            callingControlsToolbar: true,       // +4
+            leaveButton: true,                  // +3
+            muteButton: true,                   // +2
+            titleMatch: true,                   // +2
+            processAudioIsRunningInput: true,   // +3 (DET12)
+            shareableContentActive: true        // +2
         )
-        XCTAssertEqual(MeetingSourceScorer.score(signals, isStickyLast: false), 13)
+        XCTAssertEqual(MeetingSourceScorer.score(signals, isStickyLast: false), 16)
     }
 
     func test_sticky_bonus_adds_one_when_lastWinner_matches() {
@@ -93,6 +94,64 @@ final class MeetingSourceScorerTests: XCTestCase {
             leaveButton: true
         )
         XCTAssertEqual(MeetingSourceScorer.distinctSignalCount(signals), 2)
+    }
+
+    // MARK: - DET12: process audio as a native corroborator
+
+    /// The acceptance case. A native's `titleMatch` is not evidence of a call (Teams and Slack title
+    /// recognizers fire on chat threads and calendar windows), so the corroboration bar exists to ask
+    /// for something that only happens during one. A per-process mic read is a better answer to that
+    /// question than a title, and DET8 measured it going true at the join in both live Teams calls.
+    func test_process_audio_alone_corroborates_a_native() {
+        let signals = MeetingSourceCandidate.Signals(
+            titleMatch: true,
+            processAudioIsRunningInput: true
+        )
+        XCTAssertTrue(MeetingSourceScorer.hasCorroboratingSignal(signals))
+    }
+
+    /// The same candidate with the mic read false: nothing but a title, which is exactly the idle
+    /// Teams chat window the bar was raised against.
+    func test_a_negative_process_audio_read_does_not_corroborate() {
+        let signals = MeetingSourceCandidate.Signals(
+            titleMatch: true,
+            processAudioIsRunningInput: false
+        )
+        XCTAssertFalse(MeetingSourceScorer.hasCorroboratingSignal(signals))
+    }
+
+    /// DET12's recorded decision, pinned rather than left to emerge from `distinctSignalCount`.
+    /// Process audio DOES count toward the higher `isConfidentNativeMeeting` bar, because that bar
+    /// exists to reject signals that linger after a call and this is the one signal measured not to
+    /// (every Teams object read false 0 s and 11.4 s after the leave in DET8's two calls). Title plus
+    /// audio therefore clears it; audio alone still does not.
+    func test_process_audio_counts_toward_the_confident_native_bar() {
+        XCTAssertTrue(MeetingSourceScorer.isConfidentNativeMeeting(
+            .init(titleMatch: true, processAudioIsRunningInput: true)
+        ))
+        XCTAssertFalse(MeetingSourceScorer.isConfidentNativeMeeting(
+            .init(processAudioIsRunningInput: true)
+        ))
+    }
+
+    /// End to end through the lone-native gate: a real Teams call whose control walk found nothing
+    /// (DET9 measured 48 s stretches of exactly that, END9 a 21-33 s AX blackout) now wins on its
+    /// title plus the mic, where before DET12 it was rejected as title-only.
+    func test_lone_native_wins_on_title_plus_process_audio() {
+        var candidates = [teams(signals: .init(titleMatch: true, processAudioIsRunningInput: true))]
+        let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
+        XCTAssertEqual(winner?.source.bundleID, "com.microsoft.teams2")
+        XCTAssertEqual(winner?.score, 5, "title (2) + process audio (3) reaches the threshold")
+    }
+
+    /// Webex is held to the single-corroborator bar rather than the confident bar, and is outside
+    /// the read set entirely, so nothing about this changes for it. Pinned so a later widening of
+    /// `readsProcessAudio` cannot quietly promote a post-call ultrasound mic hold to a meeting.
+    func test_webex_still_needs_a_control_and_never_carries_process_audio() {
+        var candidates = [webex(signals: .init(titleMatch: true))]
+        XCTAssertNil(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil))
+        XCTAssertFalse(MeetingSourceScanner.readsProcessAudio(
+            bundleID: webexBundle, kind: .native))
     }
 
     // MARK: - Single-contender path

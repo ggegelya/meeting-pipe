@@ -98,6 +98,10 @@ Design consequence, now measured rather than assumed: resolve once and cache the
 - **A `com.microsoft.teams2` prefix also matches `com.microsoft.teams2.notificationcenter`**, which is not media. It read false throughout, so OR-ing is harmless, and narrowing the rule by guessing which helpers are "media" is the kind of unmeasured cleverness that produced DET2's close. Recorded so the breadth is a known property rather than a surprise.
 - `replayd` appearing with `input=true` is ScreenCaptureKit's own capture, not Teams. Irrelevant to attribution, but it confirms the enumeration sees capture clients live.
 
+### Start-side follow-up (2026-08-18)
+
+The "what a GO unlocks" bullet further down claims start detection revives for free, because `MeetingSourceScanner.collectSignals` "already calls `ProcessAudioSignal.defaultProbe`". That was written against code the DET2 cleanup had already deleted, and DET8 shipped the end side only. DET12 wrote the start side: a scan-scoped `ProcessAudioScanProbe` sharing this doc's matcher, a `MeetingSourceScorer.hasCorroboratingSignal` disjunct, and the `MeetingSourceScanner.shouldWalkControlAX` precondition. The 8.3 s and 2.1 s of headroom the two runs above measured is what it is spending; whether the scan actually attributes the signal before its confident winner is read from `events.jsonl` on the owner's next calls.
+
 ## Measured verdict (2026-07-20): none of A / B / C. Close the leg.
 
 The owner ran the probe on a real Mac against a live Teams call (PID 667), with the probe's own grant line reading `screen-recording grant: granted`. All three mechanisms returned the identical failure:

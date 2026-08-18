@@ -20,9 +20,15 @@ final class MeetingSourceScanner {
         let droppedCandidates: [MeetingSourceCandidate]
         /// DET11: whitelisted natives that produced NO signal at all because Accessibility is
         /// untrusted. They are invisible to `droppedCandidates` by construction (that list is
-        /// built from candidates which already carry a signal, and every native signal is gated
-        /// on AX), so without this a running Teams call under a denied grant left not one line
-        /// in `events.jsonl`. Feeds `candidate_unreadable`.
+        /// built from candidates which already carry a signal, and every AX-gated native signal is
+        /// false under a denied grant), so without this a running Teams call under a denied grant
+        /// left not one line in `events.jsonl`. Feeds `candidate_unreadable`.
+        ///
+        /// DET12 narrowed which natives land here without changing what the list means. Process
+        /// audio needs no Accessibility, so a Teams or Zoom candidate actually on the mic now
+        /// carries one signal under a denied grant and is reported as a drop instead: still a line
+        /// in `events.jsonl`, and a more informative one. An idle native, or any native outside
+        /// `readsProcessAudio`, is unreadable exactly as before.
         let unreadableNatives: [MeetingSourceCandidate]
         /// DET6: plain-browser tabs that carried a weak meeting title and were refused at the
         /// admission gate. Invisible to `droppedCandidates` for the same structural reason
@@ -69,12 +75,23 @@ final class MeetingSourceScanner {
     /// Last scan's winner for the scorer's sticky-bonus tie-break (TECH-C15).
     private var lastScorerWinner: AppSource?
 
+    /// DET12: the per-scan process-audio reader. One enumeration of the HAL process-object list
+    /// serves every candidate in a pass; see `ProcessAudioScanProbe` for why the cache is the
+    /// precondition for wiring the read in at all rather than a tuning afterthought.
+    private let processAudio: ProcessAudioScanProbe
+
     /// - Parameter registry: bundle lists (bundled defaults + user overlay). Injectable so tests
     ///   can drive a synthetic registry; production reads `MeetingAppRegistry.shared` (DET4).
-    init(registry: MeetingAppRegistry = .shared) {
+    /// - Parameter processAudio: injectable so a test can count enumerations and drive readings
+    ///   without a HAL (DET12).
+    init(
+        registry: MeetingAppRegistry = .shared,
+        processAudio: ProcessAudioScanProbe = ProcessAudioScanProbe()
+    ) {
         self.nativeBundles = registry.nativeBundles
         self.browserBundles = registry.browserBundles
         self.browserURLFragments = registry.browserURLFragments
+        self.processAudio = processAudio
     }
 
     /// Run one discovery pass and return the winner.
@@ -151,12 +168,18 @@ final class MeetingSourceScanner {
 
     /// DET11: the natives a denied Accessibility grant made unreadable. Pure.
     ///
-    /// With AX untrusted, `collectSignals` skips every signal collection, so a native is enqueued
+    /// With AX untrusted, `collectSignals` skips every AX-gated signal, so a native is enqueued
     /// (natives are always enqueued) and then dropped by the scorer's zero-evidence filter. Both
     /// halves are correct on their own and the result is a start-detection blackout that emits
     /// nothing: not a `candidate_dropped` (that list needs a signal), not a `discovery_shadow_pick`
     /// (there is no winner). Four user-facing surfaces said the cost of denying Accessibility was
     /// a late auto-stop, which is what the silence let stand for months.
+    ///
+    /// DET12 left one signal outside that gate: a Teams or Zoom candidate whose process audio reads
+    /// true is no longer zero-evidence, so it drops out of this list and into `droppedCandidates`.
+    /// That is the intended narrowing, not a hole. It does not make the AX-denied machine detect a
+    /// meeting, since one signal does not clear `isConfidentNativeMeeting`; it makes the candidate
+    /// visible with its evidence attached instead of visible as a permission complaint.
     ///
     /// Browsers and PWAs are absent by construction rather than by choice: their branches `guard
     /// axTrusted` before enqueueing at all, so a denied grant leaves nothing here to name. That is
@@ -183,6 +206,10 @@ final class MeetingSourceScanner {
 
     /// Produce one candidate per concurrent meeting-app contender. Native bundles are always included (scorer rejects those with zero signals, and DET11's `unreadableNatives` names the ones a denied Accessibility grant left with none). Browsers only qualify when at least one window matches a meeting-pattern title.
     private func enumerateCandidates(axTrusted: Bool) -> Enumeration {
+        // DET12: one HAL process-object enumeration serves every candidate below. Dropping the
+        // snapshot here rather than holding it across scans is deliberate; a synchronous scan has no
+        // list-change listener to tell it when a cached object ID went stale.
+        processAudio.beginScan()
         let apps = NSWorkspace.shared.runningApplications
         // DET5 walk-gate inputs (see `shouldWalkControlAX`): the frontmost app, and whether
         // exactly one native meeting app is running (so a lone native's control walk is cheap
@@ -341,10 +368,14 @@ final class MeetingSourceScanner {
     }
 
     /// Cisco Webex keeps the mic open after a call for ultrasound device discovery. That is why it
-    /// was excluded from the process-audio probe, and DET2's removal of that probe (2026-07-20)
-    /// leaves this set doing two jobs that survive it: `shouldWalkControlAX` always walks these
-    /// bundles, and `hasAudioLeg` is false for them so the scorer holds them to DET4's
-    /// single-corroborator bar. Both are deliberate behaviour, not probe leftovers.
+    /// was excluded from the original process-audio probe, and this set does two jobs beyond that
+    /// exclusion: `shouldWalkControlAX` always walks these bundles, and `hasAudioLeg` is false for
+    /// them so the scorer holds them to DET4's single-corroborator bar.
+    ///
+    /// It is no longer the audio exclusion itself. DET12 brought a start-side read back and pointed
+    /// its gate at `NativeLifecycleConfig.usesProcessAudio`, which answers false for Webex and spark
+    /// for the same ultrasound reason, so the carve-out is stated once for both ends of the meeting
+    /// rather than duplicated here. Do not re-add it below.
     private static let webexBundleIDs: Set<String> = ["com.cisco.webexmeetingsapp", "com.cisco.spark"]
 
     /// PERF6 + DET5: whether the three control-button AX walks (toolbar / leave / mute) are worth
@@ -359,19 +390,54 @@ final class MeetingSourceScanner {
     /// is nothing to disambiguate) both admit the walk. PERF6's cost gate still bites for an idle
     /// backgrounded app in a multi-native scan. Webex always walks (see `webexBundleIDs`).
     ///
-    /// A `processAudioActive` precondition was removed here when DET2 closed that signal as
-    /// permanently dead (2026-07-20); it could never be true, so it never admitted a walk.
+    /// `processAudioIsRunningInput` is the fourth admission and the oldest: it was one of PERF6's two
+    /// original preconditions, removed by the DET2 cleanup (2026-07-20) because the read could never
+    /// be true, and restored by DET12 once DET8 measured that it can. It is the only admission here
+    /// that is evidence of a live call rather than a cheap guess that one is plausible, so a Teams
+    /// window renamed out of the recognizer while backgrounded in a multi-native scan now gets its
+    /// control walk on the strength of the mic instead of being skipped.
     static func shouldWalkControlAX(
         titleMatch: Bool,
+        processAudioIsRunningInput: Bool,
         isFrontmost: Bool,
         isLoneNative: Bool,
         bundleID: String
     ) -> Bool {
         if webexBundleIDs.contains(bundleID) { return true }
-        return titleMatch || isFrontmost || isLoneNative
+        return titleMatch || processAudioIsRunningInput || isFrontmost || isLoneNative
     }
 
-    /// Populate the signal tuple. Each signal degrades to false on AX denied / read failure.
+    /// DET12: whether this candidate's process audio is read at all. The single gate, which is what
+    /// lets `MeetingSourceScorer.hasCorroboratingSignal` OR the signal in without re-asking about
+    /// kind.
+    ///
+    /// Native only, and then only the bundles whose lifecycle config opts in. Pointing at
+    /// `NativeLifecycleConfig.usesProcessAudio` rather than keeping a second list here is the point:
+    /// the start and end sides read the same HAL property, so which apps that read is trusted for is
+    /// one fact, and turning Slack or Webex on stays a measurement rather than a flag flip on either
+    /// side. Browsers and Chromium PWAs answer false because they hold no native config: a browser on
+    /// the mic names the browser and never the tab, and whether a browser tab may be admitted on any
+    /// evidence is DET6's question, gated on DET6's own measurement.
+    static func readsProcessAudio(bundleID: String, kind: AppSourceKind) -> Bool {
+        kind == .native && NativeLifecycleConfig.usesProcessAudio(bundleID: bundleID)
+    }
+
+    /// DET12: read one candidate's process audio, off the per-scan snapshot.
+    ///
+    /// Internal so a test can drive it with a counting probe: the enumeration-once-per-scan property
+    /// is the precondition this whole seam rests on, and `enumerateCandidates` around it needs a real
+    /// `NSWorkspace`. An unknown read (nothing matched, or the list would not enumerate) degrades to
+    /// false, like every other signal in the tuple.
+    func processAudioIsRunningInput(bundleID: String, kind: AppSourceKind, pid: pid_t) -> Bool {
+        guard MeetingSourceScanner.readsProcessAudio(bundleID: bundleID, kind: kind) else {
+            return false
+        }
+        return processAudio.isRunningInput(bundleID: bundleID, pid: pid) ?? false
+    }
+
+    /// Populate the signal tuple. Each signal degrades to false on a read failure, and every signal
+    /// but `processAudioIsRunningInput` also degrades to false when Accessibility is denied (DET12
+    /// put that one read outside the gate on purpose; see below).
     /// `preTitleMatch` short-circuits the per-bundle recognizer: browsers pass the already-computed
     /// browser title/URL match (`true` for a plain tab vetted by URL/title; the real per-window result
     /// for a PWA, which is `false` on a name-only admission, START3/AUD-4); natives pass `nil` so the recognizer runs.
@@ -386,16 +452,30 @@ final class MeetingSourceScanner {
     ) -> MeetingSourceCandidate.Signals {
         var signals = MeetingSourceCandidate.Signals()
 
-        // A cheap per-process audio probe used to run here, ahead of the AX walks, as one of the
-        // PERF6 gate preconditions. The DET2 cleanup removed it (2026-07-20): it cost a CoreAudio
-        // HAL round-trip per candidate process on every scan to produce a value that could never be
-        // true. DET8 revived the signal on 2026-08-05, so a read here could be true again, and it
-        // was still not restored. Two reasons, both worth knowing before adding it back. The cost
-        // argument got worse, not better: resolution is now an enumeration of the whole HAL process
-        // list plus two property reads per object, which is heavier than the old translate and would
-        // run per candidate per scan. And the benefit is a start-side widening that DET6 owns and
-        // has to measure. If it comes back it belongs behind the same PERF6 gate, resolved once per
-        // scan rather than once per candidate.
+        // DET12: the per-process audio read, ahead of the AX walks and OUTSIDE the `axTrusted` gate
+        // below. Both halves of that placement are load-bearing.
+        //
+        // Ahead of the walks because it is one of PERF6's gate preconditions again: a true reading is
+        // evidence of a live call, and it admits the recursive control-button walks for a candidate
+        // that today is gated on cheaper and weaker evidence (a title, being frontmost, being alone).
+        //
+        // Outside the AX gate because it needs no Accessibility grant and no Screen Recording grant.
+        // DET8's enumeration resolved from a disclaimed harness shell holding no TCC grant at all,
+        // and DET11 established that every other native signal is AX-gated, after which the scorer
+        // drops the zero-signal candidate. So on an Accessibility-denied machine this is the only
+        // signal a native can carry, which is the difference between a candidate that leaves a
+        // reasoned line in `events.jsonl` and one that vanishes. Moving this read inside the gate
+        // would silently undo that.
+        //
+        // The cost that got the pre-DET2 probe removed is handled by the cache rather than by
+        // skipping the read: resolution is now a whole-list enumeration, heavier than the old
+        // per-process translate, so `ProcessAudioScanProbe` enumerates once per scan and matches every
+        // candidate against that one snapshot.
+        signals.processAudioIsRunningInput = processAudioIsRunningInput(
+            bundleID: bundleID,
+            kind: kind,
+            pid: pid
+        )
 
         if axTrusted {
             let axApp = AXUIElementCreateApplication(pid)
@@ -418,6 +498,7 @@ final class MeetingSourceScanner {
             // "walked and found nothing".
             if MeetingSourceScanner.shouldWalkControlAX(
                 titleMatch: signals.titleMatch,
+                processAudioIsRunningInput: signals.processAudioIsRunningInput,
                 isFrontmost: isFrontmost,
                 isLoneNative: isLoneNative,
                 bundleID: bundleID

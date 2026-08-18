@@ -239,6 +239,11 @@ final class MeetingDiscoveryWatcher {
                     "leave_button": winner.signals.leaveButton,
                     "mute_button": winner.signals.muteButton,
                     "title_match": winner.signals.titleMatch,
+                    // DET12: the winner's line enumerates its evidence, so it has to name the
+                    // signal that can now arrive before any of the AX ones do. It is also the half
+                    // of DET12's behavioural bar that is read from the log: this attribute true on
+                    // a Teams winner means the mic read got there first.
+                    "process_audio_is_running_input": winner.signals.processAudioIsRunningInput,
                 ])
             }
             // Report every winner, not just changes; keeps re-discovery working when the same app is
@@ -315,6 +320,9 @@ final class MeetingDiscoveryWatcher {
                 "leave_button": c.signals.leaveButton,
                 "mute_button": c.signals.muteButton,
                 "title_match": c.signals.titleMatch,
+                // DET12: a drop line that enumerates four of five signals is a misleading picture,
+                // and this is the one an Accessibility-denied native arrives with on its own.
+                "process_audio_is_running_input": c.signals.processAudioIsRunningInput,
             ])
         }
     }

@@ -1,3 +1,5 @@
+import CoreAudio
+import MeetingPipeCore
 import XCTest
 @testable import MeetingPipe
 
@@ -237,27 +239,145 @@ final class MeetingSourceScannerTests: XCTestCase {
         // The hot case PERF6 protects (Teams backgrounded, no call, another native also running):
         // no meeting-titled window, not frontmost, not the lone native -> walk skipped.
         XCTAssertFalse(MeetingSourceScanner.shouldWalkControlAX(
-            titleMatch: false,
+            titleMatch: false, processAudioIsRunningInput: false,
             isFrontmost: false, isLoneNative: false, bundleID: "com.microsoft.teams2"))
     }
 
     func test_meeting_titled_window_admits_the_control_walk() {
         XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
-            titleMatch: true,
+            titleMatch: true, processAudioIsRunningInput: false,
             isFrontmost: false, isLoneNative: false, bundleID: "com.microsoft.teams2"))
     }
 
-    // DET2 (2026-07-20) removed the `processAudioActive` precondition from the walk gate, so the
-    // test that pinned "active process audio admits the walk" is gone with it: the read is
-    // permanently dead, and that admission could never occur. The remaining cases below are the
-    // ones that actually fire.
+    func test_active_process_audio_admits_the_control_walk() {
+        // DET12 restored the precondition DET2 removed. The hot case it buys back is the first one
+        // above with the mic held: Teams backgrounded in a multi-native scan, its window renamed out
+        // of the recognizer, and its ModuleHost reading input. Nothing cheap says a call is
+        // plausible, and the one signal that says a call is HAPPENING now admits the walk.
+        XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
+            titleMatch: false, processAudioIsRunningInput: true,
+            isFrontmost: false, isLoneNative: false, bundleID: "com.microsoft.teams2"))
+    }
+
+    // MARK: - DET12: who is read for process audio at all
+
+    /// The single gate. Everything below is one assertion about what may never carry the signal,
+    /// which is what lets `MeetingSourceScorer.hasCorroboratingSignal` OR it in without re-asking
+    /// about kind.
+    func test_process_audio_is_read_for_the_measured_natives_only() {
+        XCTAssertTrue(MeetingSourceScanner.readsProcessAudio(
+            bundleID: "com.microsoft.teams2", kind: .native))
+        XCTAssertTrue(MeetingSourceScanner.readsProcessAudio(
+            bundleID: "us.zoom.xos", kind: .native))
+    }
+
+    func test_process_audio_is_never_read_for_a_browser_or_a_pwa() {
+        // A browser holding the mic names the browser and never which tab, so the read that is
+        // trustworthy for Teams is ambiguous here. Whether a browser tab may be admitted on any
+        // evidence at all is DET6's question and gated on DET6's own measurement; DET12 must not
+        // widen that gate as a side effect.
+        XCTAssertFalse(MeetingSourceScanner.readsProcessAudio(
+            bundleID: "com.google.Chrome", kind: .browser))
+        XCTAssertFalse(MeetingSourceScanner.readsProcessAudio(
+            bundleID: "com.apple.Safari", kind: .browser))
+        XCTAssertFalse(MeetingSourceScanner.readsProcessAudio(
+            bundleID: "com.google.Chrome.app.fmgjjmmmlfnkbppncabfkddbjimcfncm", kind: .browser))
+    }
+
+    func test_process_audio_is_never_read_for_webex_or_slack() {
+        // Cisco holds the mic open post-call for ultrasound device discovery, so a true read there
+        // says nothing about whether a call is live; Slack was never probed. Both stay false on the
+        // start side for the same reason `NativeLifecycleConfig` keeps them false on the end side,
+        // and turning either on is a measurement rather than a flag flip.
+        XCTAssertFalse(MeetingSourceScanner.readsProcessAudio(
+            bundleID: "com.cisco.webexmeetingsapp", kind: .native))
+        XCTAssertFalse(MeetingSourceScanner.readsProcessAudio(
+            bundleID: "com.cisco.spark", kind: .native))
+        XCTAssertFalse(MeetingSourceScanner.readsProcessAudio(
+            bundleID: "com.tinyspeck.slackmacgap", kind: .native))
+    }
+
+    // MARK: - DET12: one HAL enumeration per scan, not one per candidate
+
+    /// One audio object per app, so both bundles below resolve. Teams matches on the dotted bundle
+    /// prefix its media stack actually carries, which is the shape DET8 measured.
+    private static let twoAppSnapshot = ProcessAudioScanProbe.Snapshot(
+        objects: [
+            .init(objectID: 10, bundleID: "com.microsoft.teams2.modulehost", pid: 900),
+            .init(objectID: 20, bundleID: "us.zoom.xos", pid: 901),
+        ],
+        status: noErr
+    )
+
+    /// The precondition the whole seam rests on. Resolution is a whole-list enumeration plus two
+    /// property reads per object, so a per-candidate enumeration would cost strictly more than the
+    /// probe DET2's cleanup removed partly on cost. Counted rather than reasoned about.
+    func test_the_hal_list_is_enumerated_once_per_scan_not_once_per_candidate() {
+        var enumerations = 0
+        let probe = ProcessAudioScanProbe(
+            enumerator: {
+                enumerations += 1
+                return MeetingSourceScannerTests.twoAppSnapshot
+            },
+            inputReader: { $0 == 10 },
+            parentOf: { _ in nil }
+        )
+        let scanner = MeetingSourceScanner(processAudio: probe)
+
+        probe.beginScan()
+        XCTAssertTrue(scanner.processAudioIsRunningInput(
+            bundleID: "com.microsoft.teams2", kind: .native, pid: 100))
+        XCTAssertFalse(scanner.processAudioIsRunningInput(
+            bundleID: "us.zoom.xos", kind: .native, pid: 200))
+        XCTAssertEqual(enumerations, 1, "two candidates in one scan must share one enumeration")
+
+        // And it is once per SCAN, not once per process: the next pass re-enumerates, because a
+        // synchronous scan has no list-change listener to tell it a cached object ID went stale.
+        probe.beginScan()
+        _ = scanner.processAudioIsRunningInput(
+            bundleID: "com.microsoft.teams2", kind: .native, pid: 100)
+        XCTAssertEqual(enumerations, 2)
+    }
+
+    func test_a_candidate_outside_the_read_set_costs_no_enumeration_at_all() {
+        var enumerations = 0
+        let probe = ProcessAudioScanProbe(
+            enumerator: {
+                enumerations += 1
+                return MeetingSourceScannerTests.twoAppSnapshot
+            },
+            inputReader: { _ in true },
+            parentOf: { _ in nil }
+        )
+        let scanner = MeetingSourceScanner(processAudio: probe)
+        probe.beginScan()
+        XCTAssertFalse(scanner.processAudioIsRunningInput(
+            bundleID: "com.google.Chrome", kind: .browser, pid: 300))
+        XCTAssertFalse(scanner.processAudioIsRunningInput(
+            bundleID: "com.cisco.spark", kind: .native, pid: 301))
+        XCTAssertEqual(enumerations, 0, "the gate must short-circuit before the HAL is touched")
+    }
+
+    func test_an_unresolvable_read_degrades_to_false() {
+        // Nothing in the list matches, which is `nil` from the probe (UNKNOWN). The signal tuple is
+        // booleans, so unknown reads as false exactly like a failed AX walk does.
+        let probe = ProcessAudioScanProbe(
+            enumerator: { ProcessAudioScanProbe.Snapshot(objects: [], status: noErr) },
+            inputReader: { _ in true },
+            parentOf: { _ in nil }
+        )
+        let scanner = MeetingSourceScanner(processAudio: probe)
+        XCTAssertFalse(scanner.processAudioIsRunningInput(
+            bundleID: "com.microsoft.teams2", kind: .native, pid: 100))
+    }
+
 
     func test_lone_native_walks_even_with_a_renamed_window() {
         // DET5 acceptance: a Zoom build that dropped "Zoom Meeting" from its title (titleMatch
         // false) is the only native running, so its control walk still runs and the
         // leave/mute/toolbar signals can carry it to a prompt.
         XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
-            titleMatch: false,
+            titleMatch: false, processAudioIsRunningInput: false,
             isFrontmost: false, isLoneNative: true, bundleID: "us.zoom.xos"))
     }
 
@@ -265,7 +385,7 @@ final class MeetingSourceScannerTests: XCTestCase {
         // The user is actively looking at the meeting window; walk it even when its title was
         // renamed and another native idles in the background.
         XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
-            titleMatch: false,
+            titleMatch: false, processAudioIsRunningInput: false,
             isFrontmost: true, isLoneNative: false, bundleID: "us.zoom.xos"))
     }
 
@@ -297,6 +417,34 @@ final class MeetingSourceScannerTests: XCTestCase {
             "the drop is invisible to DET5's list by construction - that is why DET11 exists"
         )
         XCTAssertEqual(result.unreadableNatives.map(\.source.bundleID), ["com.microsoft.teams2"])
+    }
+
+    /// DET12's second payoff, and the acceptance case for placing the read outside the `axTrusted`
+    /// gate. Same scan as above, same denied grant, except Teams is actually on the mic. Process
+    /// audio needs no Accessibility and no Screen Recording grant, so the candidate now carries one
+    /// real signal instead of the zero-signal set `pickBest` drops before `droppedCandidates` is
+    /// built. It stops being a permission complaint and becomes a drop with its evidence attached.
+    func test_ax_denied_native_on_the_mic_carries_a_signal_instead_of_vanishing() {
+        let scanner = MeetingSourceScanner()
+        let onTheMic = MeetingSourceCandidate.Signals(processAudioIsRunningInput: true)
+        let result = scanner.scan(
+            candidates: [native("com.microsoft.teams2", signals: onTheMic)],
+            axTrusted: false
+        )
+
+        XCTAssertEqual(MeetingSourceScorer.distinctSignalCount(onTheMic), 1)
+        XCTAssertEqual(
+            result.droppedCandidates.map(\.source.bundleID), ["com.microsoft.teams2"],
+            "the candidate must survive the zero-evidence filter and be reported"
+        )
+        XCTAssertTrue(
+            result.unreadableNatives.isEmpty,
+            "it is no longer unreadable: one signal was read without Accessibility"
+        )
+        // And what it is NOT: a single signal still does not clear `isConfidentNativeMeeting`, so a
+        // denied grant does not silently start recording either. Lowering that bar is a separate
+        // decision with its own measurement owed.
+        XCTAssertNil(result.winner)
     }
 
     /// The emitted line, not a re-spelling of it: this is the function `emitUnreadableNatives`
@@ -372,10 +520,10 @@ final class MeetingSourceScannerTests: XCTestCase {
         // which is why it was carved out of the old process-audio probe; the always-walk exemption
         // outlived that probe deliberately).
         XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
-            titleMatch: false,
+            titleMatch: false, processAudioIsRunningInput: false,
             isFrontmost: false, isLoneNative: false, bundleID: "com.cisco.webexmeetingsapp"))
         XCTAssertTrue(MeetingSourceScanner.shouldWalkControlAX(
-            titleMatch: false,
+            titleMatch: false, processAudioIsRunningInput: false,
             isFrontmost: false, isLoneNative: false, bundleID: "com.cisco.spark"))
     }
 }

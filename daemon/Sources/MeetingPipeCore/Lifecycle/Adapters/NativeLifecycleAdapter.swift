@@ -80,6 +80,19 @@ public extension NativeLifecycleConfig {
     /// pre-DET4 dead `com.skype.skype` / `com.google.meet` rows). The daemon builds one
     /// `NativeLifecycleAdapter` per entry (see `Coordinator`).
     static let all: [NativeLifecycleConfig] = [.teams, .zoom, .webex, .slack]
+
+    /// Whether this bundle's process audio is read at all, on either side of the meeting.
+    ///
+    /// DET12 gave the start-side scan a process-audio read and pointed it at this predicate rather
+    /// than a second list, so the measured/unmeasured boundary is stated once. It answers false for
+    /// anything with no native config, which is every browser and every Chromium PWA: a native app's
+    /// helper process on the mic names the app, while a browser on the mic names only the browser and
+    /// never which tab, so the read that is trustworthy for Teams is ambiguous for Chrome. Whether a
+    /// browser tab may be admitted on any evidence at all is DET6's question and gated on its own
+    /// measurement.
+    static func usesProcessAudio(bundleID: String) -> Bool {
+        all.first { $0.bundleIDs.contains(bundleID) }?.usesProcessAudio ?? false
+    }
 }
 
 /// Single parameterized adapter for native meeting clients (Teams, Zoom, Webex, Slack). Per-app differences live in `NativeLifecycleConfig`.

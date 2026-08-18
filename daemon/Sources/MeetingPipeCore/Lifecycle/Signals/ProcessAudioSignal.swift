@@ -429,7 +429,10 @@ public final class ProcessAudioSignal {
         return value
     }
 
-    private static func readIsRunningInput(_ object: AudioObjectID) -> Bool? {
+    /// Read one object's `kAudioProcessPropertyIsRunningInput`. nil when the read itself failed.
+    /// Internal rather than private because `ProcessAudioScanProbe` reads the same property on the
+    /// start side and there must be exactly one spelling of it (DET12).
+    static func readIsRunningInput(_ object: AudioObjectID) -> Bool? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioProcessPropertyIsRunningInput,
             mScope: kAudioObjectPropertyScopeGlobal,

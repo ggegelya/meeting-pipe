@@ -9,6 +9,10 @@ enum MeetingSourceScorer {
         static let leaveButton = 3
         static let muteButton = 2
         static let titleMatch = 2
+        /// DET12 restores the pre-DET2 value unchanged rather than re-deriving it: stronger than a
+        /// Mute button, weaker than the calling-controls toolbar. Title (2) plus this (3) reaches
+        /// `threshold`, which is the pairing a real Teams call produces before any control walk.
+        static let processAudioIsRunningInput = 3
         static let shareableContentActive = 2
         /// Recency bonus applied when the candidate's bundle matches the previous scan's winner.
         static let sticky = 1
@@ -25,6 +29,7 @@ enum MeetingSourceScorer {
         if signals.leaveButton { total += Weights.leaveButton }
         if signals.muteButton { total += Weights.muteButton }
         if signals.titleMatch { total += Weights.titleMatch }
+        if signals.processAudioIsRunningInput { total += Weights.processAudioIsRunningInput }
         if signals.shareableContentActive { total += Weights.shareableContentActive }
         if isStickyLast { total += Weights.sticky }
         return total
@@ -37,6 +42,7 @@ enum MeetingSourceScorer {
         if signals.leaveButton { count += 1 }
         if signals.muteButton { count += 1 }
         if signals.titleMatch { count += 1 }
+        if signals.processAudioIsRunningInput { count += 1 }
         if signals.shareableContentActive { count += 1 }
         return count
     }
@@ -44,16 +50,21 @@ enum MeetingSourceScorer {
     /// True when at least one in-call signal beyond `titleMatch` is set. `titleMatch` alone is
     /// unreliable for natives: Teams/Slack title recognizers match chat threads and calendar
     /// windows. The calling-controls toolbar, Leave button and Mute button only appear during an
-    /// active call. `shareableContentActive` is listed but never set (see its declaration), and the
-    /// process-audio disjunct was removed by the DET2 cleanup, so in practice this is the three AX
-    /// control signals. DET8 revived process audio on 2026-08-05 (DET2 had measured the wrong
-    /// process) but END-SIDE only, and deliberately did not re-add this disjunct: re-admitting a
-    /// candidate on an audio read is a start-side false-positive question that DET6 owns and gates
-    /// on its own measurement. So the signal exists again and this scorer still does not consult it.
+    /// active call. `shareableContentActive` is listed but never set (see its declaration).
+    ///
+    /// `processAudioIsRunningInput` is a disjunct again as of DET12, three weeks after the DET2
+    /// cleanup removed it and two weeks after DET8 revived the underlying signal end-side. A
+    /// per-process mic read is a strictly better answer to "is this app in a call" than a title, and
+    /// DET8 measured it going true at the join in both of its live Teams calls. It is deliberately
+    /// NOT re-asked here whether the candidate is native: the field can only ever be true for one,
+    /// because `MeetingSourceScanner.readsProcessAudio` is the single gate on who is read at all and
+    /// it answers false for every browser, every PWA and Webex. Putting the kind test here as well
+    /// would be a second copy of that rule, and two copies of a rule is how they drift.
     static func hasCorroboratingSignal(_ signals: MeetingSourceCandidate.Signals) -> Bool {
         signals.callingControlsToolbar
             || signals.leaveButton
             || signals.muteButton
+            || signals.processAudioIsRunningInput
             || signals.shareableContentActive
     }
 
@@ -65,6 +76,22 @@ enum MeetingSourceScorer {
     /// Leave + Mute buttons; a single stale-prone control is not enough, so any signal other than
     /// the toolbar needs a second one. Used for the lone-native prompt gate and as the bar a
     /// native must clear to block the trustworthy-browser exemption in a contested scan.
+    ///
+    /// **DET12 decided deliberately that process audio counts toward this bar**, by counting it in
+    /// `distinctSignalCount` rather than carving out a second count. Three reasons, and the decision
+    /// is recorded here because it is otherwise the kind of thing that happens by accident. The bar
+    /// exists to reject signals that linger after a call, and process audio is the one signal in the
+    /// set measured NOT to: DET8's two live calls had every Teams object reading false 0 s and 11.4 s
+    /// after the leave, while a stale Leave button is exactly what DET5 was raised against. The one
+    /// app known to hold the mic past the call, Webex, is excluded from the read entirely rather than
+    /// discounted here. And a second count would have to stay in step with the one `pickBest` already
+    /// uses for its zero-evidence filter, which has to count this signal or the DET11 payoff (a
+    /// native carrying evidence on an Accessibility-denied scan) does not exist.
+    ///
+    /// What that means in practice: title plus audio now clears the bar, where title alone never
+    /// does. What it does not mean: audio ALONE still does not, so a native on an AX-denied machine
+    /// is visible in the log and dropped rather than promoted. Lowering that is a separate decision
+    /// and needs its own measurement.
     static func isConfidentNativeMeeting(_ signals: MeetingSourceCandidate.Signals) -> Bool {
         signals.callingControlsToolbar || distinctSignalCount(signals) >= 2
     }
