@@ -230,6 +230,44 @@ The AI9 hint is armed only when the prompt showed it (never on auto-consent, a h
 
 ## Daemon — `daemon/Sources/MeetingPipe/`
 
+### File index
+
+One hop to the right file. Moved here from `daemon/CLAUDE.md` by DOC15: that file is prepended to every prompt in its subtree, so an orientation table nobody obeys was paying a per-turn cost for a lookup done occasionally, and its own intro already deferred to this section for what each file does and why. The subsections below carry that detail; `daemon/docs/gotchas.md` carries the traps.
+
+| Subsystem | Entry file(s) |
+| State machine + dispatch | `Coordinator.swift` (+ `Coordinator+*.swift`), `MeetingSessionController.swift`, `SessionHost.swift`, `Coordination/` (`DetectionStateMachine`, `SinkDispatcher`, `PipelineJobDispatcher`, `ConfigRefreshCoordinator`) |
+| Meeting detection (start + end) | `MeetingPipeCore/Lifecycle/`, `MeetingDiscoveryWatcher.swift`, `MeetingSourceScanner.swift`, `MeetingSourceScorer.swift`, `MeetingAppRegistry.swift`, `MicBusySpanTracker.swift`, `MicInUseTier.swift`, `MicInputAvailability.swift`, `Resources/meeting_apps.toml` |
+| Mute gating | `MeetingPipeCore/MicGate/`, `MicGateWriter`, `AXMuteButtonProbe`, `MeetingAXWindowWatcher`, `Adapters/LogMuteAdapter.swift`, `SlimCoreMuteLog.swift`, `MuteSourceFusion.swift` |
+| Recording | `MeetingRecorder.swift`, `RecordingPostProcessor.swift`, `RecordingDurationParity.swift`, `SystemAudioCapture.swift`, `SystemCaptureRetryPlanner.swift`, `CaptureRecoveryPlanner.swift`, `SerialBufferWriter.swift`, `MuteRedactor.swift`, `AudioRetention.swift` |
+| Bounding a wedged audio engine (REC13) | `RunWithTimeout.swift`, `BoundedEngineStart.swift`, `EngineTeardown.swift`, `MainQueueObserver.swift`, `StopStallWatchdog.swift` |
+| Surviving an ObjC raise (REC12) | `GuardedTapInstall.swift`, `UncaughtExceptionLogger.swift`, `Sources/MeetingPipeObjC/` (the `@try` barrier; a target of its own only because SwiftPM has no mixed ObjC/Swift target) |
+| Transcription (ASR + diarization) | `Transcription/` (`FluidAudioRunner`, `TranscriptionRunner`, `SegmentBuilder`, `TranscriptionService`), `SpeakerAccuracy.swift`, `TranscriptOverlayCarry.swift` |
+| Derived copy (engines, sinks, clamps) | `SummarizationEngine.swift` (UX31), `PublishLanding.swift` (UX49), `RegulatedMode.swift` (UX60), `DigestNarration.swift` (UX63), `SummaryStaleness.swift` (UX65), `PrivacyReach.swift` (DOC12) |
+| Workflows | `Workflow.swift`, `WorkflowStore.swift`, `WorkflowMatcher.swift`, `WorkflowsView.swift`, `PublishTargets.swift`, `WorkflowContextHint.swift`, `WorkflowDeletion.swift`, `WorkflowRowActions.swift`, `WorkflowInspectorPresentation.swift`, `WorkflowInspector.swift`, `WorkflowRoutingHint.swift`, `WorkflowCorrectionStore.swift` |
+| Library UI | `LibraryWindow.swift`, `LibraryListView.swift`, `MeetingDetailView.swift`, `MeetingStore.swift`, `LibraryProcessing.swift`, `ReSummarizeMenu.swift`, `LibraryDialogs.swift`, `BatchActionConfirmation.swift` |
+| Library: search + smart folders | `SearchIndex.swift` (SQLite FTS5), `SearchIndexer.swift`, `SearchQuery.swift`, `SavedSearch.swift`, `SavedSearchStore.swift`, `SavedSearchViews.swift` |
+| Library: Ask (AI3) | `AskModel.swift`, `AskPane.swift`, `AskContextWidth.swift`, `AskView.swift` |
+| Library: Facts + evidence | `Facts.swift`, `FactsView.swift`, `SummaryRenderedView.swift` (`EvidenceChips`) |
+| Quick Find (Cmd+K) | `QuickFindWindow.swift`, `QuickFindRanker.swift`, `QuickFindList.swift` |
+| Speaker naming | `TranscriptTab.swift`, `MeetingCast.swift`, `SpeakerLabelStore.swift`, `Library/MeetingLibraryService.swift`, `VoiceResolution.swift`, `VoiceResolutionBar.swift` |
+| People rail (DV3) | `PeopleRail.swift`, `PeopleView.swift`, `RosterProfile.swift`, `RosterRename.swift` |
+| Meeting time rail (AI8) | `MeetingStats.swift`, `StatsView.swift` |
+| Preferences | `PreferencesWindow.swift`, `Preferences/` (`PreferencesView.swift`, `PreferencesControls.swift`, `UISettings.swift`, `VocabularyEditor.swift`), `NotionDatabasePicker.swift`, `GlossaryStore.swift`, `RestoreFlow.swift` |
+| Vocabulary + clarify | `VocabularyCandidate.swift` (FEAT12), `Clarify.swift` + `ClarifySheet.swift` (FEAT13) |
+| Menu bar + onboarding | `StatusBarController.swift`, `StatusBarModel.swift`, `SetupChecklist.swift`, `Onboarding/`, `OnboardingGate` |
+| Application menu bar | `MainMenu.swift` (UX48) - the App / Edit / Window bar, distinct from the menu-bar *extra* above |
+| Window activation | `WindowActivationManager.swift` (UX39/UX56) - owns the policy flip, and installs/removes `MainMenu` with it |
+| Permissions | `PermissionsCenter.swift` |
+| Pipeline subprocess | `PipelineLauncher.swift`, `LocalServerReaper.swift`, `LocalModelPreloader.swift`, `LocalModelTier.swift` |
+| Scheduled `mp` jobs | `LaunchAgentScheduler.swift`, `DigestSchedulerService.swift` (AI4), `BackupSchedulerService.swift` (STOR4) - a new job adds a thin service here, not a second plist writer |
+| Launch at login | `LaunchAtLoginService.swift` (UX42) - the agent that installs the app, distinct from the one-shots above |
+| One instance only | `SingleInstanceGuard.swift` (UX54) |
+| Event log | `Logger.swift` (`Log.event` / `Log.writeLine` / `Log.main`, size-rotated) |
+| Diagnostics viewer (UX20) | `DiagnosticsWindow.swift`, `DiagnosticsView.swift`, `DiagnosticsLog.swift`, `DoctorRunner` |
+| User guide (DOC11) | `GuideWindow.swift`, `GuideView.swift`, `GuideDocument.swift` - text is `docs/GUIDE.md` and *only* that; never paste guide prose into Swift |
+| Clipboard share (FEAT16) | `RichTextShare.swift` (`RichTextShare` = the flavors + the pasteboard write; `MeetingShare` = what a meeting's two documents are), reached from `MeetingDetailView+Header.swift`'s `actionsMenu` |
+| Automation (`meetingpipe://` + App Intents) | `Automation/` (`AutomationCommand.swift`, `AutomationReference.swift`, `Coordinator+Automation.swift`, `TranscriptDeeplink.swift`, `MeetingPipeAppIntents.swift`), `AppDelegate.application(_:open:)` |
+
 ### Lifecycle entry points
 
 - `App.swift` - `@main`. NSApplication accessory app. Stands down through `SingleInstanceGuard` if another copy is already running, then reads `UISettings`, applies theme, sets up `ConfigStore` + `SecretsStore`, constructs `Coordinator`, wires `StatusBarController`, kicks off `SystemAudioCapture.prewarm`.

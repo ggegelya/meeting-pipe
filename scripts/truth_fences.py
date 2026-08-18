@@ -106,8 +106,12 @@ CLAUDE_MAX_ENTRY_BYTES = 800
 
 # Whole-file backstop, deliberately loose. With entries capped above, a file can
 # only grow by accumulating rules, which is legitimate; this catches the far end
-# of that (~85 rules at daemon's current average), where the answer is to ask
-# whether the subtree needs splitting rather than to write another line.
+# of that, where the answer is to ask whether the subtree needs splitting rather
+# than to write another line. The parenthetical here used to read "~85 rules at
+# daemon's current average" and was measured before DOC14's split; daemon hit
+# this cap at 58 rules on 2026-08-18, so the average it named had already
+# drifted. A rule count is not derivable from a byte budget, which is why DOC15
+# records both in its ship note rather than restating a ratio here.
 CLAUDE_MAX_BYTES = 24_000
 
 # Known drift, each naming the task that clears it. Same ratchet contract as the
