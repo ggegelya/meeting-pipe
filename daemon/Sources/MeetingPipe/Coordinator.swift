@@ -323,7 +323,7 @@ final class Coordinator: NSObject {
             onError: { [weak self] message in
                 self?.notifier.notifyError(message)
             },
-            onQueueDepth: { [weak self] depth in self?.statusBar.setProcessingCount(depth) },
+            onQueueActivity: { [weak self] activity in self?.statusBar.setQueueActivity(activity) },
             onProgress: { [weak self] stem, progress in
                 // Live pipeline progress for the row (TECH-UX5). Preserve a
                 // prior stalled flag if a late beat arrives after stalling.

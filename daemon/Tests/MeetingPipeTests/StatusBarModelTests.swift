@@ -60,11 +60,11 @@ final class StatusBarModelTests: XCTestCase {
             progress: 0.42, downloadedBytes: 1, totalBytes: 2
         )
         XCTAssertEqual(
-            M.title(.init(state: .idle, processingCount: 3, download: downloading)), " ↓ 42%"
+            M.title(.init(state: .idle, queue: .init(depth: 3, isRunning: true), download: downloading)), " ↓ 42%"
         )
-        XCTAssertEqual(M.title(.init(state: .idle, processingCount: 3)), " Processing (3)")
+        XCTAssertEqual(M.title(.init(state: .idle, queue: .init(depth: 3, isRunning: true))), " Processing (3)")
         XCTAssertEqual(
-            M.title(.init(state: recording(), processingCount: 3, download: downloading)),
+            M.title(.init(state: recording(), queue: .init(depth: 3, isRunning: true), download: downloading)),
             " Recording",
             "a recording title is never displaced by background work"
         )
@@ -89,7 +89,7 @@ final class StatusBarModelTests: XCTestCase {
         XCTAssertEqual(M.title(.init(state: .idle, regulatedMode: true)), " Idle \u{1F512}")
         XCTAssertEqual(M.title(.init(state: .idle, regulatedMode: false)), " Idle")
         XCTAssertEqual(
-            M.title(.init(state: .idle, processingCount: 2, regulatedMode: true)),
+            M.title(.init(state: .idle, queue: .init(depth: 2, isRunning: true), regulatedMode: true)),
             " Processing (2) \u{1F512}"
         )
     }
@@ -133,11 +133,11 @@ final class StatusBarModelTests: XCTestCase {
     /// replaces it. Two deliberately different rules.
     func test_header_appends_processing_in_every_state() {
         XCTAssertEqual(
-            M.headerLabel(.init(state: .idle, processingCount: 2)),
+            M.headerLabel(.init(state: .idle, queue: .init(depth: 2, isRunning: true))),
             "MeetingPipe: Idle · Processing (2)"
         )
         XCTAssertEqual(
-            M.headerLabel(.init(state: recording(), processingCount: 2)),
+            M.headerLabel(.init(state: recording(), queue: .init(depth: 2, isRunning: true))),
             "MeetingPipe: Recording · Processing (2)"
         )
     }

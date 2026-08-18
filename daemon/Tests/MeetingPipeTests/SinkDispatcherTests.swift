@@ -134,7 +134,7 @@ final class SinkDispatcherTests: XCTestCase {
         let driver = FakeDriver()
         let dispatcher = makeDispatcher(driver)
         var depths: [Int] = []
-        dispatcher.onQueueDepthChanged = { depths.append($0) }
+        dispatcher.onQueueActivityChanged = { depths.append($0.depth) }
 
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -247,7 +247,7 @@ final class SinkDispatcherTests: XCTestCase {
         let driver = FakeDriver()
         let dispatcher = makeDispatcher(driver)
         var depths: [Int] = []
-        dispatcher.onQueueDepthChanged = { depths.append($0) }
+        dispatcher.onQueueActivityChanged = { depths.append($0.depth) }
 
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }

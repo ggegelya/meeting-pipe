@@ -29,7 +29,7 @@ final class PipelineJobDispatcherTests: XCTestCase {
     private var dispatcher: PipelineJobDispatcher!
     private var done: [(stem: String, dir: URL, page: URL?)] = []
     private var errors: [String] = []
-    private var depths: [Int] = []
+    private var activities: [QueueActivity] = []
     private var progressEnded = 0
 
     override func setUp() {
@@ -37,13 +37,13 @@ final class PipelineJobDispatcherTests: XCTestCase {
         sink = SinkDispatcher(launcher: NoopDriver(), transcriptionRunner: PassRunner())
         done = []
         errors = []
-        depths = []
+        activities = []
         progressEnded = 0
         dispatcher = PipelineJobDispatcher(
             sinkDispatcher: sink,
             onDone: { [unowned self] stem, dir, page in self.done.append((stem, dir, page)) },
             onError: { [unowned self] message in self.errors.append(message) },
-            onQueueDepth: { [unowned self] depth in self.depths.append(depth) },
+            onQueueActivity: { [unowned self] activity in self.activities.append(activity) },
             onProgressEnded: { [unowned self] in self.progressEnded += 1 }
         )
     }
@@ -74,17 +74,26 @@ final class PipelineJobDispatcherTests: XCTestCase {
         XCTAssertTrue(done.isEmpty)
     }
 
-    func test_queue_depth_changes_forward_to_callback() {
-        sink.onQueueDepthChanged?(2)
-        sink.onQueueDepthChanged?(0)
-        XCTAssertEqual(depths, [2, 0])
+    func test_queue_activity_changes_forward_to_callback() {
+        sink.onQueueActivityChanged?(QueueActivity(depth: 2, isRunning: true))
+        sink.onQueueActivityChanged?(.idle)
+        XCTAssertEqual(activities, [QueueActivity(depth: 2, isRunning: true), .idle])
+    }
+
+    /// UX77: the running flag is the half the surfaces were missing, so pin that the seam carries
+    /// it rather than only the number. A depth that forgets whether anything started is what let
+    /// three surfaces call a waiting job "Processing".
+    func test_the_seam_carries_whether_the_head_has_started() {
+        sink.onQueueActivityChanged?(QueueActivity(depth: 1, isRunning: false))
+        XCTAssertEqual(activities.last?.isRunning, false)
+        XCTAssertEqual(QueueActivityPresentation.pillLabel(activities.last!), "Queued 1")
     }
 
     func test_enqueue_forwards_to_sink_and_bumps_depth() {
         dispatcher.enqueue(file: URL(fileURLWithPath: "/tmp/recordings/a.wav"), summaryMode: .auto)
         // enqueue raises queue depth to 1 synchronously.
         XCTAssertEqual(dispatcher.queueDepth, 1)
-        XCTAssertEqual(depths.first, 1)
+        XCTAssertEqual(activities.first?.depth, 1)
     }
 
     // MARK: - Re-transcribe jobs (ASR3)
@@ -147,6 +156,6 @@ final class PipelineJobDispatcherTests: XCTestCase {
     func test_retranscribe_still_counts_toward_queue_depth() {
         dispatcher.enqueueRetranscribe(file: URL(fileURLWithPath: "/tmp/recordings/a.wav")) { _ in }
         XCTAssertEqual(dispatcher.queueDepth, 1)
-        XCTAssertEqual(depths.first, 1)
+        XCTAssertEqual(activities.first?.depth, 1)
     }
 }

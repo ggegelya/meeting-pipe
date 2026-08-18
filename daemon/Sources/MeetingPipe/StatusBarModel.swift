@@ -71,7 +71,7 @@ enum StatusBarModel {
         var workflowName: String?
         var ndaMode: Bool
         var summaryMode: SummaryMode
-        var processingCount: Int
+        var queue: QueueActivity
         var regulatedMode: Bool
         var download: ModelDownloadSupervisor.State
         var microphone: PermissionsCenter.Status
@@ -104,7 +104,7 @@ enum StatusBarModel {
             workflowName: String? = nil,
             ndaMode: Bool = false,
             summaryMode: SummaryMode = .auto,
-            processingCount: Int = 0,
+            queue: QueueActivity = .idle,
             regulatedMode: Bool = false,
             download: ModelDownloadSupervisor.State = .idle,
             microphone: PermissionsCenter.Status = .granted,
@@ -121,7 +121,7 @@ enum StatusBarModel {
             self.workflowName = workflowName
             self.ndaMode = ndaMode
             self.summaryMode = summaryMode
-            self.processingCount = processingCount
+            self.queue = queue
             self.regulatedMode = regulatedMode
             self.download = download
             self.microphone = microphone
@@ -169,8 +169,8 @@ enum StatusBarModel {
         let clause: String
         if i.state == .idle, let download = downloadTitleClause(i.download) {
             clause = download
-        } else if i.state == .idle, i.processingCount > 0 {
-            clause = "Processing (\(i.processingCount))"
+        } else if i.state == .idle, let queued = QueueActivityPresentation.menuLabel(i.queue) {
+            clause = queued
         } else {
             clause = baseTitle(i)
         }
@@ -222,7 +222,7 @@ enum StatusBarModel {
     // MARK: - Menu header
 
     static func headerLabel(_ i: Inputs) -> String {
-        let suffix = i.processingCount > 0 ? " · Processing (\(i.processingCount))" : ""
+        let suffix = QueueActivityPresentation.menuLabel(i.queue).map { " · \($0)" } ?? ""
         switch i.state {
         case .idle:                  return "MeetingPipe: Idle\(suffix)"
         case .prompting(let src):    return "MeetingPipe: Detected \(src.displayName)\(suffix)"

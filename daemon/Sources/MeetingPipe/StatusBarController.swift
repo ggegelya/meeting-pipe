@@ -37,7 +37,7 @@ final class StatusBarController {
     private var recordingWorkflow: Workflow?
 
     /// Pipeline jobs queued or running; shown as a title badge.
-    private var processingCount: Int = 0
+    private var queue: QueueActivity = .idle
 
     /// Last model-download state. Shown as a title prefix + a menu header
     /// row; `completed` collapses to idle after `completedDisplayDuration`
@@ -212,11 +212,13 @@ final class StatusBarController {
     /// Update the processing-jobs badge. Writes into the sibling
     /// `LibraryWindowModel.processing` (not a parent @Published) so only the
     /// toolbar re-renders per tick.
-    func setProcessingCount(_ n: Int) {
-        processingCount = n
+    /// UX77: the queue publishes whether its head has started, not just how deep it is, so the
+    /// menu bar and the Library toolbar can stop calling waiting work "Processing".
+    func setQueueActivity(_ activity: QueueActivity) {
+        queue = activity
         applyTitle()
         rebuildMenu(state: lastMenuState)
-        libraryModel?.processing.count = n
+        libraryModel?.processing.activity = activity
     }
 
     /// Reflect the async model-prefetch lifecycle in the menu bar (driven by
@@ -266,7 +268,7 @@ final class StatusBarController {
             workflowName: recordingWorkflow?.name,
             ndaMode: recordingWorkflow?.flags.ndaMode ?? false,
             summaryMode: summaryMode,
-            processingCount: processingCount,
+            queue: queue,
             regulatedMode: regulatedMode,
             download: modelDownload
         )
@@ -388,7 +390,7 @@ final class StatusBarController {
         let center = PermissionsCenter.shared
         return StatusBarModel.Inputs(
             state: state,
-            processingCount: processingCount,
+            queue: queue,
             regulatedMode: regulatedMode,
             download: modelDownload,
             microphone: center.microphone,

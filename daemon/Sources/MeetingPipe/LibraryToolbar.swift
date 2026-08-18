@@ -30,7 +30,7 @@ struct LibraryToolbar: View {
 
             StatePill(
                 status: model.status,
-                processingCount: processing.count,
+                queue: processing.activity,
                 workflow: activeWorkflow
             )
 
@@ -118,7 +118,7 @@ struct LibraryToolbar: View {
 /// Always-visible status pill: idle (dot + "Idle"), processing (spinner + count), recording (tinted expanded pill + elapsed). The recording variant expands inline; it is not a separate widget.
 struct StatePill: View {
     let status: LibraryWindowModel.Status
-    let processingCount: Int
+    let queue: QueueActivity
     let workflow: Workflow?
 
     var body: some View {
@@ -128,8 +128,8 @@ struct StatePill: View {
         case .stopping:
             processingShape(label: "Stopping…")
         default:
-            if processingCount > 0 {
-                processingShape(label: "Processing \(processingCount)")
+            if let label = QueueActivityPresentation.pillLabel(queue) {
+                processingShape(label: label)
             } else {
                 idleShape
             }

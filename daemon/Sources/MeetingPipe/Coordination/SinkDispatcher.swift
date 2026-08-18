@@ -22,7 +22,9 @@ final class SinkDispatcher: @unchecked Sendable {
     private let languageHint: String
 
     /// Fires when queue depth changes. Status-bar processing badge subscribes.
-    var onQueueDepthChanged: ((Int) -> Void)?
+    /// UX77: carries whether the head job has started, not only how deep the queue is. The
+    /// aggregate surfaces used to receive the depth alone and all called it "Processing".
+    var onQueueActivityChanged: ((QueueActivity) -> Void)?
 
     /// Fires with the jobs waiting behind the active one, on every queue change
     /// (UX28). Separate from the depth counter because the Library needs to name
@@ -238,7 +240,7 @@ final class SinkDispatcher: @unchecked Sendable {
     /// One place to broadcast the queue, so the depth badge and the Library's
     /// queued rows can never disagree about what is waiting.
     private func publishQueueState() {
-        onQueueDepthChanged?(processingJobs.count)
+        onQueueActivityChanged?(QueueActivity(depth: processingJobs.count, isRunning: activeJob != nil))
         onQueueChanged?(pendingJobs)
     }
 

@@ -64,6 +64,60 @@ enum ProcessingPresentation: Equatable {
     }
 }
 
+/// UX77: the pipeline queue as the aggregate surfaces need to see it.
+///
+/// `depth` counts the union of running and waiting work, because that is what the queue publishes
+/// (`SinkDispatcher.processingJobs` holds the active job as its head for as long as it runs).
+/// `isRunning` is the bit that was missing: without it every aggregate surface had to guess, and
+/// all three guessed "Processing".
+struct QueueActivity: Equatable {
+    /// Running plus waiting. Zero means the surfaces show nothing at all.
+    let depth: Int
+    /// Whether the head job has actually started.
+    let isRunning: Bool
+
+    static let idle = QueueActivity(depth: 0, isRunning: false)
+}
+
+/// UX77: the one place the aggregate surfaces get their word.
+///
+/// The toolbar pill, the menu-bar title clause and the menu header all rendered the literal word
+/// "Processing" against a number that is a queue depth, so a queue holding one not-yet-started job
+/// read as `Processing 1` while the meeting's own row read `Queued: Re-transcribe`. One job, two
+/// nouns, contradicting each other about whether anything had begun (owner, 2026-08-04).
+///
+/// The row was the half that was right, and `ProcessingPresentation.label` above is why: it
+/// distinguishes running from waiting deliberately. So the fix is to give the aggregate surfaces
+/// the same distinction rather than to soften the word, and to derive it once here so a later edit
+/// cannot move three surfaces and leave the fourth behind. `QueueActivityPresentationTests` is what
+/// holds that.
+///
+/// The noun describes the head of the queue and the number counts the whole of it, which is how a
+/// person describes a queue out loud: two jobs with one running is "processing two", not "processing
+/// one and queueing one". The spec offered a split label (`Processing 1 · 2 queued`) as the richer
+/// alternative and it was not taken, because DSN7 gives the menu-bar title exactly one clause and a
+/// split is two things competing for it.
+enum QueueActivityPresentation {
+
+    /// The word every aggregate surface uses, and the whole of the fix. Only ever read through the
+    /// helpers below or a call site could still hand it the wrong number.
+    static func noun(_ activity: QueueActivity) -> String {
+        activity.isRunning ? "Processing" : "Queued"
+    }
+
+    /// The Library toolbar pill's form. Nil when there is nothing to say, which is the pill's cue
+    /// to render its idle shape instead.
+    static func pillLabel(_ activity: QueueActivity) -> String? {
+        activity.depth > 0 ? "\(noun(activity)) \(activity.depth)" : nil
+    }
+
+    /// The menu-bar's form, in the title clause and in the menu header's suffix. Parenthesised
+    /// because the menu bar is tight and the count is secondary there.
+    static func menuLabel(_ activity: QueueActivity) -> String? {
+        activity.depth > 0 ? "\(noun(activity)) (\(activity.depth))" : nil
+    }
+}
+
 /// Resolves the per-meeting presentation from the two published surfaces.
 enum LibraryProcessing {
     /// `active` is the whole model's active job (not pre-matched), `pending` is

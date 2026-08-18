@@ -76,7 +76,10 @@ private final class LibraryWindowDelegate: NSObject, NSWindowDelegate {
 
 /// High-frequency processing-queue counter, split off from `LibraryWindowModel` so bursts don't cascade re-renders into the rail, list, and detail. Only the toolbar observes this. Kept as a separate `ObservableObject` because SwiftUI tracks subscriptions per-object: a `@Published` on the parent would re-render every parent subscriber on every tick.
 final class ProcessingTracker: ObservableObject {
-    @Published var count: Int = 0
+    /// UX77: depth and running-state together on one published value. They are read as a pair by
+    /// every surface, so publishing them separately would be two re-renders and one more way for
+    /// the toolbar to disagree with the menu bar.
+    @Published var activity: QueueActivity = .idle
 }
 
 /// SwiftUI-observable mirror of the recording state machine. Threading: all mutations run on main (the Coordinator already enforces this). Rapidly-changing values like processing-queue depth live on `ProcessingTracker` so they don't pull the whole window through a re-render every tick.

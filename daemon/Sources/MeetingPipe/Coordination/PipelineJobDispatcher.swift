@@ -44,7 +44,7 @@ final class PipelineJobDispatcher: LibraryRunLane {
     private let sinkDispatcher: SinkDispatcher
     private let onDone: (_ stem: String, _ recordingsDir: URL, _ pageURL: URL?) -> Void
     private let onError: (String) -> Void
-    private let onQueueDepth: (Int) -> Void
+    private let onQueueActivity: (QueueActivity) -> Void
     private let onProgress: (_ stem: String, _ progress: PipelineProgress) -> Void
     private let onProgressEnded: () -> Void
     private let onStalled: (_ stem: String) -> Void
@@ -55,7 +55,7 @@ final class PipelineJobDispatcher: LibraryRunLane {
         sinkDispatcher: SinkDispatcher,
         onDone: @escaping (_ stem: String, _ recordingsDir: URL, _ pageURL: URL?) -> Void,
         onError: @escaping (String) -> Void,
-        onQueueDepth: @escaping (Int) -> Void,
+        onQueueActivity: @escaping (QueueActivity) -> Void,
         onProgress: @escaping (_ stem: String, _ progress: PipelineProgress) -> Void = { _, _ in },
         onProgressEnded: @escaping () -> Void = {},
         onStalled: @escaping (_ stem: String) -> Void = { _ in },
@@ -65,14 +65,14 @@ final class PipelineJobDispatcher: LibraryRunLane {
         self.sinkDispatcher = sinkDispatcher
         self.onDone = onDone
         self.onError = onError
-        self.onQueueDepth = onQueueDepth
+        self.onQueueActivity = onQueueActivity
         self.onProgress = onProgress
         self.onProgressEnded = onProgressEnded
         self.onStalled = onStalled
         self.onPending = onPending
         self.onLibraryRun = onLibraryRun
-        sinkDispatcher.onQueueDepthChanged = { [weak self] depth in
-            self?.onQueueDepth(depth)
+        sinkDispatcher.onQueueActivityChanged = { [weak self] activity in
+            self?.onQueueActivity(activity)
         }
         sinkDispatcher.onQueueChanged = { [weak self] pending in
             self?.onPending(pending)
