@@ -54,13 +54,25 @@ final class MeetingSourceScanner {
     }
 
     /// Run one discovery pass and return the winner.
-    /// - Parameter keepStickyOnEmpty: when true, an empty pass leaves the sticky pin intact (owner is mid-recording; a transient empty scan must not unbias the next pass).
-    func scan(keepStickyOnEmpty: Bool) -> Result {
+    ///
+    /// This used to take a `keepStickyOnEmpty` flag whose `true` mode documented a
+    /// mid-recording protection ("a transient empty scan must not unbias the next
+    /// pass"). The one production caller passed `false` for the parameter's whole life,
+    /// so the protection never existed, and ARCH6 removed it rather than wiring it.
+    /// What the pin buys was measured against what wiring it would cost: the pin is a
+    /// tie-break bonus in `MeetingSourceScorer.pickBest`, so it decides nothing unless
+    /// two candidates score equal (never seen in this Teams-only dogfood), and the only
+    /// other thing it feeds is `winnerChanged`, which gates one `discovery_shadow_pick`
+    /// log line. Against that, `MeetingDiscoveryWatcher` does not know whether a
+    /// recording is running and would have needed that plumbed in. Empty passes mid-call
+    /// are common, not rare (DET9 measured 48 s between confident winners, END9 a 21-33 s
+    /// AX blackout), so the flag would have been *active* often and still changed nothing
+    /// observable. Re-open it if a second simultaneous candidate ever becomes real.
+    func scan() -> Result {
         let axTrusted = AXIsProcessTrusted()
         return scan(
             candidates: enumerateCandidates(axTrusted: axTrusted),
-            axTrusted: axTrusted,
-            keepStickyOnEmpty: keepStickyOnEmpty
+            axTrusted: axTrusted
         )
     }
 
@@ -71,8 +83,7 @@ final class MeetingSourceScanner {
     /// is a process-wide read no test can flip. Internal, not private, for exactly that reason.
     func scan(
         candidates: [MeetingSourceCandidate],
-        axTrusted: Bool,
-        keepStickyOnEmpty: Bool
+        axTrusted: Bool
     ) -> Result {
         var candidates = candidates
         let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: lastScorerWinner)
@@ -85,9 +96,8 @@ final class MeetingSourceScanner {
         }
         let unreadable = MeetingSourceScanner.unreadableNatives(in: candidates, axTrusted: axTrusted)
         guard let winner = winner else {
-            if !keepStickyOnEmpty {
-                lastScorerWinner = nil
-            }
+            // An empty pass drops the pin, so the next pass scores unbiased.
+            lastScorerWinner = nil
             return Result(
                 winner: nil,
                 candidateCount: count,

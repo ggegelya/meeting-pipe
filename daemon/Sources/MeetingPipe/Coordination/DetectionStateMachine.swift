@@ -155,10 +155,14 @@ final class DetectionStateMachine {
     /// cooldown so this same meeting isn't re-prompted immediately.
     ///
     /// Replaces the old `setSuppressed` transition on these paths. `.suppressed` blocked
-    /// *all* detection until a corroborated lifecycle `.ended` arrived - an end the Teams
-    /// compact-window leave-button artifact never produces (`PromptEndPolicy` filters the
-    /// bare, uncorroborated invalidation), so detection wedged for the rest of the meeting
-    /// and the engaged Leave-button signal leaked, health-polling a dead element at 1 Hz.
+    /// *all* detection until a corroborated lifecycle `.ended` arrived, and a lone
+    /// leave-button invalidation is not one: START1 made
+    /// `PromotionEngine.handleStarting` refuse to promote a `requiresCorroboration`
+    /// signal at all, so a Teams leave-button artifact during a prompt yields no `.ended`
+    /// verdict. Detection therefore wedged for the rest of the meeting, and the engaged
+    /// Leave-button signal leaked, health-polling a dead element at 1 Hz. (A daemon-side
+    /// `PromptEndPolicy` used to be named here as the filter; it was a second copy of
+    /// START1's rule, unreachable from the day START1 landed, and ARCH6 deleted it.)
     /// Going to `.idle` here fires `onIdleTransition`, which disengages that poll; the
     /// suppression is bundle-scoped, so only the skipped meeting is held off.
     ///

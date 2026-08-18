@@ -98,7 +98,7 @@ final class SpyStatusPresenter: SessionStatusPresenting {
     func setRecording(file: URL, source: AppSource?, summaryMode: SummaryMode, workflow: Workflow?) {
         recordings.append((file, source, summaryMode, workflow))
     }
-    func setStopping() { stoppingCount += 1 }
+    func setStopping(file: URL, source: AppSource?, summaryMode: SummaryMode) { stoppingCount += 1 }
     func setSuppressed(_ source: AppSource, isStillSuppressed: @escaping () -> Bool) {
         suppressedSources.append(source)
     }

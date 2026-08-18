@@ -10,11 +10,6 @@ final class UISettings: ObservableObject {
         case system, light, dark
     }
 
-    /// `outline` (default): thin ring + waveform bars. `filled`: no ring, thicker bars for a heavier look on a busy menu bar.
-    enum MenuBarIconStyle: String, CaseIterable {
-        case outline, filled
-    }
-
     @Published var theme: Theme {
         didSet {
             UserDefaults.standard.set(theme.rawValue, forKey: Keys.theme)
@@ -22,14 +17,14 @@ final class UISettings: ObservableObject {
         }
     }
 
-    @Published var menuBarIconStyle: MenuBarIconStyle {
-        didSet { UserDefaults.standard.set(menuBarIconStyle.rawValue, forKey: Keys.menuBarIconStyle) }
-    }
-
-    /// Show a lock glyph in the status-bar title when regulated mode is on. Cosmetic only; defaults to `true` so existing users see the badge immediately.
-    @Published var showRegulatedBadge: Bool {
-        didSet { UserDefaults.standard.set(showRegulatedBadge, forKey: Keys.showRegulatedBadge) }
-    }
+    // `menuBarIconStyle` (outline/filled) and `showRegulatedBadge` used to live here.
+    // DSN1's IA pass cut both controls and left the properties behind, with no writer
+    // anywhere in the app, so each sat pinned at its init default while the branches
+    // reading it stayed in the code as if they varied. ARCH6 removed both, along with
+    // the icon-style branch in `StatusBarController.makeIdleIcon`, the two Combine
+    // subscriptions that could never fire, and the `&&` in the lock-glyph condition.
+    // A property here is not covered by the CI5 config fence, which compares
+    // `config.toml` key sets; see `daemon/docs/gotchas.md`.
 
     /// Exports `MP_VERBOSE=1` at daemon launch so pipeline subprocesses inherit it. Env propagation requires a restart; verbose-only event fields (e.g. correction transcript text, SEC14) read this live value in-process.
     @Published var verboseLogging: Bool {
@@ -121,8 +116,6 @@ final class UISettings: ObservableObject {
 
     private enum Keys {
         static let theme = "mp.ui.theme"
-        static let menuBarIconStyle = "mp.ui.menuBarIconStyle"
-        static let showRegulatedBadge = "mp.ui.showRegulatedBadge"
         static let verboseLogging = "mp.ui.verboseLogging"
         static let playbackChannelMode = "mp.ui.playbackChannelMode"
         static let preloadLocalModelAtLaunch = "mp.ui.preloadLocalModelAtLaunch"
@@ -143,10 +136,6 @@ final class UISettings: ObservableObject {
     private init() {
         let d = UserDefaults.standard
         self.theme = Theme(rawValue: d.string(forKey: Keys.theme) ?? "") ?? .system
-        self.menuBarIconStyle = MenuBarIconStyle(rawValue: d.string(forKey: Keys.menuBarIconStyle) ?? "")
-            ?? .outline
-        // `object(forKey:)` is nil when the key was never written, distinguishing "never persisted" (default true) from an explicitly saved false.
-        self.showRegulatedBadge = d.object(forKey: Keys.showRegulatedBadge) as? Bool ?? true
         self.verboseLogging = d.bool(forKey: Keys.verboseLogging)
         self.playbackChannelMode = PlaybackChannelMode(
             rawValue: d.string(forKey: Keys.playbackChannelMode) ?? ""

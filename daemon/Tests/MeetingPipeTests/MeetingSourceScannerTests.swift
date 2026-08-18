@@ -108,8 +108,7 @@ final class MeetingSourceScannerTests: XCTestCase {
         let scanner = MeetingSourceScanner()
         let result = scanner.scan(
             candidates: [native("com.microsoft.teams2")],
-            axTrusted: false,
-            keepStickyOnEmpty: false
+            axTrusted: false
         )
 
         XCTAssertNil(result.winner, "a zero-signal native must not win; that half is correct")
@@ -134,8 +133,7 @@ final class MeetingSourceScannerTests: XCTestCase {
         let scanner = MeetingSourceScanner()
         let result = scanner.scan(
             candidates: [native("com.microsoft.teams2")],
-            axTrusted: false,
-            keepStickyOnEmpty: false
+            axTrusted: false
         )
         MeetingDiscoveryWatcher.logUnreadableNatives(result.unreadableNatives)
 
@@ -156,8 +154,7 @@ final class MeetingSourceScannerTests: XCTestCase {
         let scanner = MeetingSourceScanner()
         let result = scanner.scan(
             candidates: [native("com.microsoft.teams2")],
-            axTrusted: true,
-            keepStickyOnEmpty: false
+            axTrusted: true
         )
         XCTAssertTrue(result.unreadableNatives.isEmpty)
     }
@@ -169,8 +166,7 @@ final class MeetingSourceScannerTests: XCTestCase {
         let scanner = MeetingSourceScanner()
         let result = scanner.scan(
             candidates: [native("com.microsoft.teams2", signals: .init(titleMatch: true))],
-            axTrusted: false,
-            keepStickyOnEmpty: false
+            axTrusted: false
         )
         XCTAssertTrue(result.unreadableNatives.isEmpty)
     }
@@ -186,8 +182,7 @@ final class MeetingSourceScannerTests: XCTestCase {
         )
         let result = scanner.scan(
             candidates: [browser],
-            axTrusted: false,
-            keepStickyOnEmpty: false
+            axTrusted: false
         )
         XCTAssertTrue(result.unreadableNatives.isEmpty)
     }

@@ -81,18 +81,15 @@ final class StatusBarModelTests: XCTestCase {
         XCTAssertEqual(M.downloadTitleClause(.failed(modelId: "a/b", error: "boom")), "↓ failed")
     }
 
-    /// The regulated lock is a trailing glyph on top of whatever clause won, and
-    /// it is suppressed by the UI setting rather than by the mode.
+    /// The regulated lock is a trailing glyph on top of whatever clause won, never a
+    /// clause of its own. It used to be suppressible by a second input,
+    /// `showRegulatedBadge`; DSN1 cut the control that wrote it and ARCH6 removed the
+    /// property, so the mode alone decides.
     func test_regulated_lock_is_a_glyph_not_a_clause() {
+        XCTAssertEqual(M.title(.init(state: .idle, regulatedMode: true)), " Idle \u{1F512}")
+        XCTAssertEqual(M.title(.init(state: .idle, regulatedMode: false)), " Idle")
         XCTAssertEqual(
-            M.title(.init(state: .idle, regulatedMode: true, showRegulatedBadge: true)),
-            " Idle \u{1F512}"
-        )
-        XCTAssertEqual(
-            M.title(.init(state: .idle, regulatedMode: true, showRegulatedBadge: false)), " Idle"
-        )
-        XCTAssertEqual(
-            M.title(.init(state: .idle, processingCount: 2, regulatedMode: true, showRegulatedBadge: true)),
+            M.title(.init(state: .idle, processingCount: 2, regulatedMode: true)),
             " Processing (2) \u{1F512}"
         )
     }
@@ -306,13 +303,18 @@ final class StatusBarModelTests: XCTestCase {
         XCTAssertFalse(offered(autoRestart: false, agent: false))
     }
 
-    /// The menu is built by hand in `StatusBarController.populateMenu` rather than from
-    /// `rows`, so a correct model is not by itself a correct menu: the shipped condition
-    /// reading only `UISettings.shared.disableAutoRestart` while the model's comment
-    /// described the fuller rule *is* the UX55 defect. Pinned in source, the way
+    /// A correct model is not by itself a correct menu, so this pins that the shipped
+    /// menu is *built from* the model rather than beside it. Pinned in source, the way
     /// `GuideDocumentTests` pins its own row, since `NSMenu` construction is not
     /// observable headlessly.
-    func test_the_status_bar_menu_asks_the_model_for_the_quit_row() throws {
+    ///
+    /// UX55 added it over one row: the shipped condition read only
+    /// `UISettings.shared.disableAutoRestart` while the model's comment described the
+    /// fuller rule, and that gap *was* the defect. ARCH6 widened it to the whole menu,
+    /// because the same gap had reappeared over the "Finish setup" row, which shipped
+    /// in the menu and never existed in `Row`. Title and icon get the same treatment:
+    /// both were second implementations living in the controller.
+    func test_the_status_bar_menu_is_built_from_the_model() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // MeetingPipeTests
             .deletingLastPathComponent()   // Tests
@@ -322,8 +324,12 @@ final class StatusBarModelTests: XCTestCase {
             contentsOf: root.appendingPathComponent("daemon/Sources/MeetingPipe/StatusBarController.swift"),
             encoding: .utf8
         )
-        XCTAssertTrue(controller.contains("StatusBarModel.offersQuitWithoutRelaunch"),
-                      "the quit row's condition must come from StatusBarModel, not a second copy")
+        XCTAssertTrue(controller.contains("StatusBarModel.rows("),
+                      "the conditional rows must come from the model, not a hand-written cascade")
+        XCTAssertTrue(controller.contains("StatusBarModel.title("),
+                      "the title must come from the model, not a second copy of its rule")
+        XCTAssertTrue(controller.contains("StatusBarModel.icon("),
+                      "the icon must come from the model, not a per-setter assignment")
         XCTAssertTrue(controller.contains("launchAtLogin.status().isOn"),
                       "the launch-agent state has to be read for the model to be given it")
         XCTAssertFalse(controller.contains("if !UISettings.shared.disableAutoRestart"),
@@ -380,6 +386,40 @@ final class StatusBarModelTests: XCTestCase {
         )
     }
 
+    // MARK: - UX22: the Finish setup row (ARCH6)
+
+    /// The row that shipped in the menu for a year and had no case in `Row`, which is
+    /// the divergence that proved the hand-built menu and the tested model were two
+    /// lists. Absent when every setup item is green, so the row disappears entirely.
+    func test_finish_setup_row_appears_only_when_something_is_unmet() {
+        XCTAssertFalse(M.rows(.init(state: .idle)).contains { row in
+            if case .finishSetup = row { return true }
+            return false
+        })
+        XCTAssertEqual(
+            M.rows(.init(state: .idle, finishSetupTitle: "Finish setup (2 steps left)")),
+            [.finishSetup(title: "Finish setup (2 steps left)"), .startRecording, .quitWithoutRelaunch]
+        )
+    }
+
+    /// It sits below the urgent per-permission warnings, which stay the fast nudge, and
+    /// above the transport row. That is where `populateMenu` has always put it.
+    func test_finish_setup_sits_between_the_warnings_and_the_transport_row() {
+        let rows = M.rows(.init(
+            state: .idle,
+            microphone: .denied,
+            failedMeetingCount: 1,
+            finishSetupTitle: "Finish setup (1 step left)"
+        ))
+        XCTAssertEqual(rows, [
+            .permissionConsequence(title: "⚠ Microphone off: recordings will be silent"),
+            .failedMeetings(count: 1, title: "⚠ 1 meeting failed - open Library to retry"),
+            .finishSetup(title: "Finish setup (1 step left)"),
+            .startRecording,
+            .quitWithoutRelaunch,
+        ])
+    }
+
     /// Row order is the decision, not just row presence: the download sits above
     /// the permission warnings, which sit above the failure row, which sits above
     /// the transport row.
@@ -390,7 +430,8 @@ final class StatusBarModelTests: XCTestCase {
             microphone: .denied,
             accessibility: .denied,
             screenRecordingCaptureDenied: true,
-            failedMeetingCount: 2
+            failedMeetingCount: 2,
+            finishSetupTitle: "Finish setup (3 steps left)"
         ))
         XCTAssertEqual(rows, [
             .modelDownload(title: "⚠ Model download failed (b) - Retry", retryable: true, toolTip: "boom"),
@@ -399,6 +440,7 @@ final class StatusBarModelTests: XCTestCase {
             .screenRecordingShortcut,
             .accessibilityDegraded,
             .failedMeetings(count: 2, title: "⚠ 2 meetings failed - open Library to retry"),
+            .finishSetup(title: "Finish setup (3 steps left)"),
             .startRecording,
             .quitWithoutRelaunch,
         ])

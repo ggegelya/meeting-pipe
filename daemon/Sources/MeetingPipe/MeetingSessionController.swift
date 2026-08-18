@@ -582,7 +582,7 @@ final class MeetingSessionController: @unchecked Sendable {
     func stopRecording(file: URL, source: AppSource?, summaryMode: SummaryMode) {
         micTierRecordingBundle = nil // DET1: this recording is ending; drop its mic-release tag
         coordinator.stateMachine.setStopping(file: file, source: source, summaryMode: summaryMode)
-        coordinator.statusUI.setStopping()
+        coordinator.statusUI.setStopping(file: file, source: source, summaryMode: summaryMode)
         coordinator.hud.dismiss()
         disarmSystemLevelMirror()
         // Tear down per-meeting AX subscriptions; the verdict stream stays
@@ -942,27 +942,22 @@ final class MeetingSessionController: @unchecked Sendable {
             // stop. This path is deliberately unchanged.
             stopRecording(file: file, source: src, summaryMode: mode)
         case .prompting, .suppressed:
-            // REC7: if a start is in flight (the user just answered Record and the
-            // recorder is coming up), the state machine is still `.prompting` until
-            // the start commits `.recording`. A confirmed end here would be swallowed
-            // by that commit, so latch it (only when PromptEndPolicy agrees it is a
-            // real end, not a Teams compact-swap flicker) and let the start path stop
-            // the fresh recording at once.
+            // Both branches below used to be gated on `PromptEndPolicy.clearsPromptState`,
+            // a second filter that dropped a bare `ax_leave_button_invalid` end carrying an
+            // empty `confirmedBy`. START1 then put the same rule where the end is *made*:
+            // `PromotionEngine.handleStarting` refuses to promote a `requiresCorroboration`
+            // signal at all, `tick()` demands a cross-class corroborator, and
+            // `confirmProvisionalEnd` always appends its re-walk signal, so no reachable
+            // `.ended` can carry that shape any more and the filter had been returning true
+            // for every end since. ARCH6 removed it; the guard that actually holds is
+            // START1's, in Core. See `daemon/docs/gotchas.md`.
+            //
+            // REC7: if a start is in flight (the user just answered Record and the recorder
+            // is coming up), the state machine is still `.prompting` until the start commits
+            // `.recording`. A confirmed end here would be swallowed by that commit, so latch
+            // it and let the start path stop the fresh recording at once.
             if recordingStartInFlight {
-                if PromptEndPolicy.clearsPromptState(reason: reason) {
-                    endObservedDuringStart = reason
-                }
-                return
-            }
-            // A bare leave-button invalidation with zero corroboration is the
-            // Teams compact/mini-window swap, not a real end (PromptEndPolicy).
-            // Acting on it here used to tear down an explicit Skip and re-open the
-            // prompt every ~minute for the whole call.
-            guard PromptEndPolicy.clearsPromptState(reason: reason) else {
-                Log.event(category: "coordinator", action: "prompt_end_ignored_unconfirmed", attributes: [
-                    "leading_signal": reason.leadingSignal,
-                    "state": DetectionStateMachine.label(coordinator.stateMachine.current),
-                ])
+                endObservedDuringStart = reason
                 return
             }
             handleMeetingEndedDuringPrompt()

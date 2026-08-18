@@ -117,8 +117,10 @@ struct GeneralSectionView: View {
                     )
                 }
                 // Menu-bar icon style (outline vs filled) was a cosmetic-only
-                // toggle; cut in the DSN1 IA pass. The glyph stays at its
-                // default; UISettings.menuBarIconStyle remains for the status bar.
+                // toggle; cut in the DSN1 IA pass. The glyph is the outline one,
+                // unconditionally: `UISettings.menuBarIconStyle` outlived this
+                // control by a year with nothing writing it, and ARCH6 removed the
+                // property and the branch it fed.
             }
 
             SettingsGroup("Startup") {

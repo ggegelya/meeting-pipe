@@ -12,30 +12,30 @@ final class StatusBarController {
     /// 18pt is the menu-bar standard.
     private static let iconSize: CGFloat = 18
 
-    private var idleIcon: NSImage = StatusBarController.makeIdleIcon(
-        size: StatusBarController.iconSize,
-        style: UISettings.shared.menuBarIconStyle
-    )
-    private var recordingIcon: NSImage = StatusBarController.makeRecordingIcon(size: StatusBarController.iconSize)
+    private let idleIcon: NSImage = StatusBarController.makeIdleIcon(size: StatusBarController.iconSize)
+    private let recordingIcon: NSImage = StatusBarController.makeRecordingIcon(size: StatusBarController.iconSize)
 
-    /// Regulated-mode flag for the lock-glyph badge (driven by Coordinator).
-    /// The glyph needs this AND `UISettings.shared.showRegulatedBadge`.
+    /// Regulated-mode flag for the lock-glyph badge (driven by Coordinator). It used
+    /// to need `UISettings.shared.showRegulatedBadge` too; DSN1 cut that control and
+    /// ARCH6 removed the property, so this is the whole condition now.
     private var regulatedMode: Bool = false
-
-    /// Live UI-setting subscriptions (icon style + regulated badge).
-    private var iconStyleCancellable: AnyCancellable?
-    private var regulatedBadgeCancellable: AnyCancellable?
 
     /// Last state a menu was built for, so a permission-driven rebuild
     /// doesn't need the caller to re-supply it.
     private var lastMenuState: AppState = .idle
-    /// Cached recording title so the processing badge can append to it.
-    private var baseTitle: String = "Idle"
 
-    /// True only in the genuine idle state (not recording / prompting / stopping).
-    /// Gates whether background work (a model download, the processing queue) may
-    /// take the single title clause (TECH-DSN7).
-    private var isIdleState: Bool = true
+    /// The state the title and the icon are showing. Deliberately NOT `lastMenuState`:
+    /// `setStopping` rebuilds the menu as `.idle` (which is what ships, header and Start
+    /// row included), while the title has always read "Stopping…" through the flush.
+    /// Collapsing the two would change what the menu says mid-stop, so they stay apart
+    /// and the difference is stated here rather than left to be rediscovered.
+    private var titleState: AppState = .idle
+
+    /// The workflow whose clause the recording title carries (TECH-B5). Only read while
+    /// `titleState` is `.recording`, and `setRecording` always writes it on the way in,
+    /// so a stale value from the last meeting can never surface.
+    private var recordingWorkflow: Workflow?
+
     /// Pipeline jobs queued or running; shown as a title badge.
     private var processingCount: Int = 0
 
@@ -113,31 +113,7 @@ final class StatusBarController {
         .receive(on: DispatchQueue.main)
         .sink { [weak self] _ in self?.refreshMenuForPermissionChange() }
 
-        // Live icon-style swap (Outline/Filled); the recording icon is
-        // style-independent and stays as-is.
-        iconStyleCancellable = UISettings.shared.$menuBarIconStyle
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] style in
-                guard let self = self else { return }
-                self.idleIcon = Self.makeIdleIcon(size: Self.iconSize, style: style)
-                if !self.isShowingRecordingIcon { self.item.button?.image = self.idleIcon }
-            }
-
-        // Recompute the title suffix when the badge toggle flips so the lock
-        // glyph appears/disappears immediately.
-        regulatedBadgeCancellable = UISettings.shared.$showRegulatedBadge
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.applyTitle() }
-
         menuDelegate.controller = self
-    }
-
-    /// True when the recording icon is shown; the icon-style live-swap
-    /// checks this so it doesn't stomp it back to idle mid-session.
-    private var isShowingRecordingIcon: Bool {
-        item.button?.image === recordingIcon
     }
 
     /// Reflect a `regulatedMode` change; the glyph renders in `applyTitle()`.
@@ -148,9 +124,8 @@ final class StatusBarController {
 
     func setIdle() {
         cancelSuppressedDisplay()
-        item.button?.image = idleIcon
-        baseTitle = "Idle"
-        isIdleState = true
+        titleState = .idle
+        applyIcon()
         applyTitle()
         rebuildMenu(state: .idle)
         libraryModel?.status = .idle
@@ -159,9 +134,8 @@ final class StatusBarController {
 
     func setPrompting(_ source: AppSource) {
         cancelSuppressedDisplay()
-        item.button?.image = idleIcon
-        baseTitle = "Detected \(source.displayName)"
-        isIdleState = false
+        titleState = .prompting(source: source)
+        applyIcon()
         applyTitle()
         rebuildMenu(state: .prompting(source: source))
         libraryModel?.status = .prompting(appName: source.displayName)
@@ -174,27 +148,22 @@ final class StatusBarController {
         workflow: Workflow? = nil
     ) {
         cancelSuppressedDisplay()
-        item.button?.image = recordingIcon
-        var label = summaryMode == .byo ? "Recording (BYO)" : "Recording"
-        if let wf = workflow {
-            // TECH-B5: show the active workflow so the user can confirm the
-            // destination at a glance; NDA mode gets a marker.
-            label += " - \(wf.name)\(wf.flags.ndaMode ? " · NDA" : "")"
-        }
-        baseTitle = label
-        isIdleState = false
+        recordingWorkflow = workflow
+        titleState = .recording(file: file, source: source, summaryMode: summaryMode)
+        applyIcon()
         applyTitle()
         rebuildMenu(state: .recording(file: file, source: source, summaryMode: summaryMode))
         libraryModel?.status = .recording(appName: source?.displayName)
         libraryModel?.liveRecordingStem = file.deletingPathExtension().lastPathComponent
     }
 
-    func setStopping() {
+    func setStopping(file: URL, source: AppSource?, summaryMode: SummaryMode) {
         cancelSuppressedDisplay()
-        item.button?.image = idleIcon
-        baseTitle = "Stopping…"
-        isIdleState = false
+        titleState = .stopping(file: file, source: source, summaryMode: summaryMode)
+        applyIcon()
         applyTitle()
+        // Deliberately `.idle`, not `titleState`: the menu built during a flush is the
+        // idle one (its header and its Start row), which is what has always shipped.
         rebuildMenu(state: .idle)
         libraryModel?.status = .stopping
         // Keep liveRecordingStem until setIdle fires so the row's pulse
@@ -213,9 +182,8 @@ final class StatusBarController {
     func setSuppressed(_ source: AppSource, isStillSuppressed: @escaping () -> Bool) {
         cancelSuppressedDisplay()
         suppressedIsActive = isStillSuppressed
-        item.button?.image = idleIcon
-        baseTitle = "Suppressed (\(source.displayName))"
-        isIdleState = false
+        titleState = .suppressed(source: source)
+        applyIcon()
         applyTitle()
         rebuildMenu(state: .suppressed(source: source))
         libraryModel?.status = .idle
@@ -272,23 +240,36 @@ final class StatusBarController {
         rebuildMenu(state: lastMenuState)
     }
 
-    /// One clause, not a pile-up (TECH-DSN7). The base state is the clause; only
-    /// while idle does background work take its place, by priority: a model
-    /// download (it blocks summaries), then the processing queue. Both also have
-    /// their own surfaces (the download row in this menu, the Library for
-    /// processing), so collapsing the title loses nothing. The regulated lock is
-    /// a single trailing glyph, not a clause.
+    /// The title is `StatusBarModel.title`'s decision; this only sources its inputs
+    /// (ARCH6). It used to be a second, independent copy of that function, which is
+    /// how the tested model and the always-visible surface were free to drift: the two
+    /// agreed string-for-string when they were finally compared, but nothing had ever
+    /// required them to.
     private func applyTitle() {
-        let lock = (regulatedMode && UISettings.shared.showRegulatedBadge) ? " \u{1F512}" : ""
-        let clause: String
-        if isIdleState, let download = StatusBarModel.downloadTitleClause(modelDownload) {
-            clause = download
-        } else if isIdleState, processingCount > 0 {
-            clause = "Processing (\(processingCount))"
-        } else {
-            clause = baseTitle
-        }
-        item.button?.title = " \(clause)\(lock)"
+        item.button?.title = StatusBarModel.title(titleInputs)
+    }
+
+    /// Which icon the button wears is `StatusBarModel.icon`'s decision, for the same
+    /// reason (ARCH6). Every state setter calls this after writing `titleState`.
+    private func applyIcon() {
+        item.button?.image = StatusBarModel.icon(for: titleState) == .recording ? recordingIcon : idleIcon
+    }
+
+    /// The title's half of the model's inputs. `summaryMode` is read back off
+    /// `titleState`, which already carries it, rather than mirrored into a field that
+    /// could drift from it; the rest of `Inputs` decides rows and is left at defaults.
+    private var titleInputs: StatusBarModel.Inputs {
+        var summaryMode: SummaryMode = .auto
+        if case .recording(_, _, let mode) = titleState { summaryMode = mode }
+        return StatusBarModel.Inputs(
+            state: titleState,
+            workflowName: recordingWorkflow?.name,
+            ndaMode: recordingWorkflow?.flags.ndaMode ?? false,
+            summaryMode: summaryMode,
+            processingCount: processingCount,
+            regulatedMode: regulatedMode,
+            download: modelDownload
+        )
     }
 
     // MARK: Icons
@@ -305,25 +286,23 @@ final class StatusBarController {
     // The SVGs in Resources/ remain the source of truth for the design;
     // these renderers reproduce the same shapes pixel-for-pixel.
 
-    private static func makeIdleIcon(size: CGFloat, style: UISettings.MenuBarIconStyle = .outline) -> NSImage {
+    /// One glyph, the outline one. There used to be a `filled` variant selected by
+    /// `UISettings.menuBarIconStyle`; DSN1's IA pass cut the control that chose it and
+    /// left the property with no writer, so the branches below rendered only ever one
+    /// way and ARCH6 folded them out (`daemon/docs/gotchas.md`).
+    private static func makeIdleIcon(size: CGFloat) -> NSImage {
         let img = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             let s = rect.width / 18.0  // SVG viewBox is 18×18
 
-            // Outline variant keeps the chrome ring around the bars. The
-            // filled variant drops the ring entirely (heavier-feeling
-            // bars alone), so users on a busy menu bar can pick the
-            // chunkier glyph if the thin ring disappears into other
-            // status icons.
-            if style == .outline {
-                let ringRect = NSRect(
-                    x: (9 - 7.5) * s, y: (9 - 7.5) * s,
-                    width: 15 * s, height: 15 * s
-                )
-                let ring = NSBezierPath(ovalIn: ringRect.insetBy(dx: 0.7 * s, dy: 0.7 * s))
-                ring.lineWidth = 1.4 * s
-                NSColor.black.setStroke()
-                ring.stroke()
-            }
+            // The chrome ring around the bars.
+            let ringRect = NSRect(
+                x: (9 - 7.5) * s, y: (9 - 7.5) * s,
+                width: 15 * s, height: 15 * s
+            )
+            let ring = NSBezierPath(ovalIn: ringRect.insetBy(dx: 0.7 * s, dy: 0.7 * s))
+            ring.lineWidth = 1.4 * s
+            NSColor.black.setStroke()
+            ring.stroke()
 
             // Waveform bars (5): same x-stride 2.1, varying heights, all rx=0.7
             let bars: [(x: CGFloat, y: CGFloat, h: CGFloat)] = [
@@ -333,14 +312,10 @@ final class StatusBarController {
                 (10.8, 6.8,  4.4),
                 (12.9, 8.0,  2.0),
             ]
-            // Filled variant widens the bars so dropping the ring
-            // doesn't shrink the perceived footprint.
-            let barWidth: CGFloat = style == .filled ? 2.0 : 1.4
-            let barRadius: CGFloat = style == .filled ? 1.0 : 0.7
             NSColor.black.setFill()
             for bar in bars {
-                let r = NSRect(x: bar.x * s, y: bar.y * s, width: barWidth * s, height: bar.h * s)
-                NSBezierPath(roundedRect: r, xRadius: barRadius * s, yRadius: barRadius * s).fill()
+                let r = NSRect(x: bar.x * s, y: bar.y * s, width: 1.4 * s, height: bar.h * s)
+                NSBezierPath(roundedRect: r, xRadius: 0.7 * s, yRadius: 0.7 * s).fill()
             }
             return true
         }
@@ -401,37 +376,31 @@ final class StatusBarController {
         rebuildMenu(state: lastMenuState)
     }
 
-    /// "Any required permission missing" for the warning row. Screen
-    /// Recording's transient `.unknown` is excluded so it doesn't flash at
-    /// every cold launch.
-    private func hasPendingPermissionIssue() -> Bool {
+    /// Everything `StatusBarModel` needs to decide the menu, sourced from the live
+    /// singletons and the Coordinator (ARCH6). The three helpers that used to build a
+    /// partial `Inputs` each (`permissionConsequences`, `offersQuitWithoutRelaunch`,
+    /// and a `hasPendingPermissionIssue` with no caller at all) collapse into this one:
+    /// every row now comes out of a single `rows(_:)` call over a single snapshot.
+    ///
+    /// `state` is a parameter rather than a read of `lastMenuState` because
+    /// `setStopping` passes `.idle` here on purpose while the title says "Stopping…".
+    private func menuInputs(state: AppState, finishSetupTitle: String?) -> StatusBarModel.Inputs {
         let center = PermissionsCenter.shared
-        return StatusBarModel.hasPendingPermissionIssue(.init(
+        return StatusBarModel.Inputs(
+            state: state,
+            processingCount: processingCount,
+            regulatedMode: regulatedMode,
+            download: modelDownload,
             microphone: center.microphone,
             screenRecording: center.screenRecording,
-            accessibility: center.accessibility
-        ))
-    }
-
-    /// The per-permission consequence lines for the menu (UX23), sourced from the
-    /// live `PermissionsCenter` + the separate capture-denial probe.
-    private func permissionConsequences() -> [String] {
-        let center = PermissionsCenter.shared
-        return StatusBarModel.permissionConsequences(.init(
-            microphone: center.microphone,
-            screenRecording: center.screenRecording,
-            screenRecordingCaptureDenied: SystemAudioCapture.permissionState == .denied
-        ))
-    }
-
-    /// Whether the menu offers the one-off "Quit (do not relaunch)" row (UX55), from
-    /// the preference plus the launch-agent state read before this menu was shown.
-    /// The rule itself is `StatusBarModel`'s; this only sources its inputs.
-    private func offersQuitWithoutRelaunch() -> Bool {
-        StatusBarModel.offersQuitWithoutRelaunch(.init(
+            accessibility: center.accessibility,
+            screenRecordingCaptureDenied: SystemAudioCapture.permissionState == .denied,
+            failedMeetingCount: coordinator?.failedMeetingCount() ?? 0,
+            finishSetupTitle: finishSetupTitle,
             disableAutoRestart: UISettings.shared.disableAutoRestart,
-            launchAgentEnabled: launchAgentEnabled
-        ))
+            launchAgentEnabled: launchAgentEnabled,
+            suppressedCandidateAppName: coordinator?.stateMachine.liveSuppressedCandidate()?.displayName
+        )
     }
 
     private func rebuildMenu(state: AppState) {
@@ -456,124 +425,34 @@ final class StatusBarController {
     }
 
     /// Build the menu items into `menu`, replacing existing ones.
+    ///
+    /// Which conditional rows exist, and in what order, is `StatusBarModel.rows`'
+    /// decision (ARCH6); this walks that list and builds an `NSMenuItem` per row. The
+    /// hand-written conditional cascade this replaces was a second copy of the same
+    /// decisions, and it had already outgrown the model over the "Finish setup" row.
+    /// The unconditional rows below (Open Library through Quit) stay spelled out here:
+    /// they are not a decision, so modelling them would only duplicate this file.
     private func populateMenu(_ menu: NSMenu, state: AppState) {
         menu.removeAllItems()
 
-        let header = NSMenuItem(title: stateLabel(state), action: nil, keyEquivalent: "")
+        // Decided once and passed down: `setupChecklistInputs()` reads config, secrets
+        // and the model cache, and this runs on every download tick and processing-count
+        // change, so the title and the submenu share one evaluation.
+        let setupItems = finishSetupItems()
+        let inputs = menuInputs(
+            state: state,
+            finishSetupTitle: SetupChecklist.menuTitle(count: setupItems.count)
+        )
+        let rows = StatusBarModel.rows(inputs)
+
+        let header = NSMenuItem(title: StatusBarModel.headerLabel(inputs), action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
 
-        if let downloadRow = modelDownloadMenuRow {
-            menu.addItem(downloadRow)
-            menu.addItem(.separator())
-        }
-
-        // One row per missing permission, each naming what stops working (UX23),
-        // routing to the Permissions tab (TECH-E3); the Screen-Recording shortcut
-        // stays under the screen-recording consequence.
-        let consequences = permissionConsequences()
-        if !consequences.isEmpty {
-            for line in consequences {
-                let row = NSMenuItem(
-                    title: line,
-                    action: #selector(Coordinator.menuPreferencesPermissions),
-                    keyEquivalent: ""
-                )
-                row.target = coordinator
-                menu.addItem(row)
-            }
-            if SystemAudioCapture.permissionState == .denied {
-                let scrShortcut = NSMenuItem(
-                    title: "Open Screen Recording Settings…",
-                    action: #selector(Coordinator.menuOpenScreenRecordingSettings),
-                    keyEquivalent: ""
-                )
-                scrShortcut.target = coordinator
-                menu.addItem(scrShortcut)
-            }
-            menu.addItem(.separator())
-        }
-
-        // TECH-END4 (c): Accessibility is what lets the app read a meeting app's
-        // windows and controls at all, so denying it costs the whole detection
-        // path, start included (DET11), and the user otherwise has no signal. Call
-        // it out specifically beyond the generic permissions row above. The
-        // PermissionsSnapshot sink rebuilds this menu when AX flips, so the row
-        // appears/clears on its own (the audit showed AX is usually a transient
-        // launch race that recovers, so there is deliberately no title glyph).
-        if PermissionsCenter.shared.accessibility == .denied {
-            let axRow = NSMenuItem(
-                title: StatusBarModel.accessibilityOffTitle,
-                action: #selector(Coordinator.menuPreferencesPermissions),
-                keyEquivalent: ""
-            )
-            axRow.target = coordinator
-            menu.addItem(axRow)
-            menu.addItem(.separator())
-        }
-
-        // Failed-pipeline row, backed by the durable error sidecar, so a
-        // notification missed under Focus isn't the only surface. Stays
-        // until retry or delete.
-        if let coordinator = coordinator,
-           let title = StatusBarModel.failedMeetingsTitle(count: coordinator.failedMeetingCount()) {
-            let failedRow = NSMenuItem(
-                title: title,
-                action: #selector(Coordinator.menuOpenLibrary),
-                keyEquivalent: ""
-            )
-            failedRow.target = coordinator
-            menu.addItem(failedRow)
-            menu.addItem(.separator())
-        }
-
-        // UX22: the "Finish setup" checklist, a quiet holistic "am I done?"
-        // view. Present only while something is unmet; the submenu lists each
-        // gap and deep-links to its fix. The urgent per-permission rows above
-        // stay as the fast nudge.
-        if let finishSetup = finishSetupMenuItem() {
-            menu.addItem(finishSetup)
-            menu.addItem(.separator())
-        }
-
-        // `.suppressed` is the skip-latch display over an idle state machine (see
-        // `setSuppressed`), so a manual start still works; keep offering it or a
-        // skipped meeting has no menu route to record for the rest of the call.
-        //
-        // DET7: read the live candidate here rather than caching it, because this runs on
-        // `menuNeedsUpdate` (the menu is repopulated in place every time it opens), so the
-        // row is correct at the instant the user looks at it. Caching it would need a
-        // rebuild on the 3 s discovery cadence for a row nobody is looking at.
-        switch state {
-        case .idle, .suppressed:
-            let start = NSMenuItem(
-                title: StatusBarModel.startRecordingTitle(
-                    suppressedCandidateAppName: coordinator?.stateMachine.liveSuppressedCandidate()?.displayName
-                ),
-                action: #selector(Coordinator.menuStart),
-                keyEquivalent: ""
-            )
-            start.target = coordinator
-            menu.addItem(start)
-        case .recording(let file, _, _):
-            let stop = NSMenuItem(title: "Stop Recording", action: #selector(Coordinator.menuStop), keyEquivalent: "")
-            stop.target = coordinator
-            stop.image = Self.makeStopDotImage()   // coral status dot (DSN20)
-            menu.addItem(stop)
-            // DSN21: the live recording file, mono tabular numerals like every
-            // other capture-surface timecode. Disabled/informational.
-            let stem = file.deletingPathExtension().lastPathComponent
-            let fileRow = NSMenuItem(title: stem, action: nil, keyEquivalent: "")
-            fileRow.isEnabled = false
-            fileRow.attributedTitle = NSAttributedString(string: stem, attributes: [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
-                .foregroundColor: MPColors.fgSubtle,
-            ])
-            menu.addItem(fileRow)
-        default:
-            break
-        }
+        // `quitWithoutRelaunch` is the one modelled row that sits BELOW the fixed tail,
+        // beside the plain Quit it qualifies, so it is added at the bottom instead.
+        addConditionalRows(rows.filter { $0 != .quitWithoutRelaunch }, to: menu, setupItems: setupItems)
 
         menu.addItem(.separator())
         let openLibrary = NSMenuItem(
@@ -637,7 +516,7 @@ final class StatusBarController {
         // TECH-UX7 / UX55: the one-off quit that does not relaunch, offered only while
         // something could actually relaunch us. `StatusBarModel` owns that rule, so the
         // shipped menu and the tested model cannot disagree about it again.
-        if offersQuitWithoutRelaunch(), let coordinator = coordinator {
+        if rows.contains(.quitWithoutRelaunch), let coordinator = coordinator {
             let quitNoRelaunch = NSMenuItem(
                 title: "Quit (do not relaunch)",
                 action: #selector(Coordinator.menuQuitWithoutRelaunch),
@@ -647,6 +526,150 @@ final class StatusBarController {
             quitNoRelaunch.target = coordinator
             menu.addItem(quitNoRelaunch)
         }
+    }
+
+    // MARK: - Conditional rows (the model's list, this file's NSMenuItems)
+
+    /// Where the dividers fall between the model's rows. Grouping is chrome, so it
+    /// stays on this side; `StatusBarModel.rows` decides presence and order.
+    private enum RowGroup {
+        case download
+        case permissions
+        case accessibility
+        case failedMeetings
+        case finishSetup
+        case transport
+        /// Added below the fixed tail by `populateMenu`, so it never reaches the walk.
+        case quit
+
+        /// Every group but the transport rows closes with a divider. The transport
+        /// group is followed by the unconditional divider above Open Library, which is
+        /// why `.stopping` (no transport row at all) renders two in a row, as it always
+        /// has.
+        var closesWithSeparator: Bool {
+            switch self {
+            case .download, .permissions, .accessibility, .failedMeetings, .finishSetup:
+                return true
+            case .transport, .quit:
+                return false
+            }
+        }
+    }
+
+    private static func group(for row: StatusBarModel.Row) -> RowGroup {
+        switch row {
+        case .modelDownload:                             return .download
+        case .permissionConsequence, .screenRecordingShortcut: return .permissions
+        case .accessibilityDegraded:                     return .accessibility
+        case .failedMeetings:                            return .failedMeetings
+        case .finishSetup:                               return .finishSetup
+        case .startRecording, .recordSuppressedMeeting, .stopRecording: return .transport
+        case .quitWithoutRelaunch:                       return .quit
+        }
+    }
+
+    /// Walk the model's rows in order, building each one's `NSMenuItem`(s) and closing
+    /// each group with its divider.
+    private func addConditionalRows(
+        _ rows: [StatusBarModel.Row],
+        to menu: NSMenu,
+        setupItems: [SetupChecklist.Item]
+    ) {
+        var index = rows.startIndex
+        while index < rows.endIndex {
+            let group = Self.group(for: rows[index])
+            var end = index
+            while end < rows.endIndex, Self.group(for: rows[end]) == group {
+                addRow(rows[end], to: menu, setupItems: setupItems)
+                end += 1
+            }
+            if group.closesWithSeparator { menu.addItem(.separator()) }
+            index = end
+        }
+    }
+
+    private func addRow(_ row: StatusBarModel.Row, to menu: NSMenu, setupItems: [SetupChecklist.Item]) {
+        switch row {
+        case .modelDownload(let title, let retryable, let toolTip):
+            menu.addItem(modelDownloadMenuItem(title: title, retryable: retryable, toolTip: toolTip))
+
+        // One row per missing permission, each naming what stops working (UX23),
+        // routing to the Permissions tab (TECH-E3).
+        case .permissionConsequence(let title):
+            menu.addItem(actionRow(title: title, action: #selector(Coordinator.menuPreferencesPermissions)))
+
+        case .screenRecordingShortcut:
+            menu.addItem(actionRow(
+                title: "Open Screen Recording Settings…",
+                action: #selector(Coordinator.menuOpenScreenRecordingSettings)
+            ))
+
+        // TECH-END4 (c): Accessibility is what lets the app read a meeting app's
+        // windows and controls at all, so denying it costs the whole detection path,
+        // start included (DET11), and the user otherwise has no signal. Called out
+        // specifically beyond the generic permission rows above. The PermissionsSnapshot
+        // sink rebuilds this menu when AX flips, so the row appears/clears on its own
+        // (the audit showed AX is usually a transient launch race that recovers, so
+        // there is deliberately no title glyph).
+        case .accessibilityDegraded:
+            menu.addItem(actionRow(
+                title: StatusBarModel.accessibilityOffTitle,
+                action: #selector(Coordinator.menuPreferencesPermissions)
+            ))
+
+        // Failed-pipeline row, backed by the durable error sidecar, so a notification
+        // missed under Focus isn't the only surface. Stays until retry or delete.
+        case .failedMeetings(_, let title):
+            menu.addItem(actionRow(title: title, action: #selector(Coordinator.menuOpenLibrary)))
+
+        case .finishSetup(let title):
+            menu.addItem(finishSetupMenuItem(title: title, items: setupItems))
+
+        // `.suppressed` is the skip-latch display over an idle state machine (see
+        // `setSuppressed`), so a manual start still works and the model keeps offering
+        // it; dropping it left a skipped meeting with no menu route to record for the
+        // rest of the call. DET7: with a live candidate the same row names what a click
+        // will attach to. The candidate is read per `menuNeedsUpdate` rather than cached
+        // (the menu is repopulated in place on open), so the row is right at the instant
+        // it is looked at and nothing rebuilds on the discovery cadence.
+        case .startRecording:
+            menu.addItem(actionRow(
+                title: StatusBarModel.startRecordingTitle(suppressedCandidateAppName: nil),
+                action: #selector(Coordinator.menuStart)
+            ))
+
+        case .recordSuppressedMeeting(_, let title):
+            menu.addItem(actionRow(title: title, action: #selector(Coordinator.menuStart)))
+
+        case .stopRecording(let stem):
+            let stop = actionRow(title: "Stop Recording", action: #selector(Coordinator.menuStop))
+            stop.image = Self.makeStopDotImage()   // coral status dot (DSN20)
+            menu.addItem(stop)
+            menu.addItem(Self.recordingFileRow(stem: stem))
+
+        case .quitWithoutRelaunch:
+            break   // added below the fixed tail by `populateMenu`
+        }
+    }
+
+    /// An enabled row aimed at the Coordinator. A nil coordinator leaves `target` nil,
+    /// which is what every hand-built row here already did.
+    private func actionRow(title: String, action: Selector) -> NSMenuItem {
+        let row = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        row.target = coordinator
+        return row
+    }
+
+    /// DSN21: the live recording file, mono tabular numerals like every other
+    /// capture-surface timecode. Disabled/informational.
+    private static func recordingFileRow(stem: String) -> NSMenuItem {
+        let row = NSMenuItem(title: stem, action: nil, keyEquivalent: "")
+        row.isEnabled = false
+        row.attributedTitle = NSAttributedString(string: stem, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+            .foregroundColor: MPColors.fgSubtle,
+        ])
+        return row
     }
 
     /// "Recent meetings" submenu, populated lazily via `menuNeedsUpdate` so
@@ -667,11 +690,8 @@ final class StatusBarController {
         return parent
     }
 
-    /// Detailed model-download row, or nil when there's nothing to show.
-    /// Disabled (informational); clicking does nothing.
-    private var modelDownloadMenuRow: NSMenuItem? {
-        guard case .modelDownload(let title, let retryable, let toolTip) =
-            StatusBarModel.downloadRow(modelDownload) else { return nil }
+    /// Detailed model-download row. Disabled (informational) unless retryable.
+    private func modelDownloadMenuItem(title: String, retryable: Bool, toolTip: String?) -> NSMenuItem {
         guard retryable else {
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -679,21 +699,15 @@ final class StatusBarController {
         }
         // Actionable (LOCAL1): clicking re-spawns the prefetch. The full error
         // goes to the tooltip so the row title stays short and clean.
-        let item = NSMenuItem(
-            title: title,
-            action: #selector(Coordinator.menuRetryModelDownload),
-            keyEquivalent: ""
-        )
-        item.target = coordinator
+        let item = actionRow(title: title, action: #selector(Coordinator.menuRetryModelDownload))
         item.toolTip = toolTip
         return item
     }
 
-    /// The "Finish setup" checklist parent row + submenu (UX22), or nil when
-    /// every setup item is green (so the row disappears entirely). Each submenu
-    /// row deep-links to its fix.
-    private func finishSetupMenuItem() -> NSMenuItem? {
-        guard let coordinator = coordinator else { return nil }
+    /// The still-unmet setup items (UX22), or empty when every one is green. Empty
+    /// without a Coordinator too, since the signals are all read through it.
+    private func finishSetupItems() -> [SetupChecklist.Item] {
+        guard let coordinator = coordinator else { return [] }
         var inputs = coordinator.setupChecklistInputs()
         // The dedicated download row already covers an in-flight / just-finished
         // pull, so don't also nag to start the model download from here.
@@ -701,19 +715,17 @@ final class StatusBarController {
         case .downloading, .completed: inputs.localModelMissing = false
         default: break
         }
-        let items = SetupChecklist.decide(inputs)
-        guard let title = SetupChecklist.menuTitle(count: items.count) else { return nil }
+        return SetupChecklist.decide(inputs)
+    }
 
+    /// The "Finish setup" checklist parent row + submenu (UX22). Each submenu row
+    /// deep-links to its fix. Whether the row exists at all is the model's call, off
+    /// the title this was given.
+    private func finishSetupMenuItem(title: String, items: [SetupChecklist.Item]) -> NSMenuItem {
         let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let submenu = NSMenu()
         for item in items {
-            let row = NSMenuItem(
-                title: item.title,
-                action: Self.selector(for: item.fix),
-                keyEquivalent: ""
-            )
-            row.target = coordinator
-            submenu.addItem(row)
+            submenu.addItem(actionRow(title: item.title, action: Self.selector(for: item.fix)))
         }
         parent.submenu = submenu
         return parent
@@ -728,9 +740,6 @@ final class StatusBarController {
         }
     }
 
-    private func stateLabel(_ s: AppState) -> String {
-        StatusBarModel.headerLabel(.init(state: s, processingCount: processingCount))
-    }
 }
 
 /// Top-level menu delegate; `menuNeedsUpdate` re-probes permissions just

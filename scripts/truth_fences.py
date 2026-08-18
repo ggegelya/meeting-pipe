@@ -10,6 +10,19 @@ checker, a linter, or a test:
      found three more, cleared by HYG2 (`transcription.language` wired,
      `recording.sample_rate` and `detection.debounce_start_sec` deleted). The
      user changes the setting and nothing happens.
+
+     **What this fence cannot see, and never will:** it diffs *sets of
+     `config.toml` keys*, so a dead knob that is not a TOML key is invisible to
+     it. `UISettings` is the live example: its properties are cosmetic
+     preferences persisted straight to `UserDefaults`, deliberately kept out of
+     `config.toml` so that file stays small and pipeline-parseable, and nothing
+     here reads them. ARCH6 found `menuBarIconStyle` and `showRegulatedBadge`
+     sitting there with no writer anywhere in the app for a year after DSN1's IA
+     pass cut their controls: each was parsed, persisted and branched on, and
+     each was permanently pinned at its init default. That is failure class 1
+     exactly, and a green fence said nothing. Read a pass here as "no dead
+     *config* key", never as "no dead knob". The same blind spot covers any
+     other non-TOML setting store added later.
   2. An **undocumented event category**: a `Log.event` / `events.emit` category
      absent from the CONVENTIONS.md table, so a session reading that table to
      orient gets an incomplete map of the event stream.

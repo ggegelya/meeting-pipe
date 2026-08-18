@@ -17,7 +17,7 @@ swift test                # full Xcode required locally (CI on macos-14 has it)
 ## Patterns to match
 
 - **Strict concurrency is on for this target too.** A new `Sendable` warning is a real cross-thread finding; fix it, don't silence it. Two documented `@unchecked Sendable` exist; don't add a third. → [gotchas](docs/gotchas.md#strict-concurrency-is-on-for-this-target) (CONC4)
-- **Pure logic on its own type with explicit inputs.** Lift non-trivial branching into a `decide(at:…) -> Action` on its own struct. "It is only presentation" is a reason to extract, not to skip. → [gotchas](docs/gotchas.md#pure-logic-on-its-own-type-with-explicit-inputs) (T3)
+- **Pure logic on its own type with explicit inputs.** Lift non-trivial branching into a `decide(at:…) -> Action` on its own struct. "It is only presentation" is a reason to extract, not to skip. Then repoint the caller; left beside the original it is two copies and only one is tested. → [gotchas](docs/gotchas.md#pure-logic-on-its-own-type-with-explicit-inputs) (T3, ARCH6)
 - **`MeetingSessionController` talks to `SessionHost`, not `Coordinator`.** A new subsystem goes on `SessionHost` and `FakeSessionHost`; a global read has to come through the host. → [gotchas](docs/gotchas.md#meetingsessioncontroller-talks-to-sessionhost-not-coordinator)
 - **Fully-qualified type name in stored-property initializers.** `Self.foo` fails on Swift 5.9+; write `StatusBarController.foo`. → [gotchas](docs/gotchas.md#fully-qualified-type-name-in-stored-property-initializers)
 - **Combine subscriptions filter to value changes.** `removeDuplicates()` + `dropFirst()` before triggering rebuilds. → [gotchas](docs/gotchas.md#combine-subscriptions-filter-to-value-changes)

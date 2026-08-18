@@ -80,8 +80,9 @@ final class MeetingPromptWindow {
 
     /// CAL2: supplies the "Last time" card for the resolved workflow. Weak because
     /// the Coordinator owns both sides; nil (no provider, or no previous meeting)
-    /// simply means the affordance never appears.
-    weak var prepProvider: (any PrepCardProviding)?
+    /// simply means the affordance never appears. The concrete store, not a protocol:
+    /// see `PrepCardStore` for why the one-conformer seam went away (ARCH6).
+    weak var prepProvider: PrepCardStore?
 
     private var panel: NSPanel?
     private var currentSource: AppSource?

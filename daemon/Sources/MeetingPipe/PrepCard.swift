@@ -110,29 +110,35 @@ struct PrepCard: Equatable, Sendable {
     }
 }
 
-/// The seam the prompt panel sees. Kept narrow so the panel never learns where
-/// recordings live; `PrepCardStore` is the only thing that touches the disk.
-protocol PrepCardProviding: AnyObject {
-    /// Look up the card for `workflow`, or nil when there is nothing to show.
-    /// The scan runs off-main; `completion` is called on the main queue, once.
-    func prepCard(for workflow: Workflow?, completion: @escaping (PrepCard?) -> Void)
-}
-
-/// Disk-backed `PrepCardProviding`: newest-first walk over the recordings
-/// directory for the last meeting recorded under a workflow.
+/// The prompt panel's "Last time" source (CAL2): a newest-first walk over the
+/// recordings directory for the last meeting recorded under a workflow. The panel
+/// sees only `prepCard(for:completion:)`, so it still never learns where recordings
+/// live; this type is the only thing here that touches the disk.
+///
+/// That narrowness used to be spelled as a `PrepCardProviding` protocol. It had one
+/// conformer, one injection site that always passed it, and no test ever supplied a
+/// fake, so it bought neither substitution nor testability while reading as if it
+/// bought both; ARCH6 collapsed it. Testing the panel through a fake provider was the
+/// alternative and is not cheap here: the branch a fake would reach
+/// (`MeetingPromptWindow.applyPrepCard`) needs a presented `NSPanel` and its
+/// `lastTimeButton`, so the seam would have bought a test only alongside a
+/// panel-presentation harness that does not exist. Re-introduce the protocol when a
+/// second real source appears, not before.
 ///
 /// The scan reads `<stem>.meta.json` only for stems that already have a summary,
 /// and stops at the first meeting that yields a card, so the usual cost is a
 /// directory listing plus one or two small JSON reads. It runs off-main anyway:
 /// a workflow with no meetings walks the whole library, and the prompt panel is
 /// raised on the main queue at meeting-detection time.
-final class PrepCardStore: PrepCardProviding {
+final class PrepCardStore {
     private let recordingsDir: URL
 
     init(recordingsDir: URL) {
         self.recordingsDir = recordingsDir
     }
 
+    /// Look up the card for `workflow`, or nil when there is nothing to show.
+    /// The scan runs off-main; `completion` is called on the main queue, once.
     func prepCard(for workflow: Workflow?, completion: @escaping (PrepCard?) -> Void) {
         guard let workflow = workflow else {
             completion(nil)

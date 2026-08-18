@@ -82,7 +82,10 @@ protocol SessionStatusPresenting: AnyObject {
     func setIdle()
     func setPrompting(_ source: AppSource)
     func setRecording(file: URL, source: AppSource?, summaryMode: SummaryMode, workflow: Workflow?)
-    func setStopping()
+    /// Takes the recording it is flushing, matching the `DetectionStateMachine.setStopping`
+    /// its one caller invokes on the line above: the presenter's state is `AppState.stopping`,
+    /// which carries the same three values (ARCH6).
+    func setStopping(file: URL, source: AppSource?, summaryMode: SummaryMode)
     func setSuppressed(_ source: AppSource, isStillSuppressed: @escaping () -> Bool)
     func refreshMenuForPermissionChange()
 }

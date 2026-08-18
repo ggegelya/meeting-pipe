@@ -11,6 +11,14 @@ import Foundation
 /// in which order. The controller keeps the `NSMenuItem` building, which is
 /// plumbing, and asks this for everything that varies.
 ///
+/// T3 wrote this type and its tests, and then left `title`, `icon(for:)` and
+/// `rows` with no production caller: the controller went on composing its own
+/// title, picking its own icon and hand-ordering its own rows, so the two copies
+/// were free to diverge and had already, over the `finishSetup` row this enum
+/// carried no case for (ARCH6). Every decision here is now the one the menu bar
+/// renders, which is what makes a row the tests below do not know about a row the
+/// user does not see either.
+///
 /// The `MicGate.decide` / `AudioRetention.decide` idiom: explicit inputs in, a
 /// value out, no globals read from inside.
 enum StatusBarModel {
@@ -35,6 +43,13 @@ enum StatusBarModel {
         case screenRecordingShortcut
         case accessibilityDegraded
         case failedMeetings(count: Int, title: String)
+        /// UX22: the "Finish setup" checklist parent row, present while anything is
+        /// still unmet. What is in the submenu is `SetupChecklist`'s decision, not this
+        /// one, so the row carries only the title the caller already computed; what
+        /// lives here is that it exists and where it sits. It shipped in the menu from
+        /// UX22 and was missing from this enum until ARCH6, which is the divergence
+        /// that proved the two row lists were not the same list.
+        case finishSetup(title: String)
         case startRecording
         /// DET7: `startRecording` when a meeting the user skipped is still running, so
         /// the row names what a click will attach to. Same action, honest label: the
@@ -58,7 +73,6 @@ enum StatusBarModel {
         var summaryMode: SummaryMode
         var processingCount: Int
         var regulatedMode: Bool
-        var showRegulatedBadge: Bool
         var download: ModelDownloadSupervisor.State
         var microphone: PermissionsCenter.Status
         var screenRecording: PermissionsCenter.Status
@@ -67,6 +81,9 @@ enum StatusBarModel {
         /// `screenRecording` above and drives only the deep-link row.
         var screenRecordingCaptureDenied: Bool
         var failedMeetingCount: Int
+        /// UX22: `SetupChecklist.menuTitle` over the still-unmet items, or nil when
+        /// every one of them is green and the row disappears entirely.
+        var finishSetupTitle: String?
         var disableAutoRestart: Bool
         /// UX55: whether the `com.meetingpipe.daemon` launch agent is enabled, which is
         /// whether anything is left that *could* relaunch the app after a quit
@@ -89,13 +106,13 @@ enum StatusBarModel {
             summaryMode: SummaryMode = .auto,
             processingCount: Int = 0,
             regulatedMode: Bool = false,
-            showRegulatedBadge: Bool = true,
             download: ModelDownloadSupervisor.State = .idle,
             microphone: PermissionsCenter.Status = .granted,
             screenRecording: PermissionsCenter.Status = .granted,
             accessibility: PermissionsCenter.Status = .granted,
             screenRecordingCaptureDenied: Bool = false,
             failedMeetingCount: Int = 0,
+            finishSetupTitle: String? = nil,
             disableAutoRestart: Bool = false,
             launchAgentEnabled: Bool = true,
             suppressedCandidateAppName: String? = nil
@@ -106,13 +123,13 @@ enum StatusBarModel {
             self.summaryMode = summaryMode
             self.processingCount = processingCount
             self.regulatedMode = regulatedMode
-            self.showRegulatedBadge = showRegulatedBadge
             self.download = download
             self.microphone = microphone
             self.screenRecording = screenRecording
             self.accessibility = accessibility
             self.screenRecordingCaptureDenied = screenRecordingCaptureDenied
             self.failedMeetingCount = failedMeetingCount
+            self.finishSetupTitle = finishSetupTitle
             self.disableAutoRestart = disableAutoRestart
             self.launchAgentEnabled = launchAgentEnabled
             self.suppressedCandidateAppName = suppressedCandidateAppName
@@ -142,8 +159,13 @@ enum StatusBarModel {
     /// download (it blocks summaries), then the processing queue. Both also have
     /// their own surfaces, so collapsing the title loses nothing. The regulated
     /// lock is a single trailing glyph, not a clause.
+    ///
+    /// The glyph used to need `UISettings.showRegulatedBadge` as well. DSN1's IA pass
+    /// cut that control and left the property with no writer anywhere in the app, so it
+    /// sat pinned at its `true` default and the second half of the `&&` decided nothing;
+    /// ARCH6 removed the property and this term together (`daemon/docs/gotchas.md`).
     static func title(_ i: Inputs) -> String {
-        let lock = (i.regulatedMode && i.showRegulatedBadge) ? " \u{1F512}" : ""
+        let lock = i.regulatedMode ? " \u{1F512}" : ""
         let clause: String
         if i.state == .idle, let download = downloadTitleClause(i.download) {
             clause = download
@@ -238,6 +260,14 @@ enum StatusBarModel {
 
         if let title = failedMeetingsTitle(count: i.failedMeetingCount) {
             rows.append(.failedMeetings(count: i.failedMeetingCount, title: title))
+        }
+
+        // UX22: the "Finish setup" checklist, a quiet holistic "am I done?" view.
+        // Present only while something is unmet; the submenu lists each gap and
+        // deep-links to its fix. The urgent per-permission rows above stay as the
+        // fast nudge, so this sits below them and above the transport row.
+        if let title = i.finishSetupTitle {
+            rows.append(.finishSetup(title: title))
         }
 
         // Offer Start whenever a manual toggle would actually start a recording.

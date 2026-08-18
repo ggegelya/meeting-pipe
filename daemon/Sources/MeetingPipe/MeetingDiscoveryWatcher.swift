@@ -219,7 +219,7 @@ final class MeetingDiscoveryWatcher {
     private func runScan() {
         scanQueue.async { [weak self] in
             guard let self = self else { return }
-            let result = self.scanner.scan(keepStickyOnEmpty: false)
+            let result = self.scanner.scan()
             // DET5: log candidates that were running with evidence but did not win, before the
             // winner short-circuit, so a no-winner scan (the DET3 miss case) still records why.
             self.emitDroppedCandidates(result.droppedCandidates, hadWinner: result.winner != nil)

@@ -30,9 +30,19 @@ public extension PrimarySignalKind {
     /// must not single-handedly confirm a meeting end. `axLeaveButton` reads invalid
     /// on a Teams call-UI re-render (the confirmed 2026-06-09 screen-share repro that
     /// chopped one meeting into 4 fragments); a lone, uncorroborated invalid must be
-    /// held in provisional, not promoted to `.ended`, until a reliable signal
-    /// (window-gone) corroborates. Reliable signals stay false here so they keep
-    /// promoting on their own via the debounce, preserving the ends that already work.
+    /// held in provisional, not promoted to `.ended`, until something independent
+    /// corroborates. Reliable signals stay false here so they keep promoting on their
+    /// own via the debounce, preserving the ends that already work.
+    ///
+    /// This paragraph used to name **window-gone** as that corroborator, and END6/AUD-10
+    /// had already made it impossible: `axLeaveButton` and `shareableContentWindow` are
+    /// one `EndEvidenceClass` (a Teams share re-render invalidates the Leave button and
+    /// drops the call window together), and `tick()` requires a *cross-class* corroborator,
+    /// so for a native meeting window-gone can never satisfy this guard. What actually
+    /// clears it is the AX re-walk (`confirmProvisionalEnd`), which is the daemon
+    /// verifying the control is really gone, or a genuinely different class such as
+    /// `processAudioIsRunningInput` or `workspaceAppTerminated`. The rule is the one
+    /// END6 intended; only this comment was stale (ARCH6).
     ///
     /// DET8 put `processAudioIsRunningInput` in the same bucket, and this is the rail its
     /// spike pre-registered as the condition of reviving that signal at all: it ships
