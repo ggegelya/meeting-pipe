@@ -129,13 +129,72 @@ final class DetectionStateMachine {
     /// post-call chat surface produces.
     static let suppressedCandidateGraceSec: Double = DetectionStateMachine.skipLatchGraceSec
 
-    private var suppressedCandidate: (source: AppSource, seenAt: Date)?
+    /// DET14: the same grace for a candidate the *cooldown* branch wrote, which is a materially
+    /// weaker claim than the latch's and now gets a materially shorter life.
+    ///
+    /// The paragraph above was right that both branches are refreshed by the same confident-winner
+    /// sighting, and wrong that this makes them equivalent. A skip-latched call is *known live*:
+    /// the owner dismissed a prompt for a meeting that was running, and the latch is refreshed by
+    /// every sighting for as long as it runs, so the 5-poll grace is bridging a control blackout
+    /// in a call we have positive evidence for. A cooling-down call has no such evidence. The
+    /// cooldown is anchored on the previous meeting's *end*, so the branch fires exactly when a
+    /// call may have just finished, and giving it the latch's width made the two failures
+    /// asymmetric in the wrong direction.
+    ///
+    /// **Measured 2026-08-19, which is why this changed.** The owner's Teams call ended, and the
+    /// menu kept offering "Record this Microsoft Teams meeting" long enough to be reported as a
+    /// defect. The ceiling was about two minutes by construction: the cooldown branch can refresh
+    /// the sighting for 60 s after the end, and the candidate then lived a further 60 s from that
+    /// last write.
+    ///
+    /// Two polls rather than five. It still has to bridge one ordinary quiet poll (12 s), so a
+    /// single scan that finds no confident winner cannot drop it, which is the DET9 bug; it does
+    /// not have to bridge END9's 21-to-33 s control blackout, because that blackout is a fact
+    /// about calls the latch has already proven live. Derived from the cadence rather than
+    /// written as a number, per DET9's rule, so the next `DiscoveryScanCadence` change carries it.
+    static let cooldownCandidateGracePolls: Double = 2
+    static let cooldownCandidateGraceSec: Double =
+        DiscoveryScanCadence.discoveryDefault.idle * DetectionStateMachine.cooldownCandidateGracePolls
+
+    /// Which suppression branch wrote the candidate. It decides how long the sighting stays
+    /// attachable, because the two branches carry different evidence that the call is still up.
+    enum SuppressedCandidateOrigin {
+        /// The owner dismissed a prompt for this meeting and discovery keeps re-sighting it. The
+        /// latch is the liveness oracle, so this keeps DET7's full grace.
+        case skipLatch
+        /// The bundle is inside its post-meeting re-prompt cooldown (DET13). No latch, and the
+        /// window opens on an *end*, so this gets `cooldownCandidateGraceSec`.
+        case cooldown
+    }
+
+    private var suppressedCandidate: (source: AppSource, seenAt: Date, origin: SuppressedCandidateOrigin)?
 
     /// Remember this sighting as the attachable candidate. Only called from a suppression branch
     /// (the skip latch, or the re-prompt cooldown), so an ordinary discovery scan never populates
     /// it: an unsuppressed sighting engages the lifecycle and gets a prompt of its own.
-    func noteSuppressedCandidate(_ source: AppSource, at: Date = Date()) {
-        suppressedCandidate = (source: source, seenAt: at)
+    func noteSuppressedCandidate(
+        _ source: AppSource,
+        origin: SuppressedCandidateOrigin,
+        at: Date = Date()
+    ) {
+        suppressedCandidate = (source: source, seenAt: at, origin: origin)
+    }
+
+    /// Drop the candidate because the lifecycle subsystem confirmed this meeting ended (DET14).
+    ///
+    /// The grace above is an *upper bound on ignorance*: it says how long to keep believing in a
+    /// call discovery has stopped confirming. A lifecycle end is not ignorance, it is the positive
+    /// signal the grace exists in the absence of, so it should not have to be waited out.
+    ///
+    /// Safe precisely because it is not sticky. If the end was false, the very next confident
+    /// sighting writes the candidate back, and a false end is re-sighted within one poll: on
+    /// 2026-08-19 a provisional end fired at 10:40:19, the recording stopped at 10:40:22, and
+    /// discovery had re-populated the candidate by 10:40:24, which the owner then used to restart
+    /// by hand at 10:40:26. So this clears a stale row without costing the false-end rescue that
+    /// DET13 built the cooldown retention for.
+    func noteMeetingEnded(bundleID: String) {
+        guard suppressedCandidate?.source.bundleID == bundleID else { return }
+        suppressedCandidate = nil
     }
 
     /// The still-live suppressed meeting to attach a manual start to, or nil when there is none.
@@ -144,17 +203,24 @@ final class DetectionStateMachine {
     /// meeting keeps DET7's rule exactly, because the latch is the stronger liveness oracle: every
     /// discovery sighting refreshes it, and an explicit start drops latch and candidate together.
     /// A cooling-down meeting has no latch at all, which is why the write alone was not enough,
-    /// so it falls through to the sighting's own age against `suppressedCandidateGraceSec`.
+    /// so it falls through to the sighting's own age against its origin's grace.
     ///
     /// Either way the candidate self-expires on read rather than needing a timer: once discovery
     /// has stopped seeing the meeting for a whole grace, the stale candidate is dropped here, so a
     /// start after the call really ended records generic rather than attributing itself to a dead
     /// meeting. Recording generic is the failure that guards against, and a live meeting wrongly
-    /// read as dead is the worse one, which is why the grace is DET9-wide rather than tight.
+    /// read as dead is the worse one, which is why the latch's grace is DET9-wide rather than
+    /// tight; DET14's shorter cooldown grace is a statement about the weaker evidence that branch
+    /// carries, not a retreat from that ordering.
     func liveSuppressedCandidate(now: Date = Date()) -> AppSource? {
         guard let candidate = suppressedCandidate else { return nil }
         if isSkipLatched(bundleID: candidate.source.bundleID, now: now) { return candidate.source }
-        guard now.timeIntervalSince(candidate.seenAt) < Self.suppressedCandidateGraceSec else {
+        let grace: Double
+        switch candidate.origin {
+        case .skipLatch: grace = Self.suppressedCandidateGraceSec
+        case .cooldown: grace = Self.cooldownCandidateGraceSec
+        }
+        guard now.timeIntervalSince(candidate.seenAt) < grace else {
             suppressedCandidate = nil
             return nil
         }

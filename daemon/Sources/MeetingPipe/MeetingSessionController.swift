@@ -153,8 +153,8 @@ final class MeetingSessionController: @unchecked Sendable {
                         self.handleMeetingStarted(source: self.appSource(from: context))
                     case .endingProvisional(let context, _):
                         self.rescueProvisionalEnd(context: context)
-                    case .ended(_, let reason):
-                        self.handleMeetingEnded(reason: reason)
+                    case .ended(let context, let reason):
+                        self.handleMeetingEnded(bundleID: context.bundleID, reason: reason)
                     default:
                         break
                     }
@@ -939,7 +939,19 @@ final class MeetingSessionController: @unchecked Sendable {
         ])
     }
 
-    func handleMeetingEnded(reason: EndingReason) {
+    func handleMeetingEnded(bundleID: String, reason: EndingReason) {
+        // DET14: drop the attachable candidate for this bundle before anything else, and outside
+        // the state switch below, because it is not about what this session is doing. The
+        // suppressed candidate's grace is an upper bound on ignorance, a guess at how long to
+        // keep believing in a call discovery has stopped confirming; a lifecycle end is the
+        // positive signal that guess stands in for, so it should not have to be waited out. It is
+        // what kept the menu offering "Record this <app> meeting" for up to two minutes after a
+        // call finished.
+        //
+        // Not sticky, deliberately: a false end is re-sighted within a poll and writes the
+        // candidate straight back, which is what keeps this clear of DET13's false-end rescue.
+        coordinator.stateMachine.noteMeetingEnded(bundleID: bundleID)
+
         switch coordinator.stateMachine.current {
         case .recording(let file, let src, let mode):
             // Recording-stop honors every end, including uncorroborated ones: a
@@ -1150,7 +1162,7 @@ final class MeetingSessionController: @unchecked Sendable {
             // row, hotkey, `meetingpipe://record`) can attach to the meeting the user
             // skipped instead of recording `source: nil`, which resolves the default
             // workflow, writes no source into the sidecar, and arms no AX end detection.
-            coordinator.stateMachine.noteSuppressedCandidate(source)
+            coordinator.stateMachine.noteSuppressedCandidate(source, origin: .skipLatch)
             return
         }
 
@@ -1171,7 +1183,7 @@ final class MeetingSessionController: @unchecked Sendable {
             // load-bearing against END9's false-end re-prompt storms, and no skip latch is armed,
             // so the meeting still prompts normally once the window lapses.
             let previous = coordinator.stateMachine.liveSuppressedCandidate()
-            coordinator.stateMachine.noteSuppressedCandidate(source)
+            coordinator.stateMachine.noteSuppressedCandidate(source, origin: .cooldown)
             if previous?.bundleID != source.bundleID {
                 // Once per retention, not once per poll: discovery re-sights the same call every 3
                 // to 12 s for the whole window. The 2026-08-04 occurrence was unreadable from

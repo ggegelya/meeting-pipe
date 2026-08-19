@@ -207,14 +207,14 @@ final class DetectionStateMachineTests: XCTestCase {
     func test_suppressed_candidate_is_returned_while_the_latch_holds() {
         let m = DetectionStateMachine()
         m.armSkipLatch(bundleID: Self.teams.bundleID)
-        m.noteSuppressedCandidate(Self.teams)
+        m.noteSuppressedCandidate(Self.teams, origin: .skipLatch)
         XCTAssertEqual(m.liveSuppressedCandidate(), Self.teams)
     }
 
     func test_suppressed_candidate_lapses_with_its_latch_and_is_dropped() {
         let m = DetectionStateMachine()
         m.armSkipLatch(bundleID: Self.teams.bundleID)
-        m.noteSuppressedCandidate(Self.teams)
+        m.noteSuppressedCandidate(Self.teams, origin: .skipLatch)
         // Discovery stopped refreshing the latch: past the grace, the meeting is over and
         // the candidate is not something a start should attribute itself to.
         let afterGrace = Date().addingTimeInterval(DetectionStateMachine.skipLatchGraceSec + 1)
@@ -226,7 +226,7 @@ final class DetectionStateMachineTests: XCTestCase {
     func test_clearSuppression_also_drops_the_candidate() {
         let m = DetectionStateMachine()
         m.armSkipLatch(bundleID: Self.teams.bundleID)
-        m.noteSuppressedCandidate(Self.teams)
+        m.noteSuppressedCandidate(Self.teams, origin: .skipLatch)
         // An explicit start consumed it; leaving it cached would let a *second* start
         // minutes later re-attach to a meeting nothing is watching any more.
         m.clearSuppression(bundleID: Self.teams.bundleID)
@@ -236,7 +236,7 @@ final class DetectionStateMachineTests: XCTestCase {
     func test_clearSuppression_for_another_bundle_leaves_the_candidate() {
         let m = DetectionStateMachine()
         m.armSkipLatch(bundleID: Self.teams.bundleID)
-        m.noteSuppressedCandidate(Self.teams)
+        m.noteSuppressedCandidate(Self.teams, origin: .skipLatch)
         m.clearSuppression(bundleID: "us.zoom.xos")
         XCTAssertEqual(m.liveSuppressedCandidate(), Self.teams,
                        "suppression is per-bundle; clearing Zoom must not forget the Teams call")
@@ -258,7 +258,7 @@ final class DetectionStateMachineTests: XCTestCase {
         // latch for the candidate to ride and DET7's gate alone would return nil.
         XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
 
-        m.noteSuppressedCandidate(Self.teams)
+        m.noteSuppressedCandidate(Self.teams, origin: .cooldown)
 
         XCTAssertEqual(m.liveSuppressedCandidate(), Self.teams,
                        "a cooling-down sighting is the only handle on the call the owner just joined")
@@ -271,10 +271,10 @@ final class DetectionStateMachineTests: XCTestCase {
         let m = DetectionStateMachine()
         m.recordCooldownEnd(bundleID: Self.teams.bundleID)
         let seenAt = Date()
-        m.noteSuppressedCandidate(Self.teams, at: seenAt)
+        m.noteSuppressedCandidate(Self.teams, origin: .cooldown, at: seenAt)
         XCTAssertEqual(m.liveSuppressedCandidate(now: seenAt), Self.teams)
 
-        let afterGrace = seenAt.addingTimeInterval(DetectionStateMachine.suppressedCandidateGraceSec + 1)
+        let afterGrace = seenAt.addingTimeInterval(DetectionStateMachine.cooldownCandidateGraceSec + 1)
         XCTAssertNil(m.liveSuppressedCandidate(now: afterGrace))
         // And the drop is durable, not just a filtered read, so nothing runs a timer to expire it.
         XCTAssertNil(m.liveSuppressedCandidate())
@@ -283,9 +283,9 @@ final class DetectionStateMachineTests: XCTestCase {
     /// DET9's rule applied to the second latch, which is the bug this task must not repeat. The
     /// grace is the poll it exists to bridge rather than a number: DET9's was a hardcoded 15
     /// justified as "5x the 3 s poll", and it silently decayed to 1.25 polls when PERF6 moved the
-    /// quiet poll to 12 s. It is deliberately the same width as the skip latch's, because both are
-    /// refreshed by the same confident-winner sighting and both have to clear the same measured
-    /// control blackout (48 s on 2026-07-27, 21-33 s in END9).
+    /// quiet poll to 12 s. The skip latch's width is the one that has to clear the measured
+    /// control blackout (48 s on 2026-07-27, 21-33 s in END9), because that blackout is a fact
+    /// about calls the latch has already proven live.
     func test_suppressedCandidateGrace_is_derived_from_the_live_discovery_poll() {
         XCTAssertEqual(
             DetectionStateMachine.suppressedCandidateGraceSec,
@@ -296,7 +296,140 @@ final class DetectionStateMachineTests: XCTestCase {
             DetectionStateMachine.suppressedCandidateGraceSec,
             DetectionStateMachine.skipLatchGraceSec,
             accuracy: 0.001,
-            "one sighting rule, so widening one grace has to widen the other"
+            "the skip-latch candidate rides its latch, so the two must not drift apart"
+        )
+    }
+
+    // MARK: - DET14: the cooldown candidate gets a shorter life than the latched one
+
+    /// The same DET9 rule, applied to the grace DET14 split off. It is derived from the live
+    /// cadence rather than written as a number, so the next `DiscoveryScanCadence` change carries
+    /// it instead of silently decaying the way DET9's hardcoded 15 did.
+    func test_cooldownCandidateGrace_is_derived_from_the_live_discovery_poll() {
+        XCTAssertEqual(
+            DetectionStateMachine.cooldownCandidateGraceSec,
+            DiscoveryScanCadence.discoveryDefault.idle * DetectionStateMachine.cooldownCandidateGracePolls,
+            accuracy: 0.001
+        )
+    }
+
+    /// The asymmetry is the point, so it is pinned rather than left to the two derivations
+    /// happening to differ. A skip-latched call is known live; a cooling-down one is not, and the
+    /// cooldown window opens on an *end*, which is exactly when a call may have just finished.
+    func test_the_cooldown_grace_is_shorter_than_the_latched_one() {
+        XCTAssertLessThan(
+            DetectionStateMachine.cooldownCandidateGraceSec,
+            DetectionStateMachine.suppressedCandidateGraceSec,
+            "a cooling-down sighting carries weaker evidence than a latched one and must not outlive it"
+        )
+        // Still wide enough to bridge one ordinary quiet poll, which is the DET9 bug: a single
+        // scan finding no confident winner must not drop a call that is still up.
+        XCTAssertGreaterThan(
+            DetectionStateMachine.cooldownCandidateGraceSec,
+            DiscoveryScanCadence.discoveryDefault.idle,
+            "one quiet poll finding no confident winner must not be enough to drop it"
+        )
+    }
+
+    /// The regression this split exists for. The owner's Teams call ended on 2026-08-19 and the
+    /// menu kept offering "Record this Microsoft Teams meeting"; the ceiling was about two
+    /// minutes, since the cooldown branch refreshes the sighting for 60 s after the end and the
+    /// candidate then lived a further 60 s from that last write. At the old grace this read is
+    /// still the live call; at DET14's it is nil.
+    func test_a_cooldown_candidate_is_gone_well_before_the_old_grace() {
+        let m = DetectionStateMachine()
+        m.recordCooldownEnd(bundleID: Self.teams.bundleID)
+        let seenAt = Date()
+        m.noteSuppressedCandidate(Self.teams, origin: .cooldown, at: seenAt)
+
+        let atOldGrace = seenAt.addingTimeInterval(DetectionStateMachine.suppressedCandidateGraceSec - 1)
+        XCTAssertNil(
+            m.liveSuppressedCandidate(now: atOldGrace),
+            "this is the read that kept the stale row on the menu"
+        )
+    }
+
+    /// The half DET14 must not break: inside its own grace the cooling-down sighting is still the
+    /// handle a manual start attaches to, which is the whole of DET13.
+    func test_a_cooldown_candidate_is_still_attachable_inside_its_own_grace() {
+        let m = DetectionStateMachine()
+        m.recordCooldownEnd(bundleID: Self.teams.bundleID)
+        let seenAt = Date()
+        m.noteSuppressedCandidate(Self.teams, origin: .cooldown, at: seenAt)
+
+        let inside = seenAt.addingTimeInterval(DetectionStateMachine.cooldownCandidateGraceSec - 1)
+        XCTAssertEqual(m.liveSuppressedCandidate(now: inside), Self.teams)
+    }
+
+    /// A latched candidate keeps DET7's full width, so the split cannot be read as a general
+    /// tightening. Past the cooldown grace and well inside the latch's, this is still attachable.
+    func test_a_latched_candidate_keeps_the_full_grace() {
+        let m = DetectionStateMachine()
+        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        let seenAt = Date()
+        m.noteSuppressedCandidate(Self.teams, origin: .skipLatch, at: seenAt)
+
+        let pastCooldownGrace = seenAt.addingTimeInterval(DetectionStateMachine.cooldownCandidateGraceSec + 1)
+        XCTAssertEqual(
+            m.liveSuppressedCandidate(now: pastCooldownGrace),
+            Self.teams,
+            "the latch is the stronger liveness oracle and DET14 does not touch it"
+        )
+    }
+
+    // MARK: - DET14: a confirmed end drops the candidate at once
+
+    /// The grace is an upper bound on ignorance. A lifecycle end is the positive signal it stands
+    /// in for, so it should not have to be waited out.
+    func test_a_confirmed_end_drops_the_candidate_without_waiting_out_the_grace() {
+        let m = DetectionStateMachine()
+        m.recordCooldownEnd(bundleID: Self.teams.bundleID)
+        m.noteSuppressedCandidate(Self.teams, origin: .cooldown)
+        XCTAssertEqual(m.liveSuppressedCandidate(), Self.teams)
+
+        m.noteMeetingEnded(bundleID: Self.teams.bundleID)
+        XCTAssertNil(m.liveSuppressedCandidate())
+    }
+
+    /// It drops a latched candidate too. The latch is evidence the call was live, not evidence it
+    /// still is, and the end is newer information than the sighting that armed it.
+    func test_a_confirmed_end_drops_a_latched_candidate_too() {
+        let m = DetectionStateMachine()
+        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        m.noteSuppressedCandidate(Self.teams, origin: .skipLatch)
+        XCTAssertEqual(m.liveSuppressedCandidate(), Self.teams)
+
+        m.noteMeetingEnded(bundleID: Self.teams.bundleID)
+        XCTAssertNil(m.liveSuppressedCandidate())
+    }
+
+    /// Per-bundle, like every other suppression read here: a Zoom call ending says nothing about
+    /// the Teams one the owner is still in.
+    func test_an_end_for_another_bundle_leaves_the_candidate() {
+        let m = DetectionStateMachine()
+        m.recordCooldownEnd(bundleID: Self.teams.bundleID)
+        m.noteSuppressedCandidate(Self.teams, origin: .cooldown)
+
+        m.noteMeetingEnded(bundleID: "us.zoom.xos")
+        XCTAssertEqual(m.liveSuppressedCandidate(), Self.teams)
+    }
+
+    /// What keeps this clear of DET13's false-end rescue: the clear is not sticky, so the next
+    /// confident sighting writes the candidate straight back. Measured on 2026-08-19, a
+    /// provisional end fired at 10:40:19, the recording stopped at 10:40:22, discovery had
+    /// re-populated the candidate by 10:40:24, and the owner restarted by hand at 10:40:26.
+    func test_a_false_end_is_undone_by_the_next_sighting() {
+        let m = DetectionStateMachine()
+        m.recordCooldownEnd(bundleID: Self.teams.bundleID)
+        m.noteSuppressedCandidate(Self.teams, origin: .cooldown)
+        m.noteMeetingEnded(bundleID: Self.teams.bundleID)
+        XCTAssertNil(m.liveSuppressedCandidate())
+
+        m.noteSuppressedCandidate(Self.teams, origin: .cooldown)
+        XCTAssertEqual(
+            m.liveSuppressedCandidate(),
+            Self.teams,
+            "the call was still up, so the very next poll has to make it attachable again"
         )
     }
 
@@ -307,7 +440,7 @@ final class DetectionStateMachineTests: XCTestCase {
     func test_retaining_a_cooldown_candidate_arms_no_skip_latch() {
         let m = DetectionStateMachine()
         m.recordCooldownEnd(bundleID: Self.teams.bundleID)
-        m.noteSuppressedCandidate(Self.teams)
+        m.noteSuppressedCandidate(Self.teams, origin: .cooldown)
         XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
     }
 
