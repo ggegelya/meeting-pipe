@@ -163,6 +163,27 @@ final class MeetingRecorder {
     /// Notify once per failure run, not per retry.
     private var captureRecoveryFailed = false
 
+    /// REC15: consecutive failed capture recoveries this recording, and the budget after which
+    /// the tap-liveness watchdog stands down.
+    ///
+    /// A bound rather than a latch, because the failures are not alike. A wedged teardown or a
+    /// converter that would not build can succeed on the next attempt, and standing down on the
+    /// first would throw away a recovery that was going to work. A fresh engine that raises again
+    /// cannot, and `recoverCapture` abandons on that directly without spending the budget.
+    ///
+    /// Five is a backstop, not a tuned number: the watchdog only fires after the tap has already
+    /// been declared stalled, so five ticks is five seconds of asking again before the mic is
+    /// given up, against the alternative of asking for the rest of the meeting. If the field ever
+    /// shows a recovery succeeding on the sixth attempt, `mic_capture_abandoned` carries the
+    /// count that says so.
+    private var consecutiveRecoveryFailures = 0
+    private static let recoveryFailureBudget = 5
+
+    /// Whether the mic half of this recording has been given up on. Set by `abandonMicCapture`,
+    /// cleared by `start()`; read by the tap-liveness watchdog, which is the loop it exists to
+    /// stop. System audio is unaffected and keeps recording.
+    private var micCaptureAbandoned = false
+
     /// Pending recovery retry. Bluetooth inputs publish the route change
     /// before the input format is queryable, so we retry rather than give
     /// up on the first sampleRate=0. Cancelled in `stop()`.
@@ -390,6 +411,8 @@ final class MeetingRecorder {
         // No converter until a device change introduces a format mismatch.
         micConverter = nil
         captureRecoveryFailed = false
+        consecutiveRecoveryFailures = 0
+        micCaptureAbandoned = false
         cancelPendingRecoveryRetry()
         configurationRecoveryAttempts = 0
 
@@ -420,96 +443,45 @@ final class MeetingRecorder {
             engine = AVAudioEngine()
         }
 
-        // Set BEFORE reading inputNode.outputFormat: voice processing
-        // changes the node's output format, so reading first would write a
-        // file whose declared format mismatches the tap buffers. A throw
-        // here falls back to raw capture (best-effort).
-        voiceProcessingEnabledForSession = false
-        if voiceProcessing {
-            do {
-                try engine.inputNode.setVoiceProcessingEnabled(true)
-                voiceProcessingEnabledForSession = true
-                Log.writeLine("recorder", "voice processing enabled on inputNode")
-            } catch {
-                Log.writeLine(
-                    "recorder",
-                    "WARN: setVoiceProcessingEnabled failed: \(error.localizedDescription) - falling back to raw mic"
-                )
-            }
+        var chain = try buildMicChain(voiceProcessing: voiceProcessing, micURL: micURL)
+
+        // REC15: give a caught raise exactly one more attempt, on an engine that has never
+        // raised. The barrier's own doc draws the line this leans on: the format check answers
+        // a *state* and the barrier covers a *race*, so a refusal is worth no retry (the HAL
+        // still has no usable input) while a raise is worth one (the hardware format moved
+        // between our read and installTap's re-read, and the next read may already have caught
+        // up). Measured on 2026-08-19: the tap was requested at 24000 Hz while the AirPods had
+        // gone back to 48000, and the owner's own manual retry read 48000 and started normally.
+        //
+        // Once, not in a loop. A second raise means the format is still moving, and a retry
+        // loop against a transitioning route is the busy-wait REC12's condemnation exists to
+        // refuse. The unwind below takes the fresh-engine path, so the retry never runs on the
+        // engine that raised.
+        if case .tapRefused(let refusal, let refusedFormat) = chain, refusal.requiresFreshEngine {
+            Log.writeLine(
+                "recorder",
+                "retrying the mic tap once on a fresh engine after a caught raise at \(refusedFormat.sampleRate) Hz"
+            )
+            unwindFailedEngineStart(micURL: micURL, recreateEngine: true)
+            chain = try buildMicChain(voiceProcessing: voiceProcessing, micURL: micURL)
+            Log.event(category: "recorder", action: "mic_tap_start_retried", attributes: [
+                "refused_sample_rate": refusedFormat.sampleRate,
+                "retry_sample_rate": chain.captureFormat.sampleRate,
+                "installed": chain.isInstalled,
+            ])
         }
 
-        // Mic via AVAudioEngine.inputNode (self-pumping).
-        let micFormat = engine.inputNode.outputFormat(forBus: 0)
-        guard micFormat.sampleRate > 0 else {
-            throw RecorderError.fileCreateFailed("inputNode reports zero sample rate - Microphone permission likely not granted")
-        }
-
-        // MIC15(a): record which input device the OS bound us to. We capture the system default
-        // input and cannot read the meeting client's own chosen device, so logging the captured
-        // identity is what makes a wrong-mic recording diagnosable at all. Always logged; also
-        // persisted per-meeting (via lastInputDevice -> the meta sidecar) for the Library detail.
-        let inputDevice = InputDeviceResolver.resolveDefaultInput()
-        capturedInputDevice = inputDevice
-        if let inputDevice = inputDevice {
-            Log.event(category: "recorder", action: "input_device_resolved", attributes: inputDevice.eventAttributes)
-        } else {
-            Log.event(category: "recorder", action: "input_device_unresolved", attributes: [:])
-        }
-        // TECH-MIC3: capture mono. The mic is published mono anyway (the
-        // stop-time merge folds it), so writing a multichannel mic file only
-        // created two defects on a multichannel input device (USB interface,
-        // aggregate device, mic array): the per-buffer RMS averaged energy
-        // across channels and read low, biasing the gate toward silence, and a
-        // mute verdict zeroed channel 0 only, leaving live voice on channels 1+
-        // that the mono merge folded back in. One channel leaves exactly one to
-        // measure and one to gate. The tap still delivers the device format;
-        // processMicBuffer collapses each buffer to this mono format.
-        let fileFormat = MeetingRecorder.monoCaptureFormat(from: micFormat) ?? micFormat
-        let micFile: AVAudioFile
-        do {
-            micFile = try AVAudioFile(forWriting: micURL, settings: fileFormat.settings)
-        } catch {
-            throw RecorderError.fileCreateFailed("mic file: \(error.localizedDescription)")
-        }
-        self.micFile = micFile
-        self.micFileFormat = fileFormat
-        Log.writeLine("recorder", "mic file opened format=\(fileFormat) device=\(micFormat)")
-
-        // Zero-fills (20 ms fade) buffers outside `.hot`. Built here so it
-        // inherits the input sample rate; released in `stop()`.
-        self.micGateWriter = MicGateWriter(sampleRate: fileFormat.sampleRate)
-
-        // Serial writer: the tap enqueues, the disk write runs off-thread. A
-        // failed write is counted (REC3 / AUD-7): a sustained run escalates to a
-        // force-stop instead of silently dropping audio.
-        self.micWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.mic-writer") { [weak self] buffer in
-            let ok: Bool
-            do {
-                try micFile.write(from: buffer)
-                ok = true
-            } catch {
-                Log.recorder.error("mic write: \(error.localizedDescription)")
-                ok = false
-            }
-            self?.noteWriteOutcome(channel: .mic, success: ok)
-        }
-
-        // The `sampleRate > 0` check above is a pre-flight on a format read fifty-odd lines
-        // earlier, and it never looked at the channel count; this is the check at the
-        // instant of use, which is the one that matters when the device is mid-transition
-        // (REC12). Unwind and let the caller retry rather than starting an engine we
-        // refused to put a mic tap on.
-        let tapOutcome = installMicTap(captureFormat: micFormat)
-        guard tapOutcome.isInstalled else {
+        let micFormat = chain.captureFormat
+        if case .tapRefused(let refusal, _) = chain {
             // A caught raise leaves this engine unspecified, so unwinding by reusing it
             // (removing a tap that may not exist, reverting voice processing on a
             // half-configured node) is exactly the retry the barrier must not permit.
             // Take the fresh-engine path instead, the same one the abandoned-start
             // timeout takes and for the same reason.
-            unwindFailedEngineStart(micURL: micURL, recreateEngine: tapOutcome.requiresFreshEngine)
+            unwindFailedEngineStart(micURL: micURL, recreateEngine: refusal.requiresFreshEngine)
             throw RecorderError.engineStartFailed(
-                tapOutcome.requiresFreshEngine
-                    ? "installTap raised on the input node; the audio engine was replaced"
+                refusal.requiresFreshEngine
+                    ? "installTap raised on the input node twice; the audio engine was replaced"
                     : "the input format cannot carry a tap (\(micFormat.sampleRate) Hz, \(micFormat.channelCount) ch)"
             )
         }
@@ -585,6 +557,128 @@ final class MeetingRecorder {
                 voiceProcessingEnabledForSession = false
             }
         }
+    }
+
+    // MARK: - The mic capture chain
+
+    /// What `buildMicChain` produced: the tap is on the bus and the writers are live, or the
+    /// guarded seam refused it. The capture format rides on both cases, because the refusal path
+    /// needs it for the thrown message and for the retry's event row.
+    private enum MicChainOutcome {
+        case ready(captureFormat: AVAudioFormat, fileFormat: AVAudioFormat)
+        case tapRefused(GuardedTapInstall.Outcome, captureFormat: AVAudioFormat)
+
+        var captureFormat: AVAudioFormat {
+            switch self {
+            case .ready(let captureFormat, _): return captureFormat
+            case .tapRefused(_, let captureFormat): return captureFormat
+            }
+        }
+
+        var isInstalled: Bool {
+            if case .ready = self { return true }
+            return false
+        }
+    }
+
+    /// Bind the mic half of a recording to the current engine: voice processing, the format read,
+    /// the mic file with its gate and serial writer, and the guarded tap.
+    ///
+    /// Split out of `start()` by REC15 so the whole chain can be rebuilt on a fresh engine after a
+    /// caught raise. It is written to be run twice: every stored property it touches is assigned
+    /// outright rather than merged, and `unwindFailedEngineStart(recreateEngine: true)` clears the
+    /// file, the gate and the writer between attempts, so the second run opens a new
+    /// `AVAudioFile` at the same URL rather than re-opening the first one (REC10: `forWriting:`
+    /// truncates, and here that is what we want, since the first attempt never wrote a frame).
+    ///
+    /// Throws only for the two failures another attempt cannot help: no usable input format at all
+    /// (the Microphone grant is the likely cause) and a mic file that will not open. A tap refusal
+    /// comes back as a value instead, because whether it is worth retrying depends on which
+    /// refusal it was, and that is the caller's judgement rather than this seam's.
+    @MainActor
+    private func buildMicChain(voiceProcessing: Bool, micURL: URL) throws -> MicChainOutcome {
+        // Set BEFORE reading inputNode.outputFormat: voice processing
+        // changes the node's output format, so reading first would write a
+        // file whose declared format mismatches the tap buffers. A throw
+        // here falls back to raw capture (best-effort).
+        voiceProcessingEnabledForSession = false
+        if voiceProcessing {
+            do {
+                try engine.inputNode.setVoiceProcessingEnabled(true)
+                voiceProcessingEnabledForSession = true
+                Log.writeLine("recorder", "voice processing enabled on inputNode")
+            } catch {
+                Log.writeLine(
+                    "recorder",
+                    "WARN: setVoiceProcessingEnabled failed: \(error.localizedDescription) - falling back to raw mic"
+                )
+            }
+        }
+
+        // Mic via AVAudioEngine.inputNode (self-pumping).
+        let micFormat = engine.inputNode.outputFormat(forBus: 0)
+        guard micFormat.sampleRate > 0 else {
+            throw RecorderError.fileCreateFailed("inputNode reports zero sample rate - Microphone permission likely not granted")
+        }
+
+        // MIC15(a): record which input device the OS bound us to. We capture the system default
+        // input and cannot read the meeting client's own chosen device, so logging the captured
+        // identity is what makes a wrong-mic recording diagnosable at all. Always logged; also
+        // persisted per-meeting (via lastInputDevice -> the meta sidecar) for the Library detail.
+        let inputDevice = InputDeviceResolver.resolveDefaultInput()
+        capturedInputDevice = inputDevice
+        if let inputDevice = inputDevice {
+            Log.event(category: "recorder", action: "input_device_resolved", attributes: inputDevice.eventAttributes)
+        } else {
+            Log.event(category: "recorder", action: "input_device_unresolved", attributes: [:])
+        }
+        // TECH-MIC3: capture mono. The mic is published mono anyway (the
+        // stop-time merge folds it), so writing a multichannel mic file only
+        // created two defects on a multichannel input device (USB interface,
+        // aggregate device, mic array): the per-buffer RMS averaged energy
+        // across channels and read low, biasing the gate toward silence, and a
+        // mute verdict zeroed channel 0 only, leaving live voice on channels 1+
+        // that the mono merge folded back in. One channel leaves exactly one to
+        // measure and one to gate. The tap still delivers the device format;
+        // processMicBuffer collapses each buffer to this mono format.
+        let fileFormat = MeetingRecorder.monoCaptureFormat(from: micFormat) ?? micFormat
+        let micFile: AVAudioFile
+        do {
+            micFile = try AVAudioFile(forWriting: micURL, settings: fileFormat.settings)
+        } catch {
+            throw RecorderError.fileCreateFailed("mic file: \(error.localizedDescription)")
+        }
+        self.micFile = micFile
+        self.micFileFormat = fileFormat
+        Log.writeLine("recorder", "mic file opened format=\(fileFormat) device=\(micFormat)")
+
+        // Zero-fills (20 ms fade) buffers outside `.hot`. Built here so it
+        // inherits the input sample rate; released in `stop()`.
+        self.micGateWriter = MicGateWriter(sampleRate: fileFormat.sampleRate)
+
+        // Serial writer: the tap enqueues, the disk write runs off-thread. A
+        // failed write is counted (REC3 / AUD-7): a sustained run escalates to a
+        // force-stop instead of silently dropping audio.
+        self.micWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.mic-writer") { [weak self] buffer in
+            let ok: Bool
+            do {
+                try micFile.write(from: buffer)
+                ok = true
+            } catch {
+                Log.recorder.error("mic write: \(error.localizedDescription)")
+                ok = false
+            }
+            self?.noteWriteOutcome(channel: .mic, success: ok)
+        }
+
+        // The `sampleRate > 0` check above is a pre-flight on a format read a few lines earlier,
+        // and it never looked at the channel count; this is the check at the instant of use, which
+        // is the one that matters when the device is mid-transition (REC12).
+        let tapOutcome = installMicTap(captureFormat: micFormat)
+        guard tapOutcome.isInstalled else {
+            return .tapRefused(tapOutcome, captureFormat: micFormat)
+        }
+        return .ready(captureFormat: micFormat, fileFormat: fileFormat)
     }
 
     // MARK: - System audio (SCStream)
@@ -1215,17 +1309,77 @@ final class MeetingRecorder {
 
         // REC12: the recovery path is the one that runs while the route is mid-transition,
         // so it is the likeliest place for a format that `installTap` would raise on, and
-        // the likeliest place for one that raises despite the check. Either way recovery
-        // ends, the same way a failed converter above ends it. A caught raise in particular
-        // must end it: retrying a tap on an engine that just raised is the one thing the
-        // barrier exists to prevent, and the engine is already condemned by the time this
-        // line runs. The next `start()` picks up a fresh one.
-        let tapOutcome = installMicTap(captureFormat: liveFormat)
+        // the likeliest place for one that raises despite the check. Retrying a tap on the
+        // engine that just raised is the one thing the barrier exists to prevent, and it is
+        // condemned by the time this line runs.
+        var tapOutcome = installMicTap(captureFormat: liveFormat)
+
+        // REC15: what REC12 left out is that a condemned engine has a way back here too, and
+        // recovery never took it. `start()` has always replaced a condemned engine; this path
+        // just ended, which left the mic dead for the rest of the meeting and, worse, spinning:
+        // every terminal return below leaves the engine stopped, and a stopped engine is exactly
+        // what `checkTapLiveness` re-arms on, so recovery was re-entered once a second and
+        // refused every time. Measured 2026-08-19: 12 consecutive refusals in 12 seconds, ended
+        // only by the owner hanging up. Replace and try once, the same rule `start()` uses and
+        // for the same reason: a raise is a race against a moving hardware format, not a state.
+        if !tapOutcome.isInstalled, tapOutcome.requiresFreshEngine {
+            Log.writeLine("recorder", "replacing the audio engine mid-recording: an installTap raise condemned it")
+            engine = AVAudioEngine()
+
+            // A replacement is a different node, so voice processing does not carry across and
+            // the format has to be read again. Re-applying it matters beyond fidelity: the flag
+            // and the node would otherwise disagree for the rest of the recording, and `stop()`
+            // reads the flag to decide whether to flip voice processing back off.
+            if voiceProcessingEnabledForSession {
+                voiceProcessingEnabledForSession = false
+                do {
+                    try engine.inputNode.setVoiceProcessingEnabled(true)
+                    voiceProcessingEnabledForSession = true
+                } catch {
+                    Log.writeLine(
+                        "recorder",
+                        "WARN: setVoiceProcessingEnabled failed on the replacement engine: \(error.localizedDescription) - falling back to raw mic"
+                    )
+                }
+            }
+
+            // The fresh read is the whole point of the retry: the format that raised was stale by
+            // the time `installTap` re-read it, and this is the re-read.
+            let refreshed = engine.inputNode.outputFormat(forBus: 0)
+            let retryFormat = refreshed.sampleRate > 0 ? refreshed : liveFormat
+            if retryFormat != fileFormat {
+                guard let converter = AVAudioConverter(from: retryFormat, to: fileFormat) else {
+                    Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
+                        "reason": "converter_init_failed",
+                    ])
+                    Log.writeLine("recorder", "WARN: could not build an input converter for the replacement engine - mic capture stopped")
+                    abandonMicCapture(reason: "converter_init_failed")
+                    reportRecoveryFailure()
+                    return
+                }
+                micConverter = converter
+            } else {
+                micConverter = nil
+            }
+
+            tapOutcome = installMicTap(captureFormat: retryFormat)
+            Log.event(category: "recorder", action: "mic_tap_recovery_retried", attributes: [
+                "refused_sample_rate": liveFormat.sampleRate,
+                "retry_sample_rate": retryFormat.sampleRate,
+                "installed": tapOutcome.isInstalled,
+            ])
+        }
+
         guard tapOutcome.isInstalled else {
             Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
                 "reason": tapOutcome.recoveryReason,
             ])
             Log.writeLine("recorder", "WARN: could not install the mic tap after a device change (\(tapOutcome.recoveryReason)) - mic capture stopped")
+            // An engine we just replaced that raises again is not going to stop raising because
+            // the watchdog asks a second later, so this one skips the retry budget entirely.
+            if tapOutcome.requiresFreshEngine {
+                abandonMicCapture(reason: tapOutcome.recoveryReason)
+            }
             reportRecoveryFailure()
             return
         }
@@ -1268,10 +1422,16 @@ final class MeetingRecorder {
             return
         case .timedOut:
             // The abandoned restart may still be wedged on this engine, so we do
-            // NOT recreate it here: its config-change observer is bound to it,
-            // and the tap-liveness watchdog stops once isRunning is false. Mic
-            // capture stops for the rest of the call; system audio keeps
+            // NOT recreate it here: its config-change observer is bound to it.
+            // Mic capture stops for the rest of the call; system audio keeps
             // recording. Same outcome as an unrecoverable device change.
+            //
+            // REC15 corrected the second half of this comment, which said the tap-liveness
+            // watchdog "stops once isRunning is false". It has not since REC8 deliberately
+            // un-gated it from `engine.isRunning`, precisely so a silently stopped engine would
+            // be caught: a stopped engine is now the strongest re-arm trigger there is. So this
+            // path was re-entered once a second, and the retry budget in `reportRecoveryFailure`
+            // is what actually stops it.
             Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
                 "reason": "engine_restart_timed_out",
             ])
@@ -1281,6 +1441,7 @@ final class MeetingRecorder {
         }
 
         captureRecoveryFailed = false
+        consecutiveRecoveryFailures = 0
         Log.event(category: "recorder", action: "configuration_change_recovered", attributes: [
             "live_sample_rate": liveFormat.sampleRate,
             "used_converter": needsConverter,
@@ -1292,10 +1453,43 @@ final class MeetingRecorder {
 
     /// Surface a recovery failure, but only once per failure run so a
     /// flapping device does not spam notifications.
+    ///
+    /// REC15 also made this the one place consecutive failures are counted, because every
+    /// terminal return from `recoverCapture` already comes through here. That matters because
+    /// each of those returns leaves the engine stopped, and `checkTapLiveness` re-arms on a
+    /// stopped engine, so a recovery that cannot succeed was re-entered at 1 Hz for the rest of
+    /// the meeting.
     private func reportRecoveryFailure() {
+        consecutiveRecoveryFailures += 1
+        if TapWatchdogPolicy.budgetExhausted(
+            consecutiveFailures: consecutiveRecoveryFailures,
+            budget: MeetingRecorder.recoveryFailureBudget
+        ) {
+            abandonMicCapture(reason: "recovery_budget_exhausted")
+        }
         guard !captureRecoveryFailed else { return }
         captureRecoveryFailed = true
         onConfigurationChange?(.failed)
+    }
+
+    /// Stand the mic half of this recording down for good: the tap-liveness watchdog stops
+    /// re-arming and system audio carries on alone.
+    ///
+    /// Deliberately per-recording rather than per-engine. It is cleared by `start()`, so the next
+    /// meeting begins with a full budget however badly this one ended, and a real device-change
+    /// notification is unaffected: that carries new information about the route, where the
+    /// watchdog's 1 Hz tick carries none, which is the whole distinction this draws.
+    private func abandonMicCapture(reason: String) {
+        guard !micCaptureAbandoned else { return }
+        micCaptureAbandoned = true
+        Log.event(category: "recorder", action: "mic_capture_abandoned", attributes: [
+            "reason": reason,
+            "consecutive_failures": consecutiveRecoveryFailures,
+        ])
+        Log.writeLine(
+            "recorder",
+            "mic capture abandoned for this recording (\(reason)) - the tap watchdog stands down, system audio continues"
+        )
     }
 
     // MARK: - Mic tap liveness watchdog
@@ -1325,9 +1519,18 @@ final class MeetingRecorder {
         // Sample only while the engine runs: a stopped engine delivers no buffers,
         // so its counter is meaningless and must not advance the stall clock.
         let stalled = engineRunning ? tapLivenessMonitor.sample(count: micFires) : false
-        guard TapWatchdogPolicy.decide(isRecording: true, engineRunning: engineRunning, stalled: stalled) == .rearm else {
-            return
-        }
+        // REC15: once the mic has been given up on, this tick has nothing left to try. Re-arming
+        // is the only thing it can do and the last several attempts were refused, so continuing
+        // to ask is a 1 Hz busy-wait that tears the engine down and rebuilds nothing. A real
+        // device-change notification still reaches `recoverCapture`; that one carries new
+        // information about the route, which is exactly what this tick does not.
+        let decision = TapWatchdogPolicy.decide(
+            isRecording: true,
+            engineRunning: engineRunning,
+            stalled: stalled,
+            micAbandoned: micCaptureAbandoned
+        )
+        guard decision == .rearm else { return }
         Log.event(category: "recorder", action: "mic_tap_stall_detected", attributes: [
             "mic_fires": Int(micFires),
             "engine_running": engineRunning,

@@ -17,9 +17,31 @@ enum TapWatchdogPolicy {
     /// `stalled` is the tap-liveness monitor's verdict, meaningful only while the
     /// engine is running (a stopped engine delivers no buffers, so its counter must
     /// not be consulted). The host passes `stalled: false` when the engine is stopped.
-    static func decide(isRecording: Bool, engineRunning: Bool, stalled: Bool) -> Action {
+    ///
+    /// `micAbandoned` is REC15's stop, and it is checked before everything else because it is
+    /// the only input that says asking again cannot help. REC8's un-gating above is what makes
+    /// it necessary: a stopped engine re-arms unconditionally, and every terminal return from
+    /// `MeetingRecorder.recoverCapture` leaves the engine stopped, so a recovery that could not
+    /// succeed re-armed once a second for the rest of the meeting (12 consecutive refusals
+    /// measured 2026-08-19). REC8's reasoning is untouched: a stopped engine is still the
+    /// strongest re-arm trigger there is, right up until the host has given up on the mic.
+    static func decide(
+        isRecording: Bool,
+        engineRunning: Bool,
+        stalled: Bool,
+        micAbandoned: Bool = false
+    ) -> Action {
         guard isRecording else { return .ignore }
+        guard !micAbandoned else { return .ignore }
         if !engineRunning { return .rearm }
         return stalled ? .rearm : .ignore
+    }
+
+    /// REC15: whether this many consecutive failed recoveries has spent the budget.
+    ///
+    /// Here rather than inline at the call site so the off-by-one is pinned by a test: the
+    /// budget counts failures, so a budget of 5 abandons on the fifth, not the sixth.
+    static func budgetExhausted(consecutiveFailures: Int, budget: Int) -> Bool {
+        consecutiveFailures >= budget
     }
 }
