@@ -193,4 +193,30 @@ Two of the seven **pass before and after on purpose** and the report should not 
 
 **DET13's dev half is done.** Change 1 shipped in `621dc79`, change 2 is closed. The remainder is the owner walkthrough only.
 
+### Field evidence, 2026-08-19: the reported scenario recurred in real use and change 1 held
+
+Not a staged test. The owner took two Teams calls back to back during ordinary work and the sequence reproduced itself, so walkthrough steps 2, 3 and 5 are answered from `events.jsonl` and the sidecar rather than from an eyeball. **Step 4, the load-bearing one, was not exercised and is still owed.**
+
+```
+07:40:19.030  lifecycle/ending_provisional        shareable_content_window_gone
+07:40:19.194  lifecycle_provisional_end_rescued   leave_buttons_found: 2
+07:40:21.091  lifecycle/ended
+07:40:22.509  recording_stopped                   20260819-103053.wav
+07:40:24.198  cooldown_candidate_retained         Teams, cooldown_sec 60
+07:40:26.694  record_attached                     Teams, trigger manual
+07:40:26.803  recording_started                   20260819-104026.wav
+```
+
+**Step 2 (the reported scenario): passed, live.** 4.2 s between the first recording stopping and the second starting, well inside the 60 s cooldown. Change 2 did not ship, so no prompt appeared and the owner pressed Record by hand, which is exactly the branch step 2 names for that case.
+
+**Step 3 (the recording is attached): passed, and this is the decisive one.** Two independent artifacts. `coordinator/cooldown_candidate_retained` is an event that **did not exist before this task**; it is the audit trail change 1 added precisely because this branch used to return silently and leave a 22 s hole in the log with nothing saying why, so its presence proves the new path ran. Then `20260819-104026.meta.json` carries `source_bundle_id: "com.microsoft.teams2"`, `source_display_name: "Microsoft Teams"`, `source_kind: "native"`. The 2026-08-04 incident is `source_bundle_id: null` in the same field. The nil path was not taken.
+
+**Step 5 (no immediate re-prompt): passed.** After the second recording stopped at 07:43:38 the cooldown armed again (`cooldown_candidate_retained`, 07:43:42.977) and two `candidate_dropped` rows followed at 07:43:58 and 07:44:02, both `no_confident_winner`. **Zero `prompt_shown`.** That is the behaviour the cooldown exists for and the half this task could most plausibly have broken; it is the field counterpart of `test_retaining_a_cooldown_candidate_arms_no_skip_latch`.
+
+**Step 4 (leave the second call and do nothing) was NOT exercised, and the log says so unambiguously.** The second recording was stopped by hand at 07:43:37.421, which shows as a bare `coordinator/state_change` from `recording` to `stopping` with **no `lifecycle/*` event before it at all**, only routine mute health polls. Compare the first recording's automatic end in the trace above, where `ending_provisional`, `lifecycle_provisional_end_rescued`, `ended` and `idle` all precede the same state change. So this run cannot distinguish "the attached recording would have ended on its own" from "the owner stopped it before the lifecycle got there", and step 4 exists precisely because the 2026-08-04 failure was a recording that ran on until hand-stopped. It stays owed.
+
+Worth keeping for whoever reads this next: **the discriminator between an automatic and a hand stop is the presence of a `lifecycle/ended` immediately before the `recording` to `stopping` transition**, not anything on the stop event itself. `coordinator/recording_stopped` looks identical either way.
+
+**Remaining after this: walkthrough step 4, then step 6's close word.**
+
 **The audit trail.** `coordinator`/`cooldown_candidate_retained` is emitted once per retention rather than once per 3 to 12 s poll, carrying `bundle_id`, `display_name` and `cooldown_sec`, so the next occurrence is readable from `events.jsonl` alone; the 2026-08-04 one was not, because that branch returned silently and left a 22 s hole in the log with nothing saying why. Documented in `CONVENTIONS.md`'s event-category section beside UX67's precedent for putting one action in an existing category. Docs checked: `CONVENTIONS.md` updated for the event, `ARCHITECTURE.md`'s **Suppressed candidate** glossary entry rewritten (its "lifetime *is* the latch's" claim was made false by this change), `README.md` and `docs/GUIDE.md` both updated because the affordance is user-visible (the menu bar's **Record this \<app\> meeting** now appears for a back-to-back meeting, not only for a skipped one), and `PRODUCT.md`, `docs/SETUP.md` and `design/` left alone since no surface, control or install step changed.
