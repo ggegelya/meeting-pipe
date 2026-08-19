@@ -126,6 +126,32 @@ If either requirement makes the fence more expensive than the defect, say so and
 - No production code change. If `scripts/truth_fences.py` is touched, say so explicitly in the ship note, since it is the one file in this task's scope that CI executes.
 - No em-dashes in changed lines.
 
+## Progress, 2026-08-19: item 4 shipped, owner said yes to the fence
+
+**Owner decision 2026-08-19: ship it.** Walkthrough step 4 answered directly, so the fence was built rather than closed with reasoning.
+
+**`scripts/truth_fences.py` was touched, and the acceptance asks that this be said explicitly**: it is the one file in this task's scope that CI executes. CI invokes it with no argument (`.github/workflows/ci.yml:103`), which resolves to `both`, so the new mode is covered without a workflow edit.
+
+**The mode is named `links` although it carries two checks**, because `links` is the command this task's acceptance pins. The second check is the UX72 run-on: a `**[DONE]` line with no blank line above it, which markdown renders as a continuation of the paragraph before it. Renaming the mode to fit both checks would have broken the acceptance's own command, so the docstring carries the explanation instead.
+
+**The two skips are implemented as structure, not as a suppression list**, which item 4 required. Fenced blocks and inline code spans are blanked before any link is extracted (line count preserved, so a finding can still name its line), and a target carrying a URL scheme, a bare anchor, or a protocol-relative prefix is never resolved as a path.
+
+**Measured on the tree as it stands, 2026-08-19:** 231 markdown files scanned, 709 inline links found, 597 resolved as real paths, 112 skipped. **Zero findings**, which is what HYG6's 88 repairs and this task's 24 leave behind.
+
+**A correction to this task's own earlier note, found by measuring instead of assuming.** The item 1 ship note said the `meetingpipe://` occurrences "are all correctly not flagged", which is true but not for the reason it implies. **Not one of them is a markdown link target**: all 89 occurrences in the tree are prose or code-span text, so the link extractor never sees them and the scheme skip is not what saves them. The skip is still load-bearing, just for a different population, and the measurement says which: the 112 skipped targets are **80 `https:` links and 32 bare in-page anchors**. Written down because "the fence passes on `meetingpipe://`" reads like evidence the skip works, and it is not; the evidence that the skip works is the mutant below.
+
+**Verified red first, which is the half that matters**, since a fence that has never failed is CI6's exact finding. A probe file carrying all four acceptance cases produced exactly two errors: the broken relative link and the run-on. The quoted broken link in an inline code span, the same in a fenced block, both `meetingpipe://` forms and a real link all stayed silent. Three mutants of the implementation were then each caught by the suite (dropping the inline-code strip, dropping the blank-line requirement, dropping the scheme skip). Worth recording: **every one of the three also turned the real tree red**, which is independent evidence that this repo genuinely does quote broken links in prose, rather than that being a hypothetical the skip was written for.
+
+**Pinned in `pipeline/tests/test_link_fence.py`** (17 tests), which loads the script by path the way `test_feat17_probe.py` loads the spike probes. It includes a walker-floor test and a "the real tree is currently clean" assertion, so the next archive move that drops a `../` level fails in `pytest` as well as in CI5.
+
+**One stale claim corrected in passing.** The root `CLAUDE.md` verify-table row said the fence fails on a `CLAUDE.md` "over its 12 KB budget". The real budgets are 800 bytes per entry and 24 KB whole-file, and DOC15 hit the second of those one day before this. The row was being edited anyway to add the new mode, so the number was corrected rather than left for a later sweep to find.
+
+**What this fence still cannot see**, stated so a green run is not over-read:
+
+- **Reference-style links** (`[text][ref]`). Only inline `[text](target)` is extracted. This repo does not use the reference form anywhere today, so the gap is theoretical, but a document that adopted it would go unchecked.
+- **Anchors.** `./doc.md#section` is resolved to `./doc.md` and the anchor is discarded, so a link to a heading that no longer exists still passes. Checking anchors means parsing every heading and matching GitHub's slug rules, which is a different and much larger job.
+- **`file.swift:NNN` line citations**, which this task and HYG7 both put out of scope: resolving one against the symbol it claims needs a Swift parser.
+
 ## Owner walkthrough (for the session that picks this up)
 
 Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who acts.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CI5: fences that diff what the docs SAY against what the code DOES.
 
-Two failure classes recur in this repo and neither is catchable by a type
+Four failure classes recur in this repo and none is catchable by a type
 checker, a linter, or a test:
 
   1. A **dead knob**: a config key documented in `config.example.toml` or the
@@ -34,15 +34,22 @@ checker, a linter, or a test:
      drift; it is prose-vs-attention. The failure mode is the same though: a rule
      buried in the middle of 7,000 words of incident narrative is a rule the
      model skims.
+  4. A **dead doc link or a run-on archive entry**: a relative link that stopped
+     resolving when its spec was archived one directory up, or a `**[DONE]`
+     entry a merge left glued to the paragraph above it. HYG6 swept 88 of the
+     first and HYG8 another 24; neither class shows up in a diff, which is why
+     both were found by hand months later (HYG8 item 4).
 
 The first two are drift between prose and code, which is exactly what a human
 reviewer stops noticing. The third is drift between a file's job and its size.
-This script is the mechanical reader.
+The fourth is drift between a document and the tree around it. This script is
+the mechanical reader.
 
-    python3 scripts/truth_fences.py            # all three fences
+    python3 scripts/truth_fences.py            # all four fences
     python3 scripts/truth_fences.py config     # config keys only
     python3 scripts/truth_fences.py events     # event categories only
     python3 scripts/truth_fences.py claude     # CLAUDE.md size budget only
+    python3 scripts/truth_fences.py links      # doc links + run-on entries only
 
 Stdlib only (tomllib, ast, re), so CI can run it without installing anything.
 
@@ -61,6 +68,7 @@ import re
 import sys
 import tomllib
 from pathlib import Path
+from urllib.parse import unquote
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -644,6 +652,144 @@ def check_claude() -> bool:
     return fence.report()
 
 
+# --------------------------------------------------------------------------
+# Fence 4: doc links and run-on archive entries (HYG8 item 4)
+# --------------------------------------------------------------------------
+#
+# The mode is called `links` because that is the name HYG8's acceptance pins,
+# but it carries two checks. Both are archive-hygiene failures that a diff
+# cannot show you, and both have recurred often enough to be worth mechanising:
+#
+#   1. A **dead relative link**. Archiving a task moves its spec up one
+#      directory and nothing rewrites the `../` levels inside it, so every
+#      archived body silently loses one level on the way up. HYG6 swept 88 of
+#      these out of `q6-final.md` on 2026-08-18 (47 of them the backlog
+#      back-link alone, against 4 that were spelled right) and HYG8 another 24.
+#      The repair is mechanical; the noticing is what keeps failing.
+#   2. A **run-on `[DONE]` entry**. A `**[DONE] ...**` line is a bold
+#      paragraph, not a heading, so if a both-sides-add merge leaves it
+#      adjacent to the previous entry's closing line with no blank between,
+#      markdown renders the two as one paragraph. UX72 found it in
+#      `q6-final.md`, FEAT15 hit the same seam in `daemon/docs/gotchas.md`, and
+#      neither was visible in a diff with no conflict markers left in it.
+#
+# Two skips are non-negotiable, and both are demonstrated by real content in
+# this tree rather than imagined:
+#
+#   * **Non-file URL schemes.** `meetingpipe://` appears in `q6-final.md` and
+#     `CONVENTIONS.md` as documentation of the app's own deeplink. Flagging it
+#     produces a false positive that gets suppressed by hand, and a suppression
+#     list is the thing that rots next.
+#   * **Inline code spans and fenced blocks.** `DOC13.md` quotes four of
+#     `docs/GUIDE.md`'s links, `HYG7.md` quotes END9's broken
+#     `PromptEndPolicy.swift#L7`, and `HYG8.md` quotes `DET12.md`'s `DET11.md`.
+#     Quoting a broken link is *how a spec records that a link is broken*, so a
+#     fence that fails on it makes that entire class of finding unwriteable.
+#     A fence that fires on correct prose is worse than no fence.
+
+_FENCE_DELIM_RE = re.compile(r"^\s*(?:```|~~~)")
+_INLINE_CODE_RE = re.compile(r"``[^`]*``|`[^`]*`")
+_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)")
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
+_DONE_RE = re.compile(r"^\*\*\[DONE\]")
+
+# Directories that are not the repo's documentation: vendored trees, build
+# output, and the per-session worktrees, whose copies would double every
+# finding under a path nobody edits.
+_LINK_SKIP_DIRS = {".git", ".claude", ".build", ".venv", "node_modules", "__pycache__"}
+
+
+def strip_code(text: str) -> str:
+    """Blank out fenced blocks and inline code spans, preserving line count.
+
+    Line count is preserved rather than the text compacted, so a finding can
+    still name the line it is on.
+    """
+    out: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        if _FENCE_DELIM_RE.match(line):
+            in_fence = not in_fence
+            out.append("")
+            continue
+        out.append("" if in_fence else _INLINE_CODE_RE.sub("", line))
+    return "\n".join(out)
+
+
+def markdown_links(text: str) -> list[tuple[int, str]]:
+    """Every inline `[text](target)` outside code, as (line number, target)."""
+    found: list[tuple[int, str]] = []
+    for n, line in enumerate(strip_code(text).splitlines(), start=1):
+        found.extend((n, m.group(1)) for m in _LINK_RE.finditer(line))
+    return found
+
+
+def resolve_link(base: Path, target: str) -> Path | None:
+    """The path a relative link points at, or None when it is not ours to check.
+
+    None covers the three cases that are correct as written: a URL with a
+    scheme (`https:`, `mailto:`, and the app's own `meetingpipe://`), a bare
+    in-page anchor, and an empty target.
+    """
+    if _SCHEME_RE.match(target) or target.startswith(("#", "//")):
+        return None
+    path = unquote(target.split("#", 1)[0].split("?", 1)[0]).strip()
+    if not path:
+        return None
+    return base / path
+
+
+def run_on_lines(text: str) -> list[int]:
+    """Line numbers where a `**[DONE]` entry ran on into the paragraph above."""
+    lines = text.splitlines()
+    return [
+        n
+        for n, line in enumerate(lines, start=1)
+        if _DONE_RE.match(line) and n > 1 and lines[n - 2].strip()
+    ]
+
+
+def doc_files() -> list[Path]:
+    return sorted(
+        p
+        for p in REPO.rglob("*.md")
+        if not (_LINK_SKIP_DIRS & set(p.relative_to(REPO).parts))
+    )
+
+
+def check_links() -> bool:
+    fence = Fence("doc links")
+
+    files = doc_files()
+    # Staleness guard, matching the other three fences: a walker that stops
+    # finding the tree passes silently, which is the one failure a fence must
+    # never have.
+    if len(files) < 50:
+        fence.fail(f"only found {len(files)} markdown files; the walker is stale")
+        return fence.report()
+
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        rel = path.relative_to(REPO)
+        for n, target in markdown_links(text):
+            resolved = resolve_link(path.parent, target)
+            if resolved is not None and not resolved.exists():
+                fence.fail(
+                    f"{rel}:{n} links to `{target}`, which does not resolve. "
+                    "Archiving a spec moves it up one directory and every `../` "
+                    "inside it loses a level; fix the level, or drop the link and "
+                    "keep the file name as text."
+                )
+        for n in run_on_lines(text):
+            fence.fail(
+                f"{rel}:{n} starts a `**[DONE]` entry with no blank line above it, "
+                "so markdown renders it as a continuation of the previous entry. "
+                "Add the blank line."
+            )
+
+    return fence.report()
+
+
 def main(argv: list[str]) -> int:
     which = argv[0] if argv else "both"
     print(f"CI5 truth fences ({which})")
@@ -654,8 +800,10 @@ def main(argv: list[str]) -> int:
         ok &= check_events()
     if which in ("both", "claude"):
         ok &= check_claude()
-    if which not in ("both", "config", "events", "claude"):
-        print("usage: truth_fences.py [both|config|events|claude]", file=sys.stderr)
+    if which in ("both", "links"):
+        ok &= check_links()
+    if which not in ("both", "config", "events", "claude", "links"):
+        print("usage: truth_fences.py [both|config|events|claude|links]", file=sys.stderr)
         return 2
     return 0 if ok else 1
 
