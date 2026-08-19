@@ -60,6 +60,38 @@ The prompt fires at the exact moment the meeting client is acquiring the input d
 
 **Not proven, and say so rather than asserting it:** the crash report does not carry the `NSException` reason string (`asi` holds only "abort() called"), so which of the raise conditions fired is inferred from the call site and the timing, not read. The fix below does not depend on the answer, and scope item 3 makes the next occurrence self-diagnosing.
 
+### Now proven, 2026-08-19: the next occurrence fired and diagnosed itself
+
+The paragraph above is answered. Scope item 3 did what it was built to do, on the first occurrence since the fix shipped, during the owner's ordinary use rather than a staged test.
+
+**The barrier worked, and this is the primary result.** Two `recorder/mic_tap_install_raised` rows at 07:46:46.076 and 07:46:50.493 UTC, and **zero new crash reports**: `~/Library/Logs/DiagnosticReports/MeetingPipe*` still holds only the four originals from 2026-08-13 and 08-14. The daemon caught a raise that would previously have been an abort, stayed alive, and reported it as a clean `coordinator/recording_error`. These are also the **first two `mic_tap_install_raised` rows in the entire event history**; the count over every prior day is zero, so this is genuinely the next occurrence and not a background rate nobody had looked at.
+
+**Which raise condition fired, read rather than inferred**, which is exactly what this section said could not be done before:
+
+```
+com.apple.coreaudio.avfaudio: Failed to create tap due to format mismatch,
+<AVAudioFormat 0xc9482eb20: 1 ch, 24000 Hz, Float32>
+```
+
+So it is the **second** of the three conditions listed above, a format that disagrees with the node's hardware format. Not a zero sample rate, not a zero channel count, not a bus that already has a tap. The other two are excluded for this occurrence.
+
+**And the Bluetooth hypothesis in the paragraph above is confirmed, not merely still plausible.** The rates line up exactly as it predicted:
+
+| Time (UTC) | Event | Rate |
+|---|---|---|
+| 07:30:53 | `input_device_resolved`, meeting 1 recording | 24000 Hz |
+| 07:40:26 | `input_device_resolved`, meeting 2 recording | 24000 Hz |
+| 07:46:46 | tap requested, `mic_level_monitor` | **24000 Hz, raised** |
+| 07:46:50 | `input_device_resolved`, meeting 3 starting | **48000 Hz** |
+| 07:46:50 | tap requested, `meeting_recorder` | **24000 Hz, raised** |
+| 07:47:12 | manual retry, recording started | 48000 Hz, succeeded |
+
+The same AirPods Pro run at 24000 Hz while a call holds the mic and return to 48000 between calls, which is ordinary HFP-versus-A2DP behaviour. This section called that "the textbook version of this window" from a single data point; it now has the transition measured on both sides.
+
+**One thing this occurrence adds that the scope did not anticipate, and it is not free.** The raise no longer crashes the app, but it still cost the recording: `coordinator/recording_error` with `reason: engine_start_failed`, the state fell back from `prompting` to `idle`, and the meeting was only captured because the owner started it by hand 22 seconds later (`record_attached`, `trigger: manual`, 07:47:11.965). Converting a crash into a failed auto-start is strictly better and is what this task set out to do, so this is not a regression against REC12's acceptance. It does mean the underlying format bug is still live and now has a user-visible cost.
+
+**The sharpest clue for whoever fixes that**, since it is not simply an ordering problem: `meeting_recorder` requested 24000 Hz at 07:46:50.493, **75 ms after** `input_device_resolved` had already reported the device at 48000 Hz at 07:46:50.418. So the tap format is not being taken from the device reading that immediately precedes it. That is a live defect rather than a race, and it is out of this task's scope (REC12 is the barrier, not the format resolution).
+
 ## Why the existing error handling does not help
 
 ```swift
