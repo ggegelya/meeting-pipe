@@ -85,6 +85,14 @@ So **six** persistent rows are missing, not the three or four that were reported
 - `python3 scripts/truth_fences.py both` green.
 - No em-dashes in changed lines.
 
+## Progress, 2026-08-19: item 4 answered, no contract
+
+**Owner decision 2026-08-19: the kit stays best-effort.** Walkthrough step 3 answered directly, so no same-commit contract is imposed and the root `CLAUDE.md` is untouched. Recorded in the kit README as a decision with its reasoning, not as a bare no, because item 4's own wording asks that a no be written down so the next session does not re-propose it.
+
+The reasoning is in the README rather than summarised twice, but the load-bearing half is worth having here too: the contract that `docs/SETUP.md` and `docs/GUIDE.md` carry protects documents a **person reads**, where a stale sentence misleads directly. A lagging mock is a stale reference that gets checked against the running app before it is trusted, and updating one faithfully needs a rendered eyeball a session does not have. So the "Known lag" list, read as a debt log per item 2, is what keeps the drift visible and owed, and the condition that would reopen this is that list going unwritten across several tasks the way the mocks did.
+
+**One real defect found while writing that paragraph, and fixed.** The item 2 answer this task added the previous day sat directly under a list item with no blank line between them, so markdown was rendering the whole paragraph **inside** the `OnboardingPermissions` bullet above it. That is UX72's run-on class in a second shape, it was invisible in the diff that introduced it, and HYG8's new `links` fence did not catch it because the first version of that check matched only `**[DONE]` lines. The fence was widened to the general shape (measured: exactly one hit across 231 files, which was this one) and the blank line added, both in `671873a`. Worth carrying: this task's own output was the counterexample to the fence shipped an hour earlier.
+
 ## Owner walkthrough (for the session that picks this up)
 
 Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who acts.
