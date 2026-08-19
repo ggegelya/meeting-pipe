@@ -4,8 +4,11 @@ Two failure classes, both archive hygiene, both invisible in a diff:
 
   * a relative link that stopped resolving when its spec was archived one
     directory up (HYG6 swept 88, HYG8 another 24), and
-  * a `**[DONE]` entry a both-sides-add merge left glued to the paragraph
-    above, which markdown then renders as one run-on (UX72, FEAT15).
+  * a bold paragraph glued to the block above it, in two shapes: a `**[DONE]`
+    entry a both-sides-add merge left touching the previous entry (UX72,
+    FEAT15), and any bold line directly under a list item, which markdown
+    swallows into that item. The second was added after the first version of
+    this fence passed over a live instance of it in `design/ui_kits/`.
 
 The two **skips** matter as much as the two checks, and they are what makes
 this fence shippable at all: `meetingpipe://` is real documented content, and a
@@ -57,7 +60,7 @@ def test_a_done_entry_glued_to_the_paragraph_above_is_a_finding():
     with no blank line above it markdown treats it as a lazy continuation and
     renders two entries as one."""
     text = "Closing line of the previous entry.\n**[DONE] RUNON1: glued.**\n"
-    assert tf.run_on_lines(text) == [2]
+    assert [n for n, _ in tf.run_on_lines(text)] == [2]
 
 
 def test_a_done_entry_with_its_blank_line_is_not_a_finding():
@@ -68,6 +71,28 @@ def test_a_done_entry_with_its_blank_line_is_not_a_finding():
 def test_a_done_entry_opening_the_file_is_not_a_finding():
     """Nothing above it to run on to, so the `n > 1` guard has to hold."""
     assert tf.run_on_lines("**[DONE] FIRST1: opens the file.**\n") == []
+
+
+def test_a_bold_paragraph_glued_to_a_list_item_is_a_finding():
+    """The second shape, found in `design/ui_kits/macos_app/README.md` on
+    2026-08-19: markdown swallows the paragraph into the bullet above it, so
+    DSN30's own answer was rendering inside an unrelated bullet."""
+    text = "- a bullet about something else\n**The answer to a different question.** Body.\n"
+    lines = tf.run_on_lines(text)
+    assert [n for n, _ in lines] == [2]
+    assert "list item" in lines[0][1]
+
+
+def test_a_bold_paragraph_after_a_blank_line_is_not_a_finding():
+    text = "- a bullet about something else\n\n**The answer.** Body.\n"
+    assert tf.run_on_lines(text) == []
+
+
+def test_a_bold_lead_in_after_ordinary_prose_is_not_a_finding():
+    """The rule is deliberately narrower than 'bold after any non-blank line'.
+    A bold lead-in following a sentence is ordinary style in this repo and must
+    never fire, or the fence becomes one nobody can keep green."""
+    assert tf.run_on_lines("A sentence of prose.\n**A bold lead-in.** More prose.\n") == []
 
 
 # --- the two non-negotiable skips ---------------------------------------------

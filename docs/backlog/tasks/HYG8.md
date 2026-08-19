@@ -146,6 +146,14 @@ If either requirement makes the fence more expensive than the defect, say so and
 
 **One stale claim corrected in passing.** The root `CLAUDE.md` verify-table row said the fence fails on a `CLAUDE.md` "over its 12 KB budget". The real budgets are 800 bytes per entry and 24 KB whole-file, and DOC15 hit the second of those one day before this. The row was being edited anyway to add the new mode, so the number was corrected rather than left for a later sweep to find.
 
+### Amendment, same day: the first version passed over a live instance of its own bug
+
+The run-on check as first written matched only `**[DONE]` lines, which is the shape UX72 reported. It landed green, and the very next file this batch opened, `design/ui_kits/macos_app/README.md`, contained the same defect in a different shape: DSN30's item 2 answer, added the previous day, sat directly under a list item with no blank line, so markdown was rendering that whole paragraph **inside the OnboardingPermissions bullet**. A fence that misses the bug in the file the same batch is editing is not a fence worth keeping narrow.
+
+**Widened on evidence rather than instinct.** Before changing anything, the general shape ("a bold line directly under a list item") was counted across the tree: **exactly one hit in 231 files**, and that hit was the defect. So the widening catches a real bug and costs zero false positives. The broader rule that suggests itself, "a bold line under any non-blank line", was rejected: a bold lead-in after a sentence is ordinary style here, and a fence nobody can keep green is worse than no fence. Both boundaries are pinned by tests.
+
+Re-verified red first in the new shape: the widened fence failed on the real file, naming the list item rather than an archive entry, and went green when the blank line was added. The finding's message is now shape-aware, since the first draft reported the list-item case as a `**[DONE]` entry, which would have sent the next reader looking for an archive problem in a design document.
+
 **What this fence still cannot see**, stated so a green run is not over-read:
 
 - **Reference-style links** (`[text][ref]`). Only inline `[text](target)` is extracted. This repo does not use the reference form anywhere today, so the gap is theoretical, but a document that adopted it would go unchecked.

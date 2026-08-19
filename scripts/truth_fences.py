@@ -692,6 +692,8 @@ _INLINE_CODE_RE = re.compile(r"``[^`]*``|`[^`]*`")
 _LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)")
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
 _DONE_RE = re.compile(r"^\*\*\[DONE\]")
+_BOLD_LINE_RE = re.compile(r"^\*\*")
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s")
 
 # Directories that are not the repo's documentation: vendored trees, build
 # output, and the per-session worktrees, whose copies would double every
@@ -740,13 +742,34 @@ def resolve_link(base: Path, target: str) -> Path | None:
 
 
 def run_on_lines(text: str) -> list[int]:
-    """Line numbers where a `**[DONE]` entry ran on into the paragraph above."""
+    """Line numbers where a bold paragraph ran on into the block above it.
+
+    Two shapes, because a `**bold**` line is a paragraph and never a heading:
+
+      * a `**[DONE]` archive entry with any non-blank line above it, which is
+        the UX72 merge artifact this check was written for, and
+      * any bold line directly under a **list item**, which markdown swallows as
+        a lazy continuation of that item.
+
+    The second is deliberately narrower than the first. "Bold line under any
+    non-blank line" would fire on every legitimate bold lead-in mid-paragraph;
+    restricted to list items it measured **one** hit across 231 files on
+    2026-08-19, and that hit was a real defect (DSN30's own item 2 answer,
+    rendering inside the bullet above it, added the previous day).
+    """
     lines = text.splitlines()
-    return [
-        n
-        for n, line in enumerate(lines, start=1)
-        if _DONE_RE.match(line) and n > 1 and lines[n - 2].strip()
-    ]
+    found: list[tuple[int, str]] = []
+    for n, line in enumerate(lines, start=1):
+        if n == 1 or not _BOLD_LINE_RE.match(line):
+            continue
+        previous = lines[n - 2]
+        if not previous.strip():
+            continue
+        if _LIST_ITEM_RE.match(previous):
+            found.append((n, "the list item above it, which swallows it as a continuation of that item"))
+        elif _DONE_RE.match(line):
+            found.append((n, "the entry above it, which markdown renders as one run-on paragraph"))
+    return found
 
 
 def doc_files() -> list[Path]:
@@ -780,11 +803,10 @@ def check_links() -> bool:
                     "inside it loses a level; fix the level, or drop the link and "
                     "keep the file name as text."
                 )
-        for n in run_on_lines(text):
+        for n, why in run_on_lines(text):
             fence.fail(
-                f"{rel}:{n} starts a `**[DONE]` entry with no blank line above it, "
-                "so markdown renders it as a continuation of the previous entry. "
-                "Add the blank line."
+                f"{rel}:{n} starts a bold paragraph with no blank line separating it from "
+                f"{why}. Add the blank line."
             )
 
     return fence.report()
