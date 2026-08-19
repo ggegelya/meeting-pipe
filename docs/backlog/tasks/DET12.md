@@ -71,3 +71,28 @@ The native-only restriction is **one** mechanism rather than two. `MeetingSource
 **Not done, and deliberately.** Webex and Slack stay outside the read set. `hasAudioLeg` was not renamed even though DET12 makes its doc comment more awkward, since it now differs from the read set in the Slack case; the comment says so and a rename is not this task's change. And the lone-native bar was not lowered to let process audio win alone.
 
 **Remainder, owner-owed.** The behavioural bar in Acceptance: `events.jsonl` showing the scan attributing a process-audio signal to the Teams candidate at or before the scan that produces the confident winner. That is read from the log after the owner's next Teams calls, so it cannot be closed by the session that shipped this. Read it with `mp logs --action discovery_shadow_pick` and `mp logs --action candidate_dropped`, both of which now carry `process_audio_is_running_input`.
+
+## Behavioural bar: PASSED, read from the log 2026-08-19
+
+Four Teams calls across one working day, none staged. The bar is met, and the day also produced a controlled natural experiment better than the bar asked for.
+
+**The passing scan, 15:03:16.348 UTC.** `discovery_shadow_pick` picked Teams as the confident winner **carrying `process_audio_is_running_input: true` on the winning scan itself**, not after it. `coordinator/ax_handles_built` did not run until 15:03:16.895, so the process-audio attribution led the AX control walk by **547 ms** and the prompt by 828 ms. The bar asked for "at or before"; this is at.
+
+**The natural experiment, which is the stronger result.** Every Teams scan on 2026-08-19, 17 rows:
+
+| Rows | Verdict | title | mute | leave | toolbar | process audio | score |
+|---|---|---|---|---|---|---|---|
+| 13 (00:45 to 14:23) | `candidate_dropped` | true | false | false | false | **false** | 2 to 3 |
+| 1 (07:30:33) | winner | true | **true** | false | false | false | 4 |
+| 1 (07:46:45) | winner | true | **true** | **true** | false | false | 7 |
+| **1 (15:03:16)** | **winner** | true | false | false | false | **true** | **5** |
+
+The last row and the first thirteen have an **identical AX signal set** and differ in exactly one bit. Those thirteen were dropped as `no_confident_winner`; the fourteenth became the winner. This is DET12's own acceptance case observed on real data rather than in a fake: *"a native candidate whose only non-title signal is a positive process-audio read clears `hasCorroboratingSignal`; the same candidate with a negative read does not."* Both halves, same app, same day, one variable.
+
+**What the other two winners say, and why they are not a failure.** The 07:30 and 07:46 winners were picked on mute and leave with process audio still false, so on those calls the AX controls won the race. That is the expected division of labour rather than a miss: the AX signals appear when Teams draws its call UI, and the mic can go hot slightly later. Process audio is not there to beat AX on a healthy machine; it is there for when AX has nothing, which is exactly the 15:03 row.
+
+**A hypothesis formed on the first two calls and refuted by the third, recorded so it is not re-formed.** After 07:30 and 07:46 both missed, the reading offered was that the call UI always precedes the mic going hot, so the bar's "at or before the winner" clause might be unsatisfiable on an AX-trusted machine. **That is wrong.** The 15:03 call has the mic hot while the AX walk still finds nothing, which is the opposite ordering. Two consecutive misses were not enough to characterise the race, and the conclusion drawn from them was premature.
+
+**The DET11 half is now more than the partial the ship note claimed.** That note said the read makes an Accessibility-denied candidate carry one real signal but that "one signal never clears `isConfidentNativeMeeting`". The 15:03 row shows title plus audio clearing the bar with **no** AX control signal present at all, which is the consequence the `isConfidentNativeMeeting` decision predicted in as many words: "title plus audio now clears the bar where title alone never does". Measured, not just designed. This still does not prove detection survives a *revoked* Accessibility grant, since `ax_trusted` was true throughout and the AX walk merely had not found the controls yet; that check remains the walkthrough's optional step.
+
+**No engineering remains.** The bar was the last item.
