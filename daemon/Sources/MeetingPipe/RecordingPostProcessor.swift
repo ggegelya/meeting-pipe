@@ -77,6 +77,23 @@ enum RecordingPostProcessor {
         var systemDelaySec: Double { Double(systemDelayMs) / 1000.0 }
     }
 
+    /// END9: cap a merge's length policy at a trim point. Pure, and lifted out of `produceFinal`
+    /// for the reason `mergeLengths` is: the arithmetic is the part that can be wrong, and it is
+    /// unreachable by a test while it sits inside a function that shells out to ffmpeg.
+    ///
+    /// A cap on REC9's target rather than a second `-t`, so the length policy still decides
+    /// everything else and the two cannot disagree about what the output length is. `min` because a
+    /// trim may only ever shorten: a limit longer than the captured audio would otherwise pad
+    /// silence onto the end, turning a safety measure into a fabricated tail.
+    static func applyTrim(_ lengths: MergeLengths, limitSeconds: Double?) -> MergeLengths {
+        guard let limit = limitSeconds, limit > 0 else { return lengths }
+        var trimmed = lengths
+        let capped = min(lengths.targetDurationSec ?? limit, limit)
+        trimmed.targetDurationSec = capped
+        trimmed.expectedDurationSec = capped
+        return trimmed
+    }
+
     /// Decide one merge's length policy. Pure, so the arithmetic is testable without
     /// ffmpeg or a recording.
     ///
@@ -259,20 +276,26 @@ enum RecordingPostProcessor {
     /// channel's first frame landed, so a capture that came up late is merged where
     /// it was recorded instead of at sample 0. `stop()` measures it; `recoverOrphan`
     /// passes 0, because a crash leaves no record of when either channel began.
+    /// `limitSeconds` (END9) cuts the output at that many seconds from the recording's start. It is
+    /// set only when a held provisional end confirmed, where everything past the hold's opening is
+    /// post-call audio by construction: a real end has to publish byte-for-byte what it published
+    /// before END9, and under the regulated / NDA postures ADR 0016 says that tail must not exist at
+    /// rest. nil on every ordinary stop, which is almost all of them.
     static func produceFinal(
         mic: URL, system: URL, final: URL, hasMic: Bool, hasSystem: Bool,
-        systemHeadOffsetSec: Double = 0
+        systemHeadOffsetSec: Double = 0, limitSeconds: Double? = nil
     ) async -> Bool {
         let tmp = mergingTempURL(forFinal: final)
         // Clear a stale temp a prior abandoned (timed-out) merge may have left.
         try? FileManager.default.removeItem(at: tmp)
 
         if hasMic && hasSystem {
-            let lengths = mergeLengths(
+            var lengths = mergeLengths(
                 micDurationSec: audioDurationSec(of: mic),
                 systemDurationSec: audioDurationSec(of: system),
                 systemHeadOffsetSec: systemHeadOffsetSec
             )
+            lengths = applyTrim(lengths, limitSeconds: limitSeconds)
             if findFFmpeg() == nil {
                 // No ffmpeg: move mic -> final (an atomic rename, no wedge risk) and
                 // keep system.wav for a later merge or manual recovery.

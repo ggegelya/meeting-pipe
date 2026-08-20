@@ -76,6 +76,9 @@ final class Coordinator: NSObject {
     let axBus: AXObserverBus
     let muteLabels: MuteLabels
     let lifecycleCoord: MeetingLifecycleCoordinator
+    /// END9: started once at session setup and never per meeting, because the teardown line it
+    /// needs can land within a second of a provisional opening and a cold tail would miss it.
+    let callTeardown = CallTeardownWatcher.teams()
     let micGate: MicGate
     /// The single VAD-gated idle backstop (TECH-END3): nudges, then auto-stops,
     /// after a long stretch of non-`.hot` MicGate verdicts with system audio also

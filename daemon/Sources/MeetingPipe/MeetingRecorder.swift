@@ -1677,7 +1677,7 @@ final class MeetingRecorder {
     /// termination flush); bounding all three is REC13's, not this task's.
     @MainActor
     @discardableResult
-    func stop() async -> Bool {
+    func stop(limitSeconds: Double? = nil) async -> Bool {
         guard let final = currentFile,
               let micURL = micURL,
               let systemURL = systemURL else { return false }
@@ -1888,7 +1888,7 @@ final class MeetingRecorder {
         } else if hasMic || hasSystem {
             producedUsableFinal = await RecordingPostProcessor.produceFinal(
                 mic: micURL, system: systemURL, final: final, hasMic: hasMic, hasSystem: hasSystem,
-                systemHeadOffsetSec: systemHeadOffsetSec
+                systemHeadOffsetSec: systemHeadOffsetSec, limitSeconds: limitSeconds
             )
         } else {
             Log.writeLine("recorder", "WARN: neither mic nor system has audio data - leaving \(final.lastPathComponent) absent")

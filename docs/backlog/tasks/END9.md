@@ -156,6 +156,54 @@ The drift detector must be time-and-volume based, not "zero teardown lines in th
 - The change emits an auditable event whenever it holds, carrying the reason and the elapsed hold, so the next occurrence is self-diagnosing from `events.jsonl` alone rather than needing this reconstruction.
 - No U+2014 anywhere in the diff.
 
+## Instance 18, and the build, 2026-08-20
+
+The owner reported a recording that "got stopped with no reason... I was in the meeting, meeting window was not closed, but invisible", and it is this defect exactly: `20260820-123036` started 12:30:36 local and was cut at 12:30:44 after **8.5 s**, `ending_provisional` led by `ax_leave_button_invalid` and `ended` with `confirmed_by: ["ax_leave_rewalk"]`. The owner restarted by hand 16 s later and `20260820-123100` then ran 26.8 minutes on the same call.
+
+**Every other signal said the call was live**, which is what makes this trace worth keeping. Both are edge-logged and neither had changed since detection at 12:30:27: `shareable_content_window_present` was still true (matching the owner's "window was not closed") and `process_audio_is_running_input` was still true, so Teams was still holding the mic. Only the Leave button moved. The teardown oracle agrees: no `UnregisterCall` within 27 minutes either side.
+
+The same morning supplied the control, which is why the pair is the fixture in `CallTeardownOracleTests`. At 13:39:54 a second recording ended with `process_audio_is_running_input_false` leading, and Teams had logged its teardown **0.81 s earlier**. Real end, correctly detected, no hold.
+
+**The owner-owed census in walkthrough step 2 could not be run.** Unified-log retention had already rolled off the 12:30 incident by the time it was investigated, and MeetingPipe's INFO entries are not persisted to the archive `log show` reads. No loss to this fix, since step 1(a) was satisfied at filing and the mechanism is settled, but the step is unrunnable in practice at anything but immediate notice and should be read that way rather than as an outstanding gate.
+
+### Execution contract step 3, re-run at pickup
+
+Required before building. Baseline at filing was 45 confirm / 8 hold over 53 in-coverage ax-leave provisionals. Re-run over the full corpus (144 teardown lines, 2026-07-13 to 2026-08-20; 76 in-coverage ax-leave provisionals):
+
+| leading signal | confirm | hold |
+|---|---|---|
+| `ax_leave_button_invalid` | 58 | 18 |
+| `shareable_content_window_gone` | 2 | 8 |
+| `process_audio_is_running_input_false` | 4 | 0 |
+
+The ax-leave confirm rate moved 84.9% -> 76.3%. **That is not the drift the contract warns about**, and the split by leading signal is what settles it rather than the aggregate: `process_audio_is_running_input_false` is 4 for 4 with zero holds, and all four of 2026-08-20's real ends confirm at 0.22 to 0.81 s with clean parses. A drifting oracle would show holds against that signal too. The rate fell because the numerator grew: ten new holds in the 16 days since filing, each one a chopped recording. Scope needed no re-examination.
+
+Read the process-audio row as the control it is. It is the reason the ax-leave row can be quoted as a defect count at all.
+
+### What shipped
+
+Core plus the two safety grafts, at the owner's direction 2026-08-20. The rest of the graft list did not ship and is named below.
+
+- `CallTeardownOracle.decide` (pure, `MeetingPipeCore/Lifecycle/`), taking `now`, `provisionalStartedAt`, `lastTeardownAt`, `oracleAvailable` and the two constants. Order is load-bearing: availability first (a broken log can never cause a hold), teardown second (a real end confirms on its own evidence, not by timing out), cap last.
+- `SlimCoreTeardownLog`, the line predicate only. Generation resolution, the byte-range tail with its partial-line carry, and the naive-clock-is-UTC parse are reused from `SlimCoreMuteLog` verbatim, as the spec asked.
+- `CallTeardownWatcher`, 1 Hz on its own queue, session-lived rather than per meeting. It skips history on its first resolve, so a line written before it started is invisible: that is deliberate (a meeting must not inherit last week's teardown) and errs toward a bounded hold rather than a chop.
+- The gate: `rescueProvisionalEnd`'s empty-walk branch calls `beginTeardownHold` instead of `confirmProvisionalEnd`. Re-entrant without re-stamping, so a flapping signal cannot push the cap out forever.
+- **Trim on confirm**, via `RecordingPostProcessor.applyTrim` capping REC9's merge target rather than adding a second `-t`, so the two cannot disagree about the output length. It may only ever shorten: a limit longer than the captured audio would pad silence and fabricate a tail.
+- **The HUD `Confirming end` state**, `fgSubtle` on the label and the elapsed readout. Shown only once a hold is actually entered, so an end that confirms on its first consult never flickers it. Off-the-record keeps the label while it is on, being the stronger claim.
+
+**Two defects the tests caught during the build**, both worth recording because neither was in the spec's model. The HUD was being told `false` on ends that never held (fixed: the surface is only cleared if it was shown, keyed on whether the timer was armed). And the first fixture read nothing at all, because the watcher's end-of-file start means a pre-written line is invisible; the fixture now appends to a warm tail, which is also what production does.
+
+**Measured red, not asserted.** `CallTeardownOracleTests`' 18 tests pass; neutering `decide` to an unconditional `.confirm`, which is precisely what `main` does, turns **9 of them red** on their own assertions, including the 2026-08-03 fixture and the 2026-08-20 pair. Restored and re-run green. **+28 tests** total (18 oracle and parsing, 10 wiring and trim). `swift build` and `swift build -c release` clean with no new warnings, `swift test` 2868 tests 0 failures, `truth_fences.py both` green. No new event category, so nothing owed to the `CONVENTIONS.md` table; four new actions on existing categories (`lifecycle_end_held`, `lifecycle_end_hold_released`, `held_end_trimmed`, and `oracle` / `held_sec` / `trimmed` attributes on `lifecycle_provisional_end_confirmed`).
+
+### Not shipped, still open
+
+The row stays `partial` for these, all from the spec's graft list:
+
+- **The ~5 s `endDebounceFloor` for `.axLeaveButton`.** The oracle is consulted ~120 ms in, so it structurally cannot reach the sub-2 s flicker class the spec documents (returns at +0.64 s, +1.07 s, +1.69 s).
+- **The empty-vs-failed AX walk result type.** `listWindows` still collapses every non-`.success` AXError into `[]`, so "Teams was busy" and "the call ended" remain the same value at that call site. Orthogonal to the oracle and worth having on its own.
+- **The title veto on auto-resume.** No auto-resume shipped, so nothing needs vetoing yet. It becomes mandatory the moment one does.
+- **The A/B on the new Teams calling UI** (walkthrough step 1). The spec says the fix ships regardless, and it did.
+
 ## Owner walkthrough
 
 Two steps here are owner-gated. Follow them with the owner rather than re-deriving the procedure.

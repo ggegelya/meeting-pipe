@@ -36,6 +36,9 @@ protocol SessionHost: AnyObject {
     var stateMachine: DetectionStateMachine { get }
     var micGate: MicGate { get }
     var lifecycleCoord: MeetingLifecycleCoordinator { get }
+    /// END9: Teams' own call-teardown line, tailed for the whole session. Concrete because it is a
+    /// file tail with no system handle to fake: a test points one at a temp directory it writes.
+    var callTeardown: CallTeardownWatcher { get }
     var silenceBackstop: IdleStopBackstop { get }
     var consent: ConsentStore { get }
     var workflowStore: WorkflowStore { get }
@@ -123,7 +126,9 @@ protocol SessionRecording: AnyObject {
     func currentMicLevelDb() -> Float
     func start(outputDir: URL, captureMode: CaptureMode, voiceProcessing: Bool) async throws -> URL
     /// Returns whether a usable final artifact reached disk.
-    func stop() async -> Bool
+    /// `limitSeconds` (END9) cuts the produced file at that many seconds from the recording's
+    /// start; nil is every ordinary stop. Only a confirmed call-teardown hold sets it.
+    func stop(limitSeconds: Double?) async -> Bool
     func setMicGateVerdict(_ verdict: MicGateVerdict)
     /// MIC14: toggle the off-the-record state (zero-fill live under the regulated gate, or record a
     /// manual redaction span under capture-first).
@@ -144,6 +149,10 @@ protocol SessionHUDPresenting: AnyObject {
     func resetFlagCount()
     /// MIC14: show or clear the persistent "Off the record" state on the HUD.
     func setOffTheRecord(_ on: Bool)
+    /// END9: the call looks over but Teams has not said so, and the recording is deliberately still
+    /// running while we wait. Without a surface, a hold that runs to its 150 s cap is a bug report
+    /// rather than an observation.
+    func setConfirmingEnd(_ on: Bool)
 }
 
 /// The "record this meeting?" prompt (`MeetingPromptWindow`).

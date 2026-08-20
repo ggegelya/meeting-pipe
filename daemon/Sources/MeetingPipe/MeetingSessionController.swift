@@ -58,6 +58,13 @@ final class MeetingSessionController: @unchecked Sendable {
     /// bring-up is bounded off the main thread now, so the UI stays live during
     /// it; this guard stops a second Record/toggle press from stacking another
     /// `recorder.start()` (five stacked starts were seen in the 2026-06-12 freeze).
+    /// END9: the open call-teardown hold, or nil. Main-queue only, like everything else here.
+    var teardownHold: TeardownHold?
+
+    /// END9: where to cut the recording when the held end confirms, or nil for an ordinary end.
+    /// Read once by `stopRecording` and cleared there, so it can never leak into the next meeting.
+    var pendingEndTrimAt: Date?
+
     private var recordingStartInFlight = false
 
     /// REC7: latched when a confirmed lifecycle `.ended` lands during the async
@@ -148,6 +155,12 @@ final class MeetingSessionController: @unchecked Sendable {
             guard let self = self else { return }
             for await verdict in self.coordinator.lifecycleCoord.verdicts {
                 await MainActor.run {
+                    // END9: any verdict other than another provisional resolves an open hold. The
+                    // one that matters is `.inMeeting`: END8 reverts on the returning Leave button,
+                    // and that revert is the whole reason for holding rather than confirming.
+                    if case .endingProvisional = verdict {} else {
+                        self.releaseTeardownHold(rescued: verdict.isLive)
+                    }
                     switch verdict {
                     case .starting(let context):
                         self.handleMeetingStarted(source: self.appSource(from: context))
@@ -611,8 +624,25 @@ final class MeetingSessionController: @unchecked Sendable {
                 StopStallWatchdog.stallMessage(elapsed: elapsed)
             )
         }
+        // END9: everything captured after the held end opened is post-call audio, so cut there.
+        // Measured from the recorder's own start rather than from the controller's clock, because
+        // that is the origin the produced file's timeline actually has. Read here rather than inside
+        // the Task below because this is main-confined controller state and that closure is `[weak
+        // self]`; consumed either way, so it can never leak into the next meeting.
+        let trimSeconds = pendingEndTrimAt.flatMap { trimAt -> Double? in
+            guard let startedAt = recorder.startedAt else { return nil }
+            let seconds = trimAt.timeIntervalSince(startedAt)
+            return seconds > 0 ? seconds : nil
+        }
+        pendingEndTrimAt = nil
+        if let trimSeconds = trimSeconds {
+            Log.event(category: "recorder", action: "held_end_trimmed", attributes: [
+                "file": file.lastPathComponent,
+                "limit_sec": trimSeconds,
+            ])
+        }
         Task { @MainActor [weak self] in
-            let producedUsableFinal = await recorder.stop()
+            let producedUsableFinal = await recorder.stop(limitSeconds: trimSeconds)
             self?.stopStallWatchdog.disarm()
             guard let self = self else { return }
             Log.writeLine("daemon", "recording stopped → \(file.path)")
@@ -1272,14 +1302,12 @@ final class MeetingSessionController: @unchecked Sendable {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 guard let leaveButton = leaveButtons.first else {
-                    // No Leave button on a fresh walk: the call really ended. The re-walk is the
-                    // corroboration, so drive the promotion to `.ended` now rather than leaving it to
-                    // stall in `.endingProvisional` until window-gone corroborates (which lagged ~4.5 min
-                    // in the wild) or the user stops by hand.
-                    Log.event(category: "coordinator", action: "lifecycle_provisional_end_confirmed", attributes: [
-                        "bundle_id": context.bundleID,
-                    ])
-                    self.coordinator.lifecycleCoord.confirmProvisionalEnd()
+                    // END9: an empty walk is NOT the corroboration this used to treat it as. It runs
+                    // ~120 ms after `AXLeaveButtonSignal` did its own re-walk, and Teams' accessibility
+                    // tree goes blank in-process for 1 to 65 s at a time while every window stays on
+                    // screen, so both walks land inside one blackout. 18 recordings were chopped by
+                    // reading that as an end, the worst losing 9 m 53 s. Ask Teams instead.
+                    self.beginTeardownHold(context: context)
                     return
                 }
                 Log.event(category: "coordinator", action: "lifecycle_provisional_end_rescued", attributes: [
@@ -1291,9 +1319,126 @@ final class MeetingSessionController: @unchecked Sendable {
         }
     }
 
+    // MARK: - END9: the call-teardown hold
+
+    /// A provisional end the AX re-walk could not disprove, waiting on Teams' own teardown line.
+    struct TeardownHold {
+        let context: MeetingLifecycleContext
+        let startedAt: Date
+        var timer: Timer?
+    }
+
+    /// Open a hold and consult immediately, then once a second until something resolves it.
+    ///
+    /// The immediate consult is what keeps a genuine end free: the teardown line **leads** the AX
+    /// edge (p50 about 1.3 s), so on a real end the answer is already on disk when this runs and the
+    /// first consult confirms with no added latency at all. The timer exists for the two cases that
+    /// are not that: a teardown that lands a moment late, and the cap.
+    ///
+    /// Re-entrant by design. `rescueProvisionalEnd` can fire again on a second provisional for the
+    /// same call, and re-stamping `startedAt` there would let a flapping signal push the cap out
+    /// forever, so an open hold keeps its original stamp.
+    func beginTeardownHold(context: MeetingLifecycleContext) {
+        if teardownHold != nil {
+            consultTeardownOracle()
+            return
+        }
+        teardownHold = TeardownHold(context: context, startedAt: Date(), timer: nil)
+        consultTeardownOracle()
+        // A confirm on the first consult already cleared it, and that is the common case: the
+        // teardown leads the AX edge, so a genuine end never reaches the lines below and looks
+        // exactly as it looked before END9, timer and HUD included.
+        guard teardownHold != nil else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.consultTeardownOracle()
+        }
+        teardownHold?.timer = timer
+        Log.event(category: "coordinator", action: "lifecycle_end_held", attributes: [
+            "bundle_id": context.bundleID,
+            "hold_cap_sec": CallTeardownOracle.defaultHoldCapSec,
+        ])
+        Log.writeLine(
+            "daemon",
+            "holding a provisional end for \(context.bundleID): Teams logged no call teardown, so the call is probably still up"
+        )
+        // The recording is still running and the HUD would otherwise look like nothing happened,
+        // which on the cap path is a bug report rather than an observation. Shown here rather than
+        // before the first consult so an end that confirms immediately never flickers it.
+        coordinator.hud.setConfirmingEnd(true)
+    }
+
+    /// One consult. Confirms, or leaves the hold open for the next tick.
+    func consultTeardownOracle() {
+        guard let hold = teardownHold else { return }
+        let snapshot = coordinator.callTeardown.snapshot()
+        let now = Date()
+        let verdict = CallTeardownOracle.decide(CallTeardownOracle.Input(
+            now: now,
+            provisionalStartedAt: hold.startedAt,
+            lastTeardownAt: snapshot.lastTeardownAt,
+            oracleAvailable: snapshot.available
+        ))
+        switch verdict {
+        case .hold:
+            return
+        case .confirm(let reason):
+            let heldFor = now.timeIntervalSince(hold.startedAt)
+            releaseTeardownHold()
+            // Anything held is post-call audio by construction, so it is trimmed off rather than
+            // published: a real end has to produce byte-for-byte what it produced before END9, and
+            // under the regulated / NDA postures ADR 0016 says that audio must not exist at rest.
+            // Sub-second holds are the normal path and trimming them would be churn for nothing.
+            pendingEndTrimAt = heldFor >= 1.0 ? hold.startedAt : nil
+            Log.event(category: "coordinator", action: "lifecycle_provisional_end_confirmed", attributes: [
+                "bundle_id": hold.context.bundleID,
+                "oracle": reason.rawValue,
+                "held_sec": heldFor,
+                "trimmed": pendingEndTrimAt != nil,
+            ])
+            if reason == .holdCapReached {
+                // The drift detector, and deliberately not a "zero teardown lines lately" check: a
+                // generation is created per Teams restart, so a naive volume check would trip on a
+                // freshly restarted Teams and disable the guard silently. Repeated rows here are
+                // what say the line has been renamed or the format moved.
+                Log.writeLine(
+                    "daemon",
+                    "WARN: a provisional end held the full \(Int(CallTeardownOracle.defaultHoldCapSec))s "
+                        + "without Teams ever logging a call teardown - if this repeats, the teardown "
+                        + "line has moved and the oracle needs re-measuring"
+                )
+            }
+            coordinator.lifecycleCoord.confirmProvisionalEnd()
+        }
+    }
+
+    /// Drop the hold without confirming. Called when the call comes back (the whole point) and on
+    /// every path that leaves `.endingProvisional`, so a stale timer can never outlive its meeting.
+    func releaseTeardownHold(rescued: Bool = false) {
+        guard let hold = teardownHold else { return }
+        // `timer != nil` is the record of whether the holding state was ever shown. Without it, an
+        // end that confirmed on its first consult would still push a `setConfirmingEnd(false)` at a
+        // HUD that was never told true, which is a state change the surface has to handle for no
+        // reason and which a test reads as the holding state having been entered.
+        let wasShown = hold.timer != nil
+        hold.timer?.invalidate()
+        teardownHold = nil
+        if wasShown { coordinator.hud.setConfirmingEnd(false) }
+        if rescued {
+            Log.event(category: "coordinator", action: "lifecycle_end_hold_released", attributes: [
+                "bundle_id": hold.context.bundleID,
+                "held_sec": Date().timeIntervalSince(hold.startedAt),
+            ])
+            Log.writeLine(
+                "daemon",
+                "the call came back while its end was held - the recording was never stopped (END9)"
+            )
+        }
+    }
+
     /// Tear down the lifecycle adapter + reset the engine. Wired to the
     /// state machine's idle transition so every idle path disengages once.
     func disengageLifecycle() {
+        releaseTeardownHold()
         coordinator.lifecycleCoord.disengage()
     }
 

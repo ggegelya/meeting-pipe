@@ -22,6 +22,15 @@ final class FakeSessionHost: SessionHost {
     let stateMachine = DetectionStateMachine()
     let micGate: MicGate
     let lifecycleCoord = MeetingLifecycleCoordinator()
+    /// Pointed at a directory that does not exist, so `available` stays false and the oracle
+    /// degrades to an immediate confirm. That is deliberately the pre-END9 behaviour, so every
+    /// existing controller test keeps meaning what it meant; the tests that exercise the hold
+    /// build their own watcher over a temp directory.
+    var callTeardown = CallTeardownWatcher(
+        directory: URL(fileURLWithPath: "/nonexistent/meetingpipe-tests"),
+        family: "MSTeamsNM_SlimCore_",
+        readQueue: nil
+    )
     let silenceBackstop = IdleStopBackstop()
     let consent: ConsentStore
     let workflowStore: WorkflowStore
@@ -185,7 +194,11 @@ final class SpyRecorder: SessionRecording {
         }
     }
 
-    func stop() async -> Bool {
+    /// END9 records what it was handed so a test can assert a held end trims and an ordinary one
+    /// does not.
+    var lastStopLimitSeconds: Double??
+    func stop(limitSeconds: Double?) async -> Bool {
+        lastStopLimitSeconds = .some(limitSeconds)
         stopCallCount += 1
         return stopResult
     }
@@ -225,6 +238,8 @@ final class SpyHUD: SessionHUDPresenting {
         flagResetCount += 1
     }
     func setOffTheRecord(_ on: Bool) { offTheRecordStates.append(on) }
+    var confirmingEndStates: [Bool] = []
+    func setConfirmingEnd(_ on: Bool) { confirmingEndStates.append(on) }
 }
 
 final class SpyPrompt: SessionPromptPresenting {

@@ -345,6 +345,24 @@ final class RecordingHUDWindow {
         if on { levelMeter?.level = 0 }
     }
 
+    /// END9: show or clear the "confirming end" state. The call's controls have gone but Teams has
+    /// not logged the teardown, so the recording is still running on purpose while the oracle
+    /// decides. Idempotent, main-queue only, and it does not resize for the reason above.
+    ///
+    /// The elapsed readout goes `fgSubtle` rather than being hidden: it is still counting real
+    /// captured seconds, and hiding it would misrepresent a recording that is genuinely running.
+    /// `fgSubtle` is the quietest token that still clears DSN3's 4.5:1 contrast floor, which
+    /// `fgFaint` does not (it measures about 2.8:1).
+    func setConfirmingEnd(_ on: Bool) {
+        // Off-the-record owns this label while it is on, and it is the stronger claim: it is about
+        // what is being captured, where this is only about why we are still capturing.
+        if (contentView as? HUDBackgroundView)?.isOffRecord != true {
+            recordingLabel?.stringValue = on ? "Confirming end" : "Recording"
+            recordingLabel?.textColor = on ? MPColors.fgSubtle : MPColors.fgMuted
+        }
+        elapsedLabel?.textColor = on ? MPColors.fgSubtle : MPColors.fgMuted
+    }
+
     /// Resize keeping the panel's top-right corner fixed, so growing the
     /// degraded card doesn't yank a HUD the user dragged elsewhere.
     private func resizePanelAnchoringTopRight(to size: CGSize) {
