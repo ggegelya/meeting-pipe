@@ -1680,7 +1680,14 @@ final class MeetingRecorder {
     func stop(limitSeconds: Double? = nil) async -> Bool {
         guard let final = currentFile,
               let micURL = micURL,
-              let systemURL = systemURL else { return false }
+              let systemURL = systemURL else {
+            // END11 item 3: this early return used to skip the release below, so an assertion
+            // acquired by a start that never produced a file held idle sleep off for the whole
+            // life of the process. There is no recording to keep the Mac awake for on this path
+            // by definition, so releasing here is unconditionally right.
+            releaseIdleSleepAssertion()
+            return false
+        }
         let started = startedAt
         let micFires = self.micFires
         let systemFires = self.systemFires

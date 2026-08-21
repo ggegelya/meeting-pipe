@@ -51,7 +51,7 @@ The same top action covers back-to-back meetings. When a recording ends, the app
 
 ### Recording by hand
 
-Press `⌃⌥M` anywhere in macOS, or pick **Start Recording** from the menu bar. No meeting required, so it doubles as a voice memo. Press it again to stop.
+Press `⌃⌥M` anywhere in macOS, or pick **Start Recording** from the menu bar. No meeting required, so it doubles as a voice memo. Press it again to stop. A recording started this way with no meeting running has nothing to watch for an ending, so stopping it is yours to do; the one safety net is the mic-only silence backstop, which nudges and then stops after a long stretch of quiet (15 minutes by default, on the **Preferences ▸ Prompt** slider). Started while a call is running, it attaches to that call instead and stops on its own when the call ends.
 
 ### BYO, when you would rather write the summary yourself
 

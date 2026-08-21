@@ -501,6 +501,12 @@ final class MeetingSessionController: @unchecked Sendable {
                 ])
                 self.armSystemLevelMirror()
                 self.engageMicGate(source: source)
+                // END11: engage BEFORE the arm below, or there is no adapter to arm onto. Here
+                // rather than in `recordAttached`, because this is the one place every explicit
+                // start converges (DET7 lifted the sequence here for exactly that reason), so the
+                // menu row, the hotkey, `meetingpipe://record` and `didRequestStartLate` cannot
+                // drift apart.
+                self.engageLifecycleIfNeeded(source: source)
                 // Re-walk for the Leave button now the call UI has rendered;
                 // the discovery-time walk usually runs too early to see it.
                 self.armLifecycleLeaveButton(source: source)
@@ -984,6 +990,23 @@ final class MeetingSessionController: @unchecked Sendable {
 
         switch coordinator.stateMachine.current {
         case .recording(let file, let src, let mode):
+            // END11 item 4: an end belongs to the recording it names. A stale adapter for a
+            // different app could otherwise stop this one. This changes *which* recording an end
+            // applies to, never *whether* an end is honoured, which is the distinction the
+            // paragraph below turns on.
+            //
+            // Only when this recording has a source of its own. A source-less recording has no
+            // identity to compare against, and it is also the case with no AX end anchor at all,
+            // so dropping the end there would remove the only automatic stop it can reach short
+            // of the idle backstop. Honouring it stays the safer direction for that path.
+            if let src = src, src.bundleID != bundleID {
+                Log.event(category: "coordinator", action: "meeting_end_ignored_other_app", attributes: [
+                    "ended_bundle_id": bundleID,
+                    "recording_bundle_id": src.bundleID,
+                    "leading_signal": reason.leadingSignal,
+                ])
+                return
+            }
             // Recording-stop honors every end, including uncorroborated ones: a
             // missed real end (recording runs forever) is worse than a rare late
             // stop. This path is deliberately unchanged.
@@ -1247,6 +1270,34 @@ final class MeetingSessionController: @unchecked Sendable {
                 "error": error.localizedDescription,
             ])
         }
+    }
+
+    /// END11: engage the lifecycle for an explicit start that carries a source.
+    ///
+    /// The only caller of `engageLifecycle` is `handleDiscovery`, and both its skip-latch and
+    /// `isCoolingDown` branches `return` before reaching it. So a recording started by hand had a
+    /// resolved Leave button and no adapter to give it to: `armLeaveButton` dropped the element,
+    /// nothing published `lifecycle`/`in_meeting`, and the recording could not end on its own.
+    /// DET13 made the *element* reachable by retaining the cooldown-suppressed sighting; this is
+    /// the neighbouring half that was assumed to follow from it and did not.
+    ///
+    /// The `isEngaged` guard is what makes this idempotent against a discovery already engaged,
+    /// and it is not an optimisation: `MeetingLifecycleCoordinator.engage` opens with
+    /// `disengage()`, so an unguarded call would stop a healthy adapter and reset the engine to
+    /// `.idle` in the middle of a live meeting.
+    func engageLifecycleIfNeeded(source: AppSource?) {
+        guard let source = source else { return }
+        guard !coordinator.lifecycleCoord.isEngaged else {
+            Log.event(category: "coordinator", action: "lifecycle_engage_skipped", attributes: [
+                "bundle_id": source.bundleID,
+                "reason": "already_engaged",
+            ])
+            return
+        }
+        Log.event(category: "coordinator", action: "lifecycle_engage_explicit_start", attributes: [
+            "bundle_id": source.bundleID,
+        ])
+        engageLifecycle(for: source)
     }
 
     /// Serial queue for cross-process AX tree walks that would otherwise run on

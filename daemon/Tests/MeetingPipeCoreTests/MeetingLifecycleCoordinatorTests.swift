@@ -312,6 +312,59 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         XCTAssertNil(scheduler.tick, "tick disarms when the provisional end reverts")
     }
 
+    // MARK: - END11: engagement is observable, and a dropped arm is loud
+
+    /// END11 acceptance bar 2. `armLeaveButton` was `activeAdapter?.armLeaveButton(element)`, so an
+    /// explicit start resolved the Leave button, handed it to nobody, and left no trace. Red
+    /// against `main`, where this path emitted nothing at all.
+    func test_armLeaveButton_withNoAdapter_isLoudRatherThanSilent() {
+        let log = RecordingEventLog()
+        let coordinator = MeetingLifecycleCoordinator(eventLog: log)
+        XCTAssertFalse(coordinator.isEngaged, "nothing engaged yet")
+
+        coordinator.armLeaveButton(AXUIElementCreateApplication(1234))
+
+        let dropped = log.entries.filter { $0.action == "arm_leave_button_dropped" }
+        XCTAssertEqual(dropped.count, 1, "a dropped arm has to leave something to grep for")
+        XCTAssertEqual(dropped.first?.attributes["reason"], "no_active_adapter")
+    }
+
+    /// The accessor the explicit-start guard reads. Without it the caller cannot tell an engaged
+    /// session from a cold one, and `engage()` opens with `disengage()`.
+    func test_isEngaged_tracksTheAdapterLifetime() throws {
+        let fake = FakeAdapter()
+        let coordinator = MeetingLifecycleCoordinator(adapters: [fake])
+        XCTAssertFalse(coordinator.isEngaged)
+
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+        XCTAssertTrue(coordinator.isEngaged, "an engaged adapter is what armLeaveButton needs")
+
+        coordinator.disengage()
+        XCTAssertFalse(coordinator.isEngaged)
+    }
+
+    /// Why the explicit-start path guards on `isEngaged` instead of just calling `engage`: engaging
+    /// again tears the live adapter down and resets the engine, which mid-meeting would throw away
+    /// a healthy session's state.
+    func test_engagingTwice_resetsTheEngine_whichIsWhyTheGuardExists() throws {
+        let fake = FakeAdapter()
+        let now = Date(timeIntervalSince1970: 0)
+        let coordinator = MeetingLifecycleCoordinator(adapters: [fake], clock: { now })
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+        fake.emit(.init(kind: .shareableContentWindow, state: .live, timestamp: now, context: teamsContext))
+        flushEngine(coordinator)
+        coordinator.confirmRecording()
+        flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .inMeeting(context: teamsContext))
+
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+        flushEngine(coordinator)
+        XCTAssertEqual(
+            coordinator.current, .idle,
+            "re-engaging resets a live meeting to idle, so an explicit start must not do it blindly"
+        )
+    }
+
     private func flushEngine(_ coordinator: MeetingLifecycleCoordinator) {
         let expectation = expectation(description: "engine drain")
         coordinator.tick()

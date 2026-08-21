@@ -225,8 +225,24 @@ public final class MeetingLifecycleCoordinator {
 
     /// Late-arm the Leave-button signal. Called at recording-start with a button re-walked after the call UI
     /// rendered; the discovery-time walk usually runs too early to see it. No-op when no adapter is engaged.
+    /// Whether an adapter is live. END11: the explicit-start paths need this to decide whether to
+    /// engage, and the guard is load-bearing rather than an optimisation, because `engage()` opens
+    /// with `disengage()` and would reset a healthy discovery-engaged session to `.idle`.
+    public var isEngaged: Bool { activeAdapter != nil }
+
     public func armLeaveButton(_ element: AXUIElement) {
-        activeAdapter?.armLeaveButton(element)
+        guard let activeAdapter = activeAdapter else {
+            // END11: this was a silent no-op for the whole life of END9 and DET13. An explicit
+            // start resolved the Leave button correctly and handed it to nobody, so the recording
+            // had no end detection at all and ran until the owner stopped it by hand. Silence is
+            // what made that cost 72 minutes in the field without leaving a trace to grep for.
+            eventLog.emit(
+                category: "lifecycle", action: "arm_leave_button_dropped",
+                attributes: ["reason": "no_active_adapter"]
+            )
+            return
+        }
+        activeAdapter.armLeaveButton(element)
     }
 
     // MARK: - Event log
