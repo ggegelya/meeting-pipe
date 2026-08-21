@@ -208,9 +208,12 @@ const PWStatusPill = ({ tone, icon, text }) => {
   );
 };
 
-const PWTag = ({ children }) => (
-  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, height: 22, padding: "0 4px 0 8px", borderRadius: 4, background: "var(--mp-bg-sunk)", border: "1px solid var(--mp-border)", fontFamily: "var(--mp-font-mono)", fontSize: 12, color: "var(--mp-fg-muted)" }}>
-    {children}<span style={{ color: "var(--mp-fg-subtle)", display: "flex", cursor: "pointer", padding: 2 }}><Icon name="x" size={9}/></span>
+// Mono identifier chip. The remove xmark is opt-out: the trailing pad follows it,
+// 4 to leave room for the xmark's own hit area and 8 for a read-only chip, so a
+// chip without one pads evenly instead of sitting lopsided.
+const PWTag = ({ children, removable = true }) => (
+  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, height: 22, padding: removable ? "0 4px 0 8px" : "0 8px", borderRadius: 4, background: "var(--mp-bg-sunk)", border: "1px solid var(--mp-border)", fontFamily: "var(--mp-font-mono)", fontSize: 12, color: "var(--mp-fg-muted)" }}>
+    {children}{removable && <span style={{ color: "var(--mp-fg-subtle)", display: "flex", cursor: "pointer", padding: 2 }}><Icon name="x" size={9}/></span>}
   </span>
 );
 
@@ -355,7 +358,20 @@ const PWIntegrationsPane = () => (
       <PWToggleRow first label="Let AI tools read your meetings" sublabel="Runs a read-only server on standard input and output when a tool you configured launches it. No port is opened and nothing on your network can reach it."/>
       <PWRow label="Reachable" sublabel="What a connected tool can search and read."><PWStatusPill tone="granted" icon="check-circle" text="184 meetings"/></PWRow>
       <PWRow label="Withheld" sublabel="NDA meetings, and meetings recorded before workflows existed, are never exposed."><PWStatusPill tone="needed" icon="alert-triangle" text="65 meetings"/></PWRow>
-      <PWRow label="Tools" sublabel="Read-only. There is no tool that can change, publish, or delete anything."><span style={{ fontFamily: "var(--mp-font-mono)", fontSize: "var(--mp-text-xs)", color: "var(--mp-fg-muted)" }}>search, read, list</span></PWRow>
+      {/* Stacked and wrapped, not an inline value. This row used to carry the
+          stand-in "search, read, list" in the hug-right slot, which fits where
+          the five names the server actually advertises do not: they come to
+          roughly 410pt of unbreakable mono, and the flexShrink: 0 control column
+          then squeezed the label beside it to a couple of characters wide. */}
+      <PWStackRow label="Tools" sublabel="Read-only. There is no tool that can change, publish, or delete anything.">
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", flex: "1 1 auto", minWidth: 0 }}>
+          <PWTag removable={false}>search_meetings</PWTag>
+          <PWTag removable={false}>get_meeting</PWTag>
+          <PWTag removable={false}>get_transcript</PWTag>
+          <PWTag removable={false}>list_meetings</PWTag>
+          <PWTag removable={false}>list_actions</PWTag>
+        </div>
+      </PWStackRow>
     </PWGroup>
     {/* UX45 publish targets. No heading of their own: DSN28 locks one type
         anchor per surface, so the group eyebrows carry the level and the pane

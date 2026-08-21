@@ -395,7 +395,10 @@ struct SettingsStatusPill: View {
 
 // MARK: - Tag
 
-/// Bundle-id chip with a remove affordance. Mono font so the id reads as code.
+/// Mono identifier chip, with an optional remove affordance. Mono font so the id
+/// reads as code. The trailing pad follows that affordance: 4 leaves room for the
+/// xmark's own 14pt hit area, and a chip without one pads evenly instead of
+/// sitting lopsided (the MCP tools row is the first read-only caller).
 struct SettingsTag: View {
     let label: String
     let onRemove: (() -> Void)?
@@ -420,7 +423,7 @@ struct SettingsTag: View {
             }
         }
         .padding(.leading, 8)
-        .padding(.trailing, 4)
+        .padding(.trailing, onRemove == nil ? 8 : 4)
         .frame(height: 22)
         .background(
             RoundedRectangle(cornerRadius: 4, style: .continuous)

@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import MeetingPipe
 
@@ -115,5 +116,55 @@ final class MCPStatusTests: XCTestCase {
         let text = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(text.contains("enabled = true"))
         XCTAssertTrue(text.contains("anthropic"))
+    }
+
+    // MARK: - The tools row's measure
+
+    /// Why the Tools row stacks and wraps instead of hugging the right edge.
+    ///
+    /// It shipped as a `SettingsRow`, whose trailing slot is fixed to its ideal
+    /// width (UX43, so a ghost button stops collapsing to an ellipsis). That is
+    /// right for a button or a pill and wrong for a list the server sizes: the
+    /// five advertised names joined with commas are 73 characters of mono at
+    /// `MPType.textXS`, about 482pt, and the row holding them is 512pt across
+    /// once the 16pt column gap is taken. The 30pt left over is what squeezed
+    /// the label until "Tools" wrapped one character per line.
+    ///
+    /// The measure is the pane's, not the window's. `PreferencesView` caps its
+    /// content at 620 and pads it 32 a side, and `SettingsStackRow` pads 14 more,
+    /// so the chips get 528 at the cap. Below it the split view's sidebar takes
+    /// its share of the 780 minimum, down to 448 when that sidebar is dragged to
+    /// its 240 maximum. Both ends are checked because the failure this replaces
+    /// was a control that did not fit its row and took the label's width instead.
+    ///
+    /// Widths are derived from the chip's geometry rather than rendered, on the
+    /// principle `FlowLayoutTests` states: pinning real glyph widths would pin
+    /// the host's font metrics. What is asserted is therefore the robust half,
+    /// that nothing overflows and nothing is dropped, not the row count. For the
+    /// record, at SF Mono's 0.6 advance the five chips come to about 572pt, so
+    /// they wrap at both measures rather than fitting either.
+    func test_the_advertised_tools_wrap_within_the_card_at_every_measure() {
+        let names = ["search_meetings", "get_meeting", "get_transcript",
+                     "list_meetings", "list_actions"]
+        // SettingsTag: 8pt of padding a side around mono text at MPType.textSM.
+        let sizes = names.map { name in
+            CGSize(width: 16 + CGFloat(name.count) * MPType.textSM * 0.6, height: 22)
+        }
+
+        for measure in [CGFloat(448), CGFloat(528)] {
+            let rows = FlowLayout.rows(for: sizes, width: measure, spacing: 6)
+            for row in rows {
+                XCTAssertLessThanOrEqual(row.width, measure,
+                    "no row may run past the card at \(measure)")
+            }
+            XCTAssertEqual(rows.flatMap(\.indices).sorted(), Array(names.indices),
+                "every tool has to land in a row at \(measure), each exactly once")
+        }
+
+        // And no single name is wider than the narrowest card, so no chip is ever
+        // the one that gets a row to itself and still overflows it.
+        for (name, size) in zip(names, sizes) {
+            XCTAssertLessThan(size.width, 448, "\(name) should fit the narrowest card on its own")
+        }
     }
 }

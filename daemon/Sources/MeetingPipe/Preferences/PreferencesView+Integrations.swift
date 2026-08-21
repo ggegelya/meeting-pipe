@@ -141,10 +141,27 @@ struct IntegrationsSectionView: View {
                     SettingsStatusPill(tone: .neutral, icon: "ellipsis", text: mcpPlaceholder)
                 }
             }
-            SettingsRow("Tools", sublabel: "Read-only. There is no tool that can change, publish, or delete anything.") {
-                Text(mcp.status?.tools.joined(separator: ", ") ?? "search, read, list")
-                    .font(.mpTextXS.monospaced())
-                    .foregroundStyle(Color(MPColors.fgMuted))
+            // Stacked, not inline. `SettingsRow`'s trailing slot is fixed to its
+            // ideal width by UX43, which is right for a button or a pill and wrong
+            // for a list whose length the server decides: the five real tool names
+            // joined with commas are 73 characters of mono, about 482pt, in a row
+            // 512pt across, and the 30pt left over is where "Tools" started
+            // wrapping one character per line. Chips through the shared `FlowLayout`,
+            // the same treatment the auto-record allowlist gives bundle ids, so
+            // identifiers read alike across the pane and any number of tools wraps
+            // rather than riding off the edge of the card.
+            SettingsStackRow("Tools", sublabel: "Read-only. There is no tool that can change, publish, or delete anything.") {
+                if let tools = mcp.status?.tools, !tools.isEmpty {
+                    FlowLayout(spacing: 6) {
+                        ForEach(tools, id: \.self) { SettingsTag($0) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    // The same placeholder the two count rows above use. The old
+                    // fallback here hardcoded "search, read, list", three names the
+                    // server does not have, copied from the design kit's stand-in.
+                    SettingsStatusPill(tone: .neutral, icon: "ellipsis", text: mcpPlaceholder)
+                }
             }
         } footer: {
             Text(mcpFooter)
