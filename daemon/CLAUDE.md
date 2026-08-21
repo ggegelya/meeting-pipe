@@ -16,6 +16,7 @@ The verify table in [`../CLAUDE.md`](../CLAUDE.md) is the source of truth for ev
 - **Fully-qualified type name in stored-property initializers.** `Self.foo` fails on Swift 5.9+; write `StatusBarController.foo`. → [gotchas](docs/gotchas.md#fully-qualified-type-name-in-stored-property-initializers)
 - **Combine subscriptions filter to value changes.** `removeDuplicates()` + `dropFirst()` before triggering rebuilds. → [gotchas](docs/gotchas.md#combine-subscriptions-filter-to-value-changes)
 - **`ObservableObject` + `@Published` debounce writes.** `ConfigStore.scheduleSave` is the template: 500 ms timer gated on `isInitialized`. → [gotchas](docs/gotchas.md#observableobject-and-published-debounce-writes)
+- **A repeat scheduled off the main queue needs a `DispatchSourceTimer`.** `Timer.scheduledTimer` attaches to `RunLoop.current` and fires exactly once from a GCD worker. And when a component only works if somebody calls it, fence the *calling*: END9 shipped 28 green tests over a watcher `Coordinator.start()` never started. → [gotchas](docs/gotchas.md#a-feature-can-ship-green-documented-and-never-once-run) (END9, END10)
 - **TOML round-trip preserves unknown keys.** Read into `TOMLTable`, mutate only what the UI models. New tables need `ensureTable("foo")`; the glossary preserves per *key*, not per table. → [gotchas](docs/gotchas.md#toml-round-trip-preserves-unknown-keys) (FEAT11, UX44)
 
 ## Don't

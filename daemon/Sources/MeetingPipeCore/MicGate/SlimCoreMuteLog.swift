@@ -107,9 +107,35 @@ public enum SlimCoreMuteLog {
     /// shell log therefore always looks fresher than the media log that carries the
     /// signal: measured 2026-08-04, the live SlimCore generation was 7th newest in
     /// its own directory.
-    public static func generations(in directory: URL, family: String) -> [Generation] {
+    /// One directory listing, plus why it failed when it did.
+    ///
+    /// END10 item 4: the `try?` this replaces collapsed a TCC refusal, a transient I/O error and a
+    /// genuinely absent family into the same empty array, which is why 323 `log_mute_source_missing`
+    /// rows between 2026-08-05 and 2026-08-21 say nothing at all about their own cause. The failure
+    /// travels out to a host that owns an `EventLog` rather than being logged here, because this
+    /// target's rule is that decisions are pure and the host does the reporting.
+    public struct Listing {
+        public let generations: [Generation]
+        /// Nil when the directory listed. Otherwise "<domain> <code>: <description>".
+        public let failure: String?
+
+        public init(generations: [Generation], failure: String?) {
+            self.generations = generations
+            self.failure = failure
+        }
+    }
+
+    public static func listing(in directory: URL, family: String) -> Listing {
         let manager = FileManager.default
-        guard let names = try? manager.contentsOfDirectory(atPath: directory.path) else { return [] }
+        let names: [String]
+        do {
+            names = try manager.contentsOfDirectory(atPath: directory.path)
+        } catch let error as NSError {
+            return Listing(
+                generations: [],
+                failure: "\(error.domain) \(error.code): \(error.localizedDescription)"
+            )
+        }
         let found: [Generation] = names.compactMap { name in
             guard name.hasPrefix(family), name.hasSuffix(".log") else { return nil }
             let url = directory.appendingPathComponent(name)
@@ -117,8 +143,39 @@ public enum SlimCoreMuteLog {
             let modified = attrs?[.modificationDate] as? Date
             return Generation(url: url, modified: modified ?? .distantPast)
         }
-        return found.sorted { ($0.modified, $0.url.lastPathComponent) < ($1.modified, $1.url.lastPathComponent) }
+        return Listing(generations: found.sorted(by: generationPrecedes), failure: nil)
     }
+
+    public static func generations(in directory: URL, family: String) -> [Generation] {
+        listing(in: directory, family: family).generations
+    }
+
+    /// END10 item 7: rank by the timestamp the generation's own name carries, falling back to mtime
+    /// only when the name does not parse. The names encode creation order and never move; mtime is
+    /// the field that does, so ranking by it lets a touched older file outrank the live generation.
+    static func generationPrecedes(_ lhs: Generation, _ rhs: Generation) -> Bool {
+        let left = (nameTimestamp(lhs.url.lastPathComponent) ?? lhs.modified, lhs.url.lastPathComponent)
+        let right = (nameTimestamp(rhs.url.lastPathComponent) ?? rhs.modified, rhs.url.lastPathComponent)
+        return left < right
+    }
+
+    /// `MSTeamsNM_SlimCore_2026-08-13_18-06-05.23.log` -> that instant. Only the ordering matters,
+    /// so reading the wall-clock stamp in a fixed zone is enough; it is never compared to a real clock.
+    static func nameTimestamp(_ name: String) -> Date? {
+        guard let match = name.range(
+            of: "[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}",
+            options: .regularExpression
+        ) else { return nil }
+        return nameFormatter.date(from: String(name[match]))
+    }
+
+    private static let nameFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter
+    }()
 
     /// The newest generation of one family, or nil when the family is absent (Teams
     /// never ran on this Mac, or the log directory moved). Absent resolves to no
@@ -138,12 +195,23 @@ public enum SlimCoreMuteLog {
         /// (including the first resolution). Rotation is per Teams restart, so the
         /// adapter re-resolves rather than holding a file handle open.
         public let rotated: Bool
+        /// mtime of the generation this tick resolved, for END10's freshness check: a generation
+        /// last written before the recording started is evidence the log is not being written,
+        /// which is a different thing from evidence that no call ended.
+        public let modified: Date?
+        /// Non-nil when the directory could not be listed at all (END10 item 4).
+        public let resolveFailure: String?
 
-        public init(url: URL?, offset: UInt64, chunk: Data, rotated: Bool) {
+        public init(
+            url: URL?, offset: UInt64, chunk: Data, rotated: Bool,
+            modified: Date? = nil, resolveFailure: String? = nil
+        ) {
             self.url = url
             self.offset = offset
             self.chunk = chunk
             self.rotated = rotated
+            self.modified = modified
+            self.resolveFailure = resolveFailure
         }
     }
 
@@ -156,9 +224,15 @@ public enum SlimCoreMuteLog {
     public static func tail(
         directory: URL, family: String, current: URL?, offset: UInt64, skipHistory: Bool
     ) -> Tail {
-        guard let newest = newest(in: directory, family: family) else {
-            return Tail(url: nil, offset: 0, chunk: Data(), rotated: current != nil)
+        let listed = listing(in: directory, family: family)
+        guard let generation = listed.generations.last else {
+            return Tail(
+                url: nil, offset: 0, chunk: Data(), rotated: current != nil,
+                modified: nil, resolveFailure: listed.failure
+            )
         }
+        let newest = generation.url
+        let modified = generation.modified
         let rotated = newest != current
         let size = fileSize(of: newest) ?? 0
         var start = offset
@@ -169,14 +243,17 @@ public enum SlimCoreMuteLog {
         // rather than seeking past its end.
         if size < start { start = 0 }
         guard size > start, let handle = try? FileHandle(forReadingFrom: newest) else {
-            return Tail(url: newest, offset: start, chunk: Data(), rotated: rotated)
+            return Tail(url: newest, offset: start, chunk: Data(), rotated: rotated, modified: modified)
         }
         defer { try? handle.close() }
         guard (try? handle.seek(toOffset: start)) != nil,
               let data = try? handle.readToEnd(), !data.isEmpty else {
-            return Tail(url: newest, offset: start, chunk: Data(), rotated: rotated)
+            return Tail(url: newest, offset: start, chunk: Data(), rotated: rotated, modified: modified)
         }
-        return Tail(url: newest, offset: start + UInt64(data.count), chunk: data, rotated: rotated)
+        return Tail(
+            url: newest, offset: start + UInt64(data.count), chunk: data,
+            rotated: rotated, modified: modified
+        )
     }
 
     private static func fileSize(of url: URL) -> UInt64? {

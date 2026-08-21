@@ -1376,7 +1376,12 @@ final class MeetingSessionController: @unchecked Sendable {
             now: now,
             provisionalStartedAt: hold.startedAt,
             lastTeardownAt: snapshot.lastTeardownAt,
-            oracleAvailable: snapshot.available
+            oracleAvailable: snapshot.available,
+            // END10 items 5 and 6. Without the recording's own start, a previous call's teardown
+            // inside the lookback confirms this one; without the generation's mtime, a log that
+            // stopped being written reads as a healthy oracle that has simply seen no teardown.
+            recordingStartedAt: coordinator.audioRecorder.startedAt,
+            logLastWrittenAt: snapshot.logLastWrittenAt
         ))
         switch verdict {
         case .hold:

@@ -320,4 +320,127 @@ final class CallTeardownOracleTests: XCTestCase {
         XCTAssertEqual(context, teamsContext)
         XCTAssertEqual(reason.leadingSignal, PrimarySignalKind.axLeaveButton.rawValue)
     }
+
+    // MARK: - END10 item 6: a teardown has to belong to *this* recording
+
+    /// Red before END10: the 2026-08-21 chop in miniature. The last teardown landed at 13:36:02,
+    /// fifteen seconds before `20260821-133615.wav` even started, and the 15 s lookback reached
+    /// back past the recording's own beginning to confirm it.
+    func testTeardownBeforeTheRecordingStartedDoesNotConfirm() {
+        let recordingStart = Date(timeIntervalSince1970: 1_000_000)
+        // The teardown has to land *inside* the 15 s lookback and still *before* the recording
+        // began, or this passes against the unfixed code for the wrong reason: the provisional
+        // opens 5 s in, so the old floor reaches back to recordingStart - 10, and a teardown at
+        // recordingStart - 3 is the case where a previous call's line confirms this recording.
+        let verdict = CallTeardownOracle.decide(CallTeardownOracle.Input(
+            now: recordingStart.addingTimeInterval(30),
+            provisionalStartedAt: recordingStart.addingTimeInterval(5),
+            lastTeardownAt: recordingStart.addingTimeInterval(-3),
+            oracleAvailable: true,
+            recordingStartedAt: recordingStart,
+            logLastWrittenAt: recordingStart.addingTimeInterval(20)
+        ))
+        guard case .hold = verdict else {
+            return XCTFail("a previous call's teardown must not confirm this recording, got \(verdict)")
+        }
+    }
+
+    func testTeardownInsideThisRecordingStillConfirms() {
+        let recordingStart = Date(timeIntervalSince1970: 1_000_000)
+        let verdict = CallTeardownOracle.decide(CallTeardownOracle.Input(
+            now: recordingStart.addingTimeInterval(60),
+            provisionalStartedAt: recordingStart.addingTimeInterval(50),
+            lastTeardownAt: recordingStart.addingTimeInterval(48),
+            oracleAvailable: true,
+            recordingStartedAt: recordingStart,
+            logLastWrittenAt: recordingStart.addingTimeInterval(48)
+        ))
+        XCTAssertEqual(verdict, .confirm(reason: .teardownObserved))
+    }
+
+    /// The lookback still has to work: the line leads the AX edge by about 1.3 s, so a teardown a
+    /// moment before the provisional opened is the normal path for a genuine end.
+    func testLookbackStillReachesBackWithinTheRecording() {
+        let recordingStart = Date(timeIntervalSince1970: 1_000_000)
+        let provisional = recordingStart.addingTimeInterval(300)
+        let verdict = CallTeardownOracle.decide(CallTeardownOracle.Input(
+            now: provisional,
+            provisionalStartedAt: provisional,
+            lastTeardownAt: provisional.addingTimeInterval(-6.82),
+            oracleAvailable: true,
+            recordingStartedAt: recordingStart,
+            logLastWrittenAt: provisional
+        ))
+        XCTAssertEqual(
+            verdict, .confirm(reason: .teardownObserved),
+            "the largest observed lead is 6.82 s and must still confirm"
+        )
+    }
+
+    // MARK: - END10 item 5: a frozen generation is a dead log, not a quiet one
+
+    /// The 2026-08-21 case: the generation was last written at 13:36:15 and was still frozen at
+    /// 14:06 while the call ran to 13:56. Before END10 that read as a healthy oracle with nothing
+    /// to report, so every genuine end would have held the full 150 s cap.
+    func testGenerationFrozenBeforeTheRecordingConfirmsAsStale() {
+        let recordingStart = Date(timeIntervalSince1970: 1_000_000)
+        let verdict = CallTeardownOracle.decide(CallTeardownOracle.Input(
+            now: recordingStart.addingTimeInterval(120),
+            provisionalStartedAt: recordingStart.addingTimeInterval(110),
+            lastTeardownAt: nil,
+            oracleAvailable: true,
+            recordingStartedAt: recordingStart,
+            logLastWrittenAt: recordingStart.addingTimeInterval(-60)
+        ))
+        XCTAssertEqual(
+            verdict, .confirm(reason: .logStale),
+            "a log not written since the recording began cannot be evidence that no call ended"
+        )
+    }
+
+    func testFreshGenerationWithNoTeardownStillHolds() {
+        let recordingStart = Date(timeIntervalSince1970: 1_000_000)
+        let verdict = CallTeardownOracle.decide(CallTeardownOracle.Input(
+            now: recordingStart.addingTimeInterval(120),
+            provisionalStartedAt: recordingStart.addingTimeInterval(110),
+            lastTeardownAt: nil,
+            oracleAvailable: true,
+            recordingStartedAt: recordingStart,
+            logLastWrittenAt: recordingStart.addingTimeInterval(115)
+        ))
+        guard case .hold = verdict else {
+            return XCTFail("a live log with no teardown is the whole point of the hold, got \(verdict)")
+        }
+    }
+
+    /// Staleness is checked before the teardown lookback, so a dead log cannot be rescued by a
+    /// teardown it logged before it died.
+    func testStalenessOutranksAnOldTeardown() {
+        let recordingStart = Date(timeIntervalSince1970: 1_000_000)
+        let verdict = CallTeardownOracle.decide(CallTeardownOracle.Input(
+            now: recordingStart.addingTimeInterval(120),
+            provisionalStartedAt: recordingStart.addingTimeInterval(110),
+            lastTeardownAt: recordingStart.addingTimeInterval(105),
+            oracleAvailable: true,
+            recordingStartedAt: recordingStart,
+            logLastWrittenAt: recordingStart.addingTimeInterval(-60)
+        ))
+        XCTAssertEqual(verdict, .confirm(reason: .logStale))
+    }
+
+    /// The pre-END10 call shape (no recording start, no mtime) must keep behaving exactly as it did,
+    /// so this change cannot regress anything that still calls it that way.
+    func testOmittedEnd10InputsPreserveTheOriginalBehaviour() {
+        let provisional = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertEqual(
+            CallTeardownOracle.decide(CallTeardownOracle.Input(
+                now: provisional,
+                provisionalStartedAt: provisional,
+                lastTeardownAt: provisional.addingTimeInterval(-2),
+                oracleAvailable: true
+            )),
+            .confirm(reason: .teardownObserved)
+        )
+    }
+
 }

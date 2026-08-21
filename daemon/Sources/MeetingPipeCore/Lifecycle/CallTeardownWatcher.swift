@@ -24,10 +24,15 @@ public final class CallTeardownWatcher {
     public struct Snapshot: Equatable {
         public let lastTeardownAt: Date?
         public let available: Bool
+        /// mtime of the generation the tail is on, or nil when nothing has resolved yet. END10
+        /// item 5: a generation frozen before the recording began is a log that is not being
+        /// written, which must not read as a healthy oracle that has simply seen no teardown.
+        public let logLastWrittenAt: Date?
 
-        public init(lastTeardownAt: Date?, available: Bool) {
+        public init(lastTeardownAt: Date?, available: Bool, logLastWrittenAt: Date? = nil) {
             self.lastTeardownAt = lastTeardownAt
             self.available = available
+            self.logLastWrittenAt = logLastWrittenAt
         }
     }
 
@@ -39,9 +44,23 @@ public final class CallTeardownWatcher {
     /// tail is comfortably ahead of the consult that reads it.
     public static let defaultPollInterval: TimeInterval = 1.0
 
+    /// END10 item 2: a `DispatchSourceTimer`, not `Timer.scheduledTimer`.
+    ///
+    /// `rearm` is called from inside the `readQueue` work closure, and a `Timer` attaches to
+    /// `RunLoop.current`. A GCD worker has no run loop being run, so the timer never fired and the
+    /// tail ticked exactly once for the life of the process. `LogMuteAdapter` avoids this by
+    /// hopping to main before re-arming; this watcher deliberately does not hop, because its whole
+    /// design is that the blocking half stays off main and only the parsed instant crosses back
+    /// under a lock. A dispatch timer has no run-loop dependency at all, so it keeps that design
+    /// instead of bouncing a once-a-second file read through the main queue.
     public static let defaultScheduler: Scheduler = { delay, action in
-        let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in action() }
-        return { timer.invalidate() }
+        let timer = DispatchSource.makeTimerSource(
+            queue: DispatchQueue(label: "MeetingPipeCore.CallTeardownWatcher.timer")
+        )
+        timer.schedule(deadline: .now() + delay)
+        timer.setEventHandler { action() }
+        timer.resume()
+        return { timer.cancel() }
     }
 
     private struct State {
@@ -52,10 +71,27 @@ public final class CallTeardownWatcher {
         var available = false
         var started = false
         var generation = 0
+        /// END10 item 3. Rises immediately, falls only after `unavailableAfterFailures`
+        /// consecutive misses, so a one-tick flap cannot fail the oracle open mid-hold.
+        var consecutiveResolveFailures = 0
+        var logLastWrittenAt: Date?
+        var ticks = 0
+        var reportedFailure: String?
     }
+
+    /// Consecutive failed resolves before `available` drops.
+    ///
+    /// Measured, not guessed, as the spec requires. Over `events.jsonl` + `events.1.jsonl` from
+    /// 2026-08-05 to 2026-08-21, all 323 `micgate`/`log_mute_source_missing` rows are isolated
+    /// single ticks: the longest run of consecutive failures in the whole corpus is 1, and there
+    /// are zero runs of 2 or more. 2 would therefore already absorb every flap ever observed; 3 is
+    /// that with 3x margin, and costs 3 seconds to notice a genuinely absent log, against a 150 s
+    /// hold cap.
+    public static let unavailableAfterFailures = 3
 
     private let directory: URL
     private let family: String
+    private let eventLog: EventLog
     private let scheduler: Scheduler
     private let readQueue: DispatchQueue?
     private let pollInterval: TimeInterval
@@ -70,10 +106,12 @@ public final class CallTeardownWatcher {
         family: String,
         scheduler: @escaping Scheduler = CallTeardownWatcher.defaultScheduler,
         readQueue: DispatchQueue? = DispatchQueue(label: "MeetingPipeCore.CallTeardownWatcher"),
-        pollInterval: TimeInterval = CallTeardownWatcher.defaultPollInterval
+        pollInterval: TimeInterval = CallTeardownWatcher.defaultPollInterval,
+        eventLog: EventLog = NoopEventLog()
     ) {
         self.directory = directory
         self.family = family
+        self.eventLog = eventLog
         self.scheduler = scheduler
         self.readQueue = readQueue
         self.pollInterval = pollInterval
@@ -83,7 +121,8 @@ public final class CallTeardownWatcher {
     public static func teams(
         scheduler: @escaping Scheduler = CallTeardownWatcher.defaultScheduler,
         readQueue: DispatchQueue? = DispatchQueue(label: "MeetingPipeCore.CallTeardownWatcher"),
-        pollInterval: TimeInterval = CallTeardownWatcher.defaultPollInterval
+        pollInterval: TimeInterval = CallTeardownWatcher.defaultPollInterval,
+        eventLog: EventLog = NoopEventLog()
     ) -> CallTeardownWatcher {
         CallTeardownWatcher(
             directory: FileManager.default.homeDirectoryForCurrentUser
@@ -93,14 +132,29 @@ public final class CallTeardownWatcher {
             family: "MSTeamsNM_SlimCore_",
             scheduler: scheduler,
             readQueue: readQueue,
-            pollInterval: pollInterval
+            pollInterval: pollInterval,
+            eventLog: eventLog
         )
     }
 
     /// The current reading. Safe from any queue; never blocks on I/O.
     public func snapshot() -> Snapshot {
-        state.withLock { Snapshot(lastTeardownAt: $0.lastTeardownAt, available: $0.available) }
+        state.withLock {
+            Snapshot(
+                lastTeardownAt: $0.lastTeardownAt,
+                available: $0.available,
+                logLastWrittenAt: $0.logLastWrittenAt
+            )
+        }
     }
+
+    /// Whether `start()` has been called and not stopped. END10 item 8 pins the production wiring
+    /// against this, because the defect it fixes was a watcher that was constructed and never run.
+    public var isRunning: Bool { state.withLock { $0.started } }
+
+    /// Completed polls. The multi-tick fence reads this: against a run-loop `Timer` re-armed from
+    /// a GCD worker it stops at 1 forever, which is exactly the second END10 defect.
+    public var tickCount: Int { state.withLock { $0.ticks } }
 
     public func start() {
         let alreadyStarted = state.withLock { s -> Bool in
@@ -119,6 +173,10 @@ public final class CallTeardownWatcher {
             s.current = nil
             s.offset = 0
             s.pending = Data()
+            s.consecutiveResolveFailures = 0
+            s.available = false
+            s.logLastWrittenAt = nil
+            s.reportedFailure = nil
         }
         cancelBox.withLock { cancel in
             cancel?()
@@ -144,9 +202,34 @@ public final class CallTeardownWatcher {
                 directory: dir, family: fam,
                 current: current, offset: offset, skipHistory: firstResolve
             )
-            self.state.withLock { s in
-                guard s.generation == generation, s.started else { return }
-                s.available = tail.url != nil
+            // Returned rather than captured: the lock body is `@Sendable`, so the report has to
+            // leave through the return value instead of a mutated local.
+            let failureToReport: String? = self.state.withLock { s -> String? in
+                guard s.generation == generation, s.started else { return nil }
+                s.ticks &+= 1
+                var reportable: String?
+                if tail.url != nil {
+                    // Rises on the first success: a resolve that worked is proof the log is there.
+                    // Only the fall is damped (END10 item 3).
+                    s.consecutiveResolveFailures = 0
+                    s.available = true
+                    s.logLastWrittenAt = tail.modified
+                    s.reportedFailure = nil
+                } else {
+                    s.consecutiveResolveFailures &+= 1
+                    if s.consecutiveResolveFailures >= CallTeardownWatcher.unavailableAfterFailures {
+                        s.available = false
+                        s.logLastWrittenAt = nil
+                    }
+                    // One row per distinct cause per outage rather than one per tick, matching
+                    // `LogMuteAdapter.reportedMissing`. The cause is the point: END10 item 4 exists
+                    // because the old `try?` could not say whether this was TCC, I/O, or absence.
+                    let cause = tail.resolveFailure ?? "family absent from a directory that listed"
+                    if s.reportedFailure != cause {
+                        s.reportedFailure = cause
+                        reportable = cause
+                    }
+                }
                 s.current = tail.url
                 s.offset = tail.offset
                 // A rotation means a Teams restart, so a carried half line belongs to a file we are
@@ -157,6 +240,13 @@ public final class CallTeardownWatcher {
                 if let newest = parsed.newest, newest > (s.lastTeardownAt ?? .distantPast) {
                     s.lastTeardownAt = newest
                 }
+                return reportable
+            }
+            if let failureToReport {
+                self.eventLog.emit(
+                    category: "coordinator", action: "call_teardown_source_missing",
+                    attributes: ["family": fam, "reason": failureToReport]
+                )
             }
             self.rearm(generation: generation)
         }

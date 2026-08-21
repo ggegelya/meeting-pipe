@@ -78,7 +78,12 @@ final class Coordinator: NSObject {
     let lifecycleCoord: MeetingLifecycleCoordinator
     /// END9: started once at session setup and never per meeting, because the teardown line it
     /// needs can land within a second of a provisional opening and a cold tail would miss it.
-    let callTeardown = CallTeardownWatcher.teams()
+    /// END10: `start()` is called in `Coordinator.start()` below. This comment used to be the only
+    /// thing that said so, and `start()` was never wired, so the oracle reported "no opinion" for
+    /// the life of every process and every provisional end confirmed on it.
+    /// `LogEventAdapter` is stateless, so a second instance here costs nothing and keeps this a
+    /// stored `let` rather than something that has to wait for `init`.
+    let callTeardown = CallTeardownWatcher.teams(eventLog: LogEventAdapter())
     let micGate: MicGate
     /// The single VAD-gated idle backstop (TECH-END3): nudges, then auto-stops,
     /// after a long stretch of non-`.hot` MicGate verdicts with system audio also
@@ -476,6 +481,14 @@ final class Coordinator: NSObject {
             self?.session.handleMicBusyBundle(bundle)
         }
         discoveryWatcher.start()
+        // END10 item 1. Explicitly here, beside the other session-lifetime watchers, rather than
+        // lazily on the first `snapshot()`: a lazy start would still return `available: false` on
+        // that very first consult, because the resolve is async on `readQueue`, so it would leave
+        // the exact first-consult chop this task exists to remove while looking like a fix. The
+        // session starts minutes to hours before any meeting, so starting it here means the tail
+        // is always warm by the time a provisional can open. `CoordinatorWiringFenceTests` is what
+        // keeps this line from going missing again.
+        callTeardown.start()
 
         if let parsed = HotkeyManager.parse(liveManualHotkey) {
             hotkey.register(keyCode: parsed.keyCode, modifiers: parsed.modifiers) { [weak self] in

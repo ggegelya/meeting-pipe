@@ -54,6 +54,13 @@ public enum CallTeardownOracle {
         /// False when the log family is missing or unreadable (Teams never ran, the directory
         /// moved, Microsoft renamed the line). Degrades to today's behaviour, never to a hold.
         public let oracleAvailable: Bool
+        /// When the recording this provisional belongs to started. END10 item 6: without it a
+        /// previous call's `UnregisterCall` landing inside the lookback confirms this recording's
+        /// provisional. The 2026-08-21 chop is exactly that shape, the last teardown before it
+        /// having landed at 13:36:02, fifteen seconds before that recording even began.
+        public let recordingStartedAt: Date?
+        /// mtime of the generation the host is tailing. END10 item 5.
+        public let logLastWrittenAt: Date?
         public let lookbackSec: TimeInterval
         public let holdCapSec: TimeInterval
 
@@ -62,6 +69,8 @@ public enum CallTeardownOracle {
             provisionalStartedAt: Date,
             lastTeardownAt: Date?,
             oracleAvailable: Bool,
+            recordingStartedAt: Date? = nil,
+            logLastWrittenAt: Date? = nil,
             lookbackSec: TimeInterval = CallTeardownOracle.defaultLookbackSec,
             holdCapSec: TimeInterval = CallTeardownOracle.defaultHoldCapSec
         ) {
@@ -69,6 +78,8 @@ public enum CallTeardownOracle {
             self.provisionalStartedAt = provisionalStartedAt
             self.lastTeardownAt = lastTeardownAt
             self.oracleAvailable = oracleAvailable
+            self.recordingStartedAt = recordingStartedAt
+            self.logLastWrittenAt = logLastWrittenAt
             self.lookbackSec = lookbackSec
             self.holdCapSec = holdCapSec
         }
@@ -94,6 +105,13 @@ public enum CallTeardownOracle {
         /// Held to the ceiling without ever seeing a teardown. Deliberately still an end: a hold
         /// that could run forever would be a worse bug than the one being fixed.
         case holdCapReached = "hold_cap_reached"
+        /// The generation has not been written since this recording started, so the log is dead
+        /// rather than quiet (END10 item 5). Confirms for the same reason `oracleUnavailable`
+        /// does: an oracle that cannot see is not evidence the call is still up, and holding the
+        /// full cap on every end of a working day is a worse failure than degrading to the
+        /// pre-END9 behaviour. Distinct from `oracleUnavailable` so the field log can tell a
+        /// missing log apart from a frozen one.
+        case logStale = "log_stale"
     }
 
     /// Largest observed lead of the teardown line over the AX edge is 6.82 s, so 15 gives 2.2x
@@ -117,8 +135,20 @@ public enum CallTeardownOracle {
     public static func decide(_ input: Input) -> Verdict {
         guard input.oracleAvailable else { return .confirm(reason: .oracleUnavailable) }
 
-        if let teardown = input.lastTeardownAt,
-           teardown >= input.provisionalStartedAt.addingTimeInterval(-input.lookbackSec) {
+        // Staleness before the teardown check, because a frozen generation cannot produce a
+        // teardown for this call and would otherwise hold the full cap on every genuine end.
+        if let recordingStartedAt = input.recordingStartedAt,
+           let writtenAt = input.logLastWrittenAt,
+           writtenAt < recordingStartedAt {
+            return .confirm(reason: .logStale)
+        }
+
+        // The teardown has to be able to belong to this recording. The lookback still applies,
+        // because the line leads the AX edge by about 1.3 s, but it can never reach back past the
+        // moment the recording started (END10 item 6).
+        let lookbackFloor = input.provisionalStartedAt.addingTimeInterval(-input.lookbackSec)
+        let floor = max(lookbackFloor, input.recordingStartedAt ?? .distantPast)
+        if let teardown = input.lastTeardownAt, teardown >= floor {
             return .confirm(reason: .teardownObserved)
         }
 
