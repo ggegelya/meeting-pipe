@@ -216,11 +216,16 @@ final class MeetingRecorder {
     private static let systemAudioAutoRetryDelaySeconds = 7.0
 
     /// REC10: when the system channel's audio stopped, so a retry can pad the outage
-    /// it is resuming across. `systemUptime`, like every other elapsed measure here.
+    /// it is resuming across. Wall clock since REC16, deliberately unlike the other elapsed
+    /// measures here: this is the one span that can contain a system sleep, and `systemUptime`
+    /// stops during one. See `SystemCaptureRetryPlanner.plan`.
     /// Written on main (`handleSystemAudioLost`), advanced to the retry moment by
     /// `startSystemCapture` so a retry whose own SCStream start fails still leaves the
     /// next one a correct span to pad. 0 means "no loss on record".
-    private var systemLostUptime: Double = 0
+    /// REC16: **wall clock** (`Date().timeIntervalSince1970`), not `systemUptime`. The monotonic
+    /// clock does not advance while the Mac is asleep, so an outage spanning a sleep measured
+    /// short by exactly the sleep duration and the system channel was padded that much too little.
+    private var systemLostAt: Double = 0
 
     /// REC8: prevents system idle sleep for the whole recording, so an in-person
     /// manual recording with no meeting client holding the Mac awake cannot idle-sleep
@@ -401,7 +406,7 @@ final class MeetingRecorder {
         systemAccumFrames = 0
         micWriteFailures = WriteFailureTracker()
         systemWriteFailures = WriteFailureTracker()
-        systemLostUptime = 0
+        systemLostAt = 0
         // Reset so a prior session's fade/verdict/off-record can't bleed in; the
         // writer itself is rebuilt below once the sample rate is bound.
         gateAccess.withLock {
@@ -440,7 +445,7 @@ final class MeetingRecorder {
         // Replacing it is the only sanctioned way back, and it is free when nothing raised.
         if GuardedTapInstall.isCondemned(engine) {
             Log.writeLine("recorder", "replacing the audio engine: a previous installTap raise condemned it")
-            engine = AVAudioEngine()
+            replaceEngine(reason: "condemned_at_start")
         }
 
         var chain = try buildMicChain(voiceProcessing: voiceProcessing, micURL: micURL)
@@ -547,7 +552,7 @@ final class MeetingRecorder {
         try? FileManager.default.removeItem(at: micURL)
         if recreateEngine {
             voiceProcessingEnabledForSession = false
-            engine = AVAudioEngine()
+            replaceEngine(reason: "failed_start_unwind")
         } else {
             engine.inputNode.removeTap(onBus: 0)
             // start() failed after VP was enabled: flip it back off so the HAL
@@ -699,13 +704,14 @@ final class MeetingRecorder {
     /// captured. `SystemCaptureRetryPlanner` owns that decision; the `.openFresh` branch
     /// below is the only one that may truncate.
     private func startSystemCapture(systemURL: URL, isRetry: Bool) {
-        let now = ProcessInfo.processInfo.systemUptime
+        // REC16: wall clock, matching the mic channel and surviving a sleep.
+        let now = Date().timeIntervalSince1970
         let plan: SystemCaptureRetryPlan = isRetry
             ? SystemCaptureRetryPlanner.plan(
                 hasOpenFile: systemFile != nil && systemWriter != nil,
                 capturedFirstFrame: systemFirstFrameUptime > 0,
-                lostAtUptime: systemLostUptime,
-                retryAtUptime: now,
+                lostAt: systemLostAt,
+                retryAt: now,
                 sampleRate: SystemAudioCapture.captureFormat.sampleRate
             )
             : .openFresh
@@ -721,7 +727,7 @@ final class MeetingRecorder {
             resumedOpenFile = true
             // Advance the mark rather than clearing it: if this retry's own SCStream
             // start fails, the next retry still has a correct span to pad from.
-            systemLostUptime = now
+            systemLostAt = now
             padSystemChannel(frames: padFrames)
             Log.event(category: "recorder", action: "system_capture_resumed", attributes: [
                 "gap_sec": gapSeconds,
@@ -984,7 +990,7 @@ final class MeetingRecorder {
     private func handleSystemAudioLost(reason: String, stalledForSeconds: TimeInterval = 0) {
         guard isRecording, let dying = systemCapture else { return }
         // REC10: date the outage now, so a retry knows how much silence to pad.
-        systemLostUptime = max(0, ProcessInfo.processInfo.systemUptime - max(0, stalledForSeconds))
+        systemLostAt = max(0, Date().timeIntervalSince1970 - max(0, stalledForSeconds))
         Log.writeLine("recorder", "system audio lost mid-recording (\(reason)); banner + retry now live")
         Log.event(category: "recorder", action: "system_capture_lost", attributes: [
             "reason": reason,
@@ -1168,6 +1174,36 @@ final class MeetingRecorder {
     /// stop path's, queued behind it. `addMainQueueObserver` registers with a nil
     /// queue and hops to main explicitly: same thread for the handler, no wait for
     /// the poster. The full incident is in that helper's doc comment.
+    /// REC16 item 1: the only sanctioned way to swap the engine.
+    ///
+    /// `armConfigurationChangeObserver()` registers with `object: engine`, so the observer is
+    /// bound to one specific `AVAudioEngine` instance. REC15 gave `recoverCapture` the ability to
+    /// replace a condemned engine mid-recording and did not re-arm it, so from that moment the
+    /// observer watched an object nothing posts to any more: `AVAudioEngineConfigurationChange`
+    /// from the live engine never reached `handleConfigurationChange`, and the exact failure the
+    /// observer exists to catch (AirPods pulled mid-call) ran unhandled for the rest of the
+    /// recording. A regression introduced by REC15's own fix, correct at the moment of recovery
+    /// and wrong immediately after it.
+    ///
+    /// A helper rather than a second `armConfigurationChangeObserver()` call inside
+    /// `recoverCapture`, so a fourth replacement site cannot reintroduce it. Re-arming only when
+    /// one was already armed is what keeps the two harmless sites harmless: `start()`'s own
+    /// replacement runs before the first arm, and `unwindFailedEngineStart` runs on a failed
+    /// start with no recording to lose.
+    private func replaceEngine(reason: String) {
+        let wasArmed = configChangeObserver != nil
+        if let observer = configChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configChangeObserver = nil
+        }
+        engine = AVAudioEngine()
+        Log.event(category: "recorder", action: "engine_replaced", attributes: [
+            "reason": reason,
+            "observer_rearmed": wasArmed,
+        ])
+        if wasArmed { armConfigurationChangeObserver() }
+    }
+
     private func armConfigurationChangeObserver() {
         configChangeObserver = addMainQueueObserver(
             on: .default,
@@ -1324,7 +1360,7 @@ final class MeetingRecorder {
         // for the same reason: a raise is a race against a moving hardware format, not a state.
         if !tapOutcome.isInstalled, tapOutcome.requiresFreshEngine {
             Log.writeLine("recorder", "replacing the audio engine mid-recording: an installTap raise condemned it")
-            engine = AVAudioEngine()
+            replaceEngine(reason: "condemned_mid_recording")
 
             // A replacement is a different node, so voice processing does not carry across and
             // the format has to be read again. Re-applying it matters beyond fidelity: the flag
@@ -1710,7 +1746,7 @@ final class MeetingRecorder {
         self.micFires = 0
         self.systemFires = 0
         self.systemFirstFrameUptime = 0
-        self.systemLostUptime = 0
+        self.systemLostAt = 0
 
         // Stop the tap-liveness + system-liveness watchdogs before teardown so neither
         // can re-arm or re-surface a recorder that is shutting down.

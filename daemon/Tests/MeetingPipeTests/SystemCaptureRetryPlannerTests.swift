@@ -23,8 +23,8 @@ final class SystemCaptureRetryPlannerTests: XCTestCase {
         let plan = SystemCaptureRetryPlanner.plan(
             hasOpenFile: false,
             capturedFirstFrame: false,
-            lostAtUptime: 100,
-            retryAtUptime: 107,
+            lostAt: 100,
+            retryAt: 107,
             sampleRate: sampleRate
         )
         XCTAssertEqual(plan, .openFresh)
@@ -36,8 +36,8 @@ final class SystemCaptureRetryPlannerTests: XCTestCase {
         let plan = SystemCaptureRetryPlanner.plan(
             hasOpenFile: true,
             capturedFirstFrame: false,
-            lostAtUptime: 100,
-            retryAtUptime: 107,
+            lostAt: 100,
+            retryAt: 107,
             sampleRate: sampleRate
         )
         XCTAssertEqual(plan, .openFresh)
@@ -50,8 +50,8 @@ final class SystemCaptureRetryPlannerTests: XCTestCase {
         let plan = SystemCaptureRetryPlanner.plan(
             hasOpenFile: true,
             capturedFirstFrame: true,
-            lostAtUptime: 100,
-            retryAtUptime: 107,
+            lostAt: 100,
+            retryAt: 107,
             sampleRate: sampleRate
         )
         XCTAssertEqual(plan, .resumeOpenFile(padFrames: 7 * 48000, gapSeconds: 7, clamped: false))
@@ -64,8 +64,8 @@ final class SystemCaptureRetryPlannerTests: XCTestCase {
         let plan = SystemCaptureRetryPlanner.plan(
             hasOpenFile: true,
             capturedFirstFrame: true,
-            lostAtUptime: 0,
-            retryAtUptime: 107,
+            lostAt: 0,
+            retryAt: 107,
             sampleRate: sampleRate
         )
         XCTAssertEqual(plan, .resumeOpenFile(padFrames: 0, gapSeconds: 0, clamped: false))
@@ -75,8 +75,8 @@ final class SystemCaptureRetryPlannerTests: XCTestCase {
         let plan = SystemCaptureRetryPlanner.plan(
             hasOpenFile: true,
             capturedFirstFrame: true,
-            lostAtUptime: 200,
-            retryAtUptime: 107,
+            lostAt: 200,
+            retryAt: 107,
             sampleRate: sampleRate
         )
         XCTAssertEqual(plan, .resumeOpenFile(padFrames: 0, gapSeconds: 0, clamped: false))
@@ -90,8 +90,8 @@ final class SystemCaptureRetryPlannerTests: XCTestCase {
         let plan = SystemCaptureRetryPlanner.plan(
             hasOpenFile: true,
             capturedFirstFrame: true,
-            lostAtUptime: 100,
-            retryAtUptime: 100 + gap,
+            lostAt: 100,
+            retryAt: 100 + gap,
             sampleRate: sampleRate
         )
         XCTAssertEqual(plan, .resumeOpenFile(

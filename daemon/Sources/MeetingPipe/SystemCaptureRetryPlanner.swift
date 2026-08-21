@@ -41,11 +41,28 @@ enum SystemCaptureRetryPlanner {
     /// logs the real gap, because a silently misaligned channel is the failure this
     /// task was filed against and a quietly clamped one would be the same failure
     /// wearing a fix.
-    static let maxPadSeconds: Double = 300
+    /// Raised from 300 by REC16, and re-derived rather than nudged, because that task made this
+    /// cap start mattering: the gap is now measured on the wall clock, so a sleep-length outage
+    /// reaches it where a monotonic one never could. The two field cases are 7.7 s (an outage with
+    /// no sleep in it, 2026-08-19) and 557.0 s (a system sleep mid-recording, 2026-08-17), and the
+    /// second one has to pad in full or the recovered channel is late by the excess, which is the
+    /// failure the padding exists to prevent. 900 gives 1.6x headroom over the largest observed
+    /// outage while still bounding the pathological case the cap was written for: silence costs
+    /// ~384 KB/s at the 48 kHz stereo Float32 capture format, so this ceiling is ~345 MB, and an
+    /// overnight sleep is still cut rather than written out in full.
+    static let maxPadSeconds: Double = 900
 
-    /// Decide what a retry does. `lostAtUptime` / `retryAtUptime` are `systemUptime`
-    /// marks, not wall clock, for the same reason every other elapsed measure in the
-    /// recorder is: an NTP step mid-meeting cannot move them.
+    /// Decide what a retry does. `lostAt` / `retryAt` are **wall-clock** seconds.
+    ///
+    /// They were `systemUptime` marks until REC16, on the stated reasoning that an NTP step
+    /// mid-meeting cannot move them. That reasoning is real and is outweighed: `systemUptime` does
+    /// not advance while the Mac is asleep, and the mic channel already measures its own gap on
+    /// `Date()`, so the two channels drifted apart by exactly the sleep duration whenever a
+    /// recording spanned one. Measured 2026-08-17: a 557.0 s outage padded 106.8 s, leaving the
+    /// finished file seven and a half minutes short and every system-channel sample after the wake
+    /// stamped that far early relative to the mic channel, which transcript and diarization
+    /// timestamps then inherit. An NTP correction on a running Mac is slewed and small; a sleep is
+    /// unbounded and ordinary. Same wall-versus-monotonic class as PIPE10, in another subsystem.
     ///
     /// `capturedFirstFrame` is what distinguishes a file worth keeping from one that
     /// holds nothing but a WAV header. A file that never took a frame carries no
@@ -54,18 +71,18 @@ enum SystemCaptureRetryPlanner {
     static func plan(
         hasOpenFile: Bool,
         capturedFirstFrame: Bool,
-        lostAtUptime: Double,
-        retryAtUptime: Double,
+        lostAt: Double,
+        retryAt: Double,
         sampleRate: Double
     ) -> SystemCaptureRetryPlan {
         guard hasOpenFile, capturedFirstFrame else { return .openFresh }
         // No loss mark (or a clock that ran backwards) means the outage cannot be
         // measured. Resume anyway: an unpadded resume misplaces the recovered audio,
         // a reopen destroys the captured audio, and only one of those is recoverable.
-        guard lostAtUptime > 0, retryAtUptime > lostAtUptime else {
+        guard lostAt > 0, retryAt > lostAt else {
             return .resumeOpenFile(padFrames: 0, gapSeconds: 0, clamped: false)
         }
-        let gapSeconds = retryAtUptime - lostAtUptime
+        let gapSeconds = retryAt - lostAt
         let clamped = gapSeconds > maxPadSeconds
         let padSeconds = clamped ? maxPadSeconds : gapSeconds
         return .resumeOpenFile(

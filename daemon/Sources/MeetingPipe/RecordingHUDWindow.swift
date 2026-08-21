@@ -244,6 +244,11 @@ final class RecordingHUDWindow {
         startedAt = nil
         pulseDot?.stopPulsing()
 
+        // REC16: per-recording state, and the window outlives the recording (the Coordinator holds
+        // one). Without this, a meeting that lost its mic would open the next one reading
+        // "Mic lost", and the two other label owners would defer to a failure that already ended.
+        micCaptureLost = false
+
         guard let panel = panel else { return }
         self.panel = nil
         self.elapsedLabel = nil
@@ -334,9 +339,47 @@ final class RecordingHUDWindow {
     /// Deliberately does not resize (UX35): `HUDPanelGeometry.pillWidth` holds the longer label
     /// with room to spare, so both states share one width and the pill never jumps under the
     /// user's cursor.
+    /// REC16 item 3: show or clear the persistent "Mic lost" state.
+    ///
+    /// Every `configuration_change_unrecoverable` path ends in `reportRecoveryFailure`, which
+    /// fires `onConfigurationChange?(.failed)` once and does not stop the recording. So the
+    /// recording ran to its normal end writing a dead mic channel behind a single notification,
+    /// and once that notification was dismissed the path was indistinguishable from the healthy
+    /// one. In the field the event fired 13 times against 5 recoveries. A recording that keeps
+    /// growing while capturing nothing from the mic satisfies a report of recordings "dropping"
+    /// just as well as one that ends early.
+    ///
+    /// The label rather than the degraded banner, which is where the spec pointed: that banner
+    /// carries a "Retry system audio" action, and an abandoned mic has no retry to offer, since
+    /// the recorder reached here by giving up. A control that cannot act is worse than a state
+    /// that is simply true, and MIC14's off-record label is this file's own precedent for a
+    /// persistent state with no action attached. It does not resize, for MIC14's reason.
+    func setMicCaptureLost(_ on: Bool) {
+        micCaptureLost = on
+        if on {
+            recordingLabel?.stringValue = "Mic lost"
+            recordingLabel?.textColor = MPColors.pulse600
+            // The recorder's level is frozen at its last value once the tap is abandoned, so the
+            // meter would otherwise sit lit beside a label saying the mic is gone.
+            levelMeter?.level = 0
+        } else {
+            recordingLabel?.stringValue = isOffTheRecord ? "Off the record" : "Recording"
+            recordingLabel?.textColor = isOffTheRecord ? MPColors.pulse600 : MPColors.fgMuted
+        }
+    }
+
+    /// Whether the mic half of this recording has been given up on. Read by the two other
+    /// label owners so they cannot overwrite it.
+    private(set) var micCaptureLost = false
+
     func setOffTheRecord(_ on: Bool) {
-        recordingLabel?.stringValue = on ? "Off the record" : "Recording"
-        recordingLabel?.textColor = on ? MPColors.pulse600 : MPColors.fgMuted
+        // REC16: a lost mic outranks both this and "Confirming end". It is the only one of the
+        // three that reports something broken rather than something chosen, and it is the one the
+        // reader has to see, so it keeps the label until the recording ends.
+        if !micCaptureLost {
+            recordingLabel?.stringValue = on ? "Off the record" : "Recording"
+            recordingLabel?.textColor = on ? MPColors.pulse600 : MPColors.fgMuted
+        }
         offRecordButton?.setActive(on)
         (contentView as? HUDBackgroundView)?.isOffRecord = on
         // Drop the meter on the click rather than at the next 10 Hz poll, so the toggle reads as
@@ -356,7 +399,7 @@ final class RecordingHUDWindow {
     func setConfirmingEnd(_ on: Bool) {
         // Off-the-record owns this label while it is on, and it is the stronger claim: it is about
         // what is being captured, where this is only about why we are still capturing.
-        if (contentView as? HUDBackgroundView)?.isOffRecord != true {
+        if (contentView as? HUDBackgroundView)?.isOffRecord != true, !micCaptureLost {
             recordingLabel?.stringValue = on ? "Confirming end" : "Recording"
             recordingLabel?.textColor = on ? MPColors.fgSubtle : MPColors.fgMuted
         }

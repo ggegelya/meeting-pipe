@@ -153,6 +153,11 @@ protocol SessionHUDPresenting: AnyObject {
     /// running while we wait. Without a surface, a hold that runs to its 150 s cap is a bug report
     /// rather than an observation.
     func setConfirmingEnd(_ on: Bool)
+
+    /// REC16: show or clear the persistent "Mic lost" state after an unrecoverable capture
+    /// failure. Persistent rather than a one-shot notification, because the recording keeps
+    /// running with a dead mic channel and that has to stay visible for the rest of it.
+    func setMicCaptureLost(_ on: Bool)
 }
 
 /// The "record this meeting?" prompt (`MeetingPromptWindow`).

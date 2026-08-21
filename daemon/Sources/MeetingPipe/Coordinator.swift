@@ -396,9 +396,19 @@ final class Coordinator: NSObject {
         // re-arms capture where it can; this just tells the user.
         recorder.onConfigurationChange = { [weak self] outcome in
             guard let self = self else { return }
+            // REC16 item 3: the notification is a moment, and this failure lasts for the rest of
+            // the recording. Every `configuration_change_unrecoverable` path leaves the recording
+            // running with a dead mic channel, so the HUD carries a persistent state beside the
+            // one-shot toast, the way a degraded system channel already does.
             switch outcome {
-            case .resumed: self.notifier.notifyCaptureRecovered()
-            case .failed:  self.notifier.notifyCaptureLost()
+            case .resumed:
+                Log.event(category: "recording", action: "recovered", attributes: ["channel": "mic"])
+                self.recordingHUD.setMicCaptureLost(false)
+                self.notifier.notifyCaptureRecovered()
+            case .failed:
+                Log.event(category: "recording", action: "degraded", attributes: ["channel": "mic"])
+                self.recordingHUD.setMicCaptureLost(true)
+                self.notifier.notifyCaptureLost()
             }
         }
         // Surface a system-audio (SCStream) failure on the HUD during the

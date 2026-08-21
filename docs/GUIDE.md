@@ -59,6 +59,10 @@ Press `⌃⌥M` anywhere in macOS, or pick **Start Recording** from the menu bar
 
 Useful for a call you do not want summarized by anything, or one you would rather hand-write.
 
+### If the panel says "Mic lost"
+
+It means the microphone stopped reaching the recording and the app could not get it back, usually after a device was pulled or swapped mid-call. The recording keeps running and still captures the other side of the call, so what you have is a one-sided recording rather than nothing. The panel says so for the rest of the recording rather than only in a notification you might miss, because the file keeps growing either way and there is otherwise no way to tell the two apart. There is nothing to click: stop the recording and start a new one once the microphone is back.
+
 ### Off the record
 
 For a stretch of a call that should not reach your notes, press `⌃⌥O`, or click the **mic-with-a-slash** button on the recording panel (it is also **Go off the record** on that panel's right-click menu). The panel shows a steady **Off the record** state and the voice meter drops to zero until you turn it off again. Press it a second time to resume; an open stretch closes by itself when you stop.
