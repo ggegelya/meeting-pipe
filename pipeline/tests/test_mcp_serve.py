@@ -408,6 +408,115 @@ def test_the_allowlist_is_resolved_per_call(library: Path, tmp_path: Path) -> No
 
 
 # --------------------------------------------------------------------------
+# AUTO5: a wrong call must not return a right-looking answer
+# --------------------------------------------------------------------------
+
+
+def test_an_unknown_argument_is_named_rather_than_dropped(
+    library: Path, tmp_path: Path
+) -> None:
+    """The defect this closes. On 2026-08-21 a client passed `offset`, got a
+    byte-identical window back with `offset: 0`, concluded the argument was
+    ignored, and left the tool to read the file off disk, which bypasses both
+    the visibility gate and the corrections overlay."""
+    lib = _lib(library, tmp_path)
+    out = mcp_serve.dispatch(lib, "get_transcript", {"stem": NORMAL_A, "offset": 2000})
+    assert out["error"] == "unknown_argument"
+    assert out["unknown"] == ["offset"]
+    assert "around" in out["accepted"] and "window" in out["accepted"]
+    assert "content" not in out, "a rejected call must not also answer"
+
+
+def test_the_unknown_argument_rule_is_a_property_of_the_seam(
+    library: Path, tmp_path: Path
+) -> None:
+    """Asserted on a tool other than `get_transcript`, because `dispatch` is the
+    single seam and the rule has to hold for every branch rather than the one
+    the bug was reported against."""
+    lib = _lib(library, tmp_path)
+    for name, args in (
+        ("search_meetings", {"query": "anything", "bogus_key": 1}),
+        ("get_meeting", {"stem": NORMAL_A, "offset": 5}),
+        ("list_meetings", {"bogus_key": "x"}),
+        ("list_actions", {"nope": True}),
+    ):
+        out = mcp_serve.dispatch(lib, name, args)
+        assert out["error"] == "unknown_argument", f"{name} accepted an undeclared key"
+        assert out["tool"] == name
+
+
+def test_every_schema_rejects_undeclared_arguments() -> None:
+    """The client-side half. `dispatch` enforces it for clients that do not
+    validate; this is what tells the ones that do."""
+    specs = mcp_serve.tool_specs()
+    assert specs, "there are tools to check"
+    for spec in specs:
+        assert spec["inputSchema"]["additionalProperties"] is False, spec["name"]
+
+
+def test_the_argument_map_is_derived_from_the_schemas() -> None:
+    """Written twice, these drift; the check would then pass while rejecting an
+    argument the schema advertises."""
+    for spec in mcp_serve.tool_specs():
+        assert mcp_serve.TOOL_ARGUMENTS[spec["name"]] == frozenset(
+            spec["inputSchema"]["properties"]
+        )
+    assert set(mcp_serve.TOOL_ARGUMENTS) == set(mcp_serve.TOOL_NAMES)
+
+
+def test_a_declared_argument_still_works(library: Path, tmp_path: Path) -> None:
+    """The guard must not be a blanket refusal: every declared argument still
+    reaches its tool."""
+    (library / f"{NORMAL_A}.md").write_text("z" * 50_000, encoding="utf-8")
+    lib = _lib(library, tmp_path)
+    out = mcp_serve.dispatch(lib, "get_transcript", {"stem": NORMAL_A, "window": 500})
+    assert "error" not in out
+    assert out["window"] == 500
+
+
+def test_an_explicit_zero_window_is_clamped_not_defaulted(
+    library: Path, tmp_path: Path
+) -> None:
+    """`int(value or default)` turned an explicit 0 into 4000, because 0 is
+    falsy, so asking for nothing returned a full default window. Only a missing
+    argument may take the default; an explicit one is clamped by the tool that
+    owns the bound."""
+    (library / f"{NORMAL_A}.md").write_text("z" * 50_000, encoding="utf-8")
+    lib = _lib(library, tmp_path)
+    out = mcp_serve.dispatch(lib, "get_transcript", {"stem": NORMAL_A, "window": 0})
+    assert out["window"] != mcp_tools.DEFAULT_TRANSCRIPT_WINDOW
+    assert out["window"] == 200, "clamped to the floor the tool already enforces"
+
+
+def test_an_explicit_zero_limit_is_not_silently_the_default(
+    library: Path, tmp_path: Path
+) -> None:
+    """The same falsy-integer bug on the three `limit` call sites. The spec named
+    `window`; leaving three identical instances behind would have been arbitrary."""
+    lib = _lib(library, tmp_path)
+    # The tool owns the bound and floors `limit` at 1 (`max(1, int(limit))`), so an
+    # explicit 0 lands on that floor. What matters is that it no longer silently
+    # becomes 100: the value the caller passed now reaches the tool that clamps it.
+    zero = mcp_serve.dispatch(lib, "list_meetings", {"limit": 0})["meetings"]
+    assert len(zero) == 1
+    assert len(mcp_serve.dispatch(lib, "list_meetings", {})["meetings"]) > 1, (
+        "a missing limit still takes the default"
+    )
+
+
+def test_a_rejected_argument_cannot_reach_a_withheld_stem(
+    library: Path, tmp_path: Path
+) -> None:
+    """A paging-shaped argument is exactly the sort of addition that could reach a
+    file the gate meant to hide, so the refusal is checked against a withheld
+    stem too: it must be the unknown-argument shape, never the file."""
+    lib = _lib(library, tmp_path)
+    out = mcp_serve.dispatch(lib, "get_transcript", {"stem": NDA, "offset": 0})
+    assert out["error"] == "unknown_argument"
+    assert "content" not in out, "the refusal must not also answer for a withheld stem"
+
+
+# --------------------------------------------------------------------------
 # The SDK wiring itself (skipped where the optional extra is absent)
 # --------------------------------------------------------------------------
 

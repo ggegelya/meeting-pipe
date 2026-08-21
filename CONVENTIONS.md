@@ -680,6 +680,25 @@ Swift's `MCPStatus` (`daemon/Sources/MeetingPipe/Preferences/MCPStatusStore.swif
 
 `--status` deliberately works without the optional `mcp` extra (`sdk_available` is how it says so), because Preferences has to render on an install that never opted in.
 
+### Tool arguments are closed (AUTO5)
+
+Every tool's `inputSchema` carries `additionalProperties: false`, and `dispatch` rejects an argument the called tool does not declare, returning a client-visible payload rather than an answer:
+
+```json
+{
+  "error": "unknown_argument",
+  "tool": "get_transcript",
+  "unknown": ["offset"],
+  "accepted": ["around", "stem", "window"]
+}
+```
+
+Both halves exist on purpose: the schema binds a client that validates, `dispatch` binds one that does not. The accepted set is derived from the schemas (`TOOL_ARGUMENTS`), so the check and the advertisement cannot drift, and a sixth tool inherits the rule without being edited in.
+
+The rule is a property of `dispatch` rather than of one branch, in the same way read-only-ness is. Before AUTO5 an undeclared key was read by nobody and rejected by nobody, so a client that guessed at a parameter got a plausible right-looking answer back: on 2026-08-21 one passed `offset` to `get_transcript`, received a byte-identical window, concluded the argument was being ignored, and left the tool to read the meeting file off disk, which bypasses both the visibility gate and the corrections overlay. **A wrong call has to fail loudly, because the fallback from a silently-wrong tool is the unguarded path.**
+
+One related shape, same commit: an explicit `0` is no longer read as absent. `int(arguments.get(k) or default)` turned `window: 0` into 4000 and `limit: 0` into the default, because `0` is falsy. Only a missing argument takes the default now; an explicit one reaches the tool that owns its bound and is clamped there (`window` to its 200 floor, `limit` to `max(1, ...)`).
+
 ---
 
 ## Speaker enrollment (FEAT3-VOICEPRINT / FEAT3-ROSTER)

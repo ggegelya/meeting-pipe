@@ -77,7 +77,7 @@ def tool_specs() -> list[dict[str, Any]]:
     are assertable on a CI runner with no `mcp` installed; `_mcp_tools` below is
     the one place they become SDK types.
     """
-    return [
+    return _closed([
         {
             "name": "search_meetings",
             "description": (
@@ -169,10 +169,29 @@ def tool_specs() -> list[dict[str, Any]]:
                 },
             },
         },
-    ]
+    ])
+
+
+def _closed(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """AUTO5: every tool's schema rejects arguments it does not declare.
+
+    Applied in a loop rather than written into each of the five literals above,
+    so a sixth tool cannot be added without it. The transport enforces the same
+    rule in `dispatch`, because a schema only binds a client that validates.
+    """
+    for spec in specs:
+        spec["inputSchema"]["additionalProperties"] = False
+    return specs
 
 
 TOOL_NAMES = tuple(spec["name"] for spec in tool_specs())
+
+#: Argument names each tool accepts, derived from the schemas rather than
+#: written twice, so `dispatch`'s check and `tool_specs()` cannot drift.
+TOOL_ARGUMENTS: dict[str, frozenset[str]] = {
+    spec["name"]: frozenset(spec["inputSchema"]["properties"])
+    for spec in tool_specs()
+}
 
 
 class Library:
@@ -212,13 +231,29 @@ def dispatch(library: Library, name: str, arguments: dict[str, Any]) -> dict[str
     Pure with respect to the transport, so the whole tool surface is testable
     without an MCP client, an event loop, or the SDK.
     """
+    if name not in TOOL_ARGUMENTS:
+        return {"error": "unknown_tool", "tool": name}
+    # AUTO5: a wrong call must not return a plausible right-looking answer. Before
+    # this, `dispatch` read the keys it knew and never looked at the rest, so a
+    # client passing `offset` got a byte-identical window back and concluded the
+    # argument was being honoured and ignored. Naming the key is the whole point:
+    # the observed client abandoned the tool and read the file off disk instead,
+    # which bypasses both the visibility gate and the corrections overlay.
+    unknown = sorted(set(arguments) - TOOL_ARGUMENTS[name])
+    if unknown:
+        return {
+            "error": "unknown_argument",
+            "tool": name,
+            "unknown": unknown,
+            "accepted": sorted(TOOL_ARGUMENTS[name]),
+        }
     allow = library.allow_stems()
     if name == "search_meetings":
         index = library.index(allow)
         return mcp_tools.search_meetings(
             library.root, index,
             str(arguments.get("query") or ""),
-            limit=int(arguments.get("limit") or mcp_tools.DEFAULT_SEARCH_LIMIT),
+            limit=_int_or(arguments.get("limit"), mcp_tools.DEFAULT_SEARCH_LIMIT),
         )
     if name == "get_meeting":
         return mcp_tools.get_meeting(library.root, str(arguments.get("stem") or ""), allow)
@@ -227,7 +262,7 @@ def dispatch(library: Library, name: str, arguments: dict[str, Any]) -> dict[str
         return mcp_tools.get_transcript(
             library.root, str(arguments.get("stem") or ""), allow,
             around=str(around) if around else None,
-            window=int(arguments.get("window") or mcp_tools.DEFAULT_TRANSCRIPT_WINDOW),
+            window=_int_or(arguments.get("window"), mcp_tools.DEFAULT_TRANSCRIPT_WINDOW),
         )
     if name == "list_meetings":
         return mcp_tools.list_meetings(
@@ -235,7 +270,7 @@ def dispatch(library: Library, name: str, arguments: dict[str, Any]) -> dict[str
             since=_opt_str(arguments.get("since")),
             until=_opt_str(arguments.get("until")),
             workflow=_opt_str(arguments.get("workflow")),
-            limit=int(arguments.get("limit") or 100),
+            limit=_int_or(arguments.get("limit"), 100),
         )
     if name == "list_actions":
         open_only = arguments.get("open_only")
@@ -243,9 +278,19 @@ def dispatch(library: Library, name: str, arguments: dict[str, Any]) -> dict[str
             library.root, allow,
             open_only=True if open_only is None else bool(open_only),
             since=_opt_str(arguments.get("since")),
-            limit=int(arguments.get("limit") or 200),
+            limit=_int_or(arguments.get("limit"), 200),
         )
     return {"error": "unknown_tool", "tool": name}
+
+
+def _int_or(value: Any, default: int) -> int:
+    """AUTO5: `int(value or default)` silently turned an explicit 0 into the
+    default, because 0 is falsy. Only a missing argument may take the default;
+    an explicit value is passed through and clamped by the tool that owns the
+    bound. Named on `window` in the spec, fixed on the three `limit`s too, since
+    it is the same line and the same wrong answer.
+    """
+    return default if value is None else int(value)
 
 
 def _opt_str(value: Any) -> str | None:
