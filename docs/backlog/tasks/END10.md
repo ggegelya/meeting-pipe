@@ -90,3 +90,7 @@ The smallest change that fixes the class, in `MeetingPipeCore/Lifecycle/` and `M
 
 1. **[owner] After the fix installs, use the app normally for a day of Teams calls.** Then grep `events.jsonl` for `lifecycle_end_held` and for `oracle_unavailable`. Expected: the first present, the second absent. This confirms afterwards; it does not gate building.
 2. **[owner] If any `hold_cap_reached` rows appear**, the SlimCore teardown line has moved or the log is not being written, and scope item 5 needs re-measuring rather than the constants nudging. END9's `decide()` doc comment already names this as the drift detector.
+
+## Field result 2026-09-02
+
+Item 5 shipped as an instant confirm (`log_stale`) and fired on 11 of the 12 oracle consults between 2026-08-22 and 2026-09-02, 8 of them false ends the owner put back on record by hand. The SlimCore generation's mtime is a flush clock that sits at the previous call boundary for the whole of a quiet call (the mute reader on the same file measured lines landing up to 17 m 59 s after their own stamp), so "not written since the recording began" is the normal state of a live call rather than the signature of a dead log. The correction is [END12](./END12.md); this spec's item 5 and its two pinning tests are superseded by that task, and the field bar under Acceptance above passes while the chop continues (9 `lifecycle_end_held` rows, 8 of them opened on ends corroboration had already confirmed), so read END12's bar instead.
