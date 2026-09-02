@@ -1404,10 +1404,17 @@ final class MeetingSessionController: @unchecked Sendable {
             self?.consultTeardownOracle()
         }
         teardownHold?.timer = timer
-        Log.event(category: "coordinator", action: "lifecycle_end_held", attributes: [
+        var held: [String: Any] = [
             "bundle_id": context.bundleID,
             "hold_cap_sec": CallTeardownOracle.defaultHoldCapSec,
-        ])
+        ]
+        // END12: how old the SlimCore generation looked when the hold opened. The oracle no longer
+        // decides on it (a quiet log and a dead one look the same for the length of a call), so
+        // this is where a cadence-based dead-log bound would be measured from, if one is ever wanted.
+        if let written = coordinator.callTeardown.snapshot().logLastWrittenAt {
+            held["log_written_sec_ago"] = Date().timeIntervalSince(written)
+        }
+        Log.event(category: "coordinator", action: "lifecycle_end_held", attributes: held)
         Log.writeLine(
             "daemon",
             "holding a provisional end for \(context.bundleID): Teams logged no call teardown, so the call is probably still up"

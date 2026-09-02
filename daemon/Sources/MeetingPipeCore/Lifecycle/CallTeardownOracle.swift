@@ -59,7 +59,11 @@ public enum CallTeardownOracle {
         /// provisional. The 2026-08-21 chop is exactly that shape, the last teardown before it
         /// having landed at 13:36:02, fifteen seconds before that recording even began.
         public let recordingStartedAt: Date?
-        /// mtime of the generation the host is tailing. END10 item 5.
+        /// mtime of the generation the host is tailing. Carried for the host to log and for a
+        /// cadence-measured dead-log bound if one is ever built (END12 item 2); `decide` does not
+        /// read it. END10 item 5 confirmed on it whenever it predated the recording start, and that
+        /// fired on 11 of 12 consults in the field: the file is a flush clock, not an activity
+        /// clock (see `Reason`).
         public let logLastWrittenAt: Date?
         public let lookbackSec: TimeInterval
         public let holdCapSec: TimeInterval
@@ -105,13 +109,14 @@ public enum CallTeardownOracle {
         /// Held to the ceiling without ever seeing a teardown. Deliberately still an end: a hold
         /// that could run forever would be a worse bug than the one being fixed.
         case holdCapReached = "hold_cap_reached"
-        /// The generation has not been written since this recording started, so the log is dead
-        /// rather than quiet (END10 item 5). Confirms for the same reason `oracleUnavailable`
-        /// does: an oracle that cannot see is not evidence the call is still up, and holding the
-        /// full cap on every end of a working day is a worse failure than degrading to the
-        /// pre-END9 behaviour. Distinct from `oracleUnavailable` so the field log can tell a
-        /// missing log apart from a frozen one.
-        case logStale = "log_stale"
+
+        // There is deliberately no "log stale" reason. END10 item 5 confirmed whenever the
+        // generation's mtime predated the recording start, on the theory that a log not written
+        // since the recording began is dead rather than quiet. Measured 2026-08-22 to 2026-09-02
+        // (END12): SlimCore writes only on events and buffers those lines for up to 18 minutes,
+        // flushing at call boundaries, so the mtime sits at the previous call boundary for the
+        // whole of a quiet call. The rule fired on 11 of 12 consults, 8 of them live meetings the
+        // owner put back on record by hand. A quiet log holds; only an unreadable one confirms.
     }
 
     /// Largest observed lead of the teardown line over the AX edge is 6.82 s, so 15 gives 2.2x
@@ -131,17 +136,11 @@ public enum CallTeardownOracle {
     /// Order matters and is not arbitrary. Availability is checked first so a broken or missing log
     /// can never cause a hold. The teardown check comes before the cap so a real end confirms on
     /// its own evidence rather than by timing out. The cap is last because it is the backstop, not
-    /// a route anything should reach on a healthy machine.
+    /// a route anything should reach on a healthy machine. The generation's mtime is not consulted
+    /// at all: for the length of a call a quiet log and a dead one look identical (END12), and the
+    /// cap already bounds both.
     public static func decide(_ input: Input) -> Verdict {
         guard input.oracleAvailable else { return .confirm(reason: .oracleUnavailable) }
-
-        // Staleness before the teardown check, because a frozen generation cannot produce a
-        // teardown for this call and would otherwise hold the full cap on every genuine end.
-        if let recordingStartedAt = input.recordingStartedAt,
-           let writtenAt = input.logLastWrittenAt,
-           writtenAt < recordingStartedAt {
-            return .confirm(reason: .logStale)
-        }
 
         // The teardown has to be able to belong to this recording. The lookback still applies,
         // because the line leads the AX edge by about 1.3 s, but it can never reach back past the

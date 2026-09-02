@@ -377,25 +377,25 @@ final class CallTeardownOracleTests: XCTestCase {
         )
     }
 
-    // MARK: - END10 item 5: a frozen generation is a dead log, not a quiet one
+    // MARK: - END12: a quiet generation is not a dead one
 
-    /// The 2026-08-21 case: the generation was last written at 13:36:15 and was still frozen at
-    /// 14:06 while the call ran to 13:56. Before END10 that read as a healthy oracle with nothing
-    /// to report, so every genuine end would have held the full 150 s cap.
-    func testGenerationFrozenBeforeTheRecordingConfirmsAsStale() {
+    /// END10 item 5 read a generation not written since the recording began as a dead log and
+    /// confirmed on it. In the field that was 11 of 12 consults (2026-08-22 to 2026-09-02), 8 of
+    /// them live meetings: SlimCore writes only on events and buffers them until a call boundary,
+    /// so the mtime sits at the previous teardown for the whole of a quiet call. The 2026-09-02
+    /// 12:36 cut in miniature: last write three minutes before the recording, Leave button gone
+    /// five minutes in, no teardown anywhere. This must hold. Red against the stale rule.
+    func testGenerationNotWrittenSinceTheRecordingBeganStillHolds() {
         let recordingStart = Date(timeIntervalSince1970: 1_000_000)
         let verdict = CallTeardownOracle.decide(CallTeardownOracle.Input(
-            now: recordingStart.addingTimeInterval(120),
-            provisionalStartedAt: recordingStart.addingTimeInterval(110),
+            now: recordingStart.addingTimeInterval(320),
+            provisionalStartedAt: recordingStart.addingTimeInterval(318),
             lastTeardownAt: nil,
             oracleAvailable: true,
             recordingStartedAt: recordingStart,
-            logLastWrittenAt: recordingStart.addingTimeInterval(-60)
+            logLastWrittenAt: recordingStart.addingTimeInterval(-180)
         ))
-        XCTAssertEqual(
-            verdict, .confirm(reason: .logStale),
-            "a log not written since the recording began cannot be evidence that no call ended"
-        )
+        assertHold(verdict, elapsed: 2, "a quiet log is not a dead log; the call is still up")
     }
 
     func testFreshGenerationWithNoTeardownStillHolds() {
@@ -413,9 +413,12 @@ final class CallTeardownOracleTests: XCTestCase {
         }
     }
 
-    /// Staleness is checked before the teardown lookback, so a dead log cannot be rescued by a
-    /// teardown it logged before it died.
-    func testStalenessOutranksAnOldTeardown() {
+    /// The 2026-09-02 10:10 shape: the mtime the watcher last read still predates the recording
+    /// (the join burst is written before `recording_started`, and Teams' flush lags the line),
+    /// while the teardown itself is on disk inside the lookback. That is a real end and confirms
+    /// as one; under the stale rule it confirmed too, but as `log_stale`, and a false end in the
+    /// same state would have been cut before the teardown could be read. Red against that rule.
+    func testATeardownInsideTheLookbackConfirmsHoweverStaleTheMtimeLooks() {
         let recordingStart = Date(timeIntervalSince1970: 1_000_000)
         let verdict = CallTeardownOracle.decide(CallTeardownOracle.Input(
             now: recordingStart.addingTimeInterval(120),
@@ -425,7 +428,7 @@ final class CallTeardownOracleTests: XCTestCase {
             recordingStartedAt: recordingStart,
             logLastWrittenAt: recordingStart.addingTimeInterval(-60)
         ))
-        XCTAssertEqual(verdict, .confirm(reason: .logStale))
+        XCTAssertEqual(verdict, .confirm(reason: .teardownObserved))
     }
 
     /// The pre-END10 call shape (no recording start, no mtime) must keep behaving exactly as it did,

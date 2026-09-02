@@ -89,14 +89,32 @@ final class CallTeardownHoldTests: XCTestCase {
             )
             host.callTeardown.start()
 
-            let url = logDir.appendingPathComponent("MSTeamsNM_SlimCore_2026-08-20_00-00-00.99.log")
-            let handle = try FileHandle(forWritingTo: url)
-            try handle.seekToEnd()
-            try handle.write(contentsOf: Data((logLines.joined(separator: "\n") + "\n").utf8))
-            try handle.close()
+            try appendToGeneration(logLines)
             scheduler.fire()
         }
         return (MeetingSessionController(coordinator: host), host)
+    }
+
+    private var generationURL: URL {
+        tempDir.appendingPathComponent("Logs", isDirectory: true)
+            .appendingPathComponent("MSTeamsNM_SlimCore_2026-08-20_00-00-00.99.log")
+    }
+
+    private func appendToGeneration(_ lines: [String]) throws {
+        let handle = try FileHandle(forWritingTo: generationURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((lines.joined(separator: "\n") + "\n").utf8))
+        try handle.close()
+    }
+
+    /// Age the generation's mtime to `seconds` ago and let the watcher read it, which is how every
+    /// quiet call looks: SlimCore writes only on events and buffers them until a call boundary, so
+    /// the file's clock sits at the previous teardown for the length of the call (END12).
+    private func ageGeneration(by seconds: TimeInterval) throws {
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-seconds)], ofItemAtPath: generationURL.path
+        )
+        scheduler.fire()
     }
 
     // MARK: - The defect
@@ -170,6 +188,47 @@ final class CallTeardownHoldTests: XCTestCase {
 
         XCTAssertNil(controller.teardownHold)
         XCTAssertTrue(host.hudSpy.confirmingEndStates.isEmpty)
+    }
+
+    // MARK: - END12: a quiet log is not a dead log
+
+    /// The 2026-09-02 12:36 cut: the Leave button went invalid five minutes into a live call, the
+    /// generation had last been written three minutes before the recording began, and END10's
+    /// stale rule confirmed on the first consult with no hold, no timer and no HUD. The owner put
+    /// the meeting back on record by hand 4 s later. Red against that rule.
+    func test_a_generation_not_written_since_the_recording_began_still_holds() throws {
+        let (controller, host) = try makeController(logLines: ["2026-08-20T09:00:00.000000+03:00 0x1 <INFO> noise"])
+        defer { withExtendedLifetime(host) {} }
+        try ageGeneration(by: 180)
+        host.recorderSpy.startedAt = Date().addingTimeInterval(-30)
+
+        controller.beginTeardownHold(context: context)
+
+        XCTAssertNotNil(controller.teardownHold, "a quiet log is not a dead log; the call is still up")
+        XCTAssertNotNil(controller.teardownHold?.timer, "the hold has to keep consulting, not confirm once")
+        XCTAssertEqual(host.hudSpy.confirmingEndStates, [true], "the HUD has to say why it is still recording")
+        controller.releaseTeardownHold()
+    }
+
+    /// The 2026-09-02 10:10 shape: the same stale-looking mtime, and Teams' teardown lands on the
+    /// tick after the provisional opened. The hold's next consult confirms it. Under the stale rule
+    /// the first consult had already confirmed for the wrong reason, and the timer that exists to
+    /// catch a late teardown was never created, so a false end in this state was a cut.
+    func test_a_teardown_landing_inside_the_hold_confirms_despite_a_stale_looking_mtime() throws {
+        let (controller, host) = try makeController(logLines: ["2026-08-20T09:00:00.000000+03:00 0x1 <INFO> noise"])
+        defer { withExtendedLifetime(host) {} }
+        try ageGeneration(by: 180)
+        host.recorderSpy.startedAt = Date().addingTimeInterval(-30)
+        controller.beginTeardownHold(context: context)
+        XCTAssertNotNil(controller.teardownHold, "the stale-looking mtime must not confirm on its own")
+
+        try appendToGeneration([teardownLine(secondsAgo: 0.5)])
+        scheduler.fire()
+        controller.consultTeardownOracle()
+
+        XCTAssertNil(controller.teardownHold, "the teardown belongs to this call and confirms it")
+        XCTAssertEqual(host.hudSpy.confirmingEndStates, [true, false], "a confirmed hold clears the HUD")
+        XCTAssertNil(controller.pendingEndTrimAt, "a sub-second hold is not trimmed")
     }
 
     // MARK: - Re-entrancy
