@@ -31,6 +31,18 @@ public final class MeetingLifecycleCoordinator {
     /// after `disengage` reset it.
     private var generation = 0
 
+    /// END13: the last state `processAudioIsRunningInput` reported for the engaged session, as the
+    /// tri-state `CallTeardownOracle` consumes. Guarded by `lock` because adapter sink callbacks
+    /// fire on the HAL bus queue or a poll timer queue while the reader (the teardown hold's
+    /// once-a-second consult) runs on main.
+    ///
+    /// Cached here rather than read off `ProcessAudioSignal.lastValue` for two reasons. The signal
+    /// is owned by the adapter and its `lastValue` is written from those background queues with no
+    /// synchronisation of its own, so reaching through to it would be the cross-thread read strict
+    /// concurrency exists to catch. And the signal emits **only on change**, so a value read at an
+    /// arbitrary later moment is the same value this cache holds anyway.
+    private var liveCallSignalState: CallTeardownOracle.LiveCallSignal = .unknown
+
     private let engine: PromotionEngine
     private let adapters: [LifecycleAdapter]
     private let scheduler: Scheduler
@@ -100,6 +112,9 @@ public final class MeetingLifecycleCoordinator {
         cancelTick?(); cancelTick = nil
         activeAdapter?.stop()
         activeAdapter = nil
+        // END13: the reading belongs to the session that produced it. Cleared before the generation
+        // bump so nothing can observe a previous call's veto against the next one.
+        lock.lock(); liveCallSignalState = .unknown; lock.unlock()
         // Supersede any in-flight / zombie events from the adapter just stopped: they
         // captured the prior generation, so the gen guard in `ingest` / `tick` drops them
         // instead of re-mutating the engine we are about to reset (AUD-29).
@@ -131,6 +146,17 @@ public final class MeetingLifecycleCoordinator {
         lock.withLock { lastVerdict }
     }
 
+    /// END13: what the cross-class process-audio signal last said about this session's call.
+    ///
+    /// `.unknown` until the signal reports something, which covers every case where there is no
+    /// opinion to be had: no adapter engaged, an adapter whose config sets `usesProcessAudio` false
+    /// (Webex holds the mic open post-call, so its read would say nothing about the call), and the
+    /// DET8 shape where the resolver returns `.unresolved` and the signal never emits at all.
+    /// `CallTeardownOracle` treats all three the same way, which is to leave today's cap alone.
+    public var liveCallSignal: CallTeardownOracle.LiveCallSignal {
+        lock.withLock { liveCallSignalState }
+    }
+
     /// Finish the verdict stream and reset both buses. Called at daemon shutdown.
     public func shutdown() {
         disengage()
@@ -149,6 +175,7 @@ public final class MeetingLifecycleCoordinator {
     private func bumpGeneration() -> Int { lock.withLock { generation += 1; return generation } }
 
     private func ingest(_ event: PrimarySignalEvent, generation: Int) {
+        noteLiveCallSignal(event, generation: generation)
         engineQueue.async { [weak self] in
             guard let self = self, self.currentGeneration() == generation else { return }
             if let decision = self.engine.ingest(event) {
@@ -192,6 +219,18 @@ public final class MeetingLifecycleCoordinator {
                 self.cancelTick = nil
             }
         }
+    }
+
+    /// END13: record what the cross-class signal just said, under the same generation guard the
+    /// engine ingest uses, so a zombie event from a torn-down adapter cannot write a veto for the
+    /// next meeting. Recorded synchronously rather than on `engineQueue`: this is a reading, not an
+    /// engine mutation, and the consult that reads it runs on main once a second.
+    private func noteLiveCallSignal(_ event: PrimarySignalEvent, generation: Int) {
+        guard event.kind == .processAudioIsRunningInput else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard self.generation == generation else { return }
+        liveCallSignalState = event.state == .live ? .callIsUp : .callIsDown
     }
 
     /// Drive a tick on the current generation. The production timer captures its

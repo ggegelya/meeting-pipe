@@ -646,6 +646,64 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         XCTAssertEqual(meta["source_display_name"] as? String, "Microsoft Teams")
     }
 
+    /// END13 item 5, the second half of the 2026-09-04 incident. The false end stopped the
+    /// recording at 14:07:55 and the owner pressed Record at 14:07:59, 4.2 s later. The candidate
+    /// slot is written only by a discovery poll's suppression branches, and the cooldown branch it
+    /// needs cannot run until the *next* poll after the stop, because the stop is what arms the
+    /// cooldown. Measured over the corpus the first `cooldown_candidate_retained` lands 1.1 s to
+    /// 14.1 s after a stop; the owner beat it, so the replacement recorded as `bundle_id:
+    /// "manual"`, engaged no lifecycle and ran 40 minutes with no way to end itself (END11).
+    ///
+    /// No `handleDiscovery` anywhere in this test, deliberately: that is the poll the race is
+    /// against, and the point is that the restart no longer waits for one.
+    func test_manualStartRightAfterAStop_attachesWithNoDiscoveryPollInBetween() async {
+        let (controller, host) = makeController()
+        let teams = AppSource(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams")
+        host.recorderSpy.fileToReturn = tempDir.appendingPathComponent("20260904-133358.wav")
+        host.recorderSpy.lastSystemFires = 1
+
+        controller.beginRecording(source: teams, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current.isRecording }, "the meeting to record")
+        controller.stopRecording(file: host.recorderSpy.fileToReturn, source: teams, summaryMode: .auto)
+
+        // The instant of the stop, before the flush has even finished: the slot is already live.
+        XCTAssertEqual(
+            host.stateMachine.liveSuppressedCandidate(), teams,
+            "the source of the recording that just stopped is the one thing we certainly know"
+        )
+
+        await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
+        controller.startManual(summaryMode: .auto, trigger: "manual")
+        await waitUntil({ host.stateMachine.current.isRecording }, "the replacement to record")
+
+        XCTAssertEqual(
+            host.statusBarSpy.recordings.last?.source, teams,
+            "a source-less replacement has no AX end anchor and cannot stop itself (END11)"
+        )
+    }
+
+    /// The other side of item 5: the write is a bridge to the next discovery poll, not a licence
+    /// to attach forever. Once DET14's cooldown grace has lapsed with nothing re-sighting the
+    /// call, a manual start records generic again rather than attributing itself to a dead
+    /// meeting. Same self-expiring read a poll-written candidate gets, so nothing new can go stale.
+    func test_theStopWrittenCandidate_lapsesWithItsGrace() async {
+        let (controller, host) = makeController()
+        let teams = AppSource(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams")
+        host.recorderSpy.fileToReturn = tempDir.appendingPathComponent("20260904-133358.wav")
+        host.recorderSpy.lastSystemFires = 1
+
+        controller.beginRecording(source: teams, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current.isRecording }, "the meeting to record")
+        controller.stopRecording(file: host.recorderSpy.fileToReturn, source: teams, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
+
+        let afterGrace = Date().addingTimeInterval(DetectionStateMachine.cooldownCandidateGraceSec + 1)
+        XCTAssertNil(
+            host.stateMachine.liveSuppressedCandidate(now: afterGrace),
+            "nothing re-sighted the call, so the sighting is stale and a start records generic"
+        )
+    }
+
     /// DET13's audit trail. The 2026-08-04 occurrence was unreadable from `events.jsonl` alone: the
     /// cooldown branch returned silently, so the log shows a 22 s hole with no `lifecycle starting`,
     /// no `prompt_shown`, and nothing saying why. One row per retention rather than one per poll,

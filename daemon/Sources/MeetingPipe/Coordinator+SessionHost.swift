@@ -24,6 +24,10 @@ extension Coordinator: SessionHost {
     /// of pushing it into the protocol; ARCH4 deliberately leaves the IUO alone.
     var jobs: any SessionJobDispatching { jobDispatcher }
 
+    /// END13: the engaged adapter's cross-class liveness reading. `.unknown` whenever no adapter
+    /// is engaged or its signal has said nothing, which is the value that leaves the cap alone.
+    var liveCallSignal: CallTeardownOracle.LiveCallSignal { lifecycleCoord.liveCallSignal }
+
     /// The microphone permission, read live rather than cached: a just-granted
     /// permission has to count without a daemon restart. Behind the protocol so a
     /// test can deny it without touching TCC.

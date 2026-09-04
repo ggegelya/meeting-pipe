@@ -39,6 +39,11 @@ protocol SessionHost: AnyObject {
     /// END9: Teams' own call-teardown line, tailed for the whole session. Concrete because it is a
     /// file tail with no system handle to fake: a test points one at a temp directory it writes.
     var callTeardown: CallTeardownWatcher { get }
+    /// END13: what an independent cross-class signal last said about whether the engaged call is
+    /// still up, forwarded into `CallTeardownOracle` so the hold's cap cannot confirm an end a live
+    /// signal is contradicting. Behind the host rather than reached through `lifecycleCoord`
+    /// directly so a test can state the reading without engaging an adapter.
+    var liveCallSignal: CallTeardownOracle.LiveCallSignal { get }
     var silenceBackstop: IdleStopBackstop { get }
     var consent: ConsentStore { get }
     var workflowStore: WorkflowStore { get }

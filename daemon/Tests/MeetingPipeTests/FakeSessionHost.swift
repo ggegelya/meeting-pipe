@@ -31,6 +31,10 @@ final class FakeSessionHost: SessionHost {
         family: "MSTeamsNM_SlimCore_",
         readQueue: nil
     )
+    /// END13: the cross-class liveness reading the teardown hold consults. `.unknown` by default,
+    /// which is the value that leaves END9's cap exactly as it was, so every existing test keeps
+    /// meaning what it meant; the veto tests state it explicitly.
+    var liveCallSignal: CallTeardownOracle.LiveCallSignal = .unknown
     let silenceBackstop = IdleStopBackstop()
     let consent: ConsentStore
     let workflowStore: WorkflowStore

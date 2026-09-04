@@ -604,6 +604,30 @@ final class MeetingSessionController: @unchecked Sendable {
 
     func stopRecording(file: URL, source: AppSource?, summaryMode: SummaryMode) {
         micTierRecordingBundle = nil // DET1: this recording is ending; drop its mic-release tag
+        // END13 item 5: hand the just-stopped source to the candidate slot at the instant of the
+        // stop, so a Record pressed straight afterwards attaches to it instead of recording
+        // headless.
+        //
+        // The slot is otherwise written only by `handleDiscovery`'s two suppression branches, and
+        // the cooldown branch this stands in for cannot run until the *next* discovery poll,
+        // because the cooldown is armed by this stop. Measured over every restart within 120 s of a
+        // stop since 2026-08-22, the first `cooldown_candidate_retained` landed 1.1 s to 14.1 s
+        // after the stop; on 2026-09-04 the owner pressed Record at 4.2 s and beat it, and the
+        // replacement ran 40 minutes as `bundle_id: "manual"` with no end anchor at all (END11).
+        //
+        // `.cooldown` origin rather than a new one: the claim is exactly the cooldown branch's
+        // claim, "this call was running a moment ago and may still be", and DET14's 24 s grace is
+        // already derived from the one quiet discovery poll (12 s) this has to bridge. It sits
+        // after `handleMeetingEnded`'s DET14 clear on the lifecycle-end path, which is the right
+        // order: that clear is about the *previous* sighting going stale, this is a fresh one.
+        if let source = source {
+            coordinator.stateMachine.noteSuppressedCandidate(source, origin: .cooldown)
+            Log.event(category: "coordinator", action: "stopped_candidate_retained", attributes: [
+                "bundle_id": source.bundleID,
+                "display_name": source.displayName,
+                "grace_sec": DetectionStateMachine.cooldownCandidateGraceSec,
+            ])
+        }
         coordinator.stateMachine.setStopping(file: file, source: source, summaryMode: summaryMode)
         coordinator.statusUI.setStopping(file: file, source: source, summaryMode: summaryMode)
         coordinator.hud.dismiss()
@@ -1377,6 +1401,9 @@ final class MeetingSessionController: @unchecked Sendable {
         let context: MeetingLifecycleContext
         let startedAt: Date
         var timer: Timer?
+        /// END13: whether this hold has already logged that the cap was vetoed. One row per hold,
+        /// not one per consult: the consult runs at 1 Hz and a vetoed hold can run to the ceiling.
+        var vetoLogged = false
     }
 
     /// Open a hold and consult immediately, then once a second until something resolves it.
@@ -1407,6 +1434,9 @@ final class MeetingSessionController: @unchecked Sendable {
         var held: [String: Any] = [
             "bundle_id": context.bundleID,
             "hold_cap_sec": CallTeardownOracle.defaultHoldCapSec,
+            // END13: what the cross-class signal said when the hold opened, so a hold that later
+            // runs past the cap can be read back without correlating two logs.
+            "live_signal": coordinator.liveCallSignal.rawValue,
         ]
         // END12: how old the SlimCore generation looked when the hold opened. The oracle no longer
         // decides on it (a quiet log and a dead one look the same for the length of a call), so
@@ -1426,10 +1456,13 @@ final class MeetingSessionController: @unchecked Sendable {
     }
 
     /// One consult. Confirms, or leaves the hold open for the next tick.
-    func consultTeardownOracle() {
+    ///
+    /// `now` is a parameter so a test can drive the hold past the 150 s cap without sleeping
+    /// through it; production always takes the default.
+    func consultTeardownOracle(now: Date = Date()) {
         guard let hold = teardownHold else { return }
         let snapshot = coordinator.callTeardown.snapshot()
-        let now = Date()
+        let liveCallSignal = coordinator.liveCallSignal
         let verdict = CallTeardownOracle.decide(CallTeardownOracle.Input(
             now: now,
             provisionalStartedAt: hold.startedAt,
@@ -1439,10 +1472,32 @@ final class MeetingSessionController: @unchecked Sendable {
             // inside the lookback confirms this one; without the generation's mtime, a log that
             // stopped being written reads as a healthy oracle that has simply seen no teardown.
             recordingStartedAt: coordinator.audioRecorder.startedAt,
-            logLastWrittenAt: snapshot.logLastWrittenAt
+            logLastWrittenAt: snapshot.logLastWrittenAt,
+            // END13: the reading that vetoes the cap. Collected here rather than inside the oracle
+            // for the reason every other input is, that the type stays pure and the host owns the
+            // handles.
+            liveCallSignal: liveCallSignal
         ))
         switch verdict {
         case .hold:
+            // END13: say once, per hold, that the cap was overridden. Without a row here a hold
+            // that outlives the cap is indistinguishable in the log from one that never reached
+            // it, which is the whole class this change makes possible.
+            let elapsed = now.timeIntervalSince(hold.startedAt)
+            if elapsed >= CallTeardownOracle.defaultHoldCapSec, !hold.vetoLogged {
+                teardownHold?.vetoLogged = true
+                Log.event(category: "coordinator", action: "lifecycle_end_hold_cap_vetoed", attributes: [
+                    "bundle_id": hold.context.bundleID,
+                    "held_sec": elapsed,
+                    "live_signal": liveCallSignal.rawValue,
+                    "ceiling_sec": CallTeardownOracle.defaultLiveSignalCeilingSec,
+                ])
+                Log.writeLine(
+                    "daemon",
+                    "the hold's \(Int(CallTeardownOracle.defaultHoldCapSec))s cap came and went while "
+                        + "process audio still reported this call live - still recording (END13)"
+                )
+            }
             return
         case .confirm(let reason):
             let heldFor = now.timeIntervalSince(hold.startedAt)
@@ -1457,21 +1512,32 @@ final class MeetingSessionController: @unchecked Sendable {
                 "oracle": reason.rawValue,
                 "held_sec": heldFor,
                 "trimmed": pendingEndTrimAt != nil,
+                "live_signal": liveCallSignal.rawValue,
             ])
-            if reason == .holdCapReached {
-                // The drift detector, and deliberately not a "zero teardown lines lately" check: a
-                // generation is created per Teams restart, so a naive volume check would trip on a
-                // freshly restarted Teams and disable the guard silently. Repeated rows here are
-                // what say the line has been renamed or the format moved.
-                Log.writeLine(
-                    "daemon",
-                    "WARN: a provisional end held the full \(Int(CallTeardownOracle.defaultHoldCapSec))s "
-                        + "without Teams ever logging a call teardown - if this repeats, the teardown "
-                        + "line has moved and the oracle needs re-measuring"
-                )
+            if let warning = Self.teardownDriftWarning(for: reason) {
+                Log.writeLine("daemon", warning)
             }
             coordinator.lifecycleCoord.confirmProvisionalEnd()
         }
+    }
+
+    /// END13 item 4: the drift detector's line, or nil when this confirm is not evidence of drift.
+    ///
+    /// Deliberately not a "zero teardown lines lately" check: a generation is created per Teams
+    /// restart, so a naive volume check would trip on a freshly restarted Teams and disable the
+    /// guard silently. Repeated rows are what say the line has been renamed or the format moved.
+    ///
+    /// It is a function rather than an `if` at the call site because it fired on the wrong case
+    /// and nothing could see that it had. On 2026-09-04 it wrote "the teardown line has moved" for
+    /// a call that was still live and whose teardown line was fine, merely unflushed, which is the
+    /// opposite of what it claims. `holdCapReached` now means "capped with no evidence", so the
+    /// gate is that reason and only that reason: a hold vetoed by a live signal and then ended by
+    /// the ceiling reports `liveSignalCeilingReached` and says nothing about Teams' log.
+    static func teardownDriftWarning(for reason: CallTeardownOracle.Reason) -> String? {
+        guard reason == .holdCapReached else { return nil }
+        return "WARN: a provisional end held the full \(Int(CallTeardownOracle.defaultHoldCapSec))s "
+            + "without Teams ever logging a call teardown, and nothing independent said the call was "
+            + "up - if this repeats, the teardown line has moved and the oracle needs re-measuring"
     }
 
     /// Drop the hold without confirming. Called when the call comes back (the whole point) and on

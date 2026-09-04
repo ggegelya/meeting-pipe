@@ -65,8 +65,15 @@ public enum CallTeardownOracle {
         /// fired on 11 of 12 consults in the field: the file is a flush clock, not an activity
         /// clock (see `Reason`).
         public let logLastWrittenAt: Date?
+        /// END13: what an independent, cross-class signal says about whether the call is still up.
+        /// Only `.callIsUp` vetoes the cap; `.unknown` and `.callIsDown` both leave today's bound
+        /// exactly as it was. Defaulted so every pre-END13 call site keeps its old behaviour.
+        public let liveCallSignal: LiveCallSignal
         public let lookbackSec: TimeInterval
         public let holdCapSec: TimeInterval
+        /// END13: the ceiling above the veto. A vetoed hold still ends here, whatever the signal
+        /// says, because a signal stuck at "running" would otherwise record forever.
+        public let liveSignalCeilingSec: TimeInterval
 
         public init(
             now: Date,
@@ -75,8 +82,10 @@ public enum CallTeardownOracle {
             oracleAvailable: Bool,
             recordingStartedAt: Date? = nil,
             logLastWrittenAt: Date? = nil,
+            liveCallSignal: LiveCallSignal = .unknown,
             lookbackSec: TimeInterval = CallTeardownOracle.defaultLookbackSec,
-            holdCapSec: TimeInterval = CallTeardownOracle.defaultHoldCapSec
+            holdCapSec: TimeInterval = CallTeardownOracle.defaultHoldCapSec,
+            liveSignalCeilingSec: TimeInterval = CallTeardownOracle.defaultLiveSignalCeilingSec
         ) {
             self.now = now
             self.provisionalStartedAt = provisionalStartedAt
@@ -84,9 +93,33 @@ public enum CallTeardownOracle {
             self.oracleAvailable = oracleAvailable
             self.recordingStartedAt = recordingStartedAt
             self.logLastWrittenAt = logLastWrittenAt
+            self.liveCallSignal = liveCallSignal
             self.lookbackSec = lookbackSec
             self.holdCapSec = holdCapSec
+            self.liveSignalCeilingSec = liveSignalCeilingSec
         }
+    }
+
+    /// END13: a cross-class reading of whether the call is still up, as three answers rather than
+    /// two. The third is the whole point of the type.
+    ///
+    /// `ProcessAudioSignal` resolved **0 times in 19.8 days** of dogfood before DET8 found it was
+    /// asking about the wrong PID, its resolver still returns `.unresolved(OSStatus)`, and the
+    /// signal deliberately holds prior state on a nil probe rather than flapping. So "the probe
+    /// told us nothing" is a routine state, not an edge case, and collapsing it into a Bool would
+    /// give a machine whose probe never resolves an unbounded hold. `.unknown` gets today's cap,
+    /// which is the DET8 failure mode handled rather than re-created.
+    public enum LiveCallSignal: String, Equatable {
+        /// An independent signal affirmatively reports the call is still up. The only value that
+        /// vetoes the cap.
+        case callIsUp = "call_is_up"
+        /// An independent signal affirmatively reports the call is down. Corroborates the end, so
+        /// it never vetoes.
+        case callIsDown = "call_is_down"
+        /// Nothing independent has an opinion: the probe never resolved, the signal is off for this
+        /// app (Webex holds the mic open post-call, so its read says nothing), or no adapter is
+        /// engaged. Never vetoes.
+        case unknown = "unknown"
     }
 
     public enum Verdict: Equatable {
@@ -106,9 +139,23 @@ public enum CallTeardownOracle {
         /// No usable log. Confirms immediately, so this change can only ever be neutral or better
         /// than the behaviour it replaces.
         case oracleUnavailable = "oracle_unavailable"
-        /// Held to the ceiling without ever seeing a teardown. Deliberately still an end: a hold
-        /// that could run forever would be a worse bug than the one being fixed.
+        /// Held to `holdCapSec` with nothing independent claiming the call was up. Deliberately
+        /// still an end: a hold that could run forever would be a worse bug than the one being
+        /// fixed, and with no other evidence the wall clock is all there is.
+        ///
+        /// END13 narrowed what reaches this. It used to mean "held to the cap" full stop, which on
+        /// 2026-09-04 cut a live call at 160.8 s while process audio, the mute poller and Teams'
+        /// own log all said the meeting was up. It now means "held to the cap **with no
+        /// evidence**", which is what the sentence above was always arguing about; a hold vetoed
+        /// by a live signal ends at `liveSignalCeilingReached` instead. That split is what lets
+        /// the host's drift WARN stay attached to this case only.
         case holdCapReached = "hold_cap_reached"
+        /// END13: held past the cap because an independent cross-class signal kept saying the call
+        /// was up, and then past the ceiling anyway. The drift detector for this change, the way
+        /// `holdCapReached` is END9's: a row here means the veto engaged and never released, which
+        /// is either a very long call whose Leave control never came back or a signal stuck at
+        /// "running". Repeats are the trigger to re-measure, not to nudge the ceiling.
+        case liveSignalCeilingReached = "live_signal_ceiling_reached"
 
         // There is deliberately no "log stale" reason. END10 item 5 confirmed whenever the
         // generation's mtime predated the recording start, on the theory that a log not written
@@ -131,6 +178,24 @@ public enum CallTeardownOracle {
     /// publishes what it does today.
     public static let defaultHoldCapSec: TimeInterval = 150
 
+    /// END13's absolute ceiling: a hold vetoed by a live cross-class signal still ends here.
+    ///
+    /// **Two hours, from the recording corpus rather than from taste.** Across 269 paired
+    /// recordings in the whole event log the longest ran 109.7 min, p99 was 96.7 min and p95 was
+    /// 58.2 min, so nothing the owner has actually recorded would reach this. That direction is
+    /// deliberate and the asymmetry is the argument: a ceiling that fires early on a live call
+    /// re-creates the exact chop this task exists to stop, while a ceiling that fires late on a
+    /// real end costs only latency, because the hold's audio is trimmed back to
+    /// `provisionalStartedAt` on confirm either way and nothing extra is ever published.
+    ///
+    /// What it bounds is the one new risk the veto introduces: a process-audio reading stuck at
+    /// "running" after the call is genuinely over, which would otherwise capture until the owner
+    /// noticed. DET8's 2026-08-05 probe measured Teams clearing every object's input flag within
+    /// 11.4 s of the leave, so this is a rail rather than an expected path, and the signal is off
+    /// entirely for the one app known to hold the mic open post-call (Webex, ultrasound discovery),
+    /// where the reading arrives as `.unknown` and never vetoes at all.
+    public static let defaultLiveSignalCeilingSec: TimeInterval = 7200
+
     /// The whole decision.
     ///
     /// Order matters and is not arbitrary. Availability is checked first so a broken or missing log
@@ -139,6 +204,10 @@ public enum CallTeardownOracle {
     /// a route anything should reach on a healthy machine. The generation's mtime is not consulted
     /// at all: for the length of a call a quiet log and a dead one look identical (END12), and the
     /// cap already bounds both.
+    ///
+    /// END13 added one branch and moved nothing above it, so a teardown still confirms on the
+    /// first consult with no added latency: the veto only ever applies to the cap, which is the
+    /// one route that reads no evidence at all.
     public static func decide(_ input: Input) -> Verdict {
         guard input.oracleAvailable else { return .confirm(reason: .oracleUnavailable) }
 
@@ -152,7 +221,18 @@ public enum CallTeardownOracle {
         }
 
         let elapsed = input.now.timeIntervalSince(input.provisionalStartedAt)
-        guard elapsed < input.holdCapSec else { return .confirm(reason: .holdCapReached) }
+        if elapsed >= input.holdCapSec {
+            // END13. The cap is a wall clock and reads no signal but the teardown line, so on
+            // 2026-09-04 it confirmed an end that four independent readings were contradicting.
+            // A live cross-class reading vetoes it; anything else, including "the probe told us
+            // nothing", gets exactly the bound it got before.
+            guard input.liveCallSignal == .callIsUp else {
+                return .confirm(reason: .holdCapReached)
+            }
+            if elapsed >= input.liveSignalCeilingSec {
+                return .confirm(reason: .liveSignalCeilingReached)
+            }
+        }
         return .hold(elapsedSec: max(0, elapsed))
     }
 }

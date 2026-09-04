@@ -365,6 +365,92 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         )
     }
 
+    // MARK: - END13: the cross-class liveness reading
+
+    /// The reading the teardown hold's veto is built on. Three answers, and the third is the one
+    /// that matters: until the signal says something there is nothing to veto with.
+    func test_liveCallSignal_tracks_process_audio_and_starts_unknown() throws {
+        let fake = FakeAdapter()
+        let scheduler = ManualScheduler()
+        let coordinator = MeetingLifecycleCoordinator(
+            adapters: [fake], scheduler: scheduler.scheduler()
+        )
+        XCTAssertEqual(coordinator.liveCallSignal, .unknown, "no adapter engaged is no opinion")
+
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+        XCTAssertEqual(
+            coordinator.liveCallSignal, .unknown,
+            "the DET8 shape: an unresolved probe emits nothing, so engaging alone says nothing"
+        )
+
+        fake.emit(.init(
+            kind: .processAudioIsRunningInput,
+            state: .live,
+            timestamp: Date(timeIntervalSince1970: 0),
+            context: teamsContext
+        ))
+        XCTAssertEqual(coordinator.liveCallSignal, .callIsUp)
+
+        fake.emit(.init(
+            kind: .processAudioIsRunningInput,
+            state: .ended,
+            timestamp: Date(timeIntervalSince1970: 1),
+            context: teamsContext
+        ))
+        XCTAssertEqual(coordinator.liveCallSignal, .callIsDown, "a real end must not keep vetoing")
+    }
+
+    /// Only the cross-class signal writes it. The lead this veto exists to override is
+    /// `ax_leave_button_invalid`, and `shareableContentWindow` shares its evidence class, so
+    /// neither may ever be read as independent corroboration that the call is up.
+    func test_liveCallSignal_ignores_the_signals_in_the_leading_class() throws {
+        let fake = FakeAdapter()
+        let coordinator = MeetingLifecycleCoordinator(
+            adapters: [fake], scheduler: ManualScheduler().scheduler()
+        )
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+
+        for kind in [PrimarySignalKind.shareableContentWindow, .axLeaveButton] {
+            fake.emit(.init(
+                kind: kind, state: .live, timestamp: Date(timeIntervalSince1970: 0), context: teamsContext
+            ))
+            XCTAssertEqual(
+                coordinator.liveCallSignal, .unknown,
+                "\(kind.rawValue) is the leading signal's own class, not an independent reading"
+            )
+        }
+    }
+
+    /// The reading belongs to the session that produced it. A veto carried into the next meeting
+    /// would hold that meeting's end open on evidence from the previous call.
+    func test_liveCallSignal_clears_on_disengage_and_drops_a_zombie_event() throws {
+        let fake = FakeAdapter()
+        let coordinator = MeetingLifecycleCoordinator(
+            adapters: [fake], scheduler: ManualScheduler().scheduler()
+        )
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+        fake.emit(.init(
+            kind: .processAudioIsRunningInput,
+            state: .live,
+            timestamp: Date(timeIntervalSince1970: 0),
+            context: teamsContext
+        ))
+        XCTAssertEqual(coordinator.liveCallSignal, .callIsUp)
+
+        coordinator.disengage()
+        XCTAssertEqual(coordinator.liveCallSignal, .unknown)
+
+        // The AUD-29 shape: an in-flight event from the adapter just stopped carries the prior
+        // generation and must not write a veto for whatever engages next.
+        fake.emitRetained(.init(
+            kind: .processAudioIsRunningInput,
+            state: .live,
+            timestamp: Date(timeIntervalSince1970: 1),
+            context: teamsContext
+        ))
+        XCTAssertEqual(coordinator.liveCallSignal, .unknown)
+    }
+
     private func flushEngine(_ coordinator: MeetingLifecycleCoordinator) {
         let expectation = expectation(description: "engine drain")
         coordinator.tick()

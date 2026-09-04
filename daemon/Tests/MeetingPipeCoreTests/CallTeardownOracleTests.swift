@@ -19,13 +19,15 @@ final class CallTeardownOracleTests: XCTestCase {
         now: TimeInterval,
         provisionalStartedAt: TimeInterval,
         lastTeardownAt: TimeInterval?,
-        oracleAvailable: Bool = true
+        oracleAvailable: Bool = true,
+        liveCallSignal: CallTeardownOracle.LiveCallSignal = .unknown
     ) -> CallTeardownOracle.Input {
         CallTeardownOracle.Input(
             now: at(now),
             provisionalStartedAt: at(provisionalStartedAt),
             lastTeardownAt: lastTeardownAt.map(at),
-            oracleAvailable: oracleAvailable
+            oracleAvailable: oracleAvailable,
+            liveCallSignal: liveCallSignal
         )
     }
 
@@ -429,6 +431,133 @@ final class CallTeardownOracleTests: XCTestCase {
             logLastWrittenAt: recordingStart.addingTimeInterval(-60)
         ))
         XCTAssertEqual(verdict, .confirm(reason: .teardownObserved))
+    }
+
+    // MARK: - END13: a live cross-class signal vetoes the cap
+
+    /// The 2026-09-04 14:05 cut, as the pure decision. An ax-leave-led provisional, Teams' teardown
+    /// line carrying nothing for this call to this day, and `ProcessAudioSignal` reporting
+    /// `value: true` at 13:33:52 and never reporting an end for the rest of the meeting. The cap
+    /// confirmed at 160.8 s and trimmed 2 m 49 s of a live call out of the recording; the owner
+    /// pressed Record again 4.2 s later and stayed in the meeting another 40 minutes.
+    ///
+    /// Red against `main`, where this asserted `.confirm(reason: .holdCapReached)` at 160.8.
+    func test_the_2026_09_04_cap_does_not_fire_while_process_audio_says_the_call_is_up() {
+        assertHold(
+            CallTeardownOracle.decide(
+                input(now: 160.8, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .callIsUp)
+            ),
+            elapsed: 160.8,
+            "four independent readings said the call was live; the cap read none of them"
+        )
+    }
+
+    /// The veto is not a licence to hold forever, and the ceiling is where the hold ends anyway.
+    /// A distinct reason so the field can tell "capped with no evidence" from "capped while a
+    /// signal still claimed the call was live", which is this change's own drift detector.
+    func test_a_vetoed_hold_still_terminates_at_the_ceiling_with_its_own_reason() {
+        let ceiling = CallTeardownOracle.defaultLiveSignalCeilingSec
+        assertHold(
+            CallTeardownOracle.decide(
+                input(now: ceiling - 1, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .callIsUp)
+            ),
+            elapsed: ceiling - 1
+        )
+        XCTAssertEqual(
+            CallTeardownOracle.decide(
+                input(now: ceiling, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .callIsUp)
+            ),
+            .confirm(reason: .liveSignalCeilingReached)
+        )
+        XCTAssertEqual(
+            CallTeardownOracle.decide(
+                input(now: ceiling * 10, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .callIsUp)
+            ),
+            .confirm(reason: .liveSignalCeilingReached),
+            "a vetoed hold always terminates, which is the property END9's cap exists for"
+        )
+        XCTAssertGreaterThan(
+            ceiling, CallTeardownOracle.defaultHoldCapSec,
+            "a ceiling at or below the cap would make the veto unreachable"
+        )
+    }
+
+    /// The item most likely to be got wrong. `ProcessAudioSignal` resolved 0 times in 19.8 days of
+    /// dogfood before DET8, its resolver still returns `.unresolved(OSStatus)` and the signal holds
+    /// prior state on a nil probe rather than emitting, so on such a machine nothing ever reaches
+    /// the reading and it stays `.unknown`. That machine must keep today's 150 s bound, not get an
+    /// unbounded hold.
+    func test_an_unresolved_probe_does_not_veto_and_keeps_todays_cap() {
+        // The DET8 shape, spelled through the type that produces it: an enumeration that succeeded
+        // and simply matched no object for this app. The signal emits nothing, so the host
+        // forwards `.unknown`.
+        let resolution = ProcessAudioSignal.ProcessObjectResolution.unresolved(noErr)
+        guard case .unresolved = resolution else {
+            return XCTFail("the DET8 shape is an unresolved resolution carrying its OSStatus")
+        }
+
+        XCTAssertEqual(
+            CallTeardownOracle.decide(
+                input(now: 150, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .unknown)
+            ),
+            .confirm(reason: .holdCapReached),
+            "a machine whose probe never resolves keeps the bound it has today"
+        )
+        XCTAssertEqual(
+            CallTeardownOracle.decide(
+                input(now: 10_000, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .unknown)
+            ),
+            .confirm(reason: .holdCapReached)
+        )
+    }
+
+    /// A signal that affirmatively says the call is down corroborates the end rather than
+    /// contradicting it, so it must not veto either. Only `.callIsUp` does.
+    func test_a_signal_saying_the_call_is_down_does_not_veto() {
+        XCTAssertEqual(
+            CallTeardownOracle.decide(
+                input(now: 150, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .callIsDown)
+            ),
+            .confirm(reason: .holdCapReached)
+        )
+    }
+
+    /// Everything before the cap is untouched: a live signal cannot turn a real end into a hold,
+    /// so a genuine teardown still confirms on the first consult with no added latency.
+    func test_the_veto_never_reaches_a_teardown_or_an_unavailable_oracle() {
+        XCTAssertEqual(
+            CallTeardownOracle.decide(
+                input(now: 1_000, provisionalStartedAt: 0, lastTeardownAt: -1, liveCallSignal: .callIsUp)
+            ),
+            .confirm(reason: .teardownObserved),
+            "a teardown on disk outranks the veto exactly as it outranks the cap"
+        )
+        XCTAssertEqual(
+            CallTeardownOracle.decide(
+                input(
+                    now: 1_000, provisionalStartedAt: 0, lastTeardownAt: nil,
+                    oracleAvailable: false, liveCallSignal: .callIsUp
+                )
+            ),
+            .confirm(reason: .oracleUnavailable),
+            "no usable log still means the pre-END9 behaviour, so this can only ever be neutral or better"
+        )
+    }
+
+    /// The property END9 wrote and END13 must not lose: whatever the signal says, a held
+    /// provisional terminates. Two multi-thousand-second stalls already exist in the event log.
+    func test_a_vetoed_provisional_still_always_terminates() {
+        let ceiling = CallTeardownOracle.defaultLiveSignalCeilingSec
+        for elapsed in stride(from: 0.0, through: ceiling * 2, by: 60.0) {
+            let verdict = CallTeardownOracle.decide(
+                input(now: elapsed, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .callIsUp)
+            )
+            if elapsed < ceiling {
+                assertHold(verdict, elapsed: elapsed)
+            } else {
+                XCTAssertEqual(verdict, .confirm(reason: .liveSignalCeilingReached))
+            }
+        }
     }
 
     /// The pre-END10 call shape (no recording start, no mtime) must keep behaving exactly as it did,

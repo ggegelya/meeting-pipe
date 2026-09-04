@@ -231,6 +231,132 @@ final class CallTeardownHoldTests: XCTestCase {
         XCTAssertNil(controller.pendingEndTrimAt, "a sub-second hold is not trimmed")
     }
 
+    // MARK: - END13: the cap does not fire over a live signal
+
+    /// The 2026-09-04 14:05 cut, replayed at the wiring seam. An ax-leave-led provisional, a
+    /// generation carrying no teardown for this call (Teams has logged none to this day), and
+    /// process audio reporting the call up throughout: `value: true` at 13:33:52 with no further
+    /// emission for the rest of the meeting, and `process_audio_object_resolved` still listing 5
+    /// objects at 14:02. The cap confirmed at 160.8 s, trimmed 2 m 49 s of live meeting out of
+    /// `20260904-133358.wav` and split the meeting across two library rows.
+    ///
+    /// Red against `main`, where the hold was gone and `hudSpy.confirmingEndStates` read
+    /// `[true, false]` by 150 s.
+    func test_the_2026_09_04_hold_survives_the_cap_while_process_audio_says_the_call_is_up() throws {
+        let (controller, host) = try makeController(
+            logLines: ["2026-08-20T09:00:00.000000+03:00 0x1 <INFO> noise"]
+        )
+        defer { withExtendedLifetime(host) {} }
+        // The tree blanked and came back with a Mute button and no Leave button, so the AX side
+        // says "ended" for the whole hold. The cross-class signal says otherwise.
+        host.liveCallSignal = .callIsUp
+        host.recorderSpy.startedAt = Date().addingTimeInterval(-1_872)
+
+        controller.beginTeardownHold(context: context)
+        guard let openedAt = controller.teardownHold?.startedAt else {
+            return XCTFail("the provisional must open a hold")
+        }
+        controller.consultTeardownOracle(now: openedAt.addingTimeInterval(160.8))
+
+        XCTAssertNotNil(
+            controller.teardownHold,
+            "160.8 s in, four independent readings said the call was live; the recording must still be running"
+        )
+        XCTAssertNil(controller.pendingEndTrimAt, "nothing confirmed, so nothing is cut")
+        XCTAssertEqual(host.hudSpy.confirmingEndStates, [true], "the hold is still open, not resolved")
+        controller.releaseTeardownHold()
+    }
+
+    /// The same hold, without the live reading. `.unknown` is what a machine whose process-audio
+    /// probe never resolves reports (DET8: 0 resolutions in 19.8 days), and it must keep END9's
+    /// 150 s bound rather than inheriting an unbounded hold.
+    func test_an_unknown_reading_still_confirms_at_the_cap() throws {
+        let (controller, host) = try makeController(
+            logLines: ["2026-08-20T09:00:00.000000+03:00 0x1 <INFO> noise"]
+        )
+        defer { withExtendedLifetime(host) {} }
+        host.liveCallSignal = .unknown
+
+        controller.beginTeardownHold(context: context)
+        guard let openedAt = controller.teardownHold?.startedAt else {
+            return XCTFail("the provisional must open a hold")
+        }
+        controller.consultTeardownOracle(now: openedAt.addingTimeInterval(160.8))
+
+        XCTAssertNil(controller.teardownHold, "with no evidence the cap is still the bound")
+        XCTAssertNotNil(controller.pendingEndTrimAt, "a confirmed hold trims its tail as before")
+        XCTAssertEqual(host.hudSpy.confirmingEndStates, [true, false])
+    }
+
+    /// A vetoed hold ends at the ceiling, and the reason it records is the one that tells a later
+    /// reader which of the two caps fired.
+    func test_a_vetoed_hold_confirms_at_the_ceiling_with_the_distinct_reason() throws {
+        let logs = tempDir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+
+        let (controller, host) = try makeController(
+            logLines: ["2026-08-20T09:00:00.000000+03:00 0x1 <INFO> noise"]
+        )
+        defer { withExtendedLifetime(host) {} }
+        host.liveCallSignal = .callIsUp
+
+        controller.beginTeardownHold(context: context)
+        guard let openedAt = controller.teardownHold?.startedAt else {
+            return XCTFail("the provisional must open a hold")
+        }
+        // The 1 Hz consult reaches the cap first and holds through it, which is the moment the
+        // veto engages and the only moment it is worth a row. Two consults here rather than one
+        // jump, because that is the sequence production runs.
+        for second in [CallTeardownOracle.defaultHoldCapSec, CallTeardownOracle.defaultHoldCapSec + 1] {
+            controller.consultTeardownOracle(now: openedAt.addingTimeInterval(second))
+            XCTAssertNotNil(controller.teardownHold, "the veto holds past the cap")
+        }
+        controller.consultTeardownOracle(
+            now: openedAt.addingTimeInterval(CallTeardownOracle.defaultLiveSignalCeilingSec + 1)
+        )
+
+        XCTAssertNil(controller.teardownHold, "the veto is not a licence to hold forever")
+        let confirmed = eventRows(in: logs)
+            .filter { $0["action"] as? String == "lifecycle_provisional_end_confirmed" }
+        XCTAssertEqual(confirmed.count, 1)
+        XCTAssertEqual(
+            confirmed.first?["oracle"] as? String, "live_signal_ceiling_reached",
+            "the field has to be able to tell a no-evidence cap from a vetoed one"
+        )
+        XCTAssertEqual(confirmed.first?["live_signal"] as? String, "call_is_up")
+
+        // One row per hold, not one per 1 Hz consult.
+        let vetoed = eventRows(in: logs)
+            .filter { $0["action"] as? String == "lifecycle_end_hold_cap_vetoed" }
+        XCTAssertEqual(vetoed.count, 1, "the veto engaging is logged once, whatever the hold's length")
+    }
+
+    /// END13 item 4. The drift WARN claims Teams' teardown line has moved, and on 2026-09-04 it
+    /// wrote that about a live call whose line was fine and merely unflushed. It belongs to the
+    /// no-evidence cap only.
+    func test_the_drift_warning_is_gated_on_the_no_evidence_cap() {
+        XCTAssertNotNil(
+            MeetingSessionController.teardownDriftWarning(for: .holdCapReached),
+            "a cap with nothing independent to say is still the drift detector END9 built"
+        )
+        for reason: CallTeardownOracle.Reason in [.liveSignalCeilingReached, .teardownObserved, .oracleUnavailable] {
+            XCTAssertNil(
+                MeetingSessionController.teardownDriftWarning(for: reason),
+                "\(reason.rawValue) says nothing about whether Teams' teardown line has moved"
+            )
+        }
+    }
+
+    private func eventRows(in dir: URL) -> [[String: Any]] {
+        let url = dir.appendingPathComponent("events.jsonl")
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }
+    }
+
     // MARK: - Re-entrancy
 
     /// A second provisional for the same call must not re-stamp the hold, or a flapping signal
