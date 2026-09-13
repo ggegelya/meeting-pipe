@@ -230,6 +230,8 @@ def main() -> int:
     try:
         return _dispatch(cmd, rest)
     except MissingSecretError as e:
+        from .failure_details import emit_failure
+        emit_failure(e, operation={"summarize": "summary", "run-all": "summary"}.get(cmd, cmd))
         # PIPE16: `require_env` used to `sys.exit(2)` from library code, which is
         # a `BaseException` and so escaped every `except Exception` a run is
         # wrapped in, taking the `run_failed` event, the exit-3 mapping and the
@@ -241,6 +243,12 @@ def main() -> int:
         # reaches here is a secret nothing could work around.
         print(f"ERROR: {e}", file=sys.stderr)
         return EXIT_MISSING_SECRET
+    except Exception as e:
+        import traceback
+        from .failure_details import emit_failure
+        emit_failure(e, operation={"summarize": "summary", "run-all": "summary"}.get(cmd, cmd))
+        traceback.print_exc()
+        return 1
     except KeyboardInterrupt:
         # No cleanup, no `finally`, no rollback: what the interrupt leaves on
         # disk is the feature. `mp ask`'s partial index is what lets the next

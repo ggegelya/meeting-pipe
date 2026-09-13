@@ -164,7 +164,9 @@ struct IntegrationsSectionView: View {
                 }
             }
         } footer: {
-            Text(mcpFooter)
+            if let error = mcp.error {
+                FailureNotice(failure: FailurePresentation(diagnostics: error, operation: .integrations, title: "Couldn't read the server status"))
+            } else { Text(mcpFooter) }
         }
     }
 
@@ -184,9 +186,6 @@ struct IntegrationsSectionView: View {
     }
 
     private var mcpFooter: String {
-        if let error = mcp.error {
-            return "Could not read the server's status: \(error)"
-        }
         if let status = mcp.status, !status.sdkAvailable {
             return "The MCP package is not installed, so the server cannot start yet. Run `cd pipeline && uv sync --extra mcp`, or re-run scripts/install.sh."
         }

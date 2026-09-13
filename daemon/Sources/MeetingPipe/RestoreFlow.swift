@@ -255,7 +255,7 @@ final class RestoreFlow: ObservableObject {
                 case .success(let plan):
                     self.phase = .confirming(plan)
                 case .failure(let error):
-                    self.phase = .failed("Could not read that backup: \(error.localizedDescription)")
+                    self.phase = .failed("Could not read that backup: \(PipelineLauncher.diagnostics(for: error))")
                 }
             }
         }
@@ -273,7 +273,7 @@ final class RestoreFlow: ObservableObject {
                 case .success:
                     self.phase = .finished(RestorePreview.summary(for: plan))
                 case .failure(let error):
-                    self.phase = .failed("Restore failed: \(error.localizedDescription)")
+                    self.phase = .failed("Restore failed: \(PipelineLauncher.diagnostics(for: error))")
                 }
             }
         }

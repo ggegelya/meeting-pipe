@@ -173,7 +173,7 @@ struct PipelineSectionView: View {
                 }
             } footer: {
                 if let error = rosterError {
-                    Text(error).foregroundStyle(.mpDanger)
+                    FailureNotice(failure: FailurePresentation(diagnostics: error, operation: .renameVoice, title: "Couldn't update this voice")).foregroundStyle(.mpDanger)
                 } else {
                     Text("Named voices are matched across meetings so a recurring person surfaces by name; the Library's People view lists each one's meetings and open actions. Renaming carries the new name into past meetings (reversibly, through the speaker-label overlay). Removing one stops it being auto-named; it does not change past transcripts.")
                 }
@@ -310,7 +310,7 @@ struct PipelineSectionView: View {
             case .success:
                 refreshRoster()
             case .failure(let error):
-                rosterError = "Rename failed: \(error.localizedDescription)"
+                rosterError = PipelineLauncher.diagnostics(for: error)
             }
         }
     }
@@ -336,7 +336,7 @@ struct PipelineSectionView: View {
                 case .failure(let error):
                     Log.event(category: "coordinator", action: "roster_remove_failed",
                               attributes: ["name": person.name, "error": error.localizedDescription])
-                    rosterError = "Remove failed: \(error.localizedDescription)"
+                    rosterError = PipelineLauncher.diagnostics(for: error)
                 }
             }
         }
@@ -572,7 +572,7 @@ struct PipelineSectionView: View {
                 }
                 .frame(maxHeight: 220)
             } else if let err = promptError {
-                Text("Couldn't load the prompt: \(err)")
+                FailureNotice(failure: FailurePresentation(diagnostics: err, operation: .summary, title: "Couldn't load the prompt"))
                     .font(.caption)
                     .foregroundStyle(Color(MPColors.fgMuted))
                     .frame(maxWidth: .infinity, alignment: .leading)

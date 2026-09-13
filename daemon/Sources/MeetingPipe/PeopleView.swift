@@ -26,7 +26,7 @@ struct PeopleView: View {
     @State private var people: [PeopleRail.Person] = []
     @State private var expanded: Set<String> = []
     @State private var loading = true
-    @State private var errorText: String?
+    @State var errorText: FailurePresentation?
     @State private var renaming: String?
     @State private var launcher = PipelineLauncher()
     /// The last loaded per-meeting attendee facts, kept so a change in
@@ -115,26 +115,12 @@ struct PeopleView: View {
 
     /// Inline, dismissible failure row for a failed rename, in the AskView /
     /// DigestsView vocabulary (warning triangle + muted text).
-    private func errorBanner(_ message: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle")
-                .foregroundStyle(Color.mpWarning)
-            Text(message)
-                .font(.mpTextXS)
-                .foregroundStyle(Color(MPColors.fgMuted))
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-            Button { errorText = nil } label: {
-                Image(systemName: "xmark")
-                    .font(.mpTextXS.weight(.semibold))
-                    .foregroundStyle(Color(MPColors.fgMuted))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Dismiss error")
+    private func errorBanner(_ failure: FailurePresentation) -> some View {
+        HStack(alignment: .top) {
+            FailureNotice(failure: failure)
+            Button("Dismiss") { errorText = nil }
+                .accessibilityLabel("Dismiss error")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(Color.mpWarning.opacity(0.1))
     }
 
     // MARK: - Aggregation
@@ -197,7 +183,7 @@ struct PeopleView: View {
                 // still refreshes the row's name.
                 reaggregate()
             case .failure(let error):
-                errorText = "Rename failed: \(error.localizedDescription)"
+                errorText = FailurePresentation(error: error, operation: .renameVoice, title: "Couldn't rename this voice")
             }
         }
     }

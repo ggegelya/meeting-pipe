@@ -281,6 +281,9 @@ def run_all(
             wav, cfg, force_byo=force_byo, heartbeat=heartbeat, backend=backend
         )
     except Exception as e:
+        from .failure_details import emit_failure
+        operation = {"summarize": "summary", "publish": "publish", "finalize": "transcribe"}.get(heartbeat._stage, "processing")
+        emit_failure(e, operation=operation)
         events.emit("pipeline", "run_failed", wav=str(wav),
                     error=str(e), error_type=type(e).__name__)
         raise
@@ -786,6 +789,8 @@ def main(argv: list[str]) -> int:
         result = run_all(wav, backend=backend_override)
     except Exception as e:  # noqa: BLE001
         log.exception("run-all failed: %s", e)
+        from .failure_details import emit_failure
+        emit_failure(e, operation="summary")
         return 1
     # PIPE1: an all-sinks-failed publish is a failed run. The daemon reads this
     # exit code to stamp `<stem>.error.json` with stage=publish, which in turn

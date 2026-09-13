@@ -149,7 +149,7 @@ struct StorageSectionView: View {
                 }
             } footer: {
                 if let error = stats.moveError {
-                    Text(error).foregroundStyle(.mpDanger)
+                    FailureNotice(failure: FailurePresentation(diagnostics: error, operation: .storage, title: "Couldn't finish the file operation")).foregroundStyle(.mpDanger)
                 } else if stats.promisesZeroEgress {
                     Text("Regulated mode and NDA workflows force summarization on-device, but they cannot stop \(provider.name) from uploading the recording after it is written. Move the library outside the synced folder, or turn the sync off.")
                 } else {
@@ -288,9 +288,11 @@ struct StorageSectionView: View {
             // report, and the restore's own line outranks the backup age while it
             // has something to say, because it is the thing that just happened.
             if let error = backupError {
-                Text(error).foregroundStyle(.mpDanger)
+                FailureNotice(failure: FailurePresentation(diagnostics: error, operation: .storage, title: "Couldn't finish the file operation")).foregroundStyle(.mpDanger)
             } else if let line = restore.footerText {
-                Text(line).foregroundStyle(restore.hasFailed ? .mpDanger : Color(MPColors.fgMuted))
+                if restore.hasFailed {
+                    FailureNotice(failure: FailurePresentation(diagnostics: line, operation: .storage, title: "Couldn't restore the backup"))
+                } else { Text(line).foregroundStyle(Color(MPColors.fgMuted)) }
             } else {
                 Text("\(lastBackupAge ?? "No backup has run on this Mac yet"). Restoring here recovers meetings this Mac lost; a first restore onto a new Mac still runs from the Terminal, see the README backup runbook.")
             }
@@ -357,7 +359,7 @@ struct StorageSectionView: View {
                 case .success:
                     refreshLastBackup()
                 case .failure(let error):
-                    backupError = error.localizedDescription
+                    backupError = PipelineLauncher.diagnostics(for: error)
                 }
             }
         }

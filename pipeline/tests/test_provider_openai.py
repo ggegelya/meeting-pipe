@@ -108,3 +108,32 @@ def test_select_backend_openai_requires_key(monkeypatch):
     )
     assert isinstance(client, OpenAIClient)
     assert client.model == "gpt-4o"
+
+
+@pytest.mark.parametrize("status,code,message,cause", [
+    (401, "invalid_api_key", "Invalid API key", "rejected_key"),
+    (401, "invalid_api_key", "The API key has expired", "expired_key"),
+    (429, "insufficient_quota", "Review billing", "quota"),
+    (429, "rate_limit_exceeded", "Slow down", "rate_limit"),
+    (503, "service_unavailable", "Unavailable", "service_unavailable"),
+])
+def test_real_adapter_keeps_native_failure_evidence(monkeypatch, status, code, message, cause):
+    from mp.failure_details import describe
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(status, json={"error": {"code": code, "message": message}},
+                              headers={"x-request-id": "req_0123456789abcdef"})
+
+    _mock_transport(monkeypatch, handler)
+    with pytest.raises(OpenAIError) as caught:
+        OpenAIClient(api_key="sk-fake", model="synthetic").complete(
+            system_prompt="synthetic", user_message="private transcript", max_tokens=10)
+    payload = describe(caught.value, operation="ask")
+    assert payload["cause"] == cause
+    assert payload["provider"] == "openai"
+    assert payload["http_status"] == status
+    assert payload["request_id"] == "req_0123456789abcdef"
+    assert len(calls) == 1
+    assert "private transcript" not in json.dumps(payload)

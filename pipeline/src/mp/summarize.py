@@ -935,7 +935,16 @@ def main(argv: list[str]) -> int:
         print(f"No such file: {md}", file=sys.stderr)
         return 1
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    out = summarize(md, out_suffix="candidate" if candidate else None, backend=backend_override)
+    try:
+        out = summarize(md, out_suffix="candidate" if candidate else None, backend=backend_override)
+    except Exception as error:
+        from .config import MissingSecretError
+        from .failure_details import emit_failure
+        emit_failure(error, operation="summary")
+        if isinstance(error, MissingSecretError):
+            raise  # The CLI boundary retains PIPE16's exit-2 contract.
+        log.exception("summarize failed: %s", error)
+        return 1
     if not candidate:
         rewrite_run_sidecar(md, out)
     return 0

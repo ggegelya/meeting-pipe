@@ -618,6 +618,9 @@ final class StatusBarController {
             // click-to-retry and says so; this is the exit for a failure you have read and do not
             // want to act on.
             if dismissible {
+                let details = NSMenuItem(title: "Download details…", action: #selector(showModelDownloadDetails), keyEquivalent: "")
+                details.target = self
+                menu.addItem(details)
                 menu.addItem(actionRow(
                     title: "Dismiss",
                     action: #selector(Coordinator.menuDismissModelDownload)
@@ -719,6 +722,13 @@ final class StatusBarController {
         submenu.addItem(placeholder)
         parent.submenu = submenu
         return parent
+    }
+
+    @objc private func showModelDownloadDetails() {
+        guard case .failed(_, let error) = modelDownload else { return }
+        Task { @MainActor in
+            FailureDialog.showDetails(FailurePresentation(diagnostics: error, operation: .model))
+        }
     }
 
     /// Detailed model-download row. Disabled (informational) unless retryable.

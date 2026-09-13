@@ -106,7 +106,7 @@ struct ClarifySheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let error {
-                Text(error)
+                FailureNotice(failure: FailurePresentation(diagnostics: error, operation: .processing, title: "Couldn't save this correction"))
                     .font(.mpTextXS)
                     .foregroundStyle(.mpDanger)
                     .lineLimit(3)

@@ -71,6 +71,7 @@ final class MeetingLibraryService {
     private let originalsDir: () -> URL
     private let launcher: PipelineDriver
     private let notifyError: (String) -> Void
+    private let notifyFailure: ((String?, FailurePresentation) -> Void)?
     private let enqueue: (URL, SummaryMode) -> Void
     /// Resolves the configured summarization backend ("local" / "apple_intelligence" / "anthropic" / "auto") so the local re-run preview (TECH-A16) dispatches correctly. Defaulted for tests.
     private let summarizationBackend: () -> String
@@ -116,18 +117,27 @@ final class MeetingLibraryService {
         enqueueRetranscribe: @escaping (URL, @escaping (Result<Void, Error>) -> Void) -> Void
             = { _, done in done(.failure(LibraryError.transcriptionUnavailable)) },
         refreshLibrary: @escaping () -> Void = {},
-        libraryRunLane: @escaping () -> LibraryRunLane? = { nil }
+        libraryRunLane: @escaping () -> LibraryRunLane? = { nil },
+        notifyFailure: ((String?, FailurePresentation) -> Void)? = nil
     ) {
         self.outputDir = outputDir
         self.originalsDir = originalsDir
         self.launcher = launcher
         self.notifyError = notifyError
+        self.notifyFailure = notifyFailure
         self.enqueue = enqueue
         self.summarizationBackend = summarizationBackend
         self.recordCorrection = recordCorrection
         self.enqueueRetranscribe = enqueueRetranscribe
         self.refreshLibrary = refreshLibrary
         self.libraryRunLane = libraryRunLane
+    }
+
+    private func reportFailure(_ error: Error, stem: String?, operation: FailureMetadata.Operation) {
+        guard !PipelineLauncher.isCancellation(error) else { return }
+        let failure = FailurePresentation(error: error, operation: operation)
+        if let notifyFailure { notifyFailure(stem, failure) }
+        else { notifyError(failure.title) }
     }
 
     /// Run `work` inside the pipeline lane, or inline when no lane is wired
@@ -168,7 +178,7 @@ final class MeetingLibraryService {
 
     /// Retry a failed meeting, reusing whatever the failed run already produced (PIPE1).
     ///
-    /// A publish-stage failure left a complete `<stem>.summary.json` behind, so the retry republishes that summary instead of re-running `mp run-all`, which would re-transcribe and pay the summarizer a second time for a result it already has. Every other stage retries the full pipeline: enqueuing the same subprocess the normal flow uses, so the processing badge updates and the sidecars get overwritten.
+    /// A publish-stage failure reuses its saved summary. Other failures reuse a valid finalized transcript in the serialized regenerate lane, unless transcription itself failed. Missing prerequisites fall back to the recording job.
     ///
     /// Fails immediately when the work the chosen path needs is missing (no recording for a full retry, no summary for a publish retry); all other errors surface via the existing pipeline notifier.
     func retryMeeting(stem: String) -> Result<Void, Error> {
@@ -188,6 +198,12 @@ final class MeetingLibraryService {
             return .success(())
         }
 
+        if failure?.stage != .transcribe, Self.hasReusableTranscript(stem: stem, in: dir) {
+            Log.event(category: "coordinator", action: "retry_requested", attributes: ["stem": stem, "scope": "summary"])
+            regenerateMeeting(stem: stem) { _ in }
+            return .success(())
+        }
+
         guard let audioURL = MeetingStore.finalRecordingURL(stem: stem, in: dir) else {
             return .failure(LibraryError.noAudio(stem: stem))
         }
@@ -199,6 +215,22 @@ final class MeetingLibraryService {
         PipelineFailureSidecar.clear(stem: stem, in: dir)
         enqueue(audioURL, .auto)
         return .success(())
+    }
+
+    nonisolated static func hasReusableTranscript(stem: String, in dir: URL) -> Bool {
+        guard !FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(stem).empty.json").path),
+              let md = try? String(contentsOf: dir.appendingPathComponent("\(stem).md"), encoding: .utf8),
+              !md.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let data = try? Data(contentsOf: dir.appendingPathComponent("\(stem).json")),
+              let transcript = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              transcript["finalized"] as? Bool == true,
+              transcript["streaming"] as? Bool != true,
+              let segments = transcript["segments"] as? [[String: Any]], !segments.isEmpty else { return false }
+        return segments.allSatisfy {
+            guard let text = $0["text"] as? String, let start = $0["start"] as? Double,
+                  let end = $0["end"] as? Double else { return false }
+            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && start.isFinite && end.isFinite && start >= 0 && end >= start
+        }
     }
 
     /// Re-run `mp summarize` against the existing transcript, then republish. Passing `backend` re-summarizes on a one-shot engine (PIPE6, the Library's "Re-summarize with..."); `nil` uses the configured/workflow backend. The override is request-scoped: it does not rewrite the workflow, and regulated/NDA still force local.
@@ -267,12 +299,17 @@ final class MeetingLibraryService {
                         // there is nothing to mark and nothing to report; the
                         // failure still flows back so whoever is awaiting it
                         // resolves rather than hanging.
+                        if PipelineLauncher.isCancellation(err), PipelineFailureSidecar.read(stem: stem, in: dir) != nil {
+                            PipelineFailureSidecar.write(stem: stem, in: dir, stage: .interrupted, reason: SinkDispatcher.cancelledReason)
+                        }
                         if !PipelineLauncher.isCancellation(err) {
+                            PipelineFailureSidecar.write(stem: stem, in: dir, stage: SinkDispatcher.stage(for: err),
+                                reason: PipelineLauncher.diagnostics(for: err), metadata: FailurePresentation(error: err, operation: .summary).metadata)
                             Log.event(category: "coordinator", action: "regenerate_failed", attributes: [
                                 "stem": stem,
                                 "error": err.localizedDescription,
                             ])
-                            self.notifyError("Regenerate failed: \(err.localizedDescription)")
+                            self.reportFailure(err, stem: stem, operation: .summary)
                         }
                         token.finish(.failure(err))
                     }
@@ -838,7 +875,7 @@ final class MeetingLibraryService {
         launcher.digest { [weak self] result in
             DispatchQueue.main.async {
                 if case .failure(let err) = result {
-                    self?.notifyError("Digest failed: \(err.localizedDescription)")
+                    self?.reportFailure(err, stem: nil, operation: .digest)
                 }
                 completion(result)
             }
@@ -1140,9 +1177,9 @@ final class MeetingLibraryService {
                     PipelineFailureSidecar.write(
                         stem: stem, in: dir,
                         stage: SinkDispatcher.stage(for: err),
-                        reason: err.localizedDescription
+                        reason: PipelineLauncher.diagnostics(for: err), metadata: FailureMetadata.from(err)
                     )
-                    self?.notifyError("Republish failed: \(err.localizedDescription)")
+                    self?.reportFailure(err, stem: stem, operation: .publish)
                 }
                 completion(result)
             }

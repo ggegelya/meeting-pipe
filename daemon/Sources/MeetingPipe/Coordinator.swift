@@ -382,6 +382,9 @@ final class Coordinator: NSObject {
                     stalled: false,
                     label: run.progressLabel
                 )
+            },
+            onFailure: { [weak self] stem, error in
+                self?.notifier.notifyFailure(FailurePresentation(error: error, operation: .summary), stem: stem)
             }
         )
         // MicGate consumes the recorder's per-buffer mic RMS on the
@@ -823,7 +826,8 @@ final class Coordinator: NSObject {
         // PIPE11: regenerate / republish share the run-all lane. Resolved inside
         // the closure for the same reason as `enqueue`: `jobDispatcher` is still
         // nil while this lazy var is being forced in `init`.
-        libraryRunLane: { [weak self] in self?.jobDispatcher }
+        libraryRunLane: { [weak self] in self?.jobDispatcher },
+        notifyFailure: { [weak self] stem, failure in self?.notifier.notifyFailure(failure, stem: stem) }
     )
 
     /// Config-change responses: eager local-model prefetch, model-download
@@ -845,4 +849,3 @@ final class LogEventAdapter: EventLog {
         Log.event(category: category, action: action, attributes: attributes)
     }
 }
-

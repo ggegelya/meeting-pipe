@@ -331,6 +331,8 @@ def main(argv: list[str]) -> int:
             allow_stems=allow,
         )
     except (resource_guard.ResourceGuardError, embed_index.EmbedderUnavailableError) as e:
+        from .failure_details import emit_failure
+        emit_failure(e, operation="ask")
         # A guard abort is a real answer to the question "why did this stop":
         # surfaced verbatim, and (for the memory case) carrying the marker phrase
         # the daemon matches to say `memory` rather than a generic failure.
@@ -343,10 +345,18 @@ def main(argv: list[str]) -> int:
     try:
         ans = answer_question(cfg, index, question, context_tokens=args.context_tokens, model=args.model)
     except engine.EngineError as e:
+        from .failure_details import emit_failure
+        emit_failure(e, operation="ask")
         return emit(Answer(question=question, answer="", error=str(e)), 1)
     except resource_guard.ResourceGuardError as e:
+        from .failure_details import emit_failure
+        emit_failure(e, operation="ask")
         # The answer model has its own watchdog and tier refusal (LOCAL16); they
         # reach here as themselves rather than as an opaque engine failure.
+        return emit(Answer(question=question, answer="", error=str(e)), 1)
+    except Exception as e:
+        from .failure_details import emit_failure
+        emit_failure(e, operation="ask")
         return emit(Answer(question=question, answer="", error=str(e)), 1)
 
     return emit(ans, 0)

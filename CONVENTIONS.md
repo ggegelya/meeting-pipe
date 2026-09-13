@@ -75,7 +75,7 @@ Most start/stop/error sites pair an event line (structured) with a writeLine (re
 
 ### Error propagation
 
-Throwing functions for in-module calls, `Result<T, Error>` at protocol/API boundaries. Each subsystem declares its own nested `enum X: Error, LocalizedError` (see `MeetingRecorder.RecorderError`, `PipelineLauncher.LaunchError`, `MeetingLibraryService.LibraryError`). There is no unified `MeetingPipeError`. `LocalizedError.errorDescription` is what the notifier surfaces, so write user-facing strings there.
+Throwing functions for in-module calls, `Result<T, Error>` at protocol/API boundaries. Each subsystem declares its own nested `enum X: Error, LocalizedError` (see `MeetingRecorder.RecorderError`, `PipelineLauncher.LaunchError`, `MeetingLibraryService.LibraryError`). There is no unified `MeetingPipeError`. Keep localized descriptions concise. UI failures use `FailurePresentation` and `FailureNotice`/`FailureDialog`; retain `PipelineLauncher.diagnostics(for:)` and optional `FailureMetadata` instead of flattening a process failure to its caption (UX80). Raw text belongs in Details and local logs.
 
 Never `NSError(domain:code:userInfo:)`. A hand-rolled domain string plus `code: 1` carries no meaning a caller can branch on: `MeetingLibraryService` had eleven of them where "the file is missing" and "you typed nothing" were both code 1 in one method and both code 2 in another (ARCH4 replaced them with named cases).
 
@@ -411,11 +411,13 @@ This run's publish outcome (PIPE1). A Python-to-Swift surface: `publish_router.f
   "state": "full",
   "page_url": "https://www.notion.so/...",
   "ts": "2026-07-10T09:15:00+00:00",
-  "sinks": { "notion": { "ok": true, "page_url": "https://...", "error": null } }
+  "sinks": { "notion": { "ok": true, "page_url": "https://...", "error": null, "failure": null } }
 }
 ```
 
 `state` is `full` (every sink succeeded), `partial` (some did), or `none` (every sink failed, or none ran). `page_url` is the first successful sink that produced one, and null for a local-only workflow.
+
+Each failed sink may carry a `failure` object using the optional metadata schema below (UX80). Its existing `error` remains local diagnostics. A partial publish preserves successful destinations and exposes failed-destination details in the Library notice.
 
 **`page_url` says what to open; `sinks` says who wrote it.** Swift reads both (`PublishResult.sinks`), because the two questions have different answers and only the map can name a destination for the user: `page_url` is whichever sink came first in `output.sinks` order, so a run that landed in Notion and the filesystem reports one URL and gives no clue which of the two produced it. `PublishLanding.decide` (UX49) is the one reader of that distinction: exactly one sink with `ok: true` is named, more than one is deliberately unnamed ("Open summary"), and a null `page_url` means no open affordance at all rather than a button that cannot open anything. Every local sink returns a `file://` `page_url`, so "has a URL" never meant "went to Notion", which is exactly what the done notification used to say.
 
@@ -431,7 +433,23 @@ Absent whenever the pipeline short-circuited before publish (no speech, suspect 
 
 **A missing secret is an exception, and only the boundary turns it into an exit code (PIPE16).** `config.require_env` raises `config.MissingSecretError`; `__main__.main` catches it once and returns 2, the same code its old `sys.exit(2)` returned. That `sys.exit` was the defect: `SystemExit` derives from `BaseException`, so calling it from library code walked through both of `orchestrate`'s `except Exception` handlers and skipped the `run_failed` emit, the exit-3 mapping and the publish-sidecar write at once. The publish stage never gets that far now, because `publish_router._build_one` catches it and returns an `UnavailablePublisher`, so a missing `NOTION_TOKEN` is a recorded sink failure inside the fan-out: the other sinks publish, `state` reads `partial` (or `none` when it was the only sink, which is the ordinary exit-3 path with its `run_failed` and its publish-only retry), and the row can no longer settle on "Ready" for a meeting that landed nowhere. See "Subcommand pattern" above for why 130 is deliberately not a fourth case here.
 
-**A memory failure is a phrase, not an exit code (LOCAL16).** The other stage `SinkDispatcher.stage(for:)` recognises is `memory`, and it has no exit code of its own: `mp.resource_guard` raises with a message that starts `Not enough memory`, and Swift matches that substring (`PipelineFailureSidecar.lowMemoryMarker`, case-insensitively) to stamp the sidecar. Same arrangement as UX21's `not in the local HuggingFace cache` (`Meeting.modelNotCachedMarker`): there is no shared constant across the language boundary, so the phrase itself is the contract and both messages have to keep carrying it. It exists because "Summarize and publish failed" hides the one fact the user can act on, and both producers are things the user can fix (pick a smaller preset; close memory-heavy apps). The exit-3 publish mapping deliberately wins over it, since a completed summary on disk is still retryable-from-summary whatever the tail says.
+**A memory failure has no separate exit code (LOCAL16, UX80).** `SinkDispatcher.stage(for:)` recognizes structured `cause: memory` or the legacy `Not enough memory` phrase (`PipelineFailureSidecar.lowMemoryMarker`, case-insensitively). Missing-model fallback still recognizes `not in the local HuggingFace cache`. Keep both legacy signatures for old readers and sidecars. Exit 3 takes precedence over a memory cause because the completed summary can be republished.
+
+### Optional failure metadata (UX80)
+
+`PipelineLauncher` gives each subprocess a unique temporary `MP_FAILURE_PATH`, independent of its stderr tail and of every other process. `mp.failure_details` writes the first caught failure there atomically with owner-only permissions. Command-specific catches retain native evidence before returning: run-all, standalone summarize, Ask, and each publishing destination. The CLI boundary covers unhandled commands. A wrapper cannot replace an inner operation with a less specific one. No environment variable means no transport file. This metadata is optional; existing exit codes, cancellation, logs, and successful output contracts are unchanged.
+
+```json
+{"schema_version":1,"cause":"credits","provider":"anthropic","operation":"summary","remedy":"billing","http_status":400,"request_id":"req_0123456789abcdef"}
+```
+
+Required fields are version 1, `cause`, and `operation`. Causes are `credits`, `quota`, `missing_key`, `rejected_key`, `expired_key`, `connection`, `timeout`, `rate_limit`, `service_unavailable`, `model_missing`, `memory`, `publish`, `interrupted`, `cancelled`, and `unknown`. Operations are `summary`, `ask`, `digest`, `publish`, `transcribe`, `processing`, `rename_voice`, `storage`, `integrations`, and `model`. Optional providers are `anthropic`, `openai`, `notion`, `local`, `filesystem`, `obsidian`, `lan`, and `claude_cli`; remedies are `billing`, `integrations`, `model`, or `retry`. HTTP status is an integer from 100 to 599. Request identifiers must be `req_` followed by 8-96 ASCII letters/digits, or a UUID. Unknown optional fields are discarded; malformed required fields, unsupported versions, and metadata of 4,096 bytes or more fall back to a short explanation with diagnostics retained.
+
+The daemon consumes and removes the process file at termination. It remains the sole writer of `<stem>.error.json`, retaining `schema_version`, `stem`, coarse `stage`, raw `reason`, and `ts`, plus optional `failure` containing this metadata. Legacy sidecars load without rewriting. Confirmed billing signatures, explicit authentication exceptions, interruption, cancellation, and local-model/memory markers have narrow legacy fallbacks; generic HTTP 400/401 do not establish credits or expiry. A saved summary supersedes an old processing failure; publish failures and newer structured regeneration failures retain their notice alongside the saved summary.
+
+Ask also writes diagnostic text in its result JSON. Retain that complete error when the stderr tail has truncated it, along with any additional process diagnostics; supplement the typed failure without replacing its exit status, native metadata, or cancellation.
+
+The local report is built from an allowlist, never by redacting a traceback: numeric app version, ISO timestamp, operation/cause, recognized provider, valid status, and a validated request identifier. The displayed preview is the exact copied string. No request bodies, diagnostics, titles, paths, meeting content, or other log fields enter it. Opening Details and preparing/copying the report start no processing, network request, or event-log category.
 
 ---
 
@@ -495,11 +513,12 @@ Every Swift-Python surface where both trees implement the same thing is pinned b
 | `summary-md-golden.json` (CI3) | summary markdown render, incl. AI10 action groups, FEAT10 evidence suffixes, and AUTO2 deeplinked citations (a case carrying a `deeplink_stem` pins the linked form) | `AppleIntelligenceSummarizerTests` | `test_ci3_parity.py` |
 | `transcript-corrections-golden.json` (PIPE9) | text-correction overlay | `TranscriptCorrectionStoreTests` | `test_transcript_corrections.py` |
 | `publish-result-golden.json` (CI4) | `<stem>.publish.json` + the `state` vocabulary | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |
+| `failure-metadata-golden.json` (UX80) | native Python classification + optional Swift metadata | `FailurePresentationTests` | `test_ci4_contracts.py` |
 | `prefetch-progress-golden.json` (CI4) | the progress stream above | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |
 | `speaker-overlay-golden.json` (CI4) | `<stem>.speaker_labels.json` resolution | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |
 | `glossary-golden.json` (FEAT11) | `glossary.toml` resolution: the global + per-workflow merge, key folding, the skip rules, and `[fuzzy].enabled` | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |
 
-**The CI4 four are generated, not hand-authored**, by `scripts/gen_contract_fixtures.py`, which calls the shipping Python writers (and AST-walks `prefetch_model`'s `_emit` call sites). Regenerate after any intentional shape change:
+**The CI4 four and UX80 metadata fixture are generated**, by `scripts/gen_contract_fixtures.py`, which calls the shipping Python writers (and AST-walks `prefetch_model`'s `_emit` call sites). Regenerate after any intentional shape change:
 
 ```bash
 cd pipeline && uv run python ../scripts/gen_contract_fixtures.py

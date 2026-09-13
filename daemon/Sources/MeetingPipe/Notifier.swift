@@ -3,6 +3,7 @@ import UserNotifications
 
 /// Coordinator callback protocol. Both `MeetingPromptWindow` and notification actions route here so the state machine has one entry point per outcome regardless of which surface fired it.
 protocol NotifierDelegate: AnyObject {
+    func notifier(_ notifier: Notifier, didRequestFailure failure: FailurePresentation, stem: String?)
     func notifier(_ notifier: Notifier, didChooseRecord source: AppSource)
     func notifier(_ notifier: Notifier, didChooseSkip source: AppSource)
     func notifier(_ notifier: Notifier, didChooseAlways source: AppSource)
@@ -29,6 +30,10 @@ protocol NotifierDelegate: AnyObject {
         didRequestEditSummaryFor stem: String,
         recordingsDir: URL
     )
+}
+
+extension NotifierDelegate {
+    func notifier(_ notifier: Notifier, didRequestFailure failure: FailurePresentation, stem: String?) {}
 }
 
 /// Why a detected meeting was not recorded, which decides how loudly the skip banner
@@ -77,6 +82,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         let pageURL: URL?
     }
     private var doneEntries: [String: DoneEntry] = [:]
+    private var failures: [String: (FailurePresentation, String?)] = [:]
 
     override init() {
         super.init()
@@ -183,7 +189,21 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func notifyError(_ message: String) {
-        post(title: "MeetingPipe error", body: message)
+        notifyFailure(FailurePresentation(diagnostics: message))
+    }
+
+    func notifyFailure(_ failure: FailurePresentation, stem: String? = nil) {
+        guard failure.metadata.cause != .cancelled else { return }
+        let id = NotificationRouter.failureIDPrefix + UUID().uuidString
+        if failures.count >= 30, let first = failures.keys.sorted().first { failures.removeValue(forKey: first) }
+        failures[id] = (failure, stem)
+        let content = UNMutableNotificationContent()
+        content.title = failure.title
+        content.body = stem == nil ? "Review failure details." : "Review in Library."
+        content.categoryIdentifier = NotificationRouter.failureCategory
+        if let stem { content.userInfo = ["failureStem": stem] }
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
     }
 
     /// Posted when a detected meeting is not recorded (UX10 / AUD-12, extended by DET7).
@@ -443,7 +463,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             options: []
         )
         UNUserNotificationCenter.current().setNotificationCategories(
-            Set(doneCategories + [doneCorrectableLocal, perm, accessibility, stillMeeting, skipLate])
+            Set(doneCategories + [doneCorrectableLocal, perm, accessibility, stillMeeting, skipLate,
+                UNNotificationCategory(identifier: NotificationRouter.failureCategory,
+                    actions: [UNNotificationAction(identifier: NotificationRouter.actionOpenFailure, title: "Review failure", options: [.foreground])],
+                    intentIdentifiers: [], options: [])])
         )
     }
 
@@ -473,6 +496,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
         for route in decision.routes {
             switch route {
+            case .openFailure:
+                let failure = failures.removeValue(forKey: id)
+                let stem = failure?.1 ?? response.notification.request.content.userInfo["failureStem"] as? String
+                delegate?.notifier(self, didRequestFailure: failure?.0 ?? FailurePresentation(diagnostics: ""), stem: stem)
             case .markLooksGood(let stem):
                 guard let entry else { continue }
                 delegate?.notifier(self, didMarkLooksGoodFor: stem, recordingsDir: entry.recordingsDir)

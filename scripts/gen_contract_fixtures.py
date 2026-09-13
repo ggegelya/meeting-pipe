@@ -452,6 +452,35 @@ def gen_glossary(tmp: Path) -> str:
     )
 
 
+def gen_failures() -> str:
+    import anthropic
+    import httpx
+    from mp.config import MissingSecretError
+    from mp.failure_details import describe
+
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    cases = []
+    for name, status, message, expected in [
+        ("credits", 400, "Your credit balance is too low to access the Anthropic API.", "credits"),
+        ("generic_400", 400, "Invalid argument", "unknown"),
+        ("rejected_key", 401, "Invalid x-api-key", "rejected_key"),
+        ("expired_key", 401, "API key has expired", "expired_key"),
+        ("temporary_limit", 429, "Too many requests", "rate_limit"),
+        ("service_outage", 503, "Unavailable", "service_unavailable"),
+    ]:
+        error = anthropic.APIStatusError(message, response=httpx.Response(status, request=request,
+            headers={"request-id": "req_0123456789abcdef"}), body={"error": {"message": message}})
+        cases.append({"name": name, "payload": describe(error, operation="summary"), "cause": expected})
+    for name, error in [("missing_key", MissingSecretError("ANTHROPIC_API_KEY")),
+                        ("connection", httpx.ConnectError("synthetic connection failure")),
+                        ("timeout", httpx.ReadTimeout("synthetic timeout")),
+                        ("memory", RuntimeError("not enough memory: synthetic refusal")),
+                        ("model_missing", RuntimeError("not in the local HuggingFace cache")),
+                        ("unknown", RuntimeError("synthetic unknown failure"))]:
+        cases.append({"name": name, "payload": describe(error, operation="summary"), "cause": name})
+    return _envelope("Generated synthetic failure metadata from mp.failure_details.describe. No owner data.", cases)
+
+
 def main() -> int:
     import tempfile
 
@@ -462,6 +491,7 @@ def main() -> int:
             "prefetch-progress-golden.json": gen_prefetch(),
             "speaker-overlay-golden.json": gen_overlay(tmp),
             "glossary-golden.json": gen_glossary(tmp),
+            "failure-metadata-golden.json": gen_failures(),
         }
     for name, text in written.items():
         (FIXTURES / name).write_text(text, encoding="utf-8")

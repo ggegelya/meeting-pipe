@@ -306,6 +306,8 @@ struct PublishResult: Equatable {
         let name: String
         let ok: Bool
         let pageURL: URL?
+        var error: String? = nil
+        var failure: FailureMetadata? = nil
     }
 
     /// `"full"`, `"partial"`, or `"none"` (every sink failed, or none ran).
@@ -347,7 +349,11 @@ struct PublishResult: Equatable {
                     name: name,
                     // A missing `ok` reads as failed: the writer always emits it, so its absence is a shape we do not understand, and claiming a publish landed is the costlier mistake.
                     ok: entry["ok"] as? Bool ?? false,
-                    pageURL: (entry["page_url"] as? String).flatMap(URL.init(string:))
+                    pageURL: (entry["page_url"] as? String).flatMap(URL.init(string:)),
+                    error: entry["error"] as? String,
+                    failure: (entry["failure"] as? [String: Any]).flatMap {
+                        (try? JSONSerialization.data(withJSONObject: $0)).flatMap(FailureMetadata.decode)
+                    }
                 )
             }
             .sorted { $0.name < $1.name }
@@ -466,19 +472,23 @@ final class PipelineLauncher: PipelineDriver {
     static let publishFailedExitCode: Int32 = 3
 
     private let maxRuntime: TimeInterval
+    private let invocation: (() -> MPInvocation?)
+    private let environment: [String: String]?
 
-    init(maxRuntime: TimeInterval = PipelineLauncher.defaultMaxRuntime) {
+    init(maxRuntime: TimeInterval = PipelineLauncher.defaultMaxRuntime,
+         invocation: @escaping () -> MPInvocation? = PipelineLauncher.findMP,
+         environment: [String: String]? = nil) {
         self.maxRuntime = maxRuntime
+        self.invocation = invocation
+        self.environment = environment
     }
 
     enum LaunchError: Error, LocalizedError {
         case mpNotFound
-        /// A subprocess that failed on its own. The second value is the *caption*
-        /// `failureCaption(stderr:)` picked out of the stderr tail (UX50), not the
-        /// raw tail: the tail is whatever was written last, which for a failure
-        /// whose real error came earlier is a routine INFO line shown as the reason.
-        /// The full transcript is in `pipeline.log` either way.
+        /// Retains the diagnostic tail for Details; the localized description is a short caption.
+        /// Full output remains in `pipeline.log`. Optional native metadata travels separately.
         case nonZeroExit(Int32, String)
+        case reportedFailure(Int32, FailureMetadata, String)
         case timeout(TimeInterval)
         /// This app terminated the run itself, on the owner's Cancel (UX50).
         /// Distinct from `nonZeroExit(15, …)` because a SIGTERM the app sent is
@@ -491,8 +501,10 @@ final class PipelineLauncher: PipelineDriver {
             switch self {
             case .mpNotFound:
                 return "`mp` (pipeline) not found. Did you run scripts/install.sh?"
-            case .nonZeroExit(let code, let caption):
-                return "pipeline exited \(code): \(caption)"
+            case .nonZeroExit(_, let diagnostics):
+                return PipelineLauncher.failureCaption(stderr: diagnostics)
+            case .reportedFailure(_, let metadata, let diagnostics):
+                return FailurePresentation(diagnostics: diagnostics, metadata: metadata).title
             case .timeout(let seconds):
                 return "pipeline timed out after \(Int(seconds / 60)) min - killed to free CPU. The audio file is preserved; re-run `mp run-all <wav>` manually after diagnosing."
             case .cancelled:
@@ -543,20 +555,10 @@ final class PipelineLauncher: PipelineDriver {
         return nil
     }
 
-    /// The caption a genuine non-zero exit is reported with (UX50).
-    ///
-    /// The stderr tail is simply the last thing the process wrote, so a failure
-    /// whose real error came earlier gets captioned with a routine INFO line:
-    /// UX50 was filed over `Workflow overlay applied (Personal)` presented as
-    /// the reason a run failed. Prefer the last line the pipeline logged at
-    /// `ERROR` (or `CRITICAL`), then the last `WARNING`, and fall back to the
-    /// whole tail only when the transcript carries neither, which is what keeps
-    /// a crash with a bare traceback as legible as it is today.
-    ///
-    /// Deliberately no structure beyond the level the formatter already emits:
-    /// the pipeline does not mark its errors any other way, and inventing a
-    /// sentinel here would be a contract the Python side never agreed to.
-    static func failureCaption(stderr: String) -> String {
+    /// Legacy log-level extraction (UX50), retained for diagnostic readers.
+    /// User-facing captions now come from FailurePresentation (UX80); neither
+    /// the selected record nor the whole-tail fallback belongs in normal UI.
+    static func diagnosticCaption(stderr: String) -> String {
         let lines = stderr
             .split(separator: "\n", omittingEmptySubsequences: true)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -572,6 +574,35 @@ final class PipelineLauncher: PipelineDriver {
         return stderr
     }
 
+    static func failureCaption(stderr: String) -> String {
+        FailurePresentation(diagnostics: stderr).title + "."
+    }
+
+    static func diagnostics(for error: Error) -> String {
+        switch error {
+        case LaunchError.nonZeroExit(_, let text), LaunchError.reportedFailure(_, _, let text): return text
+        default: return error.localizedDescription
+        }
+    }
+
+    /// Ask's result file retains an error that may exceed the stderr tail. Keep
+    /// both available diagnostics without replacing the exit, metadata or cancel.
+    static func askFailure(_ error: Error, answerError: String?) -> Error {
+        guard let answerError, !answerError.isEmpty else { return error }
+        func combined(_ stderr: String) -> String {
+            let tail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            if tail.isEmpty || answerError.contains(tail) { return answerError }
+            return answerError + "\n\nProcess diagnostics:\n" + stderr
+        }
+        switch error {
+        case LaunchError.nonZeroExit(let status, let stderr):
+            return LaunchError.nonZeroExit(status, combined(stderr))
+        case LaunchError.reportedFailure(let status, let metadata, let stderr):
+            return LaunchError.reportedFailure(status, metadata, combined(stderr))
+        default: return error
+        }
+    }
+
     /// What a finished subprocess means, once the watchdog has had its say (UX50).
     ///
     /// Pure and static because the alternative is spawning a real `mp` to
@@ -579,10 +610,11 @@ final class PipelineLauncher: PipelineDriver {
     /// signal against a subprocess, and it is exactly the path that shipped
     /// wrong. A run that completed before the SIGTERM landed is a success even
     /// though a cancel was asked for, since the work is done and on disk.
-    static func outcome(status: Int32, cancelled: Bool, stderr: String) -> Result<Void, Error> {
+    static func outcome(status: Int32, cancelled: Bool, stderr: String, metadata: FailureMetadata? = nil) -> Result<Void, Error> {
         if status == 0 { return .success(()) }
         if cancelled { return .failure(LaunchError.cancelled) }
-        return .failure(LaunchError.nonZeroExit(status, failureCaption(stderr: stderr)))
+        if let metadata { return .failure(LaunchError.reportedFailure(status, metadata, stderr)) }
+        return .failure(LaunchError.nonZeroExit(status, stderr))
     }
 
     /// Completion receives the Notion page URL (nil in regulated_mode) or an error.
@@ -806,17 +838,17 @@ final class PipelineLauncher: PipelineDriver {
               timeout: 10 * 60,
               onProgress: progress, retain: .ask) { result in
             defer { try? FileManager.default.removeItem(at: outURL) }
-            // Prefer the structured error the Python side wrote (a clean, single
-            // line) over the noisy stderr tail on a non-zero exit.
+            // The result's error is diagnostic text. It supplements the process
+            // failure without erasing native cause metadata or cancellation.
             let parsed = AskAnswer.load(from: outURL)
-            if let parsed = parsed, let err = parsed.error, !err.isEmpty {
+            if case .success = result, let parsed = parsed, let err = parsed.error, !err.isEmpty {
                 completion(.failure(NSError(domain: "mp ask", code: 1,
                     userInfo: [NSLocalizedDescriptionKey: err])))
                 return
             }
             switch result {
             case .failure(let error):
-                completion(.failure(error))
+                completion(.failure(Self.askFailure(error, answerError: parsed?.error)))
             case .success:
                 guard let parsed = parsed else {
                     completion(.failure(NSError(domain: "mp ask", code: 2,
@@ -1175,7 +1207,7 @@ final class PipelineLauncher: PipelineDriver {
         backendOverride: String? = nil,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        guard let mpPath = Self.findMP() else {
+        guard let mpPath = invocation() else {
             completion(.failure(LaunchError.mpNotFound))
             return
         }
@@ -1189,9 +1221,12 @@ final class PipelineLauncher: PipelineDriver {
         // on an Apple-pinned meeting is not stripped of its key.
         let policy = Self.cloudSecretPolicy(for: meeting, backendOverride: backendOverride)
         var env = Self.freshEnvironment(
+            baseEnvironment: environment,
             stripAnthropicKey: policy.stripAnthropic, stripNotionToken: policy.stripNotion
         )
         for (k, v) in extraEnv { env[k] = v }
+        let failureURL = FileManager.default.temporaryDirectory.appendingPathComponent("mp-failure-\(UUID().uuidString).json")
+        env["MP_FAILURE_PATH"] = failureURL.path
         p.environment = env
         // TECH-UX5 / UX37: retained so Cancel can terminate it. UX50: the handle
         // carries the cancel flag with it, so the termination handler below reads
@@ -1257,6 +1292,7 @@ final class PipelineLauncher: PipelineDriver {
         watchdog.resume()
 
         p.terminationHandler = { proc in
+            defer { try? FileManager.default.removeItem(at: failureURL) }
             watchdog.cancel()
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
@@ -1279,7 +1315,8 @@ final class PipelineLauncher: PipelineDriver {
             completion(Self.outcome(
                 status: proc.terminationStatus,
                 cancelled: handle.isCancelled,
-                stderr: String(data: stderrTail, encoding: .utf8) ?? ""
+                stderr: String(decoding: stderrTail, as: UTF8.self),
+                metadata: (try? Data(contentsOf: failureURL)).flatMap(FailureMetadata.decode)
             ))
         }
 

@@ -256,7 +256,8 @@ final class AskModelTests: XCTestCase {
         runner.deliver(.success(answer("", error: "the index is still building")))
         await pump { !model.isAsking }
 
-        XCTAssertEqual(model.latest?.errorText, "the index is still building")
+        XCTAssertEqual(model.latest?.errorText, "Couldn't answer the question")
+        XCTAssertEqual(model.latest?.failure?.diagnostics, "the index is still building")
         XCTAssertNil(model.latest?.answer)
     }
 
@@ -267,7 +268,8 @@ final class AskModelTests: XCTestCase {
         runner.deliver(.failure(RunnerError.killed))
         await pump { !model.isAsking }
 
-        XCTAssertEqual(model.latest?.errorText, "mp ask exited with status 15")
+        XCTAssertEqual(model.latest?.errorText, "Couldn't answer the question")
+        XCTAssertEqual(model.latest?.failure?.diagnostics, "mp ask exited with status 15")
     }
 
     // MARK: - Deeplink

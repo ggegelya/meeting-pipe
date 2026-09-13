@@ -29,6 +29,15 @@ enum PublishSink: String, CaseIterable, Equatable {
     /// `PublishTarget.sinkTypeName`.
     var sinkTypeName: String { rawValue }
 
+    var displayName: String {
+        switch self {
+        case .notion: return "Notion"
+        case .obsidian: return "Obsidian"
+        case .filesystem: return "the local folder"
+        case .lan: return "the shared folder"
+        }
+    }
+
     /// The imperative phrase an affordance that opens this sink's output wears.
     ///
     /// One register, not two, even though the two surfaces open different URLs

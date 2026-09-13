@@ -137,7 +137,7 @@ struct GeneralSectionView: View {
                     showsDivider: false)
             } footer: {
                 if let error = launchAtLogin.status.error {
-                    Text(error)
+                    FailureNotice(failure: FailurePresentation(diagnostics: error, operation: .processing, title: "Couldn't change launch at login"))
                 } else {
                     Text("Launch at login enables or disables the com.meetingpipe.daemon launch agent, the one thing that actually starts MeetingPipe when you log in. Turning it off leaves the app you are using alone; it just does not come back at the next login. Relaunch after quitting is that same agent's work, so with launch at login off, a MeetingPipe you opened yourself stays closed when you quit it.")
                 }

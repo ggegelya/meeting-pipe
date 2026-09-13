@@ -26,7 +26,8 @@
           "notion": {
             "ok": true,
             "page_url": "https://www.notion.so/Meeting-abc123",
-            "error": null
+            "error": null,
+            "failure": null
           }
         }
       },
@@ -45,12 +46,14 @@
           "notion": {
             "ok": true,
             "page_url": "https://www.notion.so/Meeting-abc123",
-            "error": null
+            "error": null,
+            "failure": null
           },
           "obsidian": {
             "ok": false,
             "page_url": null,
-            "error": "vault path not writable"
+            "error": "vault path not writable",
+            "failure": null
           }
         }
       },
@@ -69,12 +72,14 @@
           "notion": {
             "ok": false,
             "page_url": null,
-            "error": "401 Unauthorized"
+            "error": "401 Unauthorized",
+            "failure": null
           },
           "obsidian": {
             "ok": false,
             "page_url": null,
-            "error": "vault path not writable"
+            "error": "vault path not writable",
+            "failure": null
           }
         }
       },
@@ -93,7 +98,8 @@
           "filesystem": {
             "ok": true,
             "page_url": null,
-            "error": null
+            "error": null,
+            "failure": null
           }
         }
       },

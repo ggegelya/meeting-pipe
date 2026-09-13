@@ -82,7 +82,7 @@ struct AskEntry: Identifiable, Equatable {
     /// or the "terminated" stderr tail of the process the user themselves killed.
     enum Outcome: Equatable {
         case answered(AskAnswer)
-        case failed(String)
+        case failed(FailurePresentation)
         case cancelled
     }
 
@@ -99,7 +99,11 @@ struct AskEntry: Identifiable, Equatable {
 
     /// The failure message, when this entry failed.
     var errorText: String? {
-        if case .failed(let message) = outcome { return message }
+        failure?.title
+    }
+
+    var failure: FailurePresentation? {
+        if case .failed(let failure) = outcome { return failure }
         return nil
     }
 
@@ -309,10 +313,10 @@ final class AskModel: ObservableObject {
     private static func outcome(for result: Result<AskAnswer, Error>) -> AskEntry.Outcome {
         switch result {
         case .success(let answer):
-            if let message = answer.error, !message.isEmpty { return .failed(message) }
+            if let message = answer.error, !message.isEmpty { return .failed(FailurePresentation(diagnostics: message, operation: .ask)) }
             return .answered(answer)
         case .failure(let error):
-            return .failed(error.localizedDescription)
+            return .failed(FailurePresentation(error: error, operation: .ask))
         }
     }
 

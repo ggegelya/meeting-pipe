@@ -546,7 +546,7 @@ struct TranscriptTab: View {
             case .failure(let error):
                 // A chip has no error slot, and a rename that changed nothing after a
                 // modal prompt has to say so (the UX32 rail-row precedent).
-                LibraryDialogs.reportRosterRenameProblem(error.localizedDescription)
+                LibraryDialogs.reportRosterRenameProblem(PipelineLauncher.diagnostics(for: error))
             }
         }
     }
@@ -1484,7 +1484,7 @@ private struct VocabularyOfferSheet: View {
                 .foregroundStyle(Color(MPColors.fgMuted))
                 .fixedSize(horizontal: false, vertical: true)
             if let error {
-                Text(error)
+                FailureNotice(failure: FailurePresentation(diagnostics: error, operation: .processing, title: "Couldn't save this correction"))
                     .font(.mpTextXS)
                     .foregroundStyle(.mpDanger)
                     .lineLimit(3)

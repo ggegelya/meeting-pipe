@@ -711,7 +711,7 @@ final class SinkDispatcherTests: XCTestCase {
             stem: "clip", in: wav.deletingLastPathComponent()
         )
         XCTAssertEqual(failure?.stage, .pipeline)
-        XCTAssertEqual(failure?.reason, "pipeline exited 1: summarize blew up")
+        XCTAssertEqual(failure?.reason, "summarize blew up")
     }
 
     // MARK: - transcription.language reaches the runner (HYG2)

@@ -583,6 +583,7 @@ const SLDetail = ({ id = "release", tab = "summary", setTab, mode = "read", cont
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: "var(--mp-bg)" }}>
       <SLDetailHeader m={m} mode={mode} context={context} menuOpen={menuOpen}/>
       <SLTabStrip tab={tab} setTab={setTab} editing={mode === "edit"}/>
+      {(m.status === "failed" || m.status === "partial") && <SLFailureNotice/>}
       <div style={{ height: 1, background: "var(--mp-border-faint)" }}/>
       <div style={{ flex: 1, overflow: "auto" }}>
         {tab === "summary" && mode === "read"      && <SLSummary/>}
@@ -738,16 +739,23 @@ const SLProvenance = ({ kind }) => {
   );
 };
 
-// Publish-state line. Failures explain themselves inline (DSN22 audit #4): the
-// short reason from the error sidecar rides on the failed / partial line. The NDA
-// variant is re-voiced to "Kept local" intent (audit #8) and its escape hatch is a
-// real secondary button, not a text link.
-const SLPublishState = ({ status, nda, reason }) => {
-  const because = reason ? `: ${reason}` : "";
+// UX80: one compact failure notice below the tabs. Raw diagnostics live only in Details.
+const SLFailureNotice = () => (
+  <div style={{ margin: "8px 16px", padding: 10, borderRadius: "var(--mp-radius-sm)", background: "var(--mp-bg-sunk)", color: "var(--mp-fg-muted)", flexShrink: 0 }}>
+    <div style={{ fontSize: "var(--mp-text-sm)", fontWeight: 600 }}>Couldn't publish to Notion</div>
+    <div style={{ fontSize: "var(--mp-text-xs)", margin: "6px 0" }}>Your saved summary is still available. Check the destination in Preferences &gt; Integrations, then retry publishing.</div>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+      <SLHeaderBtn>Open Integrations</SLHeaderBtn>
+      <SLHeaderBtn>Retry publishing</SLHeaderBtn>
+      <SLHeaderBtn>Details…</SLHeaderBtn>
+    </div>
+  </div>
+);
+
+const SLPublishState = ({ status, nda }) => {
+  if (status === "failed" || (status === "partial" && !nda)) return null;
   let icon, tint, text;
   if (nda)                          { icon = "lock";           tint = "var(--mp-fg-subtle)";  text = "Kept local. On this Mac by design (NDA workflow)."; }
-  else if (status === "failed")     { icon = "alert-triangle"; tint = "var(--mp-danger-600)";  text = `Last publish to Notion failed${because}.`; }
-  else if (status === "partial")    { icon = "alert-triangle"; tint = "var(--mp-warning-600)"; text = `Published to Obsidian. Notion failed${because}.`; }
   else if (status === "empty")      { icon = "alert-triangle"; tint = "var(--mp-warning-600)"; text = "No summary generated. The recording had no clear speech."; }
   else if (status === "unpublished"){ icon = "alert";          tint = "var(--mp-warning-600)"; text = "Not published yet."; }
   else if (status === "paste")      { icon = "alert";          tint = "var(--mp-warning-600)"; text = "Too long for an automatic summary. The transcript bundle is ready to paste into Claude Code."; }
@@ -1294,7 +1302,7 @@ const SummaryLibrary = () => {
       <SLGalleryLabel sub="the detail header, one audit change each">Detail header states</SLGalleryLabel>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
         <div>
-          <div style={SL_cropCap}>Publish failed · reason inline, edited caption</div>
+          <div style={SL_cropCap}>Publish failed · compact notice below tabs, diagnostics in Details</div>
           <SLDetailCrop><SLDetail id="marko" tab="summary" mode="read" setTab={() => {}}/></SLDetailCrop>
         </div>
         <div>

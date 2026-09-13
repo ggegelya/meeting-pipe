@@ -532,7 +532,7 @@ struct MeetingRow: View, Equatable {
         switch onRetry() {
         case .success: break
         case .failure(let err):
-            presentAlert(title: "Retry failed", message: err.localizedDescription)
+            presentAlert(title: "Retry failed", message: PipelineLauncher.diagnostics(for: err))
         }
     }
 
@@ -547,7 +547,7 @@ struct MeetingRow: View, Equatable {
             case .failure(let err):
                 presentAlert(
                     title: "Export failed",
-                    message: err.localizedDescription
+                    message: PipelineLauncher.diagnostics(for: err)
                 )
             }
         }
@@ -560,12 +560,7 @@ struct MeetingRow: View, Equatable {
     }
 
     private func presentAlert(title: String, message: String) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+        FailureDialog.show(FailurePresentation(diagnostics: message, title: title))
     }
 
     /// On-disk status alone can't distinguish "wav being written" from "pipeline running"; escalate to `.recording` when `isLiveRecording` is set.

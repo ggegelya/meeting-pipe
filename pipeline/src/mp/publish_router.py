@@ -213,7 +213,9 @@ def fanout(
                         idempotent=bool(res.get("idempotent")))
         except Exception as e:  # noqa: BLE001
             log.error("sink %s failed: %s", p.name, e)
-            per_sink[p.name] = {"error": str(e), "error_type": type(e).__name__}
+            from .failure_details import emit_failure
+            failure = emit_failure(e, operation="publish", provider=p.name)
+            per_sink[p.name] = {"error": str(e), "error_type": type(e).__name__, "failure": failure}
             failures.append((p.name, str(e)))
             events.emit("publisher", "sink_failed", sink=p.name, file=stem,
                         error=str(e), error_type=type(e).__name__)
@@ -302,6 +304,7 @@ def _write_publish_sidecar(summary_json: Path, result: dict[str, Any]) -> None:
                 "ok": not (isinstance(res, dict) and res.get("error")),
                 "page_url": res.get("page_url") if isinstance(res, dict) else None,
                 "error": res.get("error") if isinstance(res, dict) else None,
+                "failure": res.get("failure") if isinstance(res, dict) else None,
             }
             for name, res in sinks.items()
         },

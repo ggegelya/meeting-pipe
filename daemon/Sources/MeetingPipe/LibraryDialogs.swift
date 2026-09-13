@@ -59,13 +59,9 @@ enum LibraryDialogs {
     /// Say why a workflow delete did not happen (UX32). The editor sheet lands its reason in
     /// the field under the form; a rail row has nowhere to put one, and a refusal that says
     /// nothing is exactly the defect UX30 fixed, so it gets a dialog.
+    @MainActor
     static func reportWorkflowDeleteProblem(_ reason: String) {
-        let alert = NSAlert()
-        alert.messageText = "This workflow was not deleted"
-        alert.informativeText = reason
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+        FailureDialog.show(FailurePresentation(diagnostics: reason, operation: .processing, title: "This workflow was not deleted"))
     }
 
     /// Say why a roster rename did not happen (UX40). Same shape and same reasoning as
@@ -73,13 +69,9 @@ enum LibraryDialogs {
     /// asked for a new name in a modal and then changed nothing is exactly the silence
     /// worth a dialog. Only the strip needs this; Preferences ▸ Pipeline ▸ People and the
     /// People rail both land the same failure in a field of their own.
+    @MainActor
     static func reportRosterRenameProblem(_ reason: String) {
-        let alert = NSAlert()
-        alert.messageText = "This voice was not renamed"
-        alert.informativeText = reason
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+        FailureDialog.show(FailurePresentation(diagnostics: reason, operation: .renameVoice, title: "Couldn't rename this voice"))
     }
 
     /// Report what a re-transcribe did to the overlays (ASR3), from wherever it was
@@ -92,6 +84,7 @@ enum LibraryDialogs {
     /// transcript has no home for, and that has to read the same however the rebuild was
     /// started. A private copy in each caller is how the Trash confirm came to be worded
     /// two different ways for the same action.
+    @MainActor
     static func reportRetranscribe(
         meetingTitle: String,
         result: Result<MeetingLibraryService.RetranscribeOutcome, Error>
@@ -121,10 +114,8 @@ enum LibraryDialogs {
             alert.informativeText = lines.joined(separator: "\n\n")
             alert.addButton(withTitle: "Done")
         case .failure(let error):
-            alert.alertStyle = .warning
-            alert.messageText = "Couldn't re-transcribe \(meetingTitle)."
-            alert.informativeText = error.localizedDescription
-            alert.addButton(withTitle: "OK")
+            FailureDialog.show(FailurePresentation(error: error, operation: .transcribe))
+            return
         }
         alert.runModal()
     }

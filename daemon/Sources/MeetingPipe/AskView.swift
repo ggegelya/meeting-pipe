@@ -354,8 +354,13 @@ struct AskView: View {
             // UX37: a cancelled run is a named outcome, not a blank card, and
             // deliberately not an error. Nothing went wrong, the user stopped it.
             noteRow(icon: "stop.circle", tint: Color(MPColors.fgSubtle), text: "Stopped.")
-        } else if let message = entry.errorText {
-            noteRow(icon: "exclamationmark.triangle", tint: Color.mpWarning, text: message)
+        } else if let failure = entry.failure {
+            FailureNotice(failure: failure,
+                retry: askModel.inFlight == nil ? { _ = askModel.ask(entry.question) } : nil,
+                settings: {
+                    model.coordinator?.preferencesWindow?.show(initial:
+                        [.memory, .modelMissing].contains(failure.metadata.cause) ? .pipeline : .integrations)
+                }, downloadModel: { model.coordinator?.downloadLocalModelNow() })
         } else if let answer = entry.answer {
             if answer.empty {
                 noteRow(icon: "tray", tint: Color(MPColors.fgSubtle),

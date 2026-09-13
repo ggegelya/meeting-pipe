@@ -77,6 +77,11 @@ struct MeetingDetailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             chromeBand
+            if meeting.status == .failed || meeting.publishState == "partial" {
+                failureNotice
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+            }
             Divider().overlay(Color(MPColors.borderStrong))
             tabContent
         }
@@ -169,6 +174,38 @@ struct MeetingDetailView: View {
     }
 
     // MARK: Tab strip
+
+    private var failureNotice: some View {
+        let problem = FailurePresentation(diagnostics: meeting.failureReason ?? "",
+            operation: meeting.failureStage == "publish" ? .publish : meeting.failureStage == "transcribe" ? .transcribe : .summary,
+            metadata: meeting.failureMetadata, timestamp: meeting.failureTimestamp,
+            savedRecording: meeting.audioURL != nil, savedTranscript: meeting.hasTranscriptMD,
+            savedSummary: meeting.hasSummaryJSON)
+        let canRetry = RetryAffordance.decide(processing: libraryModel.processing(for: meeting.stem))
+        return VStack(alignment: .leading, spacing: 4) {
+            FailureNotice(failure: problem,
+                retryLabel: meeting.failureStage == "publish" ? "Retry publishing" : meeting.canReuseTranscript ? "Retry summary" : "Retry",
+                retry: canRetry.isOffered ? {
+                    if meeting.publishState == "partial" {
+                        Task { _ = await libraryModel.republishMeeting(stem: meeting.stem) }
+                    } else if case .failure(let error) = libraryModel.retryMeeting(stem: meeting.stem) {
+                        FailureDialog.show(FailurePresentation(error: error, title: "Couldn't retry this meeting"))
+                    }
+                } : nil,
+                settings: {
+                    if [.memory, .modelMissing].contains(problem.metadata.cause) {
+                        libraryModel.coordinator?.preferencesWindow?.show(initial: .pipeline)
+                    } else { libraryModel.coordinator?.menuPreferencesIntegrations() }
+                }, downloadModel: { libraryModel.coordinator?.downloadLocalModelNow() })
+            if case .inFlight(let label) = canRetry {
+                Text(label).font(.mpTextXS).lineLimit(1)
+            } else if meeting.failureSuggestsLocalReSummarize {
+                Button("Re-summarize with \(SummarizationEngine.local.qualified)") {
+                    Task { _ = await libraryModel.regenerateMeeting(stem: meeting.stem, backend: SummarizationEngine.local.id) }
+                }
+            }
+        }
+    }
 
     private var tabStrip: some View {
         HStack(spacing: 0) {

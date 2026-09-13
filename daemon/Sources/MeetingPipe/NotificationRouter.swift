@@ -33,6 +33,9 @@ enum NotificationRouter {
     static let actionStopRecording = "MP_STOP_RECORDING"
     static let actionKeepRecording = "MP_KEEP_RECORDING"
     static let actionStartLate = "MP_START_LATE"
+    static let failureCategory = "MP_FAILURE"
+    static let actionOpenFailure = "MP_OPEN_FAILURE"
+    static let failureIDPrefix = "failure-"
 
     static let stillMeetingIDPrefix = "still-meeting-"
     static let skipLateIDPrefix = "skip-late-"
@@ -78,6 +81,7 @@ enum NotificationRouter {
     /// one only if the id namespaces ever overlap, which is exactly what the
     /// exhaustiveness test watches for.
     enum Route: Equatable {
+        case openFailure
         case markLooksGood(stem: String)
         case editSummary(stem: String)
         case openPage
@@ -122,6 +126,10 @@ enum NotificationRouter {
     ) -> Decision {
         var routes: [Route] = []
         var consume = false
+
+        if id.hasPrefix(failureIDPrefix), isDefault || action == actionOpenFailure {
+            return Decision(routes: [.openFailure], consumeDoneEntry: false)
+        }
 
         if let entry = doneEntry {
             switch action {

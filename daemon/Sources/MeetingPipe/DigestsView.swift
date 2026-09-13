@@ -23,7 +23,7 @@ final class DigestListModel: ObservableObject {
     @Published fileprivate var generating = false
     /// UX23: the last "Generate now" failure, surfaced inline. Before this the `Result` was discarded,
     /// so a failed `mp digest` rendered nothing and looked like a no-op.
-    @Published fileprivate var errorText: String?
+    @Published var failure: FailurePresentation?
 
     fileprivate var selected: DigestFile? {
         digests.first { $0.stem == selectedStem }
@@ -61,7 +61,7 @@ struct DigestsView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            if let error = model.errorText {
+            if let error = model.failure {
                 errorBanner(error)
             }
             content
@@ -72,26 +72,11 @@ struct DigestsView: View {
     /// UX23: an inline, dismissible error row for a failed `mp digest`, in the AskView.errorState
     /// vocabulary (warning triangle + muted text). Non-destructive: it sits above the list so any
     /// existing digests stay visible.
-    private func errorBanner(_ message: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle")
-                .foregroundStyle(Color.mpWarning)
-            Text(message)
-                .font(.mpTextXS)
-                .foregroundStyle(Color(MPColors.fgMuted))
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-            Button { model.errorText = nil } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color(MPColors.fgMuted))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Dismiss error")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(Color.mpWarning.opacity(0.1))
+    private func errorBanner(_ failure: FailurePresentation) -> some View {
+        FailureNotice(failure: failure, retry: { generate() }, settings: {
+            libraryModel.coordinator?.preferencesWindow?.show(initial:
+                [.memory, .modelMissing].contains(failure.metadata.cause) ? .pipeline : .integrations)
+        }, downloadModel: { libraryModel.coordinator?.downloadLocalModelNow() })
     }
 
     private var header: some View {
@@ -163,16 +148,16 @@ struct DigestsView: View {
 
     private func generate() {
         model.generating = true
-        model.errorText = nil
+        model.failure = nil
         Task { @MainActor in
             let result = await libraryModel.generateDigest()
             model.generating = false
             switch result {
             case .success:
-                model.errorText = nil
+                model.failure = nil
                 model.reload(directory: libraryModel.digestsDirectory)
             case .failure(let err):
-                model.errorText = "Digest failed: \(err.localizedDescription)"
+                model.failure = FailurePresentation(error: err, operation: .digest, title: "Couldn't create the digest")
             }
         }
     }

@@ -212,6 +212,54 @@ final class MeetingLibraryServiceTests: XCTestCase {
 
     // MARK: - reassign workflow (WF8)
 
+    func test_retry_reuses_a_finalized_transcript_without_transcription() throws {
+        try touch("meeting.wav")
+        try touch("meeting.md", contents: "# Transcript\n\nSpeaker: A synthetic finalized sentence.")
+        try touch("meeting.json", contents: """
+        {"segments":[{"start":0,"end":2,"text":"A synthetic finalized sentence.","speaker":"ME"}],"finalized":true}
+        """)
+        PipelineFailureSidecar.write(stem: "meeting", in: dir, stage: .pipeline, reason: "summary failed")
+        XCTAssertNoThrow(try service.retryMeeting(stem: "meeting").get())
+        XCTAssertTrue(enqueued.isEmpty)
+        XCTAssertEqual(driver.summarizeInputs, [dir.appendingPathComponent("meeting.md")])
+        XCTAssertEqual(driver.summarizeBackends.count, 1)
+        if let backend = driver.summarizeBackends.first { XCTAssertNil(backend) }
+    }
+
+    func test_summary_retry_is_serialized_coalesced_and_cancelled_without_notification() throws {
+        try touch("m.md", contents: "Synthetic transcript")
+        try touch("m.json", contents: "{\"finalized\":true,\"segments\":[{\"start\":0,\"end\":1,\"text\":\"Synthetic transcript\"}]}")
+        try touch("m.meta.json", contents: "{\"workflow_nda_mode\":true,\"workflow_backend\":\"local\"}")
+        PipelineFailureSidecar.write(stem: "m", in: dir, stage: .pipeline, reason: "previous failure")
+        let lane = FakeLane()
+        let service = makeService(lane: lane)
+        XCTAssertNoThrow(try service.retryMeeting(stem: "m").get())
+        XCTAssertNoThrow(try service.retryMeeting(stem: "m").get())
+        XCTAssertEqual(lane.accepted.count, 1)
+        XCTAssertEqual(lane.coalesced.count, 1)
+        XCTAssertTrue(driver.summarizeInputs.isEmpty)
+        lane.startNext()
+        XCTAssertEqual(driver.summarizeInputs.count, 1)
+        XCTAssertNil(driver.summarizeBackends.first!)
+        XCTAssertTrue(enqueued.isEmpty)
+        driver.finishSummarize(.failure(PipelineLauncher.LaunchError.cancelled))
+        drainMain()
+        XCTAssertTrue(errors.isEmpty)
+        XCTAssertTrue(driver.publishInputs.isEmpty)
+        XCTAssertEqual(PipelineFailureSidecar.read(stem: "m", in: dir)?.reason, SinkDispatcher.cancelledReason)
+    }
+
+    func test_retry_rejects_incomplete_invalid_empty_and_streaming_transcripts() throws {
+        try touch("m.wav")
+        try touch("m.md", contents: "Synthetic transcript")
+        for json in ["{}", "not json", "{\"finalized\":false,\"segments\":[]}", "{\"finalized\":true,\"streaming\":true,\"segments\":[]}", "{\"finalized\":true,\"segments\":[{\"start\":1,\"end\":0,\"text\":\"wrong\"}]}"] {
+            try touch("m.json", contents: json)
+            XCTAssertNoThrow(try service.retryMeeting(stem: "m").get())
+        }
+        XCTAssertEqual(enqueued.count, 5)
+        XCTAssertTrue(driver.summarizeInputs.isEmpty)
+    }
+
     func test_reassignWorkflow_rewrites_meta_and_drops_stale_cloud_keys() throws {
         try touch("m1.meta.json", contents: """
         {
@@ -748,7 +796,8 @@ final class MeetingLibraryServiceTests: XCTestCase {
         drainMain()
 
         XCTAssertEqual(errors.count, 1)
-        XCTAssertTrue(errors.first?.hasPrefix("Regenerate failed:") ?? false)
+        XCTAssertEqual(errors.first, "Couldn't create the summary")
+        XCTAssertEqual(PipelineFailureSidecar.read(stem: "m", in: dir)?.reason, "boom")
     }
 
     /// The publish leg is the other half of the same click. A cancelled publish

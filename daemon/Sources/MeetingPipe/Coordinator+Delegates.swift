@@ -51,6 +51,11 @@ extension Coordinator: NotifierDelegate {
         NSWorkspace.shared.open(url)
     }
 
+    func notifier(_ notifier: Notifier, didRequestFailure failure: FailurePresentation, stem: String?) {
+        if let stem { openMeeting(stem: stem) }
+        else { Task { @MainActor in FailureDialog.show(failure) } }
+    }
+
     func notifier(
         _ notifier: Notifier,
         didRequestEditSummaryFor stem: String,

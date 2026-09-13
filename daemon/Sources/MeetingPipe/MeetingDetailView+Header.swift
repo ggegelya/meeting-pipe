@@ -280,10 +280,7 @@ extension MeetingDetailView {
         // meeting still shows what needs doing rather than only "Kept local".
         switch meeting.status {
         case .failed:
-            let reason = meeting.failureReason
-            let because = (reason?.isEmpty == false) ? ": \(reason!)" : ""
-            return ("exclamationmark.triangle.fill", Color(MPColors.danger600),
-                    "Processing failed\(because).")
+            return nil
         case .empty:
             return ("exclamationmark.triangle", Color(MPColors.warning600),
                     (meeting.emptyReason ?? .noSpeech).detail)
@@ -299,8 +296,7 @@ extension MeetingDetailView {
                 return ("exclamationmark.circle", Color(MPColors.warning600), "Not published yet.")
             }
             if meeting.publishState == "partial" {
-                return ("exclamationmark.triangle", Color(MPColors.warning600),
-                        "Published to some targets; at least one sink failed.")
+                return nil
             }
             return nil   // cleanly published: stay calm
         default:
@@ -754,12 +750,7 @@ extension MeetingDetailView {
     }
 
     private func presentReassignError(_ error: Error) {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Couldn't change the workflow."
-        alert.informativeText = error.localizedDescription
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+        FailureDialog.show(FailurePresentation(error: error, title: "Couldn't change the workflow"))
     }
 
     func openMetaJSON() {

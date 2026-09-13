@@ -130,7 +130,7 @@ struct WorkflowEditor: View {
                 retentionSection
                 defaultSection
                 if let err = saveError {
-                    Text(err)
+                    FailureNotice(failure: FailurePresentation(diagnostics: err, operation: .processing, title: "Couldn't save the workflow"))
                         .font(.mpTextSM)
                         .foregroundStyle(.mpDanger)
                         .padding(.bottom, 12)

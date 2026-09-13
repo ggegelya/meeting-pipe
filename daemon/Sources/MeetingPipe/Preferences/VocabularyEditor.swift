@@ -74,7 +74,7 @@ struct VocabularySection: View {
                     .buttonStyle(.mpGhost)
                     Spacer(minLength: 0)
                     if let error = glossary.saveError {
-                        Text(error)
+                        FailureNotice(failure: FailurePresentation(diagnostics: error, operation: .processing, title: "Couldn't save the vocabulary"))
                             .font(.mpTextXS)
                             .foregroundStyle(.mpDanger)
                             .lineLimit(2)

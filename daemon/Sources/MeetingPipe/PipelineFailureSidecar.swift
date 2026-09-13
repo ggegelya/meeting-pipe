@@ -4,7 +4,7 @@ import Foundation
 /// Daemon-owned; distinct from `<stem>.run.json` which is written by `mp run-all` only on success. A SIGKILL'd pipeline writes nothing - the daemon is the only observer of every failure mode. Success clears a stale failure sidecar.
 enum PipelineFailureSidecar {
 
-    /// Coarse stage label. `reason` carries the detail. `publish` is split out from `pipeline` because it is the one stage whose retry can reuse work already on disk (PIPE1).
+    /// Coarse stage label. `reason` carries diagnostics. `publish` reuses the saved summary; other stages may reuse a finalized transcript (UX80).
     enum Stage: String {
         case transcribe   // FluidAudio ASR + diarization, in-process
         case pipeline     // mp run-all: summarize + publish
@@ -32,6 +32,7 @@ enum PipelineFailureSidecar {
         let stage: Stage
         let reason: String
         let ts: String
+        var metadata: FailureMetadata? = nil
     }
 
     /// LOCAL16: substring every memory refusal and watchdog abort carries (`mp.resource_guard.LOW_MEMORY_MARKER`). There is no shared constant across the language boundary, so the phrase itself is the contract, the same arrangement as UX21's `not in the local HuggingFace cache`. Matching it is what turns a generic "Summarize and publish" failure into a row that says the Mac ran out of memory.
@@ -53,15 +54,19 @@ enum PipelineFailureSidecar {
         in dir: URL,
         stage: Stage,
         reason: String,
+        metadata: FailureMetadata? = nil,
         timestamp: Date = Date()
     ) -> URL? {
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "schema_version": 1,
             "stem": stem,
             "stage": stage.rawValue,
             "reason": reason,
             "ts": iso8601.string(from: timestamp),
         ]
+        if let metadata, let data = try? JSONEncoder().encode(metadata) {
+            payload["failure"] = try? JSONSerialization.jsonObject(with: data)
+        }
         guard JSONSerialization.isValidJSONObject(payload),
               let data = try? JSONSerialization.data(
                 withJSONObject: payload,
@@ -99,7 +104,10 @@ enum PipelineFailureSidecar {
               let ts = obj["ts"] as? String else {
             return nil
         }
-        return Failure(stage: stage, reason: reason, ts: ts)
+        let metadata = (obj["failure"] as? [String: Any]).flatMap {
+            (try? JSONSerialization.data(withJSONObject: $0)).flatMap(FailureMetadata.decode)
+        }
+        return Failure(stage: stage, reason: reason, ts: ts, metadata: metadata)
     }
 
     static func read(stem: String, in dir: URL) -> Failure? {

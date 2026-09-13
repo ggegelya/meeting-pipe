@@ -434,7 +434,7 @@ final class StatusBarModelTests: XCTestCase {
             finishSetupTitle: "Finish setup (3 steps left)"
         ))
         XCTAssertEqual(rows, [
-            .modelDownload(title: "⚠ Model download failed (b) - Retry", retryable: true, toolTip: "boom", dismissible: true),
+            .modelDownload(title: "⚠ Model download failed (b) - Retry", retryable: true, toolTip: "Retry when you are ready, or open Details to inspect the failure.", dismissible: true),
             .permissionConsequence(title: "⚠ Microphone off: recordings will be silent"),
             .permissionConsequence(title: "⚠ Screen Recording off: the call audio will not be recorded (mic only)"),
             .screenRecordingShortcut,

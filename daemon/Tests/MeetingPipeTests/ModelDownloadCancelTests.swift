@@ -156,7 +156,7 @@ final class ModelDownloadCancelTests: XCTestCase {
         XCTAssertTrue(title.contains("Model download failed"))
         XCTAssertTrue(retryable, "LOCAL1's retry stays; a real failure is worth retrying")
         XCTAssertTrue(dismissible, "and it must be clearable without re-downloading the model")
-        XCTAssertEqual(toolTip, "prefetch exited 1")
+        XCTAssertEqual(toolTip, "Retry when you are ready, or open Details to inspect the failure.")
     }
 
     /// Nothing else is dismissible: a download in flight and a finished one are not notices to

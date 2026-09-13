@@ -148,7 +148,7 @@ final class PipelineJobDispatcherTests: XCTestCase {
             job("/tmp/recordings/meeting.wav"),
             .failure(PipelineLauncher.LaunchError.nonZeroExit(15, "killed by the OS"))
         )
-        XCTAssertEqual(errors, ["Pipeline failed: pipeline exited 15: killed by the OS"])
+        XCTAssertEqual(errors, ["Pipeline failed: Processing could not finish."])
     }
 
     /// The queue-depth surface is shared: the menu-bar processing badge counts a

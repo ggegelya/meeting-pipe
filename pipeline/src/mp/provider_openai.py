@@ -95,7 +95,7 @@ class OpenAIClient:
                     },
                 ]
         assert last_err is not None
-        raise OpenAIError(f"openai did not return a schema-valid summary: {last_err}")
+        raise OpenAIError(f"openai did not return a schema-valid summary: {last_err}") from last_err
 
     # ----- TextClient -----
 
@@ -142,7 +142,9 @@ class OpenAIClient:
         except httpx.HTTPError as e:
             raise OpenAIError(f"openai backend HTTP error: {e}") from e
         if r.status_code != 200:
-            raise OpenAIError(f"openai backend returned {r.status_code}: {r.text[:500]}")
+            raise OpenAIError(f"openai backend returned {r.status_code}: {r.text[:500]}") from httpx.HTTPStatusError(
+                "OpenAI request failed", request=r.request, response=r
+            )
         try:
             content = r.json()["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:

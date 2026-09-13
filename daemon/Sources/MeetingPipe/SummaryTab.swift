@@ -25,9 +25,6 @@ struct SummaryTab: View {
 
     @State private var isEditing = false
     @State private var editorModel: CorrectionViewModel? = nil
-    /// UX21: latched once the failed-state "Download model" remedy is tapped, so
-    /// the button becomes a "downloading, then Retry" acknowledgement.
-    @State private var modelDownloadStarted = false
     /// UX13: surfaced save outcome. `saveError` keeps the user in edit with an
     /// inline warning (edits preserved); `savedCue` shows a brief confirmation
     /// before the crossfade back to the reader.
@@ -37,7 +34,7 @@ struct SummaryTab: View {
     /// BYO / long-meeting paste-back (TECH-UX3).
     @State private var pasteText = ""
     @State private var pasteSaving = false
-    @State private var pasteError: String? = nil
+    @State private var pasteError: FailurePresentation? = nil
 
     /// Local re-run preview (TECH-A16): a candidate summary shown next to the
     /// current one, never published until Keep. `candidateStem` tracks which
@@ -45,7 +42,7 @@ struct SummaryTab: View {
     @State private var candidate: MeetingSummary? = nil
     @State private var candidateStem: String? = nil
     @State private var previewing = false
-    @State private var previewError: String? = nil
+    @State private var previewError: FailurePresentation? = nil
 
     /// TECH-FEAT7: reprocess with a custom prompt. `showReprocess` swaps the
     /// reader for a prompt editor; the generated candidate flows into the same
@@ -175,7 +172,7 @@ struct SummaryTab: View {
             Divider()
             HStack(spacing: 8) {
                 if let err = previewError {
-                    Label(err, systemImage: "exclamationmark.triangle.fill")
+                    FailureNotice(failure: err)
                         .font(.caption).foregroundStyle(.mpWarning).lineLimit(2)
                 }
                 Spacer()
@@ -208,10 +205,10 @@ struct SummaryTab: View {
                 candidateStem = meeting.stem
                 showReprocess = false   // the candidate compare pane takes over
             } else {
-                previewError = "The re-run produced no readable summary."
+                previewError = FailurePresentation(diagnostics: "The re-run produced no readable summary.", operation: .summary)
             }
         case .failure(let err):
-            previewError = err.localizedDescription
+            previewError = FailurePresentation(error: err, operation: .summary)
         }
     }
 
@@ -278,7 +275,7 @@ struct SummaryTab: View {
                 .disabled(previewing)
             HStack(spacing: 8) {
                 if let err = previewError {
-                    Label(err, systemImage: "exclamationmark.triangle.fill")
+                    FailureNotice(failure: err)
                         .font(.caption).foregroundStyle(.mpWarning).lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -315,7 +312,7 @@ struct SummaryTab: View {
 
     private func keepPreview() {
         if case .failure(let err) = libraryModel.keepCandidateSummary(stem: meeting.stem) {
-            previewError = err.localizedDescription
+            previewError = FailurePresentation(error: err, operation: .summary)
             return
         }
         candidate = nil
@@ -376,7 +373,7 @@ struct SummaryTab: View {
                 )
                 .disabled(pasteSaving)
             if let err = pasteError {
-                Label(err, systemImage: "exclamationmark.triangle.fill")
+                FailureNotice(failure: err)
                     .font(.caption)
                     .foregroundStyle(.mpWarning)
                     .fixedSize(horizontal: false, vertical: true)
@@ -406,134 +403,15 @@ struct SummaryTab: View {
         case .success:
             await reloadSummary()   // pick up the freshly written summary.json
         case .failure(let err):
-            pasteError = err.localizedDescription
+            pasteError = FailurePresentation(error: err, operation: .publish)
         }
     }
 
     private var failedState: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 30))
-                .foregroundStyle(.mpWarning)
-            Text("Pipeline failed")
-                .font(.title3.weight(.semibold))
-            if let stage = stageLabel {
-                Text("Failed at: \(stage)")
-                    .font(.callout)
-                    .foregroundStyle(Color(MPColors.fgMuted))
-            }
-            if let reason = meeting.failureReason, !reason.isEmpty {
-                ScrollView {
-                    Text(reason)
-                        .font(.mpTextXS.monospaced())
-                        .foregroundStyle(Color(MPColors.fgMuted))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxWidth: SummaryLayout.noticeMeasure, maxHeight: 150)
-            }
-            if case .inFlight(let label) = retryAffordance {
-                // PIPE18: a run for this meeting is already queued or active, so there is nothing
-                // to ask for. Saying what is happening, in the same words the header uses, is the
-                // half that stops the seven-click burst; coalescing only makes it harmless.
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(label)
-                        .font(.mpTextSM)
-                        .foregroundStyle(Color(MPColors.fgMuted))
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: SummaryLayout.noticeMeasure)
-                .accessibilityElement(children: .combine)
-            } else if meeting.failureSuggestsModelDownload {
-                // UX21: the on-device model was not downloaded, so a regulated / NDA
-                // run refused to fetch it and summarize failed after the recording
-                // was already captured. The in-app remedy replaces the reason text's
-                // terminal command: download the model here (progress in the menu
-                // bar), then Retry once it lands.
-                VStack(spacing: 6) {
-                    if modelDownloadStarted {
-                        Text("Downloading the model. Retry once the menu bar shows it finished.")
-                            .font(.mpTextSM)
-                            .foregroundStyle(Color(MPColors.fgMuted))
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: SummaryLayout.noticeMeasure)
-                        Button("Retry pipeline") { runRetry() }
-                            .controlSize(.large)
-                    } else {
-                        Button("Download model") {
-                            libraryModel.coordinator?.downloadLocalModelNow()
-                            modelDownloadStarted = true
-                        }
-                        .controlSize(.large)
-                        Button("Retry pipeline") { runRetry() }
-                            .controlSize(.small)
-                    }
-                }
-            } else if meeting.failureSuggestsLocalReSummarize {
-                // PIPE6: the failure is a deterministic backend rejection (Apple
-                // Intelligence declining this transcript's language). A same-backend
-                // retry just fails again, so lead with a local re-summarize that
-                // works and keep the plain retry as the small fallback.
-                VStack(spacing: 6) {
-                    // UX31: named out of the shared vocabulary. This button and
-                    // the header's Re-summarize menu start the same run, and
-                    // used to call the same engine "Local" and "Local
-                    // (on-device)" respectively.
-                    Button("Re-summarize with \(SummarizationEngine.local.qualified)") {
-                        runReSummarize(backend: SummarizationEngine.local.id)
-                    }
-                        .controlSize(.large)
-                    Button("Retry on the same backend anyway") { runRetry() }
-                        .controlSize(.small)
-                }
-            } else {
-                Button("Retry pipeline") { runRetry() }
-                    .controlSize(.large)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
-    }
-
-    /// PIPE18: read from the very `ProcessingPresentation` the detail header's queued line is built
-    /// from, so the pane and the header cannot disagree about whether work is in flight.
-    private var retryAffordance: RetryAffordance {
-        RetryAffordance.decide(processing: libraryModel.processing(for: meeting.stem))
-    }
-
-    private var stageLabel: String? {
-        guard let raw = meeting.failureStage,
-              let stage = PipelineFailureSidecar.Stage(rawValue: raw) else {
-            return nil
-        }
-        return stage.displayName
-    }
-
-    private func runRetry() {
-        switch libraryModel.retryMeeting(stem: meeting.stem) {
-        case .success:
-            break
-        case .failure(let err):
-            let alert = NSAlert()
-            alert.messageText = "Retry failed"
-            alert.informativeText = err.localizedDescription
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-        }
-    }
-
-    /// PIPE6: re-summarize the existing transcript on a one-shot backend (summarize
-    /// + republish), for the failed-state recovery. Does not rewrite the workflow.
-    ///
-    /// UX28: no local alert any more. This was the one affordance of three that
-    /// reported a failure, so the same failure was loud here and silent from the
-    /// detail menu and the row. Every re-run now reports through the shared
-    /// notifier (failure) and the done notification (success), and shows the
-    /// busy chip in the row and the detail header while it runs.
-    private func runReSummarize(backend: String) {
-        Task { _ = await libraryModel.regenerateMeeting(stem: meeting.stem, backend: backend) }
+        Text("No summary yet")
+            .font(.mpTextSM)
+            .foregroundStyle(Color(MPColors.fgMuted))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var summaryJsonURL: URL {
@@ -653,7 +531,7 @@ struct SummaryTab: View {
     @ViewBuilder
     private var footerStatus: some View {
         if let err = saveError {
-            Label(err, systemImage: "exclamationmark.triangle.fill")
+            FailureNotice(failure: FailurePresentation(diagnostics: err, operation: .summary))
                 .font(.caption)
                 .foregroundStyle(.mpWarning)
                 .lineLimit(2)

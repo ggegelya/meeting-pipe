@@ -96,65 +96,80 @@ struct AudioTab: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 12) {
-            Button {
-                playback.togglePlayPause()
-            } label: {
-                Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
-                    .frame(width: 18)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                transportControls
+                Spacer()
+                playbackOptions
             }
-            .keyboardShortcut(.space, modifiers: [])
-            .buttonStyle(.borderless)
-            .help("Play or pause. The Space bar also toggles.")
-
-            Text(WaveformTimecode.format(playback.currentTime))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(Color(MPColors.fgMuted))
-                .frame(width: 56, alignment: .trailing)
-            Text("/")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(Color(MPColors.fgSubtle))
-            Text(WaveformTimecode.format(playback.duration))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(Color(MPColors.fgMuted))
-                .frame(width: 56, alignment: .leading)
-
-            Spacer()
-
-            PlaybackRateMenu(playback: playback)
-
-            Toggle("Skip silence", isOn: $playback.skipSilence)
-                .toggleStyle(.checkbox)
-                .help("Automatically jump silent gaps during playback. Silence is derived from the waveform.")
-
-            Picker("Channels", selection: $playback.channelMode) {
-                Text("Mono").tag(PlaybackChannelMode.monoMixdown)
-                Text("Stereo").tag(PlaybackChannelMode.stereoOriginal)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) { transportControls }
+                HStack(spacing: 12) { playbackOptions }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            // Hug the two labels instead of a fixed width, so the footer stays
-            // narrow enough to fit the detail-column floor (TECH-UX11).
-            .fixedSize()
-            .help(
-                "Mono mixes the mic (left) and system audio (right) into both ears. "
-                + "Stereo plays the original channels. The on-disk WAV is never modified."
-            )
-
-            // Waveform zoom only (TECH-UI-10): Fit shows the whole recording,
-            // 1x to 8x expand it horizontally for fine seeking. This control
-            // does not change playback speed. A compact menu (not segmented)
-            // keeps the footer inside the detail-column floor (TECH-UX11).
-            Picker("Zoom", selection: $zoom) {
-                ForEach(ZoomLevel.allCases) { z in
-                    Text(z.label).tag(z)
-                }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .fixedSize()
-            .help("Waveform zoom. Fit shows the whole recording; 1x to 8x expand it horizontally for fine seeking. Playback speed is unaffected.")
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var transportControls: some View {
+        Button {
+            playback.togglePlayPause()
+        } label: {
+            Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
+                .frame(width: 18)
+        }
+        .keyboardShortcut(.space, modifiers: [])
+        .buttonStyle(.borderless)
+        .help("Play or pause. The Space bar also toggles.")
+
+        Text(WaveformTimecode.format(playback.currentTime))
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(Color(MPColors.fgMuted))
+            .frame(width: 56, alignment: .trailing)
+        Text("/")
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(Color(MPColors.fgSubtle))
+        Text(WaveformTimecode.format(playback.duration))
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(Color(MPColors.fgMuted))
+            .frame(width: 56, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var playbackOptions: some View {
+        PlaybackRateMenu(playback: playback)
+
+        Toggle("Skip silence", isOn: $playback.skipSilence)
+            .toggleStyle(.checkbox)
+            .help("Automatically jump silent gaps during playback. Silence is derived from the waveform.")
+
+        Picker("Channels", selection: $playback.channelMode) {
+            Text("Mono").tag(PlaybackChannelMode.monoMixdown)
+            Text("Stereo").tag(PlaybackChannelMode.stereoOriginal)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        // Hug the two labels instead of a fixed width, so the footer stays
+        // narrow enough to fit the detail-column floor (TECH-UX11).
+        .fixedSize()
+        .help(
+            "Mono mixes the mic (left) and system audio (right) into both ears. "
+            + "Stereo plays the original channels. The on-disk WAV is never modified."
+        )
+
+        // Waveform zoom only (TECH-UI-10): Fit shows the whole recording,
+        // 1x to 8x expand it horizontally for fine seeking. This control
+        // does not change playback speed. A compact menu (not segmented)
+        // keeps the footer inside the detail-column floor (TECH-UX11).
+        Picker("Zoom", selection: $zoom) {
+            ForEach(ZoomLevel.allCases) { z in
+                Text(z.label).tag(z)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .fixedSize()
+        .help("Waveform zoom. Fit shows the whole recording; 1x to 8x expand it horizontally for fine seeking. Playback speed is unaffected.")
     }
 
     @ViewBuilder

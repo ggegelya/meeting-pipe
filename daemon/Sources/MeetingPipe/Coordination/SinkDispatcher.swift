@@ -511,7 +511,7 @@ final class SinkDispatcher: @unchecked Sendable {
                     ])
                     PipelineFailureSidecar.write(
                         stem: loc.stem, in: loc.dir,
-                        stage: .pipeline, reason: err.localizedDescription
+                        stage: .pipeline, reason: PipelineLauncher.diagnostics(for: err), metadata: FailureMetadata.from(err)
                     )
                     self.completeActiveJob(job, with: .failure(err))
                 }
@@ -579,7 +579,8 @@ final class SinkDispatcher: @unchecked Sendable {
                         ])
                         PipelineFailureSidecar.write(
                             stem: loc.stem, in: loc.dir,
-                            stage: SinkDispatcher.stage(for: err), reason: err.localizedDescription
+                            stage: SinkDispatcher.stage(for: err), reason: PipelineLauncher.diagnostics(for: err),
+                            metadata: FailureMetadata.from(err)
                         )
                     }
                 }
@@ -697,8 +698,11 @@ final class SinkDispatcher: @unchecked Sendable {
             return .launch
         case PipelineLauncher.LaunchError.nonZeroExit(PipelineLauncher.publishFailedExitCode, _):
             return .publish
+        case PipelineLauncher.LaunchError.reportedFailure(PipelineLauncher.publishFailedExitCode, _, _):
+            return .publish
         default:
-            let reason = error.localizedDescription
+            let reason = PipelineLauncher.diagnostics(for: error)
+            if FailureMetadata.from(error)?.cause == .memory { return .memory }
             if reason.range(
                 of: PipelineFailureSidecar.lowMemoryMarker, options: .caseInsensitive
             ) != nil {

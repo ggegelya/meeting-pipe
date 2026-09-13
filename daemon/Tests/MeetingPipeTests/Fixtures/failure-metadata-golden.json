@@ -1,0 +1,146 @@
+{
+  "_comment": "Generated synthetic failure metadata from mp.failure_details.describe. No owner data.",
+  "cases": [
+    {
+      "name": "credits",
+      "payload": {
+        "schema_version": 1,
+        "cause": "credits",
+        "operation": "summary",
+        "remedy": "billing",
+        "provider": "anthropic",
+        "http_status": 400,
+        "request_id": "req_0123456789abcdef"
+      },
+      "cause": "credits"
+    },
+    {
+      "name": "generic_400",
+      "payload": {
+        "schema_version": 1,
+        "cause": "unknown",
+        "operation": "summary",
+        "remedy": "retry",
+        "provider": "anthropic",
+        "http_status": 400,
+        "request_id": "req_0123456789abcdef"
+      },
+      "cause": "unknown"
+    },
+    {
+      "name": "rejected_key",
+      "payload": {
+        "schema_version": 1,
+        "cause": "rejected_key",
+        "operation": "summary",
+        "remedy": "integrations",
+        "provider": "anthropic",
+        "http_status": 401,
+        "request_id": "req_0123456789abcdef"
+      },
+      "cause": "rejected_key"
+    },
+    {
+      "name": "expired_key",
+      "payload": {
+        "schema_version": 1,
+        "cause": "expired_key",
+        "operation": "summary",
+        "remedy": "integrations",
+        "provider": "anthropic",
+        "http_status": 401,
+        "request_id": "req_0123456789abcdef"
+      },
+      "cause": "expired_key"
+    },
+    {
+      "name": "temporary_limit",
+      "payload": {
+        "schema_version": 1,
+        "cause": "rate_limit",
+        "operation": "summary",
+        "remedy": "retry",
+        "provider": "anthropic",
+        "http_status": 429,
+        "request_id": "req_0123456789abcdef"
+      },
+      "cause": "rate_limit"
+    },
+    {
+      "name": "service_outage",
+      "payload": {
+        "schema_version": 1,
+        "cause": "service_unavailable",
+        "operation": "summary",
+        "remedy": "retry",
+        "provider": "anthropic",
+        "http_status": 503,
+        "request_id": "req_0123456789abcdef"
+      },
+      "cause": "service_unavailable"
+    },
+    {
+      "name": "missing_key",
+      "payload": {
+        "schema_version": 1,
+        "cause": "missing_key",
+        "operation": "summary",
+        "remedy": "integrations",
+        "provider": "anthropic"
+      },
+      "cause": "missing_key"
+    },
+    {
+      "name": "connection",
+      "payload": {
+        "schema_version": 1,
+        "cause": "connection",
+        "operation": "summary",
+        "remedy": "retry"
+      },
+      "cause": "connection"
+    },
+    {
+      "name": "timeout",
+      "payload": {
+        "schema_version": 1,
+        "cause": "timeout",
+        "operation": "summary",
+        "remedy": "retry"
+      },
+      "cause": "timeout"
+    },
+    {
+      "name": "memory",
+      "payload": {
+        "schema_version": 1,
+        "cause": "memory",
+        "operation": "summary",
+        "remedy": "model",
+        "provider": "local"
+      },
+      "cause": "memory"
+    },
+    {
+      "name": "model_missing",
+      "payload": {
+        "schema_version": 1,
+        "cause": "model_missing",
+        "operation": "summary",
+        "remedy": "model",
+        "provider": "local"
+      },
+      "cause": "model_missing"
+    },
+    {
+      "name": "unknown",
+      "payload": {
+        "schema_version": 1,
+        "cause": "unknown",
+        "operation": "summary",
+        "remedy": "retry"
+      },
+      "cause": "unknown"
+    }
+  ]
+}

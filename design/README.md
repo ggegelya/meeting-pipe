@@ -52,6 +52,8 @@ web UI.
 
 ## Index
 
+**Failure presentation (UX80).** Show one short notice below the Library tabs, with a confirmed cause and contextual recovery buttons. Title and explanation are line-bounded; actions wrap vertically when space is narrow. Diagnostics appear only after **Details…**, in a fixed-size sheet with selectable scrolling, **Close**/Escape, and the exact local report preview beside **Copy report**. Keep controls at regular size and label Details for VoiceOver. Ask, Digests, People, Preferences, dialogs, and failure notifications use the same distinction between concise copy and diagnostic evidence.
+
 | File | What it is |
 |---|---|
 | `colors_and_type.css` | All design tokens — colors, type scale, fonts, radii, shadows, motion. Single source of truth. |

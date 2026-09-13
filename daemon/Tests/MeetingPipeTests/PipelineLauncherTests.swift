@@ -58,6 +58,29 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertNil(empty.backend)
     }
 
+    func testAskDiagnosticsPreserveExitMetadataAndCancellation() {
+        let metadata = FailureMetadata(cause: .credits, operation: .ask, provider: "anthropic")
+        let result = PipelineLauncher.askFailure(
+            PipelineLauncher.LaunchError.reportedFailure(1, metadata, "extra process log"),
+            answerError: "complete result error")
+        guard case PipelineLauncher.LaunchError.reportedFailure(let status, let facts, let details) = result else {
+            return XCTFail("Ask must preserve the typed process failure")
+        }
+        XCTAssertEqual(status, 1)
+        XCTAssertEqual(facts, metadata)
+        XCTAssertEqual(details, "complete result error\n\nProcess diagnostics:\nextra process log")
+
+        let legacy = PipelineLauncher.askFailure(
+            PipelineLauncher.LaunchError.nonZeroExit(2, "error end\n"), answerError: "complete error end")
+        guard case PipelineLauncher.LaunchError.nonZeroExit(let code, let reason) = legacy else {
+            return XCTFail("Ask must retain an unstructured exit")
+        }
+        XCTAssertEqual(code, 2)
+        XCTAssertEqual(reason, "complete error end")
+        XCTAssertTrue(PipelineLauncher.isCancellation(PipelineLauncher.askFailure(
+            PipelineLauncher.LaunchError.cancelled, answerError: "error saved before cancellation")))
+    }
+
     // MARK: - TECH-SEC5: fail-closed subprocess env (SEC8: tokens come from the inherited daemon env)
 
     func testFreshEnvironmentStripsAnthropicKeyOnly() {
@@ -374,20 +397,25 @@ final class PipelineLauncherTests: XCTestCase {
         2026-07-31 18:31:05,602 INFO mp.workflow: Workflow overlay applied (Personal): team_context
         """
         XCTAssertEqual(
-            PipelineLauncher.failureCaption(stderr: stderr),
+            PipelineLauncher.diagnosticCaption(stderr: stderr),
             "2026-07-31 18:30:44,900 ERROR mp.summarize: summarize failed: connection reset by peer"
         )
     }
 
     /// No ERROR anywhere: today's behaviour, unchanged. A crash whose only
     /// evidence is a bare traceback stays as legible as it was.
-    func test_caption_falls_back_to_the_whole_tail_when_nothing_was_logged_as_a_fault() {
+    func test_caption_is_bounded_when_nothing_was_logged_as_a_fault() {
         let stderr = """
         Traceback (most recent call last):
           File "mp/orchestrate.py", line 12, in run_all
         RuntimeError: boom
         """
-        XCTAssertEqual(PipelineLauncher.failureCaption(stderr: stderr), stderr)
+        XCTAssertEqual(PipelineLauncher.failureCaption(stderr: stderr), "Processing could not finish.")
+    }
+
+    func test_caption_does_not_expose_a_long_traceback() {
+        let diagnostic = String(repeating: "  File /private/synthetic.py, line 12\n", count: 2000)
+        XCTAssertLessThan(PipelineLauncher.failureCaption(stderr: diagnostic).count, 200)
     }
 
     func test_caption_takes_a_warning_only_when_there_is_no_error() {
@@ -396,7 +424,7 @@ final class PipelineLauncherTests: XCTestCase {
         2026-07-31 18:31:05,602 INFO mp.workflow: Workflow overlay applied (Personal)
         """
         XCTAssertEqual(
-            PipelineLauncher.failureCaption(stderr: stderr),
+            PipelineLauncher.diagnosticCaption(stderr: stderr),
             "2026-07-31 18:30:02,101 WARNING mp.publish: notion sink retrying"
         )
     }
@@ -413,7 +441,7 @@ final class PipelineLauncherTests: XCTestCase {
         // LOCAL16 rides on this: the marker has to survive into the caption, or a
         // memory failure degrades to "Summarize and publish failed".
         XCTAssertTrue(
-            PipelineLauncher.failureCaption(stderr: stderr)
+            PipelineLauncher.diagnosticCaption(stderr: stderr)
                 .range(of: PipelineFailureSidecar.lowMemoryMarker, options: .caseInsensitive) != nil
         )
     }

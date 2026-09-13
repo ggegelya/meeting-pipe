@@ -418,12 +418,11 @@ enum StatusBarModel {
                 dismissible: false
             )
         case .failed(let modelId, let error):
-            // Actionable (LOCAL1): clicking re-spawns the prefetch. The full
-            // error goes to the tooltip so the row title stays short.
+            // Clicking retries the prefetch; the sibling Details row holds diagnostics.
             return .modelDownload(
                 title: "⚠ Model download failed (\(shortModelId(modelId))) - Retry",
                 retryable: true,
-                toolTip: error,
+                toolTip: FailurePresentation(diagnostics: error, operation: .model).explanation,
                 dismissible: true
             )
         }

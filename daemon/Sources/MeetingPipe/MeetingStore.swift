@@ -51,9 +51,11 @@ struct Meeting: Identifiable, Hashable {
 
     let status: Status
 
-    /// From `<stem>.error.json` when that sidecar is the source of `.failed`. Both nil for staleness-age-inferred failures and for non-failed rows.
+    /// From `<stem>.error.json`, or a failed destination in a partial publish. Nil for staleness-age-inferred failures.
     let failureReason: String?
     let failureStage: String?
+    var failureMetadata: FailureMetadata? = nil
+    var failureTimestamp: String? = nil
 
     /// PIPE6: true when the failure was a deterministic backend rejection (Apple Intelligence declining the transcript's language) that a same-backend retry cannot fix, so the failed-state view offers a local re-summarize instead. Matches the marker `AppleIntelligenceError` stamps into the reason, so producer and consumer cannot drift.
     var failureSuggestsLocalReSummarize: Bool {
@@ -125,6 +127,8 @@ struct Meeting: Identifiable, Hashable {
     /// need not supply them.
     var hasSummaryJSON: Bool = false
     var hasTranscriptMD: Bool = false
+    /// Validated off-main during the scan, using the retry service's prerequisite check.
+    var canReuseTranscript: Bool = false
 
     /// True when the meeting has a local summary-correction record with an
     /// `edited` verdict (`CorrectionStore`), i.e. the summary was edited on this
@@ -634,10 +638,13 @@ final class MeetingStore: ObservableObject {
         let meta = metaURL.flatMap { readJSON(at: $0) }
         let run = runURL.flatMap { readJSON(at: $0) }
         let summary: MeetingSummary? = summaryURL.flatMap { MeetingSummary.load(from: $0) }
-        // A present summary supersedes the failure sidecar: the meeting was produced, so the error is stale.
+        // A saved summary supersedes a legacy processing marker. Publish failures
+        // and newer, structured regeneration failures still need their notice.
         let failure: PipelineFailureSidecar.Failure?
-        if summaryURL == nil, let errorURL = errorURL {
-            failure = PipelineFailureSidecar.read(at: errorURL)
+        if let errorURL, let recorded = PipelineFailureSidecar.read(at: errorURL),
+           summaryURL == nil || recorded.stage == .publish
+            || (recorded.metadata != nil && summaryURL.map { mtime(of: errorURL) > mtime(of: $0) } == true) {
+            failure = recorded
         } else {
             failure = nil
         }
@@ -658,11 +665,11 @@ final class MeetingStore: ObservableObject {
 
         let status: Meeting.Status
         let cacheable: Bool
-        if summaryURL != nil {
-            status = .done
-            cacheable = true
-        } else if failure != nil {
+        if failure != nil {
             status = .failed
+            cacheable = true
+        } else if summaryURL != nil {
+            status = .done
             cacheable = true
         } else if pasteReadyURL != nil {
             status = .manualPasteReady
@@ -732,8 +739,10 @@ final class MeetingStore: ObservableObject {
             backend: (run?["backend"] as? String),
             modelId: (run?["model"] as? String),
             status: status,
-            failureReason: failure?.reason,
-            failureStage: failure?.stage.rawValue,
+            failureReason: failure?.reason ?? (publishResult?.state == "partial" ? publishResult?.sinks.filter { !$0.ok }.compactMap(\.error).joined(separator: "\n\n") : nil),
+            failureStage: failure?.stage.rawValue ?? (publishResult?.state == "partial" ? "publish" : nil),
+            failureMetadata: failure?.metadata ?? publishResult?.sinks.first { !$0.ok }?.failure,
+            failureTimestamp: failure?.ts,
             searchableText: searchable,
             needsRepublish: MeetingStore.needsRepublish(
                 publish: publishResult,
@@ -752,6 +761,8 @@ final class MeetingStore: ObservableObject {
             emptyReason: emptyReason,
             hasSummaryJSON: summaryURL != nil,
             hasTranscriptMD: files.contains { $0.lastPathComponent == "\(stem).md" },
+            canReuseTranscript: failure?.stage != .transcribe && status == .failed
+                && MeetingLibraryService.hasReusableTranscript(stem: stem, in: directory),
             namesChangedSinceSummary: MeetingStore.namesChangedSinceSummary(
                 overlayModified: speakerLabelsURL.map { mtime(of: $0) },
                 runTimestamp: run?["ts"] as? String

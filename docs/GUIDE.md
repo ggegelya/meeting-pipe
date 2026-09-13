@@ -446,13 +446,19 @@ The menu bar's **Diagnostics…** opens a read-only view of what the app has bee
 
 ### A meeting that failed
 
-Failed meetings collect in the Library's **Needs you** rail, which carries an amber count. The row names the stage that failed and offers **Retry**, which does the least work that stage needs: a meeting that failed only at publishing republishes the summary already on disk rather than re-doing the whole thing, so a retry after an outage costs nothing and cannot produce a different summary than the one you read.
+Failed meetings collect in the Library's **Needs you** rail, which carries an amber count. Open one to see a short explanation and its next action below the tabs. **Retry summary** reuses a complete saved transcript; **Retry publishing** uses the saved summary without another model call. If a usable transcript is missing, **Retry** starts from the recording. The configured engine and the meeting's privacy rules still apply.
+
+An **Insufficient Anthropic credits** notice means the provider reported a credit problem. Choose **Open billing**, resolve it in your provider account, then retry. It does not mean your key expired. Missing or rejected keys lead to **Open Integrations**; expiry is named only when the provider explicitly reports it. An unknown failure gets a short explanation without guessing its cause.
+
+**Details…** opens selectable, scrollable local diagnostics in a fixed-size sheet. Use **Close** or Escape to return. The **Report preview** shows exactly what **Copy report** puts on the clipboard: app version, time, operation, cause, and any known provider, status, or request identifier. The report excludes the traceback, credentials, meeting titles, personal paths, and meeting content. Previewing and copying work offline and send nothing. Ask, Digests, People, and Preferences use the same Details control; an error notification opens its meeting when one is known.
 
 Once you press Retry the button steps aside and the pane says what is happening, so you can tell the click landed without pressing it again; pressing it repeatedly queues one run, not one per press.
 
 Some failures lead with a more specific fix than plain Retry, because plain Retry would just fail again. A summary the engine refused because of the language leads with re-summarizing on the on-device model. A confidential meeting that needed a model you have not downloaded leads with **Download model**, then Retry.
 
-A meeting you stopped yourself lands here too, and says so: **Interrupted**, with "You cancelled this run. Reprocess to run it again." That is the same whichever part you stopped, including one you cancel while it is still transcribing. Nothing is reported when you press Cancel, since you asked for it; the row is here only so the meeting stays one click from running again rather than looking finished when it is not.
+Ask uses a separate search model. If that model is missing during a confidential run, **Details…** retains the specific download command to run before asking again; downloading the summary model does not install the search model.
+
+A meeting you stopped yourself lands here too, and says **Processing cancelled**. A run stranded by an app restart says **Processing interrupted**. Cancel sends no error notification; the row remains available to resume when you choose.
 
 ### When a re-transcribe is the answer
 

@@ -79,7 +79,7 @@ struct NotionDatabasePicker: View {
                 .font(.mpTextXS)
                 .foregroundStyle(Color(MPColors.fgSubtle))
         case .failed(let err):
-            Text(err)
+            FailureNotice(failure: FailurePresentation(diagnostics: err, operation: .integrations, title: "Couldn't fetch Notion databases"))
                 .font(.mpTextSM)
                 .foregroundStyle(.mpDanger)
                 .lineLimit(2)

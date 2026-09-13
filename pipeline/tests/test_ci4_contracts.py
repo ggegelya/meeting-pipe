@@ -66,6 +66,10 @@ def test_prefetch_fixture_matches_the_live_emitter() -> None:
     )
 
 
+def test_failure_fixture_matches_the_native_classifier() -> None:
+    assert _generator().gen_failures() == _committed("failure-metadata-golden.json")
+
+
 def test_overlay_fixture_matches_the_live_resolver(tmp_path: Path) -> None:
     assert _generator().gen_overlay(tmp_path) == _committed("speaker-overlay-golden.json"), (
         "speaker_overlay.read_overlay/apply_overlay changed; regenerate with "
@@ -119,7 +123,7 @@ def test_publish_payload_shape(case: dict) -> None:
     assert payload["page_url"] is None or isinstance(payload["page_url"], str)
     assert isinstance(payload["sinks"], dict)
     for sink in payload["sinks"].values():
-        assert set(sink) == {"ok", "page_url", "error"}
+        assert set(sink) == {"ok", "page_url", "error", "failure"}
         assert isinstance(sink["ok"], bool)
 
 

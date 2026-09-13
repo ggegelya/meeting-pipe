@@ -9,15 +9,15 @@ const Notification = ({ kind = "done", title, body, action }) => {
     started: "Recording started",
     processing: "Recording stopped",
     done: "Meeting published",
-    error: "MeetingPipe error",
+    error: "Couldn't publish to Notion",
   }[kind]);
   const bodyText = body ?? ({
     started: "20260428-1430.wav",
     processing: "Processing 20260428-1430.wav…",
     done: "Open in Notion",
-    error: "Notion publish failed (401)",
+    error: "Review in Library.",
   }[kind]);
-  const actionLabel = action ?? (kind === "done" ? "Open in Notion" : null);
+  const actionLabel = action ?? (kind === "done" ? "Open in Notion" : kind === "error" ? "Review failure" : null);
 
   return (
     <div style={{
