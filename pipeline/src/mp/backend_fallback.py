@@ -31,8 +31,11 @@ def fallback_exceptions() -> tuple[type[BaseException], ...]:
 
     Only the former earns a silent drop to local. A `BadRequestError` or a
     schema `ValidationError` is a bug that a second model will not fix, so it
-    propagates. `APITimeoutError` subclasses `APIConnectionError`; it is listed
-    explicitly because that inheritance is easy to forget and load-bearing here.
+    propagates, with one exception the type cannot express: Anthropic reports
+    an exhausted prepaid balance as a 400 too, and `is_billing_exhaustion`
+    reads the message to tell that "unwilling" apart from a malformed request.
+    `APITimeoutError` subclasses `APIConnectionError`; it is listed explicitly
+    because that inheritance is easy to forget and load-bearing here.
 
     `anthropic` is imported lazily so that importing this module (and therefore
     `engine`) stays free for callers that never make a cloud call.
@@ -66,10 +69,32 @@ def run_with_local_fallback(*, cloud: Callable[[], T], local: Callable[[], T]) -
 
     try:
         return cloud(), "anthropic"
-    except fallback_exceptions() as e:
+    except Exception as e:
+        if not (isinstance(e, fallback_exceptions()) or is_billing_exhaustion(e)):
+            raise
         # A sustained 429 / 5xx has already exhausted the caller's own backoff
         # (summarize._create_message); a busy Anthropic should drop to local
         # rather than fail the whole run.
         log.warning("Anthropic backend failed (%s); falling back to local", e)
 
     return local(), "local"
+
+
+def is_billing_exhaustion(exc: BaseException) -> bool:
+    """True for the one 400 that means the cloud is unwilling, not misused.
+
+    Anthropic answers an account with no credit left with HTTP 400
+    `invalid_request_error`, the same status a malformed request gets, so the
+    type alone reads it as a caller bug. Four meetings on 2026-09-07 and
+    2026-09-08 lost their summaries to exactly that. The classification lives
+    in `failure_details.describe`, which the daemon's failure sidecar already
+    trusts, so the ladder and the Library cannot disagree about what a
+    failure was. Lazy import for the same reason `fallback_exceptions` has one.
+    """
+    import anthropic
+
+    if not isinstance(exc, anthropic.BadRequestError):
+        return False
+    from .failure_details import describe
+
+    return describe(exc, operation="summary")["cause"] in {"credits", "quota"}
