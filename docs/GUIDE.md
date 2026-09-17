@@ -493,7 +493,7 @@ The cause that used to be behind it was the app's own doing and is fixed. When o
 
 ### The recording did not stop when the call did
 
-Accessibility is missing, or the meeting app is one whose windows cannot be read. There is a backstop: after a long stretch of silence the recording stops itself, and partway through that stretch you get a "Still meeting?" notification with a Stop button. `⌃⌥⇧M` stops it immediately. The length of that stretch is the **Mic-only silence backstop** slider in **Preferences ▸ Prompt**.
+Accessibility is missing, or the meeting app is one whose windows cannot be read. There is a backstop: after a long stretch of silence the recording stops itself, and partway through that stretch you get a "Still meeting?" notification with a Stop button. `⌃⌥⇧M` stops it immediately. The length of that stretch is the **Mic-only silence backstop** slider in **Preferences ▸ Prompt**. The stretch only counts while the other side of the call can be heard: if the recording panel says **System audio not captured**, the far side is not reaching the recording, and the backstop waits rather than treating your muted mic as an empty call. The app retries once by itself; if the notice stays, **Retry system audio** on the panel is the fix, and the backstop picks up again once audio is flowing.
 
 ### Anything else
 

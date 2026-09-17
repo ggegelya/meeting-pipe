@@ -82,9 +82,19 @@ final class MeetingRecorder {
     private(set) var systemURL: URL?
     private(set) var startedAt: Date?
 
-    /// Diagnostic counters so we can tell what's actually flowing in.
+    /// Diagnostic counters so we can tell what's actually flowing in. Zeroed at `start()`,
+    /// not at `stop()`: a buffer that lands during teardown used to increment a freshly
+    /// zeroed counter, log a spurious "first fired" line, and hand the next recording a
+    /// count of 1 that its liveness gate read as "already delivering" (REC17).
     private var micFires: UInt64 = 0
     private var systemFires: UInt64 = 0
+
+    /// REC17: `systemFires` as it stood when the current system capture was armed, so
+    /// "has this attempt delivered a buffer" is `systemFires > systemFiresAtArm` rather than
+    /// `> 0`. The counter runs across retries, so on every retry the old gate was already
+    /// true and the watchdog judged a spin-up it was written to ignore; and the one start
+    /// that mattered, the first, is the one it could never see. Written on main at arm.
+    private var systemFiresAtArm: UInt64 = 0
 
     /// Monotonic marks for REC9's head offset: when this recording started, and when
     /// the first frame landed in the system WAV *as it currently stands on disk*.
@@ -214,6 +224,39 @@ final class MeetingRecorder {
     /// in `stop()`, the termination flush, and whenever a retry actually runs.
     private var systemAudioAutoRetryTimer: DispatchSourceTimer?
     private static let systemAudioAutoRetryDelaySeconds = 7.0
+
+    /// REC17: how long `startSystemCapture` waits on `SystemAudioCapture.start()` before it
+    /// gives the channel up as lost. Nothing bounded that wait until 2026-09-17, when it took
+    /// **64 minutes** and the far side of a Teams call was silence for all of it while every
+    /// fence stayed quiet. 10 s is 3.5x the slowest healthy start of the preceding eight days
+    /// (2.82 s), 24x under the 240 s nudge the owner actually received, and still under the
+    /// 30 s nudge the Preferences slider produces at its 60 s floor, so the HUD banner lands
+    /// before any "Still in a meeting?" can. A timed-out start is treated exactly like a
+    /// mid-meeting loss (`handleSystemAudioLost`), which is what makes Retry reachable and
+    /// schedules REC8's automatic one.
+    static let systemStartBudgetSeconds = 10.0
+
+    /// REC17: what the idle backstop should believe about the system channel, read by
+    /// `MeetingSessionController` on every backstop tick. The backstop used to derive "the
+    /// far side is quiet" from a level mirror the system tap alone feeds, so a channel that
+    /// never delivered a buffer and one delivering silence were the same -120 dB, and the
+    /// moment the owner muted, the streak ran unopposed against a call it could not hear.
+    enum SystemChannelHealth: Equatable {
+        /// The current capture has delivered at least one buffer since it was armed.
+        case live
+        /// Nothing is delivering: the start has not returned yet, it timed out, or the
+        /// stream died and the retry has not re-armed it. Mic silence means nothing here.
+        case down
+        /// Deliberately mic-only: Screen Recording is denied, so there is no far side to
+        /// wait for and the backstop runs on the mic alone, as TECH-C7 built it to.
+        case micOnly
+    }
+
+    var systemChannelHealth: SystemChannelHealth {
+        if systemCapture != nil, systemFires > systemFiresAtArm { return .live }
+        if systemCapture == nil, SystemAudioCapture.permissionState == .denied { return .micOnly }
+        return .down
+    }
 
     /// REC10: when the system channel's audio stopped, so a retry can pad the outage
     /// it is resuming across. Wall clock since REC16, deliberately unlike the other elapsed
@@ -392,6 +435,9 @@ final class MeetingRecorder {
         self.captureMode = captureMode
         micFramePosition = 0
         muteTimeline = MuteTimeline()
+        micFires = 0
+        systemFires = 0
+        systemFiresAtArm = 0
         lastMicFires = 0
         lastSystemFires = 0
         lastDurationParity = nil
@@ -743,11 +789,16 @@ final class MeetingRecorder {
             )
         }
 
+        // REC17: this attempt's baseline. Read on the delivery queue below and by the watchdog
+        // and the backstop on main; written here, on main, before the capture can deliver.
+        let armBaseline = systemFires
+        systemFiresAtArm = armBaseline
+
         let capture = SystemAudioCapture { [weak self] pcm in
             guard let self = self, self.systemFile != nil else { return }
             self.systemFires &+= 1
-            if self.systemFires == 1 {
-                Log.writeLine("recorder", "system tap first fired: frames=\(pcm.frameLength)")
+            if self.systemFires == armBaseline &+ 1 {
+                Log.writeLine("recorder", "system tap first fired: frames=\(pcm.frameLength)\(isRetry ? " (retry)" : "")")
             }
             // REC9: where this file's audio begins, relative to the mic. Keyed off the
             // file's own mark rather than `systemFires`, which counts across a retry
@@ -781,9 +832,17 @@ final class MeetingRecorder {
         self.systemCapture = capture
         // Track the Task so stop() can await it; otherwise a fast stop()
         // races the in-flight start and orphans the SCStream.
+        //
+        // REC17: the start is awaited through `boundedSystemCaptureStart` and nowhere else.
+        // `SystemAudioCapture.start()` is two unbounded ScreenCaptureKit awaits, and on
+        // 2026-09-17 they took 64 minutes between them; this Task then held the slot for all
+        // of it, so `retrySystemAudio` no-oped, the watchdog (gated on a first buffer) never
+        // looked, and the recording ran mic-only with no banner. The timeout is abandon-on-
+        // timeout like every other bound in this file: the start keeps running inside SCK,
+        // and the capture's ledger makes its eventual completion stop the stream it produced.
         systemStartTask = Task { [weak self] in
-            do {
-                try await capture.start()
+            switch await boundedSystemCaptureStart(seconds: MeetingRecorder.systemStartBudgetSeconds, { try await capture.start() }) {
+            case .started:
                 Log.writeLine("recorder", "SCStream started")
                 // Healthy (re)start: the system channel covers the recording from here.
                 self?.systemDegraded = false
@@ -793,8 +852,13 @@ final class MeetingRecorder {
                     // @Sendable closure boundary (matches Coordinator's backstop hops).
                     Task { @MainActor in self?.onSystemAudioRecovered?() }
                 }
-            } catch {
-                Log.writeLine("recorder", "WARN: SCStream start failed: \(error.localizedDescription), recording mic-only")
+            case .discarded(let why):
+                // A stop() beat the start and the capture stopped its own stream. Not a
+                // failure: the failure branch below deletes a fresh system WAV, and this
+                // recording is already past its merge.
+                Log.writeLine("recorder", "SCStream start returned after \(why.rawValue); nothing adopted (REC17)")
+            case .failed(let reason):
+                Log.writeLine("recorder", "WARN: SCStream start failed: \(reason), recording mic-only")
                 self?.systemCapture = nil
                 self?.systemDegraded = true
                 // REC10: only tear the file down when it holds nothing. On a resume it
@@ -808,10 +872,34 @@ final class MeetingRecorder {
                     self?.systemWriter = nil
                     try? FileManager.default.removeItem(at: systemURL)
                 }
-                let reason = error.localizedDescription
                 Task { @MainActor in self?.onSystemAudioDegraded?(reason) }
+            case .timedOut:
+                capture.abandonStart()
+                Log.event(category: "recorder", action: "system_capture_start_timed_out", attributes: [
+                    "budget_s": MeetingRecorder.systemStartBudgetSeconds,
+                    "is_retry": isRetry,
+                ])
+                Log.writeLine("recorder", "WARN: SCStream start did not return within \(Int(MeetingRecorder.systemStartBudgetSeconds))s; abandoning it and treating the system channel as lost (REC17)")
+                // Main-thread only, like every other loss path, and through the capture's
+                // identity so a channel some other path already replaced is left alone.
+                Task { @MainActor in self?.handleSystemAudioStartTimedOut(capture, isRetry: isRetry) }
             }
         }
+    }
+
+    /// REC17: a start that never returned is a loss like any other, dated to when the attempt
+    /// began. `handleSystemAudioLost` does the rest: `systemCapture = nil` (so Retry is
+    /// reachable), `systemDegraded = true`, the HUD banner, and, for a first start, REC8's one
+    /// automatic retry; a retry that itself never came up gets the banner and no further
+    /// automatic attempt. The identity guard is what keeps a late timeout from touching a
+    /// capture a retry or a `stop()` already replaced or cleared. Main-thread only.
+    private func handleSystemAudioStartTimedOut(_ capture: SystemAudioCapture, isRetry: Bool) {
+        guard systemCapture === capture else { return }
+        handleSystemAudioLost(
+            reason: "system_capture_start_timed_out",
+            stalledForSeconds: Self.systemStartBudgetSeconds,
+            autoRetry: !isRetry
+        )
     }
 
     /// Open `<stem>.system.wav` for writing and wire its serial writer. The one place
@@ -973,7 +1061,8 @@ final class MeetingRecorder {
     }
 
     /// React to a mid-recording loss of the system-audio stream - a delivered
-    /// `didStopWithError`, or a silent stall the watchdog caught. Tear the dead SCStream
+    /// `didStopWithError`, a silent stall the watchdog caught, or a start that never returned
+    /// within its budget (REC17, via `handleSystemAudioStartTimedOut`). Tear the dead SCStream
     /// down so `retrySystemAudio()` can re-arm it (the stale non-nil `systemCapture` was why
     /// retry no-oped after a death), flag the recording system-degraded for the stop-time
     /// coverage warning, and surface the degraded banner. The partial `system.wav` is left
@@ -987,7 +1076,14 @@ final class MeetingRecorder {
     /// noticed, so the watchdog path dates the loss to when the audio actually stopped
     /// rather than to when the ~1 Hz tick caught it; the `didStopWithError` path is
     /// prompt and passes 0.
-    private func handleSystemAudioLost(reason: String, stalledForSeconds: TimeInterval = 0) {
+    ///
+    /// `autoRetry` is false only for a timed-out **retry** (REC17): the automatic attempt
+    /// never came up, so this is the same outage continuing rather than a new loss, and
+    /// REC8's contract is one hands-off retry per outage before the banner takes over.
+    /// Scheduling another here would re-enter ScreenCaptureKit every 17 s for as long as
+    /// it stays wedged, piling up abandoned starts that all discard themselves at once
+    /// when it recovers.
+    private func handleSystemAudioLost(reason: String, stalledForSeconds: TimeInterval = 0, autoRetry: Bool = true) {
         guard isRecording, let dying = systemCapture else { return }
         // REC10: date the outage now, so a retry knows how much silence to pad.
         systemLostAt = max(0, Date().timeIntervalSince1970 - max(0, stalledForSeconds))
@@ -1004,7 +1100,7 @@ final class MeetingRecorder {
         systemDegraded = true
         onSystemAudioDegraded?(reason)
         // REC8: one hands-off retry before the user has to click the banner.
-        scheduleSystemAudioAutoRetry()
+        if autoRetry { scheduleSystemAudioAutoRetry() }
     }
 
     // MARK: - System audio liveness watchdog (REC4)
@@ -1022,11 +1118,15 @@ final class MeetingRecorder {
     }
 
     /// One watchdog tick: if a system capture is supposed to be live but its buffer counter
-    /// has stalled, treat it as a mid-meeting death. Only engages once the stream has
-    /// delivered at least one buffer, so the SCStream spin-up (and a denied / mic-only
-    /// recording, where `systemCapture` is nil) never false-positives. On main.
+    /// has stalled, treat it as a mid-meeting death. Only engages once the **current attempt**
+    /// has delivered at least one buffer, so the SCStream spin-up (and a denied / mic-only
+    /// recording, where `systemCapture` is nil) never false-positives. REC17: the gate was
+    /// `systemFires > 0`, which a retry always satisfied (the counter runs across attempts)
+    /// and a first start that never came up never did, which is the wrong way round on both
+    /// counts; the hung start is the bound's job (`systemStartBudgetSeconds`), not this one's.
+    /// On main.
     private func checkSystemLiveness() {
-        guard isRecording, systemCapture != nil, systemFires > 0 else { return }
+        guard isRecording, systemCapture != nil, systemFires > systemFiresAtArm else { return }
         guard systemLivenessMonitor.sample(count: systemFires) else { return }
         Log.event(category: "recorder", action: "system_capture_stall_detected", attributes: [
             "system_fires": Int(systemFires),
@@ -1743,8 +1843,10 @@ final class MeetingRecorder {
         self.lastDurationParity = nil
         self.lastSystemDegraded = systemDegraded
         self.lastInputDevice = capturedInputDevice
-        self.micFires = 0
-        self.systemFires = 0
+        // `micFires` / `systemFires` are deliberately NOT zeroed here: the captures below are
+        // still delivering for a beat, and a buffer landing on a zeroed counter logged a
+        // spurious "first fired" and handed the next recording a count its liveness gate
+        // misread (REC17). `start()` zeroes both before it arms anything.
         self.systemFirstFrameUptime = 0
         self.systemLostAt = 0
 

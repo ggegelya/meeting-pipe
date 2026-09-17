@@ -21,8 +21,43 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
     /// (`didStopWithError`). The recorder surfaces the loss and re-enables retry from here
     /// (REC4 / AUD-13). The String is the failure reason.
     var onStopWithError: ((String) -> Void)?
+    /// Guarded by `startLock`, together with `attempt`: `stream` is assigned under the lock at
+    /// adoption and read under it by `stop()`, so a stop cannot slip between `startCapture()`
+    /// returning and the assignment and leave the produced stream orphaned (REC17).
     private var stream: SCStream?
     private let sampleQueue = DispatchQueue(label: "com.meetingpipe.sysaudio")
+
+    /// REC17: the start attempt's ledger. `start()` is unbounded inside ScreenCaptureKit (64
+    /// minutes on 2026-09-17), so the recorder bounds its wait and abandons the attempt at the
+    /// budget; `stop()` abandons it too when it beats the start. Either way the call is still
+    /// running, and when `startCapture()` finally returns it must stop the stream it produced
+    /// rather than adopt it, and the delegate must deliver nothing from it. The pure rule is
+    /// `SystemCaptureStartAttempt`; this lock is the only thing the host adds. Synchronous
+    /// `NSLock`, never held across an await, like `requestLock` below.
+    private let startLock = NSLock()
+    private var attempt = SystemCaptureStartAttempt()
+
+    private func withStartLock<R>(_ body: () -> R) -> R {
+        startLock.lock()
+        defer { startLock.unlock() }
+        return body()
+    }
+
+    /// True once the recorder's budget elapsed or `stop()` ran before the start returned.
+    /// Read on the SCStream delegate queue per buffer; an uncontended `NSLock` there is tens
+    /// of nanoseconds, and the sample handler queue is not a real-time thread.
+    private var isStartAbandoned: Bool { withStartLock { attempt.isAbandoned } }
+
+    /// True while this capture holds a stream it adopted and has not stopped: the only state
+    /// in which a `didStopWithError` is about the recorder's live channel.
+    private var holdsAdoptedStream: Bool { withStartLock { !attempt.isAbandoned && stream != nil } }
+
+    /// The recorder stopped waiting on `start()` (REC17). From here a `startCapture()` that
+    /// finally returns discards its stream, and no buffer or `didStopWithError` from this
+    /// attempt reaches the recorder. Idempotent; safe from any thread.
+    func abandonStart() {
+        withStartLock { attempt.timedOut() }
+    }
 
     /// Native delivery format from SCStream; connect AVAudioPlayerNode at this format.
     static let captureFormat: AVAudioFormat = {
@@ -158,7 +193,13 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
 
     /// Start capturing system audio. Filter requires a real display; width/height
     /// are set to 2x2 to avoid video processing cost. Only .audio outputs are used.
-    func start() async throws {
+    ///
+    /// Returns what the completion did: `.adopt` when the stream is live and delivering, or
+    /// `.discard` when the attempt had been abandoned by the time `startCapture()` returned,
+    /// in which case the stream was stopped here and nothing was adopted (REC17). The recorder
+    /// awaits this only through `boundedSystemCaptureStart`, so a call that never returns is a
+    /// `.timedOut` outcome there rather than a wait that outlives the meeting.
+    func start() async throws -> SystemCaptureStartAttempt.Completion {
         let content: SCShareableContent
         if let cached = Self.cachedContent {
             content = cached
@@ -175,6 +216,7 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
             Self.cachedContent = content
         }
         Self.permissionState = .granted
+        let stream: SCStream
         do {
             guard let display = content.displays.first else {
                 throw CaptureError.noDisplay
@@ -196,13 +238,11 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
             config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
             config.queueDepth = 5
 
-            let stream = SCStream(filter: filter, configuration: config, delegate: self)
-            try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
-            try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue) // required even for audio-only; startCapture errors without it
-            try await stream.startCapture()
-            self.stream = stream
-            Log.recorder.info("SCStream system-audio capture started")
-            Log.writeLine("recorder", "SCStream system-audio capture started")
+            let built = SCStream(filter: filter, configuration: config, delegate: self)
+            try built.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
+            try built.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue) // required even for audio-only; startCapture errors without it
+            try await built.startCapture()
+            stream = built
         } catch {
             // REC5: the cached SCShareableContent may name a display that no longer exists (e.g. after a
             // dock/undock), which fails startCapture on every reuse. Drop it so the next retrySystemAudio()
@@ -210,16 +250,58 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
             Self.cachedContent = nil
             throw error
         }
+        // REC17: `startCapture()` returned, possibly long after anyone stopped waiting for it (64
+        // minutes on 2026-09-17). Whether to keep the stream is decided by the ledger, under the
+        // lock, in the same critical section as the assignment, so a `stop()` that reads the
+        // ledger sees either "not completed" (and abandons it) or an assigned stream to stop.
+        let completion = withStartLock { () -> SystemCaptureStartAttempt.Completion in
+            let completion = attempt.completed()
+            if completion == .adopt { self.stream = stream }
+            return completion
+        }
+        switch completion {
+        case .adopt:
+            Log.recorder.info("SCStream system-audio capture started")
+            Log.writeLine("recorder", "SCStream system-audio capture started")
+        case .discard(let why):
+            // Nobody is waiting: the recorder gave the channel up as lost at its budget (and a
+            // retry may own the writer by now), or stop() ran first. The only correct move is
+            // to stop this stream at once. Its delegate is already gated on the ledger, so the
+            // beat between here and the stop taking effect delivers nothing. Unbounded on
+            // purpose: this runs on the abandoned task, which nothing awaits, and a bound here
+            // would only let that task exit while the stream it failed to stop kept running.
+            Log.writeLine("recorder", "SCStream start returned after the recorder abandoned it (\(why.rawValue)); stopping the late stream instead of adopting it (REC17)")
+            Log.event(category: "recorder", action: "system_capture_start_discarded", attributes: [
+                "reason": why.rawValue,
+            ])
+            do {
+                try await stream.stopCapture()
+            } catch {
+                Log.recorder.warning("SCStream late stopCapture: \(error.localizedDescription)")
+            }
+        }
+        return completion
     }
 
     func stop() async {
-        guard let stream = stream else { return }
+        // REC17: pre-empt a start that has not returned yet. `stream` is assigned only after
+        // `startCapture()` returns, so the old `guard let stream` made this a no-op against an
+        // in-flight start, and the stream that start eventually produced ran until process exit.
+        // Now the attempt is abandoned under the lock and its own completion stops the stream.
+        let live: SCStream? = withStartLock {
+            if !attempt.isCompleted {
+                attempt.stopped()
+                return nil
+            }
+            defer { stream = nil }
+            return stream
+        }
+        guard let live else { return }
         do {
-            try await stream.stopCapture()
+            try await live.stopCapture()
         } catch {
             Log.recorder.warning("SCStream stopCapture: \(error.localizedDescription)")
         }
-        self.stream = nil
     }
 
     enum CaptureError: Error, LocalizedError {
@@ -235,6 +317,10 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
 
 extension SystemAudioCapture: SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        // REC17: an abandoned attempt delivers nothing. Its stream may be the late one being
+        // stopped, or one adopted a beat before the recorder gave up; either way a retry may
+        // own the writer by now, and a second stream's buffers in it are audio at the wrong offset.
+        guard !isStartAbandoned else { return }
         guard type == .audio,
               CMSampleBufferDataIsReady(sampleBuffer),
               let pcm = Self.pcmBuffer(from: sampleBuffer) else {
@@ -244,6 +330,11 @@ extension SystemAudioCapture: SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        // REC17: only a stream this capture adopted and still holds may report its death. An
+        // abandoned attempt's stream and an already-stopped one both stay silent, because
+        // `handleSystemAudioLost` checks no identity: a late error from either would tear
+        // down whichever capture is live by then, a retry's included.
+        guard holdsAdoptedStream else { return }
         Log.recorder.error("SCStream stopped with error: \(error.localizedDescription)")
         Log.writeLine("recorder", "SCStream error: \(error.localizedDescription)")
         // Don't just log: a mid-recording death otherwise leaves the remote side silently

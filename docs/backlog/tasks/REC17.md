@@ -59,6 +59,16 @@ Alternatives the pickup session should not re-litigate:
 - `python3 scripts/truth_fences.py both` green. `recorder` is an existing event category, so nothing is owed to the `CONVENTIONS.md` category table.
 - No em-dashes in changed lines.
 
+## Progress
+
+**Shipped 2026-09-18**, all three scope items, on `main`. The spec above is the filing as it stood at close; the ToC row carries the ship note. Three things landed that the filing did not name, each argued in [`daemon/docs/gotchas.md`](../../../daemon/docs/gotchas.md#a-start-that-never-returns-is-invisible-to-every-fence-built-for-a-death):
+
+- The liveness watchdog's gate is per attempt (`systemFires > systemFiresAtArm`), not `systemFires > 0`. The counter runs across retries, so the old gate was already open on every retry and would have called a retry slower than 3 s a stall; and it was also open on any recording that followed a stop whose teardown let one trailing buffer through, because both counters were zeroed in `stop()` before the captures stopped. They are zeroed at `start()` now. The absence of a "system tap first fired" line was this filing's own evidence, and it was only trustworthy because the previous stop happened to let no trailing buffer through.
+- A timed-out **retry** does not schedule another automatic retry. REC8's contract is one hands-off attempt per outage, and a retry that never came up is the same outage continuing; the banner and its Retry button stay, and every manual attempt is bounded the same way.
+- `IdleStopBackstop.SystemChannel` has a third case, `.micOnly`, rather than the host folding Screen-Recording-denied into `.live(hasAudio: false)` at the call site, so the carve-out is a named state a test can assert rather than a mapping detail.
+
+Not exercised at runtime: a real hung `startCapture()`, which needs a live SCStream. The recorder's timeout branch and the capture's late-completion path are pinned by the pure ledger, the bounded runner, and source fences in `SystemCaptureStartREC17Tests`.
+
 ## Owner walkthrough (for the session that picks this up)
 
 The hang cannot be provoked on demand, so the walkthrough is instrumentation-then-wait, the REC15 shape.

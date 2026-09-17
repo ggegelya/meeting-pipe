@@ -126,6 +126,10 @@ protocol SessionRecording: AnyObject {
     /// (REC9), read by the controller for the short-recording notice. Nil when the
     /// last stop produced nothing to measure.
     var lastDurationParity: RecordingDurationParity? { get }
+    /// REC17: whether the system channel is delivering, read on every idle-backstop tick. A
+    /// channel that is down is held out of the idle streak; a mic-only-by-permission one
+    /// counts as silence, as the backstop was built to (TECH-C7).
+    var systemChannelHealth: MeetingRecorder.SystemChannelHealth { get }
     var onMicLevel: ((Float) -> Void)? { get set }
     var onSystemLevel: ((Float) -> Void)? { get set }
     func currentMicLevelDb() -> Float

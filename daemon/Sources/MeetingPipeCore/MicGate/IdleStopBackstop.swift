@@ -13,12 +13,34 @@ import Foundation
 /// recording auto-stops; real speech/activity (`voiceActivityDetected` /
 /// `rmsAboveOpenThreshold`) or live system audio resets the streak.
 ///
+/// A system channel that is **down** holds the streak instead (REC17). The host used to
+/// hand in one `hasSystemAudio` bit derived from a level mirror only the system tap
+/// feeds, so a channel that never delivered a buffer and one delivering silence were the
+/// same value; on 2026-09-17 the SCStream start hung for 64 minutes, the owner muted, and
+/// this backstop nudged "Still in a meeting?" twice at a call it could not hear. Mic
+/// silence is evidence of an empty call only when the far side can be heard.
+///
 /// Pure logic: the host feeds `ingest`, shows the nudge on `onNotify`, applies the
 /// native-lifecycle stand-down on `onAutoStop` (stopping or re-arming via `keepAlive`),
 /// and `reset`s at recording start. Not internally synchronised; host owns queue access.
 public final class IdleStopBackstop {
 
     public typealias Clock = () -> Date
+
+    /// What the host knows about the system (far-side) channel on this tick (REC17).
+    public enum SystemChannel: Equatable {
+        /// The channel is delivering; `hasAudio` is the host's above-threshold read of it.
+        /// `true` resets the streak, `false` lets a silent mic advance it.
+        case live(hasAudio: Bool)
+        /// The channel is not delivering (a start that has not returned, timed out, or a
+        /// stream lost and not yet re-armed). The streak is held: nothing advances, nothing
+        /// fires, and it starts over from the tick the channel comes back on.
+        case down
+        /// Deliberately mic-only (Screen Recording denied). There is no far side to wait
+        /// for, so this is `live(hasAudio: false)`: the backstop runs on the mic alone, as
+        /// TECH-C7 built it to and as the `mic_only_silence_seconds` key says.
+        case micOnly
+    }
 
     /// Idle seconds before the "still meeting?" nudge (fires once per streak).
     public let notifySeconds: TimeInterval
@@ -78,15 +100,29 @@ public final class IdleStopBackstop {
         didNotify = false
     }
 
-    /// Feed the current verdict and whether the SCStream right channel carries live
-    /// audio (host computes `hasSystemAudio` from its system-level mirror).
+    /// Feed the current verdict and the state of the system channel (the host computes
+    /// `.live(hasAudio:)` from its system-level mirror and `.down` / `.micOnly` from the
+    /// recorder's channel health).
     public func ingest(
         verdict: MicGateVerdict,
-        hasSystemAudio: Bool,
+        systemChannel: SystemChannel,
         at now: Date? = nil
     ) {
         if triggered { return }
         let timestamp = now ?? clock()
+        let hasSystemAudio: Bool
+        switch systemChannel {
+        case .live(let hasAudio):
+            hasSystemAudio = hasAudio
+        case .micOnly:
+            hasSystemAudio = false
+        case .down:
+            // REC17: not a silent far side, an inaudible one. Hold rather than count: the
+            // streak restarts from whichever later tick finds the channel live again.
+            silenceStart = nil
+            didNotify = false
+            return
+        }
         if !isSilent(verdict) || hasSystemAudio {
             silenceStart = nil
             didNotify = false

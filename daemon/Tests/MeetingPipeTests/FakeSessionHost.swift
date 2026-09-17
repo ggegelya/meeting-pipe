@@ -176,6 +176,10 @@ final class SpyRecorder: SessionRecording {
     var lastMicCoverage = MicCoverageSnapshot.empty
     var lastInputDevice: InputDeviceIdentity?
     var lastDurationParity: RecordingDurationParity?
+    /// REC17: `.live` by default, which is the state every pre-REC17 controller test implicitly
+    /// assumed (the backstop then reads the level mirror exactly as it always did); the hold
+    /// tests set `.down` explicitly.
+    var systemChannelHealth: MeetingRecorder.SystemChannelHealth = .live
     var onMicLevel: ((Float) -> Void)?
     var onSystemLevel: ((Float) -> Void)?
 

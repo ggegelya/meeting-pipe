@@ -119,7 +119,8 @@ final class MeetingSessionController: @unchecked Sendable {
     var lifecycleConsumerTask: Task<Void, Never>?
 
     /// System channel "carries audio" above this 1 s RMS floor; the idle backstop's
-    /// `hasSystemAudio` read draws the line here (TECH-END3).
+    /// `.live(hasAudio:)` read draws the line here (TECH-END3). Consulted only while the
+    /// recorder reports the channel live (REC17).
     private static let systemSilenceThresholdDb: Double = -50.0
 
     /// REC13(4): reports a stop that has not completed by its ceiling. Armed in
@@ -142,8 +143,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 await MainActor.run {
                     self.latestVerdict = verdict
                     self.coordinator.audioRecorder.setMicGateVerdict(verdict)
-                    let hasSystem = Double(self.latestSystemLevelDb) > Self.systemSilenceThresholdDb
-                    self.coordinator.silenceBackstop.ingest(verdict: verdict, hasSystemAudio: hasSystem)
+                    self.coordinator.silenceBackstop.ingest(verdict: verdict, systemChannel: self.backstopSystemChannel())
                 }
             }
         }
@@ -1076,7 +1076,7 @@ final class MeetingSessionController: @unchecked Sendable {
 
     // MARK: - Idle backstop (TECH-END3, was TECH-C2/C7)
 
-    /// Mirror the system-audio level so the idle backstop's `hasSystemAudio` read
+    /// Mirror the system-audio level so the idle backstop's `.live(hasAudio:)` read
     /// stays current, and clock-feed the backstop off the ~1 Hz mic-level callback.
     /// The verdict stream is deduped (change-only), so after a call goes silent once
     /// the backstop would never be fed again and its nudge / auto-stop horizons
@@ -1091,8 +1091,37 @@ final class MeetingSessionController: @unchecked Sendable {
         }
         coordinator.audioRecorder.onMicLevel = { [weak self] _ in
             guard let self = self, let verdict = self.latestVerdict else { return }
-            let hasSystem = Double(self.latestSystemLevelDb) > Self.systemSilenceThresholdDb
-            self.coordinator.silenceBackstop.ingest(verdict: verdict, hasSystemAudio: hasSystem)
+            self.coordinator.silenceBackstop.ingest(verdict: verdict, systemChannel: self.backstopSystemChannel())
+        }
+    }
+
+    /// What the backstop is told about the far side on this tick (REC17): the recorder's
+    /// channel health decides whether the level mirror means anything. On main, like both
+    /// ingest sites.
+    private func backstopSystemChannel() -> IdleStopBackstop.SystemChannel {
+        Self.backstopSystemChannel(
+            health: coordinator.audioRecorder.systemChannelHealth,
+            levelDb: latestSystemLevelDb
+        )
+    }
+
+    /// Pure mapping from the recorder's channel health plus the ~1 Hz level mirror to the
+    /// backstop's input. Lifted out so the three-way split is unit-testable without a
+    /// recorder: a down channel is `.down` whatever the mirror last read (the mirror is fed
+    /// by the system tap alone, so it simply stops moving when the channel does), a
+    /// mic-only-by-permission recording is `.micOnly`, and only a live channel's level is
+    /// compared against `systemSilenceThresholdDb`.
+    static func backstopSystemChannel(
+        health: MeetingRecorder.SystemChannelHealth,
+        levelDb: Float
+    ) -> IdleStopBackstop.SystemChannel {
+        switch health {
+        case .live:
+            return .live(hasAudio: Double(levelDb) > systemSilenceThresholdDb)
+        case .down:
+            return .down
+        case .micOnly:
+            return .micOnly
         }
     }
 
