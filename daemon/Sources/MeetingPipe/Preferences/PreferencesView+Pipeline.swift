@@ -32,6 +32,10 @@ struct PipelineSectionView: View {
     /// The Model id field's text while Custom is selected. A draft rather than a
     /// direct binding to the store, so a half-typed or cleared field is never saved.
     @State private var customModelDraft: String = ""
+    /// The Anthropic model row's text while it is being edited; nil shows the stored
+    /// id. A draft for the same reason as `customModelDraft`: a cleared field is shown
+    /// as typed but never saved.
+    @State private var anthropicModelDraft: String?
 
     // FEAT3-MANAGE: the named-speaker roster. Read directly for display (the
     // `VoiceprintProfile` exception); mutations go through `mp roster` via `launcher`.
@@ -57,6 +61,15 @@ struct PipelineSectionView: View {
                         options: Self.backendOptions,
                         width: 260
                     )
+                }
+                // Not gated on the picker above, unlike OpenAI's row below: Auto, a
+                // workflow pinning Anthropic, and Re-summarize with… all call this
+                // model whatever the global backend is.
+                SettingsStackRow("Anthropic model",
+                    sublabel: "Any Anthropic model id, used wherever Anthropic writes the summary or answers in Ask. Blank keeps the current one.") {
+                    TextField("claude-sonnet-5-5", text: anthropicModelBinding)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
                 }
                 if store.summarizationBackend == "openai" {
                     // UX45: this row replaces an instruction to hand-edit
@@ -472,6 +485,18 @@ struct PipelineSectionView: View {
                 customModelDraft = typed
                 if let modelId = LocalModelPreset.persistableModelId(typed) {
                     store.summarizationLocalModel = modelId
+                }
+            }
+        )
+    }
+
+    private var anthropicModelBinding: Binding<String> {
+        Binding<String>(
+            get: { anthropicModelDraft ?? store.summarizationModel },
+            set: { typed in
+                anthropicModelDraft = typed
+                if let modelId = ModelIdField.persistable(typed) {
+                    store.summarizationModel = modelId
                 }
             }
         )

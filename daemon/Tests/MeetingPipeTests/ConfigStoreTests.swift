@@ -342,6 +342,55 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.summarizationOpenAIModel, "gpt-4o-mini")
     }
 
+    /// The Anthropic model row writes `summarization.model`, which the pipeline reads
+    /// on every Anthropic path. A fresh config must open on the pipeline's own default:
+    /// the store writes this key back on any save, so a drifted fallback would pin a
+    /// config that never named a model to a model nobody chose.
+    func test_anthropic_model_defaults_to_the_pipelines_and_round_trips() throws {
+        let fresh = try ConfigStore(configURL: try makeTempConfigURL())
+        XCTAssertEqual(fresh.summarizationModel, try pipelineDefaultAnthropicModel())
+
+        let url = try makeTempConfigURL()
+        try """
+        [summarization]
+        model = "claude-sonnet-4-6"
+        team_context = "Custom team context"
+        """.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = try ConfigStore(configURL: url)
+        XCTAssertEqual(store.summarizationModel, "claude-sonnet-4-6")
+        store.summarizationModel = "claude-opus-5-5"
+        try store.saveNow()
+
+        let reloaded = try ConfigStore(configURL: url)
+        XCTAssertEqual(reloaded.summarizationModel, "claude-opus-5-5")
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertFalse(raw.contains("claude-sonnet-4-6"), "the old id was replaced, not duplicated")
+        XCTAssertTrue(raw.contains("Custom team context"), "an unmodelled sibling survives the write")
+    }
+
+    /// `Summarization.model`'s default in `pipeline/src/mp/config.py`, read from source so
+    /// the two trees cannot part company silently.
+    private func pipelineDefaultAnthropicModel() throws -> String {
+        let repo = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // MeetingPipeTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // daemon
+            .deletingLastPathComponent()   // repo root
+        let source = try String(
+            contentsOf: repo.appendingPathComponent("pipeline/src/mp/config.py"), encoding: .utf8
+        )
+        let re = try NSRegularExpression(
+            pattern: #"class Summarization\(BaseModel\):\s*\n\s*model: str = "([^"]+)""#
+        )
+        guard let m = re.firstMatch(in: source, range: NSRange(source.startIndex..., in: source)),
+              let range = Range(m.range(at: 1), in: source) else {
+            XCTFail("config.py's Summarization.model default no longer has the shape this fence reads")
+            return ""
+        }
+        return String(source[range])
+    }
+
     func test_publish_target_writes_preserve_unmodelled_siblings() throws {
         // The two Obsidian keys UX45 deliberately left TOML-only live in the same
         // table as the four it models, so a write that dropped them would silently

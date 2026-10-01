@@ -128,6 +128,7 @@ diarization_clustering_threshold = 0.55
 # works: older ones (Sonnet 4.6 and before) are sent a pinned temperature and a
 # forced tool call, newer ones the shape they accept (adaptive thinking at low
 # effort, no temperature). Read at spawn, so a change applies from the next run.
+# Also editable as "Anthropic model" in Preferences -> Pipeline.
 model = "claude-sonnet-5-5"
 max_tokens = 4000
 team_context = "FDA 21 CFR Part 11 regulated SaaS, .NET 8 + Angular + AWS EKS"

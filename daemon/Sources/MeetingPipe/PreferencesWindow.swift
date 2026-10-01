@@ -181,10 +181,21 @@ struct LocalModelPreset {
     }
 
     /// The id a typed Custom field should persist, or nil while it is not usable yet.
-    /// Trimmed, because a pasted repo id carries whitespace. Blank is nil rather than
-    /// an empty write: `ConfigStore`'s save is debounced 500 ms, so a field cleared on
-    /// the way to a new value would otherwise be persisted as no model at all.
+    /// `ModelIdField.persistable`, which every typed model-id field shares.
     static func persistableModelId(_ typed: String) -> String? {
+        ModelIdField.persistable(typed)
+    }
+}
+
+/// The rule every typed model-id field in Preferences persists through: the local
+/// model's Custom field (UX43) and the Anthropic model row. Pure so it is testable
+/// without a view or a config.
+enum ModelIdField {
+    /// The id a typed field should persist, or nil while it is not usable yet.
+    /// Trimmed, because a pasted id carries whitespace. Blank is nil rather than an
+    /// empty write: `ConfigStore`'s save is debounced 500 ms, so a field cleared on
+    /// the way to a new value would otherwise be persisted as no model at all.
+    static func persistable(_ typed: String) -> String? {
         let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }

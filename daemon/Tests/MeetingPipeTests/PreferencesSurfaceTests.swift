@@ -212,6 +212,33 @@ final class PreferencesSurfaceTests: XCTestCase {
     /// new value would be persisted as a config naming no model at all. Shape 1 was
     /// picked over the sentinel shape for exactly this: nothing invalid is ever
     /// written on the way to something valid.
+    /// The Anthropic model row persists through the same rule as the local Custom
+    /// field. Here a blank write is worse than there: `summarization.model` serves the
+    /// default backend, so `model = ""` would fail every summary until someone noticed.
+    func test_a_blank_anthropic_model_id_never_reaches_the_store() {
+        for blank in ["", " ", "\t", "\n", "   \n  "] {
+            XCTAssertNil(ModelIdField.persistable(blank))
+        }
+        XCTAssertEqual(ModelIdField.persistable("  claude-opus-5-5 \n"), "claude-opus-5-5")
+        for typed in ["", " x ", "mlx-community/Foo-4bit"] {
+            XCTAssertEqual(ModelIdField.persistable(typed), LocalModelPreset.persistableModelId(typed),
+                           "one rule for every typed model id, not two that can drift")
+        }
+    }
+
+    /// The row is not gated on the Backend picker: Auto, a workflow pinning Anthropic,
+    /// and Re-summarize with… all read `summarization.model` whatever the global
+    /// backend is, so a row hidden behind `backend == "anthropic"` would leave those
+    /// paths with a model nothing in the app can change.
+    func test_the_anthropic_model_row_is_bound_through_the_draft_and_not_gated() throws {
+        let pipeline = try daemonSource("Sources/MeetingPipe/Preferences/PreferencesView+Pipeline.swift")
+        XCTAssertTrue(pipeline.contains(#"SettingsStackRow("Anthropic model""#))
+        XCTAssertTrue(pipeline.contains("text: anthropicModelBinding"))
+        XCTAssertTrue(pipeline.contains("ModelIdField.persistable(typed)"))
+        XCTAssertFalse(pipeline.contains("text: $store.summarizationModel"),
+                       "a direct binding would persist a cleared field as no model")
+    }
+
     func test_a_blank_custom_id_never_reaches_the_store() {
         for blank in ["", " ", "\t", "\n", "   \n  "] {
             XCTAssertNil(LocalModelPreset.persistableModelId(blank))

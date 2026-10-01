@@ -79,6 +79,11 @@ final class ConfigStore: ObservableObject {
     /// Summarize backend: "anthropic" | "local" | "auto". Mirrors
     /// `summarization.backend`.
     @Published var summarizationBackend: String { didSet { scheduleSave() } }
+    /// Model id every Anthropic path calls (`summarization.model`): the anthropic and
+    /// auto backends, a workflow pinning Anthropic, Re-summarize with…, Ask and the
+    /// digest. TOML-only until the Pipeline pane's Anthropic model row, so changing it
+    /// meant quitting the app first or having its next save write the old id back.
+    @Published var summarizationModel: String { didSet { scheduleSave() } }
     @Published var summarizationLocalModel: String { didSet { scheduleSave() } }
     @Published var summarizationLocalEndpoint: String { didSet { scheduleSave() } }
     /// Model id the `openai` backend calls (`summarization.openai_model`). Ignored
@@ -229,6 +234,8 @@ final class ConfigStore: ObservableObject {
         self.summarizationDigestLocalOnly = summ?["digest_local_only"]?.bool ?? false
         self.summarizationSkipAboveChars = summ?["skip_above_chars"]?.int ?? 80000
         self.summarizationBackend = summ?["backend"]?.string ?? "anthropic"
+        // Mirrors `Summarization.model` in config.py; ConfigStoreTests reads that source.
+        self.summarizationModel = summ?["model"]?.string ?? "claude-sonnet-5-5"
         self.summarizationLocalModel = summ?["local_model"]?.string
             ?? "mlx-community/Qwen2.5-7B-Instruct-4bit"
         self.summarizationLocalEndpoint = summ?["local_endpoint"]?.string
@@ -316,6 +323,7 @@ final class ConfigStore: ObservableObject {
         ensureTable("summarization")["digest_local_only"] = summarizationDigestLocalOnly
         ensureTable("summarization")["skip_above_chars"] = summarizationSkipAboveChars
         ensureTable("summarization")["backend"] = summarizationBackend
+        ensureTable("summarization")["model"] = summarizationModel
         ensureTable("summarization")["local_model"] = summarizationLocalModel
         ensureTable("summarization")["local_endpoint"] = summarizationLocalEndpoint
         ensureTable("summarization")["openai_model"] = summarizationOpenAIModel
