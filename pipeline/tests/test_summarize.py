@@ -86,9 +86,10 @@ def test_summarize_calls_anthropic_and_writes_outputs(tmp_path: Path, monkeypatc
     assert parsed.title == "Phase 6 sync"
     assert parsed.actions[0].owner == "Alice"
 
-    # Confirm the API was called with tool_choice forcing the schema.
+    # Confirm the API was called with the schema tool. The default model rejects a
+    # forced tool_choice, so it is steered with `auto` (the prompt names the tool).
     call = fake_client.messages.create.call_args
-    assert call.kwargs["tool_choice"]["name"] == "emit_meeting_summary"
+    assert call.kwargs["tool_choice"] == {"type": "auto"}
     assert call.kwargs["tools"][0]["name"] == "emit_meeting_summary"
 
 

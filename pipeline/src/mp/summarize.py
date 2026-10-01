@@ -53,6 +53,7 @@ from .config import (
     SAMPLING_TEMPERATURE,
     Config,
     ExtraSectionSpec,
+    anthropic_sampling,
     effective_backend,
     extract_backend_flag,
     parse_local_endpoint,
@@ -423,12 +424,17 @@ class AnthropicSummaryClient:
             response = _create_message(
                 self._client,
                 model=model,
-                max_tokens=max_tokens,
                 # PIPE12: the same temperature local and openai have always sampled
                 # at. Left unset, this call ran at the API default of 1.0, which
                 # made the *default* backend the least repeatable one to compare
-                # regenerations on.
-                temperature=SAMPLING_TEMPERATURE,
+                # regenerations on. Models that reject a temperature (and a forced
+                # tool) get the shape they accept instead; see `anthropic_sampling`.
+                **anthropic_sampling(
+                    model,
+                    max_tokens,
+                    temperature=SAMPLING_TEMPERATURE,
+                    tool_name="emit_meeting_summary",
+                ),
                 system=[
                     {
                         "type": "text",
@@ -437,7 +443,6 @@ class AnthropicSummaryClient:
                     },
                 ],
                 tools=[SUMMARY_TOOL],
-                tool_choice={"type": "tool", "name": "emit_meeting_summary"},
                 # PIPE15: attempt 2 replays attempt 1's failure instead of
                 # re-issuing the identical request it used to.
                 messages=[

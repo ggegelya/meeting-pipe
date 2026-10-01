@@ -28,6 +28,7 @@ from .backend_fallback import run_with_local_fallback
 from .config import (
     SAMPLING_TEMPERATURE,
     Config,
+    anthropic_sampling,
     effective_backend,
     parse_local_endpoint,
     require_env,
@@ -85,11 +86,11 @@ class AnthropicTextClient:
     def complete(self, *, system_prompt: str, user_message: str, max_tokens: int) -> str:
         response = self._client.messages.create(
             model=self.model,
-            max_tokens=max_tokens,
             # PIPE12: parity with summarize and with the local / openai backends.
             # Unset, this ran at the API default of 1.0, so the same question asked
-            # twice of the same library gave two differently-worded answers.
-            temperature=SAMPLING_TEMPERATURE,
+            # twice of the same library gave two differently-worded answers. Dropped
+            # on models that reject it; see `anthropic_sampling`.
+            **anthropic_sampling(self.model, max_tokens, temperature=SAMPLING_TEMPERATURE),
             system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_message}],
         )

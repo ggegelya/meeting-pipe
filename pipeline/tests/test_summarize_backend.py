@@ -604,11 +604,14 @@ def test_anthropic_summarize_request_pins_the_temperature() -> None:
     with _anthropic_transport(body) as seen:
         out = AnthropicSummaryClient(api_key="sk-test").summarize(
             system_prompt="Summarize.", transcript="A: hello.",
-            model="claude-x", max_tokens=512,
+            model="claude-sonnet-4-6", max_tokens=512,
         )
 
     assert out.title == "Standup"
     assert seen[0]["temperature"] == SAMPLING_TEMPERATURE
+    assert seen[0]["tool_choice"] == {"type": "tool", "name": "emit_meeting_summary"}
+    assert seen[0]["max_tokens"] == 512
+    assert "thinking" not in seen[0]
 
 
 # ----- PIPE15: the schema-violation retry replays the failure -----
@@ -735,9 +738,134 @@ def test_anthropic_free_form_request_pins_the_same_temperature() -> None:
 
     body = _message_response([{"type": "text", "text": "an answer"}], "end_turn")
     with _anthropic_transport(body) as seen:
-        text = AnthropicTextClient(api_key="sk-test", model="claude-x").complete(
+        text = AnthropicTextClient(api_key="sk-test", model="claude-sonnet-4-6").complete(
             system_prompt="Answer.", user_message="a question", max_tokens=64,
         )
 
     assert text == "an answer"
     assert seen[0]["temperature"] == SAMPLING_TEMPERATURE
+
+
+# ----- Current-generation request shape (Sonnet 5.5 and later) -----
+#
+# PIPE12's pinned temperature and the forced tool_choice are both rejected with a
+# 400 by Sonnet 5.5 (and temperature by every model from Opus 4.7 on), so a bare
+# `summarization.model` bump failed every summary. These pin the shape those models
+# do accept, and that the legacy shape above is kept for the models that take it.
+
+@pytest.mark.parametrize("model", [
+    "claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5-20251001",
+    "claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-1-20250805",
+    "claude-sonnet-4-20250514", "claude-3-7-sonnet-latest", "claude-3-5-haiku-20241022",
+    "claude-3-haiku-20240307",
+])
+def test_models_that_take_a_temperature_keep_the_pipe12_shape(model: str) -> None:
+    from mp.config import anthropic_sampling
+
+    shape = anthropic_sampling(
+        model, 4000, temperature=SAMPLING_TEMPERATURE, tool_name="emit_meeting_summary",
+    )
+    assert shape == {
+        "max_tokens": 4000,
+        "temperature": SAMPLING_TEMPERATURE,
+        "tool_choice": {"type": "tool", "name": "emit_meeting_summary"},
+    }
+
+
+@pytest.mark.parametrize("model", [
+    "claude-sonnet-5-5", "claude-sonnet-5", "claude-opus-5-5", "claude-opus-5",
+    "claude-opus-4-8", "claude-opus-4-7", "claude-fable-5-1",
+    # An id the table has never seen is treated as current: a future model is far
+    # likelier to follow the 5.x line than to accept a temperature again.
+    "claude-x",
+])
+def test_current_models_drop_temperature_and_forced_tool_choice(model: str) -> None:
+    from mp.config import ANTHROPIC_THINKING_HEADROOM_TOKENS, anthropic_sampling
+
+    shape = anthropic_sampling(
+        model, 4000, temperature=SAMPLING_TEMPERATURE, tool_name="emit_meeting_summary",
+    )
+    assert "temperature" not in shape
+    assert shape["tool_choice"] == {"type": "auto"}
+    assert shape["thinking"] == {"type": "adaptive"}
+    assert shape["output_config"] == {"effort": "low"}
+    # Thinking counts toward max_tokens, so the configured reply budget is kept
+    # whole and the thinking allowance rides on top of it.
+    assert shape["max_tokens"] == 4000 + ANTHROPIC_THINKING_HEADROOM_TOKENS
+
+
+def test_no_tool_and_no_temperature_adds_neither_on_a_legacy_model() -> None:
+    # diarize_cleanup never pinned a temperature; routing it through the shared
+    # shape must not start sampling it at 0.2 behind its back.
+    from mp.config import anthropic_sampling
+
+    assert anthropic_sampling("claude-sonnet-4-6", 300) == {"max_tokens": 300}
+
+
+def test_sonnet_5_5_summarize_request_is_one_the_model_accepts() -> None:
+    from mp.summarize import AnthropicSummaryClient
+
+    summary = {
+        "title": "Standup", "summary": ["A point."], "decisions": [], "actions": [],
+        "questions": [], "attendees": ["Alice"], "detected_language": "en",
+    }
+    # A thinking model may lead with a thinking block; the tool block is found
+    # by type, not position.
+    body = _message_response(
+        [
+            {"type": "thinking", "thinking": "", "signature": "sig"},
+            {"type": "tool_use", "id": "toolu_01", "name": "emit_meeting_summary",
+             "input": summary},
+        ],
+        "tool_use",
+    )
+    with _anthropic_transport(body) as seen:
+        out = AnthropicSummaryClient(api_key="sk-test").summarize(
+            system_prompt="Summarize.", transcript="A: hello.",
+            model="claude-sonnet-5-5", max_tokens=512,
+        )
+
+    assert out.title == "Standup"
+    sent = seen[0]
+    assert sent["model"] == "claude-sonnet-5-5"
+    assert "temperature" not in sent
+    assert sent["tool_choice"] == {"type": "auto"}
+    assert sent["thinking"] == {"type": "adaptive"}
+    assert sent["output_config"] == {"effort": "low"}
+    assert sent["tools"][0]["name"] == "emit_meeting_summary"
+
+
+def test_sonnet_5_5_free_form_request_drops_the_temperature() -> None:
+    from mp.engine import AnthropicTextClient
+
+    body = _message_response(
+        [{"type": "thinking", "thinking": "", "signature": "sig"},
+         {"type": "text", "text": "an answer"}],
+        "end_turn",
+    )
+    with _anthropic_transport(body) as seen:
+        text = AnthropicTextClient(api_key="sk-test", model="claude-sonnet-5-5").complete(
+            system_prompt="Answer.", user_message="a question", max_tokens=64,
+        )
+
+    assert text == "an answer"
+    assert "temperature" not in seen[0]
+    assert seen[0]["thinking"] == {"type": "adaptive"}
+
+
+def test_sonnet_5_5_cleanup_request_does_not_force_the_tool() -> None:
+    from mp.diarize_cleanup import AnthropicCleanupClient
+
+    body = _message_response(
+        [{"type": "tool_use", "id": "toolu_01", "name": "emit_speaker_edits",
+          "input": {"edits": []}}],
+        "tool_use",
+    )
+    with _anthropic_transport(body) as seen:
+        edits = AnthropicCleanupClient(
+            api_key="sk-test", model="claude-sonnet-5-5", max_tokens=512,
+        ).propose_edits(window_prompt="[0] A: hi", speakers=["A"])
+
+    assert edits == []
+    assert seen[0]["tool_choice"] == {"type": "auto"}
+    assert "temperature" not in seen[0]

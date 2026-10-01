@@ -124,8 +124,11 @@ language = "auto"
 diarization_clustering_threshold = 0.55
 
 [summarization]
-# Latest Sonnet at time of writing. Bump deliberately.
-model = "claude-sonnet-4-6"
+# Latest Sonnet at time of writing. Bump deliberately. Any Anthropic model id
+# works: older ones (Sonnet 4.6 and before) are sent a pinned temperature and a
+# forced tool call, newer ones the shape they accept (adaptive thinking at low
+# effort, no temperature). Read at spawn, so a change applies from the next run.
+model = "claude-sonnet-5-5"
 max_tokens = 4000
 team_context = "FDA 21 CFR Part 11 regulated SaaS, .NET 8 + Angular + AWS EKS"
 # Your name, stamped on your own diarized speaker so "me vs them" reads as a

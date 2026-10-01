@@ -38,7 +38,13 @@ import anthropic
 
 from . import entry, events, storage
 from .chunking import chunked_windows
-from .config import Config, effective_backend, parse_local_endpoint, require_env
+from .config import (
+    Config,
+    anthropic_sampling,
+    effective_backend,
+    parse_local_endpoint,
+    require_env,
+)
 from .diarize import cosine_similarity
 from .markdown import render_markdown
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
@@ -544,7 +550,7 @@ class AnthropicCleanupClient:
         response = _create_message(
             self._client,
             model=self._model,
-            max_tokens=self._max_tokens,
+            **anthropic_sampling(self._model, self._max_tokens, tool_name="emit_speaker_edits"),
             system=[
                 {
                     "type": "text",
@@ -553,7 +559,6 @@ class AnthropicCleanupClient:
                 },
             ],
             tools=[CLEANUP_TOOL],
-            tool_choice={"type": "tool", "name": "emit_speaker_edits"},
             messages=[
                 {
                     "role": "user",

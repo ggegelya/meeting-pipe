@@ -6,9 +6,10 @@ which is fine because both are read-only consumers — config is owned by the us
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field
 
@@ -80,7 +81,7 @@ class ExtraSectionSpec(BaseModel):
 
 
 class Summarization(BaseModel):
-    model: str = "claude-sonnet-4-6"
+    model: str = "claude-sonnet-5-5"
     max_tokens: int = 4000
     team_context: str = ""
     # Output language for the summary. "auto" mirrors the transcript's
@@ -358,6 +359,57 @@ CLI_BACKENDS: frozenset[str] = frozenset({"claude_cli"})
 # running at the API default of 1.0 and so made the default backend the least
 # repeatable one.
 SAMPLING_TEMPERATURE: float = 0.2
+
+# Anthropic models that still take the request PIPE12 shaped: a pinned temperature
+# and, on the structured calls, a forced `tool_choice`. That is Sonnet 4.6 / Opus
+# 4.6 / Haiku 4.5 and everything older. Every model from Opus 4.7 on returns a 400
+# for a non-default temperature, and Sonnet 5.5 / Opus 5.5 / Fable 5.1 also for a
+# forced tool_choice, so before this a bare `summarization.model` bump failed every
+# summary. An id this does not match (a newer model, or one it has never heard of)
+# gets the current shape: a future model is far likelier to follow the 5.x line
+# than to accept a temperature again.
+_ANTHROPIC_SAMPLING_MODEL = re.compile(
+    r"^claude-(?:3(?:-5|-7)?-|(?:opus|sonnet|haiku)-4(?:-[0-6])?(?:-\d{8})?$)"
+)
+
+# Thinking counts toward `max_tokens`, so a model that thinks gets this on top of
+# `summarization.max_tokens`, which stays the budget for the reply itself. Effort
+# is `low`, the documented starting point for summarization and extraction, which
+# skips thinking on most simple requests.
+ANTHROPIC_THINKING_HEADROOM_TOKENS = 8000
+
+
+def anthropic_sampling(
+    model: str,
+    max_tokens: int,
+    *,
+    temperature: float | None = None,
+    tool_name: str | None = None,
+) -> dict[str, Any]:
+    """The model-dependent part of an Anthropic messages request.
+
+    On a model that takes it, the shape every call site sent before: `temperature`
+    when the caller pins one (PIPE12) and the tool forced by name. On a current
+    model the temperature is dropped (the API rejects it, so PIPE12's repeatability
+    is not available there), the tool is steered with `auto` (each prompt already
+    says to call it exactly once, and each caller already copes with a reply that
+    has no tool_use block), and adaptive thinking runs at low effort.
+    """
+    if _ANTHROPIC_SAMPLING_MODEL.match(model):
+        legacy: dict[str, Any] = {"max_tokens": max_tokens}
+        if temperature is not None:
+            legacy["temperature"] = temperature
+        if tool_name is not None:
+            legacy["tool_choice"] = {"type": "tool", "name": tool_name}
+        return legacy
+    current: dict[str, Any] = {
+        "max_tokens": max_tokens + ANTHROPIC_THINKING_HEADROOM_TOKENS,
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": "low"},
+    }
+    if tool_name is not None:
+        current["tool_choice"] = {"type": "auto"}
+    return current
 
 
 def with_backend_override(cfg: Config, backend: str) -> Config:
