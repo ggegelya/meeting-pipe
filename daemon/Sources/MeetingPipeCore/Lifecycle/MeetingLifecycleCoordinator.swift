@@ -181,6 +181,14 @@ public final class MeetingLifecycleCoordinator {
             if let decision = self.engine.ingest(event) {
                 self.publish(decision.verdict)
             }
+            // END14: a vetoed end leaves the verdict alone, so this row is the only trace of it.
+            if let veto = self.engine.takeVeto() {
+                self.eventLog.emit(category: "lifecycle", action: "end_vetoed", attributes: [
+                    "bundle_id": event.context.bundleID,
+                    "leading_signal": veto.leading.rawValue,
+                    "vetoed_by": veto.vetoedBy.rawValue
+                ])
+            }
             self.reconcileTick(generation: generation)
         }
     }

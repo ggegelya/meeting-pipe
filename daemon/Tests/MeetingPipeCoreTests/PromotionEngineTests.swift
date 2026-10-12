@@ -113,9 +113,10 @@ final class PromotionEngineTests: XCTestCase {
     }
 
     func test_second_distinct_ended_signal_promotes_to_ended_with_confirmation() {
+        // No prior process-audio `.live`: with one, END14's veto absorbs the window-gone and
+        // this is no longer the window-led fast path (see the END14 tests below).
         let engine = PromotionEngine()
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
-        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
         let decision = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 1.5))
@@ -425,24 +426,23 @@ final class PromotionEngineTests: XCTestCase {
         )
     }
 
-    func test_window_gone_provisional_not_reverted_by_cross_class_live() {
-        // END8 conservatism: only a SAME-class return reverts. A process-audio .live (a
-        // different evidence class) does not revert a window-gone lead, and the lone
-        // window-gone still promotes on the debounce exactly as before.
+    func test_window_gone_provisional_reverts_when_process_audio_reports_live_END14() {
+        // END8 kept a cross-class `.live` from reverting a window-gone lead, so a window-gone that
+        // opened a provisional before process audio had reported anything still promoted on the
+        // debounce. END14 reverses that for process audio only: Teams holding the mic is the
+        // control signal that the call is up, so it reverts the window-gone lead instead of
+        // letting a title-match miss end the meeting.
         let engine = PromotionEngine(debounce: 2.0)
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
-        let notReverted = engine.ingest(event(.processAudioIsRunningInput, .live, at: 1.5))
-        XCTAssertNil(notReverted, "A cross-class .live does not revert a window-gone provisional")
-        let post = engine.tick(at: Date(timeIntervalSince1970: 4))
+        let revert = engine.ingest(event(.processAudioIsRunningInput, .live, at: 1.5))
+        XCTAssertEqual(revert?.verdict, .inMeeting(context: teamsContext))
         XCTAssertEqual(
-            post?.verdict,
-            .ended(
-                context: teamsContext,
-                reason: EndingReason(leadingSignal: "shareable_content_window_gone", confirmedBy: [])
-            )
+            engine.takeVeto(),
+            PromotionEngine.EndVeto(leading: .shareableContentWindow, vetoedBy: .processAudioIsRunningInput)
         )
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 4)), "No end while Teams holds the mic")
     }
 
     func test_requiresCorroboration_covers_ax_leave_and_process_audio() {
@@ -566,5 +566,152 @@ final class PromotionEngineTests: XCTestCase {
         // dogfood report, so they are part of the contract.
         XCTAssertEqual(PrimarySignalKind.workspaceAppTerminated.rawValue, "workspace_app_terminated")
         XCTAssertEqual(PrimarySignalKind.windowTitleLeftPattern.rawValue, "window_title_left_pattern")
+    }
+
+    // MARK: - END14: a live process-audio reading vetoes a lone window-gone
+
+    /// The 2026-10-08 replay in `.inMeeting`. Teams dropped the ` | Microsoft Teams` title suffix,
+    /// so the call window stopped matching and read as gone while Teams held the mic and the Leave
+    /// button stayed healthy (it emits only on change, so it said nothing). 217 recordings and
+    /// prompts were ended this way on 2026-10-08 with `confirmed_by: []`.
+    func test_live_process_audio_vetoes_a_lone_window_gone_in_meeting_END14() {
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 1)))
+        XCTAssertFalse(engine.hasPendingEndDeadline, "A vetoed end opens no provisional")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 60)), "And the debounce cannot promote it")
+        XCTAssertEqual(
+            engine.takeVeto(),
+            PromotionEngine.EndVeto(leading: .shareableContentWindow, vetoedBy: .processAudioIsRunningInput)
+        )
+        XCTAssertNil(engine.takeVeto(), "A veto is reported once")
+    }
+
+    /// The real end after a veto takes the path every real end took from 2026-09-10 to
+    /// 2026-10-08: Teams releases the mic, process audio leads, the Leave button corroborates.
+    func test_real_end_after_a_veto_takes_the_process_audio_path_END14() {
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
+        let provisional = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 600))
+        XCTAssertEqual(
+            provisional?.verdict,
+            .endingProvisional(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "process_audio_is_running_input_false")
+            )
+        )
+        let ended = engine.ingest(event(.axLeaveButton, .ended, at: 600.4))
+        XCTAssertEqual(
+            ended?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "process_audio_is_running_input_false",
+                    confirmedBy: ["ax_leave_button_invalid"]
+                )
+            )
+        )
+    }
+
+    /// The clean leave keeps its fast path: the window goes a beat before Teams releases the mic
+    /// (the corpus' clean-leave traces), so the vetoed window-gone plus the mic release within the
+    /// debounce ends at once with the window leading, as the pre-veto engine did.
+    func test_clean_leave_within_the_debounce_ends_at_once_END14() {
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0.1))
+        _ = engine.confirmRecording()
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 60)))
+        let decision = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 60.2))
+        XCTAssertEqual(
+            decision?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "shareable_content_window_gone",
+                    confirmedBy: ["process_audio_is_running_input_false"]
+                )
+            )
+        )
+    }
+
+    /// The prompt half of the incident: in `.starting` a lone window-gone ended the engine at once,
+    /// which dismissed the record prompt roughly every 12 s on 2026-10-08 and 2026-10-09.
+    func test_live_process_audio_holds_the_prompt_through_a_window_gone_END14() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 0.1)))
+        XCTAssertEqual(engine.confirmRecording()?.verdict, .inMeeting(context: teamsContext))
+    }
+
+    /// A hang-up before the prompt is answered still ends: releasing the mic lifts the veto and the
+    /// held window-gone ends `.starting`, so a later Record press cannot arm a dead meeting.
+    func test_held_window_gone_ends_starting_once_the_mic_is_released_END14() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 1)))
+        let decision = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 5))
+        XCTAssertEqual(
+            decision?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "shareable_content_window_gone",
+                    confirmedBy: ["process_audio_is_running_input_false"]
+                )
+            )
+        )
+    }
+
+    /// A window that comes back clears the held end, so a later mic release alone does not end it.
+    func test_window_returning_in_starting_clears_the_held_end_END14() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 2))
+        XCTAssertNil(
+            engine.ingest(event(.processAudioIsRunningInput, .ended, at: 3)),
+            "A lone process-audio drop still needs corroboration in `.starting`"
+        )
+    }
+
+    /// An app quit is definitive and is never vetoed, even while the last mic reading was live.
+    func test_workspace_termination_is_not_vetoed_by_live_process_audio_END14() {
+        let engine = PromotionEngine(debounce: 2.0)
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        let provisional = engine.ingest(event(.workspaceAppTerminated, .ended, at: 1))
+        XCTAssertEqual(
+            provisional?.verdict,
+            .endingProvisional(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "workspace_app_terminated")
+            )
+        )
+        XCTAssertNotNil(engine.tick(at: Date(timeIntervalSince1970: 4)))
+        XCTAssertNil(engine.takeVeto())
+    }
+
+    /// A released mic is not a veto: window-gone after process audio has already ended keeps
+    /// today's direct end, so the change only ever applies while the mic is actually held.
+    func test_released_mic_does_not_veto_window_gone_END14() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        XCTAssertNil(engine.ingest(event(.processAudioIsRunningInput, .ended, at: 1)))
+        let decision = engine.ingest(event(.shareableContentWindow, .ended, at: 2))
+        XCTAssertEqual(
+            decision?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "shareable_content_window_gone",
+                    confirmedBy: ["process_audio_is_running_input_false"]
+                )
+            )
+        )
     }
 }

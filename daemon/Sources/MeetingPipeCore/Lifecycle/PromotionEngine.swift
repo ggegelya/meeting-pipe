@@ -86,6 +86,22 @@ public extension PrimarySignalKind {
         }
     }
 
+    /// END14: whether this signal's current `.live` reading vetoes a lone end. Only process audio:
+    /// Teams holding the mic is the control signal that the call is up (its own doc calls it the
+    /// signal that never fires without a real teardown), and the 2026-08-05 probe measured that a
+    /// client-side Teams mute leaves the OS mic running, so muting cannot lift the veto. Browser,
+    /// Webex and Slack adapters never emit it, so their ends are untouched by construction.
+    var vetoesLoneEnd: Bool { self == .processAudioIsRunningInput }
+
+    /// END14: whether an end led by this signal yields to a live vetoer. Only the signals that may
+    /// end a meeting on their own (`requiresCorroboration == false`) need the check, and an app
+    /// quit is definitive, so it is never vetoed. On the native path this means window-gone, which
+    /// Teams' 2026-10-08 title change (the ` | Microsoft Teams` suffix dropped, so the call window
+    /// no longer matched) turned into a false end on every call.
+    var yieldsToLiveVeto: Bool {
+        !requiresCorroboration && self != .workspaceAppTerminated
+    }
+
     /// END5: the minimum time a `.endingProvisional` led by this signal must hold before the
     /// debounce alone promotes it to `.ended`. A plain browser meeting exposes no end signal but
     /// the active tab title (`browserTabTitle`), which flips to `.ended` on any tab switch, not
@@ -150,19 +166,37 @@ public final class PromotionEngine {
 
     private enum Phase {
         case idle
-        case starting(context: MeetingLifecycleContext, observed: Set<PrimarySignalKind>)
-        case inMeeting(context: MeetingLifecycleContext, observed: Set<PrimarySignalKind>)
+        case starting(context: MeetingLifecycleContext, observed: Set<PrimarySignalKind>, states: SignalStates)
+        case inMeeting(context: MeetingLifecycleContext, observed: Set<PrimarySignalKind>, states: SignalStates)
         case endingProvisional(
             context: MeetingLifecycleContext,
             leading: PrimarySignalKind,
             startedAt: Date,
-            observed: Set<PrimarySignalKind>
+            observed: Set<PrimarySignalKind>,
+            states: SignalStates
         )
         case ended(context: MeetingLifecycleContext)
     }
 
     public struct Decision: Equatable {
         public let verdict: MeetingLifecycleVerdict
+    }
+
+    /// END14: what each signal last reported this session. `observed` only says which kinds have
+    /// been seen, so before END14 a process-audio `.live` that was still current could not stop a
+    /// lone window-gone from ending the meeting.
+    typealias SignalStates = [PrimarySignalKind: SignalReading]
+
+    struct SignalReading: Equatable {
+        let state: PrimarySignalState
+        let at: Date
+    }
+
+    /// END14: an end the engine declined because a live signal contradicted it. The engine stays
+    /// pure; the coordinator drains this after each ingest and logs `lifecycle`/`end_vetoed`.
+    public struct EndVeto: Equatable {
+        public let leading: PrimarySignalKind
+        public let vetoedBy: PrimarySignalKind
     }
 
     public let debounce: TimeInterval
@@ -183,21 +217,38 @@ public final class PromotionEngine {
         return false
     }
 
-    public func reset() { phase = .idle }
+    private var pendingVeto: EndVeto?
+
+    public func reset() {
+        phase = .idle
+        pendingVeto = nil
+    }
+
+    /// END14: the end most recently vetoed, cleared on read so each veto is reported once.
+    public func takeVeto() -> EndVeto? {
+        defer { pendingVeto = nil }
+        return pendingVeto
+    }
+
+    /// END14: the live signal that vetoes an end led by `kind`, if any.
+    private func veto(for kind: PrimarySignalKind, in states: SignalStates) -> PrimarySignalKind? {
+        guard kind.yieldsToLiveVeto else { return nil }
+        return states.first { $0.value.state == .live && $0.key.vetoesLoneEnd && $0.key.evidenceClass != kind.evidenceClass }?.key
+    }
 
     /// Ingest a PRIMARY signal event. Returns the verdict transition it triggered, or nil if the event doesn't change the phase.
     public func ingest(_ event: PrimarySignalEvent) -> Decision? {
         switch phase {
         case .idle:
             return handleIdle(event)
-        case .starting(let context, var observed):
-            return handleStarting(event, context: context, observed: &observed)
-        case .inMeeting(let context, var observed):
-            return handleInMeeting(event, context: context, observed: &observed)
-        case .endingProvisional(let context, let leading, let startedAt, var observed):
+        case .starting(let context, var observed, var states):
+            return handleStarting(event, context: context, observed: &observed, states: &states)
+        case .inMeeting(let context, var observed, var states):
+            return handleInMeeting(event, context: context, observed: &observed, states: &states)
+        case .endingProvisional(let context, let leading, let startedAt, var observed, var states):
             return handleEndingProvisional(
                 event, context: context, leading: leading,
-                startedAt: startedAt, observed: &observed
+                startedAt: startedAt, observed: &observed, states: &states
             )
         case .ended:
             return nil
@@ -206,7 +257,7 @@ public final class PromotionEngine {
 
     /// Promote `.endingProvisional` to `.ended` if the debounce has elapsed. No-op for every other phase.
     public func tick(at now: Date) -> Decision? {
-        guard case .endingProvisional(let context, let leading, let startedAt, let observed) = phase else {
+        guard case .endingProvisional(let context, let leading, let startedAt, let observed, _) = phase else {
             return nil
         }
         // END5: a tab-title-led browser end holds for a minutes-long floor, not the short
@@ -244,7 +295,7 @@ public final class PromotionEngine {
     /// minutes on native clients. `rewalkSignal` is recorded in `confirmedBy` so the end reads as
     /// corroborated. No-op in any other phase (a concurrent revert or end already handled it).
     public func confirmProvisionalEnd(rewalkSignal: String = "ax_leave_rewalk") -> Decision? {
-        guard case .endingProvisional(let context, let leading, _, let observed) = phase else {
+        guard case .endingProvisional(let context, let leading, _, let observed, _) = phase else {
             return nil
         }
         var confirmedBy = observed.subtracting([leading]).map { $0.rawValue }
@@ -256,8 +307,8 @@ public final class PromotionEngine {
 
     /// Promote `.starting` to `.inMeeting` once the recorder is armed. No-op in every other phase.
     public func confirmRecording() -> Decision? {
-        guard case .starting(let context, let observed) = phase else { return nil }
-        phase = .inMeeting(context: context, observed: observed)
+        guard case .starting(let context, let observed, let states) = phase else { return nil }
+        phase = .inMeeting(context: context, observed: observed, states: states)
         return Decision(verdict: .inMeeting(context: context))
     }
 
@@ -265,23 +316,26 @@ public final class PromotionEngine {
 
     private func handleIdle(_ event: PrimarySignalEvent) -> Decision? {
         guard event.state == .live else { return nil }
-        phase = .starting(context: event.context, observed: [event.kind])
+        phase = .starting(context: event.context, observed: [event.kind], states: [event.kind: SignalReading(state: event.state, at: event.timestamp)])
         return Decision(verdict: .starting(context: event.context))
     }
 
     private func handleStarting(
         _ event: PrimarySignalEvent,
         context: MeetingLifecycleContext,
-        observed: inout Set<PrimarySignalKind>
+        observed: inout Set<PrimarySignalKind>,
+        states: inout SignalStates
     ) -> Decision? {
         guard event.context == context else { return nil }
+        states[event.kind] = SignalReading(state: event.state, at: event.timestamp)
         switch event.state {
         case .live:
             // Absorb; promotion to `.inMeeting` is `confirmRecording()`'s job so `.inMeeting` tracks the recorder, not signals.
             observed.insert(event.kind)
-            phase = .starting(context: context, observed: observed)
+            phase = .starting(context: context, observed: observed, states: states)
             return nil
         case .ended:
+            phase = .starting(context: context, observed: observed, states: states)
             // START1/AUD-1: a staleness-prone signal (ax-leave) must not single-handedly end a
             // meeting that has not started recording yet. The Teams compact/mini-window swap
             // invalidates the Leave button on a re-render; honoring it here drove the engine to a
@@ -292,11 +346,28 @@ public final class PromotionEngine {
             // `confirmRecording`, discovery is never wedged, and the prompt's own timeout/Skip is
             // the bound on the held state. A reliable signal (window-gone, app-terminated,
             // title-left) keeps `requiresCorroboration == false` and still ends directly.
-            if event.kind.requiresCorroboration {
+            //
+            // END14: a reliable end is held too while a live process-audio reading contradicts it,
+            // and every later `.ended` re-checks the held ones, so releasing the mic ends a
+            // `.starting` whose window had already gone (the hang-up before the prompt is answered).
+            if let vetoedBy = veto(for: event.kind, in: states) {
+                pendingVeto = EndVeto(leading: event.kind, vetoedBy: vetoedBy)
                 return nil
             }
+            // A staleness-prone signal never leads here (START1), but it may be what lifts the veto
+            // on a held reliable end, which then leads.
+            let lead = event.kind.requiresCorroboration
+                ? PrimarySignalKind.allCases.first {
+                    states[$0]?.state == .ended && !$0.requiresCorroboration && veto(for: $0, in: states) == nil
+                }
+                : event.kind
+            guard let lead else { return nil }
             // Meeting ended before the recorder armed (slow prompt, stale discovery scan). End directly.
-            let reason = EndingReason(leadingSignal: event.kind.rawValue, confirmedBy: [])
+            let confirmedBy = states
+                .filter { $0.value.state == .ended && $0.key.evidenceClass != lead.evidenceClass }
+                .map { $0.key.rawValue }
+                .sorted()
+            let reason = EndingReason(leadingSignal: lead.rawValue, confirmedBy: confirmedBy)
             phase = .ended(context: context)
             return Decision(verdict: .ended(context: context, reason: reason))
         }
@@ -305,25 +376,50 @@ public final class PromotionEngine {
     private func handleInMeeting(
         _ event: PrimarySignalEvent,
         context: MeetingLifecycleContext,
-        observed: inout Set<PrimarySignalKind>
+        observed: inout Set<PrimarySignalKind>,
+        states: inout SignalStates
     ) -> Decision? {
         guard event.context == context else { return nil }
+        states[event.kind] = SignalReading(state: event.state, at: event.timestamp)
         switch event.state {
         case .live:
-            if observed.contains(event.kind) {
-                phase = .inMeeting(context: context, observed: observed)
-                return nil
-            }
             observed.insert(event.kind)
-            phase = .inMeeting(context: context, observed: observed)
+            phase = .inMeeting(context: context, observed: observed, states: states)
             return nil
         case .ended:
+            // END14: a lone end contradicted by a live process-audio reading opens no provisional.
+            // It is remembered in `states`, and the meeting ends the way every real end did from
+            // 2026-09-10 to 2026-10-08: Teams releases the mic, process audio leads, and the Leave
+            // button or the AX re-walk corroborates. The remembered window-gone is deliberately not
+            // seeded as that lead's corroborator once it is older than the debounce: a minimised
+            // window plus a DET8 object-churn blip would then end a live call on the debounce.
+            if let vetoedBy = veto(for: event.kind, in: states) {
+                pendingVeto = EndVeto(leading: event.kind, vetoedBy: vetoedBy)
+                phase = .inMeeting(context: context, observed: observed, states: states)
+                return nil
+            }
+            // END14: the clean leave. The window goes a beat before Teams releases the mic, so the
+            // window-gone was vetoed; when the mic follows within the debounce, that pair is the
+            // same cross-class confirmation the pre-veto engine reached on its fast path, so end at
+            // once with the window as the lead. Only within the debounce: an older held window-gone
+            // is exactly what the paragraph above refuses to seed.
+            if event.kind.vetoesLoneEnd, let held = states.first(where: { kind, reading in
+                kind.yieldsToLiveVeto
+                    && kind.evidenceClass != event.kind.evidenceClass
+                    && reading.state == .ended
+                    && event.timestamp.timeIntervalSince(reading.at) <= debounce
+            }) {
+                let reason = EndingReason(leadingSignal: held.key.rawValue, confirmedBy: [event.kind.rawValue])
+                phase = .ended(context: context)
+                return Decision(verdict: .ended(context: context, reason: reason))
+            }
             let reason = EndingReason(leadingSignal: event.kind.rawValue, confirmedBy: [])
             phase = .endingProvisional(
                 context: context,
                 leading: event.kind,
                 startedAt: event.timestamp,
-                observed: [event.kind]
+                observed: [event.kind],
+                states: states
             )
             return Decision(verdict: .endingProvisional(context: context, reason: reason))
         }
@@ -334,9 +430,11 @@ public final class PromotionEngine {
         context: MeetingLifecycleContext,
         leading: PrimarySignalKind,
         startedAt: Date,
-        observed: inout Set<PrimarySignalKind>
+        observed: inout Set<PrimarySignalKind>,
+        states: inout SignalStates
     ) -> Decision? {
         guard event.context == context else { return nil }
+        states[event.kind] = SignalReading(state: event.state, at: event.timestamp)
         switch event.state {
         case .ended:
             observed.insert(event.kind)
@@ -354,7 +452,7 @@ public final class PromotionEngine {
             }
             phase = .endingProvisional(
                 context: context, leading: leading,
-                startedAt: startedAt, observed: observed
+                startedAt: startedAt, observed: observed, states: states
             )
             return nil
         case .live where event.kind.evidenceClass == leading.evidenceClass:
@@ -363,12 +461,20 @@ public final class PromotionEngine {
             // (an off-screen native window, `onScreenWindowsOnly`) is reverted by the AX
             // rescue's healthy Leave button (both `.callWindowOrControl`), so minimizing a
             // meeting no longer chops the recording. A cross-class `.live` still cannot revert.
-            phase = .inMeeting(context: context, observed: observed.subtracting([leading]))
+            phase = .inMeeting(context: context, observed: observed.subtracting([leading]), states: states)
+            return Decision(verdict: .inMeeting(context: context))
+        case .live where veto(for: leading, in: states) == event.kind:
+            // END14: the one cross-class return that reverts. A window-gone that opened its
+            // provisional before process audio had reported anything is reverted once Teams is
+            // seen holding the mic, rather than promoting on the debounce. END8's conservatism
+            // still holds for every other cross-class `.live`.
+            pendingVeto = EndVeto(leading: leading, vetoedBy: event.kind)
+            phase = .inMeeting(context: context, observed: observed.subtracting([leading]), states: states)
             return Decision(verdict: .inMeeting(context: context))
         case .live:
             phase = .endingProvisional(
                 context: context, leading: leading,
-                startedAt: startedAt, observed: observed
+                startedAt: startedAt, observed: observed, states: states
             )
             return nil
         }

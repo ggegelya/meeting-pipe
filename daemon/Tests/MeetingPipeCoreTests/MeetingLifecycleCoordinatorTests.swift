@@ -451,6 +451,39 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.liveCallSignal, .unknown)
     }
 
+    // MARK: - END14: the veto is visible in the event log
+
+    /// A vetoed window-gone leaves the verdict untouched, so without a row the field could not tell
+    /// this path from a quiet call. One `lifecycle`/`end_vetoed` per vetoed transition.
+    func test_vetoed_window_gone_emits_end_vetoed_once_END14() throws {
+        let fake = FakeAdapter()
+        let log = RecordingEventLog()
+        let coordinator = MeetingLifecycleCoordinator(
+            eventLog: log, adapters: [fake], scheduler: ManualScheduler().scheduler(),
+            clock: { Date(timeIntervalSince1970: 0) }
+        )
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+        fake.emit(.init(
+            kind: .processAudioIsRunningInput, state: .live,
+            timestamp: Date(timeIntervalSince1970: 0), context: teamsContext
+        ))
+        flushEngine(coordinator)
+        coordinator.confirmRecording()
+        flushEngine(coordinator)
+        fake.emit(.init(
+            kind: .shareableContentWindow, state: .ended,
+            timestamp: Date(timeIntervalSince1970: 1), context: teamsContext
+        ))
+        flushEngine(coordinator)
+
+        XCTAssertEqual(coordinator.current, .inMeeting(context: teamsContext))
+        let vetoes = log.entries.filter { $0.category == "lifecycle" && $0.action == "end_vetoed" }
+        XCTAssertEqual(vetoes.count, 1)
+        XCTAssertEqual(vetoes.first?.attributes["bundle_id"], teamsContext.bundleID)
+        XCTAssertEqual(vetoes.first?.attributes["leading_signal"], "shareable_content_window_gone")
+        XCTAssertEqual(vetoes.first?.attributes["vetoed_by"], "process_audio_is_running_input_false")
+    }
+
     private func flushEngine(_ coordinator: MeetingLifecycleCoordinator) {
         let expectation = expectation(description: "engine drain")
         coordinator.tick()
