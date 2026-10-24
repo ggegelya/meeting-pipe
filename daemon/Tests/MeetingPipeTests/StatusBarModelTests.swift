@@ -4,6 +4,7 @@ import XCTest
 /// T3: the pure presentation derivation lifted out of `StatusBarController`.
 /// The controller is the always-visible surface and had zero test references, so
 /// every branch here is one the user sees and nothing checked.
+/// T7 source fence (pins implementation): test_the_status_bar_menu_is_built_from_the_model asserts StatusBarController calls StatusBarModel.rows/title/icon and drops the old preference-only condition. Missing seam: building the NSMenu headless and reading its items.
 final class StatusBarModelTests: XCTestCase {
 
     private typealias M = StatusBarModel

@@ -10,6 +10,7 @@ import XCTest
 /// one-sided edit is meant to fail one of the two suites; that matters more here
 /// than anywhere else, because the number is what stands between a question and
 /// the hard reboot of 2026-07-29.
+/// T7 source fence (deliberate): test_no_daemon_source_tells_the_reader_this_mac_has_been_taken_down bans one user-facing phrase across every file under daemon/Sources. Missing seam: none; the claim is about the source text itself.
 final class AskContextWidthTests: XCTestCase {
 
     private let cloud = "anthropic"

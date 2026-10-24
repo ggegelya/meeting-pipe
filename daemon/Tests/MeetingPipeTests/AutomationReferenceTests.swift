@@ -24,6 +24,7 @@ import XCTest
 /// that last inch would mean giving the parser a `CaseIterable` verb enum beside
 /// `AutomationCommand.verb`, whose exact strings are the shipped event-log
 /// vocabulary; the cost of touching those outweighs the inch (AUTO4).
+/// T7 source fence (pins implementation): test_the_advanced_pane_renders_the_reference_rather_than_its_own_list asserts PreferencesView+Advanced references AutomationReference.rows. Missing seam: a rendered-view or enumerable-content test of the Advanced pane.
 final class AutomationReferenceTests: XCTestCase {
 
     /// One sample per command the router can be handed, including both sides of

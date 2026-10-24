@@ -24,6 +24,7 @@ import XCTest
 /// view a modifier was applied to, and none of this is observable from a
 /// constructed view. Everything below runs on the checkout, which is where the
 /// claims are written.
+/// T7 source fence (deliberate): checks the cross-file contract between .tutorialAnchor/.tutorialStage modifiers, step narration, the presenter switch and menu row, and bans starting the tour from launch paths. Missing seam: none for the bans and naming; modifier attachment needs a rendered view.
 final class TutorialFenceTests: XCTestCase {
 
     // MARK: - Reading the tree

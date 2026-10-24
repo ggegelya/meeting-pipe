@@ -8,6 +8,7 @@ import XCTest
 /// eight characters of a Notion database id in Output, and no count or last date
 /// anywhere), and none of them was reachable by a test while the derivation
 /// lived inside a `View`.
+/// T7 source fence (pins implementation): test_edit_rides_the_identity_row_and_no_footer_band_survives asserts WorkflowInspector's header has Spacer then editButton and no footer. Missing seam: a rendered view test of Edit placement.
 final class WorkflowInspectorTests: XCTestCase {
 
     // MARK: - Trigger

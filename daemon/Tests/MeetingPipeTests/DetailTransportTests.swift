@@ -111,6 +111,7 @@ final class DetailTransportTests: XCTestCase {
 /// a modifier's presence and a closure's statement order are not observable from a constructed
 /// view, and `SummaryLayoutTests`, `PreferencesSurfaceTests` and `TutorialFenceTests` all take this
 /// route for the same reason.
+/// T7 source fence (pins implementation): asserts MeetingDetailView's onChange(of: meeting.stem) pauses playback, consumeTranscriptJump statement order, and transportRow's contents. Missing seam: a rendered view test of tab and meeting switches.
 final class DetailTransportWiringTests: XCTestCase {
 
     private func repoFile(_ relativePath: String) throws -> String {

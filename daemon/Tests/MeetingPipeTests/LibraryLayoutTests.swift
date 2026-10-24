@@ -10,6 +10,7 @@ import XCTest
 /// guard the same constants the `NavigationSplitView` columns and the
 /// `NSWindow` minimum consume, so a future floor bump that re-opens the clip
 /// fails the build instead.
+/// T7 source fence (pins implementation): test_the_library_window_does_not_size_itself_from_its_content asserts LibraryWindow sets `host.sizingOptions = []` before NSWindow(contentViewController:). Missing seam: a LibraryWindow factory exposing its hosting controller headless.
 final class LibraryLayoutTests: XCTestCase {
 
     /// The detail column is the flexible trailing one: once the window is

@@ -13,6 +13,7 @@ import XCTest
 /// synthetic on purpose. Pinning real rendered chip widths would pin the system font
 /// metrics of whichever macOS ran the suite, which is what T2 removed image snapshots
 /// for.
+/// T7 source fence (deliberate): test_the_wrapping_layout_is_declared_once_in_the_shared_controls_file scans daemon/Sources for a single `struct FlowLayout: Layout` declaration. Missing seam: none; the claim is about the source text itself.
 final class FlowLayoutTests: XCTestCase {
 
     private func sizes(_ widths: [CGFloat], height: CGFloat = 22) -> [CGSize] {

@@ -1,6 +1,7 @@
 import XCTest
 
 /// DIST4: no source file reaches SwiftPM's `Bundle.module` except the two accessors that fall back to it outside an `.app`. Its generated accessor looks only at the `.app` root and an absolute path into `daemon/.build`, then `fatalError`s, so one stray `Bundle.module` (or `bundle: .module`) puts the installed app back into the launchd crash loop the moment the clone moves. `MeetingPipe doctor`'s `app.resources` probe only exercises the accessors; this is what covers every other call site. Reads the checkout, like `TutorialFenceTests`.
+/// T7 source fence (deliberate): both tests walk daemon/Sources and ban any `.module` reference outside the two resource accessors. Missing seam: none; the claim is about the source text itself.
 final class BundleModuleFenceTests: XCTestCase {
 
     /// The only files allowed to name `.module`, each exactly once, in its `?? .module` fallback.

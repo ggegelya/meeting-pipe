@@ -7,6 +7,7 @@ import XCTest
 /// control read as destructive. `WorkflowDeletion` exists so the first three are pinnable
 /// without rendering anything; the last is pinned as a source fence, since a SwiftUI
 /// button's style is not observable any other way.
+/// T7 source fence (pins implementation): two tests assert MPDangerButtonStyle is declared once in PreferencesControls and that WorkflowsView and BatchActionsPane apply .buttonStyle(.mpDanger). Missing seam: a rendered view test of button style.
 final class WorkflowDeletionTests: XCTestCase {
 
     private func makeTempDir() throws -> URL {

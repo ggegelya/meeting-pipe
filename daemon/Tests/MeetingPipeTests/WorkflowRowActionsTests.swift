@@ -8,6 +8,7 @@ import XCTest
 /// pair, that Delete is disabled with a reason on the default workflow, and above all that
 /// neither of them is a second delete path. Swipe *rendering* is not unit-testable and is
 /// left to an owner eyeball; everything decided before the pixels is here.
+/// T7 source fence (deliberate): three tests pin one WorkflowDeletion.run flow shared by the rail and editor, shared confirm strings, and `allowsFullSwipe: false` in LibrarySidebar. Missing seam: none for the single flow; the swipe pin wants a rendered view.
 final class WorkflowRowActionsTests: XCTestCase {
 
     private func makeTempDir() throws -> URL {

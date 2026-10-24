@@ -11,6 +11,7 @@ import XCTest
 /// The recorder's own timeout path needs a live engine and Screen Recording TCC, so what is
 /// pinned here is the pure ledger the late completion consults, the bounded runner's
 /// branching, and source-text fences on the wiring, in `CaptureHealthREC16Tests`' shape.
+/// T7 source fence (pins implementation): five tests grep MeetingRecorder and SystemAudioCapture for the bounded start, timeout routing, auto-retry flag, ledger gates and liveness guard. Missing seam: an injectable system capture (SCStream) in MeetingRecorder.
 final class SystemCaptureStartREC17Tests: XCTestCase {
 
     private func repoFile(_ relative: String) throws -> String {

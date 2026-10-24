@@ -6,6 +6,7 @@ import XCTest
 /// longer the summary, and the record it then wrote carried that prose as
 /// `original_summary`, which is what `CorrectionsTab.performRevert` restores
 /// over the live file under a button labelled Revert.
+/// T7 source fence (pins implementation): test_the_window_captures_the_identity_on_open_and_reads_it_on_save asserts CorrectionWindow.show() reads SummaryIdentity and performSave compares it. Missing seam: a CorrectionWindow whose show-then-save runs headless.
 final class SummaryStalenessTests: XCTestCase {
 
     private func tempDir() throws -> URL {

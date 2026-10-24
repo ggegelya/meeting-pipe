@@ -8,6 +8,7 @@ import XCTest
 /// What is pinnable headlessly is the measure arithmetic and the band's
 /// *contents*; whether the wrapped band clears the narrowest column by eye is
 /// the owner check the spec reserves, since rasterising is what T2 took away.
+/// T7 source fence (pins implementation): three tests assert MeetingDetailView's tab underline overlay, chromeBand background and the reading-column alignment across the summary views. Missing seam: a rendered-layout test.
 final class SummaryLayoutTests: XCTestCase {
 
     // MARK: - Detail-pane chrome (UX36, second pass)

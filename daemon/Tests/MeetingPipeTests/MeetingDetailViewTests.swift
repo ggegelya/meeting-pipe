@@ -4,6 +4,7 @@ import XCTest
 /// The relative-path helper underpins the `obsidian://open` URL the
 /// detail header builds. Hard to drive via the SwiftUI view but trivial
 /// to cover at the helper level.
+/// T7 source fence (pins implementation): three tests assert MeetingDetailView+Header's names-changed cue and shared reSummarizeItems list, and MeetingDetailView's publish-URL reload `.task(id:)` key. Missing seam: a rendered or inspectable SwiftUI view.
 final class MeetingDetailViewTests: XCTestCase {
 
     func test_relativePath_strips_vault_prefix() {

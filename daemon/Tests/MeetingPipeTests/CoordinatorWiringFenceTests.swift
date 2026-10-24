@@ -11,12 +11,19 @@ import XCTest
 /// started the real watcher, and `Coordinator.swift` carried a doc comment claiming it did. The
 /// suite could not have failed on that, and 28 green tests said the feature shipped.
 ///
-/// So the claim under test here is the wiring itself. A source fence rather than a constructed
-/// `Coordinator`, for the same reason `TutorialFenceTests` and `SummaryLayoutTests` are: the real
-/// `Coordinator` builds a status-bar item, four windows and the AX and HAL buses, none of which
-/// stands up headless in a unit test, and the thing that went wrong is a line of wiring that is
-/// perfectly readable on the checkout.
+/// So the claim under test here is the wiring itself. T7 moved the watchers behind
+/// `SessionWatchers`, and `SessionWatchersTests` checks from fakes that every member starts and
+/// that the production set holds all three, so what is left here is the one line no headless test
+/// can reach: that `Coordinator.start()` calls `watchers.startAll()` at all. It stays a source
+/// fence because the real `Coordinator` builds a status-bar item, four windows and the AX and HAL
+/// buses, none of which stands up headless in a unit test. When `start()` cannot be found the
+/// fence fails rather than skips (T7): a skip reads as a pass in XCTest and in `swift test`'s exit
+/// code, so a rename used to switch the fence off with the suite still green.
 final class CoordinatorWiringFenceTests: XCTestCase {
+
+    private struct FenceTargetMissing: Error {
+        let message: String
+    }
 
     private func repoRoot() -> URL {
         URL(fileURLWithPath: #filePath)
@@ -34,7 +41,9 @@ final class CoordinatorWiringFenceTests: XCTestCase {
     private func coordinatorStartBody() throws -> String {
         let text = try source("daemon/Sources/MeetingPipe/Coordinator.swift")
         guard let start = text.range(of: "\n    func start() {") else {
-            throw XCTSkip("Coordinator.start() was renamed; this fence needs updating with it")
+            let message = "Coordinator.start() was renamed or moved; this fence needs updating with it"
+            XCTFail(message)
+            throw FenceTargetMissing(message: message)
         }
         var depth = 0
         var body = ""
@@ -51,24 +60,15 @@ final class CoordinatorWiringFenceTests: XCTestCase {
 
     /// The defect itself: a watcher that is constructed and never started reports "no opinion"
     /// forever, and `decide` turns that into an immediate confirm on every provisional end.
-    func testCoordinatorStartStartsTheCallTeardownWatcher() throws {
+    func testCoordinatorStartStartsTheSessionWatchers() throws {
         let body = try coordinatorStartBody()
         XCTAssertTrue(
-            body.contains("callTeardown.start()"),
-            "Coordinator.start() does not start callTeardown. Every provisional end will confirm "
-                + "with oracle_unavailable on its first consult, which is the END9-shipped-dead "
-                + "defect END10 fixed: 16 meetings chopped and restarted by hand between "
-                + "2026-07-13 and 2026-08-21."
+            body.contains("watchers.startAll()"),
+            "Coordinator.start() does not start its session watchers. Every provisional end will "
+                + "confirm with oracle_unavailable on its first consult, which is the "
+                + "END9-shipped-dead defect END10 fixed: 16 meetings chopped and restarted by hand "
+                + "between 2026-07-13 and 2026-08-21."
         )
-    }
-
-    /// The sibling watchers are started in the same place, and this is what says the fence above is
-    /// checking a real list rather than a string that happens to be present.
-    func testCoordinatorStartStartsItsSiblingWatchers() throws {
-        let body = try coordinatorStartBody()
-        for wiring in ["discoveryWatcher.start()", "configRefresh.start()"] {
-            XCTAssertTrue(body.contains(wiring), "Coordinator.start() no longer contains \(wiring)")
-        }
     }
 
     /// A watcher constructed at the property is only half the wiring; this pins the other half so a

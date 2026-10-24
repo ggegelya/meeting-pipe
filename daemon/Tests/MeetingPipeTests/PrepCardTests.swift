@@ -6,6 +6,7 @@ import XCTest
 /// (`PrepCardStore.scan`), which decides which meeting the card is about. The
 /// view's geometry is checked against its own metrics so the panel can never
 /// animate to a frame the content does not fill.
+/// T7 source fence (pins implementation): test_the_fade_mask_follows_the_scrolled_bounds_origin asserts updatePrepFade in MeetingPromptWindow sets `grad.frame = clip.bounds` with no `origin: .zero`. Missing seam: the mask frame as a pure function, or a live panel test.
 final class PrepCardTests: XCTestCase {
 
     private var dir: URL!

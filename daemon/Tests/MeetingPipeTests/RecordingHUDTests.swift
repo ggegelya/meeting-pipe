@@ -316,6 +316,7 @@ final class HUDFlagAcknowledgementTests: XCTestCase {
 /// thing that made it wrong is invisible to every behavioural test above: they would all still pass
 /// if `blink()` came back alongside the badge. So assert its absence on the checkout, the way
 /// `TutorialFenceTests` asserts the tour's claims.
+/// T7 source fence (deliberate): asserts SessionHUDPresenting and RecordingHUDWindow no longer declare blink(), and the flag count is read as markerSeconds.count in MeetingSessionController. Missing seam: none for the blink ban; the count wants a flag test over FakeSessionHost.
 final class HUDFlagAcknowledgementFenceTests: XCTestCase {
 
     private func repoFile(_ relativePath: String) throws -> String {

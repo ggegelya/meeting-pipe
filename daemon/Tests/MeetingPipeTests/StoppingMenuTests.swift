@@ -18,6 +18,7 @@ import XCTest
 /// Route A of the three the spec offered, which is its stated default: hand `rebuildMenu` the real
 /// state. The header agrees with the title and `rows(_:)` takes its `default: break`, which is what
 /// that switch's own comment already said it wanted for a flush.
+/// T7 source fence (pins implementation): test_setStopping_hands_the_menu_the_real_state asserts setStopping's body in StatusBarController calls rebuildMenu(state: titleState), not .idle. Missing seam: a headless StatusBarController whose menu header can be read.
 final class StoppingMenuTests: XCTestCase {
 
     private typealias M = StatusBarModel

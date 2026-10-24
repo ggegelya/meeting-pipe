@@ -12,6 +12,7 @@ import XCTest
 /// has a row wired to the action that opens it. Every link there is invisible at
 /// runtime until a user clicks Guide… and gets an apology, which is exactly the
 /// class of miss DOC9 spent a sweep cleaning up.
+/// T7 source fence (pins implementation): the menu-row test asserts StatusBarController and Coordinator+MenuActions wire a Guide row; the scripts test greps install.sh and rebuild.sh for the GUIDE.md copy. Missing seam: a headless NSMenu build for the row; none for the scripts half.
 final class GuideDocumentTests: XCTestCase {
 
     private typealias D = GuideDocument

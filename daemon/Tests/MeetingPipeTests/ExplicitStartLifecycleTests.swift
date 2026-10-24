@@ -147,6 +147,7 @@ final class ExplicitStartLifecycleTests: XCTestCase {
 /// END11's wiring fence, in END10's shape and for the same reason: the defect is a call that was
 /// never made, `engageLifecycle` needs a real pid so no unit test can reach it, and the claim is
 /// perfectly readable on the checkout.
+/// T7 source fence (pins implementation): asserts MeetingSessionController's start path calls engageLifecycleIfNeeded before armLifecycleLeaveButton and keeps its isEngaged guard. Missing seam: a start-path test with an injectable pid or lifecycle adapter.
 final class ExplicitStartWiringFenceTests: XCTestCase {
 
     private func repoRoot() -> URL {

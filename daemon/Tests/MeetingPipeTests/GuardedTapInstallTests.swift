@@ -8,6 +8,7 @@ import XCTest
 ///
 /// These fail against `main`, where both call sites read `outputFormat(forBus: 0)` and hand
 /// it straight to `installTap` with nothing in between.
+/// T7 source fence (deliberate): test_every_installTap_call_site_goes_through_the_guard and test_the_objc_barrier_has_exactly_one_caller ban bare calls across daemon/Sources. Missing seam: none; the claim is about the source text itself (CI has no live AVAudioEngine).
 final class GuardedTapInstallTests: XCTestCase {
 
     /// A live `AVAudioFormat` reporting 0 Hz. This is not a contrivance: it is what

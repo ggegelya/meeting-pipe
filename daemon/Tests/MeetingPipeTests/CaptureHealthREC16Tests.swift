@@ -5,6 +5,7 @@ import XCTest
 /// REC16: three defects on `MeetingRecorder`'s mid-recording capture-health paths, filed together
 /// because they share one seam. Found by reading the recorder against the field log during the
 /// END10/END11 investigation rather than from a symptom.
+/// T7 source fence (pins implementation): three tests grep MeetingRecorder/Coordinator for the one engine-replacement helper, the setMicCaptureLost calls and wall-clock outage marks. Missing seam: injectable engine and clock in MeetingRecorder, a headless Coordinator.
 final class CaptureHealthREC16Tests: XCTestCase {
 
     // MARK: - Item 2: the outage span has to survive a system sleep

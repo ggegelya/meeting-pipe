@@ -7,6 +7,7 @@ import XCTest
 /// tell "these people are not enrolled" from "they are enrolled and matching missed".
 /// Those have opposite fixes, so the classification has to be exact and the counts
 /// have to be honest about which is which.
+/// T7 source fence (deliberate): three tests pin single owners across daemon/Sources (one undoSpeakerNaming call, RosterRename.run callers) and that VoiceResolutionBar wraps rather than scrolls. Missing seam: none for the owner rules; the wrap test needs a rendered view.
 final class VoiceResolutionTests: XCTestCase {
 
     private func member(_ display: String, key: String, unattributed: Bool = false) -> CastMember {

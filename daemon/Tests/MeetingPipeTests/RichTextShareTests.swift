@@ -7,6 +7,7 @@ import XCTest
 /// Every test here runs against a scratch `NSPasteboard(name:)`, per AUTO4: a test
 /// has no business overwriting what the owner last copied, and `.general` appears
 /// nowhere in this file.
+/// T7 source fence (pins implementation): test_the_actions_menu_routes_both_shares_through_toolbarAction asserts MeetingDetailView+Header calls toolbarAction and copyRichText for each surface. Missing seam: an inspectable SwiftUI menu, or the menu built from a model.
 final class RichTextShareTests: XCTestCase {
 
     private var boards: [NSPasteboard] = []

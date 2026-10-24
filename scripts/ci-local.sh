@@ -141,6 +141,46 @@ pipeline() {
     )
 }
 
+# T7: the skips a daemon run may report, one per line as `<Class>` or `<Class>.<method>`, then
+# ` | ` and the reason. A skip is a pass to XCTest and to `swift test`'s exit code, so before this
+# gate the END10 wiring fence turned itself off on a rename and CI stayed green, and
+# FailureProcessTests had never once run in CI. A skip not listed here fails the job. The
+# environment entries are listed only when their environment is actually missing.
+# WindowRecognizerFixtureTests' "fixture not bundled" skip is deliberately absent: a missing
+# fixture is a packaging defect, not an environment (test_recognizer_matches_fixture is not listed,
+# so it still fails the gate).
+allowed_skips() {
+    echo "PlaybackChannelModeTests | AVAudioPCMBuffer allocation guards in its buffer helpers; they never fire on a working CoreAudio stack"
+    echo "WindowRecognizerFixtureTests.test_fixture_is_backed_by_real_captures | skipped on purpose until the owner-run Teams title capture lands (VALOWN1, CI6)"
+    if ! command -v ffmpeg >/dev/null 2>&1; then
+        for class in AudioTranscoderTests MeetingRecorderTests MuteRedactorTests RecordingPostProcessorTests; do
+            echo "$class | ffmpeg is not on PATH (CI installs it, so never there)"
+        done
+    fi
+    if [ ! -x "$REPO_ROOT/pipeline/.venv/bin/python3" ]; then
+        echo "FailureProcessTests | no pipeline venv: the daemon CI job does not sync one, since the darwin venv pulls the whole mlx stack for one cross-process test (the local \`all\` run syncs it first, so it runs there)"
+    fi
+}
+
+# Fails when the `swift test` log in $1 reports a skip that `allowed_skips` does not list.
+check_skips() {
+    local allowed skipped id class unlisted=""
+    allowed=$(allowed_skips | sed 's/ | .*//')
+    skipped=$(sed -nE "s/^Test Case '-\[[A-Za-z0-9_]+\.([A-Za-z0-9_]+) ([A-Za-z0-9_]+)\]' skipped.*/\1.\2/p" "$1" | sort -u)
+    for id in $skipped; do
+        class=${id%%.*}
+        if ! printf '%s\n' "$allowed" | grep -qxF -e "$id" -e "$class"; then
+            unlisted="$unlisted $id"
+        fi
+    done
+    if [ -n "$unlisted" ]; then
+        echo "::error::T7: unlisted test skip(s):$unlisted. A skip reads as a pass, so fix the cause or add the test to allowed_skips in scripts/ci-local.sh with its reason."
+        grep -F "Test skipped" "$1" || true
+        return 1
+    fi
+    echo "Skips all allowlisted ($(printf '%s\n' "$skipped" | grep -c . || true) distinct)."
+}
+
 daemon() {
     (
         cd daemon
@@ -151,7 +191,13 @@ daemon() {
         # The MuteRedactor data-safety tests shell out to ffmpeg; without it on PATH
         # they skip and the most destructive path goes unverified.
         command -v ffmpeg >/dev/null 2>&1 || echo "WARNING: ffmpeg not on PATH; the MuteRedactor tests will skip."
-        swift test
+        local log
+        log=$(mktemp "${TMPDIR:-/tmp}/ci-local-swift-test.XXXXXX")
+        swift test 2>&1 | tee "$log"
+        end
+        begin "Daemon: no unlisted test skips (T7)"
+        check_skips "$log"
+        rm -f "$log"
         end
         begin "Daemon: engine bounds under a one-thread cooperative pool (CI8)"
         # A blocking call parked on the cooperative pool starves the deadline that is

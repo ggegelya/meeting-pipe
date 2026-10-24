@@ -78,9 +78,10 @@ final class Coordinator: NSObject {
     let lifecycleCoord: MeetingLifecycleCoordinator
     /// END9: started once at session setup and never per meeting, because the teardown line it
     /// needs can land within a second of a provisional opening and a cold tail would miss it.
-    /// END10: `start()` is called in `Coordinator.start()` below. This comment used to be the only
-    /// thing that said so, and `start()` was never wired, so the oracle reported "no opinion" for
-    /// the life of every process and every provisional end confirmed on it.
+    /// END10: started by `watchers.startAll()` in `Coordinator.start()`. This comment used to be
+    /// the only thing that said so, and `start()` was never wired, so the oracle reported "no
+    /// opinion" for the life of every process and every provisional end confirmed on it. T7 moved
+    /// the start behind `SessionWatchers`, whose tests check it from fakes.
     /// `LogEventAdapter` is stateless, so a second instance here costs nothing and keeps this a
     /// stored `let` rather than something that has to wait for `init`.
     let callTeardown = CallTeardownWatcher.teams(eventLog: LogEventAdapter())
@@ -493,15 +494,16 @@ final class Coordinator: NSObject {
         discoveryWatcher.onMicBusyBundle = { [weak self] bundle in
             self?.session.handleMicBusyBundle(bundle)
         }
-        discoveryWatcher.start()
-        // END10 item 1. Explicitly here, beside the other session-lifetime watchers, rather than
-        // lazily on the first `snapshot()`: a lazy start would still return `available: false` on
-        // that very first consult, because the resolve is async on `readQueue`, so it would leave
-        // the exact first-consult chop this task exists to remove while looking like a fix. The
-        // session starts minutes to hours before any meeting, so starting it here means the tail
-        // is always warm by the time a provisional can open. `CoordinatorWiringFenceTests` is what
-        // keeps this line from going missing again.
-        callTeardown.start()
+        // T7: discovery, call-teardown and config-refresh start together here, after the
+        // discovery callbacks above are set. END10 item 1 is why call-teardown starts at launch
+        // rather than lazily on the first `snapshot()`: a lazy start would still return
+        // `available: false` on that very first consult, because the resolve is async on
+        // `readQueue`, so it would leave the exact first-consult chop END10 removed while looking
+        // like a fix. The session starts minutes to hours before any meeting, so starting it here
+        // means the tail is always warm by the time a provisional can open.
+        // `SessionWatchersTests` checks the set starts; `CoordinatorWiringFenceTests` keeps this
+        // line from going missing.
+        watchers.startAll()
 
         if let parsed = HotkeyManager.parse(liveManualHotkey) {
             hotkey.register(keyCode: parsed.keyCode, modifiers: parsed.modifiers) { [weak self] in
@@ -554,11 +556,6 @@ final class Coordinator: NSObject {
         } else {
             Log.main.warning("Could not parse off-the-record hotkey: \(offRecordHotkey)")
         }
-
-        // Seed the regulated-mode glyph, wire the model-download status,
-        // run the eager local-model prefetch, and subscribe to config
-        // persistence. Owned by ConfigRefreshCoordinator (TECH-H1-FINISH).
-        configRefresh.start()
 
         // UX60: Preferences ▸ Permissions offers the on-device model's download
         // beside the regulated-mode toggle, since that toggle forces every summary
@@ -832,11 +829,19 @@ final class Coordinator: NSObject {
 
     /// Config-change responses: eager local-model prefetch, model-download
     /// status surface, regulated-mode glyph, and the `didPersist`
-    /// subscription. Extracted in TECH-H1-FINISH; started from `start()`.
+    /// subscription. Extracted in TECH-H1-FINISH; started by `watchers`.
     lazy var configRefresh = ConfigRefreshCoordinator(
         configStore: configStore,
         onModelDownloadState: { [weak self] state in self?.statusBar.setModelDownload(state) },
         onRegulatedMode: { [weak self] flag in self?.statusBar.setRegulatedMode(flag) }
+    )
+
+    /// The session-lifetime watchers `start()` brings up together (T7). Lazy because
+    /// `configRefresh` is.
+    lazy var watchers = SessionWatchers.production(
+        discovery: discoveryWatcher,
+        callTeardown: callTeardown,
+        configRefresh: configRefresh
     )
 
 

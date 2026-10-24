@@ -7,6 +7,7 @@ import XCTest
 /// queue and so does `stop()`, so an unbounded wedged start did not merely leave the
 /// waveform flat, it made the monitor un-stoppable for the process lifetime with the
 /// tap and the engine still open behind it.
+/// T7 source fence (pins implementation): test_stop_does_not_gate_its_teardown_on_the_metering_flag asserts stop() in MicLevelMonitor.swift has no `isRunning` guard. Missing seam: an injected teardown seam or device-less engine so stop() can run headless.
 final class MicLevelMonitorTests: XCTestCase {
 
     private let budget = 0.15

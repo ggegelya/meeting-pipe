@@ -9,6 +9,7 @@ import XCTest
 /// view or a config. (a) and (b) are SwiftUI layout and window geometry, neither
 /// observable headlessly, so they are pinned where they are decided, in the
 /// source, the way `SummaryLayoutTests` and `WorkflowDeletionTests` pin theirs.
+/// T7 source fence (pins implementation): seven tests assert how PreferencesView, SettingsRow, PreferencesWindow and the Pipeline pane are written (scroll anchor order, min sizes, fixedSize, model-row bindings, a ConfigStore default literal). Missing seam: rendered view and NSWindow geometry tests.
 final class PreferencesSurfaceTests: XCTestCase {
 
     // MARK: - Helpers

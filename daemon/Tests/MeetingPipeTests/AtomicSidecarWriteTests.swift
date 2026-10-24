@@ -16,6 +16,7 @@ import XCTest
 ///
 /// `data.write(to:options:.atomic)` already writes to a temporary file and renames it into place,
 /// so the manual dance was both redundant and strictly less safe than the one-liner it wrapped.
+/// T7 source fence (deliberate): test_no_sidecar_writer_removes_its_destination_before_replacing_it bans the remove-then-move write (`moveItem(at: temp`) in four store files. Missing seam: none; the claim is about the source text itself.
 final class AtomicSidecarWriteTests: XCTestCase {
 
     private var dir: URL!
