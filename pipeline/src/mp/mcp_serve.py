@@ -346,8 +346,8 @@ def _run_stdio(library: Library) -> None:
     except ImportError as e:  # pragma: no cover - exercised by the missing-SDK test
         raise SDKMissingError(
             "The MCP server needs the optional `mcp` package, which is not "
-            "installed. Install it with:\n"
-            "    cd pipeline && uv sync --extra mcp\n"
+            "installed. Re-run scripts/rebuild.sh (or scripts/install.sh), which\n"
+            "installs it into the app's pipeline venv.\n"
             f"(underlying import error: {e})"
         ) from e
 
@@ -421,7 +421,7 @@ def main(argv: list[str]) -> int:
             print(f"  visible: {snapshot['visible']} meeting(s)")
             print(f"  withheld: {snapshot['withheld']} meeting(s) {snapshot['withheld_by_reason']}")
             if not snapshot["sdk_available"]:
-                print("  mcp package not installed: `cd pipeline && uv sync --extra mcp`")
+                print("  mcp package not installed: re-run scripts/rebuild.sh (or scripts/install.sh)")
         return 0
 
     if not cfg.mcp.enabled:

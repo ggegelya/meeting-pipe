@@ -7,7 +7,9 @@
 #   1. Verify macOS + brew + uv + ffmpeg.
 #   2. Build the daemon (swift build -c release). Fetches FluidAudio
 #      Swift package (Parakeet TDT + pyannote on Apple Neural Engine).
-#   3. Install the pipeline venv at ~/.local/share/meeting-pipe/venv.
+#   3. Install the pipeline venv at ~/.local/share/meeting-pipe/venv: a
+#      non-editable install from uv.lock, so neither it nor the app reads the
+#      clone at runtime (DIST4). Pull, then re-run this or rebuild.sh, to update.
 #      Per ADR 0007 the Python pipeline is summarize + publish only;
 #      ASR + diarization run in-process via FluidAudio.
 #   4. Pre-fetch FluidAudio CoreML models (~630 MB) so the first real
@@ -73,8 +75,12 @@ say()  { printf "\033[1;34m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!!\033[0m %s\n" "$*" >&2; }
 die()  { printf "\033[1;31mxx\033[0m %s\n" "$*" >&2; exit 1; }
 
-# Shared two-pass app-bundle signing (also used by rebuild.sh).
+# Shared app-bundle signing (also used by rebuild.sh).
 source "$REPO_ROOT/scripts/lib/sign-app.sh"
+# Shared resource-bundle placement and pipeline venv sync (DIST4; also used by
+# rebuild.sh and scripts/test-app-relocation.sh).
+source "$REPO_ROOT/scripts/lib/resource-bundles.sh"
+source "$REPO_ROOT/scripts/lib/pipeline-venv.sh"
 # Shared launch-at-login guard (also used by rebuild.sh): UX42's rule that an
 # install must not re-arm a login-start the owner turned off in Preferences.
 # shellcheck source=scripts/lib/login-agent.sh
@@ -158,8 +164,9 @@ DAEMON_BIN="$REPO_ROOT/daemon/.build/release/MeetingPipe"
 #       Info.plist
 #       MacOS/
 #         MeetingPipe                       (the SPM binary)
-#         MeetingPipe_MeetingPipe.bundle/   (resources, side-by-side
-#                                            so Bundle.module still works)
+#       Resources/
+#         MeetingPipe_MeetingPipe.bundle/   (SwiftPM resource bundles, where
+#         MeetingPipe_MeetingPipeCore.bundle/  ResourceBundleLocator looks; DIST4)
 #
 # LSUIElement=true keeps it Dock-less. The NSMicrophoneUsageDescription
 # string drives the first-launch permission prompt.
@@ -170,10 +177,10 @@ rm -rf "$APP_BUILD"
 mkdir -p "$APP_BUILD/Contents/MacOS" "$APP_BUILD/Contents/Resources"
 
 cp "$DAEMON_BIN" "$APP_BUILD/Contents/MacOS/MeetingPipe"
-# Side-by-side resource bundle (SwiftPM convention: <Target>_<Target>.bundle).
-for bundle in "$REPO_ROOT/daemon/.build/release/"*.bundle; do
-    [[ -e "$bundle" ]] && cp -R "$bundle" "$APP_BUILD/Contents/MacOS/"
-done
+# SwiftPM resource bundles (<Package>_<Target>.bundle) into Contents/Resources.
+# Not beside the binary: Bundle.module never looks there, so every lookup used to
+# be served from daemon/.build and the app crashed once it moved (DIST4).
+install_resource_bundles "$REPO_ROOT/daemon/.build/release" "$APP_BUILD"
 
 # DOC11: the user guide the menu bar's "Guide…" reads. docs/GUIDE.md is the
 # single copy (it is also what you read on GitHub); this is where it enters the
@@ -382,14 +389,10 @@ fi
 # one-time re-toggle; `--identifier` keeps `(bundle_id, identifier)` stable
 # either way so Mic / Notifications / Accessibility survive regardless.
 #
-# Two-pass signing: SPM ships each target's resource bundle as a
-# directory with the `.bundle` suffix but no Info.plist, and codesign
-# refuses to treat it as a valid macOS bundle. We write a minimal
-# Info.plist into each one, sign each with its own identifier, then
-# sign the outer .app. Loops because the package now produces one
-# bundle per target with resources (MeetingPipe_MeetingPipe.bundle
-# for the SVG glyphs + meeting_apps.toml, and
-# MeetingPipe_MeetingPipeCore.bundle for the MicGate MuteLabels.toml).
+# One pass since DIST4: the resource bundles (MeetingPipe_MeetingPipe.bundle
+# for the SVG glyphs + meeting_apps.toml, MeetingPipe_MeetingPipeCore.bundle
+# for the MicGate MuteLabels.toml) sit in Contents/Resources, which the app's
+# own signature seals; see scripts/lib/sign-app.sh for why it was two.
 say "Re-signing app bundle with stable identity"
 ensure_dev_cert
 sign_app_with_resources "$APP"
@@ -404,18 +407,12 @@ DAEMON_BIN="$APP/Contents/MacOS/MeetingPipe"
 
 say "Installing pipeline at $DATA_DIR/venv"
 mkdir -p "$DATA_DIR"
-(
-    cd "$REPO_ROOT/pipeline"
-    # Lets us launch `mp` directly via $DATA_DIR/venv/bin/mp.
-    # `--extra mcp` (AUTO3): the MCP SDK is an optional extra so the dependency
-    # is not forced on anyone who never serves, but this Mac is the one that
-    # runs `mp mcp-serve`, so its venv gets it. The server still refuses to
-    # start unless `[mcp] enabled` is on.
-    uv sync --frozen --extra mcp 2>/dev/null || uv sync --extra mcp
-    # uv places the env in .venv next to pyproject; copy a stable launcher.
-    rm -rf "$DATA_DIR/venv"
-    cp -R "$REPO_ROOT/pipeline/.venv" "$DATA_DIR/venv"
-)
+# DIST4: synced in place, non-editable, from uv.lock (see scripts/lib/pipeline-venv.sh).
+# It used to be a `cp -R` of pipeline/.venv, an editable install whose bin/mp ran
+# the clone's own interpreter, so production Python was whatever the working tree
+# held. A lock that cannot be installed as-is now stops the install here.
+sync_pipeline_venv "$REPO_ROOT/pipeline" "$DATA_DIR/venv" \
+    || die "Pipeline install failed; uv's output above says why. There is no unlocked fallback any more (DIST4)."
 [[ -x "$DATA_DIR/venv/bin/mp" ]] || die "mp launcher not at $DATA_DIR/venv/bin/mp"
 
 # 3b. `mp` launcher symlink (UX22) ----------------------------------------

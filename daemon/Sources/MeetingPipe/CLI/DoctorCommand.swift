@@ -2,8 +2,9 @@ import AppKit
 import ApplicationServices
 import AVFoundation
 import Foundation
+import MeetingPipeCore
 
-/// `MeetingPipe doctor` - probes AX trust, per-app reachability, Screen Recording / CoreAudio HAL tap, pipeline binary roundtrip, and events.jsonl writability. Complements (not duplicates) `mp doctor`, which handles credentials and network.
+/// `MeetingPipe doctor` - probes AX trust, per-app reachability, Screen Recording / CoreAudio HAL tap, the app's resource bundles, pipeline binary roundtrip, and events.jsonl writability. Complements (not duplicates) `mp doctor`, which handles credentials and network.
 /// Exit code: 0 when all probes are `.ok` or `.warn`; 1 on any `.fail`. Each probe emits a `Log.event(category: "doctor", action: "probe")` for dogfood regression tracking.
 enum DoctorCommand {
 
@@ -81,6 +82,7 @@ enum DoctorCommand {
         for bundleID in knownMeetingBundleIDs {
             out.append(Probe(name: "ax.app.\(bundleID)") { probeAppReachable(bundleID: bundleID) })
         }
+        out.append(Probe(name: "app.resources", run: { probeResources() }))
         out.append(Probe(name: "pipeline.binary", run: probePipelineBinary))
         out.append(Probe(name: "pipeline.roundtrip", run: probePipelineRoundtrip))
         out.append(Probe(name: "events.writable", run: probeEventsWritable))
@@ -89,7 +91,7 @@ enum DoctorCommand {
         return out
     }
 
-    /// The probes unique to the daemon (AX trust, TCC permissions, per-app AX
+    /// The probes unique to the daemon (AX trust, TCC permissions, resource bundles, per-app AX
     /// reachability, events writability, orphan scan) - the ones `mp doctor`
     /// cannot run. Excludes the `pipeline.*` probes, which the Preferences doctor
     /// already exercises by spawning `mp doctor` alongside this (UX20 fold). Fast
@@ -103,6 +105,7 @@ enum DoctorCommand {
         for bundleID in knownMeetingBundleIDs {
             out.append(Probe(name: "ax.app.\(bundleID)") { probeAppReachable(bundleID: bundleID) })
         }
+        out.append(Probe(name: "app.resources", run: { probeResources() }))
         out.append(Probe(name: "events.writable", run: probeEventsWritable))
         out.append(Probe(name: "library.orphans", run: probeOrphans))
         out.append(Probe(name: "search.index", run: probeSearchIndex))
@@ -222,6 +225,25 @@ enum DoctorCommand {
                 message: "AX read returned unexpected error \(err.rawValue)."
             )
         }
+    }
+
+    /// DIST4: the resource bundles load from where the installed app keeps them (`Contents/Resources`). An `.app` assembled without them no longer crashes (`ResourceBundleLocator` degrades to empty lookups), so this is where that shows up: a `.fail` naming each missing resource. Inputs injectable so both outcomes unit-test.
+    static func probeResources(
+        loadMuteLabels: () throws -> Void = { _ = try MuteLabelsLoader.loadDefault() },
+        appBundle: Bundle = .appResources
+    ) -> ProbeResult {
+        var missing: [String] = []
+        do { try loadMuteLabels() } catch { missing.append("MuteLabels.toml (\(error.localizedDescription))") }
+        if appBundle.url(forResource: "meeting_apps", withExtension: "toml") == nil { missing.append("meeting_apps.toml") }
+        if appBundle.url(forResource: "_fallback", withExtension: "svg") == nil { missing.append("_fallback.svg") }
+        guard missing.isEmpty else {
+            return ProbeResult(
+                name: "app.resources",
+                status: .fail,
+                message: "Missing \(missing.joined(separator: ", ")) from \(appBundle.bundlePath). Re-run scripts/install.sh."
+            )
+        }
+        return ProbeResult(name: "app.resources", status: .ok, message: "Loaded from \(appBundle.bundlePath).")
     }
 
     static func probePipelineBinary() -> ProbeResult {

@@ -1403,22 +1403,28 @@ final class PipelineLauncher: PipelineDriver {
     /// unit-tests without a real bundle. Returns nil to fall through to the
     /// uv / PATH tiers in `findMP`.
     ///
-    /// The embedded runtime is invoked as `python3 -m mp`, NOT the `bin/mp`
-    /// console script: pip bakes the build-time interpreter path into a console
-    /// script's shebang, which breaks the moment the .app is relocated to the
-    /// user's /Applications. `python3 -m mp` resolves the package relative to the
-    /// relocated interpreter, so it survives the move. The in-place venv keeps its
-    /// console script because it is installed where it runs.
+    /// Both tiers run `python3 -m mp`, NOT the `bin/mp` console script: pip bakes
+    /// the build-time interpreter path into a console script's shebang, which
+    /// breaks the moment the .app is relocated to the user's /Applications.
+    /// `python3 -m mp` resolves the package relative to the interpreter, so it
+    /// survives the move. DIST4 gave the venv the same shape: its `bin/mp` used
+    /// to exec the git clone's own `pipeline/.venv` interpreter, and
+    /// `isExecutable(bin/mp)` stayed true for a launcher whose interpreter was
+    /// gone, so a broken venv shadowed the uv / PATH tiers. The venv tier now
+    /// gates on the interpreter it actually runs (`isExecutableFile` follows the
+    /// symlink to the real CPython), with `bin/mp` as the "install completed"
+    /// marker.
     static func resolveDirectMP(
         embeddedRuntimePython: String?,
-        prebuiltVenvMP: String,
+        prebuiltVenv: String,
         isExecutable: (String) -> Bool
     ) -> MPInvocation? {
         if let python = embeddedRuntimePython, isExecutable(python) {
             return MPInvocation(shell: python, args: ["-m", "mp"])
         }
-        if isExecutable(prebuiltVenvMP) {
-            return MPInvocation(shell: prebuiltVenvMP, args: [])
+        let venvPython = prebuiltVenv + "/bin/python3"
+        if isExecutable(venvPython), isExecutable(prebuiltVenv + "/bin/mp") {
+            return MPInvocation(shell: venvPython, args: ["-m", "mp"])
         }
         return nil
     }
@@ -1432,10 +1438,10 @@ final class PipelineLauncher: PipelineDriver {
         // Mac (and a locked-down regulated Mac) runs entirely from the bundle.
         let embeddedPython = Bundle.main.resourceURL?
             .appendingPathComponent("pipeline-runtime/bin/python3").path
-        let venvBin = home.appendingPathComponent(".local/share/meeting-pipe/venv/bin/mp").path
+        let venv = home.appendingPathComponent(".local/share/meeting-pipe/venv").path
         if let direct = resolveDirectMP(
             embeddedRuntimePython: embeddedPython,
-            prebuiltVenvMP: venvBin,
+            prebuiltVenv: venv,
             isExecutable: { FileManager.default.isExecutableFile(atPath: $0) }
         ) {
             return direct

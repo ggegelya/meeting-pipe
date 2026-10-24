@@ -139,7 +139,7 @@ The installer will:
 
 1. Verify Homebrew, install `ffmpeg` and `uv` if missing. (`ffmpeg` is used by the Python pipeline for audio loading; the daemon itself records natively via ScreenCaptureKit — no subprocess.)
 2. Build the Swift menu-bar daemon (`swift build -c release`), generate an `AppIcon.icns` from SF Symbols, wrap the binary in a `.app` bundle, `ditto` it into `~/Applications/MeetingPipe.app`, and ask Spotlight to index it so you can launch it by name. Asking is all it can do: whether the name actually finds it depends on the state of the volume's own index, so the install says which of the two happened and `mp doctor` reports it afterwards (see troubleshooting).
-3. Install the Python pipeline into `~/.local/share/meeting-pipe/venv/`.
+3. Install the Python pipeline into `~/.local/share/meeting-pipe/venv/`, as a real install from `uv.lock` rather than a link back into the clone.
 4. Stage `~/.config/meeting-pipe/config.toml`, and prompt for your API keys (stored in the macOS Keychain, not a plaintext file).
 5. Install the LaunchAgent so the daemon starts at login.
 
@@ -149,7 +149,9 @@ The installer will:
 
 **Self-contained bundle (DIST1, in progress).** The install above needs Homebrew, `uv`, and `ffmpeg` on the machine. For a genuinely clean or locked-down Mac that can't install those, `scripts/bundle-runtime.sh` embeds a relocatable Python + the pipeline + a static `ffmpeg` into `MeetingPipe.app/Contents/Resources/pipeline-runtime/`; the daemon runs `mp` and `ffmpeg` from there before falling back to a system install. This is an owner-built path today, not yet notarized into a drag-install DMG (that step needs a Developer ID and a clean-Mac test). See [`docs/spikes/dist1-bundle-runtime.md`](docs/spikes/dist1-bundle-runtime.md).
 
-**Rebuild loop for local edits.** Once `install.sh` has run once, `scripts/rebuild.sh` is the one-command fast path: `swift build -c release` → drop the new binary into the installed `.app` → re-sign with the stable identifier → `launchctl bootout` + `bootstrap` so launchd recomputes its launch constraint from the new binary (the cheaper `kickstart -k` reuses a stale one and fails silently). If launch at login is off, it relaunches the app directly instead, since launchd is not the thing starting it. Skips pipeline venv, model pre-fetch, and config staging. Target end-to-end is under 30 s on incremental builds.
+**Rebuild loop for local edits.** Once `install.sh` has run once, `scripts/rebuild.sh` is the one-command fast path: `swift build -c release` → drop the new binary into the installed `.app` → re-sign with the stable identifier → `launchctl bootout` + `bootstrap` so launchd recomputes its launch constraint from the new binary (the cheaper `kickstart -k` reuses a stale one and fails silently). If launch at login is off, it relaunches the app directly instead, since launchd is not the thing starting it. It also re-syncs the pipeline venv from the checkout (well under a second when little changed), so one rebuild brings both the Swift and the Python side up to what you have checked out. Skips model pre-fetch and config staging. Target end-to-end is under 30 s on incremental builds.
+
+**The installed app does not read the clone.** The app bundle and the pipeline venv are copies, not links: you can move or rename the cloned folder, or delete its `daemon/.build`, and the app keeps working (DIST4). The flip side is that editing or pulling the checkout changes nothing until you run `scripts/rebuild.sh` (or `scripts/install.sh`). So updating is: `git pull`, then one of those. `scripts/test-app-relocation.sh` checks the first half on a staging copy, and `--with-pipeline` adds the venv.
 
 ### One-time manual steps
 
@@ -445,7 +447,7 @@ To see what it would expose without starting it:
 mp mcp-serve --status
 ```
 
-The server needs one optional Python package, which `scripts/install.sh` installs for you. If you set the pipeline up by hand, add it with `cd pipeline && uv sync --extra mcp`; the status output and the Preferences panel both say so when it is missing.
+The server needs one optional Python package, which `scripts/install.sh` installs for you. If it is missing, re-run `scripts/rebuild.sh` (or `scripts/install.sh`); `cd pipeline && uv sync --extra mcp` only reaches the checkout's own development venv, not the app's. The status output and the Preferences panel both say so when it is missing.
 
 Two related commands changed with it. `mp ask` and `mp digest` are library-wide, so they never anchored on a single meeting, and a per-meeting NDA flag could therefore never clamp them: only the global `modes.regulated_mode` did. Both now draw on the same visible set the MCP server does, so an NDA meeting is not in `mp ask`'s search index and its actions and decisions are not in the weekly digest.
 
@@ -689,7 +691,7 @@ The auto-stop horizon is `detection.mic_only_silence_seconds`, **default 900 s (
 **I closed the lid right after a meeting and the summary failed.** This one should now recover by itself. Each summarization request is bounded by a 120 s timeout that rides a clock which freezes while the Mac is asleep, so a request still in flight when you close the lid spends its whole budget across the brief wakes macOS takes overnight and reports a timeout on lid-open, having never had 120 s of awake time to answer in. The pipeline compares the wall clock against that frozen one, reads the gap as a sleep rather than a stalled connection, and re-issues the request once; `pipeline.log` carries a `timed out across a system sleep` warning naming both numbers whenever it does. A second timeout, or a genuine stall on a Mac that stayed awake, still fails the run and leaves a Failed row to Retry.
 
 **Local backend won't start.**
-- `mlx-lm not found`: rerun `scripts/install.sh` (or `cd pipeline && uv sync`). The dep is declared in `pyproject.toml` with an Apple-Silicon marker; non-arm64 hosts fall back to `backend="anthropic"` automatically.
+- `mlx-lm not found`: rerun `scripts/rebuild.sh` or `scripts/install.sh`; a `uv sync` inside `pipeline/` only updates the checkout's development venv, not the app's. The dep is declared in `pyproject.toml` with an Apple-Silicon marker; non-arm64 hosts fall back to `backend="anthropic"` automatically.
 - `mlx_lm.server exited during startup (rc=...)`: the message now quotes the server's own last output, which is the thing to read. The server's stdout and stderr go to `~/Library/Logs/MeetingPipe/mlx-server.log` (rotated), so a failure that scrolled past is still there.
 - `mlx_lm.server did not become healthy within 120s`: the model is being downloaded for the first time. The default `Qwen2.5-7B-Instruct-4bit` is ~4.3 GB; check `~/.cache/huggingface/hub/` size growth. A previously-interrupted download is now detected as incomplete and resumed (it no longer reports ready while partial); watch the menu-bar download row and use its **Retry** if the fetch failed.
 - Summaries suddenly read worse, or fail outright, after you turned on regulated mode: expected, and it is the mode doing its job. `regulated_mode` forces the on-device backend for every meeting, so a Mac configured for Anthropic switches to MLX-Qwen the moment you flip it, and if that model was never downloaded the run refuses rather than reaching for the cloud. `mp doctor` reports the override as an `[INFO]` line ("regulated_mode=true overrides summarization.backend ...", not a warning). Turn it back off to return to your configured backend.

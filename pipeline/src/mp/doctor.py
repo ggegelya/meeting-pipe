@@ -328,7 +328,7 @@ def check_local_stack(cfg: Config | None, workflows_dir: Path | None = None) -> 
         _ok("mlx / mlx_lm installed")
     else:
         _fail("mlx_lm not installed; the local backend cannot run")
-        _info("reinstall the pipeline venv: scripts/install.sh (or cd pipeline && uv sync)")
+        _info("reinstall the pipeline venv: scripts/rebuild.sh (or scripts/install.sh)")
         _info('non-Apple-Silicon hosts have no MLX; use summarization.backend = "anthropic"')
 
     model_id = cfg.summarization.local_model

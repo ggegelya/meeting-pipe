@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Fast rebuild-and-relaunch loop for daily development (TECH-D7).
 #
-# Touches ONLY the daemon binary inside the already-installed
-# `~/Applications/MeetingPipe.app`. Skips everything in install.sh
-# that doesn't change between Swift edits:
+# Refreshes the daemon binary and resource bundles inside the
+# already-installed `~/Applications/MeetingPipe.app`, and re-syncs the
+# pipeline venv from this checkout (DIST4: the venv is a real install now,
+# not a link into the clone, so a Python edit reaches the app only through
+# this or install.sh; incremental, well under a second). Skips everything
+# in install.sh that doesn't change between edits:
 #
 #   - prereq checks (brew, ffmpeg, uv, macOS version)
-#   - pipeline venv install (uv sync)
 #   - sherpa-onnx model pre-fetch (~32 MB)
 #   - config staging
 #   - LaunchAgent install
@@ -18,14 +20,19 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$HOME/Applications/MeetingPipe.app"
+DATA_DIR="$HOME/.local/share/meeting-pipe"
 LAUNCHD_LABEL="com.meetingpipe.daemon"
 
 say()  { printf "\033[1;34m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!!\033[0m %s\n" "$*" >&2; }
 die()  { printf "\033[1;31mxx\033[0m %s\n" "$*" >&2; exit 1; }
 
-# Shared two-pass app-bundle signing (also used by install.sh).
+# Shared app-bundle signing (also used by install.sh).
 source "$REPO_ROOT/scripts/lib/sign-app.sh"
+# Shared resource-bundle placement and pipeline venv sync (DIST4; also used by
+# install.sh and scripts/test-app-relocation.sh).
+source "$REPO_ROOT/scripts/lib/resource-bundles.sh"
+source "$REPO_ROOT/scripts/lib/pipeline-venv.sh"
 # Shared launch-at-login guard (also used by install.sh): UX42's rule that a
 # rebuild must not fight a login-start the owner turned off in Preferences.
 # shellcheck source=scripts/lib/login-agent.sh
@@ -43,17 +50,20 @@ say "swift build (release)"
 NEW_BIN="$REPO_ROOT/daemon/.build/release/MeetingPipe"
 [[ -x "$NEW_BIN" ]] || die "Build did not produce $NEW_BIN"
 
-say "Refreshing $APP/Contents/MacOS"
+# Before touching the app, so a sync that fails leaves the installed binary alone
+# and the two trees cannot land out of step.
+say "Syncing the pipeline venv"
+sync_pipeline_venv "$REPO_ROOT/pipeline" "$DATA_DIR/venv" \
+    || die "Pipeline sync failed; uv's output above says why. The app was not touched."
+
+say "Refreshing $APP"
 cp "$NEW_BIN" "$APP/Contents/MacOS/MeetingPipe"
 
-# Resource bundles (SwiftPM's `<Target>_<Target>.bundle`) refresh too —
-# they change when Resources/ contents change.
-for bundle in "$REPO_ROOT/daemon/.build/release/"*.bundle; do
-    [[ -e "$bundle" ]] || continue
-    DEST="$APP/Contents/MacOS/$(basename "$bundle")"
-    rm -rf "$DEST"
-    ditto "$bundle" "$DEST"
-done
+# Resource bundles (SwiftPM's `<Package>_<Target>.bundle`) refresh too; they
+# change when Resources/ contents change. They live in Contents/Resources, and
+# the first rebuild after DIST4 also clears the copies an older install left in
+# Contents/MacOS.
+install_resource_bundles "$REPO_ROOT/daemon/.build/release" "$APP"
 
 # The user guide the menu bar's "Guide…" reads (DOC11). Refreshed here as well
 # as in install.sh, so editing docs/GUIDE.md and rebuilding shows the edit.

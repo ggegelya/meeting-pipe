@@ -139,7 +139,7 @@ public enum MuteLabelsLoader {
 
     /// Load the catalogue from `MuteLabels.toml` in the `MeetingPipeCore` bundle.
     public static func loadDefault() throws -> MuteLabels {
-        try loadDefault(bundle: .module)
+        try loadDefault(bundle: .coreResources)
     }
 
     static func loadDefault(bundle: Bundle) throws -> MuteLabels {

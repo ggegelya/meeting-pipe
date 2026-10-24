@@ -97,6 +97,7 @@ final class DoctorCommandTests: XCTestCase {
         XCTAssertTrue(names.contains("pipeline.roundtrip"))
         XCTAssertTrue(names.contains("events.writable"))
         XCTAssertTrue(names.contains("search.index"))   // UX23
+        XCTAssertTrue(names.contains("app.resources"))  // DIST4
         // Every known meeting app gets an ax.app.<bundle> probe.
         for bundleID in DoctorCommand.knownMeetingBundleIDs {
             XCTAssertTrue(
@@ -110,6 +111,42 @@ final class DoctorCommandTests: XCTestCase {
     func test_daemonSelfCheckProbes_includes_search_index() {
         let names = DoctorCommand.daemonSelfCheckProbes().map { $0.name }
         XCTAssertTrue(names.contains("search.index"))
+    }
+
+    /// DIST4: the in-app doctor sheet names a misassembled app too, since the lookup no longer crashes.
+    func test_daemonSelfCheckProbes_includes_app_resources() {
+        let names = DoctorCommand.daemonSelfCheckProbes().map { $0.name }
+        XCTAssertTrue(names.contains("app.resources"))
+    }
+
+    // MARK: - DIST4 app.resources
+
+    func test_probeResources_ok_when_every_resource_loads() {
+        let result = DoctorCommand.probeResources()
+        XCTAssertEqual(result.status, .ok, result.message)
+        XCTAssertEqual(result.name, "app.resources")
+        XCTAssertTrue(result.message.contains(Bundle.appResources.bundlePath), result.message)
+    }
+
+    func test_probeResources_fails_naming_every_missing_resource() throws {
+        struct Missing: Error {}
+        let empty = FileManager.default.temporaryDirectory.appendingPathComponent("probeResources-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: empty) }
+        let result = DoctorCommand.probeResources(
+            loadMuteLabels: { throw Missing() },
+            appBundle: try XCTUnwrap(Bundle(url: empty))
+        )
+        XCTAssertEqual(result.status, .fail)
+        for name in ["MuteLabels.toml", "meeting_apps.toml", "_fallback.svg"] {
+            XCTAssertTrue(result.message.contains(name), "\(name) not named in: \(result.message)")
+        }
+    }
+
+    func test_app_bundle_name_matches_what_swiftpm_generated() {
+        // Under `swift test` `appResources` resolves through `Bundle.module`, so its file name is
+        // SwiftPM's own; the hardcoded name is what an installed app looks up in Contents/Resources.
+        XCTAssertEqual(Bundle.appResources.bundleURL.deletingPathExtension().lastPathComponent, Bundle.appResourceBundleName)
     }
 
     // MARK: - Per-probe pure helpers

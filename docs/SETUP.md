@@ -80,6 +80,8 @@ Partway through it stops and asks for two API keys. **You can press Return to sk
 
 When it finishes you will see `Install complete` and a list of next steps, which the rest of this guide walks through properly.
 
+The installer copies everything it needs out of the `meeting-pipe` folder, so the app does not use that folder while it runs: you can move or rename it and nothing breaks. Keep it anyway, because it is how you update. Updating is `git pull` inside the folder, then `./scripts/install.sh` again; nothing you download reaches the app until you re-run the installer.
+
 ## Step 4: Find the app and grant its permissions
 
 Look at the right end of your menu bar. There should be a small icon reading **MeetingPipe: Idle** when clicked. If it is not there, open your `~/Applications` folder in Finder, **right-click** `MeetingPipe.app`, and choose **Open**. Right-click rather than double-click matters the first time: the app is not signed by a paid Apple developer account, so macOS shows an "unverified developer" warning that only the right-click Open path lets you get past. Confirm once and macOS remembers.

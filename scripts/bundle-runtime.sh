@@ -100,6 +100,8 @@ fi
 # --- 4. sign every embedded mach-O (inside-out) -----------------------------
 # Notarization requires every mach-O inside the .app to carry a valid signature.
 # `codesign --deep` is unreliable, so sign the leaves first, then the app last.
+# The app's SwiftPM resource bundles (Contents/Resources/MeetingPipe_*.bundle,
+# DIST4) hold no Mach-O, so that last signature seals them as plain resources.
 step "Signing embedded binaries (identity: ${CODESIGN_IDENTITY})"
 find "$RUNTIME_DIR" -type f \( -name '*.dylib' -o -name '*.so' -o -perm -111 \) -print0 \
     | while IFS= read -r -d '' f; do

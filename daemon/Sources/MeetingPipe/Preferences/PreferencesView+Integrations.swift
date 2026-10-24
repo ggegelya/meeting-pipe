@@ -187,7 +187,7 @@ struct IntegrationsSectionView: View {
 
     private var mcpFooter: String {
         if let status = mcp.status, !status.sdkAvailable {
-            return "The MCP package is not installed, so the server cannot start yet. Run `cd pipeline && uv sync --extra mcp`, or re-run scripts/install.sh."
+            return "The MCP package is not installed, so the server cannot start yet. Re-run scripts/rebuild.sh or scripts/install.sh, which install it into the app's pipeline."
         }
         return "Point your AI tool at `mp mcp-serve` to connect it. Anything it reads has left this Mac and reached that tool's provider, which is why this is off until you turn it on, and why the withheld meetings stay withheld with no override."
     }

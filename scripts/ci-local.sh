@@ -143,6 +143,15 @@ daemon() {
         # Pinning the pool to one thread makes the starvation deterministic here.
         LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 swift test --filter 'EngineTeardownTests|BoundedEngineStartTests|RunWithTimeoutTests'
         end
+        begin "Daemon: installed-app relocation smoke (DIST4)"
+        # Assembles a staging MeetingPipe.app from the debug build above with the
+        # installer's own functions, moves daemon/.build aside, and runs the staged
+        # `MeetingPipe doctor`: it must not crash, and must load its resource
+        # bundles from Contents/Resources rather than the build tree. Without
+        # --with-pipeline: that half syncs the app's full venv, mlx stack included,
+        # which is a download this job does not need for what it fences.
+        bash ../scripts/test-app-relocation.sh .build/debug
+        end
     )
 }
 
