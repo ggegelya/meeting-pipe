@@ -20,6 +20,7 @@ from mp.diarize_cleanup import (
     EditRecord,
     LocalCleanupClient,
     SpeakerEdit,
+    TextCleanupClient,
     _apply_edits,
     _distinct_speakers,
     _effective_edits,
@@ -406,4 +407,69 @@ def test_unknown_backend_raises() -> None:
     cfg = _backend_cfg("local")
     cfg.summarization.backend = "made-up"  # type: ignore[assignment]
     with pytest.raises(ValueError):
+        _select_cleanup_backend(cfg)
+
+
+# ----- PIPE19: openai and claude_cli run the pass instead of raising -----
+#
+# Before PIPE19 `_select_cleanup_backend` ended in `raise ValueError` for both,
+# `run_all` swallowed it as non-fatal, and the Preferences toggle silently did
+# nothing on two offered engines.
+
+_EDITS_JSON = json.dumps({"edits": [
+    {"segment_index": 3, "speaker": "speaker_1", "kind": "reattribute"},
+]})
+
+
+@pytest.mark.parametrize("backend", ["openai", "claude_cli"])
+def test_text_backends_select_a_text_cleanup_client(
+    monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    assert isinstance(_select_cleanup_backend(_backend_cfg(backend)), TextCleanupClient)
+
+
+def test_openai_cleanup_runs_end_to_end_in_json_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    sent: list[dict[str, Any]] = []
+
+    def fake_chat(self, messages, *, max_tokens, json_mode):  # noqa: ANN001
+        sent.append({"messages": messages, "json_mode": json_mode})
+        return _EDITS_JSON
+
+    monkeypatch.setattr("mp.provider_openai.OpenAIClient._chat", fake_chat)
+    p = _write_transcript(tmp_path)
+    result = cleanup_transcript(p, cfg=_backend_cfg("openai"))
+
+    assert result["reattributions_count"] == 1
+    assert json.loads(p.read_text(encoding="utf-8"))["segments"][3]["speaker"] == "speaker_1"
+    assert sent and sent[0]["json_mode"] is True
+    # The schema rides in the system prompt, as on the local path.
+    assert '"edits"' in sent[0]["messages"][0]["content"]
+
+
+def test_claude_cli_cleanup_runs_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prompts: list[str] = []
+
+    def fake_run(self, prompt: str) -> str:  # noqa: ANN001
+        prompts.append(prompt)
+        return "Here you go:\n" + _EDITS_JSON  # prose around it is tolerated
+
+    monkeypatch.setattr("mp.provider_claude_cli.ClaudeCLIClient._run", fake_run)
+    p = _write_transcript(tmp_path)
+    result = cleanup_transcript(p, cfg=_backend_cfg("claude_cli"))
+
+    assert result["reattributions_count"] == 1
+    assert json.loads(p.read_text(encoding="utf-8"))["segments"][3]["speaker"] == "speaker_1"
+    assert len(prompts) == 1
+
+
+def test_unknown_backend_names_the_id() -> None:
+    cfg = _backend_cfg("local")
+    cfg.summarization.backend = "made-up"  # type: ignore[assignment]
+    with pytest.raises(ValueError, match="made-up"):
         _select_cleanup_backend(cfg)

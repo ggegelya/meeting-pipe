@@ -298,6 +298,8 @@ class LocalSummaryClient:
     the subprocess.
     """
 
+    backend_id = "local"
+
     def __init__(
         self,
         *,
@@ -351,7 +353,7 @@ class LocalSummaryClient:
     def model(self) -> str:
         """Repo id of the MLX model that actually answered.
 
-        Read by ``mp.summarize._identify_backend`` so the run sidecar records the
+        Read by ``mp.summarize.summarize`` (PIPE19) so the run sidecar records the
         model that produced a summary, even when Preferences swaps the configured
         model later. LOCAL11: when the identity check found a warm server we do
         not own serving something else, this reports what *served*, not what was

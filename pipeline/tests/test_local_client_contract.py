@@ -3,7 +3,7 @@
 `summarization.local_memory_floor_pct` is the free-RAM floor a local run aborts
 under (LOCAL16), and `LocalSummaryClient.__init__` defaults it to
 `resource_guard.DEFAULT_FLOOR_PCT`. So a construction that forgets the keyword
-does not fail, it silently runs at 10.0. `_AutoFallbackClient._local` did exactly
+does not fail, it silently runs at 10.0. `AutoFallbackClient._local` did exactly
 that, which meant the whole `auto` backend ignored a floor `diarize_cleanup`
 documents as universal ("means the same thing on every local path") and that both
 `README.md` and `config.example.toml` promise `0` turns off.
@@ -32,7 +32,7 @@ CONFIGURED_FLOOR = "local_memory_floor_pct"
 
 #: Modules that build the client today. Named so a construction moving out of
 #: one is a deliberate edit here rather than a silently narrower walk.
-KNOWN_CONSTRUCTORS = {"summarize", "engine", "diarize_cleanup", "dogfood"}
+KNOWN_CONSTRUCTORS = {"summarize", "engine", "providers", "dogfood"}
 
 
 def _called_name(func: ast.expr) -> str | None:

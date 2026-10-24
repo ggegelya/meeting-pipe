@@ -1,6 +1,6 @@
 """Tests for the one cloud-then-local `auto` ladder (PIPE7).
 
-`summarize._AutoFallbackClient` and `engine.complete_text` both route through
+`summarize.AutoFallbackClient` and `engine.complete_text` both route through
 `run_with_local_fallback`, so the policy is pinned once here and the two call
 sites only pin their own wiring.
 """

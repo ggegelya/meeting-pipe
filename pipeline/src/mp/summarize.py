@@ -47,7 +47,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from . import corrections, entry, events, evidence, storage, transcript_corrections
+from . import corrections, entry, events, evidence, providers, storage, transcript_corrections
 from .backend_fallback import run_with_local_fallback
 from .config import (
     SAMPLING_TEMPERATURE,
@@ -57,7 +57,6 @@ from .config import (
     effective_backend,
     extract_backend_flag,
     parse_local_endpoint,
-    require_env,
     with_backend_override,
 )
 from .markdown import render_markdown, render_summary_md
@@ -403,6 +402,8 @@ class AnthropicSummaryClient:
     implementing the same `SummaryClient` protocol.
     """
 
+    backend_id = "anthropic"
+
     def __init__(self, *, api_key: str) -> None:
         self._client = anthropic.Anthropic(
             api_key=api_key,
@@ -602,12 +603,17 @@ def summarize(
     # citations link back to the transcript like a published note's do.
     storage.atomic_write_text(md_path, render_summary_md(summary, stem))
 
-    backend, model_used = _identify_backend(client, cfg)
+    # PIPE19: every client names itself; the `AutoFallbackClient` reports the rung
+    # that answered. A client with no model of its own (Anthropic takes it per
+    # call) ran the configured one. An injected fake that names nothing is
+    # "unknown" rather than a guess.
+    backend_used: str = getattr(client, "backend_id", None) or "unknown"
+    model_used = getattr(client, "model", None) or cfg.summarization.model
     log.info("Wrote %s and %s", json_path, md_path)
     return SummaryOutput(
         json=json_path,
         md=md_path,
-        backend=backend,
+        backend=backend_used,
         model=model_used,
         adapter_path=_identify_adapter(client),
     )
@@ -697,45 +703,12 @@ def _verify_and_repair_language(
     return repaired
 
 
-def _identify_backend(client: SummaryClient, cfg: Config) -> tuple[str, str]:
-    """Map the client that handled the call back to a (backend, model)
-    pair for the run sidecar.
-
-    For ``_AutoFallbackClient`` we read ``last_used_*`` which it
-    populates per call; the other clients are stable per instance so
-    we infer from type + cfg.
-    """
-    if isinstance(client, _AutoFallbackClient):
-        return (
-            client.last_used_backend or "anthropic",
-            client.last_used_model or cfg.summarization.model,
-        )
-    if isinstance(client, AnthropicSummaryClient):
-        return "anthropic", cfg.summarization.model
-    # PROV1 providers: light modules, so a direct import here is cheap.
-    from .provider_claude_cli import ClaudeCLIClient
-    if isinstance(client, ClaudeCLIClient):
-        return "claude_cli", client.model
-    from .provider_openai import OpenAIClient
-    if isinstance(client, OpenAIClient):
-        return "openai", client.model
-    # Local backend: import lazily so non-local installs do not pay
-    # the mlx_lm import cost for an isinstance check.
-    try:
-        from .summarize_local import LocalSummaryClient
-    except Exception:
-        return "unknown", cfg.summarization.model
-    if isinstance(client, LocalSummaryClient):
-        return "local", client.model
-    return "unknown", cfg.summarization.model
-
-
 def _identify_adapter(client: SummaryClient) -> str:
     """LoRA adapter the answering client served, or "" (LOCAL9/LOCAL11).
 
     Only the local backend has one, and only it can report the *served* value
     rather than the configured one. Duck-typed rather than isinstance-checked so
-    both shapes answer with one rule: `_AutoFallbackClient` publishes
+    both shapes answer with one rule: `AutoFallbackClient` publishes
     `last_used_adapter_path` per call, `LocalSummaryClient` exposes
     `adapter_path`, and every other backend has neither."""
     for attr in ("last_used_adapter_path", "adapter_path"):
@@ -764,69 +737,25 @@ def _served_local_identity(client: object, cfg: Config) -> tuple[str, str]:
 
 
 def _select_backend(cfg: Config) -> SummaryClient:
-    """Resolve the backend per `summarization.backend`.
+    """Build the summary client for `summarization.backend` (PIPE19: a lookup in
+    `providers`, which holds every backend's builders in one table).
 
-    Four backend values (regulated_mode forces local regardless):
-      "anthropic":          requires ANTHROPIC_API_KEY.
-      "local":              never call Anthropic; build a LocalSummaryClient.
-      "auto":               return a _AutoFallbackClient that tries Anthropic
-                            first, falls back to local on network/auth failure.
-      "apple_intelligence": daemon-only (Swift); raises here if reached directly.
+    The regulated/NDA force-local rule is applied first, in one place
+    (config.effective_backend, TECH-ARCH1). `apple_intelligence` raises from its
+    builder: the daemon produces that summary, so reaching it here is a
+    misconfiguration, and it fails loudly rather than silently degrading.
     """
-    # The regulated/NDA force-local rule lives in one place now
-    # (config.effective_backend, TECH-ARCH1). Apply it, then keep this site's
-    # own apple_intelligence / auto handling below.
     backend = effective_backend(cfg)
     if backend != cfg.summarization.backend:
         log.info("zero-egress mode active; forcing local backend (was %s)",
                  cfg.summarization.backend)
-    if backend == "apple_intelligence":
-        # The Apple Intelligence summary is produced in the Swift daemon (the
-        # macOS 26 Foundation Model is Swift-only). run-all hands off before
-        # this is reached; a direct `mp summarize` with this backend is a
-        # misconfiguration, so fail loudly rather than silently degrade.
-        raise ValueError(
-            "summarization.backend='apple_intelligence' runs in the daemon (Swift), "
-            "not the Python summarizer. The daemon produces the summary on-device."
-        )
-    if backend == "local":
-        from .summarize_local import LocalSummaryClient
-        host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
-        return LocalSummaryClient(
-            model=cfg.summarization.local_model,
-            host=host,
-            port=port,
-            startup_timeout_sec=cfg.summarization.local_startup_timeout_sec,
-            request_timeout_sec=cfg.summarization.local_request_timeout_sec,
-            summary_language=cfg.summarization.summary_language,
-            # PIPE4: one knob drives both the cloud paste-bundle guard and the local
-            # map-reduce routing, so a long local meeting summarizes instead of bundling.
-            map_reduce_above_chars=cfg.summarization.skip_above_chars,
-            # LOCAL9: opt-in fine-tuned adapter; empty config keeps the base model.
-            adapter_path=cfg.summarization.local_adapter_path or None,
-            # LOCAL16: the free-RAM floor this run aborts under, rather than
-            # letting a long meeting push the Mac into swapping.
-            memory_floor_pct=cfg.summarization.local_memory_floor_pct,
-        )
-    if backend == "anthropic":
-        api_key = require_env("ANTHROPIC_API_KEY")
-        return AnthropicSummaryClient(api_key=api_key)
-    if backend == "auto":
-        return _AutoFallbackClient(cfg)
-    if backend == "claude_cli":
-        # PROV1: no API key; rides the user's Claude Code auth. A cloud backend,
-        # so it is unreachable here under zero_egress (effective_backend forced
-        # local) and refuses to spawn if the guard is somehow armed.
-        from .provider_claude_cli import ClaudeCLIClient
-        return ClaudeCLIClient()
-    if backend == "openai":
-        from .provider_openai import OpenAIClient
-        api_key = require_env("OPENAI_API_KEY")
-        return OpenAIClient(api_key=api_key, model=cfg.summarization.openai_model)
-    raise ValueError(f"unknown summarization.backend: {backend!r}")
+    row = providers.lookup(backend)
+    if row.build_summary is None:
+        raise ValueError(f"summarization.backend {backend!r} has no Python summarizer")
+    return row.build_summary(cfg)
 
 
-class _AutoFallbackClient:
+class AutoFallbackClient:
     """`SummaryClient` that tries Anthropic first, falls back to local
     on network / auth / rate-limit / server-error failure (TECH-FEAT5).
     Built once per `summarize()` call so the Anthropic auth check is
@@ -839,8 +768,8 @@ class _AutoFallbackClient:
 
     def __init__(self, cfg: Config) -> None:
         self._cfg = cfg
-        # Set per call so `_identify_backend` can attribute the run
-        # sidecar to whichever path actually answered.
+        # Set per call so `backend_id` / `model` attribute the run sidecar to
+        # whichever path actually answered.
         self.last_used_backend: str | None = None
         self.last_used_model: str | None = None
         self.last_used_adapter_path: str = ""
@@ -848,6 +777,14 @@ class _AutoFallbackClient:
         # off it before the `with` block closes it. The configured pair is only a
         # fallback: a warm server we do not own can be serving older weights.
         self._local_identity: tuple[str, str] | None = None
+
+    @property
+    def backend_id(self) -> str:
+        return self.last_used_backend or "auto"
+
+    @property
+    def model(self) -> str:
+        return self.last_used_model or self._cfg.summarization.model
 
     def summarize(
         self,

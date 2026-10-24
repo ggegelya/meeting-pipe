@@ -42,6 +42,7 @@ class _FakeLocal:
 
 class _FakeAnthropic:
     last: "_FakeAnthropic | None" = None
+    backend_id = "anthropic"
 
     def __init__(self, *, api_key: str, model: str) -> None:
         self.model = model
@@ -113,6 +114,8 @@ def test_auto_falls_back_to_local_without_key(monkeypatch: pytest.MonkeyPatch) -
 
 def _raising_anthropic(exc: BaseException) -> type:
     class _Boom:
+        backend_id = "anthropic"
+
         def __init__(self, *, api_key: str, model: str) -> None:
             self.model = model
 

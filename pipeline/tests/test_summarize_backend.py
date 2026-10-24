@@ -29,7 +29,7 @@ import pytest
 
 from mp.config import SAMPLING_TEMPERATURE, Config, MissingSecretError
 from mp.config import parse_local_endpoint
-from mp.summarize import _AutoFallbackClient, _select_backend
+from mp.summarize import AutoFallbackClient, _select_backend
 
 
 def _local_cfg(
@@ -60,7 +60,7 @@ def test_select_backend_local_returns_local_client() -> None:
 def test_select_backend_auto_returns_fallback_wrapper() -> None:
     cfg = _local_cfg("auto")
     client = _select_backend(cfg)
-    assert isinstance(client, _AutoFallbackClient)
+    assert isinstance(client, AutoFallbackClient)
 
 
 def test_select_backend_anthropic_requires_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -366,7 +366,7 @@ def test_auto_falls_back_to_local_on_429_and_5xx(
     monkeypatch.setattr("mp.summarize.AnthropicSummaryClient", _RaisingAnthropic)
     monkeypatch.setattr("mp.summarize_local.LocalSummaryClient", _FakeLocal)
 
-    client = _AutoFallbackClient(_local_cfg(backend="auto"))
+    client = AutoFallbackClient(_local_cfg(backend="auto"))
     result = client.summarize(
         system_prompt="sys", transcript="A: hi.", model="claude-x", max_tokens=100,
     )
@@ -408,7 +408,7 @@ def test_auto_fallback_local_client_carries_the_configured_floor(
 
     monkeypatch.setattr("mp.summarize_local.LocalSummaryClient", _RecordingLocal)
 
-    client = _AutoFallbackClient(_local_cfg(backend="auto", memory_floor_pct=42.0))
+    client = AutoFallbackClient(_local_cfg(backend="auto", memory_floor_pct=42.0))
     client.summarize(
         system_prompt="sys", transcript="A: hi.", model="claude-x", max_tokens=100,
     )
@@ -869,3 +869,85 @@ def test_sonnet_5_5_cleanup_request_does_not_force_the_tool() -> None:
     assert edits == []
     assert seen[0]["tool_choice"] == {"type": "auto"}
     assert "temperature" not in seen[0]
+
+
+# ----- PIPE19: the run sidecar's backend is the client's own name -----
+#
+# `_identify_backend` used to recover it with an isinstance ladder, so a backend
+# missing from the ladder was attributed "unknown". Every client names itself now.
+
+
+def _sidecar_summary() -> Any:
+    from mp.schemas import MeetingSummary
+
+    return MeetingSummary(
+        title="Sync", summary=["Reviewed the plan."], decisions=[], actions=[],
+        questions=[], attendees=["A", "B"], detected_language="en",
+    )
+
+
+def _transcript(tmp_path: Path) -> Path:
+    md = tmp_path / "20260707-123334.md"
+    md.write_text("# Transcript\n\n**A**: Let us review the plan.\n\n**B**: Agreed.\n",
+                  encoding="utf-8")
+    return md
+
+
+@pytest.mark.parametrize(
+    ("backend", "model"),
+    [
+        ("local", "fake-model"),
+        ("anthropic", "claude-configured"),
+        ("claude_cli", "claude-code"),
+        ("openai", "gpt-configured"),
+    ],
+)
+def test_run_sidecar_backend_comes_from_the_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str, model: str
+) -> None:
+    from mp.summarize import summarize
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    cfg = _local_cfg(backend=backend)
+    cfg.summarization.model = "claude-configured"
+    cfg.summarization.openai_model = "gpt-configured"
+    client = _select_backend(cfg)
+    assert client.backend_id == backend  # type: ignore[attr-defined]
+    monkeypatch.setattr(client, "summarize", lambda **_: _sidecar_summary())
+    try:
+        out = summarize(_transcript(tmp_path), cfg=cfg, client=client)
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+    assert out["backend"] == backend
+    assert out["model"] == model
+
+
+def test_run_sidecar_names_the_auto_rung_that_answered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mp.summarize import summarize
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    class _FakeAnthropic:
+        def __init__(self, **_: Any) -> None: ...
+
+        def summarize(self, **_: Any) -> Any:
+            return _sidecar_summary()
+
+    monkeypatch.setattr("mp.summarize.AnthropicSummaryClient", _FakeAnthropic)
+    cfg = _local_cfg(backend="auto")
+    client = _select_backend(cfg)
+    assert isinstance(client, AutoFallbackClient)
+    out = summarize(_transcript(tmp_path), cfg=cfg, client=client)
+    assert out["backend"] == "anthropic"
+    assert out["model"] == cfg.summarization.model
+
+
+def test_identify_backend_is_gone() -> None:
+    import mp.summarize as summarize_mod
+
+    assert not hasattr(summarize_mod, "_identify_backend")

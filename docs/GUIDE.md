@@ -472,6 +472,8 @@ If the transcript is right and the summary is what disappoints, that is **Re-sum
 
 If the same person keeps being split or merged across meetings, the setting to move is **Speaker separation** in **Preferences ▸ Pipeline ▸ Speaker labels**: **More distinct** when several people collapse into one, **Merge more** when one person splits into many. Quit from the menu bar so the app relaunches and picks it up, then re-transcribe.
 
+The same group has **Clean up speaker labels after transcription**, which asks the model to merge labels that are one person after each new meeting. It works with every summarization engine. With Apple Intelligence it uses the local model on this Mac, since Apple Intelligence only writes summaries; with any other engine it uses that engine.
+
 The app already ships on **More distinct**, because separating too eagerly is the cheaper mistake: an extra unnamed voice is one naming away from correct, while two people merged into one puts a confidently wrong name on the summary's attendees and its action owners. So if your problem is people being merged, you are already at that end of the dial and moving it will not help. Two things it genuinely cannot fix, worth knowing before you spend an evening on it: a big call with many similar-sounding voices can still merge two of them at any setting, and a sentence that changes speaker part-way through stays one turn whatever you choose, because this setting decides which voice a passage belongs to and never where one passage ends and the next begins. Both are better handled by naming the voices afterwards in the transcript.
 
 ### Nothing recorded at all

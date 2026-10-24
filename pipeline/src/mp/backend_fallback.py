@@ -1,7 +1,7 @@
 """The one implementation of the `auto` backend ladder: try cloud, fall back to local.
 
 Before PIPE7 this ladder existed three times with diverging semantics:
-`summarize._AutoFallbackClient` caught a named set of Anthropic transport
+`summarize.AutoFallbackClient` caught a named set of Anthropic transport
 errors, `engine.complete_text` caught bare `Exception`, and
 `diarize_cleanup._select_cleanup_backend` did no runtime fallback at all
 despite a docstring claiming it mirrored summarize. Summarize and engine now

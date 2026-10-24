@@ -41,6 +41,8 @@ class OpenAIError(RuntimeError):
 class OpenAIClient:
     """`SummaryClient` + `TextClient` over an OpenAI-compatible chat API."""
 
+    backend_id = "openai"
+
     def __init__(self, *, api_key: str, model: str, api_base: str = OPENAI_API_BASE) -> None:
         self._api_key = api_key
         self.model = model
@@ -99,14 +101,18 @@ class OpenAIClient:
 
     # ----- TextClient -----
 
-    def complete(self, *, system_prompt: str, user_message: str, max_tokens: int) -> str:
+    def complete(
+        self, *, system_prompt: str, user_message: str, max_tokens: int, json_mode: bool = False
+    ) -> str:
+        """Free-form completion. `json_mode` asks the API for a syntactically valid
+        JSON object; speaker cleanup sets it (PIPE19), ask / digest do not."""
         text = self._chat(
             [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
             max_tokens=max_tokens,
-            json_mode=False,
+            json_mode=json_mode,
         ).strip()
         if not text:
             raise OpenAIError("openai returned an empty completion")

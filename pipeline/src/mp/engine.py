@@ -21,9 +21,9 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
-from . import events
+from . import events, providers
 from .backend_fallback import run_with_local_fallback
 from .config import (
     SAMPLING_TEMPERATURE,
@@ -31,7 +31,6 @@ from .config import (
     anthropic_sampling,
     effective_backend,
     parse_local_endpoint,
-    require_env,
 )
 
 log = logging.getLogger("mp.engine")
@@ -71,6 +70,8 @@ class AnthropicTextClient:
     the SDK (a small internal backoff) since neither caller has summarize's
     timeout-to-local-fallback requirement.
     """
+
+    backend_id = "anthropic"
 
     def __init__(self, *, api_key: str, model: str) -> None:
         import anthropic
@@ -147,21 +148,73 @@ def _local_client(cfg: Config, model: str | None):
     )
 
 
-def _complete_local(cfg: Config, *, system_prompt: str, user_message: str, max_tokens: int, model: str | None) -> EngineResult:
-    client = _local_client(cfg, model)
-    try:
-        text = client.complete(
+class LocalTextClient:
+    """`TextClient` over the managed local `mlx_lm.server`, free-form (no schema).
+
+    Owns the server for one call, so the caller closes it. `model` is read off the
+    local client after the call, which is the id the server reported serving
+    (LOCAL11), not just the configured one.
+    """
+
+    backend_id = "local"
+
+    def __init__(self, cfg: Config, model: str | None) -> None:
+        self._local = _local_client(cfg, model)
+
+    @property
+    def model(self) -> str:
+        return self._local.model
+
+    def complete(self, *, system_prompt: str, user_message: str, max_tokens: int) -> str:
+        return self._local.complete(
             system_prompt=system_prompt,
             user_message=user_message,
             max_tokens=max_tokens,
             response_format=None,  # free-form; no schema forcing for ask / digest
         )
-    finally:
-        client.close()
-    text = (text or "").strip()
-    if not text:
-        raise EngineError("local model returned an empty completion")
-    return EngineResult(text=text, backend="local", model=client.model)
+
+    def close(self) -> None:
+        self._local.close()
+
+
+class AutoTextClient:
+    """`TextClient` for the `auto` backend: Anthropic, then local.
+
+    Not reachable under regulated / NDA (effective_backend already forced local
+    there), so falling back to local on an Anthropic failure never egresses a
+    zero-egress meeting. The ladder is shared with summarize (PIPE7): only an
+    unreachable-or-unwilling cloud drops to local, so a BadRequestError still
+    surfaces instead of silently re-running on a different model.
+
+    `backend_id` and `model` name whichever rung answered (PIPE19), the way
+    `summarize.AutoFallbackClient` does.
+    """
+
+    def __init__(self, cfg: Config, model: str | None) -> None:
+        self._cfg = cfg
+        self._model = model
+        self.backend_id = "auto"
+        self.model = model or cfg.summarization.model
+
+    def complete(self, *, system_prompt: str, user_message: str, max_tokens: int) -> str:
+        def _cloud() -> tuple[str, str]:
+            client = AnthropicTextClient(
+                api_key=os.environ["ANTHROPIC_API_KEY"],
+                model=self._model or self._cfg.summarization.model,
+            )
+            return client.complete(system_prompt=system_prompt, user_message=user_message,
+                                   max_tokens=max_tokens), client.model
+
+        def _local() -> tuple[str, str]:
+            client = LocalTextClient(self._cfg, self._model)
+            try:
+                return client.complete(system_prompt=system_prompt, user_message=user_message,
+                                       max_tokens=max_tokens), client.model
+            finally:
+                client.close()
+
+        (text, self.model), self.backend_id = run_with_local_fallback(cloud=_cloud, local=_local)
+        return text
 
 
 def complete_text(
@@ -174,22 +227,28 @@ def complete_text(
 ) -> EngineResult:
     """Generate free-form assistant text under the resolved backend.
 
-    `effective_backend(cfg)` decides local vs anthropic vs auto after the
-    regulated / NDA force-local rule, so a zero-egress config never reaches a
-    cloud call here. `model` overrides the model for this one call (anthropic:
-    the message model; local: the mlx server model); None uses the configured
-    default. Raises `EngineError` with an actionable message on failure.
+    `effective_backend(cfg)` decides the backend after the regulated / NDA
+    force-local rule, so a zero-egress config never reaches a cloud call here;
+    `providers` builds the client for it (PIPE19). `model` overrides the model
+    for this one call (anthropic: the message model; local: the mlx server
+    model); None uses the configured default. Raises `EngineError` with an
+    actionable message on failure.
 
     The caller must have armed the egress guard (`arm_for_config`) and sourced
     secrets (`load_secrets`) at its CLI entry, exactly as summarize does.
     """
     backend = effective_backend(cfg)
+    try:
+        row = providers.lookup(backend)
+    except ValueError as e:
+        raise EngineError(str(e)) from e
 
-    if backend == "apple_intelligence":
+    substituted_from: str | None = None
+    if row.stand_in is not None:
         # The Apple Intelligence Foundation Model is Swift-only and only wired for
         # transcript summarization (the daemon produces it). ask / digest have no
-        # daemon hand-off, so run them on the local MLX path instead: still
-        # on-device, still zero-egress, just a different local model.
+        # daemon hand-off, so they run on the row's stand-in (the local MLX path):
+        # still on-device, still zero-egress, just a different local model.
         #
         # PIPE12: a log line is not a surface. Someone who picked Apple
         # Intelligence precisely to avoid a resident multi-GB model gets one
@@ -202,69 +261,29 @@ def complete_text(
         # fails is exactly when someone goes looking for why. `model` is therefore
         # the id this call asks for rather than `LocalSummaryClient.model`'s
         # read-back of what a warm server turned out to be serving (LOCAL11).
-        log.info("backend 'apple_intelligence' has no Python free-form path; using local MLX for this call")
+        log.info("backend %r has no Python free-form path; using %s for this call",
+                 backend, row.stand_in)
         events.emit(
             "pipeline", "engine_backend_substituted",
-            requested="apple_intelligence", used="local",
+            requested=backend, used=row.stand_in,
             model=model or cfg.summarization.local_model,
             reason="no Python free-form path",
         )
-        result = _complete_local(cfg, system_prompt=system_prompt, user_message=user_message,
-                                 max_tokens=max_tokens, model=model)
-        return replace(result, substituted_from="apple_intelligence")
+        substituted_from = backend
+        row = providers.lookup(row.stand_in)
 
-    if backend == "local":
-        return _complete_local(cfg, system_prompt=system_prompt, user_message=user_message,
-                               max_tokens=max_tokens, model=model)
-
-    if backend == "anthropic":
-        api_key = require_env("ANTHROPIC_API_KEY")
-        client = AnthropicTextClient(api_key=api_key, model=model or cfg.summarization.model)
-        return EngineResult(text=client.complete(system_prompt=system_prompt, user_message=user_message,
-                                                 max_tokens=max_tokens),
-                            backend="anthropic", model=client.model)
-
-    if backend == "claude_cli":
-        # PROV1: cloud backend via headless `claude -p`, unreachable under
-        # zero_egress (effective_backend forced local). No API key.
-        from .provider_claude_cli import ClaudeCLIClient
-        cli = ClaudeCLIClient()
-        return EngineResult(
-            text=cli.complete(system_prompt=system_prompt, user_message=user_message, max_tokens=max_tokens),
-            backend="claude_cli", model=cli.model,
-        )
-
-    if backend == "openai":
-        from .provider_openai import OpenAIClient
-        api_key = require_env("OPENAI_API_KEY")
-        oai = OpenAIClient(api_key=api_key, model=cfg.summarization.openai_model)
-        return EngineResult(
-            text=oai.complete(system_prompt=system_prompt, user_message=user_message, max_tokens=max_tokens),
-            backend="openai", model=oai.model,
-        )
-
-    if backend == "auto":
-        # Not reachable under regulated / NDA (effective_backend already forced
-        # local there), so falling back to local on an Anthropic failure never
-        # egresses a zero-egress meeting. The ladder is shared with summarize
-        # (PIPE7): only an unreachable-or-unwilling cloud drops to local, so a
-        # BadRequestError still surfaces instead of silently re-running on a
-        # different model.
-        def _cloud() -> EngineResult:
-            client = AnthropicTextClient(
-                api_key=os.environ["ANTHROPIC_API_KEY"], model=model or cfg.summarization.model
-            )
-            return EngineResult(
-                text=client.complete(system_prompt=system_prompt, user_message=user_message,
-                                     max_tokens=max_tokens),
-                backend="anthropic", model=client.model,
-            )
-
-        def _local() -> EngineResult:
-            return _complete_local(cfg, system_prompt=system_prompt, user_message=user_message,
-                                   max_tokens=max_tokens, model=model)
-
-        result, _backend = run_with_local_fallback(cloud=_cloud, local=_local)
-        return result
-
-    raise EngineError(f"unknown summarization.backend: {backend!r}")
+    if row.build_text is None:
+        raise EngineError(f"summarization.backend {backend!r} has no free-form text path")
+    client = row.build_text(cfg, model)
+    try:
+        text = client.complete(system_prompt=system_prompt, user_message=user_message,
+                               max_tokens=max_tokens)
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+    text = (text or "").strip()
+    if not text:
+        raise EngineError(f"{client.backend_id} returned an empty completion")
+    return EngineResult(text=text, backend=client.backend_id, model=client.model,
+                        substituted_from=substituted_from)

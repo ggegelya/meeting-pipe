@@ -25,10 +25,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -36,14 +36,12 @@ from typing import Any, Protocol, runtime_checkable
 
 import anthropic
 
-from . import entry, events, storage
+from . import entry, events, providers, storage
 from .chunking import chunked_windows
 from .config import (
     Config,
     anthropic_sampling,
     effective_backend,
-    parse_local_endpoint,
-    require_env,
 )
 from .diarize import cosine_similarity
 from .markdown import render_markdown
@@ -600,54 +598,55 @@ class LocalCleanupClient:
         self._local.close()
 
 
-def _select_cleanup_backend(cfg: Config) -> CleanupClient:
-    """Resolve the cleanup LLM backend.
+class TextCleanupClient:
+    """`CleanupClient` over any free-form `complete` call (PIPE19).
 
-    `regulated_mode` and the Apple Intelligence summary backend both pin
-    the cleanup pass to the on-device MLX path (the Swift Foundation Model
-    only summarizes; cleanup runs in Python and stays local for it).
-
-    `auto` resolves here by key presence alone. Unlike summarize and engine,
-    which share `backend_fallback.run_with_local_fallback`, cleanup does not
-    fall back at call time, and does not need to: `run_all` already treats a
-    cleanup failure as non-fatal and summarizes the un-cleaned transcript, so a
-    retry on a second backend would buy tidier speaker labels at the price of a
-    second model call on an optional polish pass. (Before PIPE7 this docstring
-    claimed to mirror `summarize._select_backend`, which it never did.)
+    The `openai` and `claude_cli` backends have no tool-use or server-side schema
+    forcing, so the schema rides in the system prompt, the way the local path
+    frames it, and the reply goes through the same balanced-object recovery.
+    Before this, cleanup had no path for either backend at all: the selector
+    raised, `run_all` swallowed it, and the Preferences toggle did nothing.
     """
-    # Shared regulated/NDA force-local rule via the single chokepoint
-    # (config.effective_backend, TECH-ARCH1); the apple/auto collapse below is
-    # this site's own (cleanup runs in Python even when the summary is Apple).
+
+    def __init__(self, complete: Callable[..., str], *, max_tokens: int) -> None:
+        self._complete = complete
+        self._max_tokens = max_tokens
+
+    def propose_edits(self, *, window_prompt: str, speakers: list[str]) -> list[SpeakerEdit]:
+        text = self._complete(
+            system_prompt=_cleanup_system_prompt(speakers) + _schema_directive(),
+            user_message=(
+                "Correct the speaker labels for these numbered segments. Reply with ONLY "
+                "the JSON object described above.\n\n" + window_prompt
+            ),
+            max_tokens=self._max_tokens,
+        )
+        return _parse_edits_from_text(text)
+
+
+def _select_cleanup_backend(cfg: Config) -> CleanupClient:
+    """Build the cleanup client for the resolved backend (PIPE19: a lookup in
+    `providers`).
+
+    `regulated_mode` / NDA force the on-device path through the single chokepoint
+    (config.effective_backend, TECH-ARCH1). A row with a `stand_in` runs cleanup on
+    that row instead: Apple Intelligence only summarizes, in Swift, so its cleanup
+    pass runs in Python on the local MLX model and stays on-device.
+
+    `auto` resolves by key presence alone, with no call-time fallback; the reason
+    is at `providers._auto_cleanup`.
+    """
     backend = effective_backend(cfg)
     if backend != cfg.summarization.backend:
         log.info("zero-egress mode active; forcing local cleanup backend (was %s)",
                  cfg.summarization.backend)
-    if backend == "apple_intelligence":
-        log.info("apple_intelligence backend; running cleanup on the local MLX backend")
-        backend = "local"
-    if backend == "auto":
-        backend = "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "local"
-
-    if backend == "local":
-        from .summarize_local import LocalSummaryClient
-
-        host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
-        return LocalCleanupClient(
-            LocalSummaryClient(
-                model=cfg.summarization.local_model, host=host, port=port,
-                # LOCAL16: the configured floor, not the default, so turning the
-                # watchdog down (or off) means the same thing on every local path.
-                memory_floor_pct=cfg.summarization.local_memory_floor_pct,
-            ),
-            max_tokens=cfg.summarization.max_tokens,
-        )
-    if backend == "anthropic":
-        return AnthropicCleanupClient(
-            api_key=require_env("ANTHROPIC_API_KEY"),
-            model=cfg.summarization.model,
-            max_tokens=cfg.summarization.max_tokens,
-        )
-    raise ValueError(f"unknown summarization.backend: {backend!r}")
+    row = providers.lookup(backend)
+    if row.stand_in is not None:
+        log.info("%s backend; running cleanup on the %s backend", backend, row.stand_in)
+        row = providers.lookup(row.stand_in)
+    if row.build_cleanup is None:
+        raise ValueError(f"summarization.backend {backend!r} has no speaker-cleanup path")
+    return row.build_cleanup(cfg)
 
 
 def main(argv: list[str]) -> int:

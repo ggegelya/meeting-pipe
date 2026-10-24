@@ -135,7 +135,7 @@ enum DiarizeCleanup {
         case .onDevice where engine.id == SummarizationEngine.appleIntelligence.id:
             // Apple Intelligence summarizes in the daemon; the cleanup pass runs in
             // Python, which has no Foundation Model path, so it uses the local MLX
-            // model (`_select_cleanup_backend` collapses apple_intelligence to local).
+            // model (its `providers` row names `local` as its stand-in, PIPE19).
             return base + " It runs on the local MLX model: Apple Intelligence "
                 + "summarizes, but does not do this pass."
         case .onDevice:

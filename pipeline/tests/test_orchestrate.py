@@ -696,6 +696,41 @@ def test_diarize_cleanup_skipped_when_disabled(tmp_path: Path, monkeypatch):
     assert cleanup_calls == []
 
 
+def test_diarize_cleanup_failure_emits_stage_failed_and_still_summarizes(
+    tmp_path: Path, monkeypatch
+):
+    """PIPE19: a cleanup exception stays non-fatal but is no longer silent. It
+    used to be one `pipeline.log` warning after a `stage_started` with nothing
+    following it, which is how cleanup never running on openai and claude_cli
+    went unnoticed."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    logs = tmp_path / "logs"
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(logs))
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
+    cfg = Config()
+    cfg.summarization.diarize_cleanup = True
+    summary_json = tmp_path / f"{stem}.summary.json"
+    summary_json.write_text("{}", encoding="utf-8")
+
+    with patch("mp.diarize_cleanup.cleanup_transcript", side_effect=RuntimeError("boom")), \
+         patch("mp.orchestrate.summarize",
+               return_value={"json": summary_json, "md": tmp_path / "x.md"}) as s, \
+         patch("mp.orchestrate.publish_fanout",
+               return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+        run_all(wav, cfg=cfg)
+
+    s.assert_called_once()
+    rows = [json.loads(line) for line in
+            (logs / "pipeline_events.jsonl").read_text(encoding="utf-8").splitlines()]
+    cleanup = [r for r in rows if r.get("stage") == "diarize_cleanup"]
+    assert [r["action"] for r in cleanup] == ["stage_started", "stage_failed"]
+    assert cleanup[1]["error"] == "RuntimeError"
+    assert cleanup[1]["message"] == "boom"
+
+
 def test_apple_intelligence_hands_off_and_writes_sentinel(tmp_path: Path, monkeypatch):
     """apple_intelligence finalizes, writes the sentinel, and stops before
     Python summarize/publish so the daemon can summarize on-device."""

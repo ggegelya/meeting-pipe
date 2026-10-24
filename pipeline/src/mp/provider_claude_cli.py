@@ -65,6 +65,7 @@ class ClaudeCLIClient:
     # The model is whatever the user's Claude Code is configured to use; the run
     # sidecar records this label rather than a specific API model id.
     model = "claude-code"
+    backend_id = "claude_cli"
 
     def __init__(self, *, request_timeout_sec: float = _DEFAULT_TIMEOUT_SEC) -> None:
         self._timeout = request_timeout_sec

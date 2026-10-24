@@ -25,7 +25,7 @@ import time
 from importlib import resources
 from pathlib import Path
 
-from . import entry, storage
+from . import entry, providers, storage
 from .config import Config, effective_backend, extract_backend_flag, with_backend_override
 from .corrections import set_publish_state, write_empty_marker, write_run_sidecar
 from .transcript_quality import transcript_issues
@@ -368,17 +368,16 @@ def _check_byo(wav: Path, t: dict[str, Path], md_text: str, force_byo: bool) -> 
 
 def _will_summarize_locally(cfg: Config) -> bool:
     """Whether this run summarizes on-device, so the long-meeting guard should route
-    rather than bundle (PIPE4). True for ``local`` and ``apple_intelligence``, and for
-    ``auto`` only when no Anthropic key is available (mirroring
-    ``backend_fallback.run_with_local_fallback``'s resolution). ``entry.prepare`` ran
-    before this and loaded secrets, so the env is authoritative. Regulated / NDA already
-    fold to ``local`` in ``effective_backend``."""
-    backend = effective_backend(cfg)
-    if backend in ("local", "apple_intelligence"):
-        return True
-    if backend == "auto":
+    rather than bundle (PIPE4). Read off the backend's `providers` row (PIPE19):
+    ``on_device`` always, ``cloud_then_local`` (``auto``) only when no Anthropic key
+    is available (mirroring ``backend_fallback.run_with_local_fallback``'s
+    resolution), ``cloud`` never. ``entry.prepare`` ran before this and loaded
+    secrets, so the env is authoritative. Regulated / NDA already fold to ``local``
+    in ``effective_backend``."""
+    locality = providers.lookup(effective_backend(cfg)).locality
+    if locality == "cloud_then_local":
         return not os.environ.get("ANTHROPIC_API_KEY")
-    return False
+    return locality == "on_device"
 
 
 def _check_too_long(wav: Path, t: dict[str, Path], md_text: str, cfg: Config) -> dict | None:
@@ -489,7 +488,12 @@ def _run_all_inner(
                         reattributions=cr["reattributions_count"])
             md_text = t["md"].read_text(encoding="utf-8")
         except Exception as e:  # noqa: BLE001
+            # PIPE19: non-fatal, but never silent. This used to be the log line
+            # alone, so a cleanup that raised on every meeting left a
+            # `stage_started` with nothing after it and nothing on screen.
             log.warning("diarize cleanup failed (non-fatal): %s", e)
+            events.emit("pipeline", "stage_failed", stage="diarize_cleanup",
+                        error=type(e).__name__, message=str(e)[:300])
 
     skip = _check_apple_handoff(wav, t, md_text, cfg)
     if skip is not None:

@@ -202,6 +202,7 @@
 | DIST4 | The installed app only works while the git clone stays put, through its resource bundles and through its venv | Distribution | done | P1 | Shipped 2026-10-24. Resource bundles moved to `Contents/Resources` behind `ResourceBundleLocator` (no source file names `Bundle.module`, fenced by `BundleModuleFenceTests`), app signing is one pass, and `MeetingPipe doctor` gained `app.resources`. The venv is a non-editable in-place `uv sync --frozen` (`scripts/lib/pipeline-venv.sh`) from install.sh and rebuild.sh, and `findMP` runs it as `python3 -m mp`. `scripts/test-app-relocation.sh --with-pipeline` green on a release build with `daemon/.build` and the pipeline source both moved; CI runs the Swift half through `ci-local.sh daemon`. 13 new Swift tests. Owner: one `install.sh` or `rebuild.sh` migrates the live install. |
 | DOC16 | The Screen Recording usage string tells the user capture uses the process-tap API and reads no pixels, while capture is a ScreenCaptureKit display stream, and the plist claims macOS 13 against a macOS 14 package | Docs | done | P2 | Shipped 2026-10-24. install.sh's Screen Recording usage string now says capture is ScreenCaptureKit with a two-pixel video stream that is thrown away, and LSMinimumSystemVersion is 14.0. The floor's real reason is stated once in README, ARCHITECTURE, install.sh and Package.swift: FluidAudio declares macOS 14 and the views use the two-parameter `onChange(of:)`; `excludesCurrentProcessAudio` is macOS 13.0 per the SDK, so the old 13.3 and "hard floor" claims were both wrong. `ci-local.sh truth-fences` gained a floor-parity check over Package.swift, the plist and install.sh's version check. Owner: one `install.sh` carries the new plist to the live app (`rebuild.sh` reuses the installed Info.plist). |
 | T7 | The END10 wiring fence skips instead of failing when Coordinator.start() moves, skips pass CI silently, and the watchers have no headless seam | Tests | done | P2 | Shipped 2026-10-24. The wiring fence fails rather than skips when `func start()` moves; `ci-local.sh daemon` fails on any `swift test` skip not in its reasoned `allowed_skips` list (FailureProcessTests allowlisted only while no pipeline venv exists, so CI allowlists it and the local `all` run executes it); discovery, call-teardown and config refresh start through `SessionWatchers.startAll()` with fake-backed tests, shrinking the source fence to that one line; the 27 other source-text test files carry a `T7 source fence` label. [Spec](#done-t7-the-end10-wiring-fence-skips-instead-of-failing-when-coordinatorstart-moves-skips-pass-ci-silently-and-the-watchers-have-no-headless-seam) |
+| PIPE19 | The summarization backend is a string switch in four places, and speaker-label cleanup silently never runs for the openai and claude_cli backends | Pipeline | done | P1 | Shipped 2026-10-24. `providers.py` is the one backend table (locality + summary / text / cleanup builders, `stand_in` for Apple Intelligence); the four dispatch sites are lookups, every client names itself with `backend_id`, `_identify_backend` is gone. Owner picked option (a): cleanup runs on openai (JSON mode) and claude_cli through `TextCleanupClient`, so no Swift sublabel change. A cleanup exception now emits `stage_failed`. |
 
 ## Task specs
 
@@ -5843,3 +5844,65 @@ The wiring under test is small. `Coordinator.start()` calls `discoveryWatcher.st
 - **Labels.** The 27 other files that read `daemon/Sources` text each carry one `/// T7 source fence (deliberate|pins implementation): ... Missing seam: ...` line, grep-able by that prefix. 9 deliberate, 18 pins implementation. In three files the line sits on the source-reading class rather than the file-named one (`DetailTransportWiringTests`, `ExplicitStartWiringFenceTests`, `HUDFlagAcknowledgementFenceTests`). `ConfigStoreTests` reads `pipeline/src/mp/config.py`, a cross-tree read outside the 28, and is unlabelled.
 - **Verification.** `bash scripts/ci-local.sh` green on all four jobs after rebasing onto DOC16: design tokens, truth fences, pipeline (ruff, pyright 0 errors, 1397 pytest), daemon (3008 tests, 0 failures, 1 skip, allowlisted; the CI8 one-thread pool run and the DIST4 relocation smoke green). `FailureProcessTests` ran and passed there, because the pipeline job synced the venv first. Net +3 daemon tests: 4 new in `SessionWatchersTests`, and the wiring fence went from 4 tests to 3.
 - **Docs.** `daemon/docs/gotchas.md` gains "A skip is a pass" and the END9 section names the seam; `daemon/CLAUDE.md` one new rule line (skip allowlist) and the END9 rule gains the `SessionWatchers` clause; `ARCHITECTURE.md` lists `SessionWatchers` under `Coordination/`. `README.md`, `CONVENTIONS.md`, `docs/SETUP.md`, `docs/GUIDE.md` checked, nothing user-visible changed.
+
+# [DONE] PIPE19: the summarization backend is a string switch in four places, and speaker-label cleanup silently never runs for the openai and claude_cli backends
+
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../audits/2026-10-24-architecture-review.md) A6). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](./meetingpipe-q6-backlog.md).
+
+## Context
+
+Re-verified against `main` at `45b8c6a` on 2026-10-24.
+
+**The broken promise.** Preferences ▸ Pipeline ▸ Speaker labels offers **Clean up speaker labels after transcription** on every backend; `DiarizeCleanup.base` in `SpeakerAccuracy.swift` is documented "True on every backend", and for a cloud engine `DiarizeCleanup.sublabel(backendID:)` adds "It follows your summarization backend". For `openai` and `claude_cli` it never runs. `diarize_cleanup._select_cleanup_backend` handles `apple_intelligence` (to local), `auto`, `local` and `anthropic`, then ends `raise ValueError(f"unknown summarization.backend: {backend!r}")`. In `orchestrate.run_all` the stage is wrapped as non-fatal:
+
+```
+events.emit("pipeline", "stage_started", stage="diarize_cleanup")
+try: ... cleanup_transcript(t["json"], cfg=cfg) ...
+except Exception as e:  # noqa: BLE001
+    log.warning("diarize cleanup failed (non-fatal): %s", e)
+```
+
+So every such meeting logs a `stage_started` with no `stage_completed` and no failure event, one warning line in `pipeline.log`, and a summary over the un-cleaned transcript. Nothing on screen says the toggle did nothing. The same holds for a workflow that pins either backend, since the overlay lands in `cfg.summarization.backend` before `effective_backend` reads it.
+
+**The shape that let it happen.** Backend choice is an if/elif over the same backend ids in four places, each with its own subset:
+
+- `summarize._select_backend`: all six (`apple_intelligence` raises, `local`, `anthropic`, `auto`, `claude_cli`, `openai`).
+- `engine.complete_text`: all six (`apple_intelligence` substitutes local, then `local`, `anthropic`, `claude_cli`, `openai`, `auto`).
+- `diarize_cleanup._select_cleanup_backend`: four, as above.
+- `orchestrate._will_summarize_locally`: `local`, `apple_intelligence`, `auto` by key presence.
+
+Then `summarize._identify_backend` recovers which backend answered with an `isinstance` ladder (`_AutoFallbackClient`, `AnthropicSummaryClient`, `ClaudeCLIClient`, `OpenAIClient`, `LocalSummaryClient`, else `"unknown"`). Adding a backend means editing every site, and missing one fails at runtime, sometimes silently.
+
+## Scope
+
+1. **One table.** `pipeline/src/mp/providers.py` keyed by backend id, each row carrying `locality` (`on_device`, `cloud`, `cloud_then_local`), `build_summary(cfg)`, `build_text(cfg)` and `build_cleanup(cfg)` (each may be `None` for "not supported"). `effective_backend` stays the one zero-egress chokepoint and runs before the lookup.
+2. **Route the four sites through it.** `_select_backend`, `complete_text`, `_select_cleanup_backend` and `_will_summarize_locally` become lookups. The `auto` ladder stays in `backend_fallback.run_with_local_fallback`; the table row for `auto` wires it.
+3. **Clients name themselves.** Every summary and text client gets a `backend_id` attribute (`_AutoFallbackClient` reports the one that answered, as `last_used_backend` does today). Delete `_identify_backend`.
+4. **An unsupported pairing fails loudly and early.** For cleanup the owner picks one of two at pickup, recorded in the commit: (a) implement cleanup for `openai` (structured output) and `claude_cli`, or (b) declare them unsupported in the table, emit `stage_skipped` with `reason=unsupported_backend` and the backend id instead of swallowing a `ValueError`, and make the Swift sublabel say "Not available with <engine>" for those engines. Either way, a genuine cleanup exception emits a `stage_failed` event, not only a log line.
+
+## Explicitly not
+
+- The Anthropic client's timeout and retry policy (PIPE24, which can use this table as its home).
+- Splitting `summarize.py` (PIPE21) or making the daemon the only owner of `mlx_lm.server` (LOCAL21). This task changes dispatch only; PIPE21 should land after it.
+- The typed engine on the Swift side (ARCH14). The Swift sublabel change in item 4(b) is a string, not that refactor.
+- Apple Intelligence as a real provider row (ARCH11's follow-on leg). Here it stays "summary produced by the daemon".
+- A `deps` argument for `run_all` (T6). The table is what T6's fake provider will plug into, so name it as the seam.
+
+## Acceptance
+
+- `pipeline/tests/test_providers.py`: every id in `config.BackendName` (via the derived `BACKENDS` set) has a row; each row's `locality` matches what `orchestrate` and the long-meeting guard expect; an unknown id raises at lookup with the id in the message.
+- `test_diarize_cleanup.py`: with `backend = "openai"` and `backend = "claude_cli"`, cleanup either runs against a fake client (option a) or emits `stage_skipped reason=unsupported_backend` (option b). Both fail on the current code, which raises and is swallowed.
+- `test_orchestrate.py`: a cleanup exception emits `stage_failed` with `stage=diarize_cleanup` and the run still summarizes.
+- `test_summarize_backend.py`: the run sidecar's backend comes from `client.backend_id` for all five Python-side backends, with `_identify_backend` gone.
+- Option (b) only: a Swift test that `DiarizeCleanup.sublabel(backendID:)` says the pass is unavailable for `openai` and `claude_cli`.
+- `cd pipeline && uv run --extra dev pytest -q`, `ruff check src tests`, and `pyright` green, new test count in the commit body; `swift test` green if Swift was touched. New event actions are added to `CONVENTIONS.md`'s event table in the same commit and `python3 scripts/truth_fences.py events` stays green.
+- `README.md`'s `summarization.diarize_cleanup` entry and `docs/GUIDE.md` say which engines run the pass.
+
+## Shipped (2026-10-24)
+
+- **Option (a), the owner's pick.** Speaker cleanup runs on `openai` and `claude_cli` through one `diarize_cleanup.TextCleanupClient`: the schema rides in the system prompt (as on the local path) and the reply goes through the same balanced-object recovery. `openai` asks for JSON mode (`OpenAIClient.complete(json_mode=True)`, a new keyword defaulting off); `claude_cli` spawns one `claude -p` per transcript window. No Swift sublabel change was needed, since "It follows your summarization backend" is now true.
+- **One table.** `pipeline/src/mp/providers.py`. Two shapes beyond the spec: rows carry a `stand_in` (Apple Intelligence's text and cleanup paths run on `local`, which replaced both sites' own string compare), and `apple_intelligence`'s `build_summary` raises the old daemon-only message rather than being `None`, so the error stays specific. `test_providers.py` also pins that a stand-in stays on-device.
+- **Clients name themselves.** `backend_id` on `AnthropicSummaryClient`, `AnthropicTextClient`, `LocalSummaryClient`, `OpenAIClient`, `ClaudeCLIClient`, and the new `engine.LocalTextClient` / `engine.AutoTextClient`; `summarize.AutoFallbackClient` (renamed from `_AutoFallbackClient`, since `providers` builds it) reports the rung that answered. `_identify_backend` is deleted; an injected client that names nothing is recorded `"unknown"`, as before.
+- **`stage_failed`.** `run_all`'s cleanup `except` emits `pipeline` / `stage_failed` with `stage`, `error` (type) and `message` (capped at 300). Documented in `CONVENTIONS.md`'s event section.
+- **Verification.** pytest 1426 passed (29 new: `test_providers.py` 17, `test_diarize_cleanup.py` 5, `test_summarize_backend.py` 6, `test_orchestrate.py` 1), ruff and pyright clean, `scripts/ci-local.sh` green. `test_local_client_contract.py`'s `KNOWN_CONSTRUCTORS` now names `providers` instead of `diarize_cleanup`.
+- **Docs.** README's `summarization.diarize_cleanup` entry and `docs/GUIDE.md` name the engines that run the pass; ARCHITECTURE gains a `providers.py` bullet and the long-meeting guard reads the locality; `pipeline/CLAUDE.md` gains a one-line rule linking `pipeline/docs/gotchas.md#a-backend-is-a-row-in-providerspy-not-a-branch`.
