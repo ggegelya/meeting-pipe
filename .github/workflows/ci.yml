@@ -105,72 +105,40 @@ jobs:
   pipeline:
     name: Pipeline (pytest)
     # Pure-Python tests, run on Linux. ASR and diarization are Swift
-    # (FluidAudio); the pipeline only summarizes and publishes. The local
-    # summary backend's heavy dep (mlx-lm) is imported lazily and is
-    # darwin/arm64-only, so Linux CI exercises the renderers, publishers,
-    # and orchestrator without it. We deliberately bypass `uv run` / `uv
-    # sync` and install a pinned light dependency set so CI does not
-    # resolve the full project tree on every run.
+    # (FluidAudio); the pipeline only summarizes and publishes.
+    #
+    # Installs from uv.lock, exactly what the local `uv run` commands use (CI8).
+    # It used to install a hand-written list of floor-only ranges, which floated
+    # onto anthropic 2.x (built on httpx2) and kept this job red from 2026-08-20
+    # while every local run, resolving from the lock, stayed green. The lock is
+    # universal: the darwin/arm64-only mlx stack carries platform markers, so
+    # Linux skips it without resolving anything. ruff and pyright come from the
+    # lock too, so a linter upgrade is a deliberate `uv lock` bump.
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: pipeline
+    env:
+      # The runner's system Python is newer than 3.11 and inside requires-python,
+      # so without this uv would pick it rather than the interpreter the lock and
+      # pyright's pythonVersion assume.
+      UV_PYTHON: "3.11"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-      - name: Set up Python
-        run: uv python install 3.11
-
-      - name: Install dev deps + editable package (no project deps)
-        # The two linters are pinned to the exact versions uv.lock resolves, so
-        # this job and the local `uv run` ruff/pyright commands in
-        # CLAUDE.md run identical tooling. They were ranges (`ruff>=0.5.0`,
-        # `pyright>=1.1.400`), which meant CI floated to latest while the lock
-        # held a older version: ruff 0.16.0 shipped a wider default rule set and
-        # turned CI red with no repo change, and pyright can do the same with a
-        # new check. Upgrading a linter is now a deliberate commit that bumps
-        # both the lock and this pin, and lands its findings under review.
-        # The runtime deps stay ranges on purpose; they are exercised by the
-        # tests, not enforcing style on unrelated code.
-        # `mcp` is AUTO3's optional extra, listed here anyway: unlike the mlx
-        # pair it is pure-Python and installs on Linux, so there is no reason for
-        # `mp mcp-serve`'s transport wiring to be the one surface CI cannot
-        # exercise. Its tests skip when it is absent, so dropping this line
-        # degrades coverage rather than turning the job red.
-        run: |
-          uv venv --python 3.11
-          uv pip install \
-            "anthropic>=0.40.0" \
-            "httpx>=0.27.0" \
-            "pydantic>=2.7.0" \
-            "tenacity>=8.2.0" \
-            "numpy>=1.26" \
-            "soundfile>=0.12.1" \
-            "mcp>=1.29,<2" \
-            "pytest>=8.0.0" \
-            "ruff==0.15.12" \
-            "pyright==1.1.411"
-          uv pip install -e . --no-deps
-
+      - name: Install from the lock
+        run: uv sync --frozen --extra dev --extra mcp
       - name: Lint
-        # Use the venv binary directly: `uv run` would trigger `uv sync`
-        # and resolve the full project tree, including mlx-lm.
-        run: .venv/bin/ruff check src tests
-
+        run: uv run --frozen --extra dev --extra mcp ruff check src tests
       - name: Typecheck
-        # TYPE1: pyright basic over src/. Resolves imports against .venv via
-        # `[tool.pyright] venvPath`, so the light dep set above is what it sees;
-        # the three darwin-only imports absent here (mlx_embeddings, mlx.core,
-        # huggingface_hub) are suppressed at their lazy import sites.
-        run: .venv/bin/pyright
-
+        # TYPE1: pyright basic over src/. The three darwin-only imports absent on
+        # Linux (mlx_embeddings, mlx.core, huggingface_hub) are suppressed at their
+        # lazy import sites.
+        run: uv run --frozen --extra dev --extra mcp pyright
       - name: Test
-        # All tests run against the pinned light dependency set. The
-        # mlx-lm import in summarize_local.py is lazy, and its tests stub
-        # the server, so CI never needs the heavy local-model dep.
-        run: .venv/bin/pytest -v
+        run: uv run --frozen --extra dev --extra mcp pytest -v
 
   daemon:
     name: Daemon (swift build + test)

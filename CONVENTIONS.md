@@ -173,7 +173,7 @@ def summarize(self, transcript: str) -> MeetingSummary:
     ...
 ```
 
-Why: `mp --help` and `mp logs` shouldn't pay an import cost they do not need. Linux CI installs only a light dep set and bypasses `uv sync`, relying on these lazy boundaries to not blow up.
+Why: `mp --help` and `mp logs` shouldn't pay an import cost they do not need. The Linux CI runner never installs the darwin/arm64-only mlx stack (platform markers in `uv.lock`), so a top-level `mlx_lm` import would fail there at collection time.
 
 ### Subcommand pattern
 

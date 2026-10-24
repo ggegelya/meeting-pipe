@@ -20,7 +20,7 @@ Daemon-side resolution now prefers an embedded runtime, so a bundled app is actu
 
 - `PipelineLauncher.findMP` gained a first tier: if `Contents/Resources/pipeline-runtime/bin/python3` exists, run `python3 -m mp`. It wins over the dev-machine venv, the uv-walk, and PATH. Extracted into a pure, injected `resolveDirectMP` and unit-tested (`PipelineLauncherFindMPTests`) so the priority is pinned without a real bundle.
 - `MeetingRecorder.findFFmpeg` gained the embedded `pipeline-runtime/bin/ffmpeg` as a fallback (after `MEETINGPIPE_FFMPEG` and PATH, so a machine with its own ffmpeg still uses that; the bundled one is the clean-Mac safety net). This covers both the recorder merge and `MuteRedactor`, which share `findFFmpeg`.
-- `scripts/bundle-runtime.sh`: the build tool. Fetches the relocatable Python, `pip install`s the pipeline into it, verifies `python3 -m mp --version`, optionally installs a static ffmpeg, signs every embedded mach-O inside-out, and prints the owner-owed notarize/DMG/verify steps.
+- `scripts/bundle-runtime.sh`: the build tool. Fetches the relocatable Python, installs the locked dependency set into it (`uv export --frozen`, hash-checked, CI8) and then the pipeline with `--no-deps`, verifies `python3 -m mp --version`, optionally installs a static ffmpeg, signs every embedded mach-O inside-out, and prints the owner-owed notarize/DMG/verify steps.
 
 ## The gotchas (each is handled, or flagged)
 

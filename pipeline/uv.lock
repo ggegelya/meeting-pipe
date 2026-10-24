@@ -648,11 +648,11 @@ mcp = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=0.40.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "anthropic", specifier = ">=0.40.0,<1" },
+    { name = "httpx", specifier = ">=0.27.0,<1" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.29,<2" },
     { name = "mlx-embeddings", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.0.3" },
-    { name = "mlx-lm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.20" },
+    { name = "mlx-lm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.20,<0.32" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pydantic", specifier = ">=2.7.0" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.400" },

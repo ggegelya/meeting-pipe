@@ -65,11 +65,22 @@ cp -R "$WORK/python/." "$RUNTIME_DIR/"
 
 # --- 2. install the pipeline into the embedded interpreter ------------------
 step "Installing the pipeline (mp) + deps into the embedded runtime"
+# CI8: the dependencies come from uv.lock, hash-checked, never from a fresh
+# resolve. `pip install <repo>/pipeline` resolved pyproject's ranges on the day
+# of the build, which on 2026-10-21 meant anthropic 2.x: an SDK the code had
+# never been tested against, built on httpx2, which egress_guard does not patch.
+# The package itself then goes in with --no-deps, so pip cannot add anything
+# the lock did not name. `--extra mcp` matches what install.sh syncs.
 # --no-warn-script-location: we invoke `python3 -m mp`, never the bin/mp console
 # script, precisely because pip bakes an absolute shebang into console scripts
 # and this bundle gets relocated to the user's /Applications (DIST1 / findMP).
+command -v uv >/dev/null 2>&1 \
+    || die "uv not found; it exports the locked dependency set (install it with 'brew install uv', or run scripts/install.sh first)"
+(cd "$REPO_ROOT/pipeline" && uv export --frozen --no-dev --extra mcp --no-emit-project) \
+    > "$WORK/requirements.txt" || die "uv export failed; is pipeline/uv.lock in sync with pyproject.toml? (cd pipeline && uv lock --check)"
 "$RUNTIME_DIR/bin/python3" -m pip install --upgrade pip >/dev/null
-"$RUNTIME_DIR/bin/python3" -m pip install --no-warn-script-location "$REPO_ROOT/pipeline"
+"$RUNTIME_DIR/bin/python3" -m pip install --no-warn-script-location --require-hashes -r "$WORK/requirements.txt"
+"$RUNTIME_DIR/bin/python3" -m pip install --no-warn-script-location --no-deps "$REPO_ROOT/pipeline"
 step "Verifying mp runs from the embedded runtime"
 "$RUNTIME_DIR/bin/python3" -m mp --version || die "embedded mp does not run"
 

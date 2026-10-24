@@ -12,8 +12,14 @@ license = { text = "MIT" }
 authors = [{ name = "meeting-pipe contributors" }]
 
 dependencies = [
-    "anthropic>=0.40.0",
-    "httpx>=0.27.0",
+    # CI8: capped, not floor-only. anthropic 1.0.0 (2026-08-20) swapped httpx for
+    # httpx2, and `egress_guard` patches httpx's transports and nothing else, so an
+    # SDK on httpx2 sends around the regulated-mode firewall. Lifting this cap means
+    # teaching the guard httpx2 first, and a fence in tests/test_egress_guard.py
+    # fails if a resolve ever crosses it. httpx is capped with it for the same
+    # reason: the guard is written against its 0.x transport classes.
+    "anthropic>=0.40.0,<1",
+    "httpx>=0.27.0,<1",
     "pydantic>=2.7.0",
     # ASR + diarization run in Swift (FluidAudio: Parakeet TDT + pyannote
     # on the Apple Neural Engine). The Python pipeline only summarizes
@@ -22,7 +28,9 @@ dependencies = [
     # Local-LLM summarization. LocalSummaryClient lazy-spawns mlx_lm.server
     # when summarization.backend = "local" or "auto". Apple Silicon only;
     # fall back to backend="anthropic" elsewhere.
-    "mlx-lm>=0.20; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    # Capped at the next minor (CI8): mlx-lm moves its server's behaviour on minor
+    # releases, so an upgrade is a deliberate lock bump, not something a resolve does.
+    "mlx-lm>=0.20,<0.32; sys_platform == 'darwin' and platform_machine == 'arm64'",
     # On-device sentence embeddings for the library index (AI2 spike / AI3
     # retrieval). multilingual-e5 on MLX; en/uk. Same darwin/arm64 marker and
     # lazy-import discipline as mlx-lm (embed_index.MLXEmbedder); CI never
@@ -106,9 +114,9 @@ select = ["E4", "E7", "E9", "F"]
 # TYPE1. Basic mode over src/ only: tests/ is full of deliberately-partial fakes
 # and would need its own pass. Ratcheting to strict is a later decision.
 #
-# CI installs a light dependency set (no mlx-lm / mlx-embeddings: darwin/arm64
-# wheels only, and no huggingface_hub, which rides in with them), so those three
-# imports would be unresolved there. They are suppressed at their (lazy) import
+# The Linux CI runner never installs the darwin/arm64-only mlx stack (mlx-lm /
+# mlx-embeddings carry platform markers, and huggingface_hub rides in with them),
+# so those three imports would be unresolved there. They are suppressed at their (lazy) import
 # sites with `# pyright: ignore[reportMissingImports]` rather than globally, so a
 # genuine typo in any other import still fails the build.
 [tool.pyright]

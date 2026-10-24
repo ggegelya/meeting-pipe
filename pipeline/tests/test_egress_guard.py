@@ -162,3 +162,38 @@ def test_load_secrets_declines_to_refill_when_armed(monkeypatch: pytest.MonkeyPa
     egress_guard.arm("test")
     load_secrets(reader=lambda key: pytest.fail("keychain read under a zero-egress run"))
     assert "NOTION_TOKEN" not in os.environ
+
+
+def test_the_anthropic_sdk_still_sends_through_the_patched_httpx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CI8: the guard patches `httpx`'s transports and nothing else, so it covers the
+    Anthropic SDK only while the SDK speaks `httpx`. `anthropic` 1.0.0 (2026-08-20)
+    moved to `httpx2`, which this guard never sees, and that is why pyproject caps it
+    `<1`. If a lock refresh ever crosses that line, this fails here instead of a
+    regulated-mode run sending a transcript around the firewall.
+
+    The type check comes first on purpose: on an `httpx2` SDK the request below would
+    leave the machine, so the test must stop before it gets there.
+    """
+    import anthropic
+
+    client = anthropic.Anthropic(api_key="test", max_retries=0)
+    assert isinstance(client._client, httpx.Client), (
+        f"the Anthropic SDK's HTTP client is {type(client._client).__mro__}, not httpx.Client; "
+        "egress_guard does not patch it (see the anthropic cap in pipeline/pyproject.toml)"
+    )
+
+    egress_guard.arm("test")
+    monkeypatch.setattr(egress_guard, "_orig_sync",
+                        lambda s, r: pytest.fail("Anthropic egress reached the transport"))
+    with pytest.raises(Exception) as raised:
+        client.messages.create(
+            model="claude-test", max_tokens=1, messages=[{"role": "user", "content": "x"}]
+        )
+    chain: list[BaseException] = []
+    err: BaseException | None = raised.value
+    while err is not None:
+        chain.append(err)
+        err = err.__cause__ or err.__context__
+    assert any(isinstance(e, EgressBlocked) for e in chain), chain
