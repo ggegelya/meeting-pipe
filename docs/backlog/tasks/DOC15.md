@@ -74,3 +74,39 @@ This task is closable without the owner, and the spec says so rather than invent
 1. [session] Do steps 1 and 2, then state which move was taken and why the other two were not.
 2. [owner] Only if the answer is a further subtree split: confirm that a fourth always-loaded file is wanted, since each one is a file every session in its directory pays for. A no here means the answer is the first two moves and a smaller file.
 3. [owner] Say "DOC15 good to close" (or what is wrong); [session] moves the row and this spec into `q6-final.md` and deletes this file.
+
+## Amended 2026-10-24 (audit band)
+
+Reopened from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) H1, [AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) defects list and the "Not skills" note under proposal B). The 2026-08-19 ship stands as recorded in the ToC row; what follows is new scope, and the "only the close word is outstanding" state no longer holds.
+
+### The file re-accreted
+
+| Point | Bytes | Rules (lines starting `- `) |
+|---|---|---|
+| DOC15 ship, 2026-08-19 | 18,400 | 55 |
+| `45b8c6a`, 2026-10-24 | 22,440 | 63 |
+
+That is 4,040 bytes and 8 rules in two months, from 10 commits: END9 to END14, REC16, REC17, CI8 and DIST4. The growth is lifecycle and capture rules, which is the scenario the "re-derive the rule set" move was warned about: it was the cheapest move and the one that quietly re-accretes. The file now has 1,560 bytes of headroom under `CLAUDE_MAX_BYTES`.
+
+### The entry fence has a gap
+
+`check_claude`'s `offenders` measures only lines that start with `- ` or `| ` ("if not (line.startswith("- ") or line.startswith("| ")): continue"). A plain paragraph is never measured, so the 800-byte rule-versus-story line does not apply to it. On 2026-10-24 four prose paragraphs exceed 800 bytes and pass:
+
+- root `CLAUDE.md`, the backlog paragraph under "Orientation" ("The active backlog lives in ..."): 1,341 B;
+- root `CLAUDE.md`, "Learning to use it is the same carve-out" (DOC11): 1,012 B;
+- root `CLAUDE.md`, "Exactly one interactive tour is carved out" (FEAT15): 959 B;
+- `pipeline/CLAUDE.md`, "A second Swift-to-Python surface: `mp.speaker_overlay` ...": 803 B.
+
+### Added scope
+
+1. **Close the fence gap.** `offenders` measures every prose line: anything not blank, not a heading, and not inside a fenced code block, at the same `CLAUDE_MAX_ENTRY_BYTES`. Then bring the four paragraphs under it: the two FEAT15 carve-out paragraphs move to `PRODUCT.md` (or `daemon/docs/gotchas.md`, beside the tour section they already link) leaving one rule line in the root file; the DOC11 paragraph and the backlog paragraph split into rule lines with the narrative moved out; the `speaker_overlay` paragraph loses its last few bytes of narration.
+2. **Move rules to where their types live.** The rules that name `MeetingPipeCore` types (`CallTeardownOracle`'s cap, `PromotionEngine`'s live veto, the SlimCore mute-log rule) move to `daemon/Sources/MeetingPipeCore/CLAUDE.md` (3,218 B), which loads only for sessions in that target. The pickup checks each rule's subject before moving it; a rule about `MeetingSessionController` stays.
+3. **The UI cluster wants a nested file, and that now hits this spec's owner gate.** The window, view, scroll, layout, pasteboard and tutorial rules (from "Don't let a window that holds user-authored text" through "Don't rename or remove a control the tutorial rings", about 6.5 KB on 2026-10-24) are the harness audit's and the architecture review's candidate for a nested `CLAUDE.md`. Two constraints: it is the fourth always-loaded file walkthrough step 2 reserves for the owner, so the owner answers that first; and the views are flat, with 25 `*View`/`*Window` files directly in `daemon/Sources/MeetingPipe/`, so a nested file has no directory to sit in until [ARCH13](./ARCH13.md)'s move-only commit creates feature folders. If the owner says yes, this item lands after ARCH13; items 1 and 2 do not wait for it.
+
+### Added acceptance
+
+- A test beside [`test_link_fence.py`](../../../pipeline/tests/test_link_fence.py): a 900-byte prose paragraph in a scratch `CLAUDE.md` fails the fence; a 900-byte line inside a fenced code block does not; a heading does not.
+- `python3 scripts/truth_fences.py claude` green with every prose line in all `CLAUDE.md` files at most 800 B.
+- `wc -c daemon/CLAUDE.md` back at or under 18,513 bytes, the original bar, with the byte and rule counts in the ship note.
+- Every moved rule still resolves its `gotchas.md` anchor from its new depth.
+- Interacts with [DOC18](./DOC18.md), whose precedence paragraph must fit the same 800-byte prose limit, and with [HYG10](./HYG10.md), which rewrites the `@unchecked Sendable` rule in both `daemon/CLAUDE.md` and `MeetingPipeCore/CLAUDE.md`.

@@ -1,0 +1,33 @@
+# DIAR6: the owner's name is stamped on a whole diarizer cluster with no per-segment channel check, and ASR and diarization run on an unnormalized (L+R)/2 mixdown, so a quiet mic merges remote speech into "me"
+
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-3, FQ-8, and its "Improving transcription and people identification" item 1, first half). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+
+## Context
+
+The go-live assessment measured, on the Mac it ran on, the owner's own segments at about -61 dBFS in the October recordings against about -20 dBFS in September, with remote speech at about -15 dBFS, and found 30 to 39 percent of the "me" cluster's duration in two October meetings was system-channel speech. It flagged that the mic level may be that Mac's built-in mic; the mechanism below holds regardless of why a mic is quiet. Verified in code on 2026-10-24:
+
+1. **The mixdown is a plain average.** `FluidAudioRunner.readMonoFloat32` calls `FluidAudioRunner.mixDownToMono`, which sums every channel times `1.0 / Float(channelCount)`. The recording is stereo (mic left, system right, ADR 0009), and the comment beside it explains why the mixdown is explicit (AVAudioConverter can drop the right channel). Nothing equalizes the two channels first, so a mic 40 dB below the far side contributes almost nothing to the mono both Parakeet and the diarizer hear. The owner's voice becomes the hardest one in the meeting to transcribe and to separate, and its embedding is computed from the weakest signal.
+2. **The owner is chosen per cluster, then labelled per cluster.** `diarize.identify_user_speaker` runs `assign_speakers_by_channel` (per-segment RMS, `dominance_ratio = 1.5`) and picks the diarized speaker whose speech time is at least `min_fraction = 0.6` on the mic channel. `resolve_speaker_labels` then sets `mapping[me] = label`, and `apply_speaker_labels` relabels every segment of that cluster. By construction up to 40 percent of a cluster's time can be system-dominant and still all carry the owner's name. Nothing re-checks a segment's channel after the cluster is chosen. The same whole-cluster stamp applies when `me` comes from the voiceprint (`voiceprint_me`) on a stereo recording.
+3. **The consequence is a confident wrong name.** On a headphone call the system channel cannot carry the owner's own voice, so a strongly system-dominant segment inside the "me" cluster is a remote participant's speech published under the owner's name, into attendees and action owners. It also feeds the owner's voiceprint: `_me_signals` enrols `speaker_embeddings[mic_me]`, the cluster mean, merged remote speech included.
+
+## Scope
+
+1. **Per-segment veto on the owner's label (small, Python).** After the owner's cluster is chosen, a segment of it whose window is strongly system-dominant does not take the owner's label. Preferred landing label: the existing `speaker_unknown` catch-all ("speech credited to nobody", never auto-named, never enrolled, reassignable from the line menu), which is honest about what is known. The dominance bar for the veto is stricter than `assign_speakers_by_channel`'s 1.5 (it must survive overlap and a talker on loudspeakers), measured against the owner's hand-corrected meetings and documented beside the constant. The seam is `resolve_speaker_labels` / `apply_speaker_labels` plus the per-segment RMS `assign_speakers_by_channel` already computes; mono recordings are untouched.
+2. **Per-channel gain normalization before the mixdown (Swift).** In `FluidAudioRunner.readMonoFloat32`, scale each channel toward a common level computed over its voiced frames before averaging, with a gain ceiling so a dead or near-silent mic (the MIC15 `MicCoverageWarning` case, under -65 dBFS) is not amplified into noise, and zero-filled redaction spans (ADR 0016) excluded from the level estimate. The on-disk WAV is never modified, as today.
+
+Leg 2 changes what the diarizer and the embedder see, so it is a calibration change and lands only on measurement: DIAR2's 0.55 threshold and every enrolled voiceprint were computed on the unnormalized mix. Before and after, run `scripts/valid1_check.py --der --reviewed <stems>` over the owner's fully reviewed meetings and, once [ASR4](./ASR4.md) exists, its WER mode. Land leg 2 only if misattribution does not rise and the owner's-speech WER does not regress; record both numbers in the commit body. If voiceprints compare differently after leg 2 (the risk DIAR4 ([spike](../../spikes/diar4-offline-diarizer-migration.md))'s NO-GO named for a model swap), say so and decide with the owner whether a re-enrol is owed.
+
+## Explicitly not
+
+- Diarizing the system channel alone and attributing mic-dominant speech to the owner (the go-live's "then L" half). That is a pipeline restructure; file it only if legs 1 and 2 measure short.
+- A "your mic is very quiet" warning. Real and cheap, but a second tier of MIC15's `MicCoverageWarning` rather than a diarization change; unfiled here, noted so it is not lost.
+- Changing who is identified as the owner (`_resolve_me_id` precedence, the 0.6 fraction). This task changes which segments carry the name, not which cluster is the owner.
+- Word-level speaker assignment ([DIAR7](./DIAR7.md)), the empty-`user_label` case ([UX83](./UX83.md)), and the off-the-record filter silencing only the mic channel ([SEC16](./SEC16.md)). Leg 2 must not make SEC16 worse: a zero-filled mic span stays zero after scaling.
+
+## Acceptance
+
+- `pipeline` tests over synthetic stereo WAVs: a "me" cluster with one strongly system-dominant segment keeps the owner's label on its mic segments and moves that one to `speaker_unknown`; an overlap segment under the bar keeps the label; a mono recording is unchanged; the voiceprint enrolment input is unchanged by leg 1 (it reads the cluster embedding, which leg 1 does not touch).
+- `daemon` tests: `mixDownToMono` (or its normalized successor) brings a -60 dBFS left and a -15 dBFS right to comparable levels; a silent left channel is not amplified past the ceiling; a zero-filled span stays zero. The existing (L+R)/2 tests are updated deliberately, not deleted.
+- A leg 1 test fails without the change (today the dominated segment carries the owner's name).
+- `cd pipeline && uv run --extra dev ruff check src tests`, `pyright`, `pytest -q` green; `cd daemon && swift build` and `swift test` green; new test counts in the commit bodies.
+- Leg 2's before and after `--der --reviewed` figures (and ASR4 WER when available) in its commit body.
