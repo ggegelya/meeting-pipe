@@ -1412,10 +1412,11 @@ final class MeetingRecorder {
         // thread already stopped), and that ordering is worth more than sharing a
         // helper. A wedged engine ends recovery the same way a timed-out restart
         // does below: mic capture stops, system audio keeps recording.
-        let engineStopped = await runWithTimeout(seconds: EngineTeardown.defaultBudgetSeconds) { [engine] in
+        // Blocking calls, so `runBlockingWithTimeout` rather than the `Task` form (CI8).
+        let engineStopped = await runBlockingWithTimeout(seconds: EngineTeardown.defaultBudgetSeconds) { [engine] in
             engine.stop()
         }
-        let tapRemoved = await runWithTimeout(seconds: EngineTeardown.defaultBudgetSeconds) { [engine] in
+        let tapRemoved = await runBlockingWithTimeout(seconds: EngineTeardown.defaultBudgetSeconds) { [engine] in
             engine.inputNode.removeTap(onBus: 0)
         }
         if !(engineStopped && tapRemoved) {

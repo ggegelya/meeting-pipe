@@ -172,3 +172,8 @@ jobs:
         # (NSWorkspace observers, AVCaptureDevice KVO) still require a real
         # desktop session and aren't run in CI.
         run: swift test
+      - name: Engine bounds under a one-thread cooperative pool (CI8)
+        # A blocking call parked on the cooperative pool starves the deadline meant
+        # to abandon it, and how badly depends on the core count. One pool thread
+        # makes that deterministic.
+        run: LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 swift test --filter 'EngineTeardownTests|BoundedEngineStartTests|RunWithTimeoutTests'

@@ -19,14 +19,15 @@ enum EngineStartOutcome: Equatable {
 /// for ~42 s on the main thread, freezing the whole app ("Record did nothing").
 ///
 /// Pulled out of `MeetingRecorder` so the timeout / throw / success branching is
-/// unit testable without a real wedged audio device. Wraps `runWithTimeout`,
-/// which already implements abandon-on-timeout (see RunWithTimeout.swift).
+/// unit testable without a real wedged audio device. Wraps `runBlockingWithTimeout`,
+/// which implements abandon-on-timeout off the cooperative pool (see
+/// RunWithTimeout.swift; the `Task` form starved its own deadline, CI8).
 func boundedEngineStart(
     seconds: Double,
     _ startEngine: @escaping @Sendable () throws -> Void
 ) async -> EngineStartOutcome {
     let outcome = OSAllocatedUnfairLock<EngineStartOutcome?>(initialState: nil)
-    let finished = await runWithTimeout(seconds: seconds) {
+    let finished = await runBlockingWithTimeout(seconds: seconds) {
         do {
             try startEngine()
             outcome.withLock { $0 = .started }
@@ -34,11 +35,10 @@ func boundedEngineStart(
             outcome.withLock { $0 = .failed(error.localizedDescription) }
         }
     }
-    // `finished == false` is the timeout: runWithTimeout resumed on the timer,
-    // not the operation, so the start is still running (abandoned).
+    // `finished == false` is the timeout: the semaphore wait expired before the
+    // start returned, so the start is still running (abandoned).
     if !finished { return .timedOut }
-    // `finished == true` means the operation finished `await`-ing before it
-    // resumed the continuation, so `outcome` was written first. Default
-    // defensively if it is somehow unset.
+    // `finished == true` means the start returned and signalled the semaphore,
+    // so `outcome` was written first. Default defensively if it is somehow unset.
     return outcome.withLock { $0 } ?? .timedOut
 }

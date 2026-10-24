@@ -83,18 +83,21 @@ enum EngineTeardown {
 
     /// Asynchronous form, for the `@MainActor async` paths (`stop()` and
     /// `recoverCapture`). Every wait is a suspension, so the UI stays live for the
-    /// whole budget instead of freezing on it.
+    /// whole budget instead of freezing on it. Each step is a blocking call, so it goes
+    /// through `runBlockingWithTimeout`, never `runWithTimeout`: the `Task` form parks a
+    /// wedged step on the cooperative pool, and three of them starved the deadline on
+    /// the 3-core CI runner (CI8).
     static func run(
         budgetSeconds: Double = defaultBudgetSeconds,
         removeTap: @escaping @Sendable () -> Void,
         stop: @escaping @Sendable () -> Void,
         revertVoiceProcessing: (@Sendable () -> Void)?
     ) async -> EngineTeardownOutcome {
-        let removedTap = await runWithTimeout(seconds: budgetSeconds) { removeTap() }
-        let stopped = await runWithTimeout(seconds: budgetSeconds) { stop() }
+        let removedTap = await runBlockingWithTimeout(seconds: budgetSeconds, removeTap)
+        let stopped = await runBlockingWithTimeout(seconds: budgetSeconds, stop)
         var reverted = true
         if let revertVoiceProcessing {
-            reverted = await runWithTimeout(seconds: budgetSeconds) { revertVoiceProcessing() }
+            reverted = await runBlockingWithTimeout(seconds: budgetSeconds, revertVoiceProcessing)
         }
         return EngineTeardownOutcome(
             removedTap: removedTap, stopped: stopped, revertedVoiceProcessing: reverted
