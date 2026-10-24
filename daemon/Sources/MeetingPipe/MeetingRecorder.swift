@@ -2048,25 +2048,41 @@ final class MeetingRecorder {
         // so it writes nothing. Skipped when no final was produced.
         muteTimeline.finalize()
         let hasFinal = FileManager.default.fileExists(atPath: final.path)
+        // SEC16: only a timeline that landed is logged as written. A failed write keeps the
+        // capture-mode marker below, so the redactor sees a redaction-opt-in recording with no
+        // timeline and fails closed instead of reading it as one with nothing to cut.
+        var timelineWriteFailed = false
         if captureMode == .captureFirstRedact, hasFinal {
-            MuteTimelineFile.write(spans: muteTimeline.spans, forFinal: final)
-            Log.event(category: "recorder", action: "mute_timeline_written", attributes: [
-                "file": final.lastPathComponent,
-                "muted_spans": muteTimeline.spans.count,
-            ])
+            if MuteTimelineFile.write(spans: muteTimeline.spans, forFinal: final) {
+                Log.event(category: "recorder", action: "mute_timeline_written", attributes: [
+                    "file": final.lastPathComponent,
+                    "muted_spans": muteTimeline.spans.count,
+                ])
+            } else {
+                timelineWriteFailed = true
+            }
         } else if captureMode == .captureFirst, hasFinal, muteTimeline.hasManualSpan {
             let manualSpans = muteTimeline.spans.filter { $0.source == .manual }
-            MuteTimelineFile.write(spans: manualSpans, forFinal: final)
-            Log.event(category: "recorder", action: "mute_timeline_written", attributes: [
+            if MuteTimelineFile.write(spans: manualSpans, forFinal: final) {
+                Log.event(category: "recorder", action: "mute_timeline_written", attributes: [
+                    "file": final.lastPathComponent,
+                    "manual_spans": manualSpans.count,
+                    "source": "manual",
+                ])
+            } else {
+                timelineWriteFailed = true
+            }
+        }
+        if timelineWriteFailed {
+            Log.event(category: "recorder", action: "mute_timeline_write_failed", attributes: [
                 "file": final.lastPathComponent,
-                "manual_spans": manualSpans.count,
-                "source": "manual",
             ])
         }
         // Clean finish only: drop the start-time capture-mode marker (orphan
         // recovery needs it to quarantine a redaction-opt-in recording whose
-        // merge failed, so keep it when no usable final was produced).
-        if producedUsableFinal {
+        // merge failed, so keep it when no usable final was produced, and the
+        // redactor needs it when the timeline write failed, SEC16).
+        if producedUsableFinal, !timelineWriteFailed {
             try? FileManager.default.removeItem(
                 at: final.deletingPathExtension().appendingPathExtension("capturemode")
             )

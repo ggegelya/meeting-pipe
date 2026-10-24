@@ -16,6 +16,35 @@ import Foundation
 /// destroys, and the full original is always restorable.
 enum MuteRedactor {
 
+    /// What `redactIfNeeded` did (SEC16). It used to answer a bare `Bool`, the same `false` for
+    /// "nothing to cut" and for every failure, and its one caller discarded it, so a missing
+    /// ffmpeg or a corrupt timeline transcribed and published the uncut recording. `.failed` is
+    /// the caller's cue to hold the meeting back instead.
+    enum Outcome: Equatable {
+        /// No timeline and no evidence one was owed, nothing muted, or every auto span withheld
+        /// by the MIC12 speech guard: the WAV is safe to consume as it is.
+        case notNeeded
+        /// The canonical WAV is now the redacted artifact (this pass or an earlier one).
+        case redacted
+        /// Redaction was owed and did not happen; the WAV on disk may hold the uncut audio.
+        case failed(FailureReason)
+    }
+
+    /// Why a redaction that was owed did not happen. The raw value is the `reason` attribute of
+    /// `mute_redaction_failed` and the token in the held-back row's failure sidecar.
+    enum FailureReason: String, Equatable {
+        /// A `<stem>.mute-timeline.json` exists but does not decode.
+        case timelineUnreadable = "timeline_unreadable"
+        /// No timeline, but a start-time marker says one was owed: the MIC14 `.offrecord` marker,
+        /// or a `.capturemode` marker for a redaction-opt-in recording (both kept until the
+        /// timeline write lands).
+        case timelineMissing = "timeline_missing"
+        case ffmpegMissing = "ffmpeg_missing"
+        case ffmpegFailed = "ffmpeg_failed"
+        case moveAsideFailed = "move_aside_failed"
+        case promoteFailed = "promote_failed"
+    }
+
     /// Mean mic level (dBFS) at or below which a muted span is judged genuinely
     /// quiet and safe to redact; above it the span carries speech, so the mute
     /// oracle was wrong for that span and it is withheld rather than zeroed (never
@@ -77,25 +106,48 @@ enum MuteRedactor {
 
     /// Redact `wav` in place if a non-empty mute timeline exists for it. Moves the
     /// full recording to the originals directory and replaces `wav` with the
-    /// redacted artifact. No-op (returns false) when there is no timeline (a
-    /// regulated/NDA recording, an orphan recovered without a stop, or a
-    /// pre-MIC4 file) or nothing was muted. On any failure the full `wav` is left
-    /// intact (recoverable, never destroyed) and false is returned.
-    @discardableResult
-    static func redactIfNeeded(wav: URL, originalsDir: URL? = nil) async -> Bool {
-        guard let timeline = MuteTimelineFile.read(forFinal: wav), !timeline.spans.isEmpty else {
-            return false
+    /// redacted artifact. `.notNeeded` when there is no timeline and nothing on disk
+    /// says one was owed (a regulated/NDA recording, a default capture-first
+    /// recording with no off-the-record span, or a pre-MIC4 file), or nothing was
+    /// muted. Every other way of not redacting is `.failed` (SEC16), and the full
+    /// `wav` is left intact (recoverable, never destroyed).
+    static func redactIfNeeded(
+        wav: URL,
+        originalsDir: URL? = nil,
+        findFFmpeg: () -> String? = RecordingPostProcessor.findFFmpeg
+    ) async -> Outcome {
+        let timeline: MuteTimelineFile
+        switch MuteTimelineFile.load(forFinal: wav) {
+        case .loaded(let file):
+            timeline = file
+        case .unreadable:
+            return fail(.timelineUnreadable, wav: wav, mutedSpans: nil)
+        case .missing:
+            // SEC16: a failed timeline write used to read exactly like "no timeline", and the
+            // markers that said otherwise were already gone. Both now survive until a timeline
+            // lands (the recorder keeps `.capturemode`, the job removes `.offrecord` only after
+            // this returns), so either one here means the spans were lost.
+            if OffRecordMarker.exists(forFinal: wav) || CaptureMode.recorded(forFinal: wav) == .captureFirstRedact {
+                return fail(.timelineMissing, wav: wav, mutedSpans: nil)
+            }
+            return .notNeeded
         }
+        guard !timeline.spans.isEmpty else { return .notNeeded }
         let dir = originalsDir ?? originalsDirectory()
-        guard FileManager.default.fileExists(atPath: wav.path) else { return false }
+        guard FileManager.default.fileExists(atPath: wav.path) else { return .notNeeded }
         // Idempotency (TECH-MIC5 review): if the full original was already moved
         // aside by a prior pass, this WAV is the redacted artifact already. A
         // re-run (reprocess / retry) must NOT move the redacted file over the
         // kept original, or the full recording is lost. Reap the stale timeline
-        // and no-op.
-        if FileManager.default.fileExists(atPath: originalsURL(for: wav, in: dir).path) {
+        // and no-op. SEC16: unless the two are byte-identical, which means this WAV
+        // is the full recording itself, copied back by hand from a held-back
+        // meeting (that quarantine lands in this same directory), so it is
+        // redacted like any other.
+        let kept = originalsURL(for: wav, in: dir)
+        if FileManager.default.fileExists(atPath: kept.path),
+           !FileManager.default.contentsEqual(atPath: kept.path, andPath: wav.path) {
             try? FileManager.default.removeItem(at: MuteTimelineFile.url(forFinal: wav))
-            return false
+            return .redacted
         }
         // Per-span runaway guard (TECH-MIC12, replacing the whole-file 85%-coverage
         // cliff of TECH-MIC9). A mute oracle that goes confidently-wrong (e.g.
@@ -132,13 +184,12 @@ enum MuteRedactor {
             // case the whole-file guard used to handle for a stuck oracle).
             Log.writeLine("recorder", "no muted span was quiet enough to redact for \(wav.lastPathComponent); kept the full mic recording (TECH-MIC12)")
             try? FileManager.default.removeItem(at: MuteTimelineFile.url(forFinal: wav))
-            return false
+            return .notNeeded
         }
         let channels = channelCount(of: wav) ?? 2
-        guard let filter = buildFilter(spans: redactSpans, channels: channels) else { return false }
-        guard let ffmpeg = RecordingPostProcessor.findFFmpeg() else {
-            Log.writeLine("recorder", "WARN: ffmpeg not found - skipping mute redaction for \(wav.lastPathComponent)")
-            return false
+        guard let filter = buildFilter(spans: redactSpans, channels: channels) else { return .notNeeded }
+        guard let ffmpeg = findFFmpeg() else {
+            return fail(.ffmpegMissing, wav: wav, mutedSpans: timeline.spans.count)
         }
 
         let temp = wav.deletingPathExtension().appendingPathExtension("redacting.wav")
@@ -155,11 +206,7 @@ enum MuteRedactor {
         let ok = await runFFmpeg(ffmpeg: ffmpeg, args: args)
         guard ok, FileManager.default.fileExists(atPath: temp.path) else {
             try? FileManager.default.removeItem(at: temp)
-            Log.event(category: "recorder", action: "mute_redaction_failed", attributes: [
-                "file": wav.lastPathComponent,
-                "muted_spans": timeline.spans.count,
-            ])
-            return false
+            return fail(.ffmpegFailed, wav: wav, mutedSpans: timeline.spans.count)
         }
 
         // Move the full recording aside for recovery, then promote the redacted
@@ -167,7 +214,7 @@ enum MuteRedactor {
         // leave the full recording in place rather than risk losing it.
         guard moveOriginalAside(wav: wav, to: dir) else {
             try? FileManager.default.removeItem(at: temp)
-            return false
+            return fail(.moveAsideFailed, wav: wav, mutedSpans: timeline.spans.count)
         }
         do {
             try FileManager.default.moveItem(at: temp, to: wav)
@@ -176,7 +223,7 @@ enum MuteRedactor {
             try? FileManager.default.moveItem(at: originalsURL(for: wav, in: dir), to: wav)
             try? FileManager.default.removeItem(at: temp)
             Log.writeLine("recorder", "WARN: could not promote redacted artifact for \(wav.lastPathComponent), restored full recording")
-            return false
+            return fail(.promoteFailed, wav: wav, mutedSpans: timeline.spans.count)
         }
 
         // Reap the timeline so a re-run no-ops at the read guard above; the kept
@@ -188,10 +235,36 @@ enum MuteRedactor {
             "muted_spans": timeline.spans.count,
             "channels": channels,
         ])
-        return true
+        return .redacted
+    }
+
+    /// Move a recording that must not be consumed out of the Library-scanned tree into the
+    /// app-private originals directory, with the at-rest protections. Shared by the orphan
+    /// quarantine and the held-back job (SEC16) so the two moves cannot drift; each caller logs
+    /// its own action.
+    static func quarantine(_ url: URL, in dir: URL? = nil) throws -> URL {
+        let dir = dir ?? originalsDirectory()
+        let dest = originalsURL(for: url, in: dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: dest)
+        try FileManager.default.moveItem(at: url, to: dest)
+        protectOriginalAtRest(dest)
+        return dest
     }
 
     // MARK: - Private
+
+    /// Log a failed redaction once, with its reason, and hand back the outcome (SEC16).
+    private static func fail(_ reason: FailureReason, wav: URL, mutedSpans: Int?) -> Outcome {
+        var attributes: [String: Any] = [
+            "file": wav.lastPathComponent,
+            "reason": reason.rawValue,
+        ]
+        if let mutedSpans { attributes["muted_spans"] = mutedSpans }
+        Log.event(category: "recorder", action: "mute_redaction_failed", attributes: attributes)
+        Log.writeLine("recorder", "ERROR: mute redaction failed (\(reason.rawValue)) for \(wav.lastPathComponent)")
+        return .failed(reason)
+    }
 
     /// Move `wav` to the originals directory, 0600 and Time-Machine-excluded.
     private static func moveOriginalAside(wav: URL, to dir: URL) -> Bool {

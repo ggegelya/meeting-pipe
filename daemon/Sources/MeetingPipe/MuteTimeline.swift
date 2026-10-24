@@ -105,10 +105,13 @@ struct MuteTimelineFile: Codable {
         return final.deletingLastPathComponent().appendingPathComponent("\(stem).mute-timeline.json")
     }
 
-    /// Write the spans for `final`. Best-effort: a failed write degrades to "no
-    /// redaction" (the kept full recording is still intact), it never blocks the
-    /// recording from finishing.
-    static func write(spans: [MuteTimeline.Span], forFinal final: URL) {
+    /// Write the spans for `final`. Never blocks the recording from finishing, but
+    /// answers whether it landed (SEC16): a failed write used to be a WARN line and
+    /// nothing else, so the recording read as one with nothing to redact. The
+    /// recorder now keeps its start-time markers when this returns false, which is
+    /// what makes the redactor fail closed on the missing timeline.
+    @discardableResult
+    static func write(spans: [MuteTimeline.Span], forFinal final: URL) -> Bool {
         let file = MuteTimelineFile(spans: spans)
         do {
             let data = try JSONEncoder().encode(file)
@@ -116,17 +119,38 @@ struct MuteTimelineFile: Codable {
             // (it carries manual off-record spans), so a torn write must not leave a partial
             // timeline that redacts the wrong ranges.
             try data.write(to: url(forFinal: final), options: .atomic)
+            return true
         } catch {
             Log.writeLine("recorder", "WARN: could not write mute timeline for \(final.lastPathComponent): \(error.localizedDescription)")
+            return false
         }
     }
 
-    /// Read the spans for `final`, or nil when no timeline exists (a regulated
-    /// recording, an orphan recovered without a stop, or a pre-MIC4 file).
-    static func read(forFinal final: URL) -> MuteTimelineFile? {
+    /// What is on disk for a final's timeline. `unreadable` is kept apart from
+    /// `missing` because the redactor must fail closed on it (SEC16): a corrupt
+    /// file used to decode to nil and read as "nothing to redact".
+    enum LoadResult {
+        case missing
+        case unreadable
+        case loaded(MuteTimelineFile)
+    }
+
+    static func load(forFinal final: URL) -> LoadResult {
         let url = url(forFinal: final)
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(MuteTimelineFile.self, from: data)
+        guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
+        guard let data = try? Data(contentsOf: url),
+              let file = try? JSONDecoder().decode(MuteTimelineFile.self, from: data) else {
+            return .unreadable
+        }
+        return .loaded(file)
+    }
+
+    /// Read the spans for `final`, or nil when no readable timeline exists (a
+    /// regulated recording, an orphan recovered without a stop, a pre-MIC4 file,
+    /// or a corrupt one).
+    static func read(forFinal final: URL) -> MuteTimelineFile? {
+        if case .loaded(let file) = load(forFinal: final) { return file }
+        return nil
     }
 }
 

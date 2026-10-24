@@ -754,10 +754,9 @@ final class MeetingSessionController: @unchecked Sendable {
                     forStem: file.deletingPathExtension().lastPathComponent,
                     in: file.deletingLastPathComponent()
                 )
-                // Clean finish: the recorder wrote any manual off-record timeline, so drop the
-                // MIC14 orphan-quarantine marker. Kept on the else branch (merge failed), so the
-                // orphan sweep still quarantines a recording whose manual span was never persisted.
-                OffRecordMarker.remove(forFinal: file)
+                // The MIC14 `.offrecord` marker is deliberately NOT dropped here (SEC16). It used
+                // to be, which left nothing on disk saying the recording had an off-record span
+                // if the timeline write had failed. The job removes it once redaction succeeds.
             } else {
                 // The merge/convert could not produce a usable final. stop() kept
                 // any capture intermediates and wrote a failure breadcrumb, so the

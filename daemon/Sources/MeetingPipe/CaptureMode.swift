@@ -59,6 +59,14 @@ enum CaptureMode: Equatable {
         }
     }
 
+    /// The mode a recording's start-time `<stem>.capturemode` marker names, or nil
+    /// when there is none (removed at a clean stop once the timeline landed, a
+    /// regulated recording's marker aside).
+    static func recorded(forFinal final: URL) -> CaptureMode? {
+        let marker = final.deletingPathExtension().appendingPathExtension("capturemode")
+        return (try? String(contentsOf: marker, encoding: .utf8)).flatMap(CaptureMode.init(marker:))
+    }
+
     init?(marker: String) {
         switch marker.trimmingCharacters(in: .whitespacesAndNewlines) {
         case "capture_first": self = .captureFirst

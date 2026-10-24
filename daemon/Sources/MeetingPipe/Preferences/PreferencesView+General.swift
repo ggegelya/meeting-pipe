@@ -166,7 +166,7 @@ struct GeneralSectionView: View {
                     SettingsHotkeyField(text: $store.flagMomentHotkey)
                 }
                 SettingsRow("Off the record",
-                    sublabel: "Mark a sensitive stretch as off the record while recording; toggle again to resume. The marked span is kept out of the notes.") {
+                    sublabel: "Cut your microphone out of a stretch while recording; toggle again to resume. The other side of the call is still transcribed.") {
                     SettingsHotkeyField(text: $store.offTheRecordHotkey)
                 }
             } footer: {

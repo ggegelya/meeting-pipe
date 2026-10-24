@@ -203,8 +203,7 @@ enum OrphanRecordingRecovery {
     static func shouldQuarantine(stem: String, final: URL, in directory: URL) -> Bool {
         // A written timeline means stop() ran and the redactor can do its job: never quarantine.
         guard MuteTimelineFile.read(forFinal: final) == nil else { return false }
-        let markerURL = directory.appendingPathComponent("\(stem).capturemode")
-        let mode = (try? String(contentsOf: markerURL, encoding: .utf8)).flatMap(CaptureMode.init(marker:))
+        let mode = CaptureMode.recorded(forFinal: directory.appendingPathComponent("\(stem).wav"))
         // Quarantine a redaction-opt-in recording (as before), OR any recording that had a manual
         // off-record span (MIC14): both were meant to have audio redacted, and the lost timeline
         // means auto-publishing would leak it. A plain capture-first recording with no manual span
@@ -215,17 +214,11 @@ enum OrphanRecordingRecovery {
     /// Move a quarantined orphan to the app-private originals directory (kept for
     /// manual recovery, out of the Library scan and every pipeline glob), 0600.
     private static func quarantine(_ url: URL) -> URL? {
-        let dest = MuteRedactor.originalsURL(for: url)
         do {
-            try FileManager.default.createDirectory(
-                at: MuteRedactor.originalsDirectory(), withIntermediateDirectories: true
-            )
-            try? FileManager.default.removeItem(at: dest)
-            try FileManager.default.moveItem(at: url, to: dest)
             // Owner-only + Time-Machine/iCloud excluded, same as the redaction
             // move-aside. Quarantined full audio used to reach Time Machine
             // because this path set 0600 but skipped the exclusion (AUD-19).
-            MuteRedactor.protectOriginalAtRest(dest)
+            let dest = try MuteRedactor.quarantine(url)
             Log.event(category: "coordinator", action: "orphan_quarantined", attributes: [
                 "file": url.lastPathComponent,
                 "reason": "capture_first_no_timeline",

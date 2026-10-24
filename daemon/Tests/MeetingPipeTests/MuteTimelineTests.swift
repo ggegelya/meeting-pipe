@@ -95,6 +95,34 @@ final class MuteTimelineTests: XCTestCase {
         XCTAssertNil(MuteTimelineFile.read(forFinal: final))
     }
 
+    // MARK: - SEC16: a failed write and a corrupt file are not "no timeline"
+
+    func test_write_reports_whether_the_timeline_landed() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mute-timeline-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let spans = [MuteTimeline.Span(startSec: 0, endSec: 1, source: .manual)]
+
+        XCTAssertTrue(MuteTimelineFile.write(spans: spans, forFinal: dir.appendingPathComponent("rec.wav")))
+        let missingDir = dir.appendingPathComponent("gone", isDirectory: true).appendingPathComponent("rec.wav")
+        XCTAssertFalse(MuteTimelineFile.write(spans: spans, forFinal: missingDir),
+                       "a write that did not land must say so, so the recorder keeps its markers")
+    }
+
+    func test_load_tells_a_corrupt_timeline_from_a_missing_one() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mute-timeline-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let final = dir.appendingPathComponent("rec.wav")
+
+        guard case .missing = MuteTimelineFile.load(forFinal: final) else { return XCTFail("expected .missing") }
+        try Data("not json".utf8).write(to: MuteTimelineFile.url(forFinal: final))
+        guard case .unreadable = MuteTimelineFile.load(forFinal: final) else { return XCTFail("expected .unreadable") }
+        XCTAssertNil(MuteTimelineFile.read(forFinal: final))
+    }
+
     // MARK: - MIC14: span source (mute | manual)
 
     func test_a_manual_span_abutting_an_auto_span_does_not_coalesce() {

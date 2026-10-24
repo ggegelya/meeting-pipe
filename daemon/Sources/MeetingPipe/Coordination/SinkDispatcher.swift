@@ -15,6 +15,13 @@ final class SinkDispatcher: @unchecked Sendable {
 
     private let transcriptionRunner: TranscriptionRunner
 
+    /// The offline mute redaction every recording passes before anything reads it
+    /// (TECH-MIC5). Injected so `SinkDispatcherTests` can make it fail (SEC16);
+    /// `originalsDir` is where a held-back recording is moved, nil meaning the
+    /// app-private default.
+    private let redactor: @Sendable (URL) async -> MuteRedactor.Outcome
+    private let originalsDir: URL?
+
     /// ASR language hint handed to the runner for every job (HYG2). `"auto"` or an
     /// unknown code means auto-detect (`FluidAudioRunner.resolveLanguage`). Read once
     /// at Coordinator init from `transcription.language`, like the end-debounce and
@@ -104,11 +111,15 @@ final class SinkDispatcher: @unchecked Sendable {
     init(
         launcher: PipelineDriver,
         transcriptionRunner: TranscriptionRunner = TranscriptionService.makeRunner(),
-        languageHint: String = "auto"
+        languageHint: String = "auto",
+        redactor: @escaping @Sendable (URL) async -> MuteRedactor.Outcome = { await MuteRedactor.redactIfNeeded(wav: $0) },
+        originalsDir: URL? = nil
     ) {
         self.launcher = launcher
         self.transcriptionRunner = transcriptionRunner
         self.languageHint = languageHint
+        self.redactor = redactor
+        self.originalsDir = originalsDir
     }
 
     // MARK: - Pipeline-job queue
@@ -375,9 +386,27 @@ final class SinkDispatcher: @unchecked Sendable {
         // the one everything downstream sees (ADR 0016). No-op unless a
         // capture-first mute timeline exists; the full recording is moved aside
         // for recovery and is never destroyed on failure.
-        await MuteRedactor.redactIfNeeded(wav: job.file)
-
+        //
+        // SEC16: the outcome used to be discarded, so every failure published the
+        // uncut recording. A redaction that was owed and did not happen now holds
+        // the meeting back: nothing below runs.
         let loc = SinkDispatcher.sidecarLocation(for: job)
+        if case .failed(let reason) = await redactor(job.file) {
+            let kept = quarantineHeldBack(job.file)
+            await MainActor.run {
+                if job.kind == .full {
+                    PipelineFailureSidecar.write(
+                        stem: loc.stem, in: loc.dir,
+                        stage: .transcribe, reason: SinkDispatcher.heldBackReason(reason)
+                    )
+                }
+                self.completeActiveJob(job, with: .failure(RedactionHeldBack(reason: reason, quarantined: kept)))
+            }
+            return
+        }
+        // The MIC14 marker stays on disk until here, so a lost timeline is caught
+        // above as `timeline_missing` rather than read as "nothing to cut".
+        OffRecordMarker.remove(forFinal: job.file)
         // UX69 leg (b): the row's live entry begins here, not at the pipeline's
         // first heartbeat. On the owner's 110 minute meeting those were 58.6 s
         // apart, and about 52.5 s of that gap was this pass, which scales with
@@ -680,6 +709,44 @@ final class SinkDispatcher: @unchecked Sendable {
         Log.event(category: "coordinator", action: "pipeline_cancelled", attributes: [:])
         transcriptionTask?.cancel()
         launcher.cancelActiveRun()
+    }
+
+    /// A job whose redaction failed (SEC16). Its message is what the error banner
+    /// and notification show.
+    struct RedactionHeldBack: LocalizedError, Equatable {
+        let reason: MuteRedactor.FailureReason
+        let quarantined: Bool
+        var errorDescription: String? { SinkDispatcher.heldBackReason(reason) }
+    }
+
+    /// The held-back row's failure reason. It opens with a prefix
+    /// `FailurePresentation.isValidation` knows, so the row explains itself
+    /// instead of offering a retry that has no recording left to run on. No
+    /// slash in it for the same reason: the path stays in the event log.
+    static func heldBackReason(_ reason: MuteRedactor.FailureReason) -> String {
+        "A stretch marked off the record or muted could not be cut out (\(reason.rawValue)), so this meeting was held back: nothing was transcribed or published. The full recording is kept in MeetingPipe's originals folder."
+    }
+
+    /// Move a held-back recording out of the Library-scanned tree, the same move
+    /// orphan quarantine makes. Off main: it touches the disk. A recording that
+    /// cannot be moved stays where it is, still never transcribed.
+    private func quarantineHeldBack(_ wav: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: wav.path) else { return false }
+        do {
+            let dest = try MuteRedactor.quarantine(wav, in: originalsDir)
+            Log.event(category: "coordinator", action: "recording_held_back", attributes: [
+                "file": wav.lastPathComponent,
+                "kept": dest.path,
+            ])
+            return true
+        } catch {
+            Log.writeLine("daemon", "WARN: could not quarantine held-back recording \(wav.lastPathComponent): \(error.localizedDescription)")
+            Log.event(category: "coordinator", action: "recording_held_back", attributes: [
+                "file": wav.lastPathComponent,
+                "kept": NSNull(),
+            ])
+            return false
+        }
     }
 
     private static func sidecarLocation(for job: ProcessingJob) -> (stem: String, dir: URL) {

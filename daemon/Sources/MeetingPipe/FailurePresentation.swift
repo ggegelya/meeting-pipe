@@ -206,6 +206,6 @@ struct FailurePresentation: Equatable {
 
     private static func isValidation(_ text: String) -> Bool {
         guard text.count <= 260, !text.contains("\n"), !text.contains("/"), !text.contains("{"), !text.contains("sk-") else { return false }
-        return ["Enter a ", "Choose a ", "Type a ", "Paste a ", "The name ", "A voice named ", "The default workflow ", "No transcript ", "No summary ", "No audio ", "No recording ", "Transcription is not available", "Regulated mode is on:", "Set NOTION_TOKEN in Preferences", "Database id is not a valid value.", "Database not found, or the integration is not connected"].contains { text.hasPrefix($0) }
+        return ["Enter a ", "Choose a ", "Type a ", "Paste a ", "The name ", "A voice named ", "The default workflow ", "No transcript ", "No summary ", "No audio ", "No recording ", "Transcription is not available", "A stretch marked off the record", "Regulated mode is on:", "Set NOTION_TOKEN in Preferences", "Database id is not a valid value.", "Database not found, or the integration is not connected"].contains { text.hasPrefix($0) }
     }
 }

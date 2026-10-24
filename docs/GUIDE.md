@@ -65,9 +65,13 @@ It means the microphone stopped reaching the recording and the app could not get
 
 ### Off the record
 
-For a stretch of a call that should not reach your notes, press `⌃⌥O`, or click the **mic-with-a-slash** button on the recording panel (it is also **Go off the record** on that panel's right-click menu). The panel shows a steady **Off the record** state and the voice meter drops to zero until you turn it off again. Press it a second time to resume; an open stretch closes by itself when you stop.
+For a stretch where what *you* say should not reach your notes, press `⌃⌥O`, or click the **mic-with-a-slash** button on the recording panel (it is also **Go off the record** on that panel's right-click menu). The panel shows a steady **Off the record** state and the voice meter drops to zero until you turn it off again. Press it a second time to resume; an open stretch closes by itself when you stop.
 
-What that actually does depends on the workflow. Under an ordinary workflow the microphone keeps recording and the marked stretch is cut out before anything reads the audio, so it never reaches the transcript, the summary, or anything you publish. The uncut recording is kept on your Mac as a recovery copy, readable only by you and never backed up or synced anywhere, and it is reclaimed after a month or so. Under a workflow in NDA mode, or with regulated mode on, the microphone is silenced for real while the stretch is open, because those modes promise no such audio is kept at all.
+Off the record covers your microphone only. The other people on the call are still recorded, so anything they say during the stretch still reaches the transcript and the summary. If the whole conversation should stay out, stop the recording instead and start a new one afterwards.
+
+What it does to your microphone depends on the workflow. Under an ordinary workflow the microphone keeps recording and your side of the marked stretch is cut out before anything reads the audio, so your voice from it never reaches the transcript, the summary, or anything you publish. The uncut recording is kept on your Mac as a recovery copy, readable only by you and never backed up or synced anywhere, and it is reclaimed after a month or so. Under a workflow in NDA mode, or with regulated mode on, the microphone is silenced for real while the stretch is open, because those modes promise no such audio is kept at all.
+
+If the cut cannot be made (the audio tool it needs is missing, say), the meeting is held back rather than processed: its row in the Library shows it failed and says why, nothing is transcribed or published, and the full recording is moved into the private recovery folder instead of being used. The same applies to a workflow set to cut out the stretches where you were muted.
 
 ### Flagging a moment
 
@@ -525,7 +529,7 @@ Plain-language versions of the terms in this guide and in the app.
 
 **NDA mode.** A workflow switch meaning summaries stay on your Mac and are written only to a local folder. Regulated mode is the same idea applied to the whole app rather than one workflow.
 
-**Off the record.** A stretch of a live recording marked to stay out of your notes.
+**Off the record.** A stretch of a live recording where your microphone is cut out of your notes. The other side of the call is still transcribed.
 
 **Flagged moment.** A point in a recording you marked while it was happening, so you can find it again.
 

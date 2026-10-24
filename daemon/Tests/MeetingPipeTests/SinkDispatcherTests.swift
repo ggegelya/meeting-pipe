@@ -492,6 +492,87 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertTrue(driver.startedFiles.isEmpty, "pipeline must not run when ASR fails")
     }
 
+    // MARK: - SEC16: a failed redaction holds the meeting back
+
+    private func makeHeldBackDispatcher(
+        _ driver: FakeDriver, _ runner: FakeRunner, originals: URL,
+        redactor: @escaping @Sendable (URL) async -> MuteRedactor.Outcome
+    ) -> SinkDispatcher {
+        SinkDispatcher(launcher: driver, transcriptionRunner: runner, redactor: redactor, originalsDir: originals)
+    }
+
+    func test_a_failed_redaction_never_transcribes_or_publishes_and_moves_the_recording_out() throws {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        let originals = dir.appendingPathComponent("originals", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        MuteTimelineFile.write(spans: [MuteTimeline.Span(startSec: 0, endSec: 1, source: .manual)], forFinal: wav)
+        let dispatcher = makeHeldBackDispatcher(driver, runner, originals: originals) { _ in .failed(.ffmpegMissing) }
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForJobCompletion { completed.count }
+
+        XCTAssertTrue(runner.calls.isEmpty, "the uncut recording must never reach transcription")
+        XCTAssertTrue(driver.startedFiles.isEmpty, "nor the pipeline")
+        let failure = try XCTUnwrap(PipelineFailureSidecar.read(stem: "clip", in: dir))
+        XCTAssertTrue(failure.reason.contains("ffmpeg_missing"), "the row names why: \(failure.reason)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: wav.path), "the WAV left the library directory")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: originals.appendingPathComponent("clip.wav").path),
+                      "it is kept in the originals directory for recovery")
+        guard case .failure(let error) = completed.first?.1 else { return XCTFail("expected .failure") }
+        XCTAssertEqual(error as? SinkDispatcher.RedactionHeldBack,
+                       SinkDispatcher.RedactionHeldBack(reason: .ffmpegMissing, quarantined: true))
+        XCTAssertFalse(PipelineLauncher.isCancellation(error), "a held-back meeting is reported, not silent")
+    }
+
+    /// The acceptance case for SEC16 scope 3, through the real redactor: a clean
+    /// finish whose timeline write failed leaves only the `.offrecord` marker, and
+    /// that marker alone is what makes the job fail closed.
+    func test_a_lost_timeline_with_the_offrecord_marker_fails_closed_and_keeps_the_marker() throws {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        let originals = dir.appendingPathComponent("originals", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        OffRecordMarker.write(forFinal: wav)
+        let dispatcher = makeHeldBackDispatcher(driver, runner, originals: originals) {
+            await MuteRedactor.redactIfNeeded(wav: $0, originalsDir: originals)
+        }
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForJobCompletion { completed.count }
+
+        XCTAssertTrue(runner.calls.isEmpty)
+        XCTAssertTrue(driver.startedFiles.isEmpty)
+        XCTAssertTrue(OffRecordMarker.exists(forFinal: wav), "the evidence stays until a redaction succeeds")
+        let failure = try XCTUnwrap(PipelineFailureSidecar.read(stem: "clip", in: dir))
+        XCTAssertTrue(failure.reason.contains("timeline_missing"), failure.reason)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: wav.path))
+    }
+
+    func test_a_successful_redaction_drops_the_offrecord_marker_and_runs_the_job() throws {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        OffRecordMarker.write(forFinal: wav)
+        let dispatcher = makeHeldBackDispatcher(driver, runner, originals: dir) { _ in .redacted }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+
+        XCTAssertEqual(runner.calls, [wav])
+        XCTAssertFalse(OffRecordMarker.exists(forFinal: wav), "the marker's job is done once the cut landed")
+    }
+
     // MARK: - failure-stage attribution (PIPE1)
 
     /// `mp` exits 3 when every configured sink failed. That leaves a complete

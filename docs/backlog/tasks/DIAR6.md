@@ -22,7 +22,7 @@ Leg 2 changes what the diarizer and the embedder see, so it is a calibration cha
 - Diarizing the system channel alone and attributing mic-dominant speech to the owner (the go-live's "then L" half). That is a pipeline restructure; file it only if legs 1 and 2 measure short.
 - A "your mic is very quiet" warning. Real and cheap, but a second tier of MIC15's `MicCoverageWarning` rather than a diarization change; unfiled here, noted so it is not lost.
 - Changing who is identified as the owner (`_resolve_me_id` precedence, the 0.6 fraction). This task changes which segments carry the name, not which cluster is the owner.
-- Word-level speaker assignment ([DIAR7](./DIAR7.md)), the empty-`user_label` case ([UX83](./UX83.md)), and the off-the-record filter silencing only the mic channel ([SEC16](./SEC16.md)). Leg 2 must not make SEC16 worse: a zero-filled mic span stays zero after scaling.
+- Word-level speaker assignment ([DIAR7](./DIAR7.md)), the empty-`user_label` case ([UX83](./UX83.md)), and the off-the-record filter silencing only the mic channel ([SEC16](../q6-final.md), shipped mic-only by the owner's choice). Leg 2 must not make SEC16 worse: a zero-filled mic span stays zero after scaling.
 
 ## Acceptance
 

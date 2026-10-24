@@ -946,8 +946,12 @@ private final class HUDOffRecordButton: NSButton {
             .withSymbolConfiguration(config)
         contentTintColor = on ? MPColors.pulse600 : MPColors.fgMuted
         let label = on ? "Back on the record" : "Go off the record"
-        toolTip = label
+        // SEC16: off the record cuts the mic only, so the hover says so; the other side is still
+        // transcribed and nothing else on the panel would tell you that.
+        let help = "Cuts your microphone only; the other side is still transcribed."
+        toolTip = "\(label). \(help)"
         setAccessibilityLabel(label)
+        setAccessibilityHelp(help)
     }
 
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
