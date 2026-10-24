@@ -32,12 +32,13 @@ The active backlog lives in [`docs/backlog/`](./docs/backlog/): the highest-numb
 
 | Step | Command (from repo root unless noted) |
 |---|---|
+| **CI gate (run this before landing)** | `bash scripts/ci-local.sh [all\|fences\|design-tokens\|truth-fences\|pipeline\|daemon]` - CI8. The CI step list itself: every `ci.yml` job calls it after its own setup, so green here is green there. Covers the rows below plus the design-token greps and the engine suites under a one-thread cooperative pool. A new CI check goes in this script, never only in the YAML. `/tech-task` step 6 runs it. |
 | Pipeline lint | `cd pipeline && uv run --extra dev ruff check src tests` |
 | Pipeline typecheck | `cd pipeline && uv run --extra dev --extra mcp pyright` - pyright basic over `src/` (TYPE1); CI fails on a type regression. `--extra mcp` is load-bearing: without AUTO3's optional SDK `mcp_serve.py` reports 3 unresolved imports, and CI installs it so it never sees them. |
 | Pipeline tests | `cd pipeline && uv run --extra dev pytest -q` |
 | Daemon build (debug) | `cd daemon && swift build` |
 | Daemon build (release) | `cd daemon && swift build -c release` |
-| Daemon tests | `cd daemon && swift test` — needs full Xcode; Command Line Tools alone errors on `import XCTest`. Write tests anyway; CI (macos-14) runs them. |
+| Daemon tests | `cd daemon && swift test` - needs full Xcode; Command Line Tools alone errors on `import XCTest`. Write tests anyway; CI (macos-15) runs them. |
 | Fast rebuild + relaunch | `./scripts/rebuild.sh` — for live-testing daemon changes against a running install. |
 | Coverage (both trees) | `./scripts/coverage.sh [both\|python\|swift]` - a report, not a gate; CI does not run it. Baselines in `docs/backlog/q6-final.md` under T3. |
 | Truth fences | `python3 scripts/truth_fences.py [both\|config\|events\|claude\|links]` - CI5. Fails on a dead config knob, a doc/reader mismatch, an undocumented event category, a `CLAUDE.md` over its per-entry (800 B) or whole-file (24 KB) budget (DOC14), or a dead relative link or run-on `**[DONE]` entry in any tracked `.md` (HYG8). CI runs it; run it locally after touching a config key, adding an event category, adding a rule to a `CLAUDE.md`, or archiving a spec. |

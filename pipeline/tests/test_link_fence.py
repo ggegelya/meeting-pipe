@@ -150,9 +150,13 @@ def test_the_walker_sees_the_real_doc_tree():
 
 def test_the_walker_skips_worktrees_and_build_output():
     """Session worktrees under `.claude/` hold whole copies of the tree, which
-    would double every finding under a path nobody edits."""
+    would double every finding under a path nobody edits.
+
+    Relative to the repo root, as the walker itself checks: the absolute path of a
+    checkout that is itself a worktree runs through `.claude/worktrees/`, so testing
+    `p.parts` failed in every worktree session and passed only on CI (CI8)."""
     assert all(
-        not ({".claude", ".build", "node_modules"} & set(p.parts))
+        not ({".claude", ".build", "node_modules"} & set(p.relative_to(tf.REPO).parts))
         for p in tf.doc_files()
     )
 
