@@ -135,6 +135,12 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         await waitUntil({ host.recorderSpy.startCallCount >= 1 }, "the first start to be entered")
 
         XCTAssertEqual(host.recorderSpy.startCallCount, 1)
+
+        // Resolve the parked start while `host` is still alive. The controller holds its host
+        // `unowned` and the start's catch reads it, so a start left parked past this test traps
+        // later, in an unrelated one (CI8).
+        host.recorderSpy.releaseHang()
+        await waitUntil({ !host.notifierSpy.errors.isEmpty }, "the parked start to resolve")
     }
 
     func test_beginRecording_acceptsANewStartOnceTheFirstResolved() async {

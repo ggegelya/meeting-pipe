@@ -153,11 +153,16 @@ final class SpyRecorder: SessionRecording {
     enum StartBehaviour {
         case succeed
         case fail(Error)
-        /// Never returns, so a test can observe the in-flight guard.
+        /// Parks until `releaseHang()`, so a test can observe the in-flight guard. A test that
+        /// uses it must release it, and wait for the start to resolve, before it returns.
         case hang
     }
 
     var startBehaviour: StartBehaviour = .succeed
+    private let hangReleased = OSAllocatedUnfairLockBox<Bool>(false)
+
+    /// Ends a `.hang` start: it then throws, the way a cancelled start would.
+    func releaseHang() { hangReleased.value = true }
     var fileToReturn: URL = URL(fileURLWithPath: "/tmp/meetingpipe-test/20260710-1200.wav")
     var stopResult = true
 
@@ -196,8 +201,15 @@ final class SpyRecorder: SessionRecording {
         case .fail(let error):
             throw error
         case .hang:
-            // Long enough that a test never outruns it; cancelled with the Task.
-            try? await Task.sleep(nanoseconds: 60 * NSEC_PER_SEC)
+            // CI8: this used to sleep 60 s on the claim that the Task would cancel it. Nothing
+            // does: `beginRecording`'s start Task is unstructured. A minute later the start resumed
+            // into that Task's catch, which reads the controller's `unowned` coordinator, and the
+            // test's host was long gone, so it trapped in whichever unrelated test was draining the
+            // main queue at the time (`WorkflowCorrectionStoreTests` on CI, 2026-10-23 and -24).
+            // Only a run slower than 60 s past this test could hit it, so it never fired locally.
+            while !hangReleased.value {
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
             throw CancellationError()
         }
     }
