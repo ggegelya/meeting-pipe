@@ -1345,4 +1345,36 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertEqual(outcome.dropped, 1)
         XCTAssertTrue(TranscriptCorrectionStore.read(stem: stem, in: dir).isEmpty)
     }
+
+    // MARK: - END17: the held-end trim
+
+    private func meta(_ stem: String) throws -> [String: Any] {
+        let data = try Data(contentsOf: dir.appendingPathComponent("\(stem).meta.json"))
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    /// The undo drops the trim point and nothing else, so the next transcription reads the whole
+    /// recording while the meeting keeps its source, workflow and privacy flags.
+    func test_restoring_the_held_tail_drops_only_the_trim_key() throws {
+        try touch("m.meta.json", contents: #"{"held_end_trim_sec": 2531.5, "workflow_name": "Client work", "workflow_nda_mode": false, "schema_version": 4}"#)
+
+        guard case .success = service.restoreHeldTail(stem: "m") else { return XCTFail("expected success") }
+
+        let after = try meta("m")
+        XCTAssertNil(after[HeldEndTrim.metaKey])
+        XCTAssertEqual(after["workflow_name"] as? String, "Client work")
+        XCTAssertEqual(after["workflow_nda_mode"] as? Bool, false)
+        XCTAssertEqual(after["schema_version"] as? Int, 4)
+    }
+
+    /// A merge appends audio past the primary's trim point, so a cut left behind would drop every
+    /// fragment from a later re-transcribe.
+    func test_a_merge_drops_the_primarys_held_trim() throws {
+        try touch("a.wav"); try touch("a.meta.json", contents: #"{"held_end_trim_sec": 900, "schema_version": 4}"#)
+        try touch("b.wav"); try touch("b.meta.json")
+        service.mergeMeetings(primaryStem: "a", fragmentStems: ["b"]) { _ in }
+        driver.finishMerge(.success(nil))
+        drainMain()
+        XCTAssertNil(try meta("a")[HeldEndTrim.metaKey])
+    }
 }

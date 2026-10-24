@@ -21,7 +21,6 @@ final class ConfigStoreTests: XCTestCase {
         let url = try makeTempConfigURL()
         // Don't create the file — store should bootstrap empty.
         let store = ConfigStore(configURL: url)
-        XCTAssertEqual(store.debounceEndSec, 5)
         XCTAssertEqual(store.manualHotkey, "ctrl+option+m")
         XCTAssertFalse(store.regulatedMode)
         XCTAssertTrue(store.autoConsentApps.isEmpty)
@@ -64,14 +63,12 @@ final class ConfigStoreTests: XCTestCase {
         let url = try makeTempConfigURL()
         try """
         [detection]
-        debounce_end_sec = 7
         prompt_timeout_sec = 45
         reprompt_cooldown_sec = 120
         mic_only_silence_seconds = 600
         """.write(to: url, atomically: true, encoding: .utf8)
 
         let store = ConfigStore(configURL: url)
-        XCTAssertEqual(store.debounceEndSec, 7)
         XCTAssertEqual(store.promptTimeoutSec, 45)
         XCTAssertEqual(store.repromptCooldownSec, 120)
         XCTAssertEqual(store.micOnlySilenceSec, 600)
@@ -80,7 +77,7 @@ final class ConfigStoreTests: XCTestCase {
         store.regulatedMode = true
         try store.saveNow()
         let reloaded = ConfigStore(configURL: url)
-        XCTAssertEqual(reloaded.debounceEndSec, 7)
+        XCTAssertEqual(reloaded.promptTimeoutSec, 45)
         XCTAssertEqual(reloaded.micOnlySilenceSec, 600)
     }
 
@@ -119,7 +116,7 @@ final class ConfigStoreTests: XCTestCase {
 
         let store = ConfigStore(configURL: url)
         store.regulatedMode = true
-        store.debounceEndSec = 7
+        store.promptTimeoutSec = 45
         store.autoConsentApps = ["us.zoom.xos"]
         try store.saveNow()
 
@@ -127,7 +124,7 @@ final class ConfigStoreTests: XCTestCase {
         // file actually changed, not just the in-memory model.
         let reloaded = ConfigStore(configURL: url)
         XCTAssertTrue(reloaded.regulatedMode)
-        XCTAssertEqual(reloaded.debounceEndSec, 7)
+        XCTAssertEqual(reloaded.promptTimeoutSec, 45)
         XCTAssertEqual(reloaded.autoConsentApps, ["us.zoom.xos"])
     }
 

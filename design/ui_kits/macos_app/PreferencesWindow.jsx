@@ -262,9 +262,6 @@ const PWRecordingPane = () => (
       <PWToggleRow first on label="Pause mic when muted" sublabel="Pauses mic capture while you're muted in Teams / Zoom / Slack / Webex. Uses the locale catalogue (en, uk, de, es, fr, ja, pt, ru)."/>
       <PWToggleRow on={false} label="Voice processing" sublabel="Apple's noise-suppression + AGC. Drops your mic gain system-wide while recording, so other apps hear you quietly. Off by default; flip on only for solo voice memos."/>
     </PWGroup>
-    <PWGroup label="Detection" footer="How long the detector waits after a meeting's signals go away before ending the recording, so a brief gap does not cut off a pause. Takes effect on the next daemon launch.">
-      <PWStackRow first label="End debounce"><PWSlider value={8} max={30} format="8 s"/></PWStackRow>
-    </PWGroup>
     <PWGroup label="Auto-record allowlist" footer="When the daemon detects audio from these apps, recording starts without showing the prompt.">
       <PWFullRow first>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>

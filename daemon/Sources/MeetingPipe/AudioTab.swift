@@ -7,6 +7,12 @@ import SwiftUI
 struct AudioTab: View {
     @ObservedObject var playback: AudioPlaybackController
     let meeting: Meeting
+    @EnvironmentObject var libraryModel: LibraryWindowModel
+
+    /// END17: the restore runs a re-transcribe and a regenerate, so the row says it is working
+    /// and then what happened, rather than going quiet for the length of both.
+    @State private var restoringTail = false
+    @State private var restoreError: String?
 
     enum LoadState {
         case loading
@@ -72,6 +78,9 @@ struct AudioTab: View {
                 if let mic = meeting.micDeviceName, !mic.isEmpty {
                     recordedWithCaption(mic)
                 }
+                if let trimSec = meeting.heldEndTrimSec {
+                    heldTailRow(trimSec: trimSec)
+                }
                 WaveformContainer(peaks: peaks, zoom: zoom, playback: playback)
                     .draggable(audio)
             }
@@ -90,6 +99,40 @@ struct AudioTab: View {
                 .foregroundStyle(Color(MPColors.fgMuted))
                 .lineLimit(1)
                 .truncationMode(.middle)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    /// END17: a held end kept the minutes after the call in the recording and left them out of
+    /// the transcript. Said here, beside the audio that still has them, with the one action that
+    /// takes the cut back.
+    private func heldTailRow(trimSec: Double) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "scissors")
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgSubtle))
+            Text(restoreError ?? HeldEndTrim.caption(trimSec: trimSec, durationSec: meeting.durationSec))
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgMuted))
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            if restoringTail {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Restore") {
+                    restoringTail = true
+                    restoreError = nil
+                    Task {
+                        if case .failure(let error) = await libraryModel.restoreHeldTail(stem: meeting.stem) {
+                            restoreError = "Could not restore the end: \(error.localizedDescription)"
+                        }
+                        restoringTail = false
+                    }
+                }
+                .buttonStyle(.mpGhost)
+                .help("Transcribe the whole recording, including the part after the call seemed to end, and regenerate the summary.")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)

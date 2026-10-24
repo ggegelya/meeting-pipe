@@ -85,8 +85,8 @@ public final class CallTeardownWatcher {
     /// 2026-08-05 to 2026-08-21, all 323 `micgate`/`log_mute_source_missing` rows are isolated
     /// single ticks: the longest run of consecutive failures in the whole corpus is 1, and there
     /// are zero runs of 2 or more. 2 would therefore already absorb every flap ever observed; 3 is
-    /// that with 3x margin, and costs 3 seconds to notice a genuinely absent log, against a 150 s
-    /// hold cap.
+    /// that with 3x margin, and costs 3 seconds to notice a genuinely absent log. Since END17 an
+    /// unavailable log is "no evidence" rather than a confirm, so a flap can no longer end a call.
     public static let unavailableAfterFailures = 3
 
     private let directory: URL

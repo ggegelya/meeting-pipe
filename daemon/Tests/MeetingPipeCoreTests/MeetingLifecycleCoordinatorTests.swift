@@ -131,14 +131,15 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
             )
         )
 
-        now = Date(timeIntervalSince1970: 4)
+        // END17: a lone weak end confirms on the lone dwell, not the old 2 s debounce.
+        now = Date(timeIntervalSince1970: 1 + PromotionEngine.defaultLoneDwell)
         coordinator.tick()
         flushEngine(coordinator)
         XCTAssertEqual(
             coordinator.current,
             .ended(
                 context: teamsContext,
-                reason: EndingReason(leadingSignal: "shareable_content_window_gone")
+                reason: EndingReason(leadingSignal: "shareable_content_window_gone", confirmedBy: ["lone_dwell"])
             )
         )
     }
@@ -269,15 +270,18 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         now = Date(timeIntervalSince1970: 1)
         fake.emit(.init(kind: .shareableContentWindow, state: .ended, timestamp: now, context: teamsContext))
         flushEngine(coordinator)
-        // PERF5: a provisional end arms the tick so the debounce can promote it.
+        // PERF5: a provisional end arms the tick so a dwell can promote it.
         XCTAssertNotNil(scheduler.tick, "tick arms when a provisional end is pending")
 
-        now = Date(timeIntervalSince1970: 4)
+        now = Date(timeIntervalSince1970: 1 + PromotionEngine.defaultLoneDwell)
         coordinator.tick()
         flushEngine(coordinator)
         XCTAssertEqual(
             coordinator.current,
-            .ended(context: teamsContext, reason: EndingReason(leadingSignal: "shareable_content_window_gone"))
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "shareable_content_window_gone", confirmedBy: ["lone_dwell"])
+            )
         )
         // PERF5: promoting to .ended disarms the tick again.
         XCTAssertNil(scheduler.tick, "tick disarms once the end is confirmed")

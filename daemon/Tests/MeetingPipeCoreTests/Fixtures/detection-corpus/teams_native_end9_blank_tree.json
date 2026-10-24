@@ -1,0 +1,23 @@
+{
+  "scenario": "teams_native_end9_blank_tree",
+  "description": "END9, 2026-08-20, synthetic engine half: the Leave button reads invalid during an accessibility blackout with no other signal, and returns 16 s later. Nothing ends in between; the host half (an empty re-walk is not a confirm, and only Teams' teardown line is) is pinned in CallTeardownHoldTests.",
+  "engine": "promotion",
+  "expected_outcome": "no_end",
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "events": [
+    {"t": 0.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": 2700.0, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 2710.0, "kind": "tick"},
+    {"t": 2716.0, "kind": "ax_leave_button", "state": "live"}
+  ],
+  "expected_verdicts": [
+    {"after": "events[0]", "verdict": "starting"},
+    {"after": "events[0]", "verdict": "in_meeting"},
+    {"after": "events[1]", "verdict": "ending_provisional", "leading": "ax_leave_button_invalid"},
+    {"after": "events[3]", "verdict": "in_meeting"}
+  ]
+}

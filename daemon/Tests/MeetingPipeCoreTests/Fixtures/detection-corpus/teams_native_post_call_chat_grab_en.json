@@ -1,8 +1,7 @@
 {
   "scenario": "teams_native_post_call_chat_grab_en",
-  "description": "Teams 2.x English; after Leave the post-call chat surface grabs the mic for ~1.2s. ShareableContent flips ended, ProcessAudio flips ended for ~1.2s then back to live. The 2.0s debounce absorbs this without promoting to ended; once the chat surface releases the mic, debounce expires and ended fires with the leading-only signal.",
+  "description": "Teams post-call: the window goes, Teams releases the mic, then its chat surface re-grabs the mic 1.2 s later. The teardown line confirms the hold on the mic release, so the re-grab arrives after the end and cannot revive the recording; without that line the re-grab would read as the call coming back and keep recording, which is END17's chosen direction to be wrong in.",
   "engine": "promotion",
-  "debounce_seconds": 2.0,
   "context": {
     "bundle_id": "com.microsoft.teams2",
     "kind": "native",
@@ -13,12 +12,14 @@
     {"t": 0.1, "kind": "process_audio_is_running_input_false", "state": "live"},
     {"t": 30.0, "kind": "shareable_content_window", "state": "ended"},
     {"t": 30.3, "kind": "process_audio_is_running_input_false", "state": "ended"},
+    {"t": 30.3, "kind": "confirm_provisional_end", "rewalk_signal": "call_teardown_observed"},
     {"t": 31.5, "kind": "process_audio_is_running_input_false", "state": "live"},
     {"t": 33.0, "kind": "tick"}
   ],
   "expected_verdicts": [
     {"after": "events[0]", "verdict": "starting"},
     {"after": "events[0]", "verdict": "in_meeting"},
-    {"after": "events[3]", "verdict": "ended", "leading": "shareable_content_window_gone", "confirmed_by": ["process_audio_is_running_input_false"]}
+    {"after": "events[3]", "verdict": "ending_provisional", "leading": "process_audio_is_running_input_false"},
+    {"after": "events[4]", "verdict": "ended", "leading": "process_audio_is_running_input_false", "confirmed_by": ["call_teardown_observed"]}
   ]
 }

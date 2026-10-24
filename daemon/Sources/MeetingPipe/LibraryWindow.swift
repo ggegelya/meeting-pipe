@@ -292,6 +292,45 @@ final class LibraryWindowModel: ObservableObject {
         await bridge { library, done in library.retranscribeMeeting(stem: stem) { done($0) } }
     }
 
+    /// END17: undo a suggested trim. Drops the trim point, re-transcribes the whole recording, and
+    /// regenerates the summary from it, which republishes like any Regenerate. Stops at the first
+    /// leg that fails, so a failed re-transcribe never summarizes the old, trimmed words.
+    func restoreHeldTail(stem: String) async -> Result<Void, Error> {
+        guard let library = library else { return .failure(Unwired.libraryUnavailable) }
+        if case .failure(let error) = library.restoreHeldTail(stem: stem) { return .failure(error) }
+        if case .failure(let error) = await retranscribeMeeting(stem: stem) { return .failure(error) }
+        if case .failure(let error) = await regenerateMeeting(stem: stem) { return .failure(error) }
+        return .success(())
+    }
+
+    /// END17 item 5: merge a recording that resumed after an end with the one that end stopped.
+    /// The resume is the evidence that the end was wrong, so the earlier recording's held tail was
+    /// meeting and not silence: it is restored and re-transcribed first, then FEAT9's merge runs
+    /// under its own guardrails (same workflow, same privacy posture, both finished).
+    func mergeResumed(stem: String) async -> Result<URL?, Error> {
+        let meetings = meetingStore.meetings
+        guard let later = meetings.first(where: { $0.stem == stem }),
+              let earlierStem = later.resumedFrom,
+              let earlier = meetings.first(where: { $0.stem == earlierStem })
+        else { return .failure(ResumeMergeRefused(reason: "The earlier part of this meeting is no longer in the library.")) }
+        let plan: MeetingMergeEligibility.Plan
+        switch MeetingMergeEligibility.decide([earlier, later]) {
+        case .success(let p): plan = p
+        case .failure(let why): return .failure(ResumeMergeRefused(reason: why.reason))
+        }
+        if earlier.heldEndTrimSec != nil {
+            guard let library = library else { return .failure(Unwired.libraryUnavailable) }
+            if case .failure(let error) = library.restoreHeldTail(stem: earlier.stem) { return .failure(error) }
+            if case .failure(let error) = await retranscribeMeeting(stem: earlier.stem) { return .failure(error) }
+        }
+        return await mergeMeetings(primary: plan.primary.stem, fragments: plan.fragments.map(\.stem))
+    }
+
+    struct ResumeMergeRefused: LocalizedError {
+        let reason: String
+        var errorDescription: String? { reason }
+    }
+
     /// FEAT9: merge fragmented recordings into the primary (concatenate + re-summarize
     /// + republish, then soft-delete the fragments). Same async-wrap pattern as
     /// `regenerateMeeting`; returns the primary's page URL.

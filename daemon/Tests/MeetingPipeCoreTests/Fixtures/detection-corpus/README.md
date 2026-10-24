@@ -5,9 +5,13 @@ start/end lifecycle) and `MicGate.decide` (mute gating) and asserts the produced
 verdict sequence matches the captured expectation, so a regression in either is
 caught by CI (`DetectionCorpusTests`). `INDEX.json` lists the active scenarios.
 
-The corpus is nine synthetic seeds plus twenty real dogfood traces
-(`teams_native_*`) derived from the daemon event log by
-`scripts/extract_detection_trace.py`. The seeds lock in the format and the
+The corpus is nine synthetic seeds, twenty real dogfood traces
+(`teams_native_{rewalk,debounce,flicker}_end_*`) derived from the daemon event
+log by `scripts/extract_detection_trace.py`, and seven synthetic incident traces
+END17 added (`teams_native_end{9,12,13,14,15}_*`,
+`google_meet_browser_tab_away_ten_minutes`), each built from the raw rows its END
+spec quotes and marked `"expected_outcome": "no_end"`: a live call that must
+never reach `.ended`. T8 replaces them with raw extracted traces. The seeds lock in the format and the
 cross-app scenarios (Zoom / Webex / Meet / PWA); the real traces cover the
 endings actually observed in dogfood. Real traces are derived from live meetings,
 which means the source carries meeting subjects, customer names, and other PII,
@@ -18,10 +22,14 @@ so every real trace is redacted before it lands (see below).
 The twenty real traces are **all `com.microsoft.teams2` native**, because that is
 the only client this user records; the cross-app seeds stay synthetic until real
 meetings on those clients exist. Three engine paths are represented, all seen in
-real sessions: `rewalk_end` (ax-leave-led end confirmed by the AX re-walk, the
-dominant real ending), `debounce_end` (a shareable-window-gone end promoted on the
-debounce), and `flicker_rewalk_end` (a share re-render flickers the end signals
-before the real leave, the END6/END8 fragmentation path).
+real sessions: `rewalk_end` (ax-leave-led end confirmed by the host, the
+dominant real ending), `debounce_end` (a lone shareable-window-gone end the
+pre-END17 engine promoted on its 2 s debounce; END17 confirms it on the 12 minute
+lone dwell, so the trace's `tick` sits there), and `flicker_rewalk_end` (a share
+re-render flickers the end signals before the real leave, the END6/END8
+fragmentation path). Since END17 the timing a real trace asserts is the current
+engine's, not the log's: the verdict sequence, leading signal and flicker count
+are the log's, and the moment of the end is when today's engine would end it.
 
 The extractor also reports a skipped bucket, and C7 measured what it actually is,
 because the first reading of it was wrong. A lone ax-leave `.ended` with empty
@@ -69,8 +77,12 @@ structural signal, never meeting content. Before a real trace lands:
   must be one of the signal kinds: `shareable_content_window`,
   `process_audio_is_running_input_false`, `ax_leave_button`, `browser_tab_title`,
   `workspace_app_terminated`, `window_title`; or a control pseudo-event: `tick`
-  (advance the debounce clock) or `confirm_provisional_end` (fire the AX re-walk
-  promotion, `PromotionEngine.confirmProvisionalEnd`). Anything else the loader
+  (advance the engine's clock, which is how END17's dwells confirm) or
+  `confirm_provisional_end` (the host's definitive confirm,
+  `PromotionEngine.confirmProvisionalEnd`, which since END17 means Teams'
+  teardown line for this recording; `rewalk_signal` names the evidence,
+  `call_teardown_observed` today and `ax_leave_rewalk` in traces extracted
+  before it). Anything else the loader
   rejects; do not invent kinds to carry extra data.
 - **No free text, anywhere.** No emails, URLs, `@`-mentions, or notes. The only
   human-readable strings should be `scenario`, `description` (write it yourself,
@@ -100,7 +112,6 @@ Two engine shapes. See the seeds for full examples.
   "scenario": "teams_native_clean_leave_en",
   "description": "generic, PII-free description you write",
   "engine": "promotion",
-  "debounce_seconds": 2.0,
   "context": { "bundle_id": "com.microsoft.teams2", "kind": "native", "pid": 1234 },
   "events": [ {"t": 0.0, "kind": "shareable_content_window", "state": "live"} ],
   "expected_verdicts": [ {"after": "events[0]", "verdict": "in_meeting"} ]
@@ -110,9 +121,12 @@ Two engine shapes. See the seeds for full examples.
 A signal `state` is `"live"` or `"ended"`. `expected_verdicts[].leading` /
 `confirmed_by` use the raw signal values (e.g. `shareable_content_window_gone`,
 `ax_leave_button_invalid`), not the short `events[].kind`. The `after` field is
-documentation only; the replay compares the verdict sequence positionally. A real
-`rewalk_end` trace (the dominant native ending) ends with the AX-re-walk control
-event rather than a debounce `tick`:
+documentation only; the replay compares the verdict sequence positionally. An
+optional `"expected_outcome": "no_end"` additionally fails the replay if any
+`.ended` verdict appears, whatever `expected_verdicts` says. The engine runs at
+its default dwells (60 s pair, 720 s lone); the old `debounce_seconds` field is
+gone with the debounce. A real `rewalk_end` trace (the dominant native ending)
+ends with the host's confirm event rather than a `tick`:
 
 ```json
 "events": [

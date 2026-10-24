@@ -4,7 +4,9 @@ import XCTest
 /// END9. The defect: `rescueProvisionalEnd` walks the AX tree ~120 ms after `AXLeaveButtonSignal`
 /// walked it, and treats a second empty result as proof the call ended. Both land inside the same
 /// 1-to-65 s accessibility blackout, so the empty walk means "Teams' tree is blank" at least as
-/// often as "the call is over". These pin the replacement: Teams' own teardown line decides.
+/// often as "the call is over". These pin the replacement: Teams' own teardown line decides. Since
+/// END17 it is the only thing that decides here: no cap, no ceiling and no unreadable-log confirm,
+/// so every case below is either a teardown for this recording or a hold.
 final class CallTeardownOracleTests: XCTestCase {
 
     private let teamsContext = MeetingLifecycleContext(
@@ -18,16 +20,12 @@ final class CallTeardownOracleTests: XCTestCase {
     private func input(
         now: TimeInterval,
         provisionalStartedAt: TimeInterval,
-        lastTeardownAt: TimeInterval?,
-        oracleAvailable: Bool = true,
-        liveCallSignal: CallTeardownOracle.LiveCallSignal = .unknown
+        lastTeardownAt: TimeInterval?
     ) -> CallTeardownOracle.Input {
         CallTeardownOracle.Input(
             now: at(now),
             provisionalStartedAt: at(provisionalStartedAt),
-            lastTeardownAt: lastTeardownAt.map(at),
-            oracleAvailable: oracleAvailable,
-            liveCallSignal: liveCallSignal
+            lastTeardownAt: lastTeardownAt.map(at)
         )
     }
 
@@ -133,49 +131,23 @@ final class CallTeardownOracleTests: XCTestCase {
         )
     }
 
-    // MARK: - Degradation and the ceiling
+    // MARK: - END17: no wall clock
 
-    /// The safety property that makes this change never worse than what it replaces: no usable log
-    /// means today's behaviour, an immediate confirm, never a hold.
-    func test_an_unavailable_oracle_confirms_immediately() {
-        XCTAssertEqual(
-            CallTeardownOracle.decide(
-                input(now: 0, provisionalStartedAt: 0, lastTeardownAt: nil, oracleAvailable: false)
-            ),
-            .confirm(reason: .oracleUnavailable)
-        )
-    }
-
-    /// Availability is checked before everything, so a broken log cannot be held even at the moment
-    /// a real teardown would have confirmed anyway.
-    func test_unavailability_outranks_a_present_teardown() {
-        XCTAssertEqual(
-            CallTeardownOracle.decide(
-                input(now: 0, provisionalStartedAt: 0, lastTeardownAt: -1, oracleAvailable: false)
-            ),
-            .confirm(reason: .oracleUnavailable)
-        )
-    }
-
-    /// A held provisional **always** terminates. Two multi-thousand-second provisional stalls
-    /// already exist in the event log; this is the guard against a third, and it is a property of
-    /// the pure type rather than of the timer plumbing so it cannot be lost to a scheduling bug.
-    func test_a_held_provisional_always_terminates_at_the_cap() {
-        for elapsed in stride(from: 0.0, through: 400.0, by: 0.5) {
-            let verdict = CallTeardownOracle.decide(
-                input(now: elapsed, provisionalStartedAt: 0, lastTeardownAt: nil)
+    /// END9's cap and END13's ceiling were wall clocks standing in for evidence, and each was tuned
+    /// toward ending early. The oracle now holds for as long as it has no teardown, however long
+    /// that is; the engine's dwells are what bound a hold.
+    func test_a_hold_never_confirms_on_time_alone_END17() {
+        for elapsed in [0.0, 149.9, 150.0, 160.8, 720.0, 7200.0, 86_400.0] {
+            assertHold(
+                CallTeardownOracle.decide(input(now: elapsed, provisionalStartedAt: 0, lastTeardownAt: nil)),
+                elapsed: elapsed,
+                "\(elapsed) s of waiting is not evidence that the call ended"
             )
-            if elapsed < CallTeardownOracle.defaultHoldCapSec {
-                assertHold(verdict, elapsed: elapsed)
-            } else {
-                XCTAssertEqual(verdict, .confirm(reason: .holdCapReached))
-            }
         }
     }
 
-    /// Ordering: a real end confirms on its own evidence, so the reason recorded in the log is the
-    /// teardown rather than the timeout, even past the ceiling.
-    func test_a_teardown_outranks_the_cap() {
+    /// A real end confirms on its own evidence whenever it is read, however late.
+    func test_a_teardown_confirms_however_long_the_hold_has_run() {
         XCTAssertEqual(
             CallTeardownOracle.decide(
                 input(now: 1_000, provisionalStartedAt: 0, lastTeardownAt: -1)
@@ -295,7 +267,7 @@ final class CallTeardownOracleTests: XCTestCase {
         }
         XCTAssertNil(
             engine.tick(at: at(100.12)),
-            "an uncorroborated ax-leave lead must not promote on the debounce either"
+            "an uncorroborated ax-leave lead must not promote on a short wait either"
         )
 
         // The live-call signature returns 32.5 s later and reverts through END8.
@@ -338,9 +310,7 @@ final class CallTeardownOracleTests: XCTestCase {
             now: recordingStart.addingTimeInterval(30),
             provisionalStartedAt: recordingStart.addingTimeInterval(5),
             lastTeardownAt: recordingStart.addingTimeInterval(-3),
-            oracleAvailable: true,
-            recordingStartedAt: recordingStart,
-            logLastWrittenAt: recordingStart.addingTimeInterval(20)
+            recordingStartedAt: recordingStart
         ))
         guard case .hold = verdict else {
             return XCTFail("a previous call's teardown must not confirm this recording, got \(verdict)")
@@ -353,9 +323,7 @@ final class CallTeardownOracleTests: XCTestCase {
             now: recordingStart.addingTimeInterval(60),
             provisionalStartedAt: recordingStart.addingTimeInterval(50),
             lastTeardownAt: recordingStart.addingTimeInterval(48),
-            oracleAvailable: true,
-            recordingStartedAt: recordingStart,
-            logLastWrittenAt: recordingStart.addingTimeInterval(48)
+            recordingStartedAt: recordingStart
         ))
         XCTAssertEqual(verdict, .confirm(reason: .teardownObserved))
     }
@@ -369,9 +337,7 @@ final class CallTeardownOracleTests: XCTestCase {
             now: provisional,
             provisionalStartedAt: provisional,
             lastTeardownAt: provisional.addingTimeInterval(-6.82),
-            oracleAvailable: true,
-            recordingStartedAt: recordingStart,
-            logLastWrittenAt: provisional
+            recordingStartedAt: recordingStart
         ))
         XCTAssertEqual(
             verdict, .confirm(reason: .teardownObserved),
@@ -380,6 +346,9 @@ final class CallTeardownOracleTests: XCTestCase {
     }
 
     // MARK: - END12: a quiet generation is not a dead one
+
+    // The generation's mtime is not an input at all since END17, so these pin the history: each
+    // shape that once confirmed on a stale-looking mtime now holds unless the teardown is there.
 
     /// END10 item 5 read a generation not written since the recording began as a dead log and
     /// confirmed on it. In the field that was 11 of 12 consults (2026-08-22 to 2026-09-02), 8 of
@@ -393,9 +362,7 @@ final class CallTeardownOracleTests: XCTestCase {
             now: recordingStart.addingTimeInterval(320),
             provisionalStartedAt: recordingStart.addingTimeInterval(318),
             lastTeardownAt: nil,
-            oracleAvailable: true,
-            recordingStartedAt: recordingStart,
-            logLastWrittenAt: recordingStart.addingTimeInterval(-180)
+            recordingStartedAt: recordingStart
         ))
         assertHold(verdict, elapsed: 2, "a quiet log is not a dead log; the call is still up")
     }
@@ -406,9 +373,7 @@ final class CallTeardownOracleTests: XCTestCase {
             now: recordingStart.addingTimeInterval(120),
             provisionalStartedAt: recordingStart.addingTimeInterval(110),
             lastTeardownAt: nil,
-            oracleAvailable: true,
-            recordingStartedAt: recordingStart,
-            logLastWrittenAt: recordingStart.addingTimeInterval(115)
+            recordingStartedAt: recordingStart
         ))
         guard case .hold = verdict else {
             return XCTFail("a live log with no teardown is the whole point of the hold, got \(verdict)")
@@ -426,141 +391,12 @@ final class CallTeardownOracleTests: XCTestCase {
             now: recordingStart.addingTimeInterval(120),
             provisionalStartedAt: recordingStart.addingTimeInterval(110),
             lastTeardownAt: recordingStart.addingTimeInterval(105),
-            oracleAvailable: true,
-            recordingStartedAt: recordingStart,
-            logLastWrittenAt: recordingStart.addingTimeInterval(-60)
+            recordingStartedAt: recordingStart
         ))
         XCTAssertEqual(verdict, .confirm(reason: .teardownObserved))
     }
 
-    // MARK: - END13: a live cross-class signal vetoes the cap
-
-    /// The 2026-09-04 14:05 cut, as the pure decision. An ax-leave-led provisional, Teams' teardown
-    /// line carrying nothing for this call to this day, and `ProcessAudioSignal` reporting
-    /// `value: true` at 13:33:52 and never reporting an end for the rest of the meeting. The cap
-    /// confirmed at 160.8 s and trimmed 2 m 49 s of a live call out of the recording; the owner
-    /// pressed Record again 4.2 s later and stayed in the meeting another 40 minutes.
-    ///
-    /// Red against `main`, where this asserted `.confirm(reason: .holdCapReached)` at 160.8.
-    func test_the_2026_09_04_cap_does_not_fire_while_process_audio_says_the_call_is_up() {
-        assertHold(
-            CallTeardownOracle.decide(
-                input(now: 160.8, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .callIsUp)
-            ),
-            elapsed: 160.8,
-            "four independent readings said the call was live; the cap read none of them"
-        )
-    }
-
-    /// The veto is not a licence to hold forever, and the ceiling is where the hold ends anyway.
-    /// A distinct reason so the field can tell "capped with no evidence" from "capped while a
-    /// signal still claimed the call was live", which is this change's own drift detector.
-    func test_a_vetoed_hold_still_terminates_at_the_ceiling_with_its_own_reason() {
-        let ceiling = CallTeardownOracle.defaultLiveSignalCeilingSec
-        assertHold(
-            CallTeardownOracle.decide(
-                input(now: ceiling - 1, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .callIsUp)
-            ),
-            elapsed: ceiling - 1
-        )
-        XCTAssertEqual(
-            CallTeardownOracle.decide(
-                input(now: ceiling, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .callIsUp)
-            ),
-            .confirm(reason: .liveSignalCeilingReached)
-        )
-        XCTAssertEqual(
-            CallTeardownOracle.decide(
-                input(now: ceiling * 10, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .callIsUp)
-            ),
-            .confirm(reason: .liveSignalCeilingReached),
-            "a vetoed hold always terminates, which is the property END9's cap exists for"
-        )
-        XCTAssertGreaterThan(
-            ceiling, CallTeardownOracle.defaultHoldCapSec,
-            "a ceiling at or below the cap would make the veto unreachable"
-        )
-    }
-
-    /// The item most likely to be got wrong. `ProcessAudioSignal` resolved 0 times in 19.8 days of
-    /// dogfood before DET8, its resolver still returns `.unresolved(OSStatus)` and the signal holds
-    /// prior state on a nil probe rather than emitting, so on such a machine nothing ever reaches
-    /// the reading and it stays `.unknown`. That machine must keep today's 150 s bound, not get an
-    /// unbounded hold.
-    func test_an_unresolved_probe_does_not_veto_and_keeps_todays_cap() {
-        // The DET8 shape, spelled through the type that produces it: an enumeration that succeeded
-        // and simply matched no object for this app. The signal emits nothing, so the host
-        // forwards `.unknown`.
-        let resolution = ProcessAudioSignal.ProcessObjectResolution.unresolved(noErr)
-        guard case .unresolved = resolution else {
-            return XCTFail("the DET8 shape is an unresolved resolution carrying its OSStatus")
-        }
-
-        XCTAssertEqual(
-            CallTeardownOracle.decide(
-                input(now: 150, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .unknown)
-            ),
-            .confirm(reason: .holdCapReached),
-            "a machine whose probe never resolves keeps the bound it has today"
-        )
-        XCTAssertEqual(
-            CallTeardownOracle.decide(
-                input(now: 10_000, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .unknown)
-            ),
-            .confirm(reason: .holdCapReached)
-        )
-    }
-
-    /// A signal that affirmatively says the call is down corroborates the end rather than
-    /// contradicting it, so it must not veto either. Only `.callIsUp` does.
-    func test_a_signal_saying_the_call_is_down_does_not_veto() {
-        XCTAssertEqual(
-            CallTeardownOracle.decide(
-                input(now: 150, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .callIsDown)
-            ),
-            .confirm(reason: .holdCapReached)
-        )
-    }
-
-    /// Everything before the cap is untouched: a live signal cannot turn a real end into a hold,
-    /// so a genuine teardown still confirms on the first consult with no added latency.
-    func test_the_veto_never_reaches_a_teardown_or_an_unavailable_oracle() {
-        XCTAssertEqual(
-            CallTeardownOracle.decide(
-                input(now: 1_000, provisionalStartedAt: 0, lastTeardownAt: -1, liveCallSignal: .callIsUp)
-            ),
-            .confirm(reason: .teardownObserved),
-            "a teardown on disk outranks the veto exactly as it outranks the cap"
-        )
-        XCTAssertEqual(
-            CallTeardownOracle.decide(
-                input(
-                    now: 1_000, provisionalStartedAt: 0, lastTeardownAt: nil,
-                    oracleAvailable: false, liveCallSignal: .callIsUp
-                )
-            ),
-            .confirm(reason: .oracleUnavailable),
-            "no usable log still means the pre-END9 behaviour, so this can only ever be neutral or better"
-        )
-    }
-
-    /// The property END9 wrote and END13 must not lose: whatever the signal says, a held
-    /// provisional terminates. Two multi-thousand-second stalls already exist in the event log.
-    func test_a_vetoed_provisional_still_always_terminates() {
-        let ceiling = CallTeardownOracle.defaultLiveSignalCeilingSec
-        for elapsed in stride(from: 0.0, through: ceiling * 2, by: 60.0) {
-            let verdict = CallTeardownOracle.decide(
-                input(now: elapsed, provisionalStartedAt: 0, lastTeardownAt: nil, liveCallSignal: .callIsUp)
-            )
-            if elapsed < ceiling {
-                assertHold(verdict, elapsed: elapsed)
-            } else {
-                XCTAssertEqual(verdict, .confirm(reason: .liveSignalCeilingReached))
-            }
-        }
-    }
-
-    /// The pre-END10 call shape (no recording start, no mtime) must keep behaving exactly as it did,
+    /// The pre-END10 call shape (no recording start) must keep behaving exactly as it did,
     /// so this change cannot regress anything that still calls it that way.
     func testOmittedEnd10InputsPreserveTheOriginalBehaviour() {
         let provisional = Date(timeIntervalSince1970: 1_000_000)
@@ -568,8 +404,7 @@ final class CallTeardownOracleTests: XCTestCase {
             CallTeardownOracle.decide(CallTeardownOracle.Input(
                 now: provisional,
                 provisionalStartedAt: provisional,
-                lastTeardownAt: provisional.addingTimeInterval(-2),
-                oracleAvailable: true
+                lastTeardownAt: provisional.addingTimeInterval(-2)
             )),
             .confirm(reason: .teardownObserved)
         )

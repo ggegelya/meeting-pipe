@@ -1,0 +1,25 @@
+{
+  "scenario": "teams_native_end15_mic_switch_audio_first",
+  "description": "END15's other order (2026-09-18 shape), synthetic: Teams releases its input first while switching microphones, the Leave button flickers invalid inside the gap, then the mic comes back. The returning mic reverts the hold.",
+  "engine": "promotion",
+  "expected_outcome": "no_end",
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "events": [
+    {"t": 0.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": 0.2, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 900.0, "kind": "process_audio_is_running_input_false", "state": "ended"},
+    {"t": 902.5, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 908.0, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 1700.0, "kind": "tick"}
+  ],
+  "expected_verdicts": [
+    {"after": "events[0]", "verdict": "starting"},
+    {"after": "events[0]", "verdict": "in_meeting"},
+    {"after": "events[2]", "verdict": "ending_provisional", "leading": "process_audio_is_running_input_false"},
+    {"after": "events[4]", "verdict": "in_meeting"}
+  ]
+}

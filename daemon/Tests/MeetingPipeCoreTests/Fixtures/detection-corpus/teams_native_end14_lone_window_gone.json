@@ -1,0 +1,22 @@
+{
+  "scenario": "teams_native_end14_lone_window_gone",
+  "description": "END14, 2026-10-08, synthetic: Teams dropped its window-title suffix, so the call window read as gone while Teams held the mic for the rest of the call. No hold opens and nothing ends, however long the window stays gone.",
+  "engine": "promotion",
+  "expected_outcome": "no_end",
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "events": [
+    {"t": 0.0, "kind": "shareable_content_window", "state": "live"},
+    {"t": 0.1, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 12.0, "kind": "shareable_content_window", "state": "ended"},
+    {"t": 120.0, "kind": "tick"},
+    {"t": 3600.0, "kind": "tick"}
+  ],
+  "expected_verdicts": [
+    {"after": "events[0]", "verdict": "starting"},
+    {"after": "events[0]", "verdict": "in_meeting"}
+  ]
+}

@@ -107,6 +107,16 @@ struct Meeting: Identifiable, Hashable {
     /// Defaulted so test constructors need not supply it.
     var micWarning: Bool = false
 
+    /// END17: where a held end began, in seconds from the recording's start, from
+    /// `<stem>.meta.json["held_end_trim_sec"]`. The recording keeps the audio after it and the
+    /// transcript leaves it out; the Audio tab says so and offers to restore it. Nil when the
+    /// recording ended on a definitive signal or the owner restored the tail.
+    var heldEndTrimSec: Double? = nil
+
+    /// END17 item 5: the stem this recording resumed from after an end that the same app's call
+    /// outlived (`<stem>.meta.json["resumed_from"]`). The header offers to merge the pair.
+    var resumedFrom: String? = nil
+
     /// Publish outcome from `<stem>.publish.json`'s `state` (TECH-I6, sourced
     /// there by PIPE14): "full" / "partial" / "none", nil for never-published
     /// rows. `publish_router.fanout` rewrites that sidecar on every publish, so
@@ -754,6 +764,8 @@ final class MeetingStore: ObservableObject {
             regulatedMode: (meta?["regulated_mode"] as? Bool),
             micDeviceName: (meta?["mic_device_name"] as? String),
             micWarning: (meta?["mic_silent"] as? Bool) ?? false,
+            heldEndTrimSec: meta.flatMap(HeldEndTrim.trimSeconds(meta:)),
+            resumedFrom: (meta?[ResumeAfterEnd.metaKey] as? String).flatMap { $0.isEmpty ? nil : $0 },
             publishState: PublishResult.resolveState(
                 publish: publishResult,
                 runPublishState: (run?["publish_state"] as? String)

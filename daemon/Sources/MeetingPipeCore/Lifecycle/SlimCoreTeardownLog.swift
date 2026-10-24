@@ -46,7 +46,8 @@ public enum SlimCoreTeardownLog {
     /// Newest rather than all of them: the oracle only ever asks "has a teardown happened since
     /// roughly now", so a tick that catches up on several calls at once needs only the last. The
     /// carry is not an optimization, it is correctness: without it a teardown flushed across two
-    /// ticks is silently dropped and the recording is held to the cap for a call that really ended.
+    /// ticks is silently dropped and a call that really ended is held until an engine dwell
+    /// confirms it, minutes late.
     public static func newestTeardown(
         inChunk chunk: Data, pending: Data
     ) -> (newest: Date?, carry: Data) {

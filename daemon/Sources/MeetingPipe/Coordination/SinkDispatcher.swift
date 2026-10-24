@@ -432,7 +432,18 @@ final class SinkDispatcher: @unchecked Sendable {
             "engine": transcriptionRunner.backendName,
         ])
         do {
-            let sidecar = try await transcriptionRunner.transcribe(wavURL: job.file, languageHint: languageHint)
+            var sidecar = try await transcriptionRunner.transcribe(wavURL: job.file, languageHint: languageHint)
+            // END17: a held end kept its post-call tail in the WAV; the words stop where the hold
+            // began, so the summary and every sink see the meeting and not the minutes after it.
+            // A re-transcribe honours it too until the owner restores the tail.
+            if let trimAt = HeldEndTrim.trimSeconds(forAudio: job.file) {
+                sidecar = HeldEndTrim.apply(sidecar, at: trimAt)
+                Log.event(category: "transcription", action: "held_end_excluded", attributes: [
+                    "file": job.file.lastPathComponent,
+                    "trim_sec": trimAt,
+                    "audio_seconds": sidecar.audioSeconds,
+                ])
+            }
             // UX69: the pass can also finish in the moments after the click, with
             // nothing left to throw from. Checking here, before anything is
             // written, is what stops that click being silently swallowed and the

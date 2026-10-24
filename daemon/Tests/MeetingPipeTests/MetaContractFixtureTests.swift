@@ -132,11 +132,35 @@ final class MetaContractFixtureTests: XCTestCase {
         XCTAssertEqual(reassigned["meeting_title"] as? String, "Design review")
     }
 
-    func test_all_fixtures_carry_schema_version_three() throws {
-        for name in ["source-only-regulated", "workflow-full", "workflow-lan", "workflow-nda", "workflow-reassigned-to-nda"] {
+    func test_all_fixtures_carry_schema_version_four() throws {
+        for name in ["source-only-regulated", "workflow-full", "workflow-lan", "workflow-nda", "workflow-reassigned-to-nda", "held-end-trim"] {
             let f = try fixture(name)
-            XCTAssertEqual(f["schema_version"] as? Int, 3, "\(name) must carry schema_version 3")
+            XCTAssertEqual(f["schema_version"] as? Int, 4, "\(name) must carry schema_version 4")
         }
+    }
+
+    /// END17: the suggested trim a held end leaves under a lossless capture. One fixture both
+    /// sides read: this side pins the key `build` writes, the Python side pins that the overlay
+    /// treats it as informational and changes no routing.
+    func test_held_end_trim_matches_fixture() throws {
+        let source = AppSource(
+            bundleID: "com.google.Chrome",
+            displayName: "Google Chrome",
+            kind: .browser,
+            meetingTitle: "Design review"
+        )
+        let dict = MeetingMetaSidecar.build(source: source, workflow: nil, heldEndTrimSec: 2531.5)
+        XCTAssertEqual(dict as NSDictionary, try fixture("held-end-trim"))
+        XCTAssertEqual(HeldEndTrim.trimSeconds(meta: dict), 2531.5)
+    }
+
+    /// The trim key rides the skip-empty guard like the mic keys, and a zero or absent trim
+    /// writes nothing.
+    func test_held_end_trim_present_only_when_set() {
+        let source = AppSource(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .native)
+        XCTAssertNil(MeetingMetaSidecar.build(source: source, workflow: nil)[HeldEndTrim.metaKey])
+        XCTAssertNil(MeetingMetaSidecar.build(source: source, workflow: nil, heldEndTrimSec: 0)[HeldEndTrim.metaKey])
+        XCTAssertTrue(MeetingMetaSidecar.build(source: nil, workflow: nil, heldEndTrimSec: 90).isEmpty)
     }
 
     /// WF7: `workflow_extra_sections` is a workflow_* key omitted when the workflow
@@ -171,7 +195,7 @@ final class MetaContractFixtureTests: XCTestCase {
         )
         XCTAssertEqual(withMic["mic_device_name"] as? String, "AirPods Pro")
         XCTAssertEqual(withMic["mic_silent"] as? Bool, true)
-        XCTAssertEqual(withMic["schema_version"] as? Int, 3)
+        XCTAssertEqual(withMic["schema_version"] as? Int, 4)
 
         let quietMic = MeetingMetaSidecar.build(source: source, workflow: nil, micDeviceName: "AirPods Pro")
         XCTAssertEqual(quietMic["mic_device_name"] as? String, "AirPods Pro")

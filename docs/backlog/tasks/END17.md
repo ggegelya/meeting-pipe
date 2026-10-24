@@ -34,12 +34,20 @@ END17 supersedes the rule-by-rule approach. It closes none of them; each keeps i
 - **DET13**: item 5 builds on change 1's retained candidate; DET13's closed change 2 is not reopened.
 - **T8** lands first: its raw incident traces and Core hold policy are what this task is verified against. **DET15** adds the per-app oracle this tier table consumes.
 
-## Owner decisions needed before pickup
+## Owner decisions (answered 2026-10-24)
 
-1. Accept the inversion: after a real leave that only a weak signal saw, the recording and the HUD run for up to `lone_dwell` before stopping, and the tail is trimmed afterwards.
-2. The `lone_dwell` value (the session proposes one from the corpus; minutes, not seconds).
-3. Keep-and-suggest for non-regulated workflows (item 3), or truncate everywhere as today.
-4. END15 first as a narrow P1 fix, or folded into this task.
+1. Accept the inversion: after a real leave that only a weak signal saw, the recording and the HUD run for up to `lone_dwell` before stopping, and the tail is trimmed afterwards. **Accepted.**
+2. The `lone_dwell` value. **12 minutes** (`PromotionEngine.defaultLoneDwell = 720`): above a ten-minute tab share, which acceptance needs, and below the 15 minute idle backstop. The local event log on the owner's personal Mac held one ended meeting, so the value was not derived from a corpus; the work laptop's log is where T8's extraction would measure it.
+3. Keep-and-suggest for non-regulated workflows (item 3), or truncate everywhere as today. **Keep and suggest.**
+4. END15 first as a narrow P1 fix, or folded into this task. **Folded in.**
+
+T8 sequencing (asked at pickup): **END17 first, on synthetic traces** built from the raw rows each END spec quotes; END17 stays `partial` until T8's raw traces replay to `no_end`.
+
+## Shipped 2026-10-24 (partial)
+
+Items 1 to 6 as scoped, with these choices the spec left open. `confirm_dwell` is 60 s, above DET8's 11.4 s and the 22 s inside which the 2026-10-22 incident re-acquired the mic; the device-switch gap END15 asked to measure is still unmeasured. The end debounce (`detection.debounce_end_sec`, its Preferences slider and `config.py`'s copy) had no consumer left and was retired. The revert rule is any signal of the lead's own class, any signal that had itself gone ended, or process audio. The Library's merge offer sits in the detail header ("Picks up where ... stopped." with **Merge**), which restores and re-transcribes the earlier recording's held tail before FEAT9's merge; any merge drops the primary's trim key. The incident traces are engine-only, so END9's empty re-walk and END12's quiet log are pinned on the host side in `CallTeardownHoldTests` instead.
+
+Remaining: replay T8's raw traces for END9, END12 to END15 (and drop the synthetic ones T8 replaces), the owner's mic-switch measurement for `defaultConfirmDwell`, and the walkthrough below.
 
 ## Explicitly not / out of scope
 

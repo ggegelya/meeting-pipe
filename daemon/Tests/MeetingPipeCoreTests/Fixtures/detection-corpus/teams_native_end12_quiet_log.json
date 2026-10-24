@@ -1,0 +1,23 @@
+{
+  "scenario": "teams_native_end12_quiet_log",
+  "description": "END12, 2026-09-02 12:36, synthetic engine half: the Leave button went invalid five minutes into a live call whose SlimCore log looked stale, and the old rule confirmed on the first consult. The engine holds past the old 150 s cap until the control returns; the host half (a quiet or unreadable log is no evidence) is pinned in CallTeardownHoldTests.",
+  "engine": "promotion",
+  "expected_outcome": "no_end",
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "events": [
+    {"t": 0.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": 300.0, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 451.0, "kind": "tick"},
+    {"t": 480.0, "kind": "ax_leave_button", "state": "live"}
+  ],
+  "expected_verdicts": [
+    {"after": "events[0]", "verdict": "starting"},
+    {"after": "events[0]", "verdict": "in_meeting"},
+    {"after": "events[1]", "verdict": "ending_provisional", "leading": "ax_leave_button_invalid"},
+    {"after": "events[3]", "verdict": "in_meeting"}
+  ]
+}

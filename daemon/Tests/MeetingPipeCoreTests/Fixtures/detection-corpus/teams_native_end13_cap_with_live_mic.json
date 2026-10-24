@@ -1,0 +1,24 @@
+{
+  "scenario": "teams_native_end13_cap_with_live_mic",
+  "description": "END13, 2026-09-04, synthetic: the accessibility tree blanked and came back with no Leave button while Teams held the mic for the rest of the meeting. Past the old 150 s cap, past the lone dwell and past the old 7200 s ceiling, nothing ends while the mic reads live.",
+  "engine": "promotion",
+  "expected_outcome": "no_end",
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "events": [
+    {"t": 0.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": 0.1, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 1872.0, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 2032.8, "kind": "tick"},
+    {"t": 2600.0, "kind": "tick"},
+    {"t": 9100.0, "kind": "tick"}
+  ],
+  "expected_verdicts": [
+    {"after": "events[0]", "verdict": "starting"},
+    {"after": "events[0]", "verdict": "in_meeting"},
+    {"after": "events[2]", "verdict": "ending_provisional", "leading": "ax_leave_button_invalid"}
+  ]
+}

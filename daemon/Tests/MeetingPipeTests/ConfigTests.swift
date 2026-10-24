@@ -39,7 +39,6 @@ final class ConfigTests: XCTestCase {
         let cfg = ConfigStore(configURL: url).config
         XCTAssertEqual(cfg.detection.manualHotkey, "ctrl+option+m")
         XCTAssertEqual(cfg.detection.forceStopHotkey, "ctrl+option+shift+m")
-        XCTAssertEqual(cfg.detection.debounceEndSec, 5)
         XCTAssertFalse(cfg.modes.regulatedMode)
     }
 
@@ -50,12 +49,10 @@ final class ConfigTests: XCTestCase {
         // dead knobs: the user changes the setting and nothing happens.
         let cfg = ConfigStore(configURL: writeTOML("""
         [detection]
-        debounce_end_sec = 7
         prompt_timeout_sec = 45
         reprompt_cooldown_sec = 120
         mic_only_silence_seconds = 600
         """)).config
-        XCTAssertEqual(cfg.detection.debounceEndSec, 7)
         XCTAssertEqual(cfg.detection.promptTimeoutSec, 45)
         XCTAssertEqual(cfg.detection.repromptCooldownSec, 120)
         XCTAssertEqual(cfg.detection.micOnlySilenceSec, 600)
@@ -64,11 +61,11 @@ final class ConfigTests: XCTestCase {
     func testSecondsKnobsStillAcceptFloatTomlLiterals() throws {
         let cfg = ConfigStore(configURL: writeTOML("""
         [detection]
-        debounce_end_sec = 7.5
         prompt_timeout_sec = 45.5
+        reprompt_cooldown_sec = 90.5
         """)).config
-        XCTAssertEqual(cfg.detection.debounceEndSec, 7.5, accuracy: 1e-9)
         XCTAssertEqual(cfg.detection.promptTimeoutSec, 45.5, accuracy: 1e-9)
+        XCTAssertEqual(cfg.detection.repromptCooldownSec, 90.5, accuracy: 1e-9)
     }
 
     func testParsesForceStopHotkeyOverride() throws {
@@ -112,8 +109,9 @@ final class ConfigTests: XCTestCase {
 
     func testIgnoresLegacyFieldsWithoutCrashing() throws {
         // Older configs may still have audio_device / capture_mode etc., plus the
-        // two knobs HYG2 deleted (sample_rate, debounce_start_sec). We don't read
-        // any of them anymore but parsing should silently succeed.
+        // two knobs HYG2 deleted (sample_rate, debounce_start_sec) and the one END17
+        // deleted (debounce_end_sec). We don't read any of them anymore but parsing
+        // should silently succeed.
         let url = writeTOML("""
         [recording]
         output_dir = "/tmp/x"
@@ -126,11 +124,12 @@ final class ConfigTests: XCTestCase {
         [detection]
         debounce_start_sec = 12
         debounce_end_sec = 7
+        prompt_timeout_sec = 45
         """)
         let cfg = ConfigStore(configURL: url).config
         XCTAssertEqual(cfg.recording.outputDir.path, "/tmp/x")
         // The live neighbour still parses; a deleted key alongside it is inert.
-        XCTAssertEqual(cfg.detection.debounceEndSec, 7)
+        XCTAssertEqual(cfg.detection.promptTimeoutSec, 45)
     }
 
     func test_scrubbed_environment_drops_every_managed_token() {

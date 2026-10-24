@@ -3,8 +3,8 @@ import Foundation
 /// Pure builder for `<stem>.meta.json`. Canonical Swift-to-Python contract: the pipeline reads these keys via `mp.workflow.apply_overrides`. Unit-testable without a Coordinator.
 enum MeetingMetaSidecar {
 
-    /// Sidecar shape version. Bump when the key set or a key's semantics change so a future reader can migrate. The Python reader stays fail-open on it (an unknown key is ignored); the cross-language golden fixtures (CI2, `Fixtures/meta-contract/`) pin it on both sides. Bumped to 2 by MIC15 (added `mic_device_name` + `mic_silent`); to 3 by WF7 (added `workflow_extra_sections`).
-    static let schemaVersion = 3
+    /// Sidecar shape version. Bump when the key set or a key's semantics change so a future reader can migrate. The Python reader stays fail-open on it (an unknown key is ignored); the cross-language golden fixtures (CI2, `Fixtures/meta-contract/`) pin it on both sides. Bumped to 2 by MIC15 (added `mic_device_name` + `mic_silent`); to 3 by WF7 (added `workflow_extra_sections`); to 4 by END17 (added `held_end_trim_sec` and `resumed_from`).
+    static let schemaVersion = 4
 
     /// Build the JSON-serializable dictionary for a finished recording. Returns an empty dict when neither source nor workflow is available (and not regulated); caller skips the write so the pipeline's no-sidecar fallback (LLM-derived title, global config) stays intact.
     ///
@@ -17,12 +17,19 @@ enum MeetingMetaSidecar {
     /// dead-mic gate fired (drives the Library row warning). Both are informational; the Python
     /// reader ignores them (fail-open). Added only to a sidecar we already write, so the
     /// skip-empty invariant holds; `micSilent` is stamped only when true, like `regulated_mode`.
+    /// `heldEndTrimSec` is END17's suggested trim (`HeldEndTrim.metaKey`): seconds from the
+    /// recording's start at which a held end began. The WAV keeps the tail; transcription leaves it
+    /// out. Stamped only for a lossless capture, since regulated and NDA recordings are cut at stop.
+    /// `resumedFrom` is END17's link from a recording that resumed after an end to the one that end
+    /// stopped (`ResumeAfterEnd.metaKey`), which is what the Library's merge offer reads.
     static func build(
         source: AppSource?,
         workflow: Workflow?,
         regulatedMode: Bool = false,
         micDeviceName: String? = nil,
-        micSilent: Bool = false
+        micSilent: Bool = false,
+        heldEndTrimSec: Double? = nil,
+        resumedFrom: String? = nil
     ) -> [String: Any] {
         var dict: [String: Any] = [:]
         // Global zero-egress state at record time. Top-level (not under the
@@ -79,6 +86,12 @@ enum MeetingMetaSidecar {
             }
             if micSilent {
                 dict["mic_silent"] = true
+            }
+            if let heldEndTrimSec = heldEndTrimSec, heldEndTrimSec > 0 {
+                dict[HeldEndTrim.metaKey] = heldEndTrimSec
+            }
+            if let resumedFrom = resumedFrom, !resumedFrom.isEmpty {
+                dict[ResumeAfterEnd.metaKey] = resumedFrom
             }
             dict["schema_version"] = schemaVersion
         }

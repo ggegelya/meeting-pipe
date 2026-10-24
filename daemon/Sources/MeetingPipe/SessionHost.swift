@@ -40,9 +40,9 @@ protocol SessionHost: AnyObject {
     /// file tail with no system handle to fake: a test points one at a temp directory it writes.
     var callTeardown: CallTeardownWatcher { get }
     /// END13: what an independent cross-class signal last said about whether the engaged call is
-    /// still up, forwarded into `CallTeardownOracle` so the hold's cap cannot confirm an end a live
-    /// signal is contradicting. Behind the host rather than reached through `lifecycleCoord`
-    /// directly so a test can state the reading without engaging an adapter.
+    /// still up. Since END17 the engine applies the veto itself, so the host reads this only to
+    /// attribute its hold rows in the event log. Behind the host rather than reached through
+    /// `lifecycleCoord` directly so a test can state the reading without engaging an adapter.
     var liveCallSignal: CallTeardownOracle.LiveCallSignal { get }
     var silenceBackstop: IdleStopBackstop { get }
     var consent: ConsentStore { get }
@@ -158,9 +158,9 @@ protocol SessionHUDPresenting: AnyObject {
     func resetFlagCount()
     /// MIC14: show or clear the persistent "Off the record" state on the HUD.
     func setOffTheRecord(_ on: Bool)
-    /// END9: the call looks over but Teams has not said so, and the recording is deliberately still
-    /// running while we wait. Without a surface, a hold that runs to its 150 s cap is a bug report
-    /// rather than an observation.
+    /// END9 / END17: a weak end is being held and the recording is deliberately still running
+    /// while a dwell or a definitive signal decides. Without a surface, a hold that runs to the
+    /// 12 minute lone dwell is a bug report rather than an observation.
     func setConfirmingEnd(_ on: Bool)
 
     /// REC16: show or clear the persistent "Mic lost" state after an unrecoverable capture

@@ -57,7 +57,6 @@ final class ConfigStore: ObservableObject {
     /// only the regulated / NDA gate zeroes the mic live. Off skips mute tracking.
     @Published var honorAppMute: Bool = false { didSet { scheduleSave() } }
 
-    @Published var debounceEndSec: Double = 0 { didSet { scheduleSave() } }
     @Published var manualHotkey: String = "" { didSet { scheduleSave() } }
     /// Stop-only hotkey (TECH-C5); second Carbon binding. Default
     /// `ctrl+option+shift+m`.
@@ -207,7 +206,6 @@ final class ConfigStore: ObservableObject {
                 honorAppMute: honorAppMute
             ),
             detection: Config.Detection(
-                debounceEndSec: debounceEndSec,
                 manualHotkey: manualHotkey,
                 forceStopHotkey: forceStopHotkey,
                 flagMomentHotkey: flagMomentHotkey,
@@ -309,7 +307,6 @@ final class ConfigStore: ObservableObject {
             return fallback
         }
 
-        self.debounceEndSec = seconds("debounce_end_sec", ConfigDefaults.debounceEndSec)
         self.manualHotkey = det?["manual_hotkey"]?.string ?? ConfigDefaults.manualHotkey
         self.forceStopHotkey = det?["force_stop_hotkey"]?.string ?? ConfigDefaults.forceStopHotkey
         self.flagMomentHotkey = det?["flag_moment_hotkey"]?.string ?? ConfigDefaults.flagMomentHotkey
@@ -405,7 +402,6 @@ final class ConfigStore: ObservableObject {
         ensureTable("recording")["voice_processing"] = voiceProcessing
         ensureTable("recording")["honor_app_mute"] = honorAppMute
 
-        ensureTable("detection")["debounce_end_sec"] = debounceEndSec
         ensureTable("detection")["manual_hotkey"] = manualHotkey
         ensureTable("detection")["force_stop_hotkey"] = forceStopHotkey
         ensureTable("detection")["flag_moment_hotkey"] = flagMomentHotkey

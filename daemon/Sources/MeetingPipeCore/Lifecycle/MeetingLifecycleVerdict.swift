@@ -2,9 +2,9 @@ import Foundation
 
 /// Verdict stream element: whether the recorder should be armed, held open, or closed.
 /// `MeetingLifecycleCoordinator` fuses PRIMARY signals into these cases; `RecordingStateMachine` acts on them.
-/// The `.endingProvisional` / `.ended` split is the core debounce: one PRIMARY flips to provisional,
-/// a second PRIMARY or 2.0 s of sustained ended-state promotes to `.ended`. This absorbs post-call
-/// chat-surface mic-grabs without the old `RepromptCooldown` patch.
+/// The `.endingProvisional` / `.ended` split is END17's hold: a weak end flips to provisional and the
+/// recording keeps running, and a definitive signal or a dwell (`PromotionEngine.tick`) promotes it
+/// to `.ended`. A signal returning live reverts it, so a false end costs nothing.
 /// `Equatable` is hand-rolled to ignore `at` so tests compare cause, not wall-clock.
 public enum MeetingLifecycleVerdict: Equatable, Sendable {
     /// No meeting in flight. Recorder closed.
@@ -16,7 +16,7 @@ public enum MeetingLifecycleVerdict: Equatable, Sendable {
     /// Recorder is open and writing.
     case inMeeting(context: MeetingLifecycleContext)
 
-    /// One PRIMARY ended; debounce running. Recorder stays open.
+    /// A weak end is held; the dwell is running. Recorder stays open.
     case endingProvisional(context: MeetingLifecycleContext, reason: EndingReason)
 
     /// Fully ended. Recorder closes; sidecar finalises.
@@ -85,7 +85,7 @@ public struct EndingReason: Equatable, Sendable {
     /// The first PRIMARY signal to flip to "ended", e.g. `"shareable_content_window_gone"`.
     public let leadingSignal: String
 
-    /// Additional PRIMARYs that confirmed the end. Empty on `.endingProvisional`; populated on `.ended` when a second PRIMARY arrived before the debounce elapsed.
+    /// Additional PRIMARYs that confirmed the end. Empty on `.endingProvisional`; on `.ended`, the other signals that had ended, plus a pseudo-signal naming a non-signal route (`lone_dwell`, `call_teardown_observed`).
     public let confirmedBy: [String]
 
     public init(leadingSignal: String, confirmedBy: [String] = []) {

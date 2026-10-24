@@ -1,0 +1,27 @@
+{
+  "scenario": "teams_native_end15_mic_switch_ax_first",
+  "description": "END15, 2026-10-22, synthetic from the raw rows its spec quotes: the Leave button reads invalid while Teams reopens the new microphone, Teams releases its input six seconds later, then re-acquires it. The mic coming back reverts the hold; before END17 the release ended the call on the cross-class fast path.",
+  "engine": "promotion",
+  "expected_outcome": "no_end",
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "events": [
+    {"t": 0.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": 0.2, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 1800.0, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 1806.0, "kind": "process_audio_is_running_input_false", "state": "ended"},
+    {"t": 1810.0, "kind": "tick"},
+    {"t": 1812.0, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 1900.0, "kind": "tick"},
+    {"t": 2700.0, "kind": "tick"}
+  ],
+  "expected_verdicts": [
+    {"after": "events[0]", "verdict": "starting"},
+    {"after": "events[0]", "verdict": "in_meeting"},
+    {"after": "events[2]", "verdict": "ending_provisional", "leading": "ax_leave_button_invalid"},
+    {"after": "events[5]", "verdict": "in_meeting"}
+  ]
+}

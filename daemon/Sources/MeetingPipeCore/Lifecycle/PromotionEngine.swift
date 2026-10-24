@@ -17,7 +17,7 @@ public enum PrimarySignalKind: String, Equatable, CaseIterable {
 /// corroboration of the first. Only ax-leave + window-gone are grouped (a Teams share re-render
 /// invalidates the Leave button and drops the call window together); every other signal is its
 /// own class, so the cross-class corroboration that already works is unchanged.
-public enum EndEvidenceClass: Equatable {
+public enum EndEvidenceClass: Hashable {
     case callWindowOrControl
     case processAudio
     case browserTabTitle
@@ -26,38 +26,30 @@ public enum EndEvidenceClass: Equatable {
 }
 
 public extension PrimarySignalKind {
-    /// TECH-END2: signals whose `.ended` is prone to transient AX staleness and so
-    /// must not single-handedly confirm a meeting end. `axLeaveButton` reads invalid
-    /// on a Teams call-UI re-render (the confirmed 2026-06-09 screen-share repro that
-    /// chopped one meeting into 4 fragments); a lone, uncorroborated invalid must be
-    /// held in provisional, not promoted to `.ended`, until something independent
-    /// corroborates. Reliable signals stay false here so they keep promoting on their
-    /// own via the debounce, preserving the ends that already work.
+    /// END17: the evidence tier. A definitive signal ends a recording at once; every other end
+    /// signal is weak, and a weak end only opens a hold that keeps recording until it is confirmed
+    /// by a dwell (`PromotionEngine.tick`) or by a definitive signal. Only an app quit is
+    /// definitive among the signals; the host adds the other two definitive routes, Teams' own
+    /// teardown line for this recording (`confirmProvisionalEnd`) and an explicit user Stop.
     ///
-    /// This paragraph used to name **window-gone** as that corroborator, and END6/AUD-10
-    /// had already made it impossible: `axLeaveButton` and `shareableContentWindow` are
-    /// one `EndEvidenceClass` (a Teams share re-render invalidates the Leave button and
-    /// drops the call window together), and `tick()` requires a *cross-class* corroborator,
-    /// so for a native meeting window-gone can never satisfy this guard. What actually
-    /// clears it is the AX re-walk (`confirmProvisionalEnd`), which is the daemon
-    /// verifying the control is really gone, or a genuinely different class such as
-    /// `processAudioIsRunningInput` or `workspaceAppTerminated`. The rule is the one
-    /// END6 intended; only this comment was stale (ARCH6).
+    /// The tier table is the design (ADR 0017): a new false-end shape extends the table rather
+    /// than adding a rule beside it. Every weak signal here has chopped a live meeting at least
+    /// once, which is why none of them may end one alone any more.
+    var isDefinitive: Bool { self == .workspaceAppTerminated }
+
+    /// TECH-END2: signals whose `.ended` is prone to transient AX staleness and so must not
+    /// single-handedly end a meeting that has not started recording yet (START1, the `.starting`
+    /// phase), and which never absorb a hold under END14's veto. `axLeaveButton` reads invalid on a
+    /// Teams call-UI re-render (the confirmed 2026-06-09 screen-share repro that chopped one meeting
+    /// into 4 fragments). DET8 put `processAudioIsRunningInput` in the same bucket as the condition
+    /// its spike pre-registered for reviving that signal at all: the probe caught an audio client
+    /// tearing down and re-registering under a new process-object ID, so a refreshing resolution
+    /// can read as an input drop that is really an unknown.
     ///
-    /// DET8 put `processAudioIsRunningInput` in the same bucket, and this is the rail its
-    /// spike pre-registered as the condition of reviving that signal at all: it ships
-    /// true-with-corroboration or it does not ship. Worth knowing that it survived a
-    /// measurement that superficially argues against needing it. The rail was justified on
-    /// two risks, mute and object churn, and the 2026-08-05 probe measured the mute half as
-    /// a NON-risk: two confirmed in-call mutes across two calls produced zero
-    /// `isRunningInput` transitions, the HAL independently agreeing with MIC8's SlimCore
-    /// finding that client mute is a transmit gate and the OS mic stays live. The churn half
-    /// stands and is now the live risk: the same probe caught an audio client that tore down
-    /// and re-registered under a NEW process-object ID, so a stale or refreshing resolution
-    /// can read as an input drop that is really an unknown. Two calls on one app is not a
-    /// licence to drop the rail either: Zoom's mute behaviour here is unmeasured, and a
-    /// future Teams can change. As a CORROBORATOR the signal is unaffected and still confirms
-    /// another class's lead on the fast path, which is most of what DET8 bought back.
+    /// Once a recording is running this no longer decides anything about ending it. Before END17
+    /// it held these leads in provisional until a cross-class corroborator arrived and let every
+    /// other weak signal end alone on the debounce; END17 holds every weak signal the same way,
+    /// so the distinction survives only where the recorder is not yet armed.
     var requiresCorroboration: Bool {
         switch self {
         case .axLeaveButton, .processAudioIsRunningInput:
@@ -86,42 +78,22 @@ public extension PrimarySignalKind {
         }
     }
 
-    /// END14: whether this signal's current `.live` reading vetoes a lone end. Only process audio:
-    /// Teams holding the mic is the control signal that the call is up (its own doc calls it the
-    /// signal that never fires without a real teardown), and the 2026-08-05 probe measured that a
-    /// client-side Teams mute leaves the OS mic running, so muting cannot lift the veto. Browser,
-    /// Webex and Slack adapters never emit it, so their ends are untouched by construction.
+    /// END14: whether this signal's current `.live` reading vetoes an end. Only process audio:
+    /// Teams holding the mic is the control signal that the call is up, and the 2026-08-05 probe
+    /// measured that a client-side Teams mute leaves the OS mic running, so muting cannot lift the
+    /// veto. Browser, Webex and Slack adapters never emit it, so their ends are untouched by
+    /// construction. END17 widened what it vetoes: while it reads `.live` no weak end confirms on
+    /// either dwell, so END13's 2026-09-04 shape (an ax-leave lead held while Teams held the mic)
+    /// can no longer reach the lone dwell either.
     var vetoesLoneEnd: Bool { self == .processAudioIsRunningInput }
 
-    /// END14: whether an end led by this signal yields to a live vetoer. Only the signals that may
-    /// end a meeting on their own (`requiresCorroboration == false`) need the check, and an app
-    /// quit is definitive, so it is never vetoed. On the native path this means window-gone, which
-    /// Teams' 2026-10-08 title change (the ` | Microsoft Teams` suffix dropped, so the call window
-    /// no longer matched) turned into a false end on every call.
+    /// END14: whether an end led by this signal is absorbed outright, with no hold opened, while a
+    /// vetoer reads `.live`. The signals that START1 lets end a `.starting` alone, minus the
+    /// definitive app quit. On the native path this means window-gone, which Teams' 2026-10-08
+    /// title change (the ` | Microsoft Teams` suffix dropped, so the call window no longer matched)
+    /// turned into a false end on every call; absorbing it keeps 217 holds a day off the HUD.
     var yieldsToLiveVeto: Bool {
-        !requiresCorroboration && self != .workspaceAppTerminated
-    }
-
-    /// END5: the minimum time a `.endingProvisional` led by this signal must hold before the
-    /// debounce alone promotes it to `.ended`. A plain browser meeting exposes no end signal but
-    /// the active tab title (`browserTabTitle`), which flips to `.ended` on any tab switch, not
-    /// just a real leave. With the short configured end-debounce a >5 s mid-call tab switch
-    /// promoted straight to `.ended` and chopped the recording. No cross-class corroborator exists
-    /// for a plain browser (only a full browser quit fires the cross-class `workspaceAppTerminated`),
-    /// so a genuine tab-switch end can be told from a transient excursion only by waiting: hold a
-    /// tab-title-led end for minutes so a returning tab reverts to `.inMeeting` (recording never
-    /// stops), while a real end still promotes once the title stays gone past the floor. A browser
-    /// quit (`workspaceAppTerminated`) still ends promptly on the cross-class fast path, and the
-    /// idle-silence backstop remains the ceiling. Zero for every other signal, so native ends keep
-    /// the configured debounce unchanged.
-    var endDebounceFloor: TimeInterval {
-        switch self {
-        case .browserTabTitle:
-            return 120
-        case .shareableContentWindow, .processAudioIsRunningInput, .axLeaveButton,
-             .workspaceAppTerminated, .windowTitleLeftPattern:
-            return 0
-        }
+        !requiresCorroboration && !isDefinitive
     }
 }
 
@@ -155,14 +127,41 @@ public struct PrimarySignalEvent: Equatable {
 /// Fuses PRIMARY signal events from per-app adapters into `MeetingLifecycleVerdict` transitions.
 /// Promotion rules: `.idle` -> `.starting` on first PRIMARY `.live`; `.starting` -> `.inMeeting`
 /// only via `confirmRecording()` (so `.inMeeting` means "recorder armed", not just "signal fired");
-/// `.starting` -> `.ended` directly when PRIMARY `.ended` arrives before the recorder arms;
-/// `.inMeeting` -> `.endingProvisional` on first PRIMARY `.ended`; `.endingProvisional` -> `.ended`
-/// when a second PRIMARY confirms or the debounce elapses; `.endingProvisional` -> `.inMeeting`
-/// if the leading signal flips back to `.live` (absorbs spurious flickers).
+/// `.starting` -> `.ended` directly when PRIMARY `.ended` arrives before the recorder arms.
+///
+/// Once recording, END17's tiers decide (ADR 0017). A definitive end (`isDefinitive`, or the host's
+/// `confirmProvisionalEnd`) moves to `.ended` at once. A weak end opens `.endingProvisional`, which
+/// the host treats as a hold that keeps recording, and `tick(at:)` confirms it only when weak
+/// signals from two evidence classes have both stayed ended for `confirmDwell`, or the hold has run
+/// `loneDwell`, and never while a vetoer reads `.live`. A signal returning `.live` inside the hold
+/// reverts to `.inMeeting`. Getting this wrong late costs a trimmed tail; getting it wrong early
+/// costs the rest of the meeting, so every rule here leans late.
 /// All decisions are returned as `Decision` so the caller can publish the verdict and log the transition.
 public final class PromotionEngine {
 
-    public static let defaultDebounce: TimeInterval = 2.0
+    /// END17: how long weak end signals from two evidence classes must both stay ended before the
+    /// pair confirms an end. Pinned from measurement rather than taste, in both directions:
+    /// DET8's 2026-08-05 probe measured Teams clearing every object's input flag within 11.4 s of a
+    /// real leave, so a genuine pair is complete well inside this; and END15's in-call device
+    /// switch releases the input for a few seconds (the 2026-10-22 incident re-acquired it inside
+    /// 22 s, the exact gap still to be measured by the owner), so the dwell sits well above any
+    /// switch observed. Too long costs only a trimmed tail on an app with no teardown oracle; too
+    /// short is END15 again.
+    public static let defaultConfirmDwell: TimeInterval = 60
+
+    /// END17: how long a hold with only one weak evidence class may run before it confirms. The
+    /// owner's decision (2026-10-24): 12 minutes, so a presenter who shares another browser tab for
+    /// ten minutes is still one recording, and below the 15 minute idle backstop, which stays the
+    /// ceiling for a silent post-call tail. The cost is up to this much extra recording after a
+    /// leave only a weak signal saw, trimmed from the transcript afterwards.
+    public static let defaultLoneDwell: TimeInterval = 720
+
+    /// The pseudo-signal recorded in `confirmedBy` when the lone dwell confirmed an end, so the
+    /// event log says which route ended a given recording.
+    public static let loneDwellEvidence = "lone_dwell"
+
+    /// The pseudo-signal the host records when Teams' own teardown line confirmed the hold.
+    public static let teardownEvidence = "call_teardown_observed"
 
     private enum Phase {
         case idle
@@ -182,9 +181,9 @@ public final class PromotionEngine {
         public let verdict: MeetingLifecycleVerdict
     }
 
-    /// END14: what each signal last reported this session. `observed` only says which kinds have
-    /// been seen, so before END14 a process-audio `.live` that was still current could not stop a
-    /// lone window-gone from ending the meeting.
+    /// END14: what each signal last reported this session. END17 reads `at` as "in this state
+    /// since": a repeated reading of the same state keeps the first stamp, so a dwell measures how
+    /// long a signal has stayed ended rather than when it last said so.
     typealias SignalStates = [PrimarySignalKind: SignalReading]
 
     struct SignalReading: Equatable {
@@ -199,19 +198,21 @@ public final class PromotionEngine {
         public let vetoedBy: PrimarySignalKind
     }
 
-    public let debounce: TimeInterval
+    public let confirmDwell: TimeInterval
+    public let loneDwell: TimeInterval
     private var phase: Phase = .idle
 
-    public init(debounce: TimeInterval = PromotionEngine.defaultDebounce) {
-        self.debounce = debounce
+    public init(
+        confirmDwell: TimeInterval = PromotionEngine.defaultConfirmDwell,
+        loneDwell: TimeInterval = PromotionEngine.defaultLoneDwell
+    ) {
+        self.confirmDwell = confirmDwell
+        self.loneDwell = loneDwell
     }
 
-    public var debounceInterval: TimeInterval { debounce }
-
-    /// True while the engine holds a provisional end awaiting the debounce (or a
-    /// corroborating signal): the only phase in which `tick(at:)` can do work.
-    /// The lifecycle coordinator reads this to arm the periodic tick only when it
-    /// can matter, instead of running it for the whole meeting (PERF5).
+    /// True while the engine holds a provisional end awaiting a dwell (or a definitive signal):
+    /// the only phase in which `tick(at:)` can do work. The lifecycle coordinator reads this to arm
+    /// the periodic tick only when it can matter, instead of running it for the whole meeting (PERF5).
     public var hasPendingEndDeadline: Bool {
         if case .endingProvisional = phase { return true }
         return false
@@ -236,6 +237,17 @@ public final class PromotionEngine {
         return states.first { $0.value.state == .live && $0.key.vetoesLoneEnd && $0.key.evidenceClass != kind.evidenceClass }?.key
     }
 
+    /// Record `event` in `states`, keeping the first stamp of an unchanged state (END17), and
+    /// return what the signal said before it.
+    @discardableResult
+    private static func record(_ event: PrimarySignalEvent, in states: inout SignalStates) -> SignalReading? {
+        let previous = states[event.kind]
+        if previous?.state != event.state {
+            states[event.kind] = SignalReading(state: event.state, at: event.timestamp)
+        }
+        return previous
+    }
+
     /// Ingest a PRIMARY signal event. Returns the verdict transition it triggered, or nil if the event doesn't change the phase.
     public func ingest(_ event: PrimarySignalEvent) -> Decision? {
         switch phase {
@@ -255,51 +267,51 @@ public final class PromotionEngine {
         }
     }
 
-    /// Promote `.endingProvisional` to `.ended` if the debounce has elapsed. No-op for every other phase.
+    /// END17: confirm a held weak end once a dwell has run. No-op in every other phase.
+    ///
+    /// Two routes, and a veto over both. The pair: weak signals from two evidence classes have each
+    /// stayed ended for `confirmDwell`, measured from the later of the two, so a signal that
+    /// flickers back (END15's mic switch, DET8's object churn) never completes it. The lone dwell:
+    /// the hold has run `loneDwell` with nothing returning, which is the only way a browser meeting
+    /// with no app quit ends (PD-3). Neither fires while a vetoer reads `.live`, because Teams
+    /// holding the mic is the one reading that says the call is up whatever the window or the
+    /// accessibility tree claims (END13, END14).
     public func tick(at now: Date) -> Decision? {
-        guard case .endingProvisional(let context, let leading, let startedAt, let observed, _) = phase else {
+        guard case .endingProvisional(let context, let leading, let startedAt, _, let states) = phase else {
             return nil
         }
-        // END5: a tab-title-led browser end holds for a minutes-long floor, not the short
-        // configured end-debounce, so a mid-call tab switch no longer chops the recording. Every
-        // other lead uses the configured debounce (floor 0). A cross-class corroborator still
-        // promotes immediately via `handleEndingProvisional`, unaffected by this floor.
-        let effectiveDebounce = max(debounce, leading.endDebounceFloor)
-        guard now.timeIntervalSince(startedAt) >= effectiveDebounce else { return nil }
-        let confirmedBy = Array(observed.subtracting([leading]).map { $0.rawValue }).sorted()
-        // TECH-END2 + END6/AUD-10: a staleness-prone leading signal (ax-leave) must not confirm
-        // an end on the debounce alone, and a SAME-class signal (window-gone for an ax-leave
-        // lead) is correlated, not independent, so it does not satisfy the guard either: the
-        // 2026-06-09 screen-share re-render invalidated the Leave button and dropped the call
-        // window together, which would otherwise chop one meeting into fragments. A genuine
-        // native end is promoted promptly by `confirmProvisionalEnd`, which the daemon calls
-        // once its Leave-button re-walk verifies the control is really gone; this guard is the
-        // backstop for the debounce path until that re-walk (or a genuinely independent,
-        // cross-class signal) corroborates. Reliable signals keep `requiresCorroboration ==
-        // false` and promote here on their own.
-        let crossClassCorroborated = observed.contains {
-            $0 != leading && $0.evidenceClass != leading.evidenceClass
+        if states.contains(where: { $0.key.vetoesLoneEnd && $0.value.state == .live }) { return nil }
+
+        var endedSince: [EndEvidenceClass: Date] = [:]
+        for (kind, reading) in states where reading.state == .ended {
+            endedSince[kind.evidenceClass] = min(endedSince[kind.evidenceClass] ?? reading.at, reading.at)
         }
-        if leading.requiresCorroboration && !crossClassCorroborated {
-            return nil
-        }
-        let reason = EndingReason(leadingSignal: leading.rawValue, confirmedBy: confirmedBy)
+        let dwelled = endedSince.values.filter { now.timeIntervalSince($0) >= confirmDwell }
+        let pairHeld = dwelled.count >= 2
+        let loneHeld = now.timeIntervalSince(startedAt) >= loneDwell
+        guard pairHeld || loneHeld else { return nil }
+
+        var confirmedBy = states
+            .filter { $0.value.state == .ended && $0.key != leading }
+            .map { $0.key.rawValue }
+        if !pairHeld { confirmedBy.append(Self.loneDwellEvidence) }
+        let reason = EndingReason(leadingSignal: leading.rawValue, confirmedBy: confirmedBy.sorted())
         phase = .ended(context: context)
         return Decision(verdict: .ended(context: context, reason: reason))
     }
 
-    /// The daemon re-walked the AX tree and verified the leading signal's control is genuinely
-    /// gone (not transient staleness; see `MeetingSessionController.rescueProvisionalEnd`). That
-    /// re-walk IS the corroboration `tick()` would otherwise wait for, so promote
-    /// `.endingProvisional` to `.ended` now instead of holding for a second signal that can lag
-    /// minutes on native clients. `rewalkSignal` is recorded in `confirmedBy` so the end reads as
-    /// corroborated. No-op in any other phase (a concurrent revert or end already handled it).
-    public func confirmProvisionalEnd(rewalkSignal: String = "ax_leave_rewalk") -> Decision? {
+    /// A definitive end the host observed and the signals cannot see: Teams' teardown line for this
+    /// recording (`CallTeardownOracle`), recorded in `confirmedBy` as `evidence` so the end reads as
+    /// confirmed by it. No-op in any other phase (a concurrent revert or end already handled it).
+    ///
+    /// Before END9 the host called this on an empty AX re-walk, which was one sample of a blank
+    /// accessibility tree rather than evidence; END17 leaves the teardown as its only caller.
+    public func confirmProvisionalEnd(evidence: String = PromotionEngine.teardownEvidence) -> Decision? {
         guard case .endingProvisional(let context, let leading, _, let observed, _) = phase else {
             return nil
         }
         var confirmedBy = observed.subtracting([leading]).map { $0.rawValue }
-        confirmedBy.append(rewalkSignal)
+        confirmedBy.append(evidence)
         let reason = EndingReason(leadingSignal: leading.rawValue, confirmedBy: confirmedBy.sorted())
         phase = .ended(context: context)
         return Decision(verdict: .ended(context: context, reason: reason))
@@ -327,7 +339,7 @@ public final class PromotionEngine {
         states: inout SignalStates
     ) -> Decision? {
         guard event.context == context else { return nil }
-        states[event.kind] = SignalReading(state: event.state, at: event.timestamp)
+        Self.record(event, in: &states)
         switch event.state {
         case .live:
             // Absorb; promotion to `.inMeeting` is `confirmRecording()`'s job so `.inMeeting` tracks the recorder, not signals.
@@ -380,39 +392,31 @@ public final class PromotionEngine {
         states: inout SignalStates
     ) -> Decision? {
         guard event.context == context else { return nil }
-        states[event.kind] = SignalReading(state: event.state, at: event.timestamp)
+        Self.record(event, in: &states)
         switch event.state {
         case .live:
             observed.insert(event.kind)
             phase = .inMeeting(context: context, observed: observed, states: states)
             return nil
         case .ended:
-            // END14: a lone end contradicted by a live process-audio reading opens no provisional.
-            // It is remembered in `states`, and the meeting ends the way every real end did from
-            // 2026-09-10 to 2026-10-08: Teams releases the mic, process audio leads, and the Leave
-            // button or the AX re-walk corroborates. The remembered window-gone is deliberately not
-            // seeded as that lead's corroborator once it is older than the debounce: a minimised
-            // window plus a DET8 object-churn blip would then end a live call on the debounce.
+            // END17: an app quit is the one signal that ends a recording without a hold.
+            if event.kind.isDefinitive {
+                let reason = EndingReason(leadingSignal: event.kind.rawValue, confirmedBy: [])
+                phase = .ended(context: context)
+                return Decision(verdict: .ended(context: context, reason: reason))
+            }
+            // END14: a lone end contradicted by a live process-audio reading opens no hold. It is
+            // remembered in `states`, and when Teams releases the mic, process audio leads a hold
+            // that this remembered window-gone pairs with once both have dwelled.
             if let vetoedBy = veto(for: event.kind, in: states) {
                 pendingVeto = EndVeto(leading: event.kind, vetoedBy: vetoedBy)
                 phase = .inMeeting(context: context, observed: observed, states: states)
                 return nil
             }
-            // END14: the clean leave. The window goes a beat before Teams releases the mic, so the
-            // window-gone was vetoed; when the mic follows within the debounce, that pair is the
-            // same cross-class confirmation the pre-veto engine reached on its fast path, so end at
-            // once with the window as the lead. Only within the debounce: an older held window-gone
-            // is exactly what the paragraph above refuses to seed.
-            if event.kind.vetoesLoneEnd, let held = states.first(where: { kind, reading in
-                kind.yieldsToLiveVeto
-                    && kind.evidenceClass != event.kind.evidenceClass
-                    && reading.state == .ended
-                    && event.timestamp.timeIntervalSince(reading.at) <= debounce
-            }) {
-                let reason = EndingReason(leadingSignal: held.key.rawValue, confirmedBy: [event.kind.rawValue])
-                phase = .ended(context: context)
-                return Decision(verdict: .ended(context: context, reason: reason))
-            }
+            // END17: every other end is weak and opens a hold. END14's instant pair (a vetoed
+            // window-gone plus the mic release within the debounce) went with the debounce: it is
+            // a pair like any other now, confirmed by Teams' teardown at once on the host or by the
+            // pair dwell elsewhere.
             let reason = EndingReason(leadingSignal: event.kind.rawValue, confirmedBy: [])
             phase = .endingProvisional(
                 context: context,
@@ -434,17 +438,16 @@ public final class PromotionEngine {
         states: inout SignalStates
     ) -> Decision? {
         guard event.context == context else { return nil }
-        states[event.kind] = SignalReading(state: event.state, at: event.timestamp)
+        let previous = Self.record(event, in: &states)
         switch event.state {
         case .ended:
             observed.insert(event.kind)
-            // END6/AUD-10: a distinct second signal confirms the end on this fast path only
-            // when it is in a DIFFERENT evidence class than the leading signal. ax-leave and
-            // window-gone are one class (a Teams share re-render invalidates the Leave button
-            // and drops the call window together), so the pair can no longer instant-confirm
-            // each other; a same-class second signal is absorbed, and the AX re-walk
-            // (confirmProvisionalEnd) or a genuinely independent signal must corroborate.
-            if event.kind != leading && event.kind.evidenceClass != leading.evidenceClass {
+            // END17: only a definitive signal ends a hold on arrival. A weak second signal used to
+            // confirm here at once when it was cross-class (END6), and that is the path END15's
+            // mic switch took on 2026-10-22: Teams released its input for a few seconds while the
+            // Leave button flickered, and the pair ended a live call. It is absorbed now and
+            // `tick` confirms it only after both have stayed ended for the dwell.
+            if event.kind.isDefinitive {
                 let confirmedBy = Array(observed.subtracting([leading]).map { $0.rawValue }).sorted()
                 let reason = EndingReason(leadingSignal: leading.rawValue, confirmedBy: confirmedBy)
                 phase = .ended(context: context)
@@ -455,28 +458,27 @@ public final class PromotionEngine {
                 startedAt: startedAt, observed: observed, states: states
             )
             return nil
-        case .live where event.kind.evidenceClass == leading.evidenceClass:
-            // END8: a returning signal reverts the provisional when it shares the leading
-            // signal's evidence class, not only when it is the same kind. A window-gone lead
-            // (an off-screen native window, `onScreenWindowsOnly`) is reverted by the AX
-            // rescue's healthy Leave button (both `.callWindowOrControl`), so minimizing a
-            // meeting no longer chops the recording. A cross-class `.live` still cannot revert.
-            phase = .inMeeting(context: context, observed: observed.subtracting([leading]), states: states)
-            return Decision(verdict: .inMeeting(context: context))
-        case .live where veto(for: leading, in: states) == event.kind:
-            // END14: the one cross-class return that reverts. A window-gone that opened its
-            // provisional before process audio had reported anything is reverted once Teams is
-            // seen holding the mic, rather than promoting on the debounce. END8's conservatism
-            // still holds for every other cross-class `.live`.
-            pendingVeto = EndVeto(leading: leading, vetoedBy: event.kind)
-            phase = .inMeeting(context: context, observed: observed.subtracting([leading]), states: states)
-            return Decision(verdict: .inMeeting(context: context))
         case .live:
-            phase = .endingProvisional(
-                context: context, leading: leading,
-                startedAt: startedAt, observed: observed, states: states
-            )
-            return nil
+            // END17: any signal coming back reverts the hold. Three readings count. A signal of the
+            // lead's own evidence class (END8: the AX rescue's healthy Leave button reverts a
+            // window-gone lead, so minimising a call is not an end). A signal that had itself gone
+            // ended and now returns, whatever its class: END15's mic switch, in either order, is
+            // exactly a process-audio drop that comes back. And a vetoer reporting the call is up
+            // (END14). A cross-class `.live` from a signal that never went ended says nothing new
+            // and leaves the hold alone.
+            let returning = previous?.state == .ended
+            guard event.kind.evidenceClass == leading.evidenceClass || returning || event.kind.vetoesLoneEnd else {
+                phase = .endingProvisional(
+                    context: context, leading: leading,
+                    startedAt: startedAt, observed: observed, states: states
+                )
+                return nil
+            }
+            if event.kind.vetoesLoneEnd {
+                pendingVeto = EndVeto(leading: leading, vetoedBy: event.kind)
+            }
+            phase = .inMeeting(context: context, observed: observed.subtracting([leading]), states: states)
+            return Decision(verdict: .inMeeting(context: context))
         }
     }
 }

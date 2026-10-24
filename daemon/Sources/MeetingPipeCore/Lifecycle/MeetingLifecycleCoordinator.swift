@@ -32,7 +32,7 @@ public final class MeetingLifecycleCoordinator {
     private var generation = 0
 
     /// END13: the last state `processAudioIsRunningInput` reported for the engaged session, as the
-    /// tri-state `CallTeardownOracle` consumes. Guarded by `lock` because adapter sink callbacks
+    /// tri-state `CallTeardownOracle.LiveCallSignal` the host logs. Guarded by `lock` because adapter sink callbacks
     /// fire on the HAL bus queue or a poll timer queue while the reader (the teardown hold's
     /// once-a-second consult) runs on main.
     ///
@@ -152,7 +152,8 @@ public final class MeetingLifecycleCoordinator {
     /// opinion to be had: no adapter engaged, an adapter whose config sets `usesProcessAudio` false
     /// (Webex holds the mic open post-call, so its read would say nothing about the call), and the
     /// DET8 shape where the resolver returns `.unresolved` and the signal never emits at all.
-    /// `CallTeardownOracle` treats all three the same way, which is to leave today's cap alone.
+    /// Since END17 this is read only to attribute the host's hold rows; the engine applies the veto
+    /// from its own per-signal readings.
     public var liveCallSignal: CallTeardownOracle.LiveCallSignal {
         lock.withLock { liveCallSignalState }
     }
@@ -205,7 +206,7 @@ public final class MeetingLifecycleCoordinator {
 
     /// PERF5: arm or disarm the periodic tick so it runs only while the engine
     /// needs it. `engine.tick` advances an `.endingProvisional` toward `.ended`
-    /// on the debounce and is a no-op in every other phase, so the tick is
+    /// on END17's dwells and is a no-op in every other phase, so the tick is
     /// pointless for the rest of a meeting. Called on `engineQueue` after every
     /// engine mutation: it samples the engine's pending state there (the only
     /// queue that mutates the engine) and hops to main to touch the timer, since
@@ -257,13 +258,13 @@ public final class MeetingLifecycleCoordinator {
         }
     }
 
-    /// Promote `.endingProvisional` to `.ended` because the daemon's Leave-button re-walk verified
-    /// the control is genuinely gone. The re-walk is the corroboration, so this skips the debounce
-    /// wait that `tick()` enforces. No-op when the engine is not in `.endingProvisional`.
-    public func confirmProvisionalEnd() {
+    /// Promote `.endingProvisional` to `.ended` on definitive evidence the signals cannot see: the
+    /// host observed Teams' teardown line for this recording (END17's definitive tier), so this skips
+    /// the dwell `tick()` would otherwise wait out. No-op when the engine is not in `.endingProvisional`.
+    public func confirmProvisionalEnd(evidence: String = PromotionEngine.teardownEvidence) {
         engineQueue.async { [weak self] in
             guard let self = self else { return }
-            if let decision = self.engine.confirmProvisionalEnd() {
+            if let decision = self.engine.confirmProvisionalEnd(evidence: evidence) {
                 self.publish(decision.verdict)
             }
             self.reconcileTick(generation: self.currentGeneration())

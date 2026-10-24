@@ -112,17 +112,38 @@ final class PromotionEngineTests: XCTestCase {
         )
     }
 
-    func test_second_distinct_ended_signal_promotes_to_ended_with_confirmation() {
-        // No prior process-audio `.live`: with one, END14's veto absorbs the window-gone and
-        // this is no longer the window-led fast path (see the END14 tests below).
+    // MARK: - END17: weak ends hold, dwells confirm
+
+    private let dwell = PromotionEngine.defaultConfirmDwell
+    private let lone = PromotionEngine.defaultLoneDwell
+
+    func test_the_dwells_are_the_pinned_values_END17() {
+        XCTAssertEqual(PromotionEngine.defaultConfirmDwell, 60, "above DET8's 11.4 s and END15's mic-switch gap")
+        XCTAssertEqual(PromotionEngine.defaultLoneDwell, 720, "the owner's 12 minute decision (2026-10-24)")
+        XCTAssertLessThan(PromotionEngine.defaultLoneDwell, 900, "below the idle backstop, which stays the ceiling")
+    }
+
+    func test_only_an_app_quit_is_definitive_END17() {
+        XCTAssertTrue(PrimarySignalKind.workspaceAppTerminated.isDefinitive)
+        for kind in PrimarySignalKind.allCases where kind != .workspaceAppTerminated {
+            XCTAssertFalse(kind.isDefinitive, "\(kind.rawValue) has chopped a live meeting and must hold")
+        }
+    }
+
+    /// A weak cross-class pair used to end on arrival (END6's fast path). It holds now, and confirms
+    /// once both signals have stayed ended for the confirm dwell.
+    func test_a_weak_cross_class_pair_confirms_only_after_the_dwell_END17() {
         let engine = PromotionEngine()
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
-        let decision = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 1.5))
-
+        XCTAssertNil(
+            engine.ingest(event(.processAudioIsRunningInput, .ended, at: 1.5)),
+            "a weak second signal is absorbed, not an end"
+        )
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1.5 + dwell - 0.1)), "the later signal has not dwelled yet")
         XCTAssertEqual(
-            decision?.verdict,
+            engine.tick(at: Date(timeIntervalSince1970: 1.5 + dwell))?.verdict,
             .ended(
                 context: teamsContext,
                 reason: EndingReason(
@@ -133,90 +154,141 @@ final class PromotionEngineTests: XCTestCase {
         )
     }
 
-    func test_tick_after_debounce_promotes_to_ended_without_confirmation() {
-        let engine = PromotionEngine(debounce: 2.0)
+    /// A lone weak end confirms on the lone dwell and says so in `confirmed_by`.
+    func test_a_lone_weak_end_confirms_only_on_the_lone_dwell_END17() {
+        let engine = PromotionEngine()
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
 
-        let pre = engine.tick(at: Date(timeIntervalSince1970: 2.5))
-        XCTAssertNil(pre, "Debounce has not elapsed yet")
-
-        let post = engine.tick(at: Date(timeIntervalSince1970: 3.0))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 3)), "the old 2 s debounce ends nothing")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1 + dwell + 1)), "one class is not a pair")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1 + lone - 1)))
         XCTAssertEqual(
-            post?.verdict,
+            engine.tick(at: Date(timeIntervalSince1970: 1 + lone))?.verdict,
             .ended(
                 context: teamsContext,
-                reason: EndingReason(leadingSignal: "shareable_content_window_gone", confirmedBy: [])
+                reason: EndingReason(leadingSignal: "shareable_content_window_gone", confirmedBy: ["lone_dwell"])
             )
         )
     }
 
     func test_leading_signal_flipping_back_to_live_reverts_to_in_meeting() {
-        let engine = PromotionEngine(debounce: 2.0)
+        let engine = PromotionEngine()
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
         let revert = engine.ingest(event(.shareableContentWindow, .live, at: 1.2))
 
         XCTAssertEqual(revert?.verdict, .inMeeting(context: teamsContext))
-        let post = engine.tick(at: Date(timeIntervalSince1970: 3.5))
-        XCTAssertNil(post, "Debounce must not fire after a revert")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1 + lone + 1)), "no dwell runs after a revert")
     }
 
-    // MARK: - END5: browser tab-title end debounce floor
-
-    func test_browser_tab_title_end_holds_past_the_configured_debounce_END5() {
-        // A browser exposes no end signal but the active tab title. A mid-call tab switch flips it
-        // to `.ended`; with only the short configured end-debounce this promoted in seconds and
-        // chopped the recording. The minutes-long floor holds it instead.
-        let engine = PromotionEngine(debounce: 5.0)
-        _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
+    /// A signal re-reporting the state it is already in keeps its first stamp, so a repeated
+    /// `.ended` cannot push a dwell out and a dwell measures how long it has stayed ended.
+    func test_a_repeated_reading_keeps_its_first_stamp_END17() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
         _ = engine.confirmRecording()
-        _ = engine.ingest(browserEvent(.browserTabTitle, .ended, at: 10))
-        // Well past the 5 s configured debounce, still inside the 120 s floor: no end.
-        XCTAssertNil(
-            engine.tick(at: Date(timeIntervalSince1970: 90)),
-            "A tab-title-led browser end must not promote on the short configured debounce"
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 2))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 50))
+        XCTAssertNotNil(
+            engine.tick(at: Date(timeIntervalSince1970: 2 + dwell)),
+            "the pair dwelled from the first reading, not the repeat"
         )
     }
 
-    func test_browser_tab_title_end_promotes_after_the_minutes_long_floor_END5() {
-        let engine = PromotionEngine(debounce: 5.0)
+    // MARK: - END15: an in-call microphone switch
+
+    /// The 2026-10-22 sequence. The Leave button reads invalid while Teams reopens the new mic, Teams
+    /// releases its input six seconds later and re-acquires it. Before END17 the release ended the
+    /// call on the cross-class fast path; red against that engine.
+    func test_a_mic_switch_with_the_leave_button_first_never_ends_END15() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 100))
+        XCTAssertNil(engine.ingest(event(.processAudioIsRunningInput, .ended, at: 106)), "the release is not an end")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 110)))
+        XCTAssertEqual(
+            engine.ingest(event(.processAudioIsRunningInput, .live, at: 112))?.verdict,
+            .inMeeting(context: teamsContext),
+            "the mic coming back reverts the hold"
+        )
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 100 + lone + 1)))
+    }
+
+    /// The 2026-09-18 order: the mic is released first and the Leave button flickers inside the gap.
+    func test_a_mic_switch_with_the_mic_first_never_ends_END15() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 100))
+        XCTAssertNil(engine.ingest(event(.axLeaveButton, .ended, at: 102.5)))
+        XCTAssertEqual(
+            engine.ingest(event(.processAudioIsRunningInput, .live, at: 108))?.verdict,
+            .inMeeting(context: teamsContext)
+        )
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 100 + lone + 1)))
+    }
+
+    /// The genuine leave in the same shape: nothing returns, so the pair confirms once the dwell
+    /// elapses, and `confirmed_by` still names process audio.
+    func test_a_genuine_leave_in_the_same_shape_ends_after_the_dwell_END15() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 100))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 106))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 106 + dwell))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "ax_leave_button_invalid",
+                    confirmedBy: ["process_audio_is_running_input_false"]
+                )
+            )
+        )
+    }
+
+    // MARK: - Browser (PD-3): no 120 s floor
+
+    func test_a_browser_tab_away_for_ten_minutes_is_one_recording_END17() {
+        let engine = PromotionEngine()
         _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(browserEvent(.browserTabTitle, .ended, at: 10))
-        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 120)), "Still inside the 120 s floor")
-        let post = engine.tick(at: Date(timeIntervalSince1970: 131))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 131)), "past the retired 120 s floor")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 609)))
         XCTAssertEqual(
-            post?.verdict,
+            engine.ingest(browserEvent(.browserTabTitle, .live, at: 610))?.verdict,
+            .inMeeting(context: browserContext)
+        )
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 2000)))
+    }
+
+    func test_a_browser_meeting_left_open_ends_on_the_lone_dwell_END17() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(browserEvent(.browserTabTitle, .ended, at: 10))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 10 + lone))?.verdict,
             .ended(
                 context: browserContext,
-                reason: EndingReason(leadingSignal: "browser_tab_title_left_meet_pattern", confirmedBy: [])
-            ),
-            "A sustained tab-title end promotes once the floor elapses"
+                reason: EndingReason(leadingSignal: "browser_tab_title_left_meet_pattern", confirmedBy: ["lone_dwell"])
+            )
         )
     }
 
-    func test_browser_tab_switch_returning_within_the_floor_reverts_END5() {
-        // The point of the floor: a tab switch that returns before it elapses reverts to
-        // `.inMeeting`, so the recording is never chopped.
-        let engine = PromotionEngine(debounce: 5.0)
-        _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
-        _ = engine.confirmRecording()
-        _ = engine.ingest(browserEvent(.browserTabTitle, .ended, at: 10))
-        let revert = engine.ingest(browserEvent(.browserTabTitle, .live, at: 40))
-        XCTAssertEqual(revert?.verdict, .inMeeting(context: browserContext))
-        XCTAssertNil(
-            engine.tick(at: Date(timeIntervalSince1970: 200)),
-            "After the tab returns, the floor must not fire a late end"
-        )
-    }
-
-    func test_browser_quit_ends_promptly_during_the_floor_hold_END5() {
-        // A full browser quit (`workspaceAppTerminated`) is a cross-class corroborator, so it
-        // confirms the end immediately on the fast path without waiting out the tab-title floor.
-        let engine = PromotionEngine(debounce: 5.0)
+    /// A browser quit is definitive, so it ends a hold at once.
+    func test_a_browser_quit_ends_at_once_during_a_hold_END17() {
+        let engine = PromotionEngine()
         _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(browserEvent(.browserTabTitle, .ended, at: 10))
@@ -229,8 +301,21 @@ final class PromotionEngineTests: XCTestCase {
                     leadingSignal: "browser_tab_title_left_meet_pattern",
                     confirmedBy: ["workspace_app_terminated"]
                 )
-            ),
-            "A cross-class browser quit ends immediately, not after the 120 s floor"
+            )
+        )
+    }
+
+    /// And with no hold open, a quit ends the recording without one.
+    func test_a_browser_quit_ends_at_once_from_in_meeting_END17() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
+        _ = engine.confirmRecording()
+        XCTAssertEqual(
+            engine.ingest(browserEvent(.workspaceAppTerminated, .ended, at: 5))?.verdict,
+            .ended(
+                context: browserContext,
+                reason: EndingReason(leadingSignal: "workspace_app_terminated", confirmedBy: [])
+            )
         )
     }
 
@@ -265,13 +350,12 @@ final class PromotionEngineTests: XCTestCase {
         XCTAssertEqual(decision?.verdict, .starting(context: teamsContext))
     }
 
-    // MARK: - TECH-END2 corroboration guard (screen-share false-stop)
+    // MARK: - TECH-END2 / END6: staleness-prone and correlated signals
 
-    func test_lone_ax_leave_invalid_does_not_promote_to_ended_after_debounce() {
-        // The confirmed 2026-06-09 repro: ax-leave goes transiently invalid on a
-        // screen-share re-render. With no corroborating signal it must NOT auto-stop;
-        // it stays provisional so the silence backstop, not a false end, decides.
-        let engine = PromotionEngine(debounce: 2.0)
+    func test_lone_ax_leave_invalid_does_not_promote_before_the_lone_dwell() {
+        // The confirmed 2026-06-09 repro: ax-leave goes transiently invalid on a screen-share
+        // re-render. With nothing else ended it holds, and only the lone dwell can end it.
+        let engine = PromotionEngine()
         _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
         _ = engine.confirmRecording()
         let provisional = engine.ingest(event(.axLeaveButton, .ended, at: 1))
@@ -282,16 +366,15 @@ final class PromotionEngineTests: XCTestCase {
                 reason: EndingReason(leadingSignal: "ax_leave_button_invalid")
             )
         )
-        let post = engine.tick(at: Date(timeIntervalSince1970: 4))
-        XCTAssertNil(post, "A lone ax-leave invalid must not confirm an end on the debounce alone")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 4)))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1 + lone - 1)))
+        XCTAssertNotNil(engine.tick(at: Date(timeIntervalSince1970: 1 + lone)))
     }
 
-    func test_rewalk_confirm_promotes_a_lone_ax_leave_provisional() {
-        // The end-stop fix: when the daemon's Leave-button re-walk verifies the control is really
-        // gone, confirmProvisionalEnd promotes the held provisional to .ended immediately (the
-        // re-walk is the corroboration), recorded in confirmedBy. This stops a genuine native leave
-        // that the tick() guard alone would otherwise hold until window-gone or a manual stop.
-        let engine = PromotionEngine(debounce: 2.0)
+    /// Teams' teardown line is the host's definitive evidence. It ends a held provisional at once and
+    /// is recorded in `confirmedBy`.
+    func test_a_teardown_confirm_promotes_a_held_provisional_END17() {
+        let engine = PromotionEngine()
         _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.axLeaveButton, .ended, at: 1))
@@ -302,137 +385,67 @@ final class PromotionEngineTests: XCTestCase {
                 context: teamsContext,
                 reason: EndingReason(
                     leadingSignal: "ax_leave_button_invalid",
-                    confirmedBy: ["ax_leave_rewalk"]
+                    confirmedBy: ["call_teardown_observed"]
                 )
             )
         )
         XCTAssertNil(
-            engine.tick(at: Date(timeIntervalSince1970: 5)),
+            engine.tick(at: Date(timeIntervalSince1970: 1 + lone)),
             "Once confirmed-ended, a later tick must not re-emit"
         )
     }
 
-    func test_rewalk_confirm_is_noop_when_not_provisional() {
+    func test_confirm_is_noop_when_not_provisional() {
         // No provisional end in flight: confirming is a no-op (a concurrent revert or end already
         // moved the phase), so it can never fabricate an end out of .idle or .inMeeting.
-        let engine = PromotionEngine(debounce: 2.0)
+        let engine = PromotionEngine()
         XCTAssertNil(engine.confirmProvisionalEnd(), "idle: nothing to confirm")
         _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
         _ = engine.confirmRecording()
         XCTAssertNil(engine.confirmProvisionalEnd(), "in_meeting: nothing to confirm")
     }
 
-    func test_window_gone_still_promotes_alone_after_debounce() {
-        // The guard is scoped: a reliable signal (window-gone) keeps promoting on the
-        // debounce by itself, so the ends that already work are preserved.
-        let engine = PromotionEngine(debounce: 2.0)
-        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
-        _ = engine.confirmRecording()
-        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
-        let post = engine.tick(at: Date(timeIntervalSince1970: 4))
-        XCTAssertEqual(
-            post?.verdict,
-            .ended(
-                context: teamsContext,
-                reason: EndingReason(leadingSignal: "shareable_content_window_gone", confirmedBy: [])
-            )
-        )
-    }
-
-    func test_correlated_window_gone_does_not_confirm_ax_leave_on_fast_path() {
+    func test_correlated_window_gone_is_not_a_pair_with_ax_leave() {
         // END6/AUD-10: ax-leave + window-gone are one evidence class (a Teams share re-render
-        // invalidates the Leave button and drops the call window together), so the window-gone
-        // must NOT instant-confirm an ax-leave lead. It is absorbed; the AX re-walk
-        // (confirmProvisionalEnd) or a genuinely independent signal decides. This is the fix
-        // for the 2026-06-09 fragments-1-and-4 false end.
-        let engine = PromotionEngine(debounce: 2.0)
+        // invalidates the Leave button and drops the call window together), so the pair never
+        // satisfies the confirm dwell. This is the fix for the 2026-06-09 fragments-1-and-4 false end.
+        let engine = PromotionEngine()
         _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.axLeaveButton, .ended, at: 1))
-        let decision = engine.ingest(event(.shareableContentWindow, .ended, at: 1.3))
-        XCTAssertNil(decision, "A same-class window-gone is absorbed, not promoted to .ended")
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 1.3)))
         XCTAssertNil(
-            engine.tick(at: Date(timeIntervalSince1970: 5)),
-            "And the debounce path stays held: a correlated signal is not a cross-class corroborator"
-        )
-    }
-
-    func test_ax_leave_provisional_ends_when_corroborated_by_cross_class_signal() {
-        // The gate is about CORRELATION, not blocking all corroboration: a genuinely
-        // independent signal (process-audio, a different evidence class) still confirms an
-        // ax-leave lead on the fast path.
-        let engine = PromotionEngine(debounce: 2.0)
-        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
-        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
-        _ = engine.confirmRecording()
-        _ = engine.ingest(event(.axLeaveButton, .ended, at: 1))
-        let decision = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 1.3))
-        XCTAssertEqual(
-            decision?.verdict,
-            .ended(
-                context: teamsContext,
-                reason: EndingReason(
-                    leadingSignal: "ax_leave_button_invalid",
-                    confirmedBy: ["process_audio_is_running_input_false"]
-                )
-            )
-        )
-    }
-
-    func test_held_ax_leave_provisional_is_not_ended_by_correlated_window_gone() {
-        // END6/AUD-10 on the debounce path: a window-gone arriving after the debounce does NOT
-        // end an ax-leave-led provisional, because it is the same (correlated) evidence class.
-        // Only the AX re-walk (confirmProvisionalEnd) or a cross-class signal ends it.
-        let engine = PromotionEngine(debounce: 2.0)
-        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
-        _ = engine.confirmRecording()
-        _ = engine.ingest(event(.axLeaveButton, .ended, at: 1))
-        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 5)), "Held while uncorroborated")
-        let decision = engine.ingest(event(.shareableContentWindow, .ended, at: 6))
-        XCTAssertNil(decision, "A correlated window-gone does not end an ax-leave provisional")
-        XCTAssertNil(
-            engine.tick(at: Date(timeIntervalSince1970: 8)),
-            "Still held after the correlated signal: no cross-class corroborator arrived"
+            engine.tick(at: Date(timeIntervalSince1970: 1.3 + dwell + 1)),
+            "a correlated signal is not a cross-class pair"
         )
     }
 
     func test_ax_leave_provisional_reverts_to_in_meeting_when_control_returns() {
-        // The signal's re-walk finds the live control and emits .live; provisional reverts.
-        let engine = PromotionEngine(debounce: 2.0)
+        let engine = PromotionEngine()
         _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.axLeaveButton, .ended, at: 1))
         let revert = engine.ingest(event(.axLeaveButton, .live, at: 1.5))
         XCTAssertEqual(revert?.verdict, .inMeeting(context: teamsContext))
-        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 4)), "No end after the control returns")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1 + lone)), "No end after the control returns")
     }
 
     func test_window_gone_provisional_reverts_when_ax_leave_returns_healthy() {
-        // END8: a minimized / other-Space native window makes ShareableContent report the
-        // window gone (the leading signal, `onScreenWindowsOnly`), but the AX rescue re-walk
-        // finds the still-healthy Leave button and emits .live. It is a different KIND but the
-        // SAME evidence class (`.callWindowOrControl`), so the provisional reverts instead of
-        // promoting a false end after the debounce.
-        let engine = PromotionEngine(debounce: 2.0)
+        // END8: a minimized / other-Space native window makes ShareableContent report the window
+        // gone, but the AX rescue re-walk finds the still-healthy Leave button and emits .live. A
+        // different KIND in the SAME evidence class, so the hold reverts.
+        let engine = PromotionEngine()
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
         let revert = engine.ingest(event(.axLeaveButton, .live, at: 1.5))
         XCTAssertEqual(revert?.verdict, .inMeeting(context: teamsContext))
-        XCTAssertNil(
-            engine.tick(at: Date(timeIntervalSince1970: 4)),
-            "No false end after the window-gone lead is reverted by the healthy Leave button"
-        )
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1 + lone)))
     }
 
     func test_window_gone_provisional_reverts_when_process_audio_reports_live_END14() {
-        // END8 kept a cross-class `.live` from reverting a window-gone lead, so a window-gone that
-        // opened a provisional before process audio had reported anything still promoted on the
-        // debounce. END14 reverses that for process audio only: Teams holding the mic is the
-        // control signal that the call is up, so it reverts the window-gone lead instead of
-        // letting a title-match miss end the meeting.
-        let engine = PromotionEngine(debounce: 2.0)
+        let engine = PromotionEngine()
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
@@ -442,14 +455,23 @@ final class PromotionEngineTests: XCTestCase {
             engine.takeVeto(),
             PromotionEngine.EndVeto(leading: .shareableContentWindow, vetoedBy: .processAudioIsRunningInput)
         )
-        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 4)), "No end while Teams holds the mic")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1 + lone)), "No end while Teams holds the mic")
+    }
+
+    /// A cross-class `.live` from a signal that never went ended says nothing new about the call, so
+    /// it leaves the hold alone.
+    func test_a_cross_class_live_that_never_ended_leaves_the_hold_alone_END17() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(browserEvent(.windowTitleLeftPattern, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(browserEvent(.windowTitleLeftPattern, .ended, at: 1))
+        XCTAssertNil(engine.ingest(browserEvent(.shareableContentWindow, .live, at: 2)))
+        XCTAssertTrue(engine.hasPendingEndDeadline)
     }
 
     func test_requiresCorroboration_covers_ax_leave_and_process_audio() {
         XCTAssertTrue(PrimarySignalKind.axLeaveButton.requiresCorroboration)
-        // DET8's rail, and the condition its spike pre-registered for reviving the signal at all:
-        // a lone input drop (object churn, a client whose mute the OS honours) must never
-        // solo-confirm an end. Reviving the signal without this is the shape not to ship.
+        // DET8's rail, and the condition its spike pre-registered for reviving the signal at all.
         XCTAssertTrue(PrimarySignalKind.processAudioIsRunningInput.requiresCorroboration)
         XCTAssertFalse(PrimarySignalKind.shareableContentWindow.requiresCorroboration)
         XCTAssertFalse(PrimarySignalKind.workspaceAppTerminated.requiresCorroboration)
@@ -457,40 +479,15 @@ final class PromotionEngineTests: XCTestCase {
         XCTAssertFalse(PrimarySignalKind.browserTabTitle.requiresCorroboration)
     }
 
-    func test_lone_process_audio_drop_does_not_promote_to_ended_after_debounce() {
-        // The rail in action: process audio leads an end with nothing else observed, and the
-        // debounce alone must not promote it. A helper restart or a resolution refresh reads
-        // exactly like this, and DET8's probe caught an audio client re-registering under a new
-        // object ID, so this is a measured risk rather than a theoretical one.
-        let engine = PromotionEngine(debounce: 2.0)
+    func test_a_lone_process_audio_drop_holds_until_the_lone_dwell() {
+        // DET8's object churn reads exactly like this: process audio leads with nothing else ended.
+        // It neither ends on a short wait nor pairs with itself.
+        let engine = PromotionEngine()
         _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 1))
-        XCTAssertNil(
-            engine.tick(at: Date(timeIntervalSince1970: 10)),
-            "a lone process-audio drop must stay provisional, not promote on the debounce"
-        )
-    }
-
-    func test_process_audio_lead_ends_when_corroborated_by_cross_class_signal() {
-        // And the other half: the rail holds it provisional, it does not make the signal inert.
-        // A genuinely independent class still confirms it on the fast path.
-        let engine = PromotionEngine(debounce: 2.0)
-        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
-        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
-        _ = engine.confirmRecording()
-        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 1))
-        let decision = engine.ingest(event(.shareableContentWindow, .ended, at: 1.4))
-        XCTAssertEqual(
-            decision?.verdict,
-            .ended(
-                context: teamsContext,
-                reason: EndingReason(
-                    leadingSignal: "process_audio_is_running_input_false",
-                    confirmedBy: ["shareable_content_window_gone"]
-                )
-            )
-        )
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1 + dwell + 1)))
+        XCTAssertNotNil(engine.tick(at: Date(timeIntervalSince1970: 1 + lone)))
     }
 
     func test_evidence_class_groups_only_ax_leave_and_window_gone() {
@@ -515,42 +512,15 @@ final class PromotionEngineTests: XCTestCase {
         )
     }
 
-    // MARK: - Browser path corroboration (GAP 2)
-
-    func test_workspace_termination_confirms_browser_ended_without_debounce() {
-        // The browser path now fuses more than one PRIMARY signal:
-        // ShareableContent leads .ended, WorkspaceSignal (a distinct
-        // kind) confirms, so .ended fires immediately instead of
-        // waiting out the 2 s debounce a lone signal would need.
-        let engine = PromotionEngine(debounce: 2.0)
-        _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
-        _ = engine.confirmRecording()
-        _ = engine.ingest(browserEvent(.browserTabTitle, .ended, at: 25))
-        let decision = engine.ingest(browserEvent(.workspaceAppTerminated, .ended, at: 25.3))
-
-        XCTAssertEqual(
-            decision?.verdict,
-            .ended(
-                context: browserContext,
-                reason: EndingReason(
-                    leadingSignal: "browser_tab_title_left_meet_pattern",
-                    confirmedBy: ["workspace_app_terminated"]
-                )
-            )
-        )
-    }
-
-    func test_window_title_can_lead_browser_ended_confirmed_by_shareable_content() {
-        // PWA path: the AX window-title signal leads, the
-        // shareable-content snapshot confirms.
-        let engine = PromotionEngine(debounce: 2.0)
+    func test_window_title_and_shareable_content_pair_after_the_dwell() {
+        // PWA path: the AX window-title signal leads, the shareable-content snapshot pairs with it.
+        let engine = PromotionEngine()
         _ = engine.ingest(browserEvent(.windowTitleLeftPattern, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(browserEvent(.windowTitleLeftPattern, .ended, at: 10))
-        let decision = engine.ingest(browserEvent(.shareableContentWindow, .ended, at: 10.4))
-
+        XCTAssertNil(engine.ingest(browserEvent(.shareableContentWindow, .ended, at: 10.4)))
         XCTAssertEqual(
-            decision?.verdict,
+            engine.tick(at: Date(timeIntervalSince1970: 10.4 + dwell))?.verdict,
             .ended(
                 context: browserContext,
                 reason: EndingReason(
@@ -568,19 +538,17 @@ final class PromotionEngineTests: XCTestCase {
         XCTAssertEqual(PrimarySignalKind.windowTitleLeftPattern.rawValue, "window_title_left_pattern")
     }
 
-    // MARK: - END14: a live process-audio reading vetoes a lone window-gone
+    // MARK: - END13 / END14: a live process-audio reading vetoes
 
     /// The 2026-10-08 replay in `.inMeeting`. Teams dropped the ` | Microsoft Teams` title suffix,
-    /// so the call window stopped matching and read as gone while Teams held the mic and the Leave
-    /// button stayed healthy (it emits only on change, so it said nothing). 217 recordings and
-    /// prompts were ended this way on 2026-10-08 with `confirmed_by: []`.
+    /// so the call window stopped matching and read as gone while Teams held the mic.
     func test_live_process_audio_vetoes_a_lone_window_gone_in_meeting_END14() {
-        let engine = PromotionEngine(debounce: 2.0)
+        let engine = PromotionEngine()
         _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
         _ = engine.confirmRecording()
         XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 1)))
-        XCTAssertFalse(engine.hasPendingEndDeadline, "A vetoed end opens no provisional")
-        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 60)), "And the debounce cannot promote it")
+        XCTAssertFalse(engine.hasPendingEndDeadline, "A vetoed end opens no hold")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1 + lone + 1)))
         XCTAssertEqual(
             engine.takeVeto(),
             PromotionEngine.EndVeto(leading: .shareableContentWindow, vetoedBy: .processAudioIsRunningInput)
@@ -588,10 +556,26 @@ final class PromotionEngineTests: XCTestCase {
         XCTAssertNil(engine.takeVeto(), "A veto is reported once")
     }
 
-    /// The real end after a veto takes the path every real end took from 2026-09-10 to
-    /// 2026-10-08: Teams releases the mic, process audio leads, the Leave button corroborates.
+    /// The 2026-09-04 shape: an ax-leave hold while Teams held the mic. It used to end on the
+    /// host's 150 s cap; END13 moved that to a 7200 s ceiling, and END17 to no wall clock at all.
+    func test_a_live_mic_blocks_both_dwells_END13() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 1872))
+        for held in [160.8, lone, 7200.0, 7201.0] {
+            XCTAssertNil(
+                engine.tick(at: Date(timeIntervalSince1970: 1872 + held)),
+                "\(held) s into the hold Teams still holds the mic"
+            )
+        }
+    }
+
+    /// The real end after a veto: Teams releases the mic, process audio leads, and the remembered
+    /// window-gone pairs with it once both have dwelled.
     func test_real_end_after_a_veto_takes_the_process_audio_path_END14() {
-        let engine = PromotionEngine(debounce: 2.0)
+        let engine = PromotionEngine()
         _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.shareableContentWindow, .ended, at: 1))
@@ -603,36 +587,42 @@ final class PromotionEngineTests: XCTestCase {
                 reason: EndingReason(leadingSignal: "process_audio_is_running_input_false")
             )
         )
-        let ended = engine.ingest(event(.axLeaveButton, .ended, at: 600.4))
+        XCTAssertNil(engine.ingest(event(.axLeaveButton, .ended, at: 600.4)))
         XCTAssertEqual(
-            ended?.verdict,
+            engine.tick(at: Date(timeIntervalSince1970: 600 + dwell))?.verdict,
             .ended(
                 context: teamsContext,
                 reason: EndingReason(
                     leadingSignal: "process_audio_is_running_input_false",
-                    confirmedBy: ["ax_leave_button_invalid"]
+                    confirmedBy: ["ax_leave_button_invalid", "shareable_content_window_gone"]
                 )
             )
         )
     }
 
-    /// The clean leave keeps its fast path: the window goes a beat before Teams releases the mic
-    /// (the corpus' clean-leave traces), so the vetoed window-gone plus the mic release within the
-    /// debounce ends at once with the window leading, as the pre-veto engine did.
-    func test_clean_leave_within_the_debounce_ends_at_once_END14() {
-        let engine = PromotionEngine(debounce: 2.0)
+    /// The clean leave: the window goes a beat before Teams releases the mic. On the engine alone
+    /// the pair confirms after the dwell; on the host Teams' teardown confirms it the moment the
+    /// hold opens, so a clean Teams leave pays no added latency.
+    func test_clean_leave_holds_on_the_mic_release_and_confirms_on_teardown_END17() {
+        let engine = PromotionEngine()
         _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
         _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0.1))
         _ = engine.confirmRecording()
         XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 60)))
-        let decision = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 60.2))
         XCTAssertEqual(
-            decision?.verdict,
+            engine.ingest(event(.processAudioIsRunningInput, .ended, at: 60.2))?.verdict,
+            .endingProvisional(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "process_audio_is_running_input_false")
+            )
+        )
+        XCTAssertEqual(
+            engine.confirmProvisionalEnd()?.verdict,
             .ended(
                 context: teamsContext,
                 reason: EndingReason(
-                    leadingSignal: "shareable_content_window_gone",
-                    confirmedBy: ["process_audio_is_running_input_false"]
+                    leadingSignal: "process_audio_is_running_input_false",
+                    confirmedBy: ["call_teardown_observed"]
                 )
             )
         )
@@ -680,18 +670,16 @@ final class PromotionEngineTests: XCTestCase {
 
     /// An app quit is definitive and is never vetoed, even while the last mic reading was live.
     func test_workspace_termination_is_not_vetoed_by_live_process_audio_END14() {
-        let engine = PromotionEngine(debounce: 2.0)
+        let engine = PromotionEngine()
         _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
         _ = engine.confirmRecording()
-        let provisional = engine.ingest(event(.workspaceAppTerminated, .ended, at: 1))
         XCTAssertEqual(
-            provisional?.verdict,
-            .endingProvisional(
+            engine.ingest(event(.workspaceAppTerminated, .ended, at: 1))?.verdict,
+            .ended(
                 context: teamsContext,
-                reason: EndingReason(leadingSignal: "workspace_app_terminated")
+                reason: EndingReason(leadingSignal: "workspace_app_terminated", confirmedBy: [])
             )
         )
-        XCTAssertNotNil(engine.tick(at: Date(timeIntervalSince1970: 4)))
         XCTAssertNil(engine.takeVeto())
     }
 

@@ -48,6 +48,15 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
       - `workflow_nda_mode`        → forces local backend + filesystem sink
       - `regulated_mode`           → global zero-egress at record time (TECH-DSN6);
         folded in fail-closed, same effect as `workflow_nda_mode`
+
+    Informational keys, read elsewhere or not at all, that change no routing:
+      - `mic_device_name`, `mic_silent` (MIC15), for the Library
+      - `held_end_trim_sec` (END17), seconds from the recording start where a
+        held end began. The daemon already cut the transcript there, so the
+        summary this pipeline writes covers only the meeting; the WAV keeps
+        the tail so the owner can restore it.
+      - `resumed_from` (END17), the stem a recording resumed from after an end
+        the call outlived, for the Library's merge offer
     """
     meta = read_meta(any_meeting_path)
     if not meta:

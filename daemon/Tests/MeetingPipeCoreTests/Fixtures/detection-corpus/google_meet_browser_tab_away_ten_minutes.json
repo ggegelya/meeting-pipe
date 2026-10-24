@@ -1,0 +1,25 @@
+{
+  "scenario": "google_meet_browser_tab_away_ten_minutes",
+  "description": "PD-3: a presenter shares another browser tab for ten minutes and comes back. The pre-END17 120 s floor ended this meeting; the lone dwell holds it, and the returning tab reverts the hold, so it stays one recording.",
+  "engine": "promotion",
+  "expected_outcome": "no_end",
+  "context": {
+    "bundle_id": "com.google.Chrome",
+    "kind": "browser",
+    "pid": 1234
+  },
+  "events": [
+    {"t": 0.0, "kind": "browser_tab_title", "state": "live"},
+    {"t": 100.0, "kind": "browser_tab_title", "state": "ended"},
+    {"t": 221.0, "kind": "tick"},
+    {"t": 699.0, "kind": "tick"},
+    {"t": 700.0, "kind": "browser_tab_title", "state": "live"},
+    {"t": 2000.0, "kind": "tick"}
+  ],
+  "expected_verdicts": [
+    {"after": "events[0]", "verdict": "starting"},
+    {"after": "events[0]", "verdict": "in_meeting"},
+    {"after": "events[1]", "verdict": "ending_provisional", "leading": "browser_tab_title_left_meet_pattern"},
+    {"after": "events[4]", "verdict": "in_meeting"}
+  ]
+}

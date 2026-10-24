@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Detection regression corpus (TECH-C6). Each trace replays a recorded scenario through PromotionEngine + MicGate.decide and asserts the produced verdict sequence matches the captured expectation, so a regression in PromotionEngine / MicGate is caught by CI. The first nine entries are synthetic seeds that lock in the format and cross-app scenarios; the teams_native_{rewalk,debounce,flicker}_end entries are real dogfood sessions derived from the daemon event log via scripts/extract_detection_trace.py (verdict sequence, leading signal, confirmed_by, flicker count and timing preserved; titles and pids redacted).",
+  "description": "Detection regression corpus (TECH-C6). Each trace replays a recorded scenario through PromotionEngine + MicGate.decide and asserts the produced verdict sequence matches the captured expectation, so a regression in PromotionEngine / MicGate is caught by CI. The first nine entries are synthetic seeds that lock in the format and cross-app scenarios; the teams_native_{rewalk,debounce,flicker}_end entries are real dogfood sessions derived from the daemon event log via scripts/extract_detection_trace.py (verdict sequence, leading signal, confirmed_by, flicker count and timing preserved; titles and pids redacted). The end9/end12/end13/end14/end15 and google_meet_browser_tab_away entries are END17's synthetic incident traces, built from the raw rows each END spec quotes and expected to reach no end (`expected_outcome: no_end`); T8 replaces them with raw extracted traces.",
   "scenarios": [
     "teams_native_clean_leave_en.json",
     "teams_native_post_call_chat_grab_en.json",
@@ -30,6 +30,13 @@
     "teams_native_rewalk_end_10.json",
     "teams_native_rewalk_end_11.json",
     "teams_native_rewalk_end_12.json",
-    "teams_native_rewalk_end_13.json"
+    "teams_native_rewalk_end_13.json",
+    "teams_native_end15_mic_switch_ax_first.json",
+    "teams_native_end15_mic_switch_audio_first.json",
+    "teams_native_end14_lone_window_gone.json",
+    "teams_native_end13_cap_with_live_mic.json",
+    "teams_native_end9_blank_tree.json",
+    "teams_native_end12_quiet_log.json",
+    "google_meet_browser_tab_away_ten_minutes.json"
   ]
 }

@@ -21,18 +21,22 @@ preserved. That is a characterization test of real behavior, matching how the
 synthetic seeds are shaped.
 
 It reproduces two ending families (see PromotionEngine):
-  - confirm-path: `confirmed_by == ["ax_leave_rewalk"]`, i.e. the AX re-walk
-    (`confirmProvisionalEnd`) promoted the end. Modelled with the
+  - confirm-path: `confirmed_by == ["ax_leave_rewalk"]` (the pre-END17 host
+    confirm) or `["call_teardown_observed"]` (END17's), i.e. the host promoted
+    the end through `confirmProvisionalEnd`. Modelled with the
     `confirm_provisional_end` pseudo-event. This is the dominant native ending.
-  - tick-path: `confirmed_by == []` and a leading signal that does not require
-    corroboration (shareable-window-gone, workspace-terminated, ...). Modelled
-    with a `tick` past the debounce.
+  - tick-path: `confirmed_by == []` with a leading signal that does not require
+    corroboration (shareable-window-gone, ...), which the pre-END17 engine
+    promoted on its debounce, or `["lone_dwell"]`, END17's lone dwell. Since
+    END17 a lone weak end confirms only on the lone dwell, so the `tick` is
+    placed past it: the trace pins that the meeting still ends, at the time the
+    current engine ends it, not the 2 s the old log recorded.
 An ending it cannot reproduce with the pure engine is REPORTED and SKIPPED, never
 faked. Two shapes land there, and neither is a corpus coverage gap (C7):
   - a lone ax-leave ended with empty confirmed_by is PRE-END2 HISTORY. Until END2
     landed (2026-06-10) the engine promoted a lone ax-leave on the debounce alone;
     it now refuses to (`requiresCorroboration` with no cross-class corroborator,
-    pinned by `test_lone_ax_leave_invalid_does_not_promote_to_ended_after_debounce`),
+    pinned by `test_lone_ax_leave_invalid_does_not_promote_before_the_lone_dwell`),
     so replaying such a session would assert the exact behaviour END2 removed. Every
     session in this bucket in the owner's log ended on or before 2026-06-09.
   - a same-class confirmed_by (ax-leave plus window-gone) is correlated evidence,
@@ -78,10 +82,11 @@ RAW_TO_SHORT = {
 }
 # PrimarySignalKind.requiresCorroboration == true only for ax-leave.
 REQUIRES_CORROBORATION = {"ax_leave_button_invalid"}
-# PrimarySignalKind.endDebounceFloor: only browser-tab-title has a floor.
-END_DEBOUNCE_FLOOR = {"browser_tab_title_left_meet_pattern": 120.0}
-DEBOUNCE = 2.0
+# PromotionEngine.defaultLoneDwell (END17): a lone weak end confirms only after this.
+LONE_DWELL = 720.0
+LONE = "lone_dwell"
 REWALK = "ax_leave_rewalk"
+TEARDOWN = "call_teardown_observed"
 
 
 def _parse_ts(raw: object) -> datetime | None:
@@ -192,10 +197,10 @@ def synthesize(s: Session, scenario: str) -> tuple[dict | None, str]:
     # ending_provisional verdict and each revert flips back to in_meeting, so a real
     # flicker-recover-end (the END6/END8 fragmentation path) is faithfully modelled.
     confirmed = sorted(s.confirmed_by)
-    if confirmed == [REWALK]:
-        family = "confirm"  # the AX re-walk (confirmProvisionalEnd) promoted the end
-    elif confirmed == [] and s.leading not in REQUIRES_CORROBORATION:
-        family = "tick"  # a no-corroboration lead promoted on the debounce
+    if confirmed in ([REWALK], [TEARDOWN]):
+        family = "confirm"  # the host promoted the end through confirmProvisionalEnd
+    elif confirmed == [LONE] or (confirmed == [] and s.leading not in REQUIRES_CORROBORATION):
+        family = "tick"  # a lone weak lead, confirmed on END17's lone dwell
     elif confirmed == [] and s.leading in REQUIRES_CORROBORATION:
         # Pre-END2 history, reported under its own reason so an inventory run cannot read it
         # as a coverage gap (C7). See the module docstring for why replaying one would be wrong.
@@ -246,20 +251,19 @@ def synthesize(s: Session, scenario: str) -> tuple[dict | None, str]:
     if family == "confirm":
         et = round(s.rel(s.end), 2)
         events.append({"t": et if et > last_t else round(last_t + 0.1, 2),
-                       "kind": "confirm_provisional_end", "rewalk_signal": REWALK})
-        expected.append({"after": f"events[{len(events) - 1}]", "verdict": "ended", "leading": s.leading, "confirmed_by": [REWALK]})
+                       "kind": "confirm_provisional_end", "rewalk_signal": confirmed[0]})
+        expected.append({"after": f"events[{len(events) - 1}]", "verdict": "ended", "leading": s.leading, "confirmed_by": confirmed})
         shape = f"{'flicker_' if n_prov > 1 else ''}rewalk_end"
     else:  # tick
-        floor = END_DEBOUNCE_FLOOR.get(s.leading, 0.0)
-        tick_t = round(last_t + max(DEBOUNCE, floor) + 0.5, 2)
+        tick_t = round(last_t + LONE_DWELL + 0.5, 2)
         events.append({"t": tick_t, "kind": "tick"})
-        expected.append({"after": f"events[{len(events) - 1}]", "verdict": "ended", "leading": s.leading, "confirmed_by": []})
-        shape = f"{'flicker_' if n_prov > 1 else ''}debounce_end"
+        expected.append({"after": f"events[{len(events) - 1}]", "verdict": "ended", "leading": s.leading, "confirmed_by": [LONE]})
+        shape = f"{'flicker_' if n_prov > 1 else ''}lone_dwell_end"
 
     prov_note = f"{n_prov} provisional flicker(s)" if n_prov > 1 else "clean single end"
-    family_note = ("ax-leave-led end confirmed by the AX re-walk (confirmProvisionalEnd)"
+    family_note = (f"{RAW_TO_SHORT[s.leading]}-led end confirmed by the host ({confirmed[0]})"
                    if family == "confirm" else
-                   f"{RAW_TO_SHORT[s.leading]}-led end promoted on the {DEBOUNCE:.0f}s debounce")
+                   f"lone {RAW_TO_SHORT[s.leading]}-led end, confirmed on the {LONE_DWELL:.0f}s lone dwell (END17)")
     trace = {
         "scenario": scenario,
         "description": (f"Real dogfood session (redacted). {s.kind} {s.bundle_id}; {family_note}; {prov_note}. "
@@ -267,7 +271,6 @@ def synthesize(s: Session, scenario: str) -> tuple[dict | None, str]:
                         "event log; signal timeline minimally reconstructed to reproduce that sequence through the "
                         "pure engine; titles dropped and pid set to 1234."),
         "engine": "promotion",
-        "debounce_seconds": DEBOUNCE,
         "context": {"bundle_id": s.bundle_id, "kind": s.kind, "pid": 1234},
         "events": events,
         "expected_verdicts": expected,

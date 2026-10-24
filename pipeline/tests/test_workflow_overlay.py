@@ -294,7 +294,20 @@ def test_contract_fixture_lan_sink_resolves_to_the_lan_publisher(tmp_path: Path)
 def test_contract_fixtures_carry_schema_version() -> None:
     for name in (
         "source-only-regulated", "workflow-full", "workflow-lan",
-        "workflow-nda", "workflow-reassigned-to-nda"
+        "workflow-nda", "workflow-reassigned-to-nda", "held-end-trim",
     ):
         data = json.loads((_CONTRACT / f"{name}.meta.json").read_text(encoding="utf-8"))
-        assert data["schema_version"] == 3
+        assert data["schema_version"] == 4
+
+
+def test_contract_fixture_held_end_trim_is_informational() -> None:
+    # END17: the daemon trims the transcript itself, so the suggested trim must
+    # change nothing about where or how the meeting is summarized and published.
+    cfg = Config()
+    fixture = _CONTRACT / "held-end-trim.meta.json"
+    assert json.loads(fixture.read_text(encoding="utf-8"))["held_end_trim_sec"] == 2531.5
+    result = apply_overrides(cfg, fixture)
+    assert result.summarization.backend == cfg.summarization.backend
+    assert result.summarization.team_context == cfg.summarization.team_context
+    assert result.output.sinks == cfg.output.sinks
+    assert result.modes.regulated_mode == cfg.modes.regulated_mode

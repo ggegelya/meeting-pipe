@@ -26,7 +26,6 @@ enum ConfigDefaults {
 
     // MARK: - [detection]
 
-    static let debounceEndSec: Double = 5
     static let manualHotkey = "ctrl+option+m"
     static let forceStopHotkey = "ctrl+option+shift+m"
     static let flagMomentHotkey = "ctrl+option+f"

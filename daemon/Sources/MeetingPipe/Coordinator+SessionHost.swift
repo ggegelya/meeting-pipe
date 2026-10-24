@@ -25,7 +25,7 @@ extension Coordinator: SessionHost {
     var jobs: any SessionJobDispatching { jobDispatcher }
 
     /// END13: the engaged adapter's cross-class liveness reading. `.unknown` whenever no adapter
-    /// is engaged or its signal has said nothing, which is the value that leaves the cap alone.
+    /// is engaged or its signal has said nothing. Logged on the hold rows; the veto lives in the engine.
     var liveCallSignal: CallTeardownOracle.LiveCallSignal { lifecycleCoord.liveCallSignal }
 
     /// The microphone permission, read live rather than cached: a just-granted

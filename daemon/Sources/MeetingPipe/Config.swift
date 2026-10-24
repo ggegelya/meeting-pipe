@@ -12,8 +12,6 @@ struct Config {
     }
 
     struct Detection {
-        /// End-side debounce only. There is deliberately no start-side twin: `.idle` -> `.starting` fires on the first PRIMARY `.live` so the prompt panel appears promptly, and the real start gate is `PromotionEngine.confirmRecording()` (the recorder arming), not a timer. HYG2 deleted the dead `debounce_start_sec` knob rather than inserting a delay that would only cost the head of every meeting.
-        var debounceEndSec: Double
         var manualHotkey: String
         /// Stop-only hotkey (TECH-C5). Distinct from `manualHotkey` so the user can force-stop without risking an accidental new recording start when the daemon is idle. Default `ctrl+option+shift+m`.
         var forceStopHotkey: String
@@ -68,7 +66,6 @@ struct Config {
                 honorAppMute: ConfigDefaults.honorAppMute
             ),
             detection: Detection(
-                debounceEndSec: ConfigDefaults.debounceEndSec,
                 manualHotkey: ConfigDefaults.manualHotkey,
                 forceStopHotkey: ConfigDefaults.forceStopHotkey,
                 flagMomentHotkey: ConfigDefaults.flagMomentHotkey,

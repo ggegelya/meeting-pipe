@@ -70,6 +70,7 @@ extension MeetingDetailView {
             provenanceRow
             if meeting.hasCorrections { editedCaption }
             if meeting.namesChangedSinceSummary { namesChangedCaption }
+            if let earlier = resumedEarlierPart { resumedCaption(earlier: earlier) }
             processingRow
             transportRow
             publishStateLine
@@ -234,6 +235,48 @@ extension MeetingDetailView {
             .fixedSize()
             .help("Re-summarize this meeting so the summary uses the current speaker names")
             .accessibilityLabel("Re-summarize with the current speaker names")
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    /// END17 item 5: the recording this one resumed from, while it is still in the library. Nil
+    /// once a merge folded this one in or the earlier part was deleted, so the offer clears itself.
+    var resumedEarlierPart: Meeting? {
+        guard let stem = meeting.resumedFrom else { return nil }
+        return store.meetings.first { $0.stem == stem }
+    }
+
+    /// END17 item 5: this recording started because the same call came back right after an end,
+    /// so it is probably the rest of the earlier one. Same caption slot and register as the
+    /// names-changed cue, with the one action that joins them.
+    func resumedCaption(earlier: Meeting) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "link")
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgSubtle))
+            Text(resumeMergeError ?? "Picks up where \(earlier.displayTitle) stopped.")
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgSubtle))
+                .fixedSize(horizontal: false, vertical: true)
+            if mergingResumed {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Merge") {
+                    mergingResumed = true
+                    resumeMergeError = nil
+                    Task {
+                        if case .failure(let error) = await libraryModel.mergeResumed(stem: meeting.stem) {
+                            resumeMergeError = error.localizedDescription
+                        }
+                        mergingResumed = false
+                    }
+                }
+                .controlSize(.small)
+                .fixedSize()
+                .help("Join this recording onto the earlier one as a single meeting, including the part the earlier recording held back")
+                .accessibilityLabel("Merge with the earlier part of this meeting")
+            }
             Spacer(minLength: 0)
         }
         .accessibilityElement(children: .contain)

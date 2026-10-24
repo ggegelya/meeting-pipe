@@ -40,16 +40,12 @@ honor_app_mute = true
 # System Settings ▸ Sound ▸ Input and the next recording follows.
 
 [detection]
-# Seconds the detector waits after a meeting's signals go away before ending
-# the recording. Window-closed signal (Signal C) lets us shrink this from 10s —
-# Zoom and Teams keep the input device opened for a few seconds after a hangup,
-# but the call window disappears immediately. 5s is enough margin to absorb
-# a stuttery probe without trimming the tail of speech.
-#
-# There is no start-side twin: detection promotes on the first live signal so
-# the prompt appears promptly, and the recorder arming is the real start gate.
-# `debounce_start_sec` existed until HYG2 and nothing read it.
-debounce_end_sec = 5
+# There is no end-debounce knob. `debounce_end_sec` was retired by END17: a
+# weak end signal (a window gone, a Leave button invalid, a tab switched)
+# holds and keeps recording until a definitive signal or a pinned dwell
+# confirms it, and the minutes after the call are trimmed from the notes
+# afterwards. A leftover `debounce_end_sec` line is ignored. Its start-side
+# twin, `debounce_start_sec`, went the same way in HYG2.
 manual_hotkey = "ctrl+option+m"
 # Stop-only hotkey (TECH-C5). Unlike `manual_hotkey`, pressing this
 # when idle is a no-op — only stops a running recording. Useful as a

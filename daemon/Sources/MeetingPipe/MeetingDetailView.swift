@@ -43,6 +43,11 @@ struct MeetingDetailView: View {
     /// Corrections moved from a tab to a sheet off the "..." menu (DSN2).
     @State var showCorrectionsSheet = false
 
+    /// END17 item 5: the resume-merge offer's in-flight flag and its last refusal, so the caption
+    /// says what is happening and why a merge did not run.
+    @State var mergingResumed = false
+    @State var resumeMergeError: String?
+
     /// FEAT10: a transcript time the Summary tab asked us to reveal, set when an
     /// evidence chip is clicked. Lives here because the jump crosses tabs: the
     /// Summary tab raises it, the tab switch happens, and the Transcript tab

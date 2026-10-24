@@ -211,11 +211,6 @@ final class Coordinator: NSObject {
         self.halBus = halBus
         self.axBus = axBus
         self.muteLabels = muteLabels
-        // TECH-END4 (b): honor the end-debounce knob. It was read into Config /
-        // ConfigStore and shown as a Preferences slider but never reached the
-        // engine, which always used the hardcoded 2.0s. Read once at init (edits
-        // apply next launch), like the silence-backstop window below.
-        let debounceEndSec = configStore?.debounceEndSec ?? config.detection.debounceEndSec
         self.lifecycleCoord = MeetingLifecycleCoordinator(
             halBus: halBus,
             axBus: axBus,
@@ -235,7 +230,10 @@ final class Coordinator: NSObject {
                     bundleIDs: MeetingAppRegistry.shared.browserBundles
                 ),
             ],
-            engine: PromotionEngine(debounce: debounceEndSec)
+            // END17: the engine's dwells are pinned constants, not a knob. `debounce_end_sec`
+            // was retired with them: no rule ends a recording on a few seconds of quiet any more,
+            // and a user-set dwell below the mic-switch gap would re-create END15.
+            engine: PromotionEngine()
         )
         self.micGate = MicGate(
             catalogue: muteLabels,

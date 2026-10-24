@@ -562,6 +562,40 @@ final class MeetingLibraryService {
         return .success(())
     }
 
+    /// END17's undo: drop the suggested trim from `<stem>.meta.json`, so the next transcription
+    /// reads the whole recording, held tail included. Only the file write lives here; the caller
+    /// (`LibraryWindowModel.restoreHeldTail`) then re-transcribes and regenerates, so nothing
+    /// egresses that the owner did not ask for by pressing the button. Every other key is kept.
+    @discardableResult
+    func restoreHeldTail(stem: String) -> Result<Void, Error> {
+        dropHeldTrim(stem: stem, reason: "restored")
+    }
+
+    /// Remove `held_end_trim_sec` from a meeting's sidecar and log why. A no-op success when there
+    /// is none. Shared by the undo and by a merge, which appends audio past the trim point and so
+    /// must not leave a cut that a later re-transcribe would apply to the merged file.
+    @discardableResult
+    private func dropHeldTrim(stem: String, reason: String) -> Result<Void, Error> {
+        let metaURL = outputDir().appendingPathComponent("\(stem).meta.json")
+        guard let data = try? Data(contentsOf: metaURL),
+              var meta = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let trimmed = HeldEndTrim.trimSeconds(meta: meta)
+        else { return .success(()) }
+        meta.removeValue(forKey: HeldEndTrim.metaKey)
+        do {
+            let out = try JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted, .sortedKeys])
+            try out.write(to: metaURL, options: .atomic)
+        } catch {
+            return .failure(LibraryError.metaWriteFailed(stem: stem))
+        }
+        Log.event(category: "coordinator", action: "held_end_restored", attributes: [
+            "stem": stem,
+            "trim_sec": trimmed,
+            "reason": reason,
+        ])
+        return .success(())
+    }
+
     /// Ask a natural-language question across the whole library (AI3). Spawns `mp
     /// ask`, which retrieves + synthesizes an engine-backed answer with verified
     /// `[stem]` citations on-device, honouring the backend + egress clamp. Async /
@@ -1225,6 +1259,9 @@ final class MeetingLibraryService {
                 switch result {
                 case .success(let url):
                     PipelineFailureSidecar.clear(stem: primaryStem, in: dir)
+                    // END17: the merged file runs past the primary's held-end trim point, so the cut
+                    // would drop every fragment from a later re-transcribe.
+                    self.dropHeldTrim(stem: primaryStem, reason: "merged")
                     // The fragments are folded into the primary now; retire them.
                     // The note about where their content lives (the primary's page)
                     // is surfaced by the batch pane on completion. A failed trash

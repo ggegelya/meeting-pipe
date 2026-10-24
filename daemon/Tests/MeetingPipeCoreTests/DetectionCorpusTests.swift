@@ -60,10 +60,9 @@ final class DetectionCorpusTests: XCTestCase {
               let expected = json["expected_verdicts"] as? [[String: Any]] else {
             return XCTFail("\(traceName) missing context/events/expected_verdicts")
         }
-        let debounce = (json["debounce_seconds"] as? Double) ?? 2.0
         let context = try makeContext(contextJson)
 
-        let engine = PromotionEngine(debounce: debounce)
+        let engine = PromotionEngine()
         var observed: [(eventIndex: Int, verdict: MeetingLifecycleVerdict)] = []
 
         for (index, event) in events.enumerated() {
@@ -76,15 +75,13 @@ final class DetectionCorpusTests: XCTestCase {
                 continue
             }
             if kind == "confirm_provisional_end" {
-                // The daemon's AX re-walk (MeetingSessionController.rescueProvisionalEnd) verified the
-                // leading control is genuinely gone and promotes via PromotionEngine.confirmProvisionalEnd().
-                // This is the production end path for a native ax-leave-led end: the debounce tick
-                // deliberately refuses to promote a lone, staleness-prone ax-leave (requiresCorroboration),
-                // so a real dogfood trace of that ending (the dominant one for a native-Teams user) can only
-                // replay through this pseudo-event. `rewalk_signal` defaults to "ax_leave_rewalk", matching
-                // the confirmed_by the daemon records live.
-                let rewalk = (event["rewalk_signal"] as? String) ?? "ax_leave_rewalk"
-                if let decision = engine.confirmProvisionalEnd(rewalkSignal: rewalk) {
+                // The host's definitive confirm, `PromotionEngine.confirmProvisionalEnd`. Since END17 its
+                // one caller is Teams' teardown line for this recording (`call_teardown_observed`); the
+                // real traces extracted before that carry `ax_leave_rewalk`, the string the pre-END17 host
+                // recorded for the same call. A native Teams end replays through this pseudo-event
+                // because the engine on its own would wait out a dwell the host never needs to.
+                let evidence = (event["rewalk_signal"] as? String) ?? PromotionEngine.teardownEvidence
+                if let decision = engine.confirmProvisionalEnd(evidence: evidence) {
                     observed.append((index, decision.verdict))
                 }
                 continue
@@ -114,6 +111,14 @@ final class DetectionCorpusTests: XCTestCase {
             observed.count, expected.count,
             "\(traceName) observed \(observed.count) verdicts, expected \(expected.count)"
         )
+        // END17: an incident trace says outright that the call must survive, so a later edit to its
+        // expected verdicts cannot quietly turn a no-end trace into one that ends.
+        if (json["expected_outcome"] as? String) == "no_end" {
+            XCTAssertFalse(
+                observed.contains { if case .ended = $0.verdict { return true } else { return false } },
+                "\(traceName) is a live call and must never reach .ended"
+            )
+        }
         for (i, expectation) in expected.enumerated() where i < observed.count {
             let actual = observed[i].verdict
             try assertMatches(traceName: traceName, expectation: expectation, actual: actual, context: context)

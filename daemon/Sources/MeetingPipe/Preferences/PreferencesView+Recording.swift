@@ -44,22 +44,6 @@ struct RecordingSectionView: View {
                 Text("Voice processing takes effect on the next recording. Mute tracking applies to every meeting.")
             }
 
-            SettingsGroup("Detection") {
-                SettingsStackRow("End debounce", showsDivider: false) {
-                    SettingsSlider(
-                        value: $store.debounceEndSec,
-                        range: 1...30,
-                        step: 1,
-                        format: { "\(Int($0)) s" }
-                    )
-                }
-            } footer: {
-                // The start-debounce slider lived here until HYG2. Nothing consumed
-                // it: detection promotes on the first live signal so the prompt
-                // appears promptly, and the real start gate is the recorder arming.
-                Text("How long the detector waits after a meeting's signals go away before ending the recording, so a brief gap does not cut off a pause. Takes effect on the next daemon launch.")
-            }
-
             SettingsGroup("Auto-record allowlist") {
                 SettingsFullRow(showsDivider: false) {
                     if store.autoConsentApps.isEmpty {
