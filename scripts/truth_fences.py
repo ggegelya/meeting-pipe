@@ -216,15 +216,17 @@ def _swift_alias_map(src: str) -> dict[str, str]:
 def swift_read_keys() -> set[str]:
     keys: set[str] = set()
 
-    for rel in ("daemon/Sources/MeetingPipe/Config.swift",
-                "daemon/Sources/MeetingPipe/ConfigStore.swift"):
-        src = _read(rel)
-        aliases = _swift_alias_map(src)
-        if not aliases:
-            raise SystemExit(f"{rel}: found no `let x = doc[\"section\"]?.table` aliases")
-        for alias, key in re.findall(r'\b(\w+)\?\["([a-z_]+)"\]', src):
-            if alias in aliases:
-                keys.add(f"{aliases[alias]}.{key}")
+    # ARCH9: the store is the one Swift reader of config.toml. `Config.swift`
+    # used to be a second parse and a second extraction source here; it is now a
+    # value the store produces, and `ConfigStoreFenceTests` keeps it that way.
+    rel = "daemon/Sources/MeetingPipe/ConfigStore.swift"
+    src = _read(rel)
+    aliases = _swift_alias_map(src)
+    if not aliases:
+        raise SystemExit(f"{rel}: found no `let x = doc[\"section\"]?.table` aliases")
+    for alias, key in re.findall(r'\b(\w+)\?\["([a-z_]+)"\]', src):
+        if alias in aliases:
+            keys.add(f"{aliases[alias]}.{key}")
 
     # ConfigStore's write-back carries the section name inline, and it must
     # agree with the read side or a saved Preferences change lands in the wrong
@@ -288,9 +290,17 @@ def _reader_helpers(src: str, aliases: dict[str, str]) -> dict[str, str]:
     section is still derived from source rather than hardcoded.
     """
     out: dict[str, str] = {}
-    for name, body in re.findall(r"\bfunc\s+(\w+)\s*\([^)]*\)[^{]*\{(.*?)\n        \}", src, re.S):
+    # Matched from every `func` rather than with one `findall`: the helper is
+    # nested inside the store's `apply` (ARCH9), and a non-overlapping scan
+    # consumed it as part of the enclosing method's body and never saw its name.
+    shape = re.compile(r"func\s+(\w+)\s*\([^)]*\)[^{]*\{(.*?)\n        \}", re.S)
+    for start in re.finditer(r"\bfunc\s", src):
+        match = shape.match(src, start.start())
+        if match is None:
+            continue
+        name, body = match.groups()
         for alias in re.findall(r"\b(\w+)\?\[\s*key\s*\]", body):
-            if alias in aliases:
+            if alias in aliases and name not in out:
                 out[name] = aliases[alias]
     return out
 

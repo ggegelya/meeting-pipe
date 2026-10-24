@@ -1,12 +1,11 @@
 import Foundation
-import TOMLKit
 
-/// Mirrors config.example.toml. Loaded once at startup; mutations don't propagate. No audio-device fields: SCStream taps the system bus regardless of output device; AVAudioEngine.inputNode follows the system default input.
+/// The daemon's value snapshot of config.example.toml's daemon-side keys, produced by `ConfigStore.config` (ARCH9: the store is the one Swift reader of config.toml, so this type has no parser of its own). `App` takes it once at startup; mutations don't propagate. No audio-device fields: SCStream taps the system bus regardless of output device; AVAudioEngine.inputNode follows the system default input.
 struct Config {
     struct Recording {
         var outputDir: URL
         var autoConsentApps: [String]
-        /// `AVAudioInputNode.setVoiceProcessingEnabled(true)`: Apple VoIP DSP (noise suppression, echo cancellation, AGC), mono only. Costs dynamic range. Default false - see load() comment.
+        /// `AVAudioInputNode.setVoiceProcessingEnabled(true)`: Apple VoIP DSP (noise suppression, echo cancellation, AGC), mono only. Costs dynamic range. Default false - see `ConfigDefaults.voiceProcessing`.
         var voiceProcessing: Bool
         /// Track in-app mute in the meeting client (AX probe, best-effort). Does NOT pause the mic: the default is capture-first (ADR 0016), so the verdict only feeds the per-workflow redaction timeline and the idle backstop; only the regulated / NDA gate zeroes the mic live. No-op when AX is denied or the mute control is unrecognized.
         var honorAppMute: Bool
@@ -59,82 +58,7 @@ struct Config {
             .appendingPathComponent(Endpoints.Paths.secretsRelative)
     }()
 
-    static func load(from url: URL = Config.defaultPath) throws -> Config {
-        let raw = try String(contentsOf: url, encoding: .utf8)
-        let toml = try TOMLTable(string: raw)
-
-        let rec = toml["recording"]?.table
-        let det = toml["detection"]?.table
-        let mod = toml["modes"]?.table
-        let tra = toml["transcription"]?.table
-
-        let outputDirRaw = rec?["output_dir"]?.string ?? ConfigDefaults.outputDirPath
-        let consent = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string })
-            ?? ConfigDefaults.autoConsentApps
-        let voiceProcessing = rec?["voice_processing"]?.bool ?? ConfigDefaults.voiceProcessing
-        let honorAppMute = rec?["honor_app_mute"]?.bool ?? ConfigDefaults.honorAppMute
-
-        // TOML distinguishes integer from float literals and TOMLKit does not
-        // coerce between them, so reading a seconds knob through `.double` alone
-        // silently ignores `debounce_end_sec = 7` and falls back to the default.
-        // That matters because `config.example.toml` writes every one of these as
-        // an integer, so hand-editing the shipped file was a no-op (HYG2: the same
-        // "changed a setting, nothing happened" class as the three dead knobs, and
-        // why `mic_only_silence_seconds` already read both).
-        func seconds(_ key: String, _ fallback: Double) -> Double {
-            if let d = det?[key]?.double { return d }
-            if let i = det?[key]?.int { return Double(i) }
-            return fallback
-        }
-
-        let debounceEnd = seconds("debounce_end_sec", ConfigDefaults.debounceEndSec)
-        let hotkey = det?["manual_hotkey"]?.string ?? ConfigDefaults.manualHotkey
-        let forceStop = det?["force_stop_hotkey"]?.string ?? ConfigDefaults.forceStopHotkey
-        let flagMoment = det?["flag_moment_hotkey"]?.string ?? ConfigDefaults.flagMomentHotkey
-        let offTheRecord = det?["off_the_record_hotkey"]?.string ?? ConfigDefaults.offTheRecordHotkey
-        let promptTimeout = seconds("prompt_timeout_sec", ConfigDefaults.promptTimeoutSec)
-        let repromptCooldown = seconds("reprompt_cooldown_sec", ConfigDefaults.repromptCooldownSec)
-        let micOnlySilenceSec = seconds("mic_only_silence_seconds", ConfigDefaults.micOnlySilenceSec)
-
-        let regulated = mod?["regulated_mode"]?.bool ?? ConfigDefaults.regulatedMode
-
-        // Accept both double and integer literals; clamp to FluidAudio's documented
-        // range through the shared helper, so this and `ConfigStore` cannot drift
-        // into showing Preferences one value while the runner uses another (DIAR3).
-        let clusteringRaw: Double = {
-            if let d = tra?["diarization_clustering_threshold"]?.double { return d }
-            if let i = tra?["diarization_clustering_threshold"]?.int { return Double(i) }
-            return ConfigDefaults.diarizationClusteringThreshold
-        }()
-        let clusteringThreshold = SpeakerSeparation.clamp(clusteringRaw)
-        let language = tra?["language"]?.string ?? ConfigDefaults.transcriptionLanguage
-
-        return Config(
-            recording: Recording(
-                outputDir: expandTilde(outputDirRaw),
-                autoConsentApps: consent,
-                voiceProcessing: voiceProcessing,
-                honorAppMute: honorAppMute
-            ),
-            detection: Detection(
-                debounceEndSec: debounceEnd,
-                manualHotkey: hotkey,
-                forceStopHotkey: forceStop,
-                flagMomentHotkey: flagMoment,
-                offTheRecordHotkey: offTheRecord,
-                promptTimeoutSec: promptTimeout,
-                repromptCooldownSec: repromptCooldown,
-                micOnlySilenceSec: micOnlySilenceSec
-            ),
-            modes: Modes(regulatedMode: regulated),
-            transcription: Transcription(
-                diarizationClusteringThreshold: clusteringThreshold,
-                language: language
-            )
-        )
-    }
-
-    /// Best-effort fallback when the user hasn't run `cp config.example.toml ...` yet.
+    /// Every value at its compile-time default: what `ConfigStore.config` yields for a missing file. Tests and headless callers that need a `Config` without a file use it.
     static func defaultFallback() -> Config {
         Config(
             recording: Recording(

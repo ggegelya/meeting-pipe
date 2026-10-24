@@ -79,7 +79,7 @@ final class MCPStatusTests: XCTestCase {
     // MARK: - The config key
 
     func test_mcp_is_off_by_default() throws {
-        let store = try ConfigStore(configURL: try makeTempConfigURL())
+        let store = ConfigStore(configURL: try makeTempConfigURL())
         XCTAssertFalse(store.mcpEnabled)
         XCTAssertFalse(ConfigDefaults.mcpEnabled)
     }
@@ -91,12 +91,12 @@ final class MCPStatusTests: XCTestCase {
         enabled = true
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertTrue(store.mcpEnabled)
 
         store.mcpEnabled = false
         try store.saveNow()
-        XCTAssertFalse(try ConfigStore(configURL: url).mcpEnabled)
+        XCTAssertFalse(ConfigStore(configURL: url).mcpEnabled)
     }
 
     func test_saving_mcp_preserves_unknown_pipeline_keys() throws {
@@ -109,7 +109,7 @@ final class MCPStatusTests: XCTestCase {
         enabled = false
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         store.mcpEnabled = true
         try store.saveNow()
 

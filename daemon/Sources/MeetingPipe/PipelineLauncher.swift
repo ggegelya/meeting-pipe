@@ -1,5 +1,4 @@
 import Foundation
-import TOMLKit
 
 /// One live progress sample from a running pipeline subprocess (TECH-UX5).
 ///
@@ -1168,17 +1167,15 @@ final class PipelineLauncher: PipelineDriver {
     /// Resolve (team_context, summary_language) for the Apple Intelligence summary:
     /// global config.toml, with the per-meeting workflow context prompt
     /// (`<stem>.meta.json` -> `workflow_context_prompt`) overriding team_context.
-    static func appleContext(for wav: URL) -> (teamContext: String, summaryLanguage: String) {
-        var teamContext = ""
-        var summaryLanguage = "auto"
-        let cfgURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/meeting-pipe/config.toml")
-        if let text = try? String(contentsOf: cfgURL, encoding: .utf8),
-           let doc = try? TOMLTable(string: text) {
-            let summ = doc["summarization"]?.table
-            if let s = summ?["team_context"]?.string { teamContext = s }
-            if let s = summ?["summary_language"]?.string { summaryLanguage = s }
-        }
+    /// The global half comes off a `ConfigStore` read (ARCH9), which used to be a
+    /// private parse of a hard-coded path.
+    static func appleContext(
+        for wav: URL,
+        configURL: URL = Config.defaultPath
+    ) -> (teamContext: String, summaryLanguage: String) {
+        let config = ConfigStore(configURL: configURL)
+        var teamContext = config.summarizationTeamContext
+        let summaryLanguage = config.summaryLanguage
         let dir = wav.deletingLastPathComponent()
         let stem = wav.deletingPathExtension().lastPathComponent
         let meta = dir.appendingPathComponent("\(stem).meta.json")
@@ -1359,18 +1356,19 @@ final class PipelineLauncher: PipelineDriver {
     /// re-deriving from scratch; the only resolution applied here is "regulated forces
     /// local" and "a matched workflow overrides the global backend". A future
     /// effective-config chokepoint (TECH-ARCH1) would own this.
+    ///
+    /// The global config comes off a `ConfigStore` read, so a file that does not
+    /// parse reads as regulated and strips both tokens (ARCH9). It used to read
+    /// `regulated = false` there, keeping both tokens for a user whose file said
+    /// regulated.
     static func cloudSecretPolicy(
         for meeting: URL?,
         backendOverride: String? = nil,
         configURL: URL = Config.defaultPath
     ) -> (stripAnthropic: Bool, stripNotion: Bool) {
-        var regulated = false
-        var globalBackend = "anthropic"
-        if let text = try? String(contentsOf: configURL, encoding: .utf8),
-           let doc = try? TOMLTable(string: text) {
-            regulated = doc["modes"]?.table?["regulated_mode"]?.bool ?? false
-            globalBackend = doc["summarization"]?.table?["backend"]?.string ?? "anthropic"
-        }
+        let config = ConfigStore(configURL: configURL)
+        let regulated = config.regulatedMode
+        let globalBackend = config.summarizationBackend
         var nda = false
         var sidecarBackend: String?
         if let meeting = meeting {

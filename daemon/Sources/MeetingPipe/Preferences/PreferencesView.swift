@@ -124,6 +124,18 @@ struct PreferencesView: View {
 
     @ViewBuilder
     private var detailContent: some View {
+        // ARCH9: while config.toml does not parse the store refuses to save, so
+        // every pane's controls would edit nothing. One persistent row replaces
+        // them until the file is fixed and Preferences is reopened.
+        if let parseError = store.parseError {
+            ConfigParseErrorPane(error: parseError)
+        } else {
+            paneContent
+        }
+    }
+
+    @ViewBuilder
+    private var paneContent: some View {
         switch selectionState.current {
         case .general:
             GeneralSectionView(store: store)
@@ -235,3 +247,31 @@ private struct PreferencesSidebar: View {
 }
 
 // MARK: - General
+
+/// What every Preferences pane shows while `config.toml` does not parse (ARCH9).
+/// The file is left exactly as the user wrote it; the two buttons are the way to
+/// the fix, and reopening Preferences re-reads it (`ConfigStore.reloadIfUnparsed`).
+struct ConfigParseErrorPane: View {
+    let error: ConfigParseError
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsSectionHeader("Settings unavailable",
+                caption: "MeetingPipe is running with regulated mode on and will not change the file until it parses.")
+            SettingsGroup {
+                SettingsRow(error.preferencesMessage,
+                    sublabel: error.message,
+                    showsDivider: false) {
+                    Button("Open in editor") {
+                        NSWorkspace.shared.open(Config.defaultPath)
+                    }
+                    .buttonStyle(.mpGhost)
+                    Button("Reveal in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([Config.defaultPath])
+                    }
+                    .buttonStyle(.mpGhost)
+                }
+            }
+        }
+    }
+}

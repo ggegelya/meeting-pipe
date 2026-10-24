@@ -497,6 +497,10 @@ The cause that used to be behind it was the app's own doing and is fixed. When o
 
 Accessibility is missing, or the meeting app is one whose windows cannot be read. There is a backstop: after a long stretch of silence the recording stops itself, and partway through that stretch you get a "Still meeting?" notification with a Stop button. `⌃⌥⇧M` stops it immediately. The length of that stretch is the **Mic-only silence backstop** slider in **Preferences ▸ Prompt**. The stretch only counts while the other side of the call can be heard: if the recording panel says **System audio not captured**, the far side is not reaching the recording, and the backstop waits rather than treating your muted mic as an empty call. The app retries once by itself; if the notice stays, **Retry system audio** on the panel is the fix, and the backstop picks up again once audio is flowing.
 
+### Preferences says the settings file has a syntax error
+
+Every pane in **Preferences** shows one row instead of its controls: "config.toml has a syntax error at line N". The settings file, `~/.config/meeting-pipe/config.toml`, was edited by hand and something in it no longer reads, often a missing bracket or quote on the line named. Nothing in it has been lost: the app will not save over a file it cannot read, so every setting you had is still there, waiting for the typo to be fixed. Until then the app plays safe. It runs as if **Regulated mode** were on, so nothing leaves your Mac, and every other setting sits at its default. Meetings still record, but their summaries fail until the file is fixed, because the summarizer reads the same file; once it reads again, **Retry** on the failed meeting picks it up. Click **Open in editor** on that row, fix the line it names, save, then close and reopen Preferences; the panes come back with your settings in them.
+
 ### Anything else
 
 Two families of failure are worth naming, because both read as the app being broken and neither is.

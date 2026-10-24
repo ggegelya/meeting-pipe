@@ -96,7 +96,7 @@ final class CoordinatorMicGateIntegrationTests: XCTestCase {
         mic_only_silence_seconds = 120
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let cfg = try Config.load(from: url)
+        let cfg = ConfigStore(configURL: url).config
         XCTAssertEqual(cfg.detection.micOnlySilenceSec, 120)
     }
 
@@ -106,13 +106,13 @@ final class CoordinatorMicGateIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("config.toml")
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertEqual(store.micOnlySilenceSec, 900)
 
         store.micOnlySilenceSec = 60
         try store.saveNow()
 
-        let reloaded = try ConfigStore(configURL: url)
+        let reloaded = ConfigStore(configURL: url)
         XCTAssertEqual(reloaded.micOnlySilenceSec, 60)
     }
 }

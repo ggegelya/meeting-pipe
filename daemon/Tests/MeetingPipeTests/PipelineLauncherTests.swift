@@ -117,6 +117,35 @@ final class PipelineLauncherTests: XCTestCase {
 
     // MARK: - TECH-SEC5: cloudSecretPolicy
 
+    func testPolicyMalformedConfigStripsBoth() {
+        // ARCH9: a file that does not parse used to read `regulated = false` and keep
+        // both tokens, even when the broken file said regulated. It fails closed now.
+        let cfg = writeConfig("[modes]\nregulated_mode = true\n[summarization\nbackend = \"anthropic\"\n")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        let policy = PipelineLauncher.cloudSecretPolicy(for: nil, configURL: cfg)
+        XCTAssertTrue(policy.stripAnthropic)
+        XCTAssertTrue(policy.stripNotion)
+    }
+
+    func testPolicyWellFormedCloudConfigKeepsBoth() {
+        let cfg = writeConfig("[modes]\nregulated_mode = false\n[summarization]\nbackend = \"anthropic\"\n")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        let policy = PipelineLauncher.cloudSecretPolicy(for: nil, configURL: cfg)
+        XCTAssertFalse(policy.stripAnthropic)
+        XCTAssertFalse(policy.stripNotion)
+    }
+
+    func testAppleContextReadsTheInjectedConfig() throws {
+        // ARCH9: the Apple path used to parse a hard-coded ~/.config path of its own.
+        let cfg = writeConfig("[summarization]\nteam_context = \"FDA team\"\nsummary_language = \"de\"\n")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        let wav = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apple-\(UUID().uuidString).wav")
+        let resolved = PipelineLauncher.appleContext(for: wav, configURL: cfg)
+        XCTAssertEqual(resolved.teamContext, "FDA team")
+        XCTAssertEqual(resolved.summaryLanguage, "de")
+    }
+
     func testPolicyRegulatedStripsBoth() {
         let cfg = writeConfig("[modes]\nregulated_mode = true\n")
         defer { try? FileManager.default.removeItem(at: cfg) }

@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import MeetingPipe
 
@@ -19,7 +20,7 @@ final class ConfigStoreTests: XCTestCase {
     func test_loads_defaults_when_file_missing() throws {
         let url = try makeTempConfigURL()
         // Don't create the file — store should bootstrap empty.
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertEqual(store.debounceEndSec, 5)
         XCTAssertEqual(store.manualHotkey, "ctrl+option+m")
         XCTAssertFalse(store.regulatedMode)
@@ -43,7 +44,7 @@ final class ConfigStoreTests: XCTestCase {
         honor_app_mute = false
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertTrue(store.voiceProcessing)
         XCTAssertFalse(store.honorAppMute)
 
@@ -51,7 +52,7 @@ final class ConfigStoreTests: XCTestCase {
         store.honorAppMute = true
         try store.saveNow()
 
-        let reloaded = try ConfigStore(configURL: url)
+        let reloaded = ConfigStore(configURL: url)
         XCTAssertFalse(reloaded.voiceProcessing)
         XCTAssertTrue(reloaded.honorAppMute)
     }
@@ -69,7 +70,7 @@ final class ConfigStoreTests: XCTestCase {
         mic_only_silence_seconds = 600
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertEqual(store.debounceEndSec, 7)
         XCTAssertEqual(store.promptTimeoutSec, 45)
         XCTAssertEqual(store.repromptCooldownSec, 120)
@@ -78,7 +79,7 @@ final class ConfigStoreTests: XCTestCase {
         // An unrelated save must not clobber the values it just read.
         store.regulatedMode = true
         try store.saveNow()
-        let reloaded = try ConfigStore(configURL: url)
+        let reloaded = ConfigStore(configURL: url)
         XCTAssertEqual(reloaded.debounceEndSec, 7)
         XCTAssertEqual(reloaded.micOnlySilenceSec, 600)
     }
@@ -90,13 +91,13 @@ final class ConfigStoreTests: XCTestCase {
         language = "uk"
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertEqual(store.transcriptionLanguage, "uk")
 
         store.transcriptionLanguage = "auto"
         try store.saveNow()
 
-        let reloaded = try ConfigStore(configURL: url)
+        let reloaded = ConfigStore(configURL: url)
         XCTAssertEqual(reloaded.transcriptionLanguage, "auto")
     }
 
@@ -116,7 +117,7 @@ final class ConfigStoreTests: XCTestCase {
         regulated_mode = false
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         store.regulatedMode = true
         store.debounceEndSec = 7
         store.autoConsentApps = ["us.zoom.xos"]
@@ -124,7 +125,7 @@ final class ConfigStoreTests: XCTestCase {
 
         // Re-read from disk via a fresh ConfigStore — that proves the
         // file actually changed, not just the in-memory model.
-        let reloaded = try ConfigStore(configURL: url)
+        let reloaded = ConfigStore(configURL: url)
         XCTAssertTrue(reloaded.regulatedMode)
         XCTAssertEqual(reloaded.debounceEndSec, 7)
         XCTAssertEqual(reloaded.autoConsentApps, ["us.zoom.xos"])
@@ -159,7 +160,7 @@ final class ConfigStoreTests: XCTestCase {
         regulated_mode = false
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         store.regulatedMode = true  // unrelated UI mutation
         try store.saveNow()
 
@@ -177,7 +178,7 @@ final class ConfigStoreTests: XCTestCase {
 
     func test_speaker_accuracy_keys_default_when_absent() throws {
         let url = try makeTempConfigURL()
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertEqual(store.diarizationClusteringThreshold,
                        ConfigDefaults.diarizationClusteringThreshold)
         XCTAssertFalse(store.summarizationDiarizeCleanup,
@@ -194,7 +195,7 @@ final class ConfigStoreTests: XCTestCase {
         diarize_cleanup = true
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertEqual(store.diarizationClusteringThreshold, 0.75)
         XCTAssertTrue(store.summarizationDiarizeCleanup)
 
@@ -204,7 +205,7 @@ final class ConfigStoreTests: XCTestCase {
         store.summarizationDiarizeCleanup = false
         try store.saveNow()
 
-        let reloaded = try ConfigStore(configURL: url)
+        let reloaded = ConfigStore(configURL: url)
         XCTAssertEqual(reloaded.diarizationClusteringThreshold, 0.55)
         XCTAssertFalse(reloaded.summarizationDiarizeCleanup)
         let raw = try String(contentsOf: url, encoding: .utf8)
@@ -213,7 +214,7 @@ final class ConfigStoreTests: XCTestCase {
     }
 
     func test_out_of_range_threshold_is_clamped_to_what_the_daemon_would_use() throws {
-        // A hand-edited 0.2 is clamped to 0.5 by `Config.load`, so a store that showed
+        // A hand-edited 0.2 is clamped to 0.5 on read, so a store that showed
         // 0.2 would have Preferences reporting a value the runner never sees.
         let url = try makeTempConfigURL()
         try """
@@ -221,10 +222,10 @@ final class ConfigStoreTests: XCTestCase {
         diarization_clustering_threshold = 0.2
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertEqual(store.diarizationClusteringThreshold, 0.5)
         XCTAssertEqual(store.diarizationClusteringThreshold,
-                       try Config.load(from: url).transcription.diarizationClusteringThreshold)
+                       ConfigStore(configURL: url).config.transcription.diarizationClusteringThreshold)
     }
 
     func test_integer_threshold_literal_survives_a_load_and_save() throws {
@@ -236,7 +237,7 @@ final class ConfigStoreTests: XCTestCase {
         diarization_clustering_threshold = 1
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertEqual(store.diarizationClusteringThreshold, 0.9, "1 clamps to the range ceiling")
     }
 
@@ -259,7 +260,7 @@ final class ConfigStoreTests: XCTestCase {
         sinks = ["obsidian", "filesystem"]
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         store.diarizationClusteringThreshold = 0.55
         store.summarizationDiarizeCleanup = true
         try store.saveNow()
@@ -281,7 +282,7 @@ final class ConfigStoreTests: XCTestCase {
         // `NotionCfg` carry in config.py. A drift here would show the owner a
         // destination the publisher does not use, which is worse than no UI.
         let url = try makeTempConfigURL()
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertEqual(store.obsidianVaultPath, "", "no vault until the owner picks one")
         XCTAssertEqual(store.obsidianFolder, "Meetings")
         XCTAssertTrue(store.obsidianAttachAudio)
@@ -313,7 +314,7 @@ final class ConfigStoreTests: XCTestCase {
         include_full_transcript = false
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertEqual(store.obsidianVaultPath, "~/Vaults/Work")
         XCTAssertEqual(store.obsidianFolder, "Calls")
         XCTAssertFalse(store.obsidianAttachAudio)
@@ -332,7 +333,7 @@ final class ConfigStoreTests: XCTestCase {
         store.summarizationOpenAIModel = "gpt-4o-mini"
         try store.saveNow()
 
-        let reloaded = try ConfigStore(configURL: url)
+        let reloaded = ConfigStore(configURL: url)
         XCTAssertEqual(reloaded.obsidianVaultPath, "~/Vaults/Personal")
         XCTAssertTrue(reloaded.obsidianAttachAudio)
         XCTAssertEqual(reloaded.filesystemOutputDir, "~/Elsewhere")
@@ -347,7 +348,7 @@ final class ConfigStoreTests: XCTestCase {
     /// the store writes this key back on any save, so a drifted fallback would pin a
     /// config that never named a model to a model nobody chose.
     func test_anthropic_model_defaults_to_the_pipelines_and_round_trips() throws {
-        let fresh = try ConfigStore(configURL: try makeTempConfigURL())
+        let fresh = ConfigStore(configURL: try makeTempConfigURL())
         XCTAssertEqual(fresh.summarizationModel, try pipelineDefaultAnthropicModel())
 
         let url = try makeTempConfigURL()
@@ -357,12 +358,12 @@ final class ConfigStoreTests: XCTestCase {
         team_context = "Custom team context"
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertEqual(store.summarizationModel, "claude-sonnet-4-6")
         store.summarizationModel = "claude-opus-5-5"
         try store.saveNow()
 
-        let reloaded = try ConfigStore(configURL: url)
+        let reloaded = ConfigStore(configURL: url)
         XCTAssertEqual(reloaded.summarizationModel, "claude-opus-5-5")
         let raw = try String(contentsOf: url, encoding: .utf8)
         XCTAssertFalse(raw.contains("claude-sonnet-4-6"), "the old id was replaced, not duplicated")
@@ -410,7 +411,7 @@ final class ConfigStoreTests: XCTestCase {
         mount_path = "/Volumes/team"
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         store.obsidianFolder = "Calls"
         store.notionIncludeFullTranscript = false
         try store.saveNow()
@@ -436,7 +437,7 @@ final class ConfigStoreTests: XCTestCase {
         user_label = "Alex"
         """.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertEqual(store.notionDatabaseId, "abc123")
         XCTAssertEqual(store.summaryLanguage, "ru")
         XCTAssertEqual(store.summarizationSkipAboveChars, 50000)
@@ -447,7 +448,7 @@ final class ConfigStoreTests: XCTestCase {
         let url = try makeTempConfigURL()
         try "".write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         store.notionDatabaseId = "deadbeef"
         store.summaryLanguage = "uk"
         store.summarizationSkipAboveChars = 0
@@ -466,7 +467,7 @@ final class ConfigStoreTests: XCTestCase {
         let url = try makeTempConfigURL()
         try "".write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         // Default applies on a fresh file.
         XCTAssertEqual(store.forceStopHotkey, "ctrl+option+shift+m")
 
@@ -477,7 +478,7 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertTrue(raw.contains("force_stop_hotkey = \"cmd+shift+x\""))
 
         // Reload from disk and confirm the value sticks.
-        let reloaded = try ConfigStore(configURL: url)
+        let reloaded = ConfigStore(configURL: url)
         XCTAssertEqual(reloaded.forceStopHotkey, "cmd+shift+x")
     }
 
@@ -489,7 +490,7 @@ final class ConfigStoreTests: XCTestCase {
         let url = try makeTempConfigURL()
         try "".write(to: url, atomically: true, encoding: .utf8)
 
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         XCTAssertEqual(store.defaultPromptAction, "skip")
 
         store.defaultPromptAction = "record"
@@ -498,14 +499,14 @@ final class ConfigStoreTests: XCTestCase {
         let raw = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(raw.contains("default_prompt_action = \"record\""))
 
-        let reloaded = try ConfigStore(configURL: url)
+        let reloaded = ConfigStore(configURL: url)
         XCTAssertEqual(reloaded.defaultPromptAction, "record")
     }
 
     func test_writeBack_is_pure() throws {
         let url = try makeTempConfigURL()
         try "".write(to: url, atomically: true, encoding: .utf8)
-        let store = try ConfigStore(configURL: url)
+        let store = ConfigStore(configURL: url)
         // Any round-tripped knob proves the invariant; this used to assert on
         // `sample_rate`, which HYG2 deleted as a dead knob.
         store.manualHotkey = "cmd+shift+z"
@@ -528,7 +529,7 @@ final class ConfigStoreTests: XCTestCase {
         // create the file as a side-effect of construction.
         let url = try makeTempConfigURL()
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
-        _ = try ConfigStore(configURL: url)
+        _ = ConfigStore(configURL: url)
         // Give the run loop a tick so any erroneously-scheduled timer
         // would have fired by now.
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
@@ -536,5 +537,135 @@ final class ConfigStoreTests: XCTestCase {
             FileManager.default.fileExists(atPath: url.path),
             "ConfigStore.init must not persist anything; the file should still not exist"
         )
+    }
+
+    // MARK: - ARCH9: a file that does not parse fails closed
+
+    /// A real syntax error on line 3 (an unclosed table header) under a file that
+    /// says regulated and carries keys the store does not model.
+    private let malformed = """
+    [modes]
+    regulated_mode = true
+    [summarization
+    team_context = "keep me"
+    """
+
+    func test_malformed_file_sets_parse_error_with_its_line() throws {
+        let url = try makeTempConfigURL()
+        try malformed.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = ConfigStore(configURL: url)
+        let error = try XCTUnwrap(store.parseError)
+        XCTAssertEqual(error.line, 3)
+        XCTAssertFalse(error.message.isEmpty)
+        XCTAssertEqual(error.preferencesMessage,
+                       "config.toml has a syntax error at line 3. Fix it in a text editor, then reopen Preferences.")
+    }
+
+    func test_preferences_message_without_a_position() {
+        let error = ConfigParseError(message: "not UTF-8", line: nil, column: nil)
+        XCTAssertEqual(error.preferencesMessage,
+                       "config.toml has a syntax error. Fix it in a text editor, then reopen Preferences.")
+    }
+
+    func test_unreadable_file_is_a_parse_error_not_a_fresh_install() throws {
+        // A file that exists but is not UTF-8 used to read as "no config yet", which
+        // is the same empty document the next save would write over it.
+        let url = try makeTempConfigURL()
+        try Data([0xFF, 0xFE, 0x00, 0xC3]).write(to: url)
+        XCTAssertNotNil(ConfigStore(configURL: url).parseError)
+    }
+
+    func test_save_now_throws_and_leaves_the_bytes_alone() throws {
+        let url = try makeTempConfigURL()
+        try malformed.write(to: url, atomically: true, encoding: .utf8)
+        let before = try Data(contentsOf: url)
+
+        let store = ConfigStore(configURL: url)
+        store.regulatedMode = false
+        XCTAssertThrowsError(try store.saveNow()) { error in
+            XCTAssertEqual(error as? ConfigParseError, store.parseError)
+        }
+        XCTAssertEqual(try Data(contentsOf: url), before)
+    }
+
+    func test_debounced_preferences_edit_does_not_write_over_a_malformed_file() throws {
+        // The data-loss path itself: a Preferences edit arms the 500 ms debounce,
+        // which used to replace the user's file with only the modeled keys, every
+        // one at its default, `regulated_mode = false` among them.
+        let url = try makeTempConfigURL()
+        try malformed.write(to: url, atomically: true, encoding: .utf8)
+        let before = try Data(contentsOf: url)
+
+        let store = ConfigStore(configURL: url)
+        var persisted = false
+        let sub = store.didPersist.sink { persisted = true }
+        defer { sub.cancel() }
+        store.manualHotkey = "ctrl+option+k"
+        store.regulatedMode = false
+
+        RunLoop.main.run(until: Date().addingTimeInterval(0.9))
+        XCTAssertFalse(persisted)
+        XCTAssertEqual(try Data(contentsOf: url), before)
+    }
+
+    func test_malformed_file_reads_regulated_and_takes_the_regulated_gate() throws {
+        let url = try makeTempConfigURL()
+        // Says NOT regulated, and still reads regulated: the store cannot know what
+        // an unparsed file says, so it assumes the stricter answer.
+        try "[modes]\nregulated_mode = false\n[detection\n".write(to: url, atomically: true, encoding: .utf8)
+
+        let store = ConfigStore(configURL: url)
+        XCTAssertNotNil(store.parseError)
+        XCTAssertTrue(store.regulatedMode)
+        XCTAssertTrue(store.config.modes.regulatedMode)
+        XCTAssertEqual(CaptureMode.resolve(regulated: store.regulatedMode, nda: false, redactMuted: false),
+                       .regulatedGate)
+    }
+
+    func test_well_formed_file_has_no_parse_error() throws {
+        let url = try makeTempConfigURL()
+        try "[modes]\nregulated_mode = false\n".write(to: url, atomically: true, encoding: .utf8)
+        let store = ConfigStore(configURL: url)
+        XCTAssertNil(store.parseError)
+        XCTAssertFalse(store.regulatedMode)
+    }
+
+    func test_reload_after_the_fix_clears_the_error_and_reads_the_file() throws {
+        let url = try makeTempConfigURL()
+        try malformed.write(to: url, atomically: true, encoding: .utf8)
+        let store = ConfigStore(configURL: url)
+        XCTAssertNotNil(store.parseError)
+
+        try """
+        [modes]
+        regulated_mode = false
+        [detection]
+        manual_hotkey = "ctrl+option+k"
+        """.write(to: url, atomically: true, encoding: .utf8)
+        var persisted = false
+        let sub = store.didPersist.sink { persisted = true }
+        defer { sub.cancel() }
+        store.reloadIfUnparsed()
+
+        XCTAssertNil(store.parseError)
+        XCTAssertFalse(store.regulatedMode)
+        XCTAssertEqual(store.manualHotkey, "ctrl+option+k")
+        XCTAssertTrue(persisted, "subscribers re-read on a reload that changed what the store says")
+        // And saves work again.
+        store.manualHotkey = "ctrl+option+j"
+        try store.saveNow()
+        XCTAssertTrue(try String(contentsOf: url, encoding: .utf8).contains("ctrl+option+j"))
+    }
+
+    func test_reload_is_a_no_op_on_a_store_that_parsed() throws {
+        // The store is the file's author once it parsed; a re-read would race its
+        // own debounced save, so an unsaved edit must survive a Preferences reopen.
+        let url = try makeTempConfigURL()
+        try "[detection]\nmanual_hotkey = \"ctrl+option+m\"\n".write(to: url, atomically: true, encoding: .utf8)
+        let store = ConfigStore(configURL: url)
+        store.manualHotkey = "ctrl+option+k"
+        store.reloadIfUnparsed()
+        XCTAssertEqual(store.manualHotkey, "ctrl+option+k")
     }
 }

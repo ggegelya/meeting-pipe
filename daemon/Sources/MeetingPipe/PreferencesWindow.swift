@@ -35,6 +35,9 @@ final class PreferencesWindow {
     /// forward, for the same reason `initial` is: the pane may already be on screen, in
     /// which case the published change is the only thing that moves it.
     func show(initial: PreferencesItem? = nil, vocabularyScope: String? = nil) {
+        // ARCH9: a config.toml fixed by hand since the last open clears the
+        // parse-error row here; a store that parsed is left alone.
+        store.reloadIfUnparsed()
         if let scope = vocabularyScope {
             selectionState.pendingVocabularyScope = scope
         }

@@ -26,13 +26,14 @@ final class NotionDatabaseList: ObservableObject {
     private let cacheURL: URL
     private let session: URLSession
     /// Resolves the global regulated-mode flag. Defaults to reading the config
-    /// file at refresh time; tests inject a constant. (TECH-SEC4)
+    /// file at refresh time through a `ConfigStore`, which reads a file that does
+    /// not parse as regulated (ARCH9); tests inject a constant. (TECH-SEC4)
     private let isRegulated: () -> Bool
 
     init(
         cacheURL: URL = NotionDatabaseList.defaultCacheURL,
         session: URLSession = .shared,
-        isRegulated: @escaping () -> Bool = { (try? Config.load())?.modes.regulatedMode ?? false }
+        isRegulated: @escaping () -> Bool = { ConfigStore().regulatedMode }
     ) {
         self.cacheURL = cacheURL
         self.session = session

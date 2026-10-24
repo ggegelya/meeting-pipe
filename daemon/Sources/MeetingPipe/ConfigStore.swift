@@ -2,97 +2,127 @@ import Combine
 import Foundation
 import TOMLKit
 
+/// Why `config.toml` could not be read: TOMLKit's message and, when it gave
+/// one, the position (ARCH9). Thrown by `ConfigStore.saveNow` while it is set.
+struct ConfigParseError: Error, Equatable {
+    let message: String
+    let line: Int?
+    let column: Int?
+
+    /// The one Preferences row shown in place of the panes while the file is
+    /// unreadable. Derived here so the copy is testable without a view.
+    var preferencesMessage: String {
+        let at = line.map { " at line \($0)" } ?? ""
+        return "config.toml has a syntax error\(at). Fix it in a text editor, then reopen Preferences."
+    }
+}
+
 /// Observable wrapper around `~/.config/meeting-pipe/config.toml` that the
 /// Preferences view binds to. Persistence is debounced (500 ms) and
 /// preserves unknown TOML keys (pipeline-side fields stay untouched). The
 /// disk write runs off the main queue.
+///
+/// ARCH9: this is the only Swift type that reads `config.toml`. The daemon's
+/// launch-time `Config`, the cloud-token policy, the Apple summary context,
+/// the workflow migrator, and the Notion picker's regulated check all read a
+/// store, so one parse and one failure rule cover every reader. A file that
+/// does not parse fails closed: `parseError` is set, `regulatedMode` reads
+/// true, and nothing is written back, so the user's file survives untouched
+/// instead of being replaced by defaults on the next Preferences edit.
+/// `ConfigStoreFenceTests` keeps any other file from parsing it.
 final class ConfigStore: ObservableObject {
     private let configURL: URL
     private let writeQueue = DispatchQueue(label: "com.meetingpipe.configstore.write", qos: .utility)
 
     /// Read once at load, mutated in place and re-serialized on persist;
-    /// that's how unknown keys survive.
-    private var rawDocument: TOMLTable
+    /// that's how unknown keys survive. Empty while `parseError` is set.
+    private var rawDocument = TOMLTable()
 
-    /// Live values exposed to SwiftUI. didSet → schedule debounced save.
-    @Published var outputDirPath: String { didSet { scheduleSave() } }
-    @Published var autoConsentApps: [String] { didSet { scheduleSave() } }
+    /// Set when the file exists but does not parse (ARCH9). While set, saves are
+    /// refused and every value is its default except `regulatedMode`, which is
+    /// true. `reloadIfUnparsed()` clears it once the file is fixed.
+    @Published private(set) var parseError: ConfigParseError?
+
+    /// Live values exposed to SwiftUI. didSet → schedule debounced save. The
+    /// declared values are placeholders: `apply(_:)` assigns every one in init.
+    @Published var outputDirPath: String = "" { didSet { scheduleSave() } }
+    @Published var autoConsentApps: [String] = [] { didSet { scheduleSave() } }
     /// Apple's VoIP DSP on the mic path. Off by default: VPIO drops the HAL
     /// gain system-wide so other clients hear the user quietly. Applies next
     /// recording.
-    @Published var voiceProcessing: Bool { didSet { scheduleSave() } }
+    @Published var voiceProcessing: Bool = false { didSet { scheduleSave() } }
     /// When true, MicGate observes the client's mute button (or system input
     /// mute) and records it to the muted-span timeline (capture-first, ADR 0016):
     /// the mic is still recorded in full, redaction is a per-workflow opt-in, and
     /// only the regulated / NDA gate zeroes the mic live. Off skips mute tracking.
-    @Published var honorAppMute: Bool { didSet { scheduleSave() } }
+    @Published var honorAppMute: Bool = false { didSet { scheduleSave() } }
 
-    @Published var debounceEndSec: Double { didSet { scheduleSave() } }
-    @Published var manualHotkey: String { didSet { scheduleSave() } }
+    @Published var debounceEndSec: Double = 0 { didSet { scheduleSave() } }
+    @Published var manualHotkey: String = "" { didSet { scheduleSave() } }
     /// Stop-only hotkey (TECH-C5); second Carbon binding. Default
     /// `ctrl+option+shift+m`.
-    @Published var forceStopHotkey: String { didSet { scheduleSave() } }
+    @Published var forceStopHotkey: String = "" { didSet { scheduleSave() } }
     /// Flag-moment hotkey (FEAT8); third Carbon binding. Default
     /// `ctrl+option+f`.
-    @Published var flagMomentHotkey: String { didSet { scheduleSave() } }
+    @Published var flagMomentHotkey: String = "" { didSet { scheduleSave() } }
     /// Off-the-record hotkey (MIC14); fourth Carbon binding. Default `ctrl+option+o`.
-    @Published var offTheRecordHotkey: String { didSet { scheduleSave() } }
-    @Published var promptTimeoutSec: Double { didSet { scheduleSave() } }
+    @Published var offTheRecordHotkey: String = "" { didSet { scheduleSave() } }
+    @Published var promptTimeoutSec: Double = 0 { didSet { scheduleSave() } }
     /// Action when the prompt times out: `"skip"` (default, suppress),
     /// `"record"`, or `"byo"`. Mirrors `[detection.default_prompt_action]`.
-    @Published var defaultPromptAction: String { didSet { scheduleSave() } }
+    @Published var defaultPromptAction: String = "" { didSet { scheduleSave() } }
     /// Per-bundle re-prompt cooldown (s): suppress fresh `.started` events
     /// from a post-call mic grab. Manual hotkey bypasses it.
-    @Published var repromptCooldownSec: Double { didSet { scheduleSave() } }
+    @Published var repromptCooldownSec: Double = 0 { didSet { scheduleSave() } }
     /// Idle backstop auto-stop horizon (s); auto-stop after this much VAD-silent
     /// mic with system also silent (TECH-END3). Default 900 (15 min). TOML key
     /// stays `mic_only_silence_seconds` for back-compat.
-    @Published var micOnlySilenceSec: Double { didSet { scheduleSave() } }
+    @Published var micOnlySilenceSec: Double = 0 { didSet { scheduleSave() } }
 
-    @Published var regulatedMode: Bool { didSet { scheduleSave() } }
+    @Published var regulatedMode: Bool = false { didSet { scheduleSave() } }
 
     /// Pipeline-side fields surfaced for first-run setup; the pipeline reads
     /// the same TOML at spawn time, so edits apply next recording.
-    @Published var notionDatabaseId: String { didSet { scheduleSave() } }
+    @Published var notionDatabaseId: String = "" { didSet { scheduleSave() } }
     /// ASR language for the on-device FluidAudio (Parakeet TDT) runner: an ISO
     /// 639-1 code pins it, `"auto"` (the default) lets the SDK detect per meeting.
     /// Mirrors `transcription.language`; read once at Coordinator init and passed
     /// to `SinkDispatcher`, so a change applies on the next daemon launch.
-    @Published var transcriptionLanguage: String { didSet { scheduleSave() } }
+    @Published var transcriptionLanguage: String = "" { didSet { scheduleSave() } }
     /// FluidAudio's speaker-embedding clustering threshold (DIAR2's dial, surfaced by
-    /// DIAR3 as the "Speaker separation" control). Clamped on read with the same
-    /// helper `Config.load` uses, so Preferences can never show a value the daemon
-    /// would not use. Read once at `Coordinator` init and baked into the transcription
+    /// DIAR3 as the "Speaker separation" control). Clamped on read, and `config`
+    /// hands the runner this same value, so Preferences can never show a value the
+    /// daemon would not use. Read once at `Coordinator` init and baked into the transcription
     /// runner, so a change applies on the next daemon launch, like `transcriptionLanguage`.
-    @Published var diarizationClusteringThreshold: Double { didSet { scheduleSave() } }
-    @Published var summaryLanguage: String { didSet { scheduleSave() } }
+    @Published var diarizationClusteringThreshold: Double = 0 { didSet { scheduleSave() } }
+    @Published var summaryLanguage: String = "" { didSet { scheduleSave() } }
     /// The opt-in LLM pass that merges same-speaker labels after transcription
     /// (`summarization.diarize_cleanup`, TECH-DIAR1). Read by `mp run-all` at spawn
     /// time, so a change applies from the next meeting with no relaunch.
-    @Published var summarizationDiarizeCleanup: Bool { didSet { scheduleSave() } }
+    @Published var summarizationDiarizeCleanup: Bool = false { didSet { scheduleSave() } }
     /// Pin `mp digest`'s narrative to the on-device engine whatever
     /// `summarizationBackend` says (`summarization.digest_local_only`, UX63).
     /// Read by `mp digest` at spawn, so a change applies to the next run,
     /// scheduled or on demand, with no relaunch.
-    @Published var summarizationDigestLocalOnly: Bool { didSet { scheduleSave() } }
-    @Published var summarizationSkipAboveChars: Int { didSet { scheduleSave() } }
+    @Published var summarizationDigestLocalOnly: Bool = false { didSet { scheduleSave() } }
+    @Published var summarizationSkipAboveChars: Int = 0 { didSet { scheduleSave() } }
     /// Summarize backend: "anthropic" | "local" | "auto". Mirrors
     /// `summarization.backend`.
-    @Published var summarizationBackend: String { didSet { scheduleSave() } }
+    @Published var summarizationBackend: String = "" { didSet { scheduleSave() } }
     /// Model id every Anthropic path calls (`summarization.model`): the anthropic and
     /// auto backends, a workflow pinning Anthropic, Re-summarize with…, Ask and the
     /// digest. TOML-only until the Pipeline pane's Anthropic model row, so changing it
     /// meant quitting the app first or having its next save write the old id back.
-    @Published var summarizationModel: String { didSet { scheduleSave() } }
-    @Published var summarizationLocalModel: String { didSet { scheduleSave() } }
-    @Published var summarizationLocalEndpoint: String { didSet { scheduleSave() } }
+    @Published var summarizationModel: String = "" { didSet { scheduleSave() } }
+    @Published var summarizationLocalModel: String = "" { didSet { scheduleSave() } }
+    @Published var summarizationLocalEndpoint: String = "" { didSet { scheduleSave() } }
     /// Model id the `openai` backend calls (`summarization.openai_model`). Ignored
     /// by every other backend. Surfaced by UX45; before that, picking the OpenAI
     /// backend showed an instruction to hand-edit `config.toml`.
-    @Published var summarizationOpenAIModel: String { didSet { scheduleSave() } }
+    @Published var summarizationOpenAIModel: String = "" { didSet { scheduleSave() } }
     /// Display name stamped on the user's own diarized speaker so "me vs them"
     /// reads as a real name (`summarization.user_label`).
-    @Published var summarizationUserLabel: String { didSet { scheduleSave() } }
+    @Published var summarizationUserLabel: String = "" { didSet { scheduleSave() } }
 
     // MARK: - Publish targets (UX45)
 
@@ -111,28 +141,28 @@ final class ConfigStore: ObservableObject {
     /// `obsidian.template_path` and `obsidian.daily_note_backlink` are the two
     /// keys left TOML-only on purpose: both are advanced, neither can stop the
     /// sink from running.
-    @Published var obsidianVaultPath: String { didSet { scheduleSave() } }
-    @Published var obsidianFolder: String { didSet { scheduleSave() } }
-    @Published var obsidianAttachAudio: Bool { didSet { scheduleSave() } }
-    @Published var obsidianAttachmentsSubfolder: String { didSet { scheduleSave() } }
-    @Published var filesystemOutputDir: String { didSet { scheduleSave() } }
+    @Published var obsidianVaultPath: String = "" { didSet { scheduleSave() } }
+    @Published var obsidianFolder: String = "" { didSet { scheduleSave() } }
+    @Published var obsidianAttachAudio: Bool = false { didSet { scheduleSave() } }
+    @Published var obsidianAttachmentsSubfolder: String = "" { didSet { scheduleSave() } }
+    @Published var filesystemOutputDir: String = "" { didSet { scheduleSave() } }
     /// Target directory on an already-mounted SMB/NFS share (FEAT1). The publisher
     /// never creates the mount root itself, so a share that is down fails loudly
     /// rather than quietly writing to local disk.
-    @Published var lanMountPath: String { didSet { scheduleSave() } }
+    @Published var lanMountPath: String = "" { didSet { scheduleSave() } }
     /// Optional label, used only in the LAN sink's "share unreachable" message.
-    @Published var lanHost: String { didSet { scheduleSave() } }
+    @Published var lanHost: String = "" { didSet { scheduleSave() } }
     /// Whether Notion pages carry the full transcript body. Defaults on, matching
     /// the pipeline: without a switch, every transcript egresses to Notion wherever
     /// that sink runs, and regulated mode was the only in-app lever that stopped it.
-    @Published var notionIncludeFullTranscript: Bool { didSet { scheduleSave() } }
+    @Published var notionIncludeFullTranscript: Bool = false { didSet { scheduleSave() } }
 
     /// Whether `mp mcp-serve` may run (AUTO3). Off by default and consumed by
     /// the pipeline: `mcp_serve.main` refuses to start while this is false, so
     /// the Integrations switch is a real kill switch rather than a label. MCP is
     /// the one surface where the *client* picks what leaves this Mac, which is
     /// why it is opt-in where every other integration is on once configured.
-    @Published var mcpEnabled: Bool { didSet { scheduleSave() } }
+    @Published var mcpEnabled: Bool = false { didSet { scheduleSave() } }
 
     /// Opt-in LoRA adapter the local backend serves (`summarization.local_adapter_path`,
     /// LOCAL9), read straight off the live TOML. Read-only for the same reason as
@@ -157,6 +187,43 @@ final class ConfigStore: ObservableObject {
         return ["notion"]
     }
 
+    /// The legacy global prompt context (`summarization.team_context`), read
+    /// straight off the live TOML for the two Swift consumers: the Apple
+    /// Intelligence summary and the one-shot workflow migrator. Read-only for the
+    /// same reason as `outputSinks`: it is a pipeline-side knob with no control.
+    var summarizationTeamContext: String {
+        rawDocument["summarization"]?.table?["team_context"]?.string ?? ""
+    }
+
+    /// The daemon's value snapshot (ARCH9: `Config` is produced here rather than
+    /// parsed a second time). `App` takes it once at launch; a read-only caller
+    /// takes it off a store it builds for that read.
+    var config: Config {
+        Config(
+            recording: Config.Recording(
+                outputDir: URL(fileURLWithPath: (outputDirPath as NSString).expandingTildeInPath),
+                autoConsentApps: autoConsentApps,
+                voiceProcessing: voiceProcessing,
+                honorAppMute: honorAppMute
+            ),
+            detection: Config.Detection(
+                debounceEndSec: debounceEndSec,
+                manualHotkey: manualHotkey,
+                forceStopHotkey: forceStopHotkey,
+                flagMomentHotkey: flagMomentHotkey,
+                offTheRecordHotkey: offTheRecordHotkey,
+                promptTimeoutSec: promptTimeoutSec,
+                repromptCooldownSec: repromptCooldownSec,
+                micOnlySilenceSec: micOnlySilenceSec
+            ),
+            modes: Config.Modes(regulatedMode: regulatedMode),
+            transcription: Config.Transcription(
+                diarizationClusteringThreshold: diarizationClusteringThreshold,
+                language: transcriptionLanguage
+            )
+        )
+    }
+
     /// Fired after a successful disk write so subscribers re-read without
     /// polling ("config changed, refresh what you care about").
     let didPersist = PassthroughSubject<Void, Never>()
@@ -167,17 +234,53 @@ final class ConfigStore: ObservableObject {
     /// assigning defaults doesn't write compile-time defaults to the file.
     private var isInitialized: Bool = false
 
-    init(configURL: URL = Config.defaultPath) throws {
+    init(configURL: URL = Config.defaultPath) {
         self.configURL = configURL
+        apply(Self.read(configURL))
+        // Arm last: every assignment's didSet in `apply` no-ops on !isInitialized.
+        self.isInitialized = true
+    }
+
+    /// The one parse of `config.toml` (ARCH9). A missing file is a fresh user and
+    /// reads as an empty document; a file that exists but cannot be read or parsed
+    /// is an error, never an empty document, because an empty document is what
+    /// the next save would write over the user's file.
+    static func read(_ url: URL) -> (document: TOMLTable, parseError: ConfigParseError?) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return (TOMLTable(), nil) }
         let raw: String
         do {
-            raw = try String(contentsOf: configURL, encoding: .utf8)
+            raw = try String(contentsOf: url, encoding: .utf8)
         } catch {
-            // Fresh user, no config yet: empty TOML + compile-time defaults.
-            raw = ""
+            return (TOMLTable(), ConfigParseError(message: error.localizedDescription, line: nil, column: nil))
         }
-        let doc = (try? TOMLTable(string: raw)) ?? TOMLTable()
+        do {
+            return (try TOMLTable(string: raw), nil)
+        } catch let error as TOMLParseError {
+            let at = error.source.begin
+            return (TOMLTable(), ConfigParseError(message: error.description, line: at.line, column: at.column))
+        } catch {
+            return (TOMLTable(), ConfigParseError(message: String(describing: error), line: nil, column: nil))
+        }
+    }
+
+    /// Re-read the file while the store is refusing to save (ARCH9), so fixing a
+    /// syntax error and reopening Preferences is enough. A no-op once the last
+    /// read parsed: the store is then the file's author, and an unprompted re-read
+    /// would race its own debounced save. Main thread (Preferences' `show()`).
+    func reloadIfUnparsed() {
+        guard parseError != nil else { return }
+        isInitialized = false
+        apply(Self.read(configURL))
+        isInitialized = true
+        if parseError == nil { didPersist.send() }
+    }
+
+    /// Assign every modeled value from one read. Shared by init and the reload
+    /// so the two cannot disagree about a key.
+    private func apply(_ file: (document: TOMLTable, parseError: ConfigParseError?)) {
+        let doc = file.document
         self.rawDocument = doc
+        self.parseError = file.parseError
 
         let rec = doc["recording"]?.table
         let det = doc["detection"]?.table
@@ -196,7 +299,7 @@ final class ConfigStore: ObservableObject {
         self.voiceProcessing = rec?["voice_processing"]?.bool ?? ConfigDefaults.voiceProcessing
         self.honorAppMute = rec?["honor_app_mute"]?.bool ?? ConfigDefaults.honorAppMute
 
-        // Both literal forms, for the reason spelled out in `Config.load`: TOMLKit
+        // Both literal forms: TOML separates integer from float literals and TOMLKit
         // does not coerce int to double, and `config.example.toml` writes every
         // seconds knob as an integer, so a `.double`-only read silently discarded
         // a hand-edit and then wrote the default back over it on the next save.
@@ -216,12 +319,15 @@ final class ConfigStore: ObservableObject {
         self.repromptCooldownSec = seconds("reprompt_cooldown_sec", ConfigDefaults.repromptCooldownSec)
         self.micOnlySilenceSec = seconds("mic_only_silence_seconds", ConfigDefaults.micOnlySilenceSec)
 
-        self.regulatedMode = mod?["regulated_mode"]?.bool ?? ConfigDefaults.regulatedMode
+        // Fail closed (ARCH9): a file that does not parse may well say regulated,
+        // so capture, the sidecar stamp and the token policy all treat it as on.
+        self.regulatedMode = file.parseError != nil
+            || (mod?["regulated_mode"]?.bool ?? ConfigDefaults.regulatedMode)
 
         self.notionDatabaseId = notion?["database_id"]?.string ?? ""
         self.transcriptionLanguage = trans?["language"]?.string ?? ConfigDefaults.transcriptionLanguage
         // Both literal forms, for the same reason as `seconds` above, and clamped
-        // through the helper `Config.load` uses so the control reflects the value the
+        // through the shared helper so the control reflects the value the
         // runner would actually get from a hand-edited out-of-range config (DIAR3).
         let clusteringRaw: Double = {
             if let d = trans?["diarization_clustering_threshold"]?.double { return d }
@@ -255,15 +361,13 @@ final class ConfigStore: ObservableObject {
             ?? "~/Documents/Meetings/published"
         self.lanMountPath = lan?["mount_path"]?.string ?? "/Volumes/meetings"
         self.lanHost = lan?["host"]?.string ?? ""
-
-        // Arm last: every prior assignment's didSet no-ops on !isInitialized.
-        self.isInitialized = true
     }
 
     // MARK: - Persistence
 
     /// Force an immediate save (used by tests and "Apply" buttons).
     func saveNow() throws {
+        if let parseError { throw parseError }
         writeBack()
         try persistToDisk()
     }
@@ -271,6 +375,7 @@ final class ConfigStore: ObservableObject {
     /// Debounce a burst of UI changes into one disk write (500 ms).
     private func scheduleSave() {
         guard isInitialized else { return }   // drop the init didSet storm
+        guard parseError == nil else { return }   // ARCH9: never write over an unparsed file
         // Timer.scheduledTimer needs a run loop; hop to main if a non-UI
         // setter raced in.
         guard Thread.current.isMainThread else {
@@ -341,6 +446,7 @@ final class ConfigStore: ObservableObject {
 
     /// Render `rawDocument` and replace `configURL` atomically.
     private func persistToDisk() throws {
+        if let parseError { throw parseError }
         // Omit `.allowLiteralStrings` so strings serialize as canonical
         // double-quoted basic strings; the single-quote form broke
         // round-trip assertions once TOMLKit started preferring it.

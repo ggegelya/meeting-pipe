@@ -34,7 +34,7 @@ final class RenderedViewSmokeTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let view = StorageSectionView(
-            store: try ConfigStore(configURL: dir.appendingPathComponent("config.toml")),
+            store: ConfigStore(configURL: dir.appendingPathComponent("config.toml")),
             workflowStore: WorkflowStore(directory: dir.appendingPathComponent("workflows"))
         )
         XCTAssertNotNil(view.body)

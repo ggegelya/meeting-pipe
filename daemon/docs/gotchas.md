@@ -306,7 +306,7 @@ Don't `print(...)` for event-stream data. Use `Log.event(category:action:attribu
 
 ### Config defaults live in ConfigDefaults
 
-Don't hardcode a config default at its read site when more than one reader needs it. `ConfigDefaults` (ARCH5) is the single home that `Config.load`, `Config.defaultFallback`, and `ConfigStore.init` all read; a literal in two of the three is how Preferences and the running daemon come to disagree about a value nobody changed.
+Don't hardcode a config default at its read site when more than one reader needs it. `ConfigDefaults` (ARCH5) is the single home that `ConfigStore` and `Config.defaultFallback` read (`Config.load` was the third until ARCH9 retired it); a literal in two of them is how Preferences and the running daemon come to disagree about a value nobody changed.
 
 ### Network promises in copy are derived from the routing
 
@@ -340,9 +340,15 @@ This is not hypothetical, and it cost two tasks. The canonical case is 2:01 in `
 
 Three adjacent facts from the same spike, worth having before anyone reopens the offline-diarizer question, which DIAR4 closed NO-GO. `OfflineDiarizerManager.process` returns the same `DiarizationResult` / `[TimedSpeakerSegment]` the online `performCompleteDiarization` does in FluidAudio 0.14.8, so the "different result type" DIAR2 recorded in July is no longer a migration cost. What *is* a cost is invisible at the type level: the offline pipeline embeds with different model weights at the same 256 dimensions, so every enrolled FEAT3 voiceprint and every `<stem>.embeddings.json` would keep loading and keep producing cosine distances in the wrong space. The failure mode is silent wrong roster matches, not a crash, and any migration has to re-enroll the roster. And the offline path clusters *harder*, not better, on this corpus: 3 clusters on `20260727-103155` where the online path at 0.55 returns 10 and the shipped sidecar carries 9 speaker keys, which is the under-clustering DIAR2 spent its sweep buying back.
 
+### config.toml has one reader, and it fails closed
+
+Don't open `config.toml` anywhere but `ConfigStore`, and don't give a new reader a failure rule of its own. Until ARCH9 there were five Swift readers (`Config.load`, `ConfigStore.init`, `PipelineLauncher.appleContext` with a hard-coded path, `PipelineLauncher.cloudSecretPolicy`, `WorkflowMigrator`), each with its own `try?`. On a file with one syntax error they disagreed in the worst direction: `ConfigStore` turned it into an empty document and the next Preferences edit wrote that over the user's file, dropping every key it does not model and resetting `regulated_mode` to false, while `cloudSecretPolicy` and `NotionDatabaseList` read `regulated = false` and kept both cloud tokens for a user whose file said regulated. The live capture decision and the `<stem>.meta.json` stamp read the store, so a regulated user also got a lossless capture recorded as not regulated.
+
+The rule now: `ConfigStore.read` is the one parse. A missing file is a fresh install and reads as defaults; a file that exists but cannot be read or parsed sets `parseError`, after which `regulatedMode` reads true, `scheduleSave` drops every edit, and `saveNow` / `persistToDisk` throw. Everything else derives from a store, `Config` included (`ConfigStore.config`), and a static call site that needs the file builds a store for that read, so it gets the same rule for free. Preferences replaces every pane with one row naming the line, since a control that cannot save is a lie; reopening Preferences calls `reloadIfUnparsed`, which re-reads only while the error is set, because once the file parsed the store is its author and a re-read would race its own debounced save. `ConfigStoreFenceTests` fails on a new `TOMLTable(string:)` outside a named allowlist of other-file readers, on a parser that names the config path, and on the path spelled anywhere but `Endpoints.swift`. Python already failed closed (`tomllib` raises before any egress); giving that a clear failure cause belongs with PIPE28's `FailureMetadata.Cause` work.
+
 ### A config key needs a consumer
 
-Don't add a config key to `Config.swift` / `ConfigStore.swift` without a consumer and a line in `config.example.toml`. CI5's dead-knob fence fails on a key that is parsed, persisted, and rendered as a Preferences control while nothing reads the value; that shipped three times before it was fenced, and the symptom is a user changing a setting and nothing happening.
+Don't add a config key to `ConfigStore.swift` without a consumer and a line in `config.example.toml`. CI5's dead-knob fence fails on a key that is parsed, persisted, and rendered as a Preferences control while nothing reads the value; that shipped three times before it was fenced, and the symptom is a user changing a setting and nothing happening.
 
 ### Fields in summary.json must be modeled in Swift
 

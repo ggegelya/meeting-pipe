@@ -170,8 +170,7 @@ final class Coordinator: NSObject {
         workflowStore.load()
         WorkflowMigrator.runIfNeeded(
             store: workflowStore,
-            configStore: configStore,
-            config: config
+            configStore: configStore
         )
         self.workflowStore = workflowStore
         libraryModel.workflowStore = workflowStore

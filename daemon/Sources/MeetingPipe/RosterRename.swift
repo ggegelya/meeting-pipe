@@ -50,7 +50,7 @@ enum RosterRename {
         from old: String,
         to new: String,
         launcher: PipelineDriver,
-        recordingsDir: URL? = (try? Config.load())?.recording.outputDir,
+        recordingsDir: URL? = ConfigStore().config.recording.outputDir,
         completion: @escaping (Result<Int, Error>) -> Void
     ) {
         Log.event(category: "coordinator", action: "roster_rename_requested",

@@ -28,7 +28,7 @@ final class ConfigTests: XCTestCase {
         output_dir = "/tmp/recordings"
         auto_consent_apps = ["us.zoom.xos", "com.microsoft.teams2"]
         """)
-        let cfg = try Config.load(from: url)
+        let cfg = ConfigStore(configURL: url).config
         XCTAssertEqual(cfg.recording.outputDir.path, "/tmp/recordings")
         XCTAssertEqual(cfg.recording.autoConsentApps, ["us.zoom.xos", "com.microsoft.teams2"])
     }
@@ -36,7 +36,7 @@ final class ConfigTests: XCTestCase {
     func testFallsBackToDefaultsWhenSectionsMissing() throws {
         // Empty TOML → defaults.
         let url = writeTOML("")
-        let cfg = try Config.load(from: url)
+        let cfg = ConfigStore(configURL: url).config
         XCTAssertEqual(cfg.detection.manualHotkey, "ctrl+option+m")
         XCTAssertEqual(cfg.detection.forceStopHotkey, "ctrl+option+shift+m")
         XCTAssertEqual(cfg.detection.debounceEndSec, 5)
@@ -48,13 +48,13 @@ final class ConfigTests: XCTestCase {
         // TOMLKit does not coerce int to double, so a `.double`-only read made
         // hand-editing the shipped file a silent no-op. Same class as the HYG2
         // dead knobs: the user changes the setting and nothing happens.
-        let cfg = try Config.load(from: writeTOML("""
+        let cfg = ConfigStore(configURL: writeTOML("""
         [detection]
         debounce_end_sec = 7
         prompt_timeout_sec = 45
         reprompt_cooldown_sec = 120
         mic_only_silence_seconds = 600
-        """))
+        """)).config
         XCTAssertEqual(cfg.detection.debounceEndSec, 7)
         XCTAssertEqual(cfg.detection.promptTimeoutSec, 45)
         XCTAssertEqual(cfg.detection.repromptCooldownSec, 120)
@@ -62,22 +62,22 @@ final class ConfigTests: XCTestCase {
     }
 
     func testSecondsKnobsStillAcceptFloatTomlLiterals() throws {
-        let cfg = try Config.load(from: writeTOML("""
+        let cfg = ConfigStore(configURL: writeTOML("""
         [detection]
         debounce_end_sec = 7.5
         prompt_timeout_sec = 45.5
-        """))
+        """)).config
         XCTAssertEqual(cfg.detection.debounceEndSec, 7.5, accuracy: 1e-9)
         XCTAssertEqual(cfg.detection.promptTimeoutSec, 45.5, accuracy: 1e-9)
     }
 
     func testParsesForceStopHotkeyOverride() throws {
-        // TECH-C5: user-provided override flows through Config.load.
+        // TECH-C5: user-provided override flows through the store's Config.
         let url = writeTOML("""
         [detection]
         force_stop_hotkey = "cmd+shift+x"
         """)
-        let cfg = try Config.load(from: url)
+        let cfg = ConfigStore(configURL: url).config
         XCTAssertEqual(cfg.detection.forceStopHotkey, "cmd+shift+x")
         // Manual hotkey untouched by force-stop change.
         XCTAssertEqual(cfg.detection.manualHotkey, "ctrl+option+m")
@@ -88,7 +88,7 @@ final class ConfigTests: XCTestCase {
         [modes]
         regulated_mode = true
         """)
-        let cfg = try Config.load(from: url)
+        let cfg = ConfigStore(configURL: url).config
         XCTAssertTrue(cfg.modes.regulatedMode)
     }
 
@@ -97,7 +97,7 @@ final class ConfigTests: XCTestCase {
         [recording]
         output_dir = "~/Documents/Meetings/raw"
         """#)
-        let cfg = try Config.load(from: url)
+        let cfg = ConfigStore(configURL: url).config
         // Tilde must be expanded — not literal "~".
         XCTAssertFalse(cfg.recording.outputDir.path.hasPrefix("~"))
         XCTAssertTrue(cfg.recording.outputDir.path.contains("Documents/Meetings/raw"))
@@ -127,7 +127,7 @@ final class ConfigTests: XCTestCase {
         debounce_start_sec = 12
         debounce_end_sec = 7
         """)
-        let cfg = try Config.load(from: url)
+        let cfg = ConfigStore(configURL: url).config
         XCTAssertEqual(cfg.recording.outputDir.path, "/tmp/x")
         // The live neighbour still parses; a deleted key alongside it is inert.
         XCTAssertEqual(cfg.detection.debounceEndSec, 7)
@@ -159,12 +159,12 @@ final class ConfigTests: XCTestCase {
         [transcription]
         diarization_clustering_threshold = 0.6
         """)
-        let cfg = try Config.load(from: url)
+        let cfg = ConfigStore(configURL: url).config
         XCTAssertEqual(cfg.transcription.diarizationClusteringThreshold, 0.6, accuracy: 1e-9)
     }
 
     func testDiarizationClusteringThresholdDefaultsWhenAbsent() throws {
-        let cfg = try Config.load(from: writeTOML(""))
+        let cfg = ConfigStore(configURL: writeTOML("")).config
         XCTAssertEqual(
             cfg.transcription.diarizationClusteringThreshold,
             FluidAudioRunner.defaultClusteringThreshold, accuracy: 1e-9
@@ -172,26 +172,26 @@ final class ConfigTests: XCTestCase {
     }
 
     func testDiarizationClusteringThresholdClampsToFluidAudioRange() throws {
-        let low = try Config.load(from: writeTOML("""
+        let low = ConfigStore(configURL: writeTOML("""
         [transcription]
         diarization_clustering_threshold = 0.1
-        """))
+        """)).config
         XCTAssertEqual(low.transcription.diarizationClusteringThreshold, 0.5, accuracy: 1e-9)
 
-        let high = try Config.load(from: writeTOML("""
+        let high = ConfigStore(configURL: writeTOML("""
         [transcription]
         diarization_clustering_threshold = 2.0
-        """))
+        """)).config
         XCTAssertEqual(high.transcription.diarizationClusteringThreshold, 0.9, accuracy: 1e-9)
     }
 
     // MARK: - transcription.language (HYG2)
 
     func testParsesTranscriptionLanguage() throws {
-        let cfg = try Config.load(from: writeTOML("""
+        let cfg = ConfigStore(configURL: writeTOML("""
         [transcription]
         language = "uk"
-        """))
+        """)).config
         XCTAssertEqual(cfg.transcription.language, "uk")
     }
 
@@ -199,16 +199,16 @@ final class ConfigTests: XCTestCase {
         // Not "en": before HYG2 wired the key the transcribe call passed
         // `languageHint: nil` (auto-detect), so anything else would make the
         // wiring a silent behaviour change for every config missing the key.
-        XCTAssertEqual(try Config.load(from: writeTOML("")).transcription.language, "auto")
+        XCTAssertEqual(ConfigStore(configURL: writeTOML("")).config.transcription.language, "auto")
     }
 
     func testUnknownTranscriptionLanguageResolvesToAutoDetect() throws {
         // Config keeps the raw string; the runner is what degrades a bad code to
         // auto-detect, so a typo cannot fail a transcription.
-        let cfg = try Config.load(from: writeTOML("""
+        let cfg = ConfigStore(configURL: writeTOML("""
         [transcription]
         language = "klingon"
-        """))
+        """)).config
         XCTAssertEqual(cfg.transcription.language, "klingon")
         XCTAssertNil(FluidAudioRunner.resolveLanguage(hint: cfg.transcription.language))
         XCTAssertNil(FluidAudioRunner.resolveLanguage(hint: "auto"))

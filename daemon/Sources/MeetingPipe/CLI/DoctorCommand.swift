@@ -352,13 +352,9 @@ enum DoctorCommand {
         return parts.joined(separator: "; ") + " (in \(dir.path))"
     }
 
-    /// Reproduce `Coordinator`'s recordings-dir lookup. TOML failures fall back to the same default the daemon uses at first launch.
+    /// Reproduce `Coordinator`'s recordings-dir lookup. A file that does not parse yields the same default the daemon falls back to (ARCH9).
     static func resolveRecordingsDir() -> URL {
-        do {
-            return try Config.load().recording.outputDir
-        } catch {
-            return Config.defaultFallback().recording.outputDir
-        }
+        ConfigStore().config.recording.outputDir
     }
 
     /// Verify `events.jsonl` is writable. Actually creates the file if absent, using the same path as the daemon at runtime; if this succeeds, runtime emission will too.

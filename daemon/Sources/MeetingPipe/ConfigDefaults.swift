@@ -2,11 +2,11 @@ import Foundation
 
 /// The compile-time default for every `config.toml` knob more than one reader needs (ARCH5).
 ///
-/// Three sites read these: `Config.load` (the per-key TOML fallback), `Config.defaultFallback`
-/// (the whole struct, for a user who has not copied `config.example.toml` yet), and
-/// `ConfigStore.init` (the Preferences-backed store). Each used to spell the literals itself,
-/// so changing a default meant three edits and missing one showed up as Preferences disagreeing
-/// with the running daemon about a value neither had been told to change.
+/// Two sites read these: `ConfigStore` (the per-key TOML fallback, and since ARCH9 the one Swift
+/// parse of the file) and `Config.defaultFallback` (the whole struct, for tests and headless
+/// callers with no file). They used to be three, `Config.load` being the third, and each spelled
+/// the literals itself, so changing a default meant three edits and missing one showed up as
+/// Preferences disagreeing with the running daemon about a value neither had been told to change.
 ///
 /// `config.example.toml` documents these same values for the user; CI5's dead-knob fence keeps
 /// that file and the readers honest about each other, so a new knob belongs in both.

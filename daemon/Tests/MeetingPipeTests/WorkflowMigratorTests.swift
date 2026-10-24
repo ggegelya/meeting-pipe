@@ -26,14 +26,12 @@ final class WorkflowMigratorTests: XCTestCase {
         team_context = "FDA-regulated SaaS team"
         backend = "auto"
         """)
-        let configStore = try ConfigStore(configURL: configURL)
+        let configStore = ConfigStore(configURL: configURL)
         let store = WorkflowStore(directory: workflowsDir)
         store.load()
         let did = WorkflowMigrator.runIfNeeded(
             store: store,
-            configStore: configStore,
-            config: Config.defaultFallback(),
-            configURL: configURL
+            configStore: configStore
         )
         XCTAssertTrue(did)
         XCTAssertEqual(store.workflows.count, 1)
@@ -58,12 +56,10 @@ final class WorkflowMigratorTests: XCTestCase {
         [summarization]
         team_context = "something else"
         """)
-        let configStore = try ConfigStore(configURL: configURL)
+        let configStore = ConfigStore(configURL: configURL)
         let did = WorkflowMigrator.runIfNeeded(
             store: store,
-            configStore: configStore,
-            config: Config.defaultFallback(),
-            configURL: configURL
+            configStore: configStore
         )
         XCTAssertFalse(did)
         XCTAssertEqual(store.workflows.count, 1)
@@ -76,12 +72,10 @@ final class WorkflowMigratorTests: XCTestCase {
         let workflowsDir = try makeTempDir()
         let store = WorkflowStore(directory: workflowsDir)
         let missingConfig = try makeTempDir().appendingPathComponent("no.toml")
-        let configStore = try ConfigStore(configURL: missingConfig)
+        let configStore = ConfigStore(configURL: missingConfig)
         let did = WorkflowMigrator.runIfNeeded(
             store: store,
-            configStore: configStore,
-            config: Config.defaultFallback(),
-            configURL: missingConfig
+            configStore: configStore
         )
         XCTAssertTrue(did)
         XCTAssertEqual(store.workflows.count, 1)

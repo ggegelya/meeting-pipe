@@ -136,23 +136,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.main.debug("verbose logging: off")
         }
 
-        let config: Config
-        do {
-            config = try Config.load()
+        // ConfigStore is the one reader of config.toml (ARCH9): it powers Preferences and produces the daemon's launch-time Config. A file that does not parse fails closed (regulated, no saves) instead of being replaced by defaults on the next Preferences edit.
+        let store = ConfigStore()
+        if let parseError = store.parseError {
+            Log.main.error("config.toml at \(Config.defaultPath.path) does not parse, running on defaults with regulated mode on and saves refused: \(parseError.message)")
+        } else {
             Log.main.info("Loaded config from \(Config.defaultPath.path)")
-        } catch {
-            Log.main.warning("No config at \(Config.defaultPath.path) - using defaults: \(String(describing: error))")
-            config = Config.defaultFallback()
         }
-
-        // ConfigStore powers the Preferences UI. Failure is non-fatal; the daemon runs with the in-memory config.
-        let store: ConfigStore?
-        do {
-            store = try ConfigStore()
-        } catch {
-            Log.main.warning("ConfigStore disabled: \(String(describing: error))")
-            store = nil
-        }
+        let config = store.config
         self.configStore = store
 
         // SecretsStore is unfailing: a missing secrets.env is normal on first run; the file is created (mode 0600) on the first Preferences save.
@@ -194,31 +185,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Optional local-model warm (TECH-A15), default off. Reads the backend / model from the Preferences round-trip store (the daemon's read-only Config snapshot doesn't model pipeline-side summarization fields). No-op unless the user opted in and the local model is already cached.
-        if let store = store {
-            localModelPreloader.start(
-                enabled: UISettings.shared.preloadLocalModelAtLaunch,
-                backend: store.summarizationBackend,
-                localModel: store.summarizationLocalModel,
-                adapterPath: store.summarizationLocalAdapterPath
-            )
-            // LOCAL11: the warm server pins one model + adapter for the daemon's
-            // lifetime, so without this a Preferences change to either left the old
-            // weights answering every summary until the app was quit. `mp` refuses
-            // to kill a server it did not spawn (rightly - it would race this
-            // supervisor), which makes restarting it our job. `didPersist` is
-            // already debounced 500 ms and `refresh` no-ops on an unrelated save.
-            localModelCancellable = store.didPersist
-                .receive(on: DispatchQueue.main)
-                .sink { [weak store, weak localModelPreloader] in
-                    guard let store, let localModelPreloader else { return }
-                    localModelPreloader.refresh(
-                        enabled: UISettings.shared.preloadLocalModelAtLaunch,
-                        backend: store.summarizationBackend,
-                        localModel: store.summarizationLocalModel,
-                        adapterPath: store.summarizationLocalAdapterPath
-                    )
-                }
-        }
+        localModelPreloader.start(
+            enabled: UISettings.shared.preloadLocalModelAtLaunch,
+            backend: store.summarizationBackend,
+            localModel: store.summarizationLocalModel,
+            adapterPath: store.summarizationLocalAdapterPath
+        )
+        // LOCAL11: the warm server pins one model + adapter for the daemon's
+        // lifetime, so without this a Preferences change to either left the old
+        // weights answering every summary until the app was quit. `mp` refuses
+        // to kill a server it did not spawn (rightly - it would race this
+        // supervisor), which makes restarting it our job. `didPersist` is
+        // already debounced 500 ms and `refresh` no-ops on an unrelated save.
+        localModelCancellable = store.didPersist
+            .receive(on: DispatchQueue.main)
+            .sink { [weak store, weak localModelPreloader] in
+                guard let store, let localModelPreloader else { return }
+                localModelPreloader.refresh(
+                    enabled: UISettings.shared.preloadLocalModelAtLaunch,
+                    backend: store.summarizationBackend,
+                    localModel: store.summarizationLocalModel,
+                    adapterPath: store.summarizationLocalAdapterPath
+                )
+            }
 
         installTerminationSignalHandler()
     }

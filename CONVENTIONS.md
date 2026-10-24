@@ -28,7 +28,7 @@ Two enforcement points, each with two layers:
 
 Three classes of drift are checked mechanically by [`scripts/truth_fences.py`](scripts/truth_fences.py), run as the `truth-fences` CI job. All three go wrong *by omission*, which is why they are whole-state checks and not diff-based: nothing gets added when a knob quietly stops being read, so there is no added line for a diff guard to flag.
 
-**Config keys.** The keys documented in `config.example.toml` (including commented-out ones, which still show the user the knob) and the README's Configuration reference are diffed against the keys the three readers actually parse: `Config.swift`, `ConfigStore.swift` (both the subscript reads and the `ensureTable` write-back), and `config.py`'s pydantic models. Three ways to fail:
+**Config keys.** The keys documented in `config.example.toml` (including commented-out ones, which still show the user the knob) and the README's Configuration reference are diffed against the keys the two readers actually parse: `ConfigStore.swift` (both the subscript reads and the `ensureTable` write-back; since ARCH9 the one Swift reader, `Config.swift` being a value it produces) and `config.py`'s pydantic models. Three ways to fail:
 
 - a documented key nothing parses,
 - a parsed key documented nowhere,

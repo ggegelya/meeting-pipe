@@ -28,7 +28,7 @@ Checked 2026-10-24:
 - The worktree landing text: [HYG11](./HYG11.md) (a shared file, not a skill).
 - Moving `daemon/CLAUDE.md`'s UI or capture rules into a skill. Guardrails must load by directory, not by description match; that is the [DOC15](./DOC15.md) amend's nested `CLAUDE.md`.
 - `impeccable` (web-oriented, local, stays ignored).
-- Changes to [`ARCH10`](./ARCH10.md)'s or [`ARCH9`](./ARCH9.md)'s surfaces. Whichever lands later updates the `contract-change` checklist in the same commit.
+- Changes to [`ARCH10`](./ARCH10.md)'s or `ARCH9` (shipped, in `q6-final.md`)'s surfaces. Whichever lands later updates the `contract-change` checklist in the same commit.
 - `/tech-task` process steps: [HYG14](./HYG14.md).
 
 ## Acceptance

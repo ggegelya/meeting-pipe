@@ -37,24 +37,24 @@ BackendName = Literal[
 
 class Recording(BaseModel):
     output_dir: Path = Field(default=_expand("~/Documents/Meetings/raw"))
-    auto_consent_apps: list[str] = Field(default_factory=list)
     # `extra="ignore"` — old config files in the wild may still have
     # capture_mode / audio_device / mic_device / sample_rate fields (the last
     # deleted by HYG2: capture is a deliberate 16 kHz constant). Tolerate them
-    # silently rather than rejecting the whole config.
+    # silently rather than rejecting the whole config. It also swallows the
+    # daemon-only `auto_consent_apps`, which ARCH9 dropped from this model
+    # because no Python code read it.
     model_config = {"extra": "ignore"}
 
 
 class Detection(BaseModel):
-    # No `debounce_start_sec` twin: HYG2 deleted it as a dead knob. Detection
-    # promotes on the first live signal and the recorder arming is the real
-    # start gate, so there was never a start-side debounce to configure.
-    # 5s (down from 10s) since Signal C (meeting-window-closed) gives us a
-    # faster confirmation that the call actually ended. Stays in sync with
-    # the daemon's Config.swift default and config.example.toml.
-    debounce_end_sec: float = 5.0
-    manual_hotkey: str = "ctrl+option+m"
-    prompt_timeout_sec: float = 30.0
+    """Empty placeholder so `[detection]` TOML sections still load. Every key in
+    it is daemon-only (hotkeys, debounces, the prompt timeout) and read by
+    `ConfigStore.swift`; ARCH9 dropped the three this model used to carry
+    (`debounce_end_sec`, `manual_hotkey`, `prompt_timeout_sec`) because no
+    Python code read them, and a second description of a schema nobody here
+    consumes is only another place for a default to drift."""
+
+    model_config = {"extra": "ignore"}
 
 
 class Transcription(BaseModel):
