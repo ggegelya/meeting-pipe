@@ -87,7 +87,7 @@ struct FailureDetailsView: View {
                 .accessibilityLabel("Report preview")
             HStack {
                 Text("Only the preview is copied. Nothing is sent.")
-                    .font(.mpTextXS).foregroundStyle(.secondary)
+                    .font(.mpTextXS).foregroundStyle(Color(MPColors.fgMuted))
                 Spacer()
                 Button("Copy report") { copyReport(report) }
                     .accessibilityIdentifier("copy-failure-report")
