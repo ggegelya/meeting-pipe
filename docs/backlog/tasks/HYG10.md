@@ -17,7 +17,7 @@ Each claim below was re-read against the tree on 2026-10-24. A false comment nex
 | `MeetingSessionController`, the doc comment above `teardownHold` | Describes "True while an async `beginRecording` start is in flight ... stops a second Record/toggle press" | That text belongs to `recordingStartInFlight`, three properties lower; `teardownHold` and `pendingEndTrimAt` sit between them, so the comment documents the wrong property. |
 | `run_with_local_fallback` in [`backend_fallback.py`](../../../pipeline/src/mp/backend_fallback.py) | `require_env` "exits the process on a miss" | `config.require_env` raises `MissingSecretError` ("Raises ... rather than exiting"). |
 
-The consent string that names a process tap is [DOC16](./DOC16.md)'s and is not repeated here.
+The consent string that names a process tap is DOC16's (shipped 2026-10-24, archived in [q6-final.md](../q6-final.md)) and is not repeated here.
 
 ## Scope
 

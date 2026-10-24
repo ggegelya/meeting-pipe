@@ -101,6 +101,23 @@ truth_fences() {
     begin "Truth fences (CI5)"
     python3 scripts/truth_fences.py
     end
+
+    begin "macOS floor parity (DOC16)"
+    # The floor is written three times: Package.swift's platforms, install.sh's
+    # version check, and the LSMinimumSystemVersion install.sh writes into the
+    # app's Info.plist. The plist read 13.0 against a macOS 14 package until
+    # DOC16, so Finder would have launched a copied app on 13. Plain sed, since
+    # this job runs on Linux too.
+    local pkg plist check
+    pkg=$(sed -n 's/.*platforms: *\[\.macOS(\.v\([0-9][0-9]*\)).*/\1/p' daemon/Package.swift)
+    plist=$(grep -A1 '<key>LSMinimumSystemVersion</key>' scripts/install.sh | sed -n 's/.*<string>\([0-9][0-9]*\)\.0<\/string>.*/\1/p')
+    check=$(sed -n 's/.*(( *SW_MAJOR < \([0-9][0-9]*\) *)).*/\1/p' scripts/install.sh)
+    if [ -z "$pkg" ] || [ -z "$plist" ] || [ -z "$check" ] || [ "$pkg" != "$plist" ] || [ "$pkg" != "$check" ]; then
+        echo "::error::DOC16: macOS floor disagrees (or could not be read). Package.swift .macOS(.v${pkg:-?}), install.sh LSMinimumSystemVersion ${plist:-?}.0, install.sh SW_MAJOR check ${check:-?}."
+        return 1
+    fi
+    echo "macOS $pkg everywhere: Package.swift, install.sh check, LSMinimumSystemVersion."
+    end
 }
 
 pipeline() {

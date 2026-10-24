@@ -90,7 +90,9 @@ source "$REPO_ROOT/scripts/lib/login-agent.sh"
 
 [[ "$(uname -s)" == "Darwin" ]] || die "macOS only."
 
-# macOS 14+ required for ScreenCaptureKit's `excludesCurrentProcessAudio`.
+# macOS 14+ required: FluidAudio declares macOS 14, and the SwiftUI views use the
+# two-parameter onChange(of:). Keep in step with daemon/Package.swift and the
+# LSMinimumSystemVersion below; ci-local.sh truth-fences checks all three (DOC16).
 SW_VERS=$(sw_vers -productVersion)
 SW_MAJOR=${SW_VERS%%.*}
 if (( SW_MAJOR < 14 )); then
@@ -222,11 +224,11 @@ cat >"$APP_BUILD/Contents/Info.plist" <<'PLIST'
     <key>LSUIElement</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>14.0</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>MeetingPipe records meeting audio for transcription. Audio never leaves your Mac.</string>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>MeetingPipe captures system audio (other participants' voices) directly via Apple's process-tap API on macOS 14.2+. The same TCC entitlement gates audio process taps; no screen pixels are read.</string>
+    <string>MeetingPipe captures system audio, which is everyone else's voice in a call, through ScreenCaptureKit. That API also requires a video stream, which is kept at two pixels square and thrown away, so nothing of your screen is saved.</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

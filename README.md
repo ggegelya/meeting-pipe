@@ -114,7 +114,7 @@ The long-form *why* behind a design decision is in the [ADRs](./docs/decisions/)
 
 ## Requirements
 
-- **macOS 14 (Sonoma) or later** — required for ScreenCaptureKit's `excludesCurrentProcessAudio`.
+- **macOS 14 (Sonoma) or later**, the floor FluidAudio and the app's SwiftUI views need.
 - **Apple Silicon (M-series), required.** FluidAudio (ASR + diarization) runs on the Apple Neural Engine; there is no Intel fallback. `install.sh` refuses to build on Intel rather than failing at the first recording.
 - **Xcode Command Line Tools** (`xcode-select --install`), for the Swift toolchain that builds the daemon. Full Xcode is only needed to run `swift test`.
 - **Homebrew**, which the installer uses to fetch `ffmpeg` and `uv`. On Apple Silicon, run the "Next steps" commands Homebrew prints at the end of its own install, or it will not be on your `PATH`.

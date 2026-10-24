@@ -230,7 +230,7 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
 
             let config = SCStreamConfiguration()
             config.capturesAudio = true
-            config.excludesCurrentProcessAudio = true // don't loop daemon audio into the recording; macOS 13.3+
+            config.excludesCurrentProcessAudio = true // don't loop daemon audio into the recording; macOS 13.0+, below the package floor
             config.sampleRate = 48000
             config.channelCount = 2
             config.width = 2  // SCStream requires non-zero; 2x2 wastes negligible CPU

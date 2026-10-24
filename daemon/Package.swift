@@ -3,8 +3,10 @@ import PackageDescription
 
 let package = Package(
     name: "MeetingPipe",
-    // macOS 14 required for ScreenCaptureKit's `excludesCurrentProcessAudio`
-    // (added in 13.3 but easier to bump than gate per-call).
+    // macOS 14 is the floor because FluidAudio declares it and the SwiftUI views
+    // use the two-parameter onChange(of:). Not `excludesCurrentProcessAudio`,
+    // which is macOS 13.0. install.sh's version check and LSMinimumSystemVersion
+    // must match; ci-local.sh truth-fences checks that (DOC16).
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "MeetingPipe", targets: ["MeetingPipe"]),
