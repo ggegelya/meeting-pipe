@@ -11,7 +11,7 @@ import XCTest
 /// The recorder's own timeout path needs a live engine and Screen Recording TCC, so what is
 /// pinned here is the pure ledger the late completion consults, the bounded runner's
 /// branching, and source-text fences on the wiring, in `CaptureHealthREC16Tests`' shape.
-/// T7 source fence (pins implementation): five tests grep MeetingRecorder and SystemAudioCapture for the bounded start, timeout routing, auto-retry flag, ledger gates and liveness guard. Missing seam: an injectable system capture (SCStream) in MeetingRecorder.
+/// T7 source fence (pins implementation): five tests grep SystemAudioChannel (out of MeetingRecorder since ARCH8) and SystemAudioCapture for the bounded start, timeout routing, auto-retry flag, ledger gates and liveness guard. Missing seam: an injectable system capture (SCStream) in SystemAudioChannel.
 final class SystemCaptureStartREC17Tests: XCTestCase {
 
     private func repoFile(_ relative: String) throws -> String {
@@ -112,11 +112,11 @@ final class SystemCaptureStartREC17Tests: XCTestCase {
     /// The recorder reaches `capture.start()` only through the bounded runner. Red against
     /// `main`, where `startSystemCapture` ran `try await capture.start()` bare inside its Task.
     func test_theRecorderAwaitsTheSystemStartOnlyThroughTheBound() throws {
-        let text = try repoFile("daemon/Sources/MeetingPipe/MeetingRecorder.swift")
+        let text = try repoFile("daemon/Sources/MeetingPipe/SystemAudioChannel.swift")
         let bare = text.components(separatedBy: "try await capture.start()").count - 1
         XCTAssertEqual(bare, 1, "exactly one call, and it has to be the one inside the bounded runner's closure")
         XCTAssertTrue(
-            text.contains("await boundedSystemCaptureStart(seconds: MeetingRecorder.systemStartBudgetSeconds, { try await capture.start() })"),
+            text.contains("await boundedSystemCaptureStart(seconds: SystemAudioChannel.systemStartBudgetSeconds, { try await capture.start() })"),
             "the one call is the bounded runner's operation, with the named budget"
         )
         let runner = try repoFile("daemon/Sources/MeetingPipe/SystemCaptureStartAttempt.swift")
@@ -131,7 +131,7 @@ final class SystemCaptureStartREC17Tests: XCTestCase {
     /// banner and schedules REC8's automatic retry. And it has to mark the capture abandoned
     /// first, or the late completion adopts its stream.
     func test_aTimedOutStartRoutesThroughTheLossPathAfterAbandoningTheCapture() throws {
-        let text = try repoFile("daemon/Sources/MeetingPipe/MeetingRecorder.swift")
+        let text = try repoFile("daemon/Sources/MeetingPipe/SystemAudioChannel.swift")
         guard let branch = text.range(of: "case .timedOut:\n                capture.abandonStart()") else {
             return XCTFail("the timeout branch has to abandon the capture before anything else")
         }
@@ -152,7 +152,7 @@ final class SystemCaptureStartREC17Tests: XCTestCase {
     /// further automatic attempt, or the recorder re-enters ScreenCaptureKit every 17 s for as
     /// long as it stays wedged.
     func test_aTimedOutRetryFallsBackToTheBannerWithoutAnotherAutomaticAttempt() throws {
-        let text = try repoFile("daemon/Sources/MeetingPipe/MeetingRecorder.swift")
+        let text = try repoFile("daemon/Sources/MeetingPipe/SystemAudioChannel.swift")
         XCTAssertTrue(text.contains("autoRetry: !isRetry"), "a timed-out first start still gets REC8's retry; a timed-out retry does not")
         XCTAssertTrue(text.contains("if autoRetry { scheduleSystemAudioAutoRetry() }"))
         XCTAssertTrue(
@@ -165,10 +165,10 @@ final class SystemCaptureStartREC17Tests: XCTestCase {
     /// last eight days was 2.82 s) and narrow enough to land the banner well before the nudge the
     /// owner actually saw (240 s at their setting; 30 s at the slider's 60 s floor).
     func test_theBudgetSitsBetweenTheSlowestHealthyStartAndTheEarliestNudge() {
-        XCTAssertEqual(MeetingRecorder.systemStartBudgetSeconds, 10)
-        XCTAssertGreaterThan(MeetingRecorder.systemStartBudgetSeconds, 2.82 * 3)
+        XCTAssertEqual(SystemAudioChannel.systemStartBudgetSeconds, 10)
+        XCTAssertGreaterThan(SystemAudioChannel.systemStartBudgetSeconds, 2.82 * 3)
         XCTAssertLessThan(
-            MeetingRecorder.systemStartBudgetSeconds,
+            SystemAudioChannel.systemStartBudgetSeconds,
             IdleStopBackstop.safeNotifySeconds(forAutoStop: 60),
             "the banner has to be up before the earliest nudge the Preferences slider allows"
         )
@@ -247,7 +247,7 @@ final class SystemCaptureStartREC17Tests: XCTestCase {
     /// through. The watchdog then judged a spin-up it was written to ignore: 3 s unchanged
     /// counter, stall, teardown of a stream that was 2.7 s from its first buffer.
     func test_theLivenessGateCountsFromTheAttemptNotFromZero() throws {
-        let text = try repoFile("daemon/Sources/MeetingPipe/MeetingRecorder.swift")
+        let text = try repoFile("daemon/Sources/MeetingPipe/SystemAudioChannel.swift")
         XCTAssertTrue(
             text.contains("guard isRecording, systemCapture != nil, systemFires > systemFiresAtArm else { return }"),
             "the watchdog engages on the current attempt's first buffer, not on a count inherited from a previous one"

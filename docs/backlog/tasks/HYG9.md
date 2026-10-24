@@ -27,7 +27,7 @@ The review's advice, which this task adopts: do not mass-rewrite (a sweep of 3,6
 ## Explicitly not / out of scope
 
 - A mass rewrite of existing comments, for the reason above. Shrinking happens on touch.
-- A diff-based check ("no added line in a comment may contain an ID"), the shape the design-token font check uses. Rejected: a moved or reindented comment shows as added, so [ARCH13](./ARCH13.md)'s move-only commit and [ARCH8](./ARCH8.md)'s extractions would fail it for no new narration. A count is invariant under moves.
+- A diff-based check ("no added line in a comment may contain an ID"), the shape the design-token font check uses. Rejected: a moved or reindented comment shows as added, so [ARCH13](./ARCH13.md)'s move-only commit and [ARCH8](../q6-final.md)'s extractions would fail it for no new narration. A count is invariant under moves.
 - A per-file allowlist. 295 Swift files would make a table nobody reads; two tree-level ceilings carry the same ratchet.
 - Tests (`daemon/Tests`, `pipeline/tests`). A test pinning an incident by ID is traceability with a reader, and the fences in `daemon/Tests` cite IDs on purpose. Scripts and docs are out too; [DOC17](./DOC17.md) owns docs volume.
 - Fixing false comments. That is [HYG10](./HYG10.md); a comment HYG10 corrects lowers the count, and whichever lands second rebases its ceiling.

@@ -5,7 +5,7 @@ import XCTest
 /// REC16: three defects on `MeetingRecorder`'s mid-recording capture-health paths, filed together
 /// because they share one seam. Found by reading the recorder against the field log during the
 /// END10/END11 investigation rather than from a symptom.
-/// T7 source fence (pins implementation): three tests grep MeetingRecorder/Coordinator for the one engine-replacement helper, the setMicCaptureLost calls and wall-clock outage marks. Missing seam: injectable engine and clock in MeetingRecorder, a headless Coordinator.
+/// T7 source fence (pins implementation): three tests grep MeetingRecorder, SystemAudioChannel and Coordinator for the one engine-replacement helper, the setMicCaptureLost calls and wall-clock outage marks. Missing seam: an injectable engine in MeetingRecorder (recovery itself has one since ARCH8: `InputDeviceRecoveryHost`), an injectable clock in SystemAudioChannel, a headless Coordinator.
 final class CaptureHealthREC16Tests: XCTestCase {
 
     // MARK: - Item 2: the outage span has to survive a system sleep
@@ -125,7 +125,7 @@ final class CaptureHealthREC16Tests: XCTestCase {
         )
         XCTAssertTrue(text.contains("private func replaceEngine(reason: String) {"))
         XCTAssertTrue(
-            text.contains("if wasArmed { armConfigurationChangeObserver() }"),
+            text.contains("if wasArmed { deviceRecovery.armConfigurationChangeObserver() }"),
             "the helper has to actually re-arm, or it is a rename"
         )
     }
@@ -197,7 +197,7 @@ final class CaptureHealthREC16Tests: XCTestCase {
             contentsOf: URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent().deletingLastPathComponent()
                 .deletingLastPathComponent().deletingLastPathComponent()
-                .appendingPathComponent("daemon/Sources/MeetingPipe/MeetingRecorder.swift"),
+                .appendingPathComponent("daemon/Sources/MeetingPipe/SystemAudioChannel.swift"),
             encoding: .utf8
         )
         let marks = text.components(separatedBy: "systemLostAt = ").dropFirst()

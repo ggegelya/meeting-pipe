@@ -22,7 +22,7 @@ struct SystemCaptureStartAttempt: Equatable {
 
     /// Why nobody is waiting on this attempt any more.
     enum Abandonment: String, Equatable {
-        /// The recorder's start budget elapsed (`MeetingRecorder.systemStartBudgetSeconds`).
+        /// The recorder's start budget elapsed (`SystemAudioChannel.systemStartBudgetSeconds`).
         case timedOut = "timed_out"
         /// `SystemAudioCapture.stop()` ran before the start returned.
         case stopped = "stopped"

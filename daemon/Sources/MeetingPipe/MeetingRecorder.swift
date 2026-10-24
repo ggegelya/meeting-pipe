@@ -1,4 +1,3 @@
-import Accelerate
 import AppKit
 // @preconcurrency: AVFAudio predates Sendable, so passing an AVAudioEngine into the
 // bounded off-main `engine.start()` closures (boundedEngineStart) trips strict-concurrency
@@ -61,18 +60,14 @@ final class MeetingRecorder {
     /// two constants cannot see from their own files.
     static let terminationDrainTimeoutSeconds = 3.0
 
-    /// In-flight async capture-recovery (it bounds an engine restart off the
-    /// main thread). Held so `stop()` can drain it before engine teardown, and
-    /// non-nil acts as a one-at-a-time guard against re-entrant recovery.
-    ///
-    /// Main-actor-confined by convention: every write is inside a `Task { @MainActor }`
-    /// or in the now-`@MainActor` `stop()`. It used to be a `@unchecked Sendable` box
-    /// so the off-main `stop()` could reach it through a `MainActor.run` hop; REC11
-    /// removed the reason for the hop, and the box with it.
-    private var recoveryTask: Task<Void, Never>?
-    private var systemFile: AVAudioFile?
-    private var systemCapture: SystemAudioCapture?
-    private var systemStartTask: Task<Void, Never>?
+    /// Device-change and tap-stall recovery (ARCH8): the observer, the retry schedule, the
+    /// tap-liveness watchdog and the one-at-a-time recovery task. Talks back through
+    /// `InputDeviceRecoveryHost`, which this class conforms to below.
+    let deviceRecovery = InputDeviceRecovery()
+
+    /// The system-audio channel (ARCH8): the SCStream start, retry and padding, its liveness
+    /// watchdog and REC8's automatic retry, and the system WAV with its writer.
+    let systemChannel = SystemAudioChannel()
 
     private(set) var currentFile: URL?
     /// Intermediate per-source WAV paths exposed so the streaming
@@ -86,15 +81,7 @@ final class MeetingRecorder {
     /// not at `stop()`: a buffer that lands during teardown used to increment a freshly
     /// zeroed counter, log a spurious "first fired" line, and hand the next recording a
     /// count of 1 that its liveness gate read as "already delivering" (REC17).
-    private var micFires: UInt64 = 0
-    private var systemFires: UInt64 = 0
-
-    /// REC17: `systemFires` as it stood when the current system capture was armed, so
-    /// "has this attempt delivered a buffer" is `systemFires > systemFiresAtArm` rather than
-    /// `> 0`. The counter runs across retries, so on every retry the old gate was already
-    /// true and the watchdog judged a spin-up it was written to ignore; and the one start
-    /// that mattered, the first, is the one it could never see. Written on main at arm.
-    private var systemFiresAtArm: UInt64 = 0
+    private(set) var micFires: UInt64 = 0
 
     /// Monotonic marks for REC9's head offset: when this recording started, and when
     /// the first frame landed in the system WAV *as it currently stands on disk*.
@@ -108,7 +95,6 @@ final class MeetingRecorder {
     /// on the SCStream delivery queue like `systemFires`, once per recording, and a
     /// `Double` so the write is a single aligned store.
     private var startedAtUptime: Double = 0
-    private var systemFirstFrameUptime: Double = 0
 
     /// Per-writer consecutive-failure trackers (REC3 / AUD-7). Each is touched
     /// only on its own writer's serial queue, like `micFires` / `systemFires`, so
@@ -121,7 +107,10 @@ final class MeetingRecorder {
     /// unconsumed (the mic side of the backstop is verdict-driven). `nil`
     /// short-circuits the math when nobody listens.
     var onMicLevel: ((Float) -> Void)?
-    var onSystemLevel: ((Float) -> Void)?
+    var onSystemLevel: ((Float) -> Void)? {
+        get { systemChannel.onSystemLevel }
+        set { systemChannel.onSystemLevel = newValue }
+    }
 
     /// Per-buffer mic RMS in dBFS on the render thread, ingested by
     /// MicGate's RMS gate. Distinct from the ~1 Hz `onMicLevel` average.
@@ -154,87 +143,17 @@ final class MeetingRecorder {
     /// at `start()`, released at `stop()`; render-thread only.
     private(set) var micGateWriter: MicGateWriter?
 
-    /// Serial writers that drain capture buffers to disk off the
-    /// latency-sensitive delivery thread.
+    /// Serial writer that drains mic buffers to disk off the latency-sensitive delivery
+    /// thread. The system channel's lives on `SystemAudioChannel`.
     private var micWriter: SerialBufferWriter<AVAudioPCMBuffer>?
-    private var systemWriter: SerialBufferWriter<AVAudioPCMBuffer>?
 
     /// Format the mic `.wav` was opened with; tap buffers after a device
     /// change are resampled back to this so the file stays one format.
-    private var micFileFormat: AVAudioFormat?
+    private(set) var micFileFormat: AVAudioFormat?
 
     /// Resamples the live device back to `micFileFormat`; nil while they
     /// match (the normal case), built when a device change differs.
     private var micConverter: AVAudioConverter?
-
-    /// `AVAudioEngineConfigurationChange` observer, removed at `stop()`.
-    private var configChangeObserver: NSObjectProtocol?
-
-    /// Notify once per failure run, not per retry.
-    private var captureRecoveryFailed = false
-
-    /// REC15: consecutive failed capture recoveries this recording, and the budget after which
-    /// the tap-liveness watchdog stands down.
-    ///
-    /// A bound rather than a latch, because the failures are not alike. A wedged teardown or a
-    /// converter that would not build can succeed on the next attempt, and standing down on the
-    /// first would throw away a recovery that was going to work. A fresh engine that raises again
-    /// cannot, and `recoverCapture` abandons on that directly without spending the budget.
-    ///
-    /// Five is a backstop, not a tuned number: the watchdog only fires after the tap has already
-    /// been declared stalled, so five ticks is five seconds of asking again before the mic is
-    /// given up, against the alternative of asking for the rest of the meeting. If the field ever
-    /// shows a recovery succeeding on the sixth attempt, `mic_capture_abandoned` carries the
-    /// count that says so.
-    private var consecutiveRecoveryFailures = 0
-    private static let recoveryFailureBudget = 5
-
-    /// Whether the mic half of this recording has been given up on. Set by `abandonMicCapture`,
-    /// cleared by `start()`; read by the tap-liveness watchdog, which is the loop it exists to
-    /// stop. System audio is unaffected and keeps recording.
-    private var micCaptureAbandoned = false
-
-    /// Pending recovery retry. Bluetooth inputs publish the route change
-    /// before the input format is queryable, so we retry rather than give
-    /// up on the first sampleRate=0. Cancelled in `stop()`.
-    private var pendingRecoveryRetry: DispatchWorkItem?
-
-    /// Retries queued for the current device-change event.
-    private var configurationRecoveryAttempts = 0
-
-    /// Watches the mic tap for a stall that posts no `AVAudioEngineConfigurationChange`
-    /// (a silent device takeover / HAL hiccup). A ~1 Hz main-queue timer samples
-    /// `micFires`; if it stalls while the engine still claims to be running,
-    /// capture is re-armed via the same path as a device change. Torn down in `stop()`.
-    private let tapLivenessMonitor = MicTapLivenessMonitor()
-    private var tapLivenessTimer: DispatchSourceTimer?
-
-    /// System-audio (SCStream) liveness watchdog (REC4 / AUD-13). SCStream delivers audio
-    /// buffers continuously while alive, so a `systemFires` stall while a capture is
-    /// supposed to be live is a silent stream death that delivered no `didStopWithError`.
-    /// Reuses the generic counter-stall monitor; ~1 Hz main-queue timer, torn down at stop.
-    /// A longer window than the mic tap because the SCStream spin-up can be a beat slower.
-    private let systemLivenessMonitor = MicTapLivenessMonitor(stallAfterSeconds: 3.0)
-    private var systemLivenessTimer: DispatchSourceTimer?
-
-    /// REC8: one automatic bounded retry after a mid-meeting system-audio loss, then
-    /// fall back to the manual banner (preserving REC4's partial-recording choice).
-    /// `handleSystemAudioLost` fires at most once per loss (guarded on a live capture),
-    /// so scheduling one retry per call is naturally one-auto-retry-per-loss. Cancelled
-    /// in `stop()`, the termination flush, and whenever a retry actually runs.
-    private var systemAudioAutoRetryTimer: DispatchSourceTimer?
-    private static let systemAudioAutoRetryDelaySeconds = 7.0
-
-    /// REC17: how long `startSystemCapture` waits on `SystemAudioCapture.start()` before it
-    /// gives the channel up as lost. Nothing bounded that wait until 2026-09-17, when it took
-    /// **64 minutes** and the far side of a Teams call was silence for all of it while every
-    /// fence stayed quiet. 10 s is 3.5x the slowest healthy start of the preceding eight days
-    /// (2.82 s), 24x under the 240 s nudge the owner actually received, and still under the
-    /// 30 s nudge the Preferences slider produces at its 60 s floor, so the HUD banner lands
-    /// before any "Still in a meeting?" can. A timed-out start is treated exactly like a
-    /// mid-meeting loss (`handleSystemAudioLost`), which is what makes Retry reachable and
-    /// schedules REC8's automatic one.
-    static let systemStartBudgetSeconds = 10.0
 
     /// REC17: what the idle backstop should believe about the system channel, read by
     /// `MeetingSessionController` on every backstop tick. The backstop used to derive "the
@@ -252,23 +171,7 @@ final class MeetingRecorder {
         case micOnly
     }
 
-    var systemChannelHealth: SystemChannelHealth {
-        if systemCapture != nil, systemFires > systemFiresAtArm { return .live }
-        if systemCapture == nil, SystemAudioCapture.permissionState == .denied { return .micOnly }
-        return .down
-    }
-
-    /// REC10: when the system channel's audio stopped, so a retry can pad the outage
-    /// it is resuming across. Wall clock since REC16, deliberately unlike the other elapsed
-    /// measures here: this is the one span that can contain a system sleep, and `systemUptime`
-    /// stops during one. See `SystemCaptureRetryPlanner.plan`.
-    /// Written on main (`handleSystemAudioLost`), advanced to the retry moment by
-    /// `startSystemCapture` so a retry whose own SCStream start fails still leaves the
-    /// next one a correct span to pad. 0 means "no loss on record".
-    /// REC16: **wall clock** (`Date().timeIntervalSince1970`), not `systemUptime`. The monotonic
-    /// clock does not advance while the Mac is asleep, so an outage spanning a sleep measured
-    /// short by exactly the sleep duration and the system channel was padded that much too little.
-    private var systemLostAt: Double = 0
+    var systemChannelHealth: SystemChannelHealth { systemChannel.systemChannelHealth }
 
     /// REC8: prevents system idle sleep for the whole recording, so an in-person
     /// manual recording with no meeting client holding the Mac awake cannot idle-sleep
@@ -276,7 +179,7 @@ final class MeetingRecorder {
     /// needs no screen). Held from `start()`, released in `stop()` and the termination
     /// flush; best-effort (a failed create logs and is a no-op, never a thrown start).
     private var idleSleepAssertionID: IOPMAssertionID = IOPMAssertionID(0)
-    private var holdsIdleSleepAssertion = false
+    private(set) var holdsIdleSleepAssertion = false
 
     /// REC8: observes `NSWorkspace.didWakeNotification` so a recording that survived
     /// (or whose engine died over) a sleep/wake re-arms its capture promptly instead
@@ -294,15 +197,16 @@ final class MeetingRecorder {
     /// `.resumed` once re-armed, `.failed` when it can't be.
     var onConfigurationChange: ((CaptureRecoveryOutcome) -> Void)?
 
-    /// Fired on main when system-audio (SCStream) capture fails to start, so
-    /// the HUD can surface a degraded banner mid-recording (TECH-UX4). The
-    /// string is the failure reason. The mic channel keeps recording.
-    var onSystemAudioDegraded: ((String) -> Void)?
-
-    /// Fired on main when a `retrySystemAudio()` attempt re-arms the SCStream,
-    /// so the HUD can clear its degraded banner. The system channel has a gap
-    /// for the window it was down.
-    var onSystemAudioRecovered: (() -> Void)?
+    /// System-audio callbacks, held by `SystemAudioChannel` (whose docs say when each fires) so
+    /// the session sees the same surface it always has.
+    var onSystemAudioDegraded: ((String) -> Void)? {
+        get { systemChannel.onSystemAudioDegraded }
+        set { systemChannel.onSystemAudioDegraded = newValue }
+    }
+    var onSystemAudioRecovered: (() -> Void)? {
+        get { systemChannel.onSystemAudioRecovered }
+        set { systemChannel.onSystemAudioRecovered = newValue }
+    }
 
     /// Fired on main when a capture writer has failed enough consecutive writes
     /// that the recording is silently losing audio (disk full, or the 4 GiB WAV
@@ -364,12 +268,10 @@ final class MeetingRecorder {
     /// meta sidecar is written at stop; `stop()` snapshots it into `lastInputDevice`.
     private var capturedInputDevice: InputDeviceIdentity?
 
-    /// Per-source 1 s RMS accumulators; two pairs because mic + system run
-    /// on independent threads at different sample rates.
+    /// The mic's 1 s RMS accumulator; the system channel keeps its own (`SystemAudioChannel`)
+    /// because the two run on independent threads at different sample rates.
     private var micAccumSumSq: Double = 0
     private var micAccumFrames: Int = 0
-    private var systemAccumSumSq: Double = 0
-    private var systemAccumFrames: Int = 0
 
     /// Counters snapshotted at the last `stop()`; the Coordinator reads
     /// these to warn about a mic-only recording (Screen Recording denied).
@@ -387,14 +289,16 @@ final class MeetingRecorder {
     /// the last stop produced no final, so a stale verdict can never be re-reported.
     private(set) var lastDurationParity: RecordingDurationParity?
 
-    /// True once the system-audio channel was torn down by a failed start or a
-    /// mid-meeting death and not recovered (REC4 / AUD-13). Snapshotted into
-    /// `lastSystemDegraded` at `stop()` so the stop-time warning fires on a stream that
-    /// died part-way (`lastSystemFires > 0`), not only on a never-started one.
-    private var systemDegraded = false
+    /// `SystemAudioChannel.systemDegraded` as it stood at the last `stop()` (REC4 / AUD-13).
     private(set) var lastSystemDegraded = false
 
     var isRecording: Bool { currentFile != nil }
+
+    init() {
+        deviceRecovery.host = self
+        systemChannel.isRecordingProvider = { [weak self] in self?.isRecording ?? false }
+        systemChannel.noteWriteOutcome = { [weak self] ok in self?.noteWriteOutcome(channel: .system, success: ok) }
+    }
 
     enum RecorderError: Error, LocalizedError {
         case engineStartFailed(String)
@@ -436,23 +340,18 @@ final class MeetingRecorder {
         micFramePosition = 0
         muteTimeline = MuteTimeline()
         micFires = 0
-        systemFires = 0
-        systemFiresAtArm = 0
         lastMicFires = 0
         lastSystemFires = 0
         lastDurationParity = nil
-        systemDegraded = false
         micTotalSeconds = 0
         micUnmutedSeconds = 0
         micPeakUnmutedDb = -120
         capturedInputDevice = nil
         micAccumSumSq = 0
         micAccumFrames = 0
-        systemAccumSumSq = 0
-        systemAccumFrames = 0
         micWriteFailures = WriteFailureTracker()
         systemWriteFailures = WriteFailureTracker()
-        systemLostAt = 0
+        systemChannel.resetForRecording()
         // Reset so a prior session's fade/verdict/off-record can't bleed in; the
         // writer itself is rebuilt below once the sample rate is bound.
         gateAccess.withLock {
@@ -461,11 +360,7 @@ final class MeetingRecorder {
         }
         // No converter until a device change introduces a format mismatch.
         micConverter = nil
-        captureRecoveryFailed = false
-        consecutiveRecoveryFailures = 0
-        micCaptureAbandoned = false
-        cancelPendingRecoveryRetry()
-        configurationRecoveryAttempts = 0
+        deviceRecovery.resetForRecording()
 
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -563,10 +458,10 @@ final class MeetingRecorder {
 
         // Re-arm capture on a mid-recording device swap (e.g. AirPods
         // unplugged) instead of flatlining the mic. Removed in `stop()`.
-        armConfigurationChangeObserver()
+        deviceRecovery.armConfigurationChangeObserver()
 
         // System audio via SCStream (independent of the mic engine).
-        startSystemCapture(systemURL: systemURL, isRetry: false)
+        systemChannel.start(systemURL: systemURL)
 
         currentFile = finalURL
         self.micURL = micURL
@@ -575,8 +470,8 @@ final class MeetingRecorder {
         startedAtUptime = ProcessInfo.processInfo.systemUptime
         Log.recorder.info("recorder started → \(finalURL.path)")
         Log.writeLine("recorder", "recorder started → \(finalURL.path)")
-        startTapLivenessWatchdog()
-        startSystemLivenessWatchdog()
+        deviceRecovery.startTapLivenessWatchdog()
+        systemChannel.startSystemLivenessWatchdog()
         acquireIdleSleepAssertion()  // REC8: keep the Mac awake for the whole recording
         registerWakeObserver()       // REC8: re-arm capture on sleep/wake
         return finalURL
@@ -732,278 +627,15 @@ final class MeetingRecorder {
         return .ready(captureFormat: micFormat, fileFormat: fileFormat)
     }
 
-    // MARK: - System audio (SCStream)
-
-    /// Open the system WAV, wire its serial writer, and start the SCStream.
-    /// Shared by `start()` and `retrySystemAudio()`. On failure the system
-    /// channel is torn down (so the stop-time merge knows there is nothing to
-    /// mix) and `onSystemAudioDegraded` fires on main; a successful retry
-    /// fires `onSystemAudioRecovered`.
-    ///
-    /// REC10: a retry does NOT reopen the path. `AVAudioFile(forWriting:)` truncates
-    /// ("Will overwrite a file at the given URL", `AVAudioFile.h`), so re-entering
-    /// here with the same URL destroyed every system sample captured before the death
-    /// - the partial `handleSystemAudioLost` deliberately leaves on disk for the merge,
-    /// and the one REC4 and REC8 both claimed the retry preserved. When that file is
-    /// still open the retry keeps writing into it and pads the outage with silence
-    /// first, so the pre-loss audio survives AND the recovered audio lands where it was
-    /// captured. `SystemCaptureRetryPlanner` owns that decision; the `.openFresh` branch
-    /// below is the only one that may truncate.
-    private func startSystemCapture(systemURL: URL, isRetry: Bool) {
-        // REC16: wall clock, matching the mic channel and surviving a sleep.
-        let now = Date().timeIntervalSince1970
-        let plan: SystemCaptureRetryPlan = isRetry
-            ? SystemCaptureRetryPlanner.plan(
-                hasOpenFile: systemFile != nil && systemWriter != nil,
-                capturedFirstFrame: systemFirstFrameUptime > 0,
-                lostAt: systemLostAt,
-                retryAt: now,
-                sampleRate: SystemAudioCapture.captureFormat.sampleRate
-            )
-            : .openFresh
-
-        // Whether this attempt is writing into a file that already holds captured
-        // audio. Read by the start-failure path below, which must not delete it.
-        let resumedOpenFile: Bool
-        switch plan {
-        case .openFresh:
-            resumedOpenFile = false
-            openSystemFile(at: systemURL)
-        case .resumeOpenFile(let padFrames, let gapSeconds, let clamped):
-            resumedOpenFile = true
-            // Advance the mark rather than clearing it: if this retry's own SCStream
-            // start fails, the next retry still has a correct span to pad from.
-            systemLostAt = now
-            padSystemChannel(frames: padFrames)
-            Log.event(category: "recorder", action: "system_capture_resumed", attributes: [
-                "gap_sec": gapSeconds,
-                "pad_frames": Int(padFrames),
-                "pad_clamped": clamped,
-            ])
-            Log.writeLine(
-                "recorder",
-                String(
-                    format: "resuming the open system WAV across a %.1fs outage (%d silence frames%@)",
-                    gapSeconds, Int(padFrames), clamped ? ", CLAMPED - the recovered audio is late by the excess" : ""
-                )
-            )
-        }
-
-        // REC17: this attempt's baseline. Read on the delivery queue below and by the watchdog
-        // and the backstop on main; written here, on main, before the capture can deliver.
-        let armBaseline = systemFires
-        systemFiresAtArm = armBaseline
-
-        let capture = SystemAudioCapture { [weak self] pcm in
-            guard let self = self, self.systemFile != nil else { return }
-            self.systemFires &+= 1
-            if self.systemFires == armBaseline &+ 1 {
-                Log.writeLine("recorder", "system tap first fired: frames=\(pcm.frameLength)\(isRetry ? " (retry)" : "")")
-            }
-            // REC9: where this file's audio begins, relative to the mic. Keyed off the
-            // file's own mark rather than `systemFires`, which counts across a retry
-            // and so would report the FIRST attempt's offset for a file the retry
-            // reopened. One aligned store, once per open.
-            if self.systemFirstFrameUptime == 0 {
-                self.systemFirstFrameUptime = ProcessInfo.processInfo.systemUptime
-            }
-            // SystemAudioCapture hands us a fresh buffer (not reused), so
-            // unlike the mic tap it needs no deep copy.
-            self.systemWriter?.enqueue(pcm)
-            // TECH-PERF3: same vectorized sum-of-squares helper as the mic path.
-            let (sysSumSq, sysSamples) = Self.sumOfSquares(pcm)
-            self.accumulateAndEmit(
-                addSumSq: sysSumSq,
-                addSamples: sysSamples,
-                sumSq: &self.systemAccumSumSq,
-                frames: &self.systemAccumFrames,
-                threshold: Int(SystemAudioCapture.captureFormat.sampleRate),
-                callback: self.onSystemLevel
-            )
-        }
-        // A mid-recording SCStream death (delegate `didStopWithError`) used to only log,
-        // so the remote side went silently absent from that point with no banner, no
-        // working retry, and no stop-time warning (REC4 / AUD-13). Surface it: hop to main
-        // (off the delegate stack, so clearing `systemCapture` doesn't release the stream
-        // under its own callback) and route it through the same path as the watchdog.
-        capture.onStopWithError = { [weak self] reason in
-            DispatchQueue.main.async { self?.handleSystemAudioLost(reason: reason) }
-        }
-        self.systemCapture = capture
-        // Track the Task so stop() can await it; otherwise a fast stop()
-        // races the in-flight start and orphans the SCStream.
-        //
-        // REC17: the start is awaited through `boundedSystemCaptureStart` and nowhere else.
-        // `SystemAudioCapture.start()` is two unbounded ScreenCaptureKit awaits, and on
-        // 2026-09-17 they took 64 minutes between them; this Task then held the slot for all
-        // of it, so `retrySystemAudio` no-oped, the watchdog (gated on a first buffer) never
-        // looked, and the recording ran mic-only with no banner. The timeout is abandon-on-
-        // timeout like every other bound in this file: the start keeps running inside SCK,
-        // and the capture's ledger makes its eventual completion stop the stream it produced.
-        systemStartTask = Task { [weak self] in
-            switch await boundedSystemCaptureStart(seconds: MeetingRecorder.systemStartBudgetSeconds, { try await capture.start() }) {
-            case .started:
-                Log.writeLine("recorder", "SCStream started")
-                // Healthy (re)start: the system channel covers the recording from here.
-                self?.systemDegraded = false
-                if isRetry {
-                    // Hop to main and fire the recovery callback through `self`,
-                    // reached on the main actor so no non-Sendable value crosses the
-                    // @Sendable closure boundary (matches Coordinator's backstop hops).
-                    Task { @MainActor in self?.onSystemAudioRecovered?() }
-                }
-            case .discarded(let why):
-                // A stop() beat the start and the capture stopped its own stream. Not a
-                // failure: the failure branch below deletes a fresh system WAV, and this
-                // recording is already past its merge.
-                Log.writeLine("recorder", "SCStream start returned after \(why.rawValue); nothing adopted (REC17)")
-            case .failed(let reason):
-                Log.writeLine("recorder", "WARN: SCStream start failed: \(reason), recording mic-only")
-                self?.systemCapture = nil
-                self?.systemDegraded = true
-                // REC10: only tear the file down when it holds nothing. On a resume it
-                // carries every sample captured before the death, so dropping the writer
-                // (and deleting the path) here would be the same data loss this task
-                // exists to close, just moved onto the failed-retry branch. Left open,
-                // it still merges at stop and a later retry can resume it again.
-                if resumedOpenFile == false {
-                    // Drop the system file so merge knows there's nothing to mix.
-                    self?.systemFile = nil
-                    self?.systemWriter = nil
-                    try? FileManager.default.removeItem(at: systemURL)
-                }
-                Task { @MainActor in self?.onSystemAudioDegraded?(reason) }
-            case .timedOut:
-                capture.abandonStart()
-                Log.event(category: "recorder", action: "system_capture_start_timed_out", attributes: [
-                    "budget_s": MeetingRecorder.systemStartBudgetSeconds,
-                    "is_retry": isRetry,
-                ])
-                Log.writeLine("recorder", "WARN: SCStream start did not return within \(Int(MeetingRecorder.systemStartBudgetSeconds))s; abandoning it and treating the system channel as lost (REC17)")
-                // Main-thread only, like every other loss path, and through the capture's
-                // identity so a channel some other path already replaced is left alone.
-                Task { @MainActor in self?.handleSystemAudioStartTimedOut(capture, isRetry: isRetry) }
-            }
-        }
-    }
-
-    /// REC17: a start that never returned is a loss like any other, dated to when the attempt
-    /// began. `handleSystemAudioLost` does the rest: `systemCapture = nil` (so Retry is
-    /// reachable), `systemDegraded = true`, the HUD banner, and, for a first start, REC8's one
-    /// automatic retry; a retry that itself never came up gets the banner and no further
-    /// automatic attempt. The identity guard is what keeps a late timeout from touching a
-    /// capture a retry or a `stop()` already replaced or cleared. Main-thread only.
-    private func handleSystemAudioStartTimedOut(_ capture: SystemAudioCapture, isRetry: Bool) {
-        guard systemCapture === capture else { return }
-        handleSystemAudioLost(
-            reason: "system_capture_start_timed_out",
-            stalledForSeconds: Self.systemStartBudgetSeconds,
-            autoRetry: !isRetry
-        )
-    }
-
-    /// Open `<stem>.system.wav` for writing and wire its serial writer. The one place
-    /// the system WAV is truncated, which is why `startSystemCapture` reaches it only
-    /// on the `.openFresh` branch (REC10).
-    private func openSystemFile(at systemURL: URL) {
-        // SCStream's delivered format may differ from captureFormat; write
-        // each PCM buffer as-is.
-        let systemFile: AVAudioFile?
-        do {
-            systemFile = try AVAudioFile(
-                forWriting: systemURL,
-                settings: SystemAudioCapture.captureFormat.settings
-            )
-        } catch {
-            Log.writeLine("recorder", "WARN: could not open system file: \(error.localizedDescription)")
-            systemFile = nil
-        }
-        self.systemFile = systemFile
-        // REC9: `forWriting` truncated whatever was there, so the head offset of the
-        // audio this file will hold is not known again until its next first frame.
-        // Cleared HERE and not on the resume branch, which keeps both the audio and
-        // the offset that places it (REC10).
-        self.systemFirstFrameUptime = 0
-        if let systemFile {
-            self.systemWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.system-writer") { [weak self] buffer in
-                let ok: Bool
-                do {
-                    try systemFile.write(from: buffer)
-                    ok = true
-                } catch {
-                    Log.recorder.error("system write: \(error.localizedDescription)")
-                    ok = false
-                }
-                self?.noteWriteOutcome(channel: .system, success: ok)
-            }
-        }
-    }
-
-    /// Enqueue `frames` of silence onto the system writer, so the audio a retry is
-    /// about to append lands at the offset it was captured at rather than butted up
-    /// against the pre-loss audio (REC10). On main, before the SCStream restarts, so
-    /// it is always ahead of the first recovered buffer in the writer's FIFO.
-    ///
-    /// One buffer is allocated and enqueued repeatedly: the writer queue is serial and
-    /// only ever reads it, so a five-minute pad costs one second's worth of memory
-    /// rather than five minutes' worth.
-    private func padSystemChannel(frames: AVAudioFrameCount) {
-        guard frames > 0, let writer = systemWriter else { return }
-        let format = SystemAudioCapture.captureFormat
-        let chunkFrames = AVAudioFrameCount(format.sampleRate)  // 1 s per buffer
-        var remaining = frames
-        if remaining >= chunkFrames {
-            guard let chunk = Self.makeSilenceBuffer(format: format, frames: chunkFrames) else { return }
-            while remaining >= chunkFrames {
-                writer.enqueue(chunk)
-                remaining -= chunkFrames
-            }
-        }
-        if remaining > 0, let tail = Self.makeSilenceBuffer(format: format, frames: remaining) {
-            writer.enqueue(tail)
-        }
-    }
-
-    /// Re-attempt system-audio capture after an initial SCStream failure
-    /// (TECH-UX4). Main-thread only. No-op when not recording or when the
-    /// system channel is already live. When the dead stream's WAV is still open the
-    /// recovered audio is appended to it behind a silence pad covering the outage
-    /// (REC10); when nothing is open (the first start failed, so the path was deleted)
-    /// the system channel starts fresh from now and the merge places it at the offset
-    /// REC9 measured.
+    /// Re-attempt system-audio capture (TECH-UX4, REC8, REC10). Main-thread only; the channel
+    /// no-ops when not recording or already live.
     func retrySystemAudio() {
-        guard isRecording, systemCapture == nil, let systemURL = systemURL else { return }
-        // REC8: a retry (manual or automatic) supersedes any pending auto-retry.
-        systemAudioAutoRetryTimer?.cancel()
-        systemAudioAutoRetryTimer = nil
-        Log.writeLine("recorder", "retrying system audio capture")
-        startSystemCapture(systemURL: systemURL, isRetry: true)
-    }
-
-    /// REC8: schedule one automatic retry ~7 s after a system-audio loss, then fall
-    /// back to the manual banner (REC4). One per loss: `handleSystemAudioLost` only
-    /// fires while a capture is live, so it cannot re-schedule until a retry re-arms
-    /// the stream. The handler re-checks it is still recording and still down, so a
-    /// stop() or a manual retry in the interim makes it a no-op.
-    private func scheduleSystemAudioAutoRetry() {
-        systemAudioAutoRetryTimer?.cancel()
-        let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now() + Self.systemAudioAutoRetryDelaySeconds)
-        timer.setEventHandler { [weak self] in
-            guard let self = self else { return }
-            self.systemAudioAutoRetryTimer = nil
-            guard self.isRecording, self.systemCapture == nil else { return }
-            Log.event(category: "recorder", action: "system_capture_auto_retry", attributes: [:])
-            Log.writeLine("recorder", "automatic system-audio retry")
-            self.retrySystemAudio()
-        }
-        systemAudioAutoRetryTimer = timer
-        timer.resume()
+        systemChannel.retrySystemAudio()
     }
 
     // MARK: - Idle-sleep power assertion + wake re-arm (REC8)
 
-    private func acquireIdleSleepAssertion() {
+    func acquireIdleSleepAssertion() {
         guard !holdsIdleSleepAssertion else { return }
         var assertionID = IOPMAssertionID(0)
         let result = IOPMAssertionCreateWithName(
@@ -1050,93 +682,14 @@ final class MeetingRecorder {
 
     /// REC8: on wake, re-arm the mic tap if the engine died over sleep and re-attempt
     /// system audio if its stream dropped (`retrySystemAudio` no-ops if it is live).
-    private func handleDidWake() {
+    func handleDidWake() {
         guard isRecording else { return }
         Log.event(category: "recorder", action: "did_wake_while_recording", attributes: [
             "engine_running": engine.isRunning,
         ])
         Log.writeLine("recorder", "woke while recording - re-checking capture liveness")
-        if !engine.isRunning { recoverFromTapStall() }
+        if !engine.isRunning { deviceRecovery.recoverFromTapStall() }
         retrySystemAudio()
-    }
-
-    /// React to a mid-recording loss of the system-audio stream - a delivered
-    /// `didStopWithError`, a silent stall the watchdog caught, or a start that never returned
-    /// within its budget (REC17, via `handleSystemAudioStartTimedOut`). Tear the dead SCStream
-    /// down so `retrySystemAudio()` can re-arm it (the stale non-nil `systemCapture` was why
-    /// retry no-oped after a death), flag the recording system-degraded for the stop-time
-    /// coverage warning, and surface the degraded banner. The partial `system.wav` is left
-    /// on disk, open, and it stays that way: the retry resumes writing into it behind a
-    /// silence pad rather than reopening it (REC10). Until REC10 that claim was false -
-    /// the retry reopened the path `forWriting`, which truncates, so the automatic retry
-    /// REC8 made hands-off destroyed the very partial this line promises. Main-thread only;
-    /// idempotent (a second trigger finds `systemCapture` already nil). REC4 / AUD-13.
-    ///
-    /// `stalledForSeconds` is how long the counter had been still before the loss was
-    /// noticed, so the watchdog path dates the loss to when the audio actually stopped
-    /// rather than to when the ~1 Hz tick caught it; the `didStopWithError` path is
-    /// prompt and passes 0.
-    ///
-    /// `autoRetry` is false only for a timed-out **retry** (REC17): the automatic attempt
-    /// never came up, so this is the same outage continuing rather than a new loss, and
-    /// REC8's contract is one hands-off retry per outage before the banner takes over.
-    /// Scheduling another here would re-enter ScreenCaptureKit every 17 s for as long as
-    /// it stays wedged, piling up abandoned starts that all discard themselves at once
-    /// when it recovers.
-    private func handleSystemAudioLost(reason: String, stalledForSeconds: TimeInterval = 0, autoRetry: Bool = true) {
-        guard isRecording, let dying = systemCapture else { return }
-        // REC10: date the outage now, so a retry knows how much silence to pad.
-        systemLostAt = max(0, Date().timeIntervalSince1970 - max(0, stalledForSeconds))
-        Log.writeLine("recorder", "system audio lost mid-recording (\(reason)); banner + retry now live")
-        Log.event(category: "recorder", action: "system_capture_lost", attributes: [
-            "reason": reason,
-            "system_fires": Int(systemFires),
-        ])
-        // REC7: release the dead SCStream so retrySystemAudio can re-arm it AND the
-        // OS reclaims the tap. Dropping the reference alone never calls stopCapture()
-        // (SystemAudioCapture has no deinit), leaking the stream until process exit.
-        systemCapture = nil
-        Task { await dying.stop() }
-        systemDegraded = true
-        onSystemAudioDegraded?(reason)
-        // REC8: one hands-off retry before the user has to click the banner.
-        if autoRetry { scheduleSystemAudioAutoRetry() }
-    }
-
-    // MARK: - System audio liveness watchdog (REC4)
-
-    /// Start the ~1 Hz watchdog that catches a silent SCStream death (one that delivered no
-    /// `didStopWithError`). Re-baselines to the current counter; cancelled in `stop()`.
-    private func startSystemLivenessWatchdog() {
-        systemLivenessMonitor.reset(count: systemFires)
-        systemLivenessTimer?.cancel()
-        let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now() + 1.0, repeating: 1.0)
-        timer.setEventHandler { [weak self] in self?.checkSystemLiveness() }
-        systemLivenessTimer = timer
-        timer.resume()
-    }
-
-    /// One watchdog tick: if a system capture is supposed to be live but its buffer counter
-    /// has stalled, treat it as a mid-meeting death. Only engages once the **current attempt**
-    /// has delivered at least one buffer, so the SCStream spin-up (and a denied / mic-only
-    /// recording, where `systemCapture` is nil) never false-positives. REC17: the gate was
-    /// `systemFires > 0`, which a retry always satisfied (the counter runs across attempts)
-    /// and a first start that never came up never did, which is the wrong way round on both
-    /// counts; the hung start is the bound's job (`systemStartBudgetSeconds`), not this one's.
-    /// On main.
-    private func checkSystemLiveness() {
-        guard isRecording, systemCapture != nil, systemFires > systemFiresAtArm else { return }
-        guard systemLivenessMonitor.sample(count: systemFires) else { return }
-        Log.event(category: "recorder", action: "system_capture_stall_detected", attributes: [
-            "system_fires": Int(systemFires),
-            "stall_after_s": systemLivenessMonitor.stallAfter,
-        ])
-        Log.writeLine("recorder", "system audio stalled with no didStopWithError - treating as mid-meeting death")
-        handleSystemAudioLost(
-            reason: "system_capture_stalled",
-            stalledForSeconds: systemLivenessMonitor.stallAfter
-        )
     }
 
     // MARK: - Mic tap
@@ -1150,7 +703,7 @@ final class MeetingRecorder {
     /// outcome rather than a `Bool` because the two failures need different recoveries:
     /// both call sites treat any of them as a capture failure rather than silently
     /// recording nothing, and a caught raise additionally retires this engine.
-    private func installMicTap(captureFormat: AVAudioFormat) -> GuardedTapInstall.Outcome {
+    func installMicTap(captureFormat: AVAudioFormat) -> GuardedTapInstall.Outcome {
         GuardedTapInstall.install(format: captureFormat, site: "meeting_recorder", engine: engine) {
             engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: captureFormat) { [weak self] buffer, _ in
                 self?.processMicBuffer(buffer)
@@ -1250,7 +803,7 @@ final class MeetingRecorder {
         micWriter?.enqueue(buffer)
 
         // Fold the SAME sum-of-squares into the ~1 Hz level accumulator.
-        accumulateAndEmit(
+        Self.accumulateAndEmit(
             addSumSq: bufSumSq,
             addSamples: bufSamples,
             sumSq: &micAccumSumSq,
@@ -1260,20 +813,8 @@ final class MeetingRecorder {
         )
     }
 
-    // MARK: - Input device change recovery
+    // MARK: - Engine swap + the recovery host (ARCH8)
 
-    /// Register the device-change observer. Split out of `start()` (which is
-    /// async) so the NotificationCenter `@Sendable` block isn't formed in an
-    /// async region, which flags the weak-self capture. Removed in `stop()`.
-    ///
-    /// REC13: this used to register with `queue: .main`, which is what deadlocked
-    /// the engine on 2026-08-14. A non-nil queue makes NotificationCenter wrap the
-    /// handler in an `NSOperation` and have the POSTER wait on it, and the poster of
-    /// this notification is AVFAudio's own engine queue, so the engine ended up
-    /// waiting on an operation that never ran while every engine call, including the
-    /// stop path's, queued behind it. `addMainQueueObserver` registers with a nil
-    /// queue and hops to main explicitly: same thread for the handler, no wait for
-    /// the poster. The full incident is in that helper's doc comment.
     /// REC16 item 1: the only sanctioned way to swap the engine.
     ///
     /// `armConfigurationChangeObserver()` registers with `object: engine`, so the observer is
@@ -1291,504 +832,13 @@ final class MeetingRecorder {
     /// replacement runs before the first arm, and `unwindFailedEngineStart` runs on a failed
     /// start with no recording to lose.
     private func replaceEngine(reason: String) {
-        let wasArmed = configChangeObserver != nil
-        if let observer = configChangeObserver {
-            NotificationCenter.default.removeObserver(observer)
-            configChangeObserver = nil
-        }
+        let wasArmed = deviceRecovery.disarmConfigurationChangeObserver()
         engine = AVAudioEngine()
         Log.event(category: "recorder", action: "engine_replaced", attributes: [
             "reason": reason,
             "observer_rearmed": wasArmed,
         ])
-        if wasArmed { armConfigurationChangeObserver() }
-    }
-
-    private func armConfigurationChangeObserver() {
-        configChangeObserver = addMainQueueObserver(
-            on: .default,
-            forName: .AVAudioEngineConfigurationChange,
-            object: engine
-        ) { [weak self] in
-            self?.handleConfigurationChange()
-        }
-    }
-
-    /// React to an `AVAudioEngineConfigurationChange`: macOS stops the engine
-    /// on a mid-recording device/route change with no auto-recovery, so
-    /// re-arm the tap and restart, resampling back to the file format (and
-    /// silence-padding the gap) so the recording stays one continuous,
-    /// frame-aligned WAV. Surfaces failure if capture can't be re-armed.
-    private func handleConfigurationChange() {
-        // A fresh change supersedes any queued retry and restarts the budget.
-        cancelPendingRecoveryRetry()
-        configurationRecoveryAttempts = 0
-        evaluateConfigurationChange(gapStart: Date())
-    }
-
-    /// Inspect the input format and dispatch to recovery/retry/failure. Split
-    /// out so a retry reuses the same `gapStart` for the silence padding.
-    private func evaluateConfigurationChange(gapStart: Date) {
-        guard let fileFormat = micFileFormat else { return }
-
-        let rawLiveFormat = engine.inputNode.outputFormat(forBus: 0)
-        let liveFormat: AVAudioFormat? = rawLiveFormat.sampleRate > 0 ? rawLiveFormat : nil
-
-        switch CaptureRecoveryPlanner.plan(
-            isRecording: isRecording,
-            fileFormat: fileFormat,
-            liveFormat: liveFormat
-        ) {
-        case .ignore:
-            configurationRecoveryAttempts = 0
-            return
-        case .abort:
-            if let delay = CaptureRecoveryPlanner.nextRetryDelay(
-                attemptsAlreadyMade: configurationRecoveryAttempts
-            ) {
-                if configurationRecoveryAttempts == 0 {
-                    Log.writeLine("recorder", "input device changed mid-recording - input format not ready yet, retrying")
-                }
-                configurationRecoveryAttempts += 1
-                scheduleRecoveryRetry(after: delay, gapStart: gapStart)
-                return
-            }
-            Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
-                "reason": "no_usable_input_format",
-                "attempts": configurationRecoveryAttempts,
-            ])
-            Log.writeLine("recorder", "WARN: input device changed mid-recording and no usable input remains - mic capture stopped")
-            reportRecoveryFailure()
-        case .resume(let needsConverter):
-            guard let liveFormat else { return }
-            configurationRecoveryAttempts = 0
-            // recoverCapture is async (it bounds the engine restart off the main
-            // thread). Run one at a time: a re-entrant device change while a
-            // restart is in flight is dropped; the watchdog or the next change
-            // re-triggers. The task clears its own handle on completion.
-            guard recoveryTask == nil else { return }
-            recoveryTask = Task { @MainActor [weak self] in
-                defer { self?.recoveryTask = nil }
-                await self?.recoverCapture(
-                    fileFormat: fileFormat,
-                    liveFormat: liveFormat,
-                    needsConverter: needsConverter,
-                    gapStart: gapStart
-                )
-            }
-        }
-    }
-
-    /// Schedule a retry; held so `stop()` or a superseding change can cancel.
-    private func scheduleRecoveryRetry(after delay: TimeInterval, gapStart: Date) {
-        cancelPendingRecoveryRetry()
-        let work = DispatchWorkItem { [weak self] in
-            self?.evaluateConfigurationChange(gapStart: gapStart)
-        }
-        pendingRecoveryRetry = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    }
-
-    private func cancelPendingRecoveryRetry() {
-        pendingRecoveryRetry?.cancel()
-        pendingRecoveryRetry = nil
-    }
-
-    /// Re-arm mic capture after a device change; the engine is stopped here
-    /// so the tap's converter is swapped while the audio thread is down.
-    @MainActor
-    private func recoverCapture(
-        fileFormat: AVAudioFormat,
-        liveFormat: AVAudioFormat,
-        needsConverter: Bool,
-        gapStart: Date
-    ) async {
-        // REC13: bounded like the other two teardown sites. This one runs while the
-        // engine is mid-route-change, which is precisely when its queue is most
-        // likely to be busy, and an unbounded stop here would wedge the recovery
-        // that exists to keep the recording alive. Not `EngineTeardown` because the
-        // order here is the other way round on purpose (see the doc comment: the
-        // engine goes down first so the tap's converter is swapped with the audio
-        // thread already stopped), and that ordering is worth more than sharing a
-        // helper. A wedged engine ends recovery the same way a timed-out restart
-        // does below: mic capture stops, system audio keeps recording.
-        // Blocking calls, so `runBlockingWithTimeout` rather than the `Task` form (CI8).
-        let engineStopped = await runBlockingWithTimeout(seconds: EngineTeardown.defaultBudgetSeconds) { [engine] in
-            engine.stop()
-        }
-        let tapRemoved = await runBlockingWithTimeout(seconds: EngineTeardown.defaultBudgetSeconds) { [engine] in
-            engine.inputNode.removeTap(onBus: 0)
-        }
-        if !(engineStopped && tapRemoved) {
-            Log.event(category: "recorder", action: "engine_teardown_timed_out", attributes: [
-                "path": "recover_capture",
-                "engine_stopped": engineStopped,
-                "tap_removed": tapRemoved,
-            ])
-            Log.writeLine("recorder", "WARN: audio engine teardown timed out during device-change recovery (stopped=\(engineStopped) tap_removed=\(tapRemoved)) - mic capture stopped")
-            reportRecoveryFailure()
-            return
-        }
-
-        if needsConverter {
-            guard let converter = AVAudioConverter(from: liveFormat, to: fileFormat) else {
-                Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
-                    "reason": "converter_init_failed",
-                ])
-                Log.writeLine("recorder", "WARN: could not build an input converter after a device change - mic capture stopped")
-                reportRecoveryFailure()
-                return
-            }
-            micConverter = converter
-        } else {
-            micConverter = nil
-        }
-
-        // REC12: the recovery path is the one that runs while the route is mid-transition,
-        // so it is the likeliest place for a format that `installTap` would raise on, and
-        // the likeliest place for one that raises despite the check. Retrying a tap on the
-        // engine that just raised is the one thing the barrier exists to prevent, and it is
-        // condemned by the time this line runs.
-        var tapOutcome = installMicTap(captureFormat: liveFormat)
-
-        // REC15: what REC12 left out is that a condemned engine has a way back here too, and
-        // recovery never took it. `start()` has always replaced a condemned engine; this path
-        // just ended, which left the mic dead for the rest of the meeting and, worse, spinning:
-        // every terminal return below leaves the engine stopped, and a stopped engine is exactly
-        // what `checkTapLiveness` re-arms on, so recovery was re-entered once a second and
-        // refused every time. Measured 2026-08-19: 12 consecutive refusals in 12 seconds, ended
-        // only by the owner hanging up. Replace and try once, the same rule `start()` uses and
-        // for the same reason: a raise is a race against a moving hardware format, not a state.
-        if !tapOutcome.isInstalled, tapOutcome.requiresFreshEngine {
-            Log.writeLine("recorder", "replacing the audio engine mid-recording: an installTap raise condemned it")
-            replaceEngine(reason: "condemned_mid_recording")
-
-            // A replacement is a different node, so voice processing does not carry across and
-            // the format has to be read again. Re-applying it matters beyond fidelity: the flag
-            // and the node would otherwise disagree for the rest of the recording, and `stop()`
-            // reads the flag to decide whether to flip voice processing back off.
-            if voiceProcessingEnabledForSession {
-                voiceProcessingEnabledForSession = false
-                do {
-                    try engine.inputNode.setVoiceProcessingEnabled(true)
-                    voiceProcessingEnabledForSession = true
-                } catch {
-                    Log.writeLine(
-                        "recorder",
-                        "WARN: setVoiceProcessingEnabled failed on the replacement engine: \(error.localizedDescription) - falling back to raw mic"
-                    )
-                }
-            }
-
-            // The fresh read is the whole point of the retry: the format that raised was stale by
-            // the time `installTap` re-read it, and this is the re-read.
-            let refreshed = engine.inputNode.outputFormat(forBus: 0)
-            let retryFormat = refreshed.sampleRate > 0 ? refreshed : liveFormat
-            if retryFormat != fileFormat {
-                guard let converter = AVAudioConverter(from: retryFormat, to: fileFormat) else {
-                    Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
-                        "reason": "converter_init_failed",
-                    ])
-                    Log.writeLine("recorder", "WARN: could not build an input converter for the replacement engine - mic capture stopped")
-                    abandonMicCapture(reason: "converter_init_failed")
-                    reportRecoveryFailure()
-                    return
-                }
-                micConverter = converter
-            } else {
-                micConverter = nil
-            }
-
-            tapOutcome = installMicTap(captureFormat: retryFormat)
-            Log.event(category: "recorder", action: "mic_tap_recovery_retried", attributes: [
-                "refused_sample_rate": liveFormat.sampleRate,
-                "retry_sample_rate": retryFormat.sampleRate,
-                "installed": tapOutcome.isInstalled,
-            ])
-        }
-
-        guard tapOutcome.isInstalled else {
-            Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
-                "reason": tapOutcome.recoveryReason,
-            ])
-            Log.writeLine("recorder", "WARN: could not install the mic tap after a device change (\(tapOutcome.recoveryReason)) - mic capture stopped")
-            // An engine we just replaced that raises again is not going to stop raising because
-            // the watchdog asks a second later, so this one skips the retry budget entirely.
-            if tapOutcome.requiresFreshEngine {
-                abandonMicCapture(reason: tapOutcome.recoveryReason)
-            }
-            reportRecoveryFailure()
-            return
-        }
-
-        // Pad the switchover gap with silence so the mic file stays
-        // frame-aligned with the system channel. Enqueued before the
-        // engine restarts, so it lands ahead of the first resumed
-        // buffer. The span is measured from the change being observed to
-        // here, so it under-pads slightly by the engine warmup; a
-        // sub-100 ms offset is below what a meeting recording cares
-        // about, and padding only the gap keeps it clear of the separate
-        // end-of-call skew investigation.
-        let padFrames = CaptureRecoveryPlanner.silenceFrames(
-            gapStart: gapStart,
-            resumeAt: Date(),
-            sampleRate: fileFormat.sampleRate
-        )
-        if padFrames > 0, let silence = Self.makeSilenceBuffer(format: fileFormat, frames: padFrames) {
-            micWriter?.enqueue(silence)
-            // Keep the capture-first mute timeline aligned with the mic file:
-            // the pad adds frames the render thread did not, so advance the
-            // position here. Safe to touch from main: the engine is stopped, so
-            // no render-thread buffer is in flight (TECH-MIC4).
-            micFramePosition += Int64(padFrames)
-        }
-
-        // Same wedge risk as the initial start (a device change can leave the
-        // route mid-transition): bound it off the main thread.
-        switch await boundedEngineStart(seconds: MeetingRecorder.engineStartBudgetSeconds, { [engine] in
-            try engine.start()
-        }) {
-        case .started:
-            break
-        case .failed(let message):
-            Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
-                "reason": "engine_restart_failed",
-            ])
-            Log.writeLine("recorder", "WARN: audio engine failed to restart after a device change: \(message)")
-            reportRecoveryFailure()
-            return
-        case .timedOut:
-            // The abandoned restart may still be wedged on this engine, so we do
-            // NOT recreate it here: its config-change observer is bound to it.
-            // Mic capture stops for the rest of the call; system audio keeps
-            // recording. Same outcome as an unrecoverable device change.
-            //
-            // REC15 corrected the second half of this comment, which said the tap-liveness
-            // watchdog "stops once isRunning is false". It has not since REC8 deliberately
-            // un-gated it from `engine.isRunning`, precisely so a silently stopped engine would
-            // be caught: a stopped engine is now the strongest re-arm trigger there is. So this
-            // path was re-entered once a second, and the retry budget in `reportRecoveryFailure`
-            // is what actually stops it.
-            Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
-                "reason": "engine_restart_timed_out",
-            ])
-            Log.writeLine("recorder", "WARN: audio engine restart timed out after a device change - mic capture stopped")
-            reportRecoveryFailure()
-            return
-        }
-
-        captureRecoveryFailed = false
-        consecutiveRecoveryFailures = 0
-        Log.event(category: "recorder", action: "configuration_change_recovered", attributes: [
-            "live_sample_rate": liveFormat.sampleRate,
-            "used_converter": needsConverter,
-            "gap_frames": Int(padFrames),
-        ])
-        Log.writeLine("recorder", "input device changed mid-recording - capture re-armed (\(padFrames) silent frames padded the gap)")
-        onConfigurationChange?(.resumed)
-    }
-
-    /// Surface a recovery failure, but only once per failure run so a
-    /// flapping device does not spam notifications.
-    ///
-    /// REC15 also made this the one place consecutive failures are counted, because every
-    /// terminal return from `recoverCapture` already comes through here. That matters because
-    /// each of those returns leaves the engine stopped, and `checkTapLiveness` re-arms on a
-    /// stopped engine, so a recovery that cannot succeed was re-entered at 1 Hz for the rest of
-    /// the meeting.
-    private func reportRecoveryFailure() {
-        consecutiveRecoveryFailures += 1
-        if TapWatchdogPolicy.budgetExhausted(
-            consecutiveFailures: consecutiveRecoveryFailures,
-            budget: MeetingRecorder.recoveryFailureBudget
-        ) {
-            abandonMicCapture(reason: "recovery_budget_exhausted")
-        }
-        guard !captureRecoveryFailed else { return }
-        captureRecoveryFailed = true
-        onConfigurationChange?(.failed)
-    }
-
-    /// Stand the mic half of this recording down for good: the tap-liveness watchdog stops
-    /// re-arming and system audio carries on alone.
-    ///
-    /// Deliberately per-recording rather than per-engine. It is cleared by `start()`, so the next
-    /// meeting begins with a full budget however badly this one ended, and a real device-change
-    /// notification is unaffected: that carries new information about the route, where the
-    /// watchdog's 1 Hz tick carries none, which is the whole distinction this draws.
-    private func abandonMicCapture(reason: String) {
-        guard !micCaptureAbandoned else { return }
-        micCaptureAbandoned = true
-        Log.event(category: "recorder", action: "mic_capture_abandoned", attributes: [
-            "reason": reason,
-            "consecutive_failures": consecutiveRecoveryFailures,
-        ])
-        Log.writeLine(
-            "recorder",
-            "mic capture abandoned for this recording (\(reason)) - the tap watchdog stands down, system audio continues"
-        )
-    }
-
-    // MARK: - Mic tap liveness watchdog
-
-    /// Start the ~1 Hz watchdog that re-arms capture if the mic tap stops
-    /// delivering buffers without a device-change notification. Re-baselines
-    /// the monitor to the current counter; cancelled in `stop()`.
-    private func startTapLivenessWatchdog() {
-        tapLivenessMonitor.reset(count: micFires)
-        tapLivenessTimer?.cancel()
-        let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now() + 1.0, repeating: 1.0)
-        timer.setEventHandler { [weak self] in self?.checkTapLiveness() }
-        tapLivenessTimer = timer
-        timer.resume()
-    }
-
-    /// One watchdog tick: re-arm capture when the tap has silently died. REC8: a
-    /// STOPPED engine re-arms regardless of the buffer counter (the old
-    /// `engine.isRunning` gate disabled the very check meant to catch a silently
-    /// stopped engine, e.g. across a sleep/wake); a running engine re-arms on the
-    /// tap-liveness stall. On the main queue, the same thread the device-change
-    /// recovery it reuses runs on.
-    private func checkTapLiveness() {
-        guard isRecording else { return }
-        let engineRunning = engine.isRunning
-        // Sample only while the engine runs: a stopped engine delivers no buffers,
-        // so its counter is meaningless and must not advance the stall clock.
-        let stalled = engineRunning ? tapLivenessMonitor.sample(count: micFires) : false
-        // REC15: once the mic has been given up on, this tick has nothing left to try. Re-arming
-        // is the only thing it can do and the last several attempts were refused, so continuing
-        // to ask is a 1 Hz busy-wait that tears the engine down and rebuilds nothing. A real
-        // device-change notification still reaches `recoverCapture`; that one carries new
-        // information about the route, which is exactly what this tick does not.
-        let decision = TapWatchdogPolicy.decide(
-            isRecording: true,
-            engineRunning: engineRunning,
-            stalled: stalled,
-            micAbandoned: micCaptureAbandoned
-        )
-        guard decision == .rearm else { return }
-        Log.event(category: "recorder", action: "mic_tap_stall_detected", attributes: [
-            "mic_fires": Int(micFires),
-            "engine_running": engineRunning,
-            "stall_after_s": tapLivenessMonitor.stallAfter,
-        ])
-        Log.writeLine("recorder", "mic tap re-arm (engine_running=\(engineRunning) stalled=\(stalled)) - re-arming capture")
-        recoverFromTapStall()
-        tapLivenessMonitor.reset(count: micFires)
-    }
-
-    /// Re-arm the mic tap after a silent stall, reusing the device-change
-    /// recovery (stop engine, swap tap, restart). The input format usually has
-    /// not changed, so this re-installs the same-format tap and restarts.
-    private func recoverFromTapStall() {
-        guard isRecording, let fileFormat = micFileFormat else { return }
-        let rawLive = engine.inputNode.outputFormat(forBus: 0)
-        let liveFormat = rawLive.sampleRate > 0 ? rawLive : fileFormat
-        // One recovery at a time (see evaluateConfigurationChange). Stamp the
-        // gap start now, before the async hop, so the silence pad measures from
-        // the stall, not from when the task happens to run.
-        guard recoveryTask == nil else { return }
-        let gapStart = Date()
-        recoveryTask = Task { @MainActor [weak self] in
-            defer { self?.recoveryTask = nil }
-            await self?.recoverCapture(
-                fileFormat: fileFormat,
-                liveFormat: liveFormat,
-                needsConverter: liveFormat != fileFormat,
-                gapStart: gapStart
-            )
-        }
-    }
-
-    /// Resample a tap buffer to the file format with a pre-built
-    /// converter (set up when a device change altered the input format).
-    /// The converter is stateful; reuse the one instance across calls.
-    static func resample(
-        _ input: AVAudioPCMBuffer,
-        using converter: AVAudioConverter,
-        to outputFormat: AVAudioFormat
-    ) -> AVAudioPCMBuffer? {
-        guard input.frameLength > 0, input.format.sampleRate > 0 else { return nil }
-        let ratio = outputFormat.sampleRate / input.format.sampleRate
-        let capacity = AVAudioFrameCount((Double(input.frameLength) * ratio).rounded(.up)) + 1024
-        guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
-            return nil
-        }
-        var fed = false
-        let status = converter.convert(to: output, error: nil) { _, inputStatus in
-            if fed {
-                inputStatus.pointee = .noDataNow
-                return nil
-            }
-            fed = true
-            inputStatus.pointee = .haveData
-            return input
-        }
-        guard status != .error, output.frameLength > 0 else { return nil }
-        return output
-    }
-
-    /// A mono Float32 capture format at the same sample rate as `format`, so the
-    /// mic WAV is written as one channel (TECH-MIC3). Nil only if the format
-    /// constructor rejects the sample rate.
-    static func monoCaptureFormat(from format: AVAudioFormat) -> AVAudioFormat? {
-        AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: format.sampleRate,
-            channels: 1,
-            interleaved: false
-        )
-    }
-
-    /// Collapse a (possibly multichannel) tap buffer to one mono channel by
-    /// copying the highest-energy channel (TECH-MIC3). On a multichannel input
-    /// device the speaking mic is one channel; taking the loudest keeps its true
-    /// level, so the RMS gate is not diluted by silent channels, and leaves a
-    /// single channel to gate, so a muted verdict cannot leave live voice on
-    /// another channel for the stop-time mono merge to fold back in. Picking
-    /// the loudest channel rather than averaging also avoids comb-filtering two
-    /// correlated mics. The result is freshly allocated, so it outlives the
-    /// engine-reused tap buffer. Float32 deinterleaved, matching the inputNode
-    /// tap format the gate and RMS paths already assume.
-    static func collapseToMono(_ buffer: AVAudioPCMBuffer, to monoFormat: AVAudioFormat) -> AVAudioPCMBuffer? {
-        guard let src = buffer.floatChannelData else { return nil }
-        let frameLen = Int(buffer.frameLength)
-        guard frameLen > 0 else { return nil }
-        guard let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: AVAudioFrameCount(frameLen)),
-              let dst = mono.floatChannelData else { return nil }
-        mono.frameLength = AVAudioFrameCount(frameLen)
-
-        var bestChannel = 0
-        let channels = Int(buffer.format.channelCount)
-        if channels > 1 {
-            var bestEnergy: Float = -1
-            for ch in 0..<channels {
-                var energy: Float = 0
-                vDSP_svesq(src[ch], 1, &energy, vDSP_Length(frameLen))
-                if energy > bestEnergy {
-                    bestEnergy = energy
-                    bestChannel = ch
-                }
-            }
-        }
-        memcpy(dst[0], src[bestChannel], frameLen * MemoryLayout<Float>.size)
-        return mono
-    }
-
-    /// Build a zero-filled buffer used to pad the gap left by an input
-    /// device switch.
-    static func makeSilenceBuffer(format: AVAudioFormat, frames: AVAudioFrameCount) -> AVAudioPCMBuffer? {
-        guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
-            return nil
-        }
-        buffer.frameLength = frames
-        for audioBuffer in UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList) {
-            if let data = audioBuffer.mData {
-                memset(data, 0, Int(audioBuffer.mDataByteSize))
-            }
-        }
-        return buffer
+        if wasArmed { deviceRecovery.armConfigurationChangeObserver() }
     }
 
     /// Stop the recording and merge the intermediate files. Returns whether a
@@ -1806,12 +856,12 @@ final class MeetingRecorder {
     /// main-isolated now, which is what makes that guard sound.
     ///
     /// Main-isolated does not mean main-blocking: every wait below is a suspension, not
-    /// a block. The SCStream stop, the recovery drain and the ffmpeg merge were already
-    /// `async` and bounded, and the writer drains moved to `SerialBufferWriter.drain`
-    /// for exactly this reason. What does still run synchronously on main here is the
-    /// engine teardown (`removeTap` / `engine.stop()`), matching the two main-thread
-    /// engine call sites this path already had beside it (`recoverCapture` and the
-    /// termination flush); bounding all three is REC13's, not this task's.
+    /// a block. The SCStream stop, the recovery drain, the engine teardown (REC13) and the
+    /// ffmpeg merge are `async` and bounded, and the writer drains use
+    /// `SerialBufferWriter.drain` for exactly this reason.
+    ///
+    /// ARCH8 split the body into the named steps below, in the order they always ran; each
+    /// step's doc says what it must come after. Reordering them is a behaviour change.
     @MainActor
     @discardableResult
     func stop(limitSeconds: Double? = nil) async -> Bool {
@@ -1825,95 +875,94 @@ final class MeetingRecorder {
             releaseIdleSleepAssertion()
             return false
         }
-        let started = startedAt
-        let micFires = self.micFires
-        let systemFires = self.systemFires
+        let session = endSession()
+        standDownTimersAndHooks()
+        await systemChannel.haltCapture()
+        await deviceRecovery.standDown()
+        await teardownEngine()
+        snapshotMicCoverage()
+        let writerWedged = await drainWriters()
+        finalizeFiles()
+        let producedUsableFinal = await mergeIntermediates(
+            final: final, micURL: micURL, systemURL: systemURL,
+            session: session, writerWedged: writerWedged, limitSeconds: limitSeconds
+        )
+        persistAfterMerge(final: final, producedUsableFinal: producedUsableFinal, started: session.started)
+        Log.recorder.info("recorder stopped → \(final.path)")
+        Log.writeLine("recorder", "recorder stopped → \(final.path)")
+        return producedUsableFinal
+    }
+
+    /// What `stop()` read off the session before clearing it.
+    private struct StopSnapshot {
+        let started: Date?
+        let micFires: UInt64
+        let systemFires: UInt64
+        let systemHeadOffsetSec: Double
+    }
+
+    /// Step 1: read the counters and the REC9 offset, then mark the recorder idle. First, so
+    /// `isRecording` is false before anything below can re-arm or re-surface it.
+    @MainActor
+    private func endSession() -> StopSnapshot {
         // REC9: how far into the recording the system channel's audio starts. Zero
         // when no system frame ever arrived (there is then nothing to place) and, in
         // the normal case, the sub-second capture skew the merge policy ignores.
-        let systemHeadOffsetSec = systemFirstFrameUptime > 0
-            ? max(0, systemFirstFrameUptime - startedAtUptime)
-            : 0
+        let firstFrame = systemChannel.systemFirstFrameUptime
+        let session = StopSnapshot(
+            started: startedAt,
+            micFires: micFires,
+            systemFires: systemChannel.systemFires,
+            systemHeadOffsetSec: firstFrame > 0 ? max(0, firstFrame - startedAtUptime) : 0
+        )
 
         currentFile = nil
         self.micURL = nil
         self.systemURL = nil
         self.startedAt = nil
-        self.lastMicFires = micFires
-        self.lastSystemFires = systemFires
+        self.lastMicFires = session.micFires
+        self.lastSystemFires = session.systemFires
         self.lastDurationParity = nil
-        self.lastSystemDegraded = systemDegraded
+        self.lastSystemDegraded = systemChannel.systemDegraded
         self.lastInputDevice = capturedInputDevice
         // `micFires` / `systemFires` are deliberately NOT zeroed here: the captures below are
         // still delivering for a beat, and a buffer landing on a zeroed counter logged a
         // spurious "first fired" and handed the next recording a count its liveness gate
         // misread (REC17). `start()` zeroes both before it arms anything.
-        self.systemFirstFrameUptime = 0
-        self.systemLostAt = 0
+        systemChannel.endRecording()
+        return session
+    }
 
-        // Stop the tap-liveness + system-liveness watchdogs before teardown so neither
-        // can re-arm or re-surface a recorder that is shutting down.
-        tapLivenessTimer?.cancel()
-        tapLivenessTimer = nil
-        systemLivenessTimer?.cancel()
-        systemLivenessTimer = nil
-        // REC8: stop the auto-retry, drop the wake hook, and release the power
-        // assertion so a shutting-down recorder holds no timers, observers, or
-        // sleep locks.
-        systemAudioAutoRetryTimer?.cancel()
-        systemAudioAutoRetryTimer = nil
+    /// Step 2, shared with the termination flush: stop the tap-liveness + system-liveness
+    /// watchdogs before teardown so neither can re-arm or re-surface a recorder that is
+    /// shutting down. REC8: stop the auto-retry, drop the wake hook, and release the power
+    /// assertion so a shutting-down recorder holds no timers, observers, or sleep locks.
+    @MainActor
+    private func standDownTimersAndHooks() {
+        deviceRecovery.stopTapLivenessWatchdog()
+        systemChannel.stopTimers()
         removeWakeObserver()
         releaseIdleSleepAssertion()
+    }
 
-        // Await the SCStream start before teardown, else we stop() a stream
-        // that hasn't fully started and orphan it. Bounded so a stuck start
-        // can't hang stop().
-        let startTask = systemStartTask
-        if await runWithTimeout(seconds: 5, { await startTask?.value }) == false {
-            Log.writeLine("recorder", "WARN: system audio start-await timed out at stop - proceeding")
-            Log.event(category: "recorder", action: "system_capture_start_await_timed_out", attributes: [:])
-        }
-        systemStartTask = nil
-
-        // Halt capture before closing files. ScreenCaptureKit's stopCapture has
-        // hung for minutes (2026-06-05, a meeting wedged in "stopping..."), so
-        // bound it: stop() always proceeds to the merge. A short / racy system.wav
-        // is fine because the merge below runs under an explicit length policy that
-        // pads it to the longer input (REC9). That was NOT true until REC9: the bare
-        // `amerge` ended at the SHORTER input, so this comment licensed every
-        // short-system path while the merge quietly discarded the mic tail those
-        // paths produced. Removing the policy re-breaks all of them at once.
-        let capture = systemCapture
-        if await runWithTimeout(seconds: 5, { await capture?.stop() }) == false {
-            Log.writeLine("recorder", "WARN: system audio stop timed out - proceeding with merge")
-            Log.event(category: "recorder", action: "system_capture_stop_timed_out", attributes: [:])
-        }
-        systemCapture = nil
-        // Stop observing device changes before teardown so it can't trigger
-        // a recovery attempt.
-        if let observer = configChangeObserver {
-            NotificationCenter.default.removeObserver(observer)
-            configChangeObserver = nil
-        }
-        // The engine is about to go down, so any pending retry would race.
-        cancelPendingRecoveryRetry()
-        configurationRecoveryAttempts = 0
-        // Drain an in-flight async recovery (it bounds an engine restart on a
-        // background thread) before touching the engine, so teardown can't race
-        // recoverCapture's restart. The observer is already removed and the
-        // watchdog cancelled, so no new recovery launches. The handle is main-confined
-        // and so is this, so it is a plain read (REC11 removed the MainActor.run hop
-        // and the Sendable box that existed only to make it from off-main).
-        let recovery = recoveryTask
-        recoveryTask = nil
-        recovery?.cancel()
-        await recovery?.value
-        // REC13: bounded, off-main, abandon-on-timeout. These three calls were
-        // synchronous on main, so they inherited any wedge on AVAudioEngine's own
-        // serial queue, and on 2026-08-14 that is exactly what stranded `.stopping`
-        // for 52 minutes. VoiceProcessing is reverted here rather than further down
-        // so the whole engine teardown is one bounded unit; leaving it enabled keeps
-        // the HAL device degraded for other apps until this process exits (2026-05-13).
+    /// Step 5: the engine goes down only after the SCStream is halted and an in-flight recovery
+    /// drained (`deviceRecovery.standDown()`), so teardown can't race recoverCapture's restart.
+    ///
+    /// REC13: bounded, off-main, abandon-on-timeout. These three calls were
+    /// synchronous on main, so they inherited any wedge on AVAudioEngine's own
+    /// serial queue, and on 2026-08-14 that is exactly what stranded `.stopping`
+    /// for 52 minutes. VoiceProcessing is reverted here rather than further down
+    /// so the whole engine teardown is one bounded unit; leaving it enabled keeps
+    /// the HAL device degraded for other apps until this process exits (2026-05-13).
+    ///
+    /// CRITICAL: macOS does not auto-disable VPIO on stop, so the HAL device stays
+    /// degraded and other clients (Teams, Zoom) keep hearing the user at reduced
+    /// gain until the process exits (symptom on 2026-05-13: mic became extremely
+    /// low until restart). That revert is the third step of the bounded
+    /// `EngineTeardown.run`; it moved there with REC13 because it is an engine call
+    /// like the other two and was the only one still unbounded on main.
+    @MainActor
+    private func teardownEngine() async {
         var revertVoiceProcessing: (@Sendable () -> Void)?
         if voiceProcessingEnabledForSession {
             voiceProcessingEnabledForSession = false
@@ -1941,13 +990,18 @@ final class MeetingRecorder {
                 "steps": teardown.timedOutSteps,
             ])
         }
-        // MIC15/REC7: snapshot the render-thread-accumulated coverage tally only
-        // after the tap is removed, so this read can't race a buffer still being
-        // written into micTotalSeconds / micUnmutedSeconds / micPeakUnmutedDb. That
-        // ordering holds only when the removeTap above returned; on a teardown
-        // timeout it is abandoned and a late buffer can still land, so the coverage
-        // figures may be slightly short. A slightly short diagnostic beats a stop
-        // that never returns, and `engine_teardown_timed_out` says when to distrust it.
+    }
+
+    /// Step 6: MIC15/REC7: snapshot the render-thread-accumulated coverage tally only
+    /// after the tap is removed, so this read can't race a buffer still being
+    /// written into micTotalSeconds / micUnmutedSeconds / micPeakUnmutedDb.
+    ///
+    /// That ordering holds only when the removeTap above returned; on a teardown
+    /// timeout it is abandoned and a late buffer can still land, so the coverage
+    /// figures may be slightly short. A slightly short diagnostic beats a stop
+    /// that never returns, and `engine_teardown_timed_out` says when to distrust it.
+    @MainActor
+    private func snapshotMicCoverage() {
         self.lastMicCoverage = MicCoverageSnapshot(
             recordingSeconds: micTotalSeconds,
             unmutedSeconds: micUnmutedSeconds,
@@ -1958,20 +1012,23 @@ final class MeetingRecorder {
         micGateWriter = nil
         micConverter = nil
         micFileFormat = nil
+    }
 
-        // Callbacks are stopped, so drain the writer queues (finish blocks until the
-        // last buffer is on disk) before closing the files, so ffmpeg never reads a
-        // partial WAV. Bounded (REC7): a wedged disk write must not make `.stopping`
-        // inescapable. On timeout the drain is abandoned (its queue strong-captures
-        // the file, so it stays valid) and we skip the merge below, keeping the
-        // intermediates + a recordfail breadcrumb for the orphan sweep.
-        // `drain` rather than `finish` because this is `@MainActor` now (REC11): same
-        // bounded, abandon-on-timeout contract, but it suspends instead of freezing the
-        // app for the budget.
+    /// Step 7: callbacks are stopped, so drain the writer queues before the files close (step 8),
+    /// so ffmpeg never reads a partial WAV. Returns whether either drain wedged.
+    ///
+    /// Bounded (REC7): a wedged disk write must not make `.stopping`
+    /// inescapable. On timeout the drain is abandoned (its queue strong-captures
+    /// the file, so it stays valid) and the merge is skipped, keeping the
+    /// intermediates + a recordfail breadcrumb for the orphan sweep.
+    /// `drain` rather than `finish` because this is `@MainActor` now (REC11): same
+    /// bounded, abandon-on-timeout contract, but it suspends instead of freezing the
+    /// app for the budget.
+    @MainActor
+    private func drainWriters() async -> Bool {
         let micDrained = await micWriter?.drain(timeout: Self.writerDrainTimeoutSeconds) ?? true
-        let systemDrained = await systemWriter?.drain(timeout: Self.writerDrainTimeoutSeconds) ?? true
+        let systemDrained = await systemChannel.drainWriter(timeout: Self.writerDrainTimeoutSeconds)
         micWriter = nil
-        systemWriter = nil
         let writerWedged = !(micDrained && systemDrained)
         if writerWedged {
             Log.writeLine("recorder", "WARN: writer drain timed out (mic=\(micDrained) system=\(systemDrained)) - keeping intermediates for the orphan sweep")
@@ -1981,22 +1038,39 @@ final class MeetingRecorder {
                 "system_drained": systemDrained,
             ])
         }
+        return writerWedged
+    }
 
-        // CRITICAL: macOS does not auto-disable VPIO on stop, so the HAL device stays
-        // degraded and other clients (Teams, Zoom) keep hearing the user at reduced
-        // gain until the process exits (symptom on 2026-05-13: mic became extremely
-        // low until restart). That revert is the third step of the bounded
-        // `EngineTeardown.run` above; it moved there with REC13 because it is an
-        // engine call like the other two and was the only one still unbounded on main.
-
-        // Drop the AVAudioFiles to flush their headers before ffmpeg reads.
+    /// Step 8: drop the AVAudioFiles to flush their headers before ffmpeg reads. After the
+    /// drains, which still hold the files through their write closures until they finish.
+    @MainActor
+    private func finalizeFiles() {
         micFile = nil
-        systemFile = nil
+        systemChannel.closeFile()
+    }
 
+    /// Step 9: produce the final WAV from whichever intermediates exist. Last of the capture
+    /// steps, because it reads the closed files; a wedged writer drain skips it outright.
+    ///
+    /// Via a `<stem>.merging.wav` temp promoted only on a verified merge with the
+    /// ffmpeg wait bounded (REC7): a killed / timed-out merge can never leave a
+    /// truncated file at the canonical path that recovery then refuses to touch.
+    /// When the drain wedged the intermediates may be partial; either way the
+    /// intermediates + a recordfail breadcrumb are kept for the orphan sweep. A
+    /// capture intermediate is deleted ONLY after a verified promote (REC1 / AUD-5).
+    @MainActor
+    private func mergeIntermediates(
+        final: URL,
+        micURL: URL,
+        systemURL: URL,
+        session: StopSnapshot,
+        writerWedged: Bool,
+        limitSeconds: Double?
+    ) async -> Bool {
         let hasSystem = FileManager.default.fileExists(atPath: systemURL.path) && RecordingPostProcessor.fileSize(systemURL) > 4096
         let hasMic = FileManager.default.fileExists(atPath: micURL.path) && RecordingPostProcessor.fileSize(micURL) > 4096
 
-        Log.writeLine("recorder", "stopping: mic_fires=\(micFires) system_fires=\(systemFires) mic_bytes=\(RecordingPostProcessor.fileSize(micURL)) system_bytes=\(RecordingPostProcessor.fileSize(systemURL))")
+        Log.writeLine("recorder", "stopping: mic_fires=\(session.micFires) system_fires=\(session.systemFires) mic_bytes=\(RecordingPostProcessor.fileSize(micURL)) system_bytes=\(RecordingPostProcessor.fileSize(systemURL))")
 
         // Per-channel duration diagnostic for the reported end-of-call skew
         // (TECH-CAP1): log both durations + delta before the merge pads to the
@@ -2005,7 +1079,7 @@ final class MeetingRecorder {
         // one that started late, and those need opposite handling.
         let micAudioSec = hasMic ? RecordingPostProcessor.audioDurationSec(of: micURL) : nil
         let systemAudioSec = hasSystem ? RecordingPostProcessor.audioDurationSec(of: systemURL) : nil
-        let wallclockSec = started.map { Date().timeIntervalSince($0) }
+        let wallclockSec = session.started.map { Date().timeIntervalSince($0) }
         let deltaSec: Double? = {
             guard let m = micAudioSec, let s = systemAudioSec else { return nil }
             return s - m
@@ -2015,31 +1089,29 @@ final class MeetingRecorder {
             "system_audio_sec": systemAudioSec as Any,
             "delta_sec": deltaSec as Any,
             "wallclock_sec": wallclockSec as Any,
-            "head_offset_sec": systemHeadOffsetSec,
+            "head_offset_sec": session.systemHeadOffsetSec,
             "has_mic": hasMic,
             "has_system": hasSystem,
         ])
 
-        // Produce the final WAV from whichever intermediates exist, via a
-        // `<stem>.merging.wav` temp promoted only on a verified merge with the
-        // ffmpeg wait bounded (REC7): a killed / timed-out merge can never leave a
-        // truncated file at the canonical path that recovery then refuses to touch.
-        // A wedged writer drain skips the merge outright (the intermediates may be
-        // partial); either way the intermediates + a recordfail breadcrumb are kept
-        // for the orphan sweep. A capture intermediate is deleted ONLY after a
-        // verified promote (REC1 / AUD-5).
-        var producedUsableFinal = false
         if writerWedged {
             RecordingPostProcessor.writePostProcessFailure(final: final, retained: [micURL, systemURL])
+            return false
         } else if hasMic || hasSystem {
-            producedUsableFinal = await RecordingPostProcessor.produceFinal(
+            return await RecordingPostProcessor.produceFinal(
                 mic: micURL, system: systemURL, final: final, hasMic: hasMic, hasSystem: hasSystem,
-                systemHeadOffsetSec: systemHeadOffsetSec, limitSeconds: limitSeconds
+                systemHeadOffsetSec: session.systemHeadOffsetSec, limitSeconds: limitSeconds
             )
         } else {
             Log.writeLine("recorder", "WARN: neither mic nor system has audio data - leaving \(final.lastPathComponent) absent")
+            return false
         }
+    }
 
+    /// Step 10: the sidecars that describe the final, so after the merge that produced it: the
+    /// mute timeline, the capture-mode marker, the duration parity.
+    @MainActor
+    private func persistAfterMerge(final: URL, producedUsableFinal: Bool, started: Date?) {
         // Persist the muted-span timeline for the offline redactor (TECH-MIC4). Close any open
         // span first (an off-record span still active at stop auto-closes here). `.captureFirstRedact`
         // writes the whole timeline; default `.captureFirst` keeps the full mic with no redaction
@@ -2091,9 +1163,6 @@ final class MeetingRecorder {
         if producedUsableFinal, let started = started {
             checkDurationParity(file: final, recordedFor: Date().timeIntervalSince(started))
         }
-        Log.recorder.info("recorder stopped → \(final.path)")
-        Log.writeLine("recorder", "recorder stopped → \(final.path)")
-        return producedUsableFinal
     }
 
     /// Synchronous best-effort flush for process termination (REC2 / AUD-6).
@@ -2143,28 +1212,15 @@ final class MeetingRecorder {
         guard let final = currentFile else { return }
         Log.writeLine("recorder", "flushing intermediates for termination (orphan sweep merges on next launch)")
 
-        tapLivenessTimer?.cancel()
-        tapLivenessTimer = nil
-        systemLivenessTimer?.cancel()
-        systemLivenessTimer = nil
         // REC8: release the timers, wake hook, and power assertion on the terminate
         // path too, so a lingering process (a SIGTERM the user later cancels) holds
         // no sleep lock.
-        systemAudioAutoRetryTimer?.cancel()
-        systemAudioAutoRetryTimer = nil
-        removeWakeObserver()
-        releaseIdleSleepAssertion()
-        if let observer = configChangeObserver {
-            NotificationCenter.default.removeObserver(observer)
-            configChangeObserver = nil
-        }
-        cancelPendingRecoveryRetry()
-        configurationRecoveryAttempts = 0
+        standDownTimersAndHooks()
+        deviceRecovery.stopObservingAndRetrying()
 
         // Drop the system file first so an in-flight SCStream callback no-ops
         // instead of racing the writer teardown.
-        systemFile = nil
-        systemCapture = nil
+        systemChannel.dropCaptureForTermination()
 
         // REC13: the same bounded teardown `stop()` uses, in its synchronous form
         // (this path has no async context). VoiceProcessing's system-wide AGC is
@@ -2197,9 +1253,8 @@ final class MeetingRecorder {
         // deadline, and an abandoned drain still leaves whatever landed on disk for
         // the orphan sweep, which is strictly more than a force-quit leaves.
         let micDrained = micWriter?.finish(timeout: Self.terminationDrainTimeoutSeconds) ?? true
-        let systemDrained = systemWriter?.finish(timeout: Self.terminationDrainTimeoutSeconds) ?? true
+        let systemDrained = systemChannel.finishWriterForTermination(timeout: Self.terminationDrainTimeoutSeconds)
         micWriter = nil
-        systemWriter = nil
         micFile = nil
         if !(micDrained && systemDrained) {
             Log.writeLine("recorder", "WARN: writer drain timed out at termination (mic=\(micDrained) system=\(systemDrained)) - the intermediates may be short; the orphan sweep merges what landed")
@@ -2235,53 +1290,6 @@ final class MeetingRecorder {
     /// as a `.manual` timeline span under capture-first.
     func setManualOffTheRecord(_ on: Bool) {
         gateAccess.withLock { $0.manualOffRecord = on }
-    }
-
-    // MARK: - RMS level emission (TECH-C2)
-
-    /// Sum of squares of every sample across all channels, via vDSP_svesq (one
-    /// vectorized, allocation-free pass per channel). Returns the running-sum
-    /// contribution plus the sample count for the dBFS mean. Render-thread safe
-    /// (TECH-PERF3). Per-channel sums are accumulated in `Double`, so the ~1 s
-    /// average keeps full precision even though `vDSP_svesq` returns `Float`.
-    static func sumOfSquares(_ buffer: AVAudioPCMBuffer) -> (sumSq: Double, samples: Int) {
-        guard let data = buffer.floatChannelData else { return (0, 0) }
-        let frameLen = Int(buffer.frameLength)
-        let channels = Int(buffer.format.channelCount)
-        guard frameLen > 0, channels > 0 else { return (0, 0) }
-        var total: Double = 0
-        for ch in 0..<channels {
-            var chSum: Float = 0
-            vDSP_svesq(data[ch], 1, &chSum, vDSP_Length(frameLen))
-            total += Double(chSum)
-        }
-        return (total, frameLen * channels)
-    }
-
-    /// Fold a precomputed per-buffer sum-of-squares into the running total; at
-    /// ~1 s, emit dBFS on main. Channels are summed (the gate only cares if
-    /// anything was loud). The squares are computed once by `sumOfSquares`
-    /// (TECH-PERF3), so this no longer re-scans the buffer.
-    private func accumulateAndEmit(
-        addSumSq: Double,
-        addSamples: Int,
-        sumSq: inout Double,
-        frames: inout Int,
-        threshold: Int,
-        callback: ((Float) -> Void)?
-    ) {
-        guard let cb = callback, addSamples > 0 else { return }
-        sumSq += addSumSq
-        frames += addSamples
-
-        if frames >= max(threshold, 1) {
-            let mean = sumSq / Double(frames)
-            // log10(0) → -inf; clamp to -120 dBFS for a sane payload.
-            let db: Float = mean > 0 ? Float(10.0 * log10(mean)) : -120
-            sumSq = 0
-            frames = 0
-            DispatchQueue.main.async { cb(db) }
-        }
     }
 
     // MARK: - Write-failure escalation (REC3 / AUD-7)
@@ -2341,4 +1349,75 @@ final class MeetingRecorder {
         ])
     }
 
+}
+
+// MARK: - InputDeviceRecoveryHost (ARCH8)
+
+extension MeetingRecorder: InputDeviceRecoveryHost {
+    var engineIsRunning: Bool { engine.isRunning }
+    var observedEngine: AnyObject { engine }
+
+    func liveInputFormat() -> AVAudioFormat? {
+        let format = engine.inputNode.outputFormat(forBus: 0)
+        return format.sampleRate > 0 ? format : nil
+    }
+
+    func setMicConverter(_ converter: AVAudioConverter?) {
+        micConverter = converter
+    }
+
+    func replaceCondemnedEngine() {
+        replaceEngine(reason: "condemned_mid_recording")
+
+        // A replacement is a different node, so voice processing does not carry across and
+        // the format has to be read again. Re-applying it matters beyond fidelity: the flag
+        // and the node would otherwise disagree for the rest of the recording, and `stop()`
+        // reads the flag to decide whether to flip voice processing back off.
+        if voiceProcessingEnabledForSession {
+            voiceProcessingEnabledForSession = false
+            do {
+                try engine.inputNode.setVoiceProcessingEnabled(true)
+                voiceProcessingEnabledForSession = true
+            } catch {
+                Log.writeLine(
+                    "recorder",
+                    "WARN: setVoiceProcessingEnabled failed on the replacement engine: \(error.localizedDescription) - falling back to raw mic"
+                )
+            }
+        }
+    }
+
+    func padMicGap(frames: AVAudioFrameCount, format: AVAudioFormat) {
+        if frames > 0, let silence = Self.makeSilenceBuffer(format: format, frames: frames) {
+            micWriter?.enqueue(silence)
+            // Keep the capture-first mute timeline aligned with the mic file:
+            // the pad adds frames the render thread did not, so advance the
+            // position here. Safe to touch from main: the engine is stopped, so
+            // no render-thread buffer is in flight (TECH-MIC4).
+            micFramePosition += Int64(frames)
+        }
+    }
+
+    func reportConfigurationChange(_ outcome: CaptureRecoveryOutcome) {
+        onConfigurationChange?(outcome)
+    }
+
+    // Blocking calls, so `runBlockingWithTimeout` rather than the `Task` form (CI8).
+    @MainActor
+    func haltEngineForRecovery() async -> (engineStopped: Bool, tapRemoved: Bool) {
+        let engineStopped = await runBlockingWithTimeout(seconds: EngineTeardown.defaultBudgetSeconds) { [engine] in
+            engine.stop()
+        }
+        let tapRemoved = await runBlockingWithTimeout(seconds: EngineTeardown.defaultBudgetSeconds) { [engine] in
+            engine.inputNode.removeTap(onBus: 0)
+        }
+        return (engineStopped, tapRemoved)
+    }
+
+    @MainActor
+    func restartEngine() async -> EngineStartOutcome {
+        await boundedEngineStart(seconds: MeetingRecorder.engineStartBudgetSeconds, { [engine] in
+            try engine.start()
+        })
+    }
 }
