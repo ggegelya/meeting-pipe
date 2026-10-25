@@ -1,0 +1,56 @@
+# PERF15: engaging, arming and disengaging a meeting runs full AX walks, a ScreenCaptureKit wait and queue syncs on the main thread, so the prompt, Record and Stop stall while the meeting app is slow
+
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+
+## Context
+
+Re-read at HEAD 01e904a on 2026-10-25. Every transition of a native meeting does cross-process work on, or blocking, the main thread, and the transitions are the moments the meeting client is busiest (join, record, hang-up) and the user is looking.
+
+**Discovery.** `MeetingDiscoveryWatcher` hops every winner to main, not only changes (`DispatchQueue.main.async { ... if let winnerSource { self.onDiscovered?(winnerSource) } ... }`), and `MeetingSessionController.handleDiscovery` calls `engageLifecycle(for:)`, which runs `MeetingAXHandleBuilder.build(source:catalogue:)` synchronously. For a native app `build` lists the windows, runs a Leave `findButton` across them until a hit, then `findMeetingWindowMuteButtons` (a mute DFS per window plus a Leave DFS per mute-bearing window). Each `findButton` entry allocates a fresh `maxNodes = 4000` budget; `maxNodes`' own doc puts a real meeting window well under 100 nodes, so the cost is in windows that lack the control (walked to the end of their tree) and in slow calls. There is no guard for an already-engaged bundle, and `MeetingLifecycleCoordinator.engage` opens with `disengage()`, so every scan that reports a winner while the state is `.idle` builds and re-engages again.
+
+**What one build costs.** On a healthy client: DET12's 2026-08-19 Teams call logged `discovery_shadow_pick` at 15:03:16.348 UTC and `ax_handles_built` (emitted at the end of `build`) at 15:03:16.895, with the prompt 828 ms after the pick. The owner's Zoom engage on 2026-10-13 took 28 ms (`discovery_shadow_pick` 08:03:01.788Z, `ax_handles_built` 08:03:01.816Z, `prompt_shown` 08:03:01.880Z). So the cost is Teams' Electron tree, about half a second of main thread per build on a good day. Against a slow or hung client each AX call can wait the 2 s system-wide timeout `App.swift` sets, and a walk makes hundreds.
+
+**Engage then blocks main three more ways,** inside `NativeLifecycleAdapter.start`:
+
+- `ProcessAudioSignal.start` resolves synchronously: a whole `kAudioHardwarePropertyProcessObjectList` enumeration with a bundle-id and PID read per object.
+- `ShareableContentSignal.start` calls `evaluate(reason: "initial")` inline, which runs `defaultProbe`'s `SCShareableContent.getExcludingDesktopWindows` behind `semaphore.wait(timeout: .now() + probeTimeout)` (`probeTimeout = 2.0`) on main. `defaultProbe`'s doc says it is "Safe because the scheduler dispatches probes off main in production", which holds for every evaluate but this one.
+- `AXLeaveButtonSignal.start` goes through `runSync`, i.e. `serialQueue.sync(execute: work)`. When `build` found no Leave button (the compact-view case the signal's own doc describes), `_start` calls `_stop()`, which sets `lastWalkAt = nil`, so `_evaluate(reason: "initial")` reaches `throttledResolve(bypassThrottle: false)` unthrottled and runs a full `findAllLeaveButtons` walk while main waits.
+
+**Record start** (`beginRecording`'s `Task { @MainActor }`, after `audioRecorder.start` returns): `engageMicGate` runs a second full `build` on main, under the rule `armLifecycleLeaveButton`'s doc states ("The mic-gate engage deliberately stays synchronous: its verdict gates the very first buffers"); `engageLifecycleIfNeeded` runs a third when no adapter is engaged (END11's attached and manual path); `armLifecycleLeaveButton` runs a fourth on `axWalkQueue`, mute walks included and discarded, then hops to main into `armIfNeeded`, which is `runSync` again. The owner's log shows two builds after a prompted Zoom start (`recording_started` 2026-10-13 08:03:05.375Z, `ax_handles_built` at 08:03:05.392Z and 08:03:05.423Z), on top of the discovery-time one.
+
+**Stop.** `stopRecording` calls `coordinator.lifecycleCoord.disengage()` after `hud.dismiss()` and before `recorder.stop`. `disengage` reaches `NativeLifecycleAdapter.stop`, then `AXLeaveButtonSignal.stop`, a `runSync` that queues behind any walk already running on the signal's queue; the throttled re-walk runs every `slowPollInterval` (5 s) while the Leave button is missing or invalid, which is the state an END17 held end spends its dwell in. `StopStallWatchdog.arm` comes after that call, so REC13's stop watchdog cannot see a stop stalled there. `rescueProvisionalEnd` hops to main into the same `armIfNeeded`.
+
+**The prompt title.** The lifecycle `.starting` consumer builds `appSource(from:)` inside `MainActor.run`, which calls `MeetingTitleResolver.resolve`: a window list and one title read per window. Small (N+1 calls, not a walk; the verifier corrected the finding on this), but on main at join.
+
+**What it costs.** No recording is lost. The prompt appears late, the HUD and Stop freeze for the length of a walk, and the hotkeys wait with them. The installed daemon sampled on 2026-10-25 had recorded no meeting in its lifetime, so this is code-read and log-timed, not traced.
+
+Review provenance: DETECTION-2 and MAINTHREAD-2 (both verified high). [PERF10](./PERF10.md)'s bullet 3 (the record-start builds) moves here by its 2026-10-25 amendment.
+
+## Scope
+
+The seam is the controller's engage path in [`MeetingSessionController.swift`](../../../daemon/Sources/MeetingPipe/MeetingSessionController.swift) (`handleDiscovery`, `engageLifecycle(for:)`, `beginRecording`, `engageMicGate`, `engageLifecycleIfNeeded`, `armLifecycleLeaveButton`) plus the `start`, `stop` and `armIfNeeded` contract of [`ShareableContentSignal`](../../../daemon/Sources/MeetingPipeCore/Lifecycle/Signals/ShareableContentSignal.swift) and [`AXLeaveButtonSignal`](../../../daemon/Sources/MeetingPipeCore/Lifecycle/Signals/AXLeaveButtonSignal.swift).
+
+1. **Build off main, engage on main, with a staleness check.** `engageLifecycle(for:)` dispatches `MeetingAXHandleBuilder.build` (static, touches no controller state) to `axWalkQueue` and hops back to call `lifecycleCoord.engage` with the prebuilt handles only if the state is still `isAcceptingPrompts`, the bundle is unchanged, and no newer build for it was requested (a build generation). No second build is dispatched while one for the same bundle is in flight. Whether a repeat engage of an already-engaged bundle may be skipped altogether is the pickup's call, because `engage` resets the engine: pin the existing behaviour with a test first and record the decision in the commit body.
+2. **One build per recording start, off main.** Start the build on `axWalkQueue` when `beginRecording` commits (before `await audioRecorder.start`), and feed its handles to `engageMicGate`, `engageLifecycleIfNeeded` and `armLifecycleLeaveButton`, replacing up to three builds with one. The invariant `engageMicGate`'s placement protects stays: until `MicGate` engages, the recorder's verdict is `.uncertain(reasons: ["not_started"])`, which zero-fills the mic under the regulated/NDA gate exactly as it does during the synchronous build at HEAD. Bound the wait with a deadline the pickup measures and documents beside the constant; past it, engage `MicGate` with empty AX handles (the existing no-mute-button path, HAL VAD plus RMS) and let `MeetingAXWindowWatcher`'s off-main walk supply the AX reading through `injectAxMuteEvent`.
+3. **Signal start, stop and arm never block main.** `ShareableContentSignal.start` schedules its initial evaluate on `pollQueue` (its state is already lock-guarded). `AXLeaveButtonSignal`'s production `start`, `stop` and `armIfNeeded` use `runAsync` plus a generation token, so a stop never waits on a walk and an `_evaluate` that lands after `stop` emits nothing. `MeetingLifecycleCoordinator.disengage`'s generation bump stays synchronous, so the coordinator still drops late events.
+4. **The prompt title resolves off main** and updates the panel when it lands, if that leaves the prompt's copy and timing as they are; otherwise leave it and say so in the commit body.
+
+## Explicitly not
+
+- Gating the first buffers on HAL VAD and RMS alone while the AX attach is pending, which the review first suggested: HAL VAD and RMS cannot see an in-app mute, so under the regulated/NDA posture a muted user's voice would be written at rest ([ADR 0016](../../decisions/0016-capture-first-mute-redaction.md)). The `not_started` zero-fill holds until the attach or the deadline.
+- `AXMuteButtonProbe`'s poll and rearm: [PERF10](./PERF10.md). `ProcessAudioSignal`'s own threading, including making its `start` non-blocking: the HAL-listener confinement task filed 2026-10-25 (DETECTION-7 ([CONC9](./CONC9.md))).
+- Moving `MicGate`, the lifecycle coordinator or the state machine into the controller: [ARCH7](./ARCH7.md); whichever lands second rebases. [CONC6](./CONC6.md)'s main-queue precondition on the controller's methods stays true, since only the static `build` leaves main.
+- What any end rule decides (END9 to END17), and END11's explicit-start engage (the `isEngaged` guard in `engageLifecycleIfNeeded` stays).
+- Discovery's own scan cost, which the review reported under other findings (DETECTION-3, the lone-native bypass of PERF6's walk gate; DETECTION-4 ([PERF17](./PERF17.md)), scans continuing through prompting and recording; DETECTION-8 ([PERF17](./PERF17.md)), no in-flight guard on `scanQueue`).
+- `defaultProbe`'s off-main safety comment needs no [HYG10](./HYG10.md) row: item 3 makes it true.
+
+## Acceptance
+
+- A builder seam on `MeetingSessionController` (the static `MeetingAXHandleBuilder.build` behind an injectable closure, defaulting to it) so tests can supply a semaphore-gated build.
+- `MeetingSessionControllerTests`: `handleDiscovery` returns before a blocked build finishes and `engage` lands on main once it does; a build that finishes after the state left `.idle`, or after a newer build for the same bundle, does not engage.
+- Record start runs exactly one build (counting fake) and the main-thread continuation does not wait for it; the recorder's verdict stays `.uncertain(not_started)` until `MicGate` engages; the deadline path engages `MicGate` with empty handles.
+- `ShareableContentSignalTests`: with the production scheduler, `start` returns while a semaphore-gated probe is still blocked.
+- `AXLeaveButtonSignalTests`: with the production queue, `stop()` and `armIfNeeded` return while a resolver walk is blocked on the signal's queue, and no `onChange` arrives after `stop`.
+- At least one new test is measured red against `main` before the change and named in the commit body.
+- `cd daemon && swift build` and `swift build -c release` warning-clean, `swift test` green with N new tests stated in the commit body, `bash scripts/ci-local.sh` green.
+- Evidence after install (confirms, does not gate): one `ax_handles_built` after each `recording_started` (two after the 2026-10-13 08:03:05.375Z start); with [PERF11](./PERF11.md) landed, a working day of Teams calls shows no `main_thread_stall` within 2 s of `prompt_shown`, `recording_started` or `recording_stopped`.

@@ -43,3 +43,18 @@ Re-verified against `main` at `45b8c6a` on 2026-10-24.
 - A Cancel and a watchdog kill of `mp` during a local summary leave the server owned and either idle-stopped or reused, never orphaned (the PIPE22 scenario, now structurally impossible).
 - `cd daemon && swift test` and `cd pipeline && uv run --extra dev pytest -q`, ruff and pyright green, new test counts in the commit body; `bash scripts/ci-local.sh` green. `ARCHITECTURE.md`, `CONVENTIONS.md` (the marker schema leaves) and the README's local-model section updated in the same commit.
 - Owner walkthrough after install (confirms, not a gate): with the local backend and preload off, record a short meeting; `ps` shows one `mlx_lm.server` during the summary and none a few minutes after.
+
+## Amended 2026-10-25 (performance review)
+
+Review finding PYTHON-13 (confirmed, low) adds a leg the single owner inherits. Re-checked against `main` at `01e904a` on 2026-10-25.
+
+`mp serve-local` opens `mlx-server.log` through `local_server.open_server_log`, which calls `events.rotate_if_needed(path)` once, before `path.open("ab")`; `serve-local` then `os.dup2`s that descriptor onto stdout and stderr and `os.execvpe`s `mlx_lm.server`, which holds it for as long as it runs. Rotation happens only when some process opens the file, so today the 5 MiB cap is enforced only by the per-run spawns in `LocalSummaryClient._spawn`, and when one of them rotates, the warm server keeps writing into the renamed generation (and, once that generation is rotated out and unlinked, into space that is not reclaimed until the server exits). Scope item 2 stops daemon-spawned `mp` from spawning at all, so after this task nothing rotates the file while the supervisor's server runs for the daemon's lifetime. The volume is modest: `build_server_command` passes no log level, and `mlx_lm.server` 0.31.3 (the `uv.lock` pin) defaults `--log-level` to `INFO`, which logs prompt-processing progress and prompt-cache stats per completion, plus `BaseHTTPRequestHandler`'s access lines (it does not override `log_message`); the verifier put it at KB per meeting. Latent on the owner's Mac on 2026-10-25: the backend is `anthropic` and there is no `mlx-server.log`.
+
+Added scope:
+
+- `build_server_command` passes `--log-level WARNING`, so exceptions and Metal OOM tracebacks (LOCAL16's postmortem value) still reach the log while the per-request INFO lines do not; the access lines remain and are small. This applies to every spawn path, before or after the ownership change.
+- The supervisor's every start and restart goes through `mp serve-local` (or another path that calls `open_server_log`), so each one rotates the log at open. Say so where the supervisor spawns, so a later change that execs `mlx_lm.server` directly does not silently drop the bound.
+
+Added acceptance:
+
+- pytest: `build_server_command` includes `--log-level WARNING`, and the fake `mlx_lm.server` tests accept it.

@@ -37,3 +37,34 @@ A second, smaller gap: `cfg` is loaded once in `main` and held by `Library` for 
 - A Swift test that `MCPStatusStore` renders the new reason.
 - The new `regulated_global` reason is named in the `visibility` module beside the other `WITHHELD_*` constants; `python3 scripts/truth_fences.py` (CI5) clean.
 - ruff, pyright (with `--extra mcp`), `pytest -q` and `swift test` green, new test counts in the commit body.
+
+## Amended 2026-10-25 (performance review)
+
+Review finding PYTHON-6 (finder medium, verifier confirmed medium), re-checked against `main` on 2026-10-25 in [mcp_serve.py](../../../pipeline/src/mp/mcp_serve.py) and [mcp_tools.py](../../../pipeline/src/mp/mcp_tools.py). Scope item 1 above makes `Library.allow_stems` return nothing under regulated mode, but that set never reaches `search_meetings`, so this task's acceptance as written would pass while search still serves the withheld text.
+
+**The cache.** `Library.index(allow)` builds only `if self._index is None`, through `embed_index.load_or_build(self.root, self.index_dir, watchdog=watchdog, allow_stems=allow)`, and returns that object for the rest of the stdio session. `dispatch` computes `allow = library.allow_stems()` on every call, but `index()` uses it only for the first build. `mcp_tools.search_meetings` then ranks over that index and "never re-checks, and it must not, because a second check here would suggest the first is optional". The `Library` docstring states the intent the cache breaks: "a long-lived server holding a stale allowlist would keep exposing a meeting whose workflow the owner has since changed".
+
+**What follows, for any session that outlives a change** (an MCP client keeps the server for its whole session):
+
+- a meeting withheld after the first search (a workflow reassigned to NDA through WF8's Change workflow..., SEC21's re-stamp, or this task's global regulated check) keeps returning excerpts from `search_meetings`, while `get_meeting` and `get_transcript` correctly answer not-found;
+- a meeting recorded after the first search never becomes searchable;
+- `_call_tool` runs `dispatch` on a worker thread through `anyio.to_thread.run_sync`, and the SDK serves messages concurrently, so two first `search_meetings` calls both see `self._index is None`, load two MLX embedders and run two in-place saves into the same `index_dir` (the in-place save is the sibling task filed from this review, finding PYTHON-5 ([AI13](./AI13.md)));
+- the e5 embedder is never released, so it stays resident for the session.
+
+**Added scope.**
+
+4. `Library.index` holds a `threading.Lock`. Under it, compare `embed_index.library_stem_fingerprints(self.root, allow_stems=allow)` with the cached index's `stems`, and refresh only when they differ (a stem added, removed, changed or newly withheld). Comparing in memory first matters: `refresh_index` always runs `_load_reusable`, which re-reads and parses the whole on-disk index even when the plan is a no-op.
+5. An empty allowlist (this task's regulated case) returns zero results without building or refreshing, so a regulated session never rewrites the index `mp ask` shares in `DEFAULT_INDEX_DIR`.
+6. A refresh that raises returns an error payload rather than falling back to the stale index. That keeps `search_meetings`' no-re-check rule true instead of adding a second filter beside it.
+7. Release the embedder after each `search_meetings` call (`EmbeddingIndex.release_embedder`; `MLXEmbedder._ensure_loaded` reloads on the next call). If the measured reload is over about 2 s, an idle release is the alternative; the commit body records the figure.
+
+**Added acceptance**, in `tests/test_mcp_serve.py` with the hashing embedder the file already pins:
+
+- after one search, a meeting whose sidecar gains `workflow_nda_mode` returns no excerpt from the next `search_meetings` (fails on the current code);
+- after one search, a newly written meeting appears in the next search's results (fails on the current code);
+- under global regulated mode, `search_meetings` returns zero results and leaves the files in `index_dir` untouched (mtimes unchanged);
+- two concurrent first searches on one `Library` call `load_or_build` once (counting fake);
+- a second search with no library change does not call `load_or_build` at all;
+- the embedder's `release` runs once per search.
+
+**Owner note.** [AUTO3](./AUTO3.md) sits in [owner-verification.md](../owner-verification.md) as `simple`, and this is a defect in what AUTO3 shipped rather than a regression. Proposal for the owner: do not close AUTO3 on its walkthrough while added scope items 4 to 6 are open.

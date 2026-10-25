@@ -49,3 +49,17 @@ One rule, applied store by store: **missing is empty, unreadable is not.** Two k
 - pytest in `test_speaker_overlay.py` / `test_transcript_corrections.py`: a present malformed overlay makes `summarize` exit 1 with the named cause; a missing overlay summarizes as today.
 - `store_unreadable` documented in `CONVENTIONS.md` under the event schema; `python3 scripts/truth_fences.py` green. `cd daemon && swift test` and `cd pipeline && uv run --extra dev pytest -q` green, ruff and pyright clean, `bash scripts/ci-local.sh` green, N new tests per tree in the commit body.
 - `docs/GUIDE.md`'s Vocabulary recipe gains one sentence on what a broken `glossary.toml` looks like in the pane, in the same commit.
+
+## Amended 2026-10-25 (performance review)
+
+The 2026-10-25 performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified) drafted these items before this task landed the same day; they are folded in here rather than filed twice.
+
+**A lost update beside the wipe (PYTHON-9).** **Two quick speaker namings lose one.** `PipelineLauncher.rosterEnroll(name:label:wav:noRelabel:completion:)` spawns one `mp roster enroll` per in-app naming through `runMP` with no lane, so two namings in quick succession run concurrently. `RosterStore.enroll` reads the whole roster (`self._people()`), appends, and writes it back (`self._write(people)`) with no lock, so the second writer's read can predate the first's write and one enrolled person is silently dropped. Today both also share the fixed temp name (`tmp = self.path.with_name(self.path.name + ".tmp")`), so one run can rename the other's half-written file into place; SEC22 item 1 routes `_write` through `atomic_write_text`, whose temp name carries the pid, and that closes the temp half. `VoiceprintStore.update` has the same read-modify-write shape, but only for the first 12 meetings (`_VOICEPRINT_ENROLL_CAP`). The window is milliseconds after Python startup.
+
+**Scope addition.** `RosterStore`: wrap `enroll`, `forget` and `rename` in `fcntl.flock` on a sibling lock file (`roster.json.lock`, created 0600 in the config directory); `VoiceprintStore.update` takes the same pattern on `voiceprint.json.lock`. Stdlib only.
+
+**Explicitly not.** Serialising roster spawns in the daemon with a `runMP` lane. The Python lock also covers terminal runs; a lane would be a second mechanism for the same guarantee.
+
+**Acceptance addition.**
+
+- pytest in `test_roster.py`: two threads enrolling different names, forced to interleave by a barrier inside a patched `_people` (both read before either writes), end with both names enrolled; fails on `main`. The same shape for `VoiceprintStore.update`'s sample count.

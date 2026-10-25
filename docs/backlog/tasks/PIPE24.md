@@ -38,3 +38,19 @@ The engine site's difference is documented ("`max_retries` is left to the SDK ..
 - 529: a test that `_create_message` retries an `OverloadedError` and that `run_with_local_fallback` falls back to local on one. Both fail on the current code.
 - A grep-style test that `anthropic.Anthropic(` appears only in the factory module.
 - `cd pipeline && uv run --extra dev pytest -q`, `ruff check src tests` and `pyright` green, new test count in the commit body.
+
+## Amended 2026-10-25 (performance review)
+
+Review finding PYTHON-7 (finder medium, verifier confirmed medium) restates this task's cleanup row and adds the run-level consequence and a leg the scope above lacks. Re-checked against `main` on 2026-10-25: `AnthropicCleanupClient.__init__` is still `self._client = anthropic.Anthropic(api_key=api_key)`, and the locked SDK's `anthropic/_constants.py` still reads `DEFAULT_TIMEOUT = httpx.Timeout(timeout=10 * 60, connect=5.0)` and `DEFAULT_MAX_RETRIES = 2`.
+
+**Why the optional pass can cost the whole meeting.** `orchestrate.run_all` runs `cleanup_transcript(t["json"], cfg=cfg)` before `summarize`, and its `except` arm makes a cleanup that raises non-fatal ("diarize cleanup failed (non-fatal)"). A stall never raises in time. `diarize_cleanup._gather_edits` issues one `propose_edits` per window of `chunked_windows(rendered, max_chars=window_chars, ...)` (`DEFAULT_WINDOW_CHARS = 8000`) back to back with no deadline, and on SDK defaults each window can wait 600 s three times, 30 minutes, doubled by PIPE10's one re-issue when the clocks say the Mac slept. Three stalled windows pass `PipelineLauncher.defaultMaxRuntime` (`90 * 60`), and the daemon SIGKILLs run-all, so the meeting loses its summary and its publish to a pass documented as optional. This task's factory caps a window near 120 s, but a two-hour meeting renders to about 14 windows, so a degraded network can still spend about 28 minutes in cleanup before summarize starts. Reachability: `diarize_cleanup` defaults to `False` in `config.py`, and the owner's `config.toml` had `diarize_cleanup = false` on 2026-10-25.
+
+**Added scope.**
+
+- `cleanup_transcript` takes an overall pass deadline (a named constant with its reason written beside it, about 10 minutes, well inside run-all's cap after summarize's own worst case), passed to `_gather_edits` together with an injectable monotonic clock. Before each window, if the deadline has passed, stop issuing windows, apply the edits gathered so far through the existing `_effective_edits` and `_refuse_unsupported_merges` path, and return normally, so run-all's non-fatal contract holds.
+- The `pipeline.diarize_cleanup` event gains `windows_done`, `windows_total` and `deadline_hit`, next to the `parse_failed_windows` that [OBS2](./OBS2.md) item 5 adds to the same event; whichever lands second keeps the other's field.
+
+**Added acceptance**, in `tests/test_diarize_cleanup.py`:
+
+- a fake cleanup client over five windows whose injected clock passes the deadline during window 2: exactly two windows' edits are applied, the event carries `windows_done == 2`, `windows_total == 5` and `deadline_hit == True`, and `cleanup_transcript` returns without raising;
+- a run that stays under the deadline reports `deadline_hit == False` and applies every window's edits, matching the current output.

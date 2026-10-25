@@ -48,3 +48,15 @@ Failure-shaped rows below go through OBS1's `Log.failure`; the rest are `Log.eve
 - `config_saved` names only the changed key after a one-field edit and carries no value; `secret_saved` carries no secret.
 - `registry_loaded` for an absent, a valid and a malformed overlay.
 - `cd daemon && swift test` green, `python3 scripts/truth_fences.py` green, `bash scripts/ci-local.sh` green. N new tests in the commit body.
+
+## Amended 2026-10-25 (performance review)
+
+The 2026-10-25 performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified) found the re-render cost of the function item 3 edits, in its finding UI-13 (verified low). Re-checked against the tree on 2026-10-25.
+
+`PermissionsCenter.commit(_:kind:status:)` reads `let prev = self[keyPath: keyPath]` and then assigns `self[keyPath: keyPath] = status` unconditionally, so every probe fires `objectWillChange` even when nothing changed. `startPolling` runs `refreshAll()` every 2 s while the Permissions pane is visible, four commits per tick, so the pane's `@ObservedObject` body (and the onboarding permissions step while it is shown) re-renders four times every 2 s with no change, and each status-menu open adds three more through `refreshMenuRelevantSync()`. The status bar is not affected: its `CombineLatest4` pipeline applies `removeDuplicates`.
+
+Item 3 additionally must start `commit` with `guard prev != status else { return }`, before the assignment, the new `permission_changed` event and the existing `permissionGranted` send. The granted side effect already requires `prev != .granted`, so it is unchanged, and the guard makes item 3's "an unchanged status emits nothing" true by construction rather than by a second check.
+
+Added acceptance:
+
+- A `PermissionsCenterTests` case: committing an unchanged status fires no `objectWillChange` (a subscriber counts zero) and no event; `.unknown` to `.granted` fires exactly one `objectWillChange` and still sends `permissionGranted`.

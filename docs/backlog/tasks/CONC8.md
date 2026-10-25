@@ -38,3 +38,15 @@ All three share the same skeleton line for line: `guard Thread.current.isMainThr
 - Existing `ConfigStoreTests`, `ConfigStoreFenceTests` and `GlossaryStoreTests` unchanged and green, including `test_switching_scope_keeps_the_edit_that_had_not_been_saved_yet`. `GlossaryStore.flush()` (called from `VocabularyEditor`'s `.onDisappear`) has no test today; add one: an edit followed at once by `flush()` is on disk before `flush()` returns.
 - `grep -n "Timer.scheduledTimer(withTimeInterval: 0.5" daemon/Sources` returns only `DebouncedSaver.swift`.
 - `cd daemon && swift build` and `swift test` green, about 7 new tests with the count in the commit body; `python3 scripts/truth_fences.py claude` green after the `CLAUDE.md` edit; `bash scripts/ci-local.sh daemon` green.
+
+## Amended 2026-10-25 (performance review)
+
+The 2026-10-25 performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified) drafted these items before this task landed the same day; they are folded in here rather than filed twice.
+
+**The TOML render races the main-thread writer (MAINTHREAD-13).** **`ConfigStore` renders its TOML tree on `writeQueue` while main can mutate it.** The debounced `scheduleSave` timer calls `self.writeBack()` on main (which mutates `rawDocument`), then `self.writeQueue.async { try self.persistToDisk() }`, and `persistToDisk` reads the same tree with `rawDocument.convert(to: .toml, ...)` off main with no copy or lock. `saveNow()` (the Apply buttons) runs `writeBack()` and `persistToDisk()` synchronously on main, so it can mutate the tree while a queued persist converts it, and both write the same `config.toml.writing` temp before `replaceItemAt`. Two threads inside one toml++ tree can crash or render a corrupt file, and a `config.toml` that then fails to parse sets `parseError`, which fail-closes every later save (ARCH9). It needs an Apply during a pending persist or a stalled disk, so it is rare.
+
+**Scope addition, inside the `DebouncedSaver` move.** `ConfigStore`: render the TOML `String` on main right after `writeBack()` and hand only that immutable string to the write half of `persistToDisk` on `writeQueue`; `saveNow` renders the same way and performs its write through `writeQueue.sync`, so the two writers never use the `.writing` temp at once. [UX91](./UX91.md) edits the same `scheduleSave` closure; whichever lands second rebases.
+
+**Acceptance addition.**
+
+- `ConfigStoreTests` (with the write queue injectable): the write half writes exactly the string it is given; with the queue held by the test, a debounced save, a further mutation and `saveNow()` leave `config.toml` holding the `saveNow` state and no `.writing` file.

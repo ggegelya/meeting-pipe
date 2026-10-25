@@ -43,3 +43,18 @@ Re-checked at filing: the audit listed `roster_cmd`'s transcript relabel (`_rela
 - pytest: the fence passes on the fixed tree, fails on a planted hand-rolled temp-and-replace and on a planted `write_text` to a `<stem>.summary.json` path (both tried and reverted, said in the commit body), and every allowlist entry carries a reason.
 - `AppleIntelligenceSummarizerTests`: after `write(summary:transcriptMD:suffix:)` both files exist with mode `0o600`.
 - `bash scripts/ci-local.sh pipeline` and `bash scripts/ci-local.sh daemon` green, with the number of new tests per tree in the commit body.
+
+## Amended 2026-10-25 (performance review)
+
+The 2026-10-25 performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified) drafted these items before this task landed the same day; they are folded in here rather than filed twice.
+
+**Covered already, one ordering detail added (PERSISTENCE-9, PYTHON-12).** The review found `AppleIntelligenceSummarizer.write` and the file-sink, paste and digest writers independently; scope items 1 and 5 above own them. One detail for item 5: write the `.md` first and the `.json` last, because `MeetingStore` treats a `summary.json` on disk as done (`case done // summary.json on disk`), so a markdown write that fails after the JSON leaves a done row with no `.md`.
+
+**A leg the helper itself owes (PYTHON-11).** **`storage.atomic_write_text` never syncs and leaks its temp on a kill.** It runs `tmp.write_text(...)`, `os.chmod(tmp, mode)`, `os.replace(tmp, path)` with no `fsync` (on macOS only `F_FULLFSYNC` forces data to stable storage), so after a kernel panic or power loss shortly after a rewrite the rename can survive while the data does not. It cleans up only on `BaseException`, so the daemon watchdog's SIGKILL, and today SIGTERM too (no handler until [PIPE22](./PIPE22.md)), leave `.<name>.tmp-<pid>` beside the file for good; nothing sweeps them, and `backup._add_root` archives them (`rglob("*")` includes dotfiles). The temp is also created at the umask mode and only then chmodded. The verifier rated the data-loss half plausible: it needs a panic or power loss inside the window.
+
+**Scope addition.** `atomic_write_text`: create the temp with `os.open(..., O_WRONLY | O_CREAT | O_EXCL, mode)` so it is never wider than `mode`, write, flush, `fcntl.fcntl(fd, fcntl.F_FULLFSYNC)` on darwin (`os.fsync` elsewhere), then `os.replace`. Add `storage.sweep_stale_temps(directory, stem)`, called at the start of `run-all` and `summarize` for the stem, which deletes `.<stem>*.tmp-<pid>` files older than one hour (the age guard keeps an in-flight writer's temp).
+
+**Acceptance additions.**
+
+- pytest in `test_storage.py`: `atomic_write_text` issues the sync (`fcntl.fcntl` with `F_FULLFSYNC` on darwin, recorded by a monkeypatch) before `os.replace`, and the temp's mode never exceeds `mode`; `sweep_stale_temps` removes a two-hour-old `.x.json.tmp-999`, keeps a fresh one, and touches no other file.
+- Swift, in the suite that covers `AppleIntelligenceSummarizer.write`: under umask 022 both files are 0600; with `<stem>.summary.md` made a directory so the markdown write throws, an existing `summary.json` is byte-identical afterwards. Fails on `main`, which writes the JSON first.
