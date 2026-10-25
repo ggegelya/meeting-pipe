@@ -95,3 +95,25 @@ Steps tagged [owner] / [session] by who acts.
 3. [owner] While it runs, join any call that holds the microphone, wait about a minute, then leave. Any call works, including FaceTime or a browser call. Make sure MeetingPipe is **not recording** during the watch: its own capture would flip the flag from a source that is not the call, and the probe warns if it sees the app running.
 4. [owner] Paste the probe's final report back. It says whether the mic-busy flag ever flipped, whether the device was ever actually held, and which of A-D it read.
 5. [session] Files the verdict into **Measured** above and takes the branch it names.
+
+## Amended 2026-10-25 (observability audit band)
+
+Added from the [2026-10-25 observability audit](../../audits/2026-10-25-observability-audit.md) (finder LG-13; an independent skeptic downgraded it to low and placed it here). Re-verified against `main` at `01e904a` and the unified log on 2026-10-25.
+
+**What the log shows.** The installed daemon (pid 77137, running since 2026-10-18 14:59:56 local, a 2026-09-11 build) writes `(CoreAudio) AudioHardware-mac-imp.cpp:773 AudioObjectGetPropertyData: no object with given ID 0` at error level, always from the same thread, about every 12.1 s: 9,041 rows between 2026-10-24 and 2026-10-25 by the finder's count, starting 2026-10-24 01:33:54 local by the skeptic's, and still 266 in the hour to 2026-10-25 23:00 local in a session check. Nothing in the app's own logs mentions it: `events.jsonl` holds no rows at all for 2026-10-25 and, for 2026-10-24, only the 285 test doctor rows described in T9's amendment.
+
+**Attribution, inferred rather than proven.** The cadence is `DiscoveryScanCadence.discoveryDefault`'s 12 s idle backstop poll, and the storm began six days into a process that had been quiet, which is the shape of a device that went away after launch rather than one missing at launch. The poll's only per-tick HAL read while idle is `MeetingDiscoveryWatcher.sampleMicBusy`'s `mic.isInUseByAnotherApplication` on `micDevice`, the `AVCaptureDevice` that `wireMicObserver` resolved once at daemon start and never re-resolves. Ruled out by reading the code: `InputDeviceIdentity` reads run at recording start (`MeetingRecorder`'s captured input device), not per poll; `ProcessAudioSignal` and the MicGate HAL probes run inside a lifecycle or a recording, and nothing was recording. If the default input that was resolved at launch (a headset, an external interface) disconnected at 01:33:54, the retained `AVCaptureDevice` is stale, its property read hits CoreAudio with a dead object id, and it returns false every time.
+
+**Why it belongs here.** It is the stale-device symptom of the same resolve-once design this task fixes, and it is not covered by what shipped: the 2026-08-15 `detector.mic_device_unavailable` event fires only when `AVCaptureDevice.default(for: .audio)` is nil at launch, and the pre-registered outcome A ("re-resolve rather than resolve-once") was written for a nil at launch. A device that resolved and then went stale is a third way for the mic-busy input to read false forever, silently, and it matters to the probe too: `det10-mic-busy-probe.swift` runs in a fresh process, so it resolves the current device and cannot reproduce this. A probe GO (outcome B, "the daemon's own wiring is what is broken") now has a concrete candidate.
+
+**Added scope, whatever the probe's verdict.** This is observability plus a resolve fix that holds under every branch, because a stale device is wrong whether or not the property can ever read true.
+
+1. **Confirm the attribution first.** In a session, before writing the fix: reproduce by starting a debug daemon with an external input as default, disconnecting it, and counting the CoreAudio error lines at the poll cadence (`/usr/bin/log stream --predicate 'process == "MeetingPipe"'`); then confirm they stop when `sampleMicBusy` is short-circuited. If they do not stop, record what does and narrow this amendment before going further.
+2. **Re-resolve on device change.** `MeetingDiscoveryWatcher` observes `AVCaptureDevice.wasDisconnectedNotification` and the system default-input change, and re-runs the resolve: replace `micDevice`, rebuild the `isInUseByAnotherApplication` KVO, and close any open `MicBusySpanTracker` span. A resolve that comes back nil emits the existing `mic_device_unavailable`.
+3. **Say it.** Emit `detector.mic_device_changed` with the old and new device's name and transport, so `mp analyze-detection` can tell a window with a stale or swapped device from a clean one.
+
+**Added acceptance.**
+
+- The reproduction in item 1, with its line counts before and after, pasted into Measured with the date.
+- A pure test of the re-resolve decision (old device id, notification, new default: rebuild or keep), in the style of `MicInputAvailability`; the watcher itself still has no harness.
+- After the fix, on the owner's Mac: no `no object with given ID 0` rows at the poll cadence across a headset disconnect, and one `mic_device_changed` row for it.

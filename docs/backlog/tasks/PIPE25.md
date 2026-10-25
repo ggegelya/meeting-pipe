@@ -34,3 +34,25 @@ Re-verified against `main` at `45b8c6a` on 2026-10-24.
 - `cd daemon && swift build` and `swift test` green, new test count in the commit body.
 - `docs/GUIDE.md` and the README's Apple Intelligence section say that unsupported languages fall back to the local model, in the same commit.
 - Owner walkthrough after install (confirms, not a gate): with the Apple Intelligence backend, record a short Ukrainian meeting; it publishes with a local-model summary and the provenance line names the reason.
+
+## Amended 2026-10-25 (observability audit band)
+
+Source: [observability audit](../../audits/2026-10-25-observability-audit.md), amendments table, finder UI-8. Re-verified against `main` at `01e904a` on 2026-10-25.
+
+**The manual recovery is ranked below the button that fails.** `MeetingDetailView.failureNotice` renders `FailureNotice` with `retryLabel` "Retry summary" inside the notice, and the **Re-summarize with <local>** button sits outside and below it, under `else if meeting.failureSuggestsLocalReSummarize`. The failure's metadata is nil (the Apple error is not a `reportedFailure`), `FailurePresentation.legacy` has no branch for `AppleIntelligenceError.unsupportedLanguageMarker`, so the cause is `.unknown` and the explanation is "Retry when you are ready, or open Details to inspect the failure.". The [GUIDE](../../GUIDE.md)'s section 10 "A meeting that failed" says a language refusal "leads with re-summarizing on the on-device model"; it does not, and the README's Library section says outright that "the plain same-backend retry stays available in the notice".
+
+**Field evidence.** On the audit Mac, meeting `20261016-095827` failed with `Apple Intelligence: unsupported language or locale` at 2026-10-16T07:33:59Z. The owner pressed Retry at 07:38:16Z and again at 07:38:46Z (`retry_requested`, scope `run_all`); each failed identically about 12 s later (`pipeline_failed` at 07:38:28Z and 07:38:59Z). Two futile runs within 30 s, on the 2026-09-11 build; the current code ranks the controls the same way.
+
+**Why this belongs here even after item 1.** The auto-fallback stops new refusals reaching the notice, but every meeting that failed before it shipped keeps its `<stem>.error.json` with this reason, and any path the fallback does not cover lands here too. The notice should not depend on the fallback for its ordering.
+
+### Added scope
+
+5. **A typed cause for the refusal.** Add `FailureMetadata.Cause.unsupportedLanguage` (`unsupported_language`), Swift side only, derived in `FailurePresentation.legacy` from `AppleIntelligenceError.unsupportedLanguageMarker` so old sidecars get it with no rewrite. It is never written into a sidecar's `failure` metadata, so the Python vocabulary and the failure-metadata golden fixture stay unchanged. Heading "Apple Intelligence can't summarize this language"; explanation "Re-summarize it on this Mac with <local model>.". UX94 (`config`) and PIPE28 (`model_rejected`) add causes to the same enum; land them together if they are in flight.
+6. **The notice leads with the fix.** For that cause, `FailureNotice`'s primary action is **Re-summarize with <local>** (the existing `regenerateMeeting(stem:backend: SummarizationEngine.local.id)` call, moved inside the notice), and plain Retry is withheld while the meeting's resolved backend is still Apple Intelligence. When the local model is not cached, the primary action is **Download model** (the existing `downloadModel` closure) and the re-summarize follows it, matching item 4's honest-failure rule. Remove the outside-the-notice button and `meeting.failureSuggestsLocalReSummarize`'s separate branch, or have the predicate read the new cause; one source, not two.
+7. **Docs in the same commit.** [GUIDE.md](../../GUIDE.md) section 10, "A meeting that failed", the "Some failures lead with a more specific fix" paragraph: name the button. README's Library section: drop "The plain same-backend retry stays available in the notice".
+
+### Added acceptance
+
+- `FailurePresentation` tests: a diagnostics string carrying the marker yields `.unsupportedLanguage` with the new heading and explanation; one without it is unchanged.
+- A `FailureNotice` decision test (pure, over which actions are offered and in what order): the cause offers Re-summarize first and no Retry; with the local model missing it offers Download model first.
+- Owner check (confirms, not a gate): open the 2026-10-16 meeting `20261016-095827` in the Library; the notice leads with **Re-summarize with <local>** and has no Retry.

@@ -33,3 +33,28 @@ SEC8 moved the tokens into the login Keychain and accepted two residuals in code
 - A grep fence (Swift test or `truth_fences.py`) that `setenv("ANTHROPIC_API_KEY"`, `setenv("NOTION_TOKEN"` and `setenv("OPENAI_API_KEY"` appear nowhere in `daemon/Sources`.
 - `cd daemon && swift build` and `swift test` green, new test count in the commit body; `bash scripts/ci-local.sh` green.
 - Owner check (confirms): with `while true; do ps -axo args | grep -c "[a]dd-generic-password.*-w"; done` running, typing in the Notion field never shows a match, and a Notion publish and the database picker still work.
+
+## Amended 2026-10-25 (observability audit band)
+
+Two findings from the [observability audit](../../audits/2026-10-25-observability-audit.md) (SW-6, and the Keychain half of PY-9) widen this task's Keychain leg. The audit's skeptic pass confirmed that scope item 1 already covers the worst consequence SW-6 named, an unedited account deleted after a read that failed, because `persist()` will write or remove only the accounts whose value changed. What item 1 does not cover is below, re-read in code on 2026-10-25. All of it is low: the read collapse needs a locked Keychain or a failed `security` spawn at the moment of the read, and the one-time migration ran on this Mac on 2026-07-06 (`main.log`) and `~/.config/meeting-pipe/secrets.env` no longer exists.
+
+### What is still wrong
+
+- **Every read failure is "absent", on both sides.** `KeychainBackend.value(for:)` is `guard let result = Self.run([... "find-generic-password" ...]), result.status == 0 else { return nil }`, so not found (status 44), a locked Keychain, a denied ACL, and a spawn that never ran all become `nil`, and `SecretsStore.init` stores `""` for it. Python's `config._keychain_get` is the same: `except (OSError, subprocess.SubprocessError): return None` and `if out.returncode != 0: return None`, with the status and stderr discarded. The user is then told `$ANTHROPIC_API_KEY is not set. Set it in the daemon's Preferences...` (`MissingSecretError`) when the key may be set and unreadable, so the advice cannot fix it. The daemon's events.jsonl has `pipeline_failed` with exactly that text at 2026-10-16T09:46:34Z; which of the two it was cannot be told from the logs, which is the point.
+- **Remove's result is discarded.** `KeychainBackend.remove` is `_ = Self.run(["delete-generic-password", ...])`, so a delete that failed reads as done.
+- **Both migrations delete the file after a failed set.** `SecretsStore.migrateEnvFileIfPresent` runs `try? backend.set(value, for: key)` per key, then `try? FileManager.default.removeItem(at: url)`, then logs "migrated secrets.env into the Keychain and removed the file (SEC8)" whatever happened. Its "already present" test is `backend.value(for: key) == nil`, so a key that failed to read is overwritten with the file's older value. `scripts/install.sh` does the same in shell: `kc_set "$key" "$val" && say "  migrated $key"`, then `rm -f "$LEGACY_SECRETS"` regardless, and its `case` list (`ANTHROPIC_API_KEY|NOTION_TOKEN|HF_TOKEN`) omits `OPENAI_API_KEY`, one of the four `KeychainSecrets.managedKeys`, so that token is deleted with the file and never migrated.
+
+### Added scope
+
+5. **Typed reads.** `SecretsBackend.value(for:)` returns `found(String)`, `notFound` (status 44) or `unreadable(status, stderr)`. `SecretsStore` keeps the field empty for both of the last two but remembers which, and item 1's last-persisted map treats an `unreadable` account as untouchable: no set and no remove until the user edits that field. An unreadable read at launch writes a `main.log` line and `Log.event(category: "main", action: "keychain_read_failed", ...)` with the account name and status, never the value. `_keychain_get` logs the status for anything but 44, and `load_secrets` raises a distinct `KeychainUnreadableError` whose message says the token could not be read (not that it is unset) and names `security unlock-keychain`; the PIPE16 failure mapping treats it like `MissingSecretError`.
+6. **Checked remove.** `remove` throws on a status other than 0 or 44, and `persist()` surfaces it like a failed set.
+7. **Migrations delete only after every set succeeded.** The Swift migration removes `secrets.env` only when every managed key in it was set (or was already `found`), logs each failure, and leaves the file in place otherwise, retrying at the next launch. `install.sh` does the same and its `case` list becomes the four managed keys.
+
+### Added acceptance
+
+- `SecretsStoreTests` with the recording fake: an `unreadable` account at init is never set or removed by a save that edits another field; a migration whose second `set` fails keeps the file and logs the failure; a migration skips (does not overwrite) a `found` key and does not treat `unreadable` as absent.
+- A `KeychainBackend` test with the injected runner that status 44 maps to `notFound`, 51 (or any other nonzero) to `unreadable`, and a failed delete throws.
+- `test_config.py`: `_keychain_get` with a fake runner returning 44 is `None`, returning 36 (locked) raises `KeychainUnreadableError` from `load_secrets` with a message that does not say "not set".
+- A shell test (or a `test-*.sh` beside the others in `scripts/`) that the install migration keeps `secrets.env` when `kc_set` fails and migrates `OPENAI_API_KEY`.
+- `python3 scripts/truth_fences.py events` green for `keychain_read_failed`; `swift test` and `pytest -q` green with new test counts in the commit body.
+- The run-all exit code on a missing secret (1 against the documented 2) is OBS3's, not this task's.

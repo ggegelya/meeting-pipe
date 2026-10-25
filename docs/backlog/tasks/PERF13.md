@@ -42,3 +42,26 @@ Added acceptance for item 3:
 - A test that 8 concurrent writers each appending 1,000 distinct `Log.event` lines produce exactly 8,000 parseable JSONL lines across the base file and its generations, none lost or interleaved mid-line.
 - A test that concurrent writers crossing the rotation size rotate once, not twice (generation count and contents checked).
 - A test that two simulated `mp` output streams written concurrently to the pipeline log lose no bytes, under whichever `pipeline.log` design is chosen.
+
+## Amended 2026-10-25 (observability audit band)
+
+The [observability audit](../../audits/2026-10-25-observability-audit.md) (finders LG-4, LG-5, SW-17) found the 2026-10-24 amendment's last sentence true for `pipeline_events.jsonl` and false for `pipeline.log`, and the races reached in the owner's real logs. Verified in code on 2026-10-25.
+
+**`pipeline.log` has two writers on every run, not only under concurrent spawns.** `orchestrate._configure_logging` adds a `StreamHandler(sys.stderr)` and a `logging.FileHandler(log_file)` on the same `pipeline.log`, and `PipelineLauncher.runMP` opens its own `FileHandle(forWritingTo: logURL)`, calls `seekToEnd()` once, and writes every stdout and stderr chunk at that handle's offset. So every `run-all` line reaches the file twice (Python's own append, then the daemon's copy of stderr), and because the daemon's handle is not `O_APPEND`, its writes land at a stale offset over whatever Python appended since. Measured on this Mac: 5 of the 8 `run-all:` runs in `pipeline.log` end in a torn fragment line (for example `ing sentinel written: .../raw/20261016-095827.apple_pending.json`), and the 2026-10-16 12:46:34 `MissingSecretError` traceback appears twice. Other subcommands (`summarize`, `merge-meetings`, `ask`) only `basicConfig` to stderr and have the daemon as their single writer. Separately, the `emit_progress` docstring says the progress sentinel is "stripped from the daemon's view of `pipeline.log`", but `runMP`'s stdout handler writes the chunk before scanning it for the sentinel.
+
+**The `events.jsonl` race was reached, and every reader hides it.** `events.jsonl` line 651 is the tail of a row (`n ","ts":"2026-10-16T09:46:28.265Z"}`), written in the same millisecond as `lifecycle` / `idle` while a recording entered stopping; it is 1 unparseable line of 1,148, and it sits exactly where OBS5's stop-trigger question needed a row. `mp logs` (`logs_cmd`, "Skip rather than abort") and `mp analyze-detection` skip a `json.JSONDecodeError` silently, `DiagnosticsLog` drops a line whose `JSONSerialization.jsonObject` fails, and `jq` aborts on it. A lost row is indistinguishable from an event that never fired.
+
+**The logger drops whole events and lines silently.** `Log.event` returns without writing when `JSONSerialization.isValidJSONObject(dict)` is false, which is the case for `Double.nan`, `Double.infinity`, `URL`, `Date` and `UUID` values (measured with a Swift snippet). `appendData` returns on `guard let handle = try? FileHandle(forWritingTo: url)`, and `runMP`'s `logHandle` is `try?` too, so a failed open loses the whole run's output except the 4 KB stderr tail. No current call site passes a non-JSON value (spot grep); latent. CONVENTIONS.md "Non-serializable attributes" documents the drop as intended.
+
+Item 3 additionally must:
+
+- **Give `pipeline.log` one owner per file.** Either Python skips its `FileHandler` when the daemon spawned it (an `MP_RUN_ID` from OBS4, or a dedicated flag) and the daemon's copy, through the serial queue on an `O_APPEND` descriptor, is the only writer; or the daemon writes a per-spawn `pipeline.<stem>.<pid>.log` and stops appending stderr to the shared file. The pickup picks one and says why in the commit body; a hand-run `mp run-all` must still get a log. Either way the sentinel is stripped or the docstring is corrected.
+- **Coerce instead of dropping.** A non-JSON attribute value is written as its string form (and `NaN` and infinity as `null` with a sibling `<key>_invalid: true`), so the event survives, and CONVENTIONS.md's "Non-serializable attributes" section is rewritten to match Python's `default=str` in the same commit.
+- **Report a failed append.** When the descriptor cannot be opened or written, fall back to one os.Logger `.error` per log family per launch with the path and errno `privacy: .public` (OBS1's helper cannot be used here, because it writes through this same path).
+- **Count what readers skip.** `mp logs` and `mp analyze-detection` print `N unparseable lines skipped` to stderr when N > 0, and `DiagnosticsView` shows the count, so a torn log is visible.
+
+Added acceptance:
+
+- A test that one spawned `run-all` writing through both Python logging and stderr leaves each line exactly once in its log, with no torn fragment, under the chosen design.
+- `Log.event` with a `URL`, a `UUID` and `Double.nan` attribute writes one parseable row with string and null values.
+- A fixture log with one torn line makes `mp logs` and `mp analyze-detection` report 1 skipped line, and `DiagnosticsLog` return a skipped count of 1.

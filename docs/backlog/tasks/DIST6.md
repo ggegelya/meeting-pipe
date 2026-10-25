@@ -39,3 +39,21 @@ Verified on 2026-10-24.
 - `bash scripts/test-app-relocation.sh` stays green (it builds a staging app with the installer's functions).
 - `cd daemon && swift build` and `swift test` green, N new tests in the commit body; `bash scripts/ci-local.sh fences` green.
 - Owner check: after `./scripts/install.sh`, Preferences ▸ Advanced shows the commit `git rev-parse --short HEAD` prints; after a `./scripts/rebuild.sh` on a new commit it shows the new one; `./scripts/rollback.sh` brings the previous commit back and the menu bar comes up.
+
+## Amended 2026-10-25 (observability audit band)
+
+The [observability audit](../../audits/2026-10-25-observability-audit.md) (finder FB-12) adds the pipeline half of build identity. Verified in code on 2026-10-25.
+
+**Which pipeline code ran is chosen silently and recorded nowhere.** `PipelineLauncher.findMP()` walks a four-tier ladder: the embedded runtime (`Contents/Resources/pipeline-runtime/bin/python3 -m mp`, DIST1), the prebuilt venv (`~/.local/share/meeting-pipe/venv/bin/python3 -m mp`, through `resolveDirectMP`), `uv run --project <repo>/pipeline mp` found by walking up from the executable to a `pipeline/pyproject.toml`, and a bare `mp` on `PATH`. It returns the first hit with no log on any branch, and `runMP` calls it through `invocation()` on every spawn. On the Python side `orchestrate.run_all` emits `run_started` with `wav` and `force_byo` only. The third and fourth tiers can run different code from the installed app: `uv run --project` runs the clone's working tree as it is now, and a stale `PATH` `mp` runs whatever was installed last. Item 1's `MPGitCommit` in the app's plist would then name a commit the pipeline did not run, so the stamp is only true if the tier is recorded beside it.
+
+Item 2 additionally covers:
+
+- **Name the tier.** `MPInvocation` gains `tier` (`embedded`, `venv`, `uv_clone`, `path`). The daemon logs `daemon` / `pipeline_invocation_resolved` (`tier`, the executable path) once at launch and again whenever a spawn resolves a different tier than the last, as an event plus a `daemon.log` line, so a fall-through mid-session is visible. OBS4's `pipeline.log` spawn header carries the same tier name.
+- **Stamp the run.** `runMP` exports `MP_BUILD_COMMIT` (the plist's `MPGitCommit`) and `MP_INVOCATION_TIER`; `run_started` adds `executable` (`sys.executable`), `version` (`mp.__version__`), `build_commit` and `tier` from those. Under the `uv_clone` tier the commit is the clone's, so `run_started` also adds `source_commit` from `git -C <pipeline dir> rev-parse --short HEAD` when that tier ran, bounded by a short timeout and omitted on failure.
+- **Say it in the places the owner looks.** The Preferences "Build" row and `mp doctor` print the resolved tier, and a `uv_clone` or `path` tier on an installed app is a doctor WARN, because the installed app should always resolve `embedded` or `venv`.
+
+Added acceptance:
+
+- `resolveDirectMP` and a seam over the uv and `PATH` tiers return the right `tier` for each layout (temp dirs, no real `uv`); `pipeline_invocation_resolved` fires once for two spawns on the same tier and again on a change.
+- A pytest that `run_started` carries `executable`, `version`, `build_commit` and `tier` from the environment, and omits `build_commit` when it is unset.
+- The doctor WARN for a `path` tier against an app bundle path, and none for `venv`.

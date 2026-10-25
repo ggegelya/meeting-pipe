@@ -37,3 +37,24 @@ The daemon already classifies a cancel by its own flag, not the exit code (`Pipe
 - `PipelineLauncherTests` or `LocalServerReaperTests`: a cancelled run triggers `reapIfOrphaned` (inject the reaper as a closure if the static call cannot be observed).
 - `cd pipeline && uv run --extra dev pytest -q`, ruff and pyright green; `cd daemon && swift build` and `swift test` green; new test counts in the commit body.
 - `CONVENTIONS.md`'s exit-code paragraph names 143 beside 130.
+
+## Amended 2026-10-25 (observability audit band)
+
+Added from the [2026-10-25 observability audit](../../audits/2026-10-25-observability-audit.md) (finder PY-12, low, latent). Re-verified against `main` at `01e904a` on 2026-10-25. This task's scope relies on `LocalSummaryClient.close()` killing the server and clearing its LOCAL10 marker; both kill paths clear the marker without checking the server died, so the reaper this task wires on cancel can be handed a clean slate while the server is still resident.
+
+**`local_server.terminate_server`.** When `os.killpg(..., SIGTERM)` raises, the `except (OSError, ProcessLookupError)` arm logs `"SIGTERM to local model server %s failed: %s"` and falls through; when the 10 s wait expires, the SIGKILL attempt is `except (OSError, ProcessLookupError): pass`. Both paths then reach `clear_marker(home); return True` with no `is_server_pid(pid)` re-check after the ladder. The caller in `LocalSummaryClient`'s served-identity mismatch path treats the return as "gone" and respawns onto the same port.
+
+**`LocalSummaryClient._terminate_proc`.** It calls `local_server.clear_marker()` before it signals anything (the comment says "drop its marker whether or not the kill below finds it already dead"), then SIGTERMs, waits 10 s and SIGKILLs, and an exception anywhere in that ladder is only `log.warning("error terminating mlx_lm.server: %s", e)`. No path confirms the process exited.
+
+Either way a surviving multi-GB `mlx_lm.server` loses the only record that names it: `local_server.orphaned_server` (what `mp doctor` reports) and `LocalServerReaper` are both marker-based, so neither sees it. Signalling one's own setsid child rarely fails, which is why this is low, but a SIGKILL that does not land within the wait is exactly the wedged-server case this task's cancel path exists for.
+
+**Added scope.**
+
+5. **Clear the marker only on a confirmed exit.** After the kill ladder in both `terminate_server` and `_terminate_proc`, re-check (`is_server_pid(pid)` there, `proc.poll()` plus a short `proc.wait` after SIGKILL here) and clear the marker only when the server is gone. When it survives, keep the marker, return False from `terminate_server`, and emit `pipeline.local_server_survived_kill` with `pid` and which signal was last sent, so `mp doctor` and the daemon reaper still see it. `_terminate_proc` moves its `clear_marker()` after the confirmed exit; an already-dead process (`poll() is not None`) still clears it immediately.
+6. **The respawn honours the result.** The served-identity mismatch path does not spawn onto the port when `terminate_server` returned False; it raises `LocalSummaryError` naming the surviving pid instead of colliding with it.
+
+**Added acceptance.**
+
+- A `test_local_server.py` case with `os.killpg` patched to raise `PermissionError` and `is_server_pid` stuck True: `terminate_server` returns False, the marker file is still present, and one `local_server_survived_kill` event is emitted.
+- A `_terminate_proc` case on a fake process that ignores SIGTERM and SIGKILL (patched `wait` raising `TimeoutExpired` twice): the marker survives; the normal-exit case still clears it.
+- `CONVENTIONS.md`'s LOCAL10 marker paragraph says the marker is cleared only on a confirmed exit.
