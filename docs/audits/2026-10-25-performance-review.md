@@ -10,7 +10,7 @@ Eight read-only finders ran in parallel, one per subsystem: recording and the au
 
 Measured on the owner's personal Mac on 2026-10-25: the installed daemon (pid 77137) had been up 7 days 8 hours with an 18 MB physical footprint, 0.0% CPU, zero wakeups across a 10 s sample, 5 threads, 478 Mach ports and 41 open files. That is a clean idle baseline and nothing more: Teams was not running, no meeting had been recorded in that process's lifetime, and the installed bundle (mtime 2026-09-11) predates END9, DET13 and every 2026-10-24 landing, so it is not the code this review read. `~/Library/Logs/MeetingPipe/pipeline.log` was 1.4 MB and 84,285 lines since 2026-07-07. `$TMPDIR` held 3,516 leftover `mp-*` test directories totalling 5.4 GB, all created by `daemon/Tests` (covered by [T11](../backlog/tasks/T11.md)).
 
-Not covered: behaviour during a live recording (needs a meeting), the AX load on a running Teams (needs Teams open; PERF17 to PERF19 and the PERF6 question carry owner-run measurements), the work laptop's library and logs, write-failure branches (not exercisable read-only), and the rendered UI.
+Not covered: behaviour during a live recording (needs a meeting), the AX load on a running Teams (needs Teams open; PERF17 to PERF19 and PERF6 carry owner-run measurements), the work laptop's library and logs, write-failure branches (not exercisable read-only), and the rendered UI.
 
 ## Themes
 
@@ -55,7 +55,7 @@ Not covered: behaviour during a live recording (needs a meeting), the AX load on
 
 Amended in place, with only what each lacked: PERF10, PERF13, CONC5, CONC7, CONC8, PIPE22, PIPE24, PIPE30, REC19, REC20, STOR7, STOR9, ARCH10, AUTO6, DET10, END16, LOCAL21, OBS5, UX93, HYG10 (the review's 71 comment-drift items, grouped by who corrects each). Already covered with nothing to add: PERF12 (LIBRARY-10), CONC7 (SUBPROCESS-12), T11 (the test temp directories).
 
-Held for the owner rather than filed: DETECTION-3 and DETECTION-5 show that PERF6's shipped promise (an idle app skips the control-button AX walks) no longer holds, because DET5 added `isLoneNative` and `isFrontmost` to `shouldWalkControlAX` and the Teams recognizer admits chat windows. That is a regression of a shipped task and the fix reverses part of DET5, so it is a reopen conversation. Re-band proposals, not applied: PERF10 to P1 (a hung meeting client freezes Stop and the hotkeys for as long as it hangs) and REC19 to P1 (every meeting past about 3 h 06 min loses its tail).
+Reopened on the owner's decision (2026-10-26, P2): DETECTION-3 and DETECTION-5 show that PERF6's shipped promise (an idle app skips the control-button AX walks) no longer holds, because DET5 added `isLoneNative` and `isFrontmost` to `shouldWalkControlAX` and the Teams recognizer admits chat windows, so [PERF6](../backlog/tasks/PERF6.md) is open again; its fix reverses part of DET5. Re-band proposals, not applied: PERF10 to P1 (a hung meeting client freezes Stop and the hotkeys for as long as it hangs) and REC19 to P1 (every meeting past about 3 h 06 min loses its tail).
 
 ## Findings index
 
@@ -65,7 +65,7 @@ Verified severity, verdict, and where each finding was filed.
 |---|---|---|---|---|
 | DETECTION-1 | critical | confirmed | AXMuteButtonProbe polls the meeting app's AX tree on the main thread at 1 Hz and re-walks the whole tree on main every 5 s while its element reads unknown | PERF10 |
 | DETECTION-2 | high | confirmed | Lifecycle engage, recording start, arm and disengage run full AX walks, an SCK probe and a HAL process enumeration on, or blocking, the main thread | PERF15 |
-| DETECTION-3 | high | confirmed | Idle discovery runs three exhaustive AX tree walks of Teams every 3-12 s all day because isLoneNative bypasses the PERF6 walk gate | PERF6 (reopen held for the owner) |
+| DETECTION-3 | high | confirmed | Idle discovery runs three exhaustive AX tree walks of Teams every 3-12 s all day because isLoneNative bypasses the PERF6 walk gate | PERF6 (reopened 2026-10-26) |
 | DETECTION-6 | high | confirmed | MeetingAXWindowWatcher performs an exhaustive multi-window AX walk about once a second for the whole recording | PERF18 |
 | DETECTION-7 | high | confirmed | ProcessAudioSignal mutates its arrays and state from the main thread and the HAL bus queue with no synchronisation | CONC9 |
 | LIBRARY-1 | high | confirmed | FTS5 search index is wiped on every launch by the indexer's first (empty) reconcile, then rebuilt with O(N^2) SQLite work; search reports ready while transcript hits are missing | PERF20 |
@@ -82,7 +82,7 @@ Verified severity, verdict, and where each finding was filed.
 | UI-1 | high | confirmed | Library audio playback engine keeps the output device running after pause, end of file, selection change and window close | PERF21 |
 | DETECTION-10 | medium | confirmed | ShareableContentSignal polls SCShareableContent at 2 Hz for the whole engaged session and abandons timed-out requests | PERF19 |
 | DETECTION-4 | medium | confirmed | Discovery keeps doing full scans and AX walks during prompting and recording although every result is discarded | PERF17 |
-| DETECTION-5 | medium | confirmed | Admitted browser candidates get a Leave-button DFS of every browser window that can never match | PERF6 (reopen held for the owner) |
+| DETECTION-5 | medium | confirmed | Admitted browser candidates get a Leave-button DFS of every browser window that can never match | PERF6 (reopened 2026-10-26) |
 | DETECTION-9 | medium | confirmed | events.jsonl appends are unsynchronised across threads and pay mkdir + stat + open/close per event on the calling thread, including main | PERF13 |
 | LIBRARY-3 | medium | confirmed | Quick Find re-attaches the library directory watcher and nothing detaches it, so the store keeps rescanning and re-ranking while every window is hidden | PERF22 |
 | LIBRARY-4 | medium | confirmed | Facts, People and Meeting time re-read the whole library on every revision in uncancelled, overlapping detached tasks that can land out of order; the Stats transcript cache dies on every rail switch | PERF23 |

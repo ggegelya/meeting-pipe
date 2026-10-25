@@ -41,7 +41,7 @@ The seam is the controller's engage path in [`MeetingSessionController.swift`](.
 - `AXMuteButtonProbe`'s poll and rearm: [PERF10](./PERF10.md). `ProcessAudioSignal`'s own threading, including making its `start` non-blocking: the HAL-listener confinement task filed 2026-10-25 (DETECTION-7 ([CONC9](./CONC9.md))).
 - Moving `MicGate`, the lifecycle coordinator or the state machine into the controller: [ARCH7](./ARCH7.md); whichever lands second rebases. [CONC6](./CONC6.md)'s main-queue precondition on the controller's methods stays true, since only the static `build` leaves main.
 - What any end rule decides (END9 to END17), and END11's explicit-start engage (the `isEngaged` guard in `engageLifecycleIfNeeded` stays).
-- Discovery's own scan cost, which the review reported under other findings (DETECTION-3, the lone-native bypass of PERF6's walk gate; DETECTION-4 ([PERF17](./PERF17.md)), scans continuing through prompting and recording; DETECTION-8 ([PERF17](./PERF17.md)), no in-flight guard on `scanQueue`).
+- Discovery's own scan cost, which the review reported under other findings (DETECTION-3, the lone-native bypass of [PERF6](./PERF6.md)'s walk gate; DETECTION-4 ([PERF17](./PERF17.md)), scans continuing through prompting and recording; DETECTION-8 ([PERF17](./PERF17.md)), no in-flight guard on `scanQueue`).
 - `defaultProbe`'s off-main safety comment needs no [HYG10](./HYG10.md) row: item 3 makes it true.
 
 ## Acceptance

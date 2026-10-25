@@ -40,7 +40,7 @@ The seam is the resolver the watcher already injects (`stateResolver`, defaultin
 - The primary `AXMuteButtonProbe`, its main-thread poll and its 5 s re-resolve walk: [PERF10](./PERF10.md) and review finding DETECTION-1 ([PERF10](./PERF10.md)). If that work makes this watcher the single mute poller, this cache is what makes that affordable; coordinate the order.
 - Batching the three probe reads through `AXUIElementCopyMultipleAttributeValues`, or lowering `maxNodes`: measure with item 3 first.
 - Subscribing to window-created or destroyed notifications instead of listing windows each poll. The type comment records why per-element subscriptions failed here before (one `AXObserver` per PID in `RealAXBackend`, `kAXErrorNotificationAlreadyRegistered`), and a list is one read per poll.
-- Discovery's own walks: the regression of PERF6's walk gate (PERF6 shipped 2026-07-11, see [q6-final.md](../q6-final.md); the review's DETECTION-3 and DETECTION-5, held on 2026-10-25 for the owner's reopen decision) and the discovery-scheduling task filed from the same review (DETECTION-4 ([PERF17](./PERF17.md))).
+- Discovery's own walks: the reopened [PERF6](./PERF6.md) and the discovery-scheduling task filed from the same review (DETECTION-4 ([PERF17](./PERF17.md))).
 
 ## Acceptance
 

@@ -33,7 +33,7 @@ What the poll must keep doing outside `.idle`: `sampleMicBusy()`. It feeds `onMi
 
 - Scanning at a slow cadence (60 s) during recordings instead of not at all. Nothing reads the result outside `.idle`; a slow scan still costs walks for log lines.
 - Changing `DiscoveryScanCadence`'s 3 s and 12 s intervals or the 80 ms coalesce window.
-- The cost of a scan when it does run (the walk gate, three passes per window, the browser Leave walk): the regression of PERF6's walk gate (PERF6 shipped 2026-07-11, see [q6-final.md](../q6-final.md); the review's DETECTION-3 and DETECTION-5, held on 2026-10-25 for the owner's reopen decision). The in-call mute backstop's own 1 Hz walk: its own task from the same review (DETECTION-6 ([PERF18](./PERF18.md))).
+- The cost of a scan when it does run (the walk gate, three passes per window, the browser Leave walk): the reopened [PERF6](./PERF6.md). The in-call mute backstop's own 1 Hz walk: its own task from the same review (DETECTION-6 ([PERF18](./PERF18.md))).
 - Moving `sampleMicBusy` off main: item 6 of [PERF13](./PERF13.md), measured cheap.
 - Backing off a candidate whose last scan returned `kAXErrorCannotComplete` (the finding's optional extra). The single-flight gate already bounds the hung-client case to one scan in flight and one pending; a per-candidate backoff is a detection change with its own evidence owed.
 - [DET10](./DET10.md)'s mic-busy input itself, which has never produced a span; item 3 only keeps the tier's latch honest.
