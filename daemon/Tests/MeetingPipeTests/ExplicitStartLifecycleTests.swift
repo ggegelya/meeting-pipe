@@ -111,7 +111,7 @@ final class ExplicitStartLifecycleTests: XCTestCase {
     /// anchor by construction and its only automatic bound is the idle auto-stop.
     func test_sourcelessStart_engagesNoAdapter() {
         let (controller, host) = makeController()
-        controller.engageLifecycleIfNeeded(source: nil)
+        controller.engageLifecycleIfNeeded(source: nil, handles: nil)
         XCTAssertFalse(
             host.lifecycleCoord.isEngaged,
             "there is no pid and no Leave button to anchor on, so there is nothing to engage"
@@ -137,7 +137,7 @@ final class ExplicitStartLifecycleTests: XCTestCase {
     func test_engageIsSkippedWhenAnAdapterIsAlreadyLive() throws {
         let (controller, host) = makeController()
         XCTAssertFalse(host.lifecycleCoord.isEngaged)
-        controller.engageLifecycleIfNeeded(source: source("com.microsoft.teams2"))
+        controller.engageLifecycleIfNeeded(source: source("com.microsoft.teams2"), handles: nil)
         // No pid in a unit test, so nothing engages; the guard's real proof is the Core-level
         // `MeetingLifecycleCoordinatorTests` engage/disengage pair plus the ordering fence below.
         XCTAssertFalse(host.lifecycleCoord.isEngaged)
@@ -147,7 +147,7 @@ final class ExplicitStartLifecycleTests: XCTestCase {
 /// END11's wiring fence, in END10's shape and for the same reason: the defect is a call that was
 /// never made, `engageLifecycle` needs a real pid so no unit test can reach it, and the claim is
 /// perfectly readable on the checkout.
-/// T7 source fence (pins implementation): asserts MeetingSessionController's start path calls engageLifecycleIfNeeded before armLifecycleLeaveButton and keeps its isEngaged guard. Missing seam: a start-path test with an injectable pid or lifecycle adapter.
+/// T7 source fence (pins implementation): asserts MeetingSessionController's start path calls engageLifecycleIfNeeded before armLifecycleLeaveButton and keeps its isEngaged guard. PERF15's `EngageSeams` added the injectable build, so `EngageOffMainTests.test_recordStart_runsOneBuildOffMain_andAttachesEverythingFromIt` now drives the engage-then-arm behaviourally; this fence still pins the order inside `attachRecordStart`.
 final class ExplicitStartWiringFenceTests: XCTestCase {
 
     private func repoRoot() -> URL {
@@ -167,7 +167,7 @@ final class ExplicitStartWiringFenceTests: XCTestCase {
     /// Red against `main`: the engage call did not exist anywhere on the start path.
     func testBeginRecordingEngagesTheLifecycleBeforeArmingTheLeaveButton() throws {
         let text = try controllerSource()
-        guard let engage = text.range(of: "self.engageLifecycleIfNeeded(source: source)") else {
+        guard let engage = text.range(of: "engageLifecycleIfNeeded(source: attach.source, handles: handles)") else {
             return XCTFail(
                 "the recording-start path does not engage the lifecycle. An explicit start then "
                     + "resolves a Leave button and hands it to a nil adapter, which is END11: "
@@ -175,7 +175,7 @@ final class ExplicitStartWiringFenceTests: XCTestCase {
             )
         }
         let arm = try XCTUnwrap(
-            text.range(of: "self.armLifecycleLeaveButton(source: source)"),
+            text.range(of: "armLifecycleLeaveButton(source: attach.source, handles: handles)"),
             "the leave-button arm went missing from the start path"
         )
         XCTAssertTrue(

@@ -29,22 +29,30 @@ enum MeetingAXHandleBuilder {
         "com.cisco.spark": "webex",
     ]
 
-    /// Build the handles for a recording about to start. Returns nil
-    /// when the app's PID can't be resolved (caller falls through to a
-    /// degraded path).
-    static func build(source: AppSource, catalogue: MuteLabels) -> Handles? {
+    /// The lifecycle context for `source`, or nil when its app is not running. A process lookup
+    /// and no AX at all, so it is cheap on any thread. `build` opens with it; PERF15's record-start
+    /// deadline uses it alone, to engage MicGate without the walk when the walk is late.
+    static func context(for source: AppSource) -> MeetingLifecycleContext? {
         guard let pid = NSWorkspace.shared.runningApplications
             .first(where: { $0.bundleIdentifier == source.bundleID })?
             .processIdentifier else {
             return nil
         }
-        let kind: MeetingLifecycleContext.Kind = (source.kind == .browser) ? .browser : .native
-        let context = MeetingLifecycleContext(
+        return MeetingLifecycleContext(
             bundleID: source.bundleID,
-            kind: kind,
+            kind: (source.kind == .browser) ? .browser : .native,
             pid: pid,
             title: source.meetingTitle
         )
+    }
+
+    /// Build the handles for a recording about to start. Returns nil
+    /// when the app's PID can't be resolved (caller falls through to a
+    /// degraded path).
+    static func build(source: AppSource, catalogue: MuteLabels) -> Handles? {
+        guard let context = context(for: source) else { return nil }
+        let kind = context.kind
+        let pid = context.pid
 
         // Browsers expose no AX call controls (HAL + RMS only). Resolve a
         // meeting window for PWAs only: a tabless PWA window's title change

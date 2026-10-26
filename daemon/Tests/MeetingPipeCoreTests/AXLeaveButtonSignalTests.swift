@@ -45,7 +45,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         )
         signal.onChange = { observed.append($0) }
 
-        try signal.start(context: teamsContext, leaveButton: stubElement())
+        signal.start(context: teamsContext, leaveButton: stubElement())
         XCTAssertEqual(observed, [.healthy], "Healthy baseline emits so PromotionEngine can promote to .inMeeting")
         XCTAssertEqual(signal.lastState, .healthy)
     }
@@ -62,7 +62,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         )
         signal.onChange = { observed.append($0) }
 
-        try signal.start(context: teamsContext, leaveButton: stubElement())
+        signal.start(context: teamsContext, leaveButton: stubElement())
         probeReturn = .invalid
         scheduler.tick?()
         scheduler.tick?()
@@ -84,7 +84,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         )
         signal.onChange = { observed.append($0) }
 
-        try signal.start(context: teamsContext, leaveButton: stubElement())
+        signal.start(context: teamsContext, leaveButton: stubElement())
         probeReturn = .invalid
         scheduler.tick?()
 
@@ -106,7 +106,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
             scheduler: manualScheduler(scheduler)
         )
 
-        try signal.start(context: teamsContext, leaveButton: stubElement())
+        signal.start(context: teamsContext, leaveButton: stubElement())
         // Element goes invalid and STAYS invalid across many health polls - the
         // leaked-poll case where a signal is never torn down. The event-log emit
         // must collapse to the single edge, not one line per 1 Hz tick (which was
@@ -132,7 +132,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
             scheduler: manualScheduler(scheduler)
         )
 
-        try signal.start(context: teamsContext, leaveButton: stubElement())
+        signal.start(context: teamsContext, leaveButton: stubElement())
         XCTAssertEqual(bus.activeSubscriptionCount, 1)
 
         signal.stop()
@@ -172,7 +172,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         )
         signal.onChange = { observed.append($0) }
 
-        try signal.start(context: teamsContext, leaveButton: stubElement())
+        signal.start(context: teamsContext, leaveButton: stubElement())
         XCTAssertEqual(observed, [.healthy])
 
         // The recording-start late-arm racing an engage-time arm must
@@ -223,7 +223,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
 
         // Compact view at record-start: the walk found Mute but not Leave, so the
         // adapter starts the signal with no button and only the re-walk resolver.
-        try signal.start(context: teamsContext, leaveButton: nil, resolveElement: { resolverReturn })
+        signal.start(context: teamsContext, leaveButton: nil, resolveElement: { resolverReturn })
         XCTAssertFalse(signal.isArmed, "No button and an empty resolver: nothing to adopt yet")
         XCTAssertEqual(observed, [], "No baseline until a live Leave control appears")
         XCTAssertEqual(bus.activeSubscriptionCount, 0)
@@ -255,7 +255,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         )
         signal.onChange = { observed.append($0) }
 
-        try signal.start(context: teamsContext, leaveButton: nil, resolveElement: { resolverReturn })
+        signal.start(context: teamsContext, leaveButton: nil, resolveElement: { resolverReturn })
         resolverReturn = liveButton
         clock.advance(AXLeaveButtonSignal.defaultSlowPollInterval + 1)
         scheduler.tick?()                      // self-arm walk adopts -> healthy baseline
@@ -280,7 +280,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         signal.onChange = { observed.append($0) }
 
         // Browser / AX-denied: no button, no resolver. The signal stays inert.
-        try signal.start(context: teamsContext, leaveButton: nil)
+        signal.start(context: teamsContext, leaveButton: nil)
         scheduler.tick?()
         XCTAssertFalse(signal.isArmed)
         XCTAssertEqual(observed, [], "Nothing to watch and nothing to adopt: no emissions")
@@ -306,7 +306,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         )
         signal.onChange = { observed.append($0) }
 
-        try signal.start(
+        signal.start(
             context: teamsContext,
             leaveButton: staleButton,
             resolveElement: { liveButton }
@@ -334,7 +334,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         )
         signal.onChange = { observed.append($0) }
 
-        try signal.start(
+        signal.start(
             context: teamsContext,
             leaveButton: AXUIElementCreateApplication(92003),
             resolveElement: { AXUIElementCreateApplication(92004) }
@@ -353,7 +353,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
             scheduler: manualScheduler(scheduler)
         )
         signal.onChange = { observed.append($0) }
-        try signal.start(context: teamsContext, leaveButton: stubElement())
+        signal.start(context: teamsContext, leaveButton: stubElement())
         XCTAssertEqual(observed, [.invalid])
     }
 
@@ -372,7 +372,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
 
         // Armed on the meeting window's Leave button, which probes
         // invalid: the Teams compact-view swap destroyed it.
-        try signal.start(context: teamsContext, leaveButton: deadButton)
+        signal.start(context: teamsContext, leaveButton: deadButton)
         XCTAssertEqual(observed, [.invalid])
 
         // The orchestrator re-walked and found the replacement on the
@@ -402,7 +402,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         )
 
         // No button ever appears: the resolver always returns nil but counts calls.
-        try signal.start(context: teamsContext, leaveButton: nil, resolveElement: {
+        signal.start(context: teamsContext, leaveButton: nil, resolveElement: {
             walkCount += 1
             return nil
         })
@@ -440,7 +440,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         )
         signal.onChange = { observed.append($0) }
 
-        try signal.start(context: teamsContext, leaveButton: staleButton, resolveElement: {
+        signal.start(context: teamsContext, leaveButton: staleButton, resolveElement: {
             walkCount += 1
             return AXUIElementCreateApplication(94002)   // also probes invalid
         })
@@ -480,7 +480,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         signal.onChange = { observed.append($0) }
 
         // Start stale: the edge walk adopts firstLive and goes healthy (walk #1, recent).
-        try signal.start(
+        signal.start(
             context: teamsContext,
             leaveButton: AXUIElementCreateApplication(95000),
             resolveElement: {
@@ -529,7 +529,15 @@ final class AXLeaveButtonSignalTests: XCTestCase {
             if count == 2 { exp.fulfill() }
         }
 
-        try signal.start(context: teamsContext, leaveButton: stubElement())
+        signal.start(context: teamsContext, leaveButton: stubElement())
+        // PERF15: `start` returns before the initial evaluate runs on the queue, so wait for the
+        // healthy baseline before flipping, or the first reading is already the flipped one.
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            lock.lock(); let count = states.count; lock.unlock()
+            if count >= 1 { break }
+            Thread.sleep(forTimeInterval: 0.005)
+        }
         lock.lock(); probeState = .invalid; lock.unlock()   // a later timer tick flips it
         wait(for: [exp], timeout: 5.0)
         signal.stop()
@@ -537,5 +545,46 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         lock.lock(); let final = states; lock.unlock()
         XCTAssertEqual(final, [.healthy, .invalid], "real queue + timer: healthy baseline, then the invalid edge")
         XCTAssertEqual(invalidEmitOnMain, false, "the timer-driven poll emit runs off the main thread")
+    }
+
+    // MARK: - PERF15: start, stop and arm never wait on a walk
+
+    /// Started with no Leave button, the initial evaluate runs the resolver's full walk. Against a
+    /// slow client that walk is seconds long, and `stop` and `armIfNeeded` were `serialQueue.sync`,
+    /// so Stop's `disengage` sat behind it on main before `recorder.stop`. They return at once now,
+    /// and the walk that finishes after `stop` (here: finding a healthy Leave button, which would
+    /// adopt it and emit `.healthy`) emits nothing.
+    func test_stop_and_arm_returnWhileAWalkIsBlocked_andNothingEmitsAfterStop() {
+        let gate = DispatchSemaphore(value: 0)
+        let entered = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var states: [AXLeaveButtonSignal.State] = []
+        let signal = AXLeaveButtonSignal(
+            axBus: AXObserverBus(),
+            probe: { _ in .healthy },
+            pollInterval: 60,
+            slowPollInterval: 60
+        )
+        signal.onChange = { state in lock.lock(); states.append(state); lock.unlock() }
+        let button = stubElement()
+
+        let began = Date()
+        signal.start(context: teamsContext, leaveButton: nil, resolveElement: {
+            entered.signal()
+            _ = gate.wait(timeout: .now() + 3)
+            return button
+        })
+        XCTAssertEqual(entered.wait(timeout: .now() + 2), .success, "the initial walk is running")
+        signal.armIfNeeded(context: teamsContext, leaveButton: button)
+        signal.stop()
+        let elapsed = Date().timeIntervalSince(began)
+
+        XCTAssertLessThan(elapsed, 0.5, "start, armIfNeeded and stop must not wait on the walk")
+        gate.signal()
+        Thread.sleep(forTimeInterval: 0.3)  // the queued arm and stop, after the walk returns
+
+        lock.lock(); let observed = states; lock.unlock()
+        XCTAssertEqual(observed, [], "no onChange once stop() has returned")
+        XCTAssertFalse(signal.isArmed, "the arm queued before the stop belonged to the stopped session")
     }
 }

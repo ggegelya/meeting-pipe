@@ -2,9 +2,10 @@
 id: PERF15
 title: Engaging, arming and disengaging a meeting runs full AX walks, a ScreenCaptureKit wait and queue syncs on the main thread, so the prompt, Record and Stop stall while the meeting app is slow
 category: Performance
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. Each discovery winner runs `MeetingAXHandleBuilder.build` (window list, Leave DFS, scoped mute walk, a 4000-node budget per window per walk) on main, about 0.5 s for a healthy Teams (pick to `ax_handles_built` 547 ms on 2026-08-19) and up to 2 s per AX call when Teams hangs; engage then waits on `ShareableContentSignal`'s initial SCK probe (up to 2 s) and on `AXLeaveButtonSignal`'s `serialQueue.sync` start with an unthrottled Leave walk, record start builds again on main, and Stop's `disengage` queues behind any in-flight Leave re-walk before `recorder.stop`. Scope: builds on `axWalkQueue` with a staleness-checked hop back, one build per record start that keeps the `not_started` zero-fill, async signal start/stop/arm with a generation token; takes over PERF10's bullet 3. [Spec](./PERF15.md)
+closed: 2026-10-26
+comment: Shipped 2026-10-26. Discovery's `MeetingAXHandleBuilder.build` runs on `axWalkQueue` and engages back on main only if the state still accepts prompts and no newer build was requested (one in flight per bundle; a repeat engage of an engaged bundle is kept, pinned by a test); a record start runs one build from the moment it commits, feeding MicGate, END11's engage and the Leave arm, with MicGate engaging on empty handles past a measured 1.5 s deadline (`micgate_attached` `via`); `ShareableContentSignal`'s initial evaluate runs on its poll queue and `AXLeaveButtonSignal`'s start/stop/arm are async with a session generation; the prompt title resolves off main, in order; a late `.starting` for the app being recorded is confirmed (`lifecycle_late_start_confirmed`). 10 new tests (one measured red against main); `swift build` debug and release warning-clean in the touched files, `swift test` and `bash scripts/ci-local.sh` green. Field evidence after install confirms, does not gate. [Spec](./PERF15.md)
 ---
 
 # PERF15: engaging, arming and disengaging a meeting runs full AX walks, a ScreenCaptureKit wait and queue syncs on the main thread, so the prompt, Record and Stop stall while the meeting app is slow

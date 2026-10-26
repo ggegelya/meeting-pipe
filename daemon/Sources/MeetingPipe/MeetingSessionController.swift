@@ -141,6 +141,55 @@ final class MeetingSessionController: @unchecked Sendable {
     /// `stopRecording`, disarmed when `recorder.stop()` returns.
     let stopStallWatchdog = StopStallWatchdog()
 
+    /// PERF15: the parts of an engage that reach the system, behind seams so a test can gate a build
+    /// on a semaphore, count builds, and see MicGate engage without touching the HAL. Production
+    /// never sets them. `buildHandles` and `resolveContext` are read on main and the closure is
+    /// then run on `axWalkQueue`; `startMicGate` nil means `coordinator.micGate.start`.
+    struct EngageSeams {
+        var buildHandles: (AppSource, MuteLabels) -> MeetingAXHandleBuilder.Handles? = MeetingAXHandleBuilder.build
+        var resolveContext: (AppSource) -> MeetingLifecycleContext? = MeetingAXHandleBuilder.context(for:)
+        var startMicGate: ((MeetingLifecycleContext, MicGateAdapterHandle) throws -> Void)?
+    }
+    var engageSeams = EngageSeams()
+
+    /// PERF15: the discovery-time build in flight, or nil. One per bundle at a time, so a 3 s poll
+    /// cannot stack walks against a slow client; `generation` is how its landing tells it is still
+    /// the newest request. Cleared by the landing and by `disengageLifecycle`.
+    private var lifecycleBuild: (bundleID: String, generation: Int)?
+    private var lifecycleBuildGeneration = 0
+
+    /// PERF15: how long a recording start waits for its AX build before MicGate engages without it.
+    ///
+    /// Measured: the build takes 11 to 31 ms for Zoom (eight builds on 2026-10-13, discovery pick
+    /// or `recording_started` to `ax_handles_built`) and about 547 ms for a healthy Teams (DET12,
+    /// 2026-08-19, pick to `ax_handles_built`). Against a hung client each AX call can wait
+    /// `App.swift`'s 2 s messaging timeout and a walk makes hundreds, so there is no ceiling to
+    /// measure on that side. 1.5 s is close to three times the healthy Teams build, and the clock
+    /// starts only once the recorder is up, while the build started when the start committed and
+    /// has had the whole engine bring-up already. Until MicGate engages the recorder's verdict is
+    /// `.uncertain(not_started)`, which zero-fills the mic under the regulated / NDA gate, so this
+    /// is also the longest the start of such a recording can be silenced by a slow client. Past it
+    /// MicGate engages with empty AX handles (HAL VAD plus RMS) and `MeetingAXWindowWatcher`'s
+    /// walk supplies the AX reading once `axWalkQueue` frees up.
+    static let recordStartBuildDeadline: TimeInterval = 1.5
+    /// The deadline this controller applies; a test shortens it.
+    var recordStartBuildDeadlineSec = MeetingSessionController.recordStartBuildDeadline
+
+    /// PERF15: the record start's one AX build. `recordStartBuildID` names the current one, so a
+    /// landing for any other id is stale. `recordStartBuilt` holds a result that landed before the
+    /// recorder came up; `recordStartAttach` is the recording waiting on it once it has.
+    private var recordStartBuildID = 0
+    private var recordStartBuilt: (id: Int, handles: MeetingAXHandleBuilder.Handles?)?
+    private var recordStartAttach: RecordStartAttach?
+
+    private struct RecordStartAttach {
+        let id: Int
+        let source: AppSource
+        let file: URL
+        /// Set when the deadline engaged MicGate without the build, so the late landing skips it.
+        var micGateEngaged: Bool
+    }
+
     init(coordinator: any SessionHost) {
         self.coordinator = coordinator
     }
@@ -168,6 +217,17 @@ final class MeetingSessionController: @unchecked Sendable {
         lifecycleConsumerTask = Task { [weak self] in
             guard let self = self else { return }
             for await verdict in self.coordinator.lifecycleCoord.verdicts {
+                // PERF15: the prompt's source (display name plus a window-title read per window)
+                // resolves off main, awaited here so the verdicts still reach main in order: a
+                // `.starting` handed off and an `.ended` behind it overtaking would prompt for a
+                // call that is over. The prompt shows the same copy at the same moment as before,
+                // since the title was always read before it was presented; only main stops waiting.
+                let startingSource: AppSource?
+                if case .starting(let context) = verdict {
+                    startingSource = await MeetingSessionController.resolveAppSource(from: context)
+                } else {
+                    startingSource = nil
+                }
                 await MainActor.run {
                     // END9: any verdict other than another provisional resolves an open hold. An
                     // end concludes it, which is what marks the held tail for trimming whichever
@@ -187,7 +247,10 @@ final class MeetingSessionController: @unchecked Sendable {
                     }
                     switch verdict {
                     case .starting(let context):
-                        self.handleMeetingStarted(source: self.appSource(from: context))
+                        if self.confirmLateStartIfRecording(context) { break }
+                        self.handleMeetingStarted(
+                            source: startingSource ?? MeetingSessionController.appSource(from: context, title: nil)
+                        )
                     case .endingProvisional(let context, _):
                         // END17: every weak end holds with the recorder running, browser included,
                         // and the native rescue re-walk still runs so a Leave button that merely
@@ -489,6 +552,10 @@ final class MeetingSessionController: @unchecked Sendable {
         // below never blocks the UI; the post-start wiring runs back on main.
         recordingStartInFlight = true
         endObservedDuringStart = nil  // REC7: a fresh latch per start (never a stale end from a prior failed start)
+        // PERF15: the start's one AX build, on `axWalkQueue` and overlapping the engine bring-up.
+        // It replaces three: MicGate's (synchronous on main), the explicit-start lifecycle engage's
+        // (also on main) and the Leave-button arm's (off main, its mute walks discarded).
+        let recordStartBuild = source.map { beginRecordStartBuild(for: $0) }
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             defer { self.recordingStartInFlight = false }
@@ -535,18 +602,18 @@ final class MeetingSessionController: @unchecked Sendable {
                     "workflow_name": resolvedWorkflow?.name ?? NSNull(),
                 ])
                 self.armSystemLevelMirror()
-                self.engageMicGate(source: source)
-                // END11: engage BEFORE the arm below, or there is no adapter to arm onto. Here
-                // rather than in `recordAttached`, because this is the one place every explicit
-                // start converges (DET7 lifted the sequence here for exactly that reason), so the
-                // menu row, the hotkey, `meetingpipe://record` and `didRequestStartLate` cannot
-                // drift apart.
-                self.engageLifecycleIfNeeded(source: source)
-                // Re-walk for the Leave button now the call UI has rendered;
-                // the discovery-time walk usually runs too early to see it.
-                self.armLifecycleLeaveButton(source: source)
+                self.resetMicGateBackstop()
+                // PERF15: the AX attach (MicGate, END11's explicit-start engage, the Leave arm)
+                // runs when the build lands, or MicGate alone at the deadline, so nothing on this
+                // continuation waits for a walk. The recorder's verdict is `.uncertain(not_started)`
+                // until MicGate engages, which is the zero-fill the synchronous build gave before.
+                if let source = source, let recordStartBuild = recordStartBuild {
+                    self.attachWhenBuilt(id: recordStartBuild, source: source, file: file)
+                }
                 // Recorder armed: promote `.starting` to `.inMeeting` (no-op for
-                // manual recordings and the prompt-answered-late race).
+                // manual recordings and the prompt-answered-late race). An explicit start's
+                // engine reaches `.starting` only after this, once its build lands; the
+                // lifecycle consumer promotes that one (`confirmLateStartIfRecording`).
                 self.coordinator.lifecycleCoord.confirmRecording()
                 // REC7: a confirmed `.ended` that landed during the async start above
                 // was latched (it could not act while the state was still `.prompting`).
@@ -574,6 +641,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 // Manual recordings have no bundle to cool down; `recordingStartInFlight`
                 // already bounds re-clicks there.
                 let reason = MeetingSessionController.startFailureReason(error)
+                self.cancelRecordStartBuild()  // PERF15: nothing to attach it to
                 if let bundleID = source?.bundleID {
                     self.coordinator.stateMachine.recordCooldownEnd(bundleID: bundleID)
                 }
@@ -674,6 +742,9 @@ final class MeetingSessionController: @unchecked Sendable {
         coordinator.micGate.stop()
         axWindowWatcher?.stop()
         axWindowWatcher = nil
+        // PERF15: a record-start build still walking must not engage MicGate or the lifecycle
+        // after the recording it was built for has stopped.
+        cancelRecordStartBuild()
 
         // recorder.stop is `@MainActor async` (REC11): main-isolated so its teardown
         // cannot race the main-thread owners of the fields it writes, but every wait
@@ -1307,23 +1378,38 @@ final class MeetingSessionController: @unchecked Sendable {
 
     // MARK: - MicGate engage (TECH-G-MIC + TECH-C13)
 
-    /// Build the AX handles and engage MicGate; also primes the silence
-    /// backstop. Manual / browser-no-AX sources fall through to HAL VAD +
-    /// RMS only (empty handles).
-    func engageMicGate(source: AppSource?) {
+    /// Prime the silence backstop for a fresh recording. Every recording, source or not, at the
+    /// moment it starts; split from the MicGate engage by PERF15 because that now waits on a build.
+    func resetMicGateBackstop() {
         coordinator.silenceBackstop.reset()
         latestSystemLevelDb = -120
         latestVerdict = nil
-        guard coordinator.liveHonorAppMute, let source = source else { return }
-        guard let handles = MeetingAXHandleBuilder.build(source: source, catalogue: coordinator.muteLabels) else {
+    }
+
+    /// Engage MicGate on prebuilt AX handles. Manual / browser-no-AX sources fall through to HAL
+    /// VAD + RMS only (empty handles). `via` says whether the record-start build supplied them or
+    /// its deadline passed first (PERF15), which `micgate_attached` carries so the field log shows
+    /// how often a slow client costs the AX mute read at the start of a recording.
+    func engageMicGate(source: AppSource, handles: MeetingAXHandleBuilder.Handles?, via: String) {
+        guard coordinator.liveHonorAppMute else { return }
+        guard let handles = handles else {
             Log.event(category: "coordinator", action: "micgate_engage_skipped", attributes: [
                 "bundle_id": source.bundleID,
                 "reason": "no_pid",
             ])
             return
         }
+        Log.event(category: "coordinator", action: "micgate_attached", attributes: [
+            "bundle_id": source.bundleID,
+            "via": via,
+            "mute_button": handles.micGate.muteButton != nil,
+        ])
         do {
-            try coordinator.micGate.start(context: handles.context, handle: handles.micGate)
+            if let startMicGate = engageSeams.startMicGate {
+                try startMicGate(handles.context, handles.micGate)
+            } else {
+                try coordinator.micGate.start(context: handles.context, handle: handles.micGate)
+            }
         } catch {
             Log.event(category: "coordinator", action: "micgate_start_failed", attributes: [
                 "bundle_id": source.bundleID,
@@ -1444,10 +1530,63 @@ final class MeetingSessionController: @unchecked Sendable {
         engageLifecycle(for: source)
     }
 
-    /// Engage the lifecycle adapter so it fuses PRIMARY signals into the
-    /// verdict stream.
+    /// Engage the lifecycle adapter so it fuses PRIMARY signals into the verdict stream.
+    ///
+    /// PERF15: the AX build runs on `axWalkQueue` (about half a second of main per scan for a
+    /// healthy Teams before, and unbounded against a hung one) and the engage hops back to main,
+    /// but only if nothing has moved on meanwhile: the state still accepts prompts and no newer
+    /// build was requested (another bundle's, or this one's after `disengageLifecycle`). A build
+    /// already in flight for this bundle absorbs the request, so a 3 s poll cannot stack walks.
+    ///
+    /// A repeat engage of a bundle already engaged is NOT skipped, deliberately, and
+    /// `test_aRepeatDiscoveryOfAnEngagedBundleStillReEngages` pins it. `engage` resets the engine,
+    /// but this path only runs while `.idle`, where the engine has reached nothing worth keeping
+    /// (any live signal would have raised `.starting` and left `.idle`), and the re-engage is what
+    /// re-reads a relaunched app's pid and re-runs a build that may now see the Leave button.
     func engageLifecycle(for source: AppSource) {
-        guard let handles = MeetingAXHandleBuilder.build(source: source, catalogue: coordinator.muteLabels) else {
+        if let inFlight = lifecycleBuild, inFlight.bundleID == source.bundleID { return }
+        lifecycleBuildGeneration += 1
+        let generation = lifecycleBuildGeneration
+        lifecycleBuild = (bundleID: source.bundleID, generation: generation)
+        buildHandlesOffMain(for: source) { [weak self] handles in
+            guard let self = self else { return }
+            guard self.lifecycleBuild?.generation == generation else {
+                Log.event(category: "coordinator", action: "lifecycle_engage_skipped", attributes: [
+                    "bundle_id": source.bundleID,
+                    "reason": "superseded_build",
+                ])
+                return
+            }
+            self.lifecycleBuild = nil
+            guard self.coordinator.stateMachine.isAcceptingPrompts else {
+                Log.event(category: "coordinator", action: "lifecycle_engage_skipped", attributes: [
+                    "bundle_id": source.bundleID,
+                    "reason": "state_changed",
+                    "state": DetectionStateMachine.label(self.coordinator.stateMachine.current),
+                ])
+                return
+            }
+            self.engageLifecycle(source: source, handles: handles)
+        }
+    }
+
+    /// Run the static AX build for `source` on `axWalkQueue` and hand the result back on main.
+    /// The seam is read here, on main, so only the build itself crosses queues.
+    private func buildHandlesOffMain(
+        for source: AppSource,
+        then land: @escaping (MeetingAXHandleBuilder.Handles?) -> Void
+    ) {
+        let build = engageSeams.buildHandles
+        let catalogue = coordinator.muteLabels
+        Self.axWalkQueue.async {
+            let handles = build(source, catalogue)
+            DispatchQueue.main.async { land(handles) }
+        }
+    }
+
+    /// Engage on handles already built. Main only; never walks.
+    private func engageLifecycle(source: AppSource, handles: MeetingAXHandleBuilder.Handles?) {
+        guard let handles = handles else {
             Log.event(category: "coordinator", action: "lifecycle_engage_skipped", attributes: [
                 "bundle_id": source.bundleID,
                 "reason": "no_pid",
@@ -1477,7 +1616,10 @@ final class MeetingSessionController: @unchecked Sendable {
     /// and it is not an optimisation: `MeetingLifecycleCoordinator.engage` opens with
     /// `disengage()`, so an unguarded call would stop a healthy adapter and reset the engine to
     /// `.idle` in the middle of a live meeting.
-    func engageLifecycleIfNeeded(source: AppSource?) {
+    ///
+    /// PERF15: takes the record start's one build rather than walking again, and runs when that
+    /// build lands, so it is no longer synchronous with the start.
+    func engageLifecycleIfNeeded(source: AppSource?, handles: MeetingAXHandleBuilder.Handles?) {
         guard let source = source else { return }
         guard !coordinator.lifecycleCoord.isEngaged else {
             Log.event(category: "coordinator", action: "lifecycle_engage_skipped", attributes: [
@@ -1489,7 +1631,7 @@ final class MeetingSessionController: @unchecked Sendable {
         Log.event(category: "coordinator", action: "lifecycle_engage_explicit_start", attributes: [
             "bundle_id": source.bundleID,
         ])
-        engageLifecycle(for: source)
+        engageLifecycle(source: source, handles: handles)
     }
 
     /// Serial queue for cross-process AX tree walks that would otherwise run on
@@ -1504,25 +1646,113 @@ final class MeetingSessionController: @unchecked Sendable {
     /// button. Idempotent; a still-missing button leaves the recording on
     /// the silence backstop.
     ///
-    /// The AX tree walk (a cross-process DFS over every window) runs OFF the
-    /// main thread so it can't stall the run loop right after the HUD appears,
-    /// then hops back to main to arm. This is end-detection only, so arming a
-    /// beat later (the call just started) is harmless. The mic-gate engage
-    /// deliberately stays synchronous: its verdict gates the very first buffers
-    /// and the recorder zeros the mic until that first verdict, so deferring it
-    /// would clip the start of the recording.
-    func armLifecycleLeaveButton(source: AppSource?) {
-        guard let source = source else { return }
-        let catalogue = coordinator.muteLabels
-        Self.axWalkQueue.async { [weak self] in
-            guard
-                let handles = MeetingAXHandleBuilder.build(source: source, catalogue: catalogue),
-                let leaveButton = handles.lifecycle.leaveButton
-            else { return }
-            DispatchQueue.main.async {
-                self?.coordinator.lifecycleCoord.armLeaveButton(leaveButton)
-            }
+    /// PERF15: arms from the record start's one build, walked off main and landed here on main.
+    /// It used to run a build of its own on `axWalkQueue`, mute walks included and discarded.
+    /// This is end-detection only, so arming a beat later (the call just started) is harmless.
+    func armLifecycleLeaveButton(source: AppSource?, handles: MeetingAXHandleBuilder.Handles?) {
+        guard source != nil, let leaveButton = handles?.lifecycle.leaveButton else { return }
+        coordinator.lifecycleCoord.armLeaveButton(leaveButton)
+    }
+
+    // MARK: - PERF15: the record start's one build
+
+    /// Dispatch the record start's build and return its id. Called when `beginRecording` commits,
+    /// before the engine bring-up, so the walk overlaps it.
+    private func beginRecordStartBuild(for source: AppSource) -> Int {
+        recordStartBuildID += 1
+        let id = recordStartBuildID
+        recordStartBuilt = nil
+        recordStartAttach = nil
+        buildHandlesOffMain(for: source) { [weak self] handles in
+            self?.recordStartBuildLanded(id: id, handles: handles)
         }
+        return id
+    }
+
+    /// Drop whatever the record start's build would still do: the start failed, or the recording
+    /// stopped before the build or its deadline came back.
+    private func cancelRecordStartBuild() {
+        recordStartBuildID += 1
+        recordStartBuilt = nil
+        recordStartAttach = nil
+    }
+
+    private func recordStartBuildLanded(id: Int, handles: MeetingAXHandleBuilder.Handles?) {
+        guard id == recordStartBuildID else { return }
+        guard let attach = recordStartAttach else {
+            // The recorder is still coming up; `attachWhenBuilt` picks this up when it is.
+            recordStartBuilt = (id: id, handles: handles)
+            return
+        }
+        recordStartAttach = nil
+        attachRecordStart(attach, handles: handles)
+    }
+
+    /// The recorder is up: attach now if the build already landed, else wait for it, with
+    /// `recordStartBuildDeadlineSec` bounding how long MicGate goes without engaging.
+    private func attachWhenBuilt(id: Int, source: AppSource, file: URL) {
+        guard id == recordStartBuildID else { return }
+        let attach = RecordStartAttach(id: id, source: source, file: file, micGateEngaged: false)
+        if let built = recordStartBuilt, built.id == id {
+            recordStartBuilt = nil
+            attachRecordStart(attach, handles: built.handles)
+            return
+        }
+        recordStartAttach = attach
+        DispatchQueue.main.asyncAfter(deadline: .now() + recordStartBuildDeadlineSec) { [weak self] in
+            self?.recordStartBuildDeadlinePassed(id: id)
+        }
+    }
+
+    /// The build is late. Engage MicGate without it (the no-mute-button path, HAL VAD plus RMS)
+    /// rather than keep the start of the recording on `not_started`; the window watcher supplies
+    /// the AX reading through `injectAxMuteEvent` once it can walk. The lifecycle engage and the
+    /// Leave arm still wait for the build, since they are end detection and lose nothing by it.
+    private func recordStartBuildDeadlinePassed(id: Int) {
+        guard var attach = recordStartAttach, attach.id == id, !attach.micGateEngaged else { return }
+        attach.micGateEngaged = true
+        recordStartAttach = attach
+        let handles = engageSeams.resolveContext(attach.source).map {
+            MeetingAXHandleBuilder.Handles(
+                lifecycle: LifecycleAdapterHandle(),
+                micGate: MicGateAdapterHandle(),
+                context: $0
+            )
+        }
+        engageMicGate(source: attach.source, handles: handles, via: "deadline")
+    }
+
+    private func attachRecordStart(_ attach: RecordStartAttach, handles: MeetingAXHandleBuilder.Handles?) {
+        // `stopRecording` cancels the build, so this is a backstop: the recording it was built for
+        // has to be the one still running.
+        guard case .recording(let file, _, _) = coordinator.stateMachine.current, file == attach.file else { return }
+        if !attach.micGateEngaged {
+            engageMicGate(source: attach.source, handles: handles, via: "build")
+        }
+        // END11: engage BEFORE the arm below, or there is no adapter to arm onto. This is the one
+        // place every explicit start converges (DET7 lifted the sequence into `beginRecording` for
+        // exactly that reason), so the menu row, the hotkey, `meetingpipe://record` and
+        // `didRequestStartLate` cannot drift apart.
+        engageLifecycleIfNeeded(source: attach.source, handles: handles)
+        // Arm on the Leave button this build saw now the call UI has rendered; the discovery-time
+        // walk usually runs too early to see it.
+        armLifecycleLeaveButton(source: attach.source, handles: handles)
+    }
+
+    /// PERF15: an explicit start's lifecycle engages once its build lands, after `beginRecording`'s
+    /// `confirmRecording`, and its signals now start off main, so the engine reaches `.starting`
+    /// with the recorder already running and nothing left to promote it. A `.starting` for the
+    /// app being recorded is that case and only that case (discovery never engages while recording,
+    /// and a revert from a held end returns to `.inMeeting`, not `.starting`), so confirm it here.
+    /// Returns whether it did, which also means there is no prompt to raise.
+    func confirmLateStartIfRecording(_ context: MeetingLifecycleContext) -> Bool {
+        guard case .recording(_, let source?, _) = coordinator.stateMachine.current,
+              source.bundleID == context.bundleID else { return false }
+        Log.event(category: "coordinator", action: "lifecycle_late_start_confirmed", attributes: [
+            "bundle_id": context.bundleID,
+        ])
+        coordinator.lifecycleCoord.confirmRecording()
+        return true
     }
 
     /// Rescue a provisional end caused by the Teams 2 compact-view swap,
@@ -1678,21 +1908,35 @@ final class MeetingSessionController: @unchecked Sendable {
     /// state machine's idle transition so every idle path disengages once.
     func disengageLifecycle() {
         releaseTeardownHold()
+        // PERF15: a discovery build still walking belongs to the session being torn down, so its
+        // landing must not engage; the next discovery requests a fresh one.
+        lifecycleBuild = nil
         coordinator.lifecycleCoord.disengage()
     }
 
+    /// PERF15: `appSource(from:)` on `axWalkQueue`, awaited by the lifecycle consumer. GCD rather
+    /// than a `Task`, because the title read is synchronous AX IPC and would hold a cooperative
+    /// pool thread for as long as the client takes to answer (CI8).
+    static func resolveAppSource(from context: MeetingLifecycleContext) async -> AppSource {
+        await withCheckedContinuation { (continuation: CheckedContinuation<AppSource, Never>) in
+            axWalkQueue.async {
+                let title = MeetingTitleResolver.resolve(
+                    bundleID: context.bundleID,
+                    kind: context.kind == .browser ? .browser : .native,
+                    pid: context.pid
+                )
+                continuation.resume(returning: appSource(from: context, title: title))
+            }
+        }
+    }
+
     /// Bridge a lifecycle context back into an `AppSource` for the prompt +
-    /// matcher: resolve the display name via `NSRunningApplication` and
-    /// re-walk the title for the matcher's title rules.
-    func appSource(from context: MeetingLifecycleContext) -> AppSource {
+    /// matcher: resolve the display name via `NSRunningApplication`, with the
+    /// title `resolveAppSource` read for the matcher's title rules.
+    static func appSource(from context: MeetingLifecycleContext, title: String?) -> AppSource {
         let kind: AppSourceKind = context.kind == .browser ? .browser : .native
         let displayName = NSRunningApplication(processIdentifier: context.pid)?
             .localizedName ?? context.bundleID
-        let title = MeetingTitleResolver.resolve(
-            bundleID: context.bundleID,
-            kind: kind,
-            pid: context.pid
-        )
         return AppSource(
             bundleID: context.bundleID,
             displayName: displayName,

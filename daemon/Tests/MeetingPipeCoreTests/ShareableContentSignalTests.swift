@@ -152,4 +152,66 @@ final class ShareableContentSignalTests: XCTestCase {
             "A bundle-owned window that fails the title match is logged for diagnosis"
         )
     }
+
+    // MARK: - PERF15: the production start never waits on the probe
+
+    /// A probe that parks on `gate` the first time it is called and answers at once after that, so
+    /// the production poll timer cannot keep the shared poll queue blocked once the test is done.
+    final class GatedProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var blocked = false
+        let gate = DispatchSemaphore(value: 0)
+        let entered = DispatchSemaphore(value: 0)
+        let exited = DispatchSemaphore(value: 0)
+
+        func probe() -> [Summary]? {
+            let first: Bool = lock.withLock { defer { blocked = true }; return !blocked }
+            if first {
+                entered.signal()
+                _ = gate.wait(timeout: .now() + 3)
+                exited.signal()
+            }
+            return [Summary(bundleIdentifier: "com.microsoft.teams2", title: "Standup | Meeting")]
+        }
+    }
+
+    /// Red against `main` (measured 2026-10-26: `start` took the whole 3 s gate): the initial
+    /// evaluate ran inline, so every engage waited on ScreenCaptureKit on the main thread, up to
+    /// `probeTimeout` against a hung SCK. `defaultProbe`'s doc called it off main; it was not.
+    func test_start_withTheProductionScheduler_returnsWhileTheInitialProbeIsBlocked() {
+        let gated = GatedProbe()
+        let present = expectation(description: "the initial reading lands once the probe returns")
+        let signal = ShareableContentSignal(probe: { gated.probe() })
+        signal.onChange = { value in if value { present.fulfill() } }
+
+        let began = Date()
+        signal.start(context: teamsContext)
+        let elapsed = Date().timeIntervalSince(began)
+
+        XCTAssertLessThan(elapsed, 0.5, "start must not wait on the probe")
+        XCTAssertEqual(gated.entered.wait(timeout: .now() + 2), .success, "the probe runs, off the caller")
+        gated.gate.signal()
+        wait(for: [present], timeout: 5)
+        signal.stop()
+    }
+
+    /// The initial evaluate is asynchronous now, so a stop can land while its probe is still
+    /// blocked. The reading that probe returns belongs to a session that no longer exists.
+    func test_stop_whileTheInitialProbeIsBlocked_dropsItsReading() {
+        let gated = GatedProbe()
+        let lock = NSLock()
+        var emitted: [Bool] = []
+        let signal = ShareableContentSignal(probe: { gated.probe() })
+        signal.onChange = { value in lock.withLock { emitted.append(value) } }
+
+        signal.start(context: teamsContext)
+        XCTAssertEqual(gated.entered.wait(timeout: .now() + 2), .success)
+        signal.stop()
+        gated.gate.signal()
+        XCTAssertEqual(gated.exited.wait(timeout: .now() + 2), .success)
+        Thread.sleep(forTimeInterval: 0.2)  // the rest of that evaluate is microseconds of bookkeeping
+
+        XCTAssertEqual(lock.withLock { emitted }, [], "nothing emits for a stopped session")
+        XCTAssertNil(signal.lastValue)
+    }
 }

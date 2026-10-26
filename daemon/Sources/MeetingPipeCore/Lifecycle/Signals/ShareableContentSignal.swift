@@ -9,6 +9,9 @@ import ScreenCaptureKit
 /// which in production is a dedicated serial queue OFF main (the prior `Timer`-on-main scheduler blocked
 /// the run loop behind the SCK call for the whole meeting). Shared mutable state is guarded by `lock` so
 /// an off-main poll cannot race engage/disengage; `probe()` and `onChange` run outside the lock.
+/// PERF15: in production the initial evaluate runs on that queue too, so `start` never waits on the
+/// probe (it waited up to `probeTimeout` on main at every engage before), and a session generation
+/// bumped by `stop` keeps an evaluate that outlives its session from emitting or re-arming the poll.
 public final class ShareableContentSignal {
 
     /// Window fields the signal needs, decoupled from `SCWindow` so tests don't have to construct one.
@@ -37,6 +40,9 @@ public final class ShareableContentSignal {
     private let eventLog: EventLog
     private let probe: Probe
     private let scheduler: Scheduler
+    /// Where `start` runs its initial evaluate. `pollQueue` in production (PERF15); nil when a
+    /// scheduler is injected, so a test's `start` still evaluates inline and asserts synchronously.
+    private let initialQueue: DispatchQueue?
     private let activeInterval: TimeInterval
     private let idleInterval: TimeInterval
 
@@ -54,6 +60,11 @@ public final class ShareableContentSignal {
     }
     private let lock = NSLock()
     private var state = State()
+    /// Session generation, bumped by every `stop` (which `start` opens with) and guarded by `lock`.
+    /// Kept outside `State` because `stop` resets that wholesale. An evaluate captures it with the
+    /// context and drops its result when it has moved on, so a probe still running when the session
+    /// stopped neither emits nor arms a timer for a session that no longer exists (PERF15).
+    private var generation = 0
 
     /// Latest window-present verdict (nil before the first evaluate). Readable on any thread.
     public var lastValue: Bool? { lock.withLock { state.lastValue } }
@@ -61,13 +72,22 @@ public final class ShareableContentSignal {
     public init(
         eventLog: EventLog = NoopEventLog(),
         probe: @escaping Probe = ShareableContentSignal.defaultProbe,
-        scheduler: @escaping Scheduler = ShareableContentSignal.defaultScheduler,
+        scheduler: Scheduler? = nil,
         activeInterval: TimeInterval = ShareableContentSignal.activePollInterval,
         idleInterval: TimeInterval = ShareableContentSignal.idlePollInterval
     ) {
         self.eventLog = eventLog
         self.probe = probe
-        self.scheduler = scheduler
+        // No injected scheduler is the production path: the poll timer and the initial evaluate
+        // both run on `pollQueue`, off main. An injected scheduler is the test path, where the
+        // initial evaluate stays inline on the caller so assertions after `start` hold.
+        if let scheduler {
+            self.scheduler = scheduler
+            self.initialQueue = nil
+        } else {
+            self.scheduler = ShareableContentSignal.defaultScheduler
+            self.initialQueue = ShareableContentSignal.pollQueue
+        }
         self.activeInterval = activeInterval
         self.idleInterval = idleInterval
     }
@@ -83,26 +103,32 @@ public final class ShareableContentSignal {
         }
         // The initial evaluate arms the first timer via `adjustCadence` (currentInterval
         // starts at 0, so the first call always (re)schedules). Arming inside the initial
-        // evaluate - not before it - means no background poll fires while this synchronous
-        // engage is still running.
-        evaluate(reason: "initial")
+        // evaluate - not before it - means no background poll fires ahead of the first reading.
+        // PERF15: in production it runs on `pollQueue`, so this returns without waiting on the
+        // ScreenCaptureKit probe.
+        if let initialQueue {
+            initialQueue.async { [weak self] in self?.evaluate(reason: "initial") }
+        } else {
+            evaluate(reason: "initial")
+        }
     }
 
     public func stop() {
         let priorCancel: (() -> Void)? = lock.withLock {
             let prior = state.cancelTick
             state = State()
+            generation += 1
             return prior
         }
         priorCancel?()
     }
 
     func evaluate(reason: String) {
-        let snapshot: (MeetingLifecycleContext, TitleMatch)? = lock.withLock {
+        let snapshot: (MeetingLifecycleContext, TitleMatch, Int)? = lock.withLock {
             guard let context = state.context, let titleMatch = state.titleMatch else { return nil }
-            return (context, titleMatch)
+            return (context, titleMatch, generation)
         }
-        guard let (context, titleMatch) = snapshot else { return }
+        guard let (context, titleMatch, session) = snapshot else { return }
 
         // Probe OFF the lock: the production probe blocks on ScreenCaptureKit, and the
         // lock also guards stop()/start() on main.
@@ -116,12 +142,14 @@ public final class ShareableContentSignal {
         let present = summaries.contains { summary in
             summary.bundleIdentifier == context.bundleID && titleMatch(summary.title)
         }
-        adjustCadence(forActive: present)
+        adjustCadence(forActive: present, session: session)
 
         // Transition + candidate-diagnosis bookkeeping under the lock; emit + onChange after.
         var candidatesToLog: [String]?
         var transition: (previous: Bool?, value: Bool)?
-        lock.withLock {
+        let isCurrent: Bool = lock.withLock {
+            // The session stopped while the probe ran: its reading belongs to nobody.
+            guard generation == session else { return false }
             if present {
                 state.lastUnmatchedCandidates = nil
             } else {
@@ -138,7 +166,9 @@ public final class ShareableContentSignal {
                 transition = (previous: state.lastValue, value: present)
                 state.lastValue = present
             }
+            return true
         }
+        guard isCurrent else { return }
 
         if let candidatesToLog {
             eventLog.emit(category: "signal", action: "shareable_content_no_match", attributes: [
@@ -158,13 +188,13 @@ public final class ShareableContentSignal {
         }
     }
 
-    private func adjustCadence(forActive active: Bool) {
+    private func adjustCadence(forActive active: Bool, session: Int) {
         let target = active ? activeInterval : idleInterval
-        guard lock.withLock({ state.currentInterval != target }) else { return }
-        restartTick(interval: target)
+        guard lock.withLock({ generation == session && state.currentInterval != target }) else { return }
+        restartTick(interval: target, session: session)
     }
 
-    private func restartTick(interval: TimeInterval) {
+    private func restartTick(interval: TimeInterval, session: Int) {
         // Cancel the prior timer before arming the new one. The injected ManualScheduler's
         // cancel clears a single shared slot, so order matters: create-then-cancel would null
         // out the freshly-armed action.
@@ -177,10 +207,15 @@ public final class ShareableContentSignal {
         let cancel = scheduler(interval) { [weak self] in
             self?.evaluate(reason: "poll")
         }
-        lock.withLock {
+        let armed: Bool = lock.withLock {
+            // A `stop` landed between the check in `adjustCadence` and here, so the timer just
+            // made belongs to a stopped session: cancel it rather than leak a poll (PERF15).
+            guard generation == session else { return false }
             state.cancelTick = cancel
             state.currentInterval = interval
+            return true
         }
+        if !armed { cancel() }
     }
 
     // MARK: - Default seams
@@ -208,7 +243,8 @@ public final class ShareableContentSignal {
     static let probeTimeout: TimeInterval = 2.0
 
     /// Bridge `SCShareableContent.excludingDesktopWindows` synchronously via a semaphore-gated wait.
-    /// Safe because the scheduler dispatches probes off main in production.
+    /// Safe because every production evaluate runs on `pollQueue`, the initial one included since
+    /// PERF15 (before it, `start`'s inline evaluate ran this on main at every engage).
     public static let defaultProbe: Probe = {
         // Preflight before touching SCShareableContent. On macOS 14.4+ that API
         // surfaces the Screen Recording TCC dialog whenever access is not

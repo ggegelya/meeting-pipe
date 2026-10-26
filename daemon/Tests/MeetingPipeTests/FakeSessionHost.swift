@@ -21,7 +21,7 @@ final class FakeSessionHost: SessionHost {
 
     let stateMachine = DetectionStateMachine()
     let micGate: MicGate
-    let lifecycleCoord = MeetingLifecycleCoordinator()
+    var lifecycleCoord = MeetingLifecycleCoordinator()
     /// Pointed at a directory that does not exist, so `available` stays false and the oracle
     /// degrades to an immediate confirm. That is deliberately the pre-END9 behaviour, so every
     /// existing controller test keeps meaning what it meant; the tests that exercise the hold

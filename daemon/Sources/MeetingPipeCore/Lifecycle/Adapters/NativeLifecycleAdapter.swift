@@ -173,7 +173,7 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
         // the end went unseen until the user collapsed the Teams window (2026-06-12).
         // Browser / AX-denied handles carry neither, so the signal stays off there.
         if handle.leaveButton != nil || handle.resolveLeaveButton != nil {
-            try axLeaveButton.start(
+            axLeaveButton.start(
                 context: context,
                 leaveButton: handle.leaveButton,
                 resolveElement: handle.resolveLeaveButton

@@ -6,10 +6,15 @@ import Foundation
 /// sub-100 ms on the happy path; the poll bounds worst-case lag to ~1 s.
 /// Threading: all state and the poll are confined to a private serial queue in production, so the poll's
 /// synchronous AX IPC never runs on the main thread. `start`/`stop`/`armIfNeeded` (called on main) hop onto
-/// it via `runSync` and stay synchronous to the caller; the `AXObserverBus` destruction-notification handler
-/// (delivered on main) hops on via `runAsync`. `onChange` fires from the queue - the coordinator's sink hops
-/// to its own engine queue, so off-main delivery is safe. Injecting a `Scheduler` (tests) selects an inline
-/// executor (no queue) so the existing synchronous assertions hold.
+/// it via `runAsync` and return at once (PERF15): with `runSync` main waited behind any walk already on the
+/// queue, so Stop's `disengage` queued behind a 5 s Leave re-walk before `recorder.stop`, and an engage
+/// without a Leave button ran the whole initial walk while main waited. A session generation, bumped on
+/// the caller's thread by `start` and `stop`, is what a walk checks before it emits, so nothing reaches
+/// `onChange` after `stop()` has returned even though the queue has not run `_stop` yet. The
+/// `AXObserverBus` destruction-notification handler (delivered on main) hops on via `runAsync` too.
+/// `onChange` fires from the queue - the coordinator's sink hops to its own engine queue, so off-main
+/// delivery is safe. Injecting a `Scheduler` (tests) selects an inline executor (no queue) so the
+/// existing synchronous assertions hold.
 public final class AXLeaveButtonSignal {
 
     public enum State: Equatable {
@@ -45,6 +50,14 @@ public final class AXLeaveButtonSignal {
     /// synchronous AX IPC never runs on the main thread. Nil when a scheduler is
     /// injected (tests run inline on the caller for deterministic assertions).
     private let serialQueue: DispatchQueue?
+
+    /// Session generation (PERF15). Bumped by `start` and `stop` on the CALLER's thread, under
+    /// `generationLock`, before the work is queued, so it moves the instant the caller asks rather
+    /// than when the queue gets to it. `sessionGeneration` is the queue-confined copy the running
+    /// session was started under; a walk that finds the two disagree emits nothing.
+    private let generationLock = NSLock()
+    private var generation = 0
+    private var sessionGeneration = 0
 
     private var element: AXUIElement?
     private var context: MeetingLifecycleContext?
@@ -96,21 +109,10 @@ public final class AXLeaveButtonSignal {
         }
     }
 
-    /// Run `work` on the serial state context, synchronously. Production: hop to
-    /// `serialQueue` (the caller, main, blocks until the queue is free - bounded by
-    /// the AX messaging timeout, and only contended at the infrequent
-    /// start/stop/arm). Tests (no queue): run inline so those calls keep their
-    /// synchronous, throwing semantics.
-    private func runSync<T>(_ work: () throws -> T) rethrows -> T {
-        if let serialQueue = serialQueue {
-            return try serialQueue.sync(execute: work)
-        }
-        return try work()
-    }
-
-    /// Run `work` on the serial state context, asynchronously. Used from the AX
-    /// destruction-notification handler, which `AXObserverBus` delivers on main.
-    /// Inline when there is no queue (tests).
+    /// Run `work` on the serial state context, asynchronously. Every entry point uses it:
+    /// `start`, `stop` and `armIfNeeded` from main (PERF15; they were `serialQueue.sync`, so main
+    /// waited out any walk in progress) and the AX destruction-notification handler, which
+    /// `AXObserverBus` delivers on main. Inline when there is no queue (tests).
     private func runAsync(_ work: @escaping () -> Void) {
         if let serialQueue = serialQueue {
             serialQueue.async(execute: work)
@@ -118,6 +120,22 @@ public final class AXLeaveButtonSignal {
             work()
         }
     }
+
+    private func currentGeneration() -> Int {
+        generationLock.lock(); defer { generationLock.unlock() }
+        return generation
+    }
+
+    @discardableResult
+    private func bumpGeneration() -> Int {
+        generationLock.lock(); defer { generationLock.unlock() }
+        generation += 1
+        return generation
+    }
+
+    /// Whether the session this queue is running is still the one the caller last asked for. False
+    /// once `stop` (or a newer `start`) has been called, even before its queued work has run.
+    private var isCurrentSession: Bool { sessionGeneration == currentGeneration() }
 
     deinit {
         // Cancel the poll's DispatchSourceTimer if `stop()` was never called, so the
@@ -132,37 +150,37 @@ public final class AXLeaveButtonSignal {
     /// the signal still starts and the health poll self-arms via `resolveElement`
     /// the moment a live Leave button appears. With no button and no resolver the
     /// signal is inert (browser / AX-denied path), exactly as before.
+    ///
+    /// Returns without waiting (PERF15): the initial evaluate, which runs a full Leave walk when no
+    /// button was handed in, happens on the signal's queue. A failed destruction-notification
+    /// subscribe is logged rather than thrown, the way `armIfNeeded` always treated it, since the
+    /// health poll still bounds the end; before, a throw here left the signal with no poll at all.
     public func start(
         context: MeetingLifecycleContext,
         leaveButton: AXUIElement?,
         resolveElement: (() -> AXUIElement?)? = nil
-    ) throws {
-        try runSync {
-            try _start(context: context, leaveButton: leaveButton, resolveElement: resolveElement)
+    ) {
+        let generation = bumpGeneration()
+        runAsync { [self] in
+            // A `stop` or a newer `start` was called before this reached the queue.
+            guard generation == currentGeneration() else { return }
+            _start(context: context, leaveButton: leaveButton, resolveElement: resolveElement, generation: generation)
         }
     }
 
     private func _start(
         context: MeetingLifecycleContext,
         leaveButton: AXUIElement?,
-        resolveElement: (() -> AXUIElement?)?
-    ) throws {
+        resolveElement: (() -> AXUIElement?)?,
+        generation: Int
+    ) {
         _stop()
+        self.sessionGeneration = generation
         self.context = context
         self.element = leaveButton
         self.resolveElement = resolveElement
         if let leaveButton {
-            axToken = try axBus.subscribe(
-                pid: context.pid,
-                element: leaveButton,
-                notification: kAXUIElementDestroyedNotification as String
-            ) { [weak self] in
-                self?.runAsync {
-                    guard let self = self else { return }
-                    self.cadence.noteListener()   // TECH-PERF5: notification is delivering
-                    self._evaluate(reason: "destroyed_notification")
-                }
-            }
+            subscribeDestroyed(leaveButton, context: context)
         }
         cadence = AdaptivePollCadence(fast: pollInterval, slow: slowPollInterval)
         startPoll(interval: cadence.initialInterval)
@@ -190,11 +208,18 @@ public final class AXLeaveButtonSignal {
     /// compact-view swap destroys and rebuilds the Leave button on a panel, so the armed element probes
     /// invalid and must be re-armed to avoid treating the window collapse as a meeting end.
     /// Subscribe failure is logged, not thrown: the poll backstop still bounds the recording.
+    ///
+    /// Returns without waiting (PERF15). An arm that reaches the queue after a `stop` is dropped:
+    /// it belongs to the session that stop ended.
     public func armIfNeeded(
         context: MeetingLifecycleContext,
         leaveButton: AXUIElement
     ) {
-        runSync { _armIfNeeded(context: context, leaveButton: leaveButton) }
+        let generation = currentGeneration()
+        runAsync { [self] in
+            guard generation == currentGeneration() else { return }
+            _armIfNeeded(context: context, leaveButton: leaveButton)
+        }
     }
 
     private func _armIfNeeded(
@@ -204,19 +229,14 @@ public final class AXLeaveButtonSignal {
         // Skip only when the current element is still live; an armed-but-dead element falls through to re-arm.
         if let current = element, probe(current) == .healthy { return }
         let resolver = resolveElement  // preserve the injected re-walk across the re-arm
-        do {
-            try _start(context: context, leaveButton: leaveButton, resolveElement: resolver)
-        } catch {
-            eventLog.emit(category: "signal", action: "ax_leave_button_arm_failed", attributes: [
-                "bundle_id": context.bundleID,
-                "pid": Int(context.pid),
-                "error": "\(error)"
-            ])
-        }
+        _start(context: context, leaveButton: leaveButton, resolveElement: resolver, generation: currentGeneration())
     }
 
+    /// Returns without waiting (PERF15). The generation moves here, on the caller's thread, so a
+    /// walk still running on the queue emits nothing once this returns; `_stop` runs after it.
     public func stop() {
-        runSync { _stop() }
+        bumpGeneration()
+        runAsync { [self] in _stop() }
     }
 
     private func _stop() {
@@ -244,6 +264,7 @@ public final class AXLeaveButtonSignal {
             // Self-arm is the sustained "button not present yet" retry, so it is
             // always throttled (no edge to recover from when nothing was adopted).
             guard let fresh = throttledResolve(bypassThrottle: false),
+                  isCurrentSession,
                   probe(fresh) == .healthy else { return }
             adopt(fresh, context: context)
             // Fall through so the healthy baseline reaches the engine this tick.
@@ -260,6 +281,7 @@ public final class AXLeaveButtonSignal {
         // element going forward, matching the TECH-MIC6 mute-probe re-arm.
         if state == .invalid,
            let fresh = throttledResolve(bypassThrottle: lastState == .healthy),
+           isCurrentSession,
            probe(fresh) == .healthy {
             self.element = fresh
             state = .healthy
@@ -274,6 +296,9 @@ public final class AXLeaveButtonSignal {
         // polled) otherwise logged ax_leave_button_state{invalid} on every 1 Hz poll -
         // 66% of the entire event log. `onChange` below is already edge-gated, so the
         // engine is unaffected; this only collapses the redundant log lines.
+        // PERF15: a walk above can outlast its session. Once `stop()` has returned nothing may
+        // reach the engine, whatever the queue still has to run.
+        guard isCurrentSession else { return }
         if lastState == state { return }
         let previous = lastState
         lastState = state
@@ -323,6 +348,16 @@ public final class AXLeaveButtonSignal {
     /// the health poll still reads the element, matching `armIfNeeded`.
     private func adopt(_ element: AXUIElement, context: MeetingLifecycleContext) {
         self.element = element
+        subscribeDestroyed(element, context: context)
+        eventLog.emit(category: "signal", action: "ax_leave_button_self_armed", attributes: [
+            "bundle_id": context.bundleID,
+            "pid": Int(context.pid),
+        ])
+    }
+
+    /// Subscribe the destruction notification on `element`. Failure is logged, not thrown: the
+    /// health poll still reads the element and bounds the end. Shared by `_start` and `adopt`.
+    private func subscribeDestroyed(_ element: AXUIElement, context: MeetingLifecycleContext) {
         do {
             axToken = try axBus.subscribe(
                 pid: context.pid,
@@ -331,7 +366,7 @@ public final class AXLeaveButtonSignal {
             ) { [weak self] in
                 self?.runAsync {
                     guard let self = self else { return }
-                    self.cadence.noteListener()
+                    self.cadence.noteListener()   // TECH-PERF5: notification is delivering
                     self._evaluate(reason: "destroyed_notification")
                 }
             }
@@ -342,10 +377,6 @@ public final class AXLeaveButtonSignal {
                 "error": "\(error)",
             ])
         }
-        eventLog.emit(category: "signal", action: "ax_leave_button_self_armed", attributes: [
-            "bundle_id": context.bundleID,
-            "pid": Int(context.pid),
-        ])
     }
 
     // MARK: - Default seams
