@@ -30,9 +30,9 @@ final class AudioRetentionTests: XCTestCase {
     private func decide(
         _ candidates: [AudioRetention.Candidate],
         _ policies: [UUID: WorkflowRetention],
-        liveStem: String? = nil
+        liveStems: Set<String> = []
     ) -> [AudioRetention.Action] {
-        AudioRetention.decide(candidates: candidates, policies: policies, now: now, liveStem: liveStem)
+        AudioRetention.decide(candidates: candidates, policies: policies, now: now, liveStems: liveStems)
     }
 
     // MARK: Defaults
@@ -132,7 +132,7 @@ final class AudioRetentionTests: XCTestCase {
         let actions = decide(
             [candidate(stem: "20260101-120000", daysAgo: 400, workflow: workflowA)],
             policies,
-            liveStem: "20260101-120000"
+            liveStems: ["20260101-120000"]
         )
         XCTAssertEqual(actions, [])
     }

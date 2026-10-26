@@ -66,17 +66,17 @@ enum AudioRetention {
     ///   - policies: retention keyed by workflow id. A candidate whose workflow is
     ///     absent from the map, or which has no workflow at all, keeps its audio
     ///     forever: an unknown workflow must never be read as "drop it".
-    ///   - liveStem: the stem currently being recorded, if any. Never touched even
-    ///     if some other signal called it settled.
+    ///   - liveStems: the stems the recorder owns (`MeetingRecorder.ownedStems`,
+    ///     REC23). Never touched even if some other signal called them settled.
     static func decide(
         candidates: [Candidate],
         policies: [UUID: WorkflowRetention],
         now: Date,
-        liveStem: String? = nil
+        liveStems: Set<String> = []
     ) -> [Action] {
         var actions: [Action] = []
         for candidate in candidates {
-            guard candidate.stem != liveStem else { continue }
+            guard !liveStems.contains(candidate.stem) else { continue }
             guard isSettled(status: candidate.status, publishState: candidate.publishState) else {
                 continue
             }

@@ -26,7 +26,7 @@ enum AudioRetentionSweep {
         in directory: URL,
         policies: [UUID: WorkflowRetention],
         now: Date = Date(),
-        liveStem: String? = nil
+        liveStems: Set<String> = []
     ) -> Outcome {
         // Every workflow on keep-forever is the default state; skip the directory
         // walk entirely rather than stat a whole library to decide nothing.
@@ -35,7 +35,7 @@ enum AudioRetentionSweep {
         }
         let candidates = self.candidates(in: directory)
         let actions = AudioRetention.decide(
-            candidates: candidates, policies: policies, now: now, liveStem: liveStem
+            candidates: candidates, policies: policies, now: now, liveStems: liveStems
         )
         guard !actions.isEmpty else { return Outcome() }
 

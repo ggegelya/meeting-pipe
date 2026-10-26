@@ -70,6 +70,14 @@ final class MeetingRecorder {
     let systemChannel = SystemAudioChannel()
 
     private(set) var currentFile: URL?
+
+    /// REC23: the stems whose intermediates this recorder is writing or may still write, claimed
+    /// before a start creates its first file and released once stop has finished with them (or,
+    /// after an abandoned writer drain, once that drain ends). The orphan sweep reads this, never
+    /// `libraryModel.liveRecordingStem`, which is set only after `start()` returns.
+    let stemOwnership = RecordingStemOwnership()
+    @MainActor var ownedStems: Set<String> { stemOwnership.stems }
+
     /// Intermediate per-source WAV paths exposed so the streaming
     /// transcriber can tail them as the daemon writes. Both URLs are
     /// only valid between `start()` and `stop()`.
@@ -365,6 +373,12 @@ final class MeetingRecorder {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let stamp = formatter.string(from: Date())
+        // REC23: owned before any file of this stem exists, so an after-job orphan sweep
+        // landing during the engine start cannot merge the growing `.mic.wav`. Every throwing
+        // exit below releases it; a successful start hands it to `stop()`.
+        stemOwnership.claim(stamp)
+        var started = false
+        defer { if !started { stemOwnership.release(stamp) } }
         let finalURL = outputDir.appendingPathComponent("\(stamp).wav")
         let micURL = outputDir.appendingPathComponent("\(stamp).mic.wav")
         let systemURL = outputDir.appendingPathComponent("\(stamp).system.wav")
@@ -474,6 +488,7 @@ final class MeetingRecorder {
         systemChannel.startSystemLivenessWatchdog()
         acquireIdleSleepAssertion()  // REC8: keep the Mac awake for the whole recording
         registerWakeObserver()       // REC8: re-arm capture on sleep/wake
+        started = true
         return finalURL
     }
 
@@ -881,6 +896,7 @@ final class MeetingRecorder {
         await deviceRecovery.standDown()
         await teardownEngine()
         snapshotMicCoverage()
+        let writers = [micWriter, systemChannel.systemWriter].compactMap { $0 }
         let writerWedged = await drainWriters()
         finalizeFiles()
         let producedUsableFinal = await mergeIntermediates(
@@ -888,6 +904,7 @@ final class MeetingRecorder {
             session: session, writerWedged: writerWedged, limitSeconds: limitSeconds
         )
         persistAfterMerge(final: final, producedUsableFinal: producedUsableFinal, started: session.started)
+        releaseOwnership(of: final, writerWedged: writerWedged, writers: writers)
         Log.recorder.info("recorder stopped → \(final.path)")
         Log.writeLine("recorder", "recorder stopped → \(final.path)")
         return producedUsableFinal
@@ -1162,6 +1179,24 @@ final class MeetingRecorder {
 
         if producedUsableFinal, let started = started {
             checkDurationParity(file: final, recordedFor: Date().timeIntervalSince(started))
+        }
+    }
+
+    /// Step 11 (REC23): hand the stem back to the orphan sweep, last, so the sweep never sees
+    /// intermediates the merge above is still reading. When a writer drain was abandoned
+    /// (step 7) the backlog is still writing into them, so the stem stays owned until that
+    /// drain ends; `writers` were taken before step 7 dropped them.
+    @MainActor
+    private func releaseOwnership(
+        of final: URL,
+        writerWedged: Bool,
+        writers: [SerialBufferWriter<AVAudioPCMBuffer>]
+    ) {
+        let stem = final.deletingPathExtension().lastPathComponent
+        if writerWedged {
+            stemOwnership.releaseWhenDrained(stem, writers: writers)
+        } else {
+            stemOwnership.release(stem)
         }
     }
 

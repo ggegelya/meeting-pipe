@@ -683,17 +683,22 @@ final class Coordinator: NSObject {
         let policies = Dictionary(
             uniqueKeysWithValues: workflowStore.workflows.map { ($0.id, $0.retention) }
         )
-        let liveStem = libraryModel.liveRecordingStem
+        // REC23: the stems the recorder owns, asked of the recorder itself. Both callers run
+        // on main (launch, and `onDone` under `SinkDispatcher`'s main-queue invariant).
+        let ownedStems = MainActor.assumeIsolated { recorder.ownedStems }
         // REC6: recover any recording orphaned by a mid-recording termination now,
         // not only at launch. This slot runs at launch and after every job
         // completion, so a stop-time merge failure recovers on the next job instead
-        // of waiting for a relaunch (a launchd daemon can run for days). The live
-        // recording's stem is excluded so its in-flight intermediates are untouched;
-        // a re-merge that fails again keeps its `.recordfail.json` for the doctor.
-        recoverOrphanedRecordings(liveStem: liveStem)
+        // of waiting for a relaunch (a launchd daemon can run for days). Every stem the
+        // recorder owns is excluded so its in-flight intermediates are untouched: one
+        // that is starting (its `.mic.wav` exists before `start()` returns, which is
+        // when the Library's live-row mirror learns of it), recording, stopping, or
+        // still being written by an abandoned drain (REC23). A re-merge that fails
+        // again keeps its `.recordfail.json` for the doctor.
+        recoverOrphanedRecordings(excluding: ownedStems)
         Task.detached(priority: .background) {
             OriginalsReaper.sweep()
-            AudioRetentionSweep.sweep(in: dir, policies: policies, liveStem: liveStem)
+            AudioRetentionSweep.sweep(in: dir, policies: policies, liveStems: ownedStems)
             LocalServerReaper.reapIfOrphaned()
         }
     }
@@ -703,15 +708,19 @@ final class Coordinator: NSObject {
     /// `.mic.wav`/`.system.wav` intermediates. REC6 runs this from `reapStorage`
     /// (launch + after every job completion), not only at launch, so a merge that
     /// failed while the daemon keeps running recovers on the next job instead of
-    /// waiting for a relaunch. `liveStem` excludes the currently-recording stem so
-    /// its in-flight intermediates are never merged; the ffmpeg merges run off-main
-    /// so the menu bar isn't stalled.
-    private func recoverOrphanedRecordings(liveStem: String?) {
+    /// waiting for a relaunch. `ownedStems` excludes every stem the recorder owns so
+    /// their in-flight intermediates are never merged, and the recorder is asked again
+    /// per stem right before its merge, since the snapshot can be minutes old by then
+    /// (REC23); the ffmpeg merges run off-main so the menu bar isn't stalled.
+    private func recoverOrphanedRecordings(excluding ownedStems: Set<String>) {
         let dir = liveOutputDir
-        let stems = OrphanRecordingRecovery.scanOrphanStems(in: dir, excludingStem: liveStem)
+        let stems = OrphanRecordingRecovery.scanOrphanStems(in: dir, excludingStems: ownedStems)
         guard !stems.isEmpty else { return }
+        let ownership = recorder.stemOwnership
         Task { @MainActor [weak self] in
-            let result = await OrphanRecordingRecovery.recover(stems: stems, in: dir)
+            let result = await OrphanRecordingRecovery.recover(
+                stems: stems, in: dir, isOwned: { ownership.contains($0) }
+            )
             guard let self = self else { return }
             for rec in result.ready {
                 let modeLabel = rec.summaryMode == .byo ? "byo" : "auto"

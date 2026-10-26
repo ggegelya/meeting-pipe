@@ -64,4 +64,13 @@ final class SerialBufferWriter<Item> {
             }
         }
     }
+
+    /// Run `body` on the writer queue once every item enqueued before this call has been
+    /// handled, including the backlog a timed-out `drain(timeout:)` abandoned. Returns
+    /// immediately and never waits. REC23: a drain the stop gave up on still writes into the
+    /// intermediates, so the recorder keeps their stem out of the orphan sweep until this
+    /// fires.
+    func whenDrained(_ body: @escaping @Sendable () -> Void) {
+        queue.async(execute: body)
+    }
 }

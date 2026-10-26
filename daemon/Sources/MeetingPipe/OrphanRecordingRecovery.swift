@@ -33,10 +33,12 @@ enum OrphanRecordingRecovery {
     /// Enumerate directory and return orphan stems eligible for recovery (one
     /// contentsOfDirectory call). Returns [] on error.
     ///
-    /// `excludingStem` is the currently-recording stem: REC6 runs this sweep after
+    /// `excludingStems` are the stems the recorder owns: REC6 runs this sweep after
     /// every job completion, not only at launch, so a live recording's in-flight
     /// intermediates would otherwise be mistaken for an orphan and merged mid-write.
-    /// Pass `libraryModel.liveRecordingStem` (nil at launch, when nothing records).
+    /// Pass `MeetingRecorder.ownedStems` (empty at launch, when nothing records), never
+    /// `libraryModel.liveRecordingStem`: that UI mirror is set only after `start()`
+    /// returns, while `<stem>.mic.wav` exists from before the engine start (REC23).
     ///
     /// The `maxOrphanAge` staleness cutoff drops intermediates with no deliberate
     /// marker (stale test debris that must not auto-publish weeks later), but a stem
@@ -47,7 +49,7 @@ enum OrphanRecordingRecovery {
     static func scanOrphanStems(
         in directory: URL,
         now: Date = Date(),
-        excludingStem: String? = nil
+        excludingStems: Set<String> = []
     ) -> [String] {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
@@ -58,7 +60,7 @@ enum OrphanRecordingRecovery {
             return []
         }
         let candidates = detectOrphanStems(fileNames: entries.map { $0.lastPathComponent })
-            .filter { $0 != excludingStem }
+            .filter { !excludingStems.contains($0) }
         return candidates.filter { stem in
             if hasRecoveryMarker(stem: stem, in: directory) {
                 return true
@@ -128,9 +130,25 @@ enum OrphanRecordingRecovery {
     /// `<stem>.meta.json` is rebuilt from it (so an NDA / regulated orphan arms
     /// the pipeline egress guard and the meeting title survives) and the recorded
     /// summary mode rides back so a BYO orphan is enqueued `.byo`, not `.auto`.
-    static func recover(stems: [String], in directory: URL) async -> Recovered {
+    ///
+    /// `isOwned` asks the recorder, on main, immediately before each stem's merge
+    /// (REC23). The scan's exclusion is a snapshot, and an earlier stem's merge can run
+    /// for minutes, long enough for a recording to start on a stem the snapshot listed
+    /// as an orphan; merging it then deletes the live intermediates and publishes a stub.
+    static func recover(
+        stems: [String],
+        in directory: URL,
+        isOwned: @MainActor (String) -> Bool
+    ) async -> Recovered {
         var result = Recovered()
         for stem in stems {
+            if await isOwned(stem) {
+                Log.event(category: "coordinator", action: "orphan_recovery_skipped_owned", attributes: [
+                    "stem": stem,
+                ])
+                Log.writeLine("daemon", "skipping orphan \(stem): the recorder owns it now (a recording started on it after the scan)")
+                continue
+            }
             guard let url = await RecordingPostProcessor.recoverOrphan(stem: stem, in: directory) else { continue }
             // Read the manifest + capture-mode marker BEFORE clearing the
             // start-time markers below: both feed the routing decision.

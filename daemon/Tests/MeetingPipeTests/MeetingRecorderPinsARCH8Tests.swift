@@ -167,6 +167,7 @@ final class MeetingRecorderPinsARCH8Tests: XCTestCase {
             "finalizeFiles()",
             "await mergeIntermediates(",
             "persistAfterMerge(",
+            "releaseOwnership(",  // REC23: the sweep gets the stem back last
         ]
         var cursor = body.startIndex
         for step in steps {

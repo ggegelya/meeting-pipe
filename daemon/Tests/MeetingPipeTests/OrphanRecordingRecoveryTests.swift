@@ -131,8 +131,117 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
         try writeIntermediatePair(stem: "live", in: dir, modified: now.addingTimeInterval(-30))
         try writeIntermediatePair(stem: "past", in: dir, modified: now.addingTimeInterval(-600))
 
-        let stems = OrphanRecordingRecovery.scanOrphanStems(in: dir, now: now, excludingStem: "live")
+        let stems = OrphanRecordingRecovery.scanOrphanStems(in: dir, now: now, excludingStems: ["live"])
         XCTAssertEqual(stems, ["past"], "the live recording's in-flight intermediates must be excluded")
+    }
+
+    // MARK: - REC23: the recorder's owned stems
+
+    /// The window REC23 closes: during the engine start the stem has a growing `.mic.wav` and a
+    /// `.capturemode`, no final and no recovery marker, and the UI mirror does not name it yet.
+    /// Owned by the recorder, it is not an orphan.
+    func test_scanOrphanStems_excludes_a_starting_stem_the_recorder_owns_REC23() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        let starting = "20261026-100500"
+        try Data(repeating: 0, count: 8192).write(to: dir.appendingPathComponent("\(starting).mic.wav"))
+        try writeMarker(.captureFirst, stem: starting, in: dir)
+        try writeIntermediatePair(stem: "20261026-090000", in: dir, modified: now.addingTimeInterval(-600))
+
+        XCTAssertEqual(
+            OrphanRecordingRecovery.scanOrphanStems(in: dir, now: now),
+            ["20261026-090000", starting],
+            "the precondition: unowned, the starting stem reads exactly like an orphan"
+        )
+        XCTAssertEqual(
+            OrphanRecordingRecovery.scanOrphanStems(in: dir, now: now, excludingStems: [starting]),
+            ["20261026-090000"]
+        )
+    }
+
+    /// The wide path: an earlier orphan's merge runs first, the start finishes meanwhile, and
+    /// the stale snapshot then names a stem the recorder owns. The per-stem re-check must leave
+    /// every file of it alone. A stand-in ffmpeg makes the merge succeed for any stem it reaches,
+    /// so without the check the live stem would be merged, its intermediates deleted, and its
+    /// markers cleared.
+    @MainActor
+    func test_recover_skips_a_stem_that_became_owned_while_an_earlier_one_merged_REC23() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        let merged = dir.appendingPathComponent("merged-source.bin")
+        try makeWavData(seconds: 1.0).write(to: merged)
+        setenv("MEETINGPIPE_FFMPEG", try fakeFFmpeg(in: dir, writing: merged).path, 1)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer {
+            unsetenv("MEETINGPIPE_FFMPEG")
+            unsetenv("MEETINGPIPE_LOGS_DIR")
+        }
+
+        let earlier = "20261026-090000"
+        let live = "20261026-100500"
+        for stem in [earlier, live] {
+            try makeWavData(seconds: 1.0).write(to: dir.appendingPathComponent("\(stem).mic.wav"))
+            try makeWavData(seconds: 1.0).write(to: dir.appendingPathComponent("\(stem).system.wav"))
+        }
+        try writeMarker(.captureFirst, stem: live, in: dir)
+        RecordingManifest.write(summaryMode: .auto, meta: [:], forStem: live, in: dir)
+        let liveFiles = ["mic.wav", "system.wav", "capturemode", "recovery.json"].map {
+            dir.appendingPathComponent("\(live).\($0)")
+        }
+        let before = try liveFiles.map { try Data(contentsOf: $0) }
+
+        var asked: [String] = []
+        let result = await OrphanRecordingRecovery.recover(stems: [earlier, live], in: dir, isOwned: { stem in
+            asked.append(stem)
+            return asked.count > 1  // the start finished while the first stem merged
+        })
+
+        XCTAssertEqual(asked, [earlier, live], "asked once per stem, immediately before its merge")
+        XCTAssertEqual(result.ready.map { $0.url.lastPathComponent }, ["\(earlier).wav"], "the unowned orphan still recovers")
+        XCTAssertEqual(try liveFiles.map { try Data(contentsOf: $0) }, before, "every file of the owned stem is untouched")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(live).wav").path),
+                       "no stub final is promoted for the live meeting")
+
+        let events = (try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? ""
+        let skips = events.split(separator: "\n").compactMap { line -> [String: Any]? in
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  object["action"] as? String == "orphan_recovery_skipped_owned" else { return nil }
+            return object
+        }
+        XCTAssertEqual(skips.count, 1)
+        XCTAssertEqual(skips.first?["category"] as? String, "coordinator")
+        XCTAssertEqual(skips.first?["stem"] as? String, live)
+    }
+
+    /// A PCM WAV of `seconds` of silence: decodable, past the 4,096-byte has-audio floor.
+    private func makeWavData(seconds: Double, sampleRate: UInt32 = 16000) -> Data {
+        let payloadBytes = Int(Double(sampleRate) * seconds) * 2
+        var data = Data()
+        func le<T: FixedWidthInteger>(_ value: T) { data.append(contentsOf: withUnsafeBytes(of: value.littleEndian, Array.init)) }
+        data.append(contentsOf: "RIFF".utf8); le(UInt32(36 + payloadBytes))
+        data.append(contentsOf: "WAVEfmt ".utf8); le(UInt32(16)); le(UInt16(1)); le(UInt16(1))
+        le(sampleRate); le(sampleRate * 2); le(UInt16(2)); le(UInt16(16))
+        data.append(contentsOf: "data".utf8); le(UInt32(payloadBytes))
+        data.append(Data(count: payloadBytes))
+        return data
+    }
+
+    /// A stand-in ffmpeg that ignores its arguments, drops `source` at the output path, and
+    /// exits 0, so a merge succeeds without a real ffmpeg (and so without a skip).
+    private func fakeFFmpeg(in dir: URL, writing source: URL) throws -> URL {
+        let script = dir.appendingPathComponent("fake-ffmpeg")
+        let body = """
+        #!/bin/sh
+        for last; do :; done
+        /bin/cp "\(source.path)" "$last"
+        exit 0
+        """
+        try Data(body.utf8).write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        return script
     }
 
     func test_scanOrphanStems_recovery_marker_exempts_a_stale_orphan_REC6() throws {

@@ -44,7 +44,9 @@ final class SystemAudioChannel {
     private var systemFile: AVAudioFile?
     private var systemCapture: SystemAudioCapture?
     private var systemStartTask: Task<Void, Never>?
-    private var systemWriter: SerialBufferWriter<AVAudioPCMBuffer>?
+    /// Readable so `MeetingRecorder.stop()` can hold on to it across `drainWriter`, which drops
+    /// it: an abandoned drain keeps the stem owned until the writer finishes (REC23).
+    private(set) var systemWriter: SerialBufferWriter<AVAudioPCMBuffer>?
 
     /// Buffers delivered this recording, across retries. Zeroed at `start()`, not at `stop()`
     /// (REC17): a buffer landing during teardown must not hand the next recording a count.

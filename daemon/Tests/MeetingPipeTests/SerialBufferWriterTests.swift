@@ -1,3 +1,4 @@
+import os
 import XCTest
 @testable import MeetingPipe
 
@@ -157,5 +158,57 @@ final class SerialBufferWriterTests: XCTestCase {
         let result = await drained
         XCTAssertFalse(result)
         gate.signal()
+    }
+
+    // MARK: - whenDrained (REC23)
+
+    /// `whenDrained` is the recorder's signal that nothing more will be written into a
+    /// stem's intermediates, so it must run behind every item enqueued before it.
+    func test_whenDrained_runs_only_after_every_item_enqueued_before_it() {
+        let log = OSAllocatedUnfairLock(initialState: [String]())
+        let writer = SerialBufferWriter<Int>(label: "test.whenDrained.order") { item in
+            Thread.sleep(forTimeInterval: 0.001)
+            log.withLock { $0.append("item\(item)") }
+        }
+        for i in 0..<20 { writer.enqueue(i) }
+        let ran = expectation(description: "whenDrained ran")
+        writer.whenDrained {
+            log.withLock { $0.append("drained") }
+            ran.fulfill()
+        }
+
+        wait(for: [ran], timeout: 5)
+        let entries = log.withLock { $0 }
+        XCTAssertEqual(entries.last, "drained")
+        XCTAssertEqual(entries.dropLast(), ArraySlice((0..<20).map { "item\($0)" }))
+    }
+
+    /// The case it exists for: a bounded drain timed out at stop and was abandoned, and the
+    /// backlog keeps writing. The closure must wait for that backlog, not for the timeout.
+    func test_whenDrained_waits_for_the_backlog_an_abandoned_drain_left() async {
+        let gate = DispatchSemaphore(value: 0)
+        let handled = OSAllocatedUnfairLock(initialState: 0)
+        let writer = SerialBufferWriter<Int>(label: "test.whenDrained.abandoned") { _ in
+            gate.wait()
+            handled.withLock { $0 += 1 }
+        }
+        writer.enqueue(1)
+        writer.enqueue(2)
+        let drained = await writer.drain(timeout: 0.1)
+        XCTAssertFalse(drained, "the precondition: the bounded drain gave up")
+
+        let ranAfter = OSAllocatedUnfairLock(initialState: -1)
+        let ran = expectation(description: "whenDrained ran")
+        writer.whenDrained {
+            ranAfter.withLock { $0 = handled.withLock { $0 } }
+            ran.fulfill()
+        }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(ranAfter.withLock { $0 }, -1, "nothing runs while the abandoned backlog is still wedged")
+
+        gate.signal()
+        gate.signal()
+        await fulfillment(of: [ran], timeout: 5)
+        XCTAssertEqual(ranAfter.withLock { $0 }, 2, "it ran behind both items the abandoned drain was still writing")
     }
 }

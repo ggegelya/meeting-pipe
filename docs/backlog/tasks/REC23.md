@@ -2,9 +2,10 @@
 id: REC23
 title: The after-job orphan sweep can merge a recording that is still starting, delete its live intermediates, and publish a few-second stub in place of the meeting
 category: Recording
-status: new
+status: done
 priority: P1
-comment: Filed 2026-10-25 from the performance review. The sweep's only guard for the live recording is `libraryModel.liveRecordingStem`, which `setRecording` sets after `recorder.start()` returns, while `<stem>.mic.wav` exists from before the engine start (39 to 68 ms on the built-in mic on 2026-10-13 and 2026-10-16, up to the 8 s budget on a headset). A job finishing in that window lists the new stem; when an earlier orphan's merge runs first, `recoverOrphan` merges the growing files, deletes them, clears the manifest and publishes a stub, the meeting is lost, and stop says it will be recovered. Broken promise: REC6's never merged mid-write; owner may re-band to P2 by the REC14 precedent (loss only after another failure). Scope: a recorder-owned stem set, set before the first file and held through stop and an abandoned drain, checked at scan and again per stem. [Spec](./REC23.md)
+closed: 2026-10-26
+comment: Shipped 2026-10-26. `MeetingRecorder.ownedStems` (`RecordingStemOwnership`) is claimed in `start()` before the `.capturemode` write and `buildMicChain`, released by a `defer` on every failed start, by `stop()` after the merge, and after an abandoned writer drain only when `SerialBufferWriter.whenDrained` fires; `reapStorage`, the orphan scan and the retention sweep exclude it, `OrphanRecordingRecovery.recover` re-asks per stem on main and logs `coordinator`/`orphan_recovery_skipped_owned`; `Coordinator.swift` no longer reads `liveRecordingStem`. Verified by `bash scripts/ci-local.sh` green (swift test 3086, 11 new, red-first on the per-stem test; pytest 1434).
 ---
 
 # REC23: the after-job orphan sweep can merge a recording that is still starting, delete its live intermediates, and publish a few-second stub in place of the meeting
