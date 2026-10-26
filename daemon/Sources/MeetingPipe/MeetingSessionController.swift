@@ -62,9 +62,10 @@ final class MeetingSessionController: @unchecked Sendable {
     /// detection corpus replays them on a virtual clock). Main-queue only, like everything else here.
     var holdPolicy = TeardownHoldPolicy()
 
-    /// The 1 Hz consult timer while a hold is shown, or nil. Host-side, since Core has no run loop.
+    /// Cancels the 1 Hz consult timer while a hold is shown, or nil. Host-side, since Core has no run
+    /// loop; common-mode (CONC10), so an alert left open cannot keep an ended meeting recording.
     /// Non-nil is also the record that the HUD was told the hold is showing.
-    var holdTimer: Timer?
+    var cancelHoldTimer: (() -> Void)?
 
     /// END9: where to cut the recording when the held end confirms, or nil for an ordinary end.
     /// Read once by `stopRecording` and cleared there, so it can never leak into the next meeting.
@@ -1817,7 +1818,7 @@ final class MeetingSessionController: @unchecked Sendable {
         // a genuine end never reaches the lines below and looks exactly as it looked before END9,
         // timer and HUD included.
         guard holdPolicy.isOpen else { return }
-        holdTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        cancelHoldTimer = Schedulers.mainRunLoopRepeating(1.0) { [weak self] in
             self?.consultTeardownOracle()
         }
         let snapshot = coordinator.callTeardown.snapshot()
@@ -1884,13 +1885,13 @@ final class MeetingSessionController: @unchecked Sendable {
     /// on every path that leaves `.endingProvisional`, so a stale timer can never outlive its meeting.
     func releaseTeardownHold(rescued: Bool = false) {
         guard let hold = holdPolicy.release() else { return }
-        // `holdTimer != nil` is the record of whether the holding state was ever shown. Without it,
+        // `cancelHoldTimer != nil` is the record of whether the holding state was ever shown. Without it,
         // an end that confirmed on its first consult would still push a `setConfirmingEnd(false)` at
         // a HUD that was never told true, which is a state change the surface has to handle for no
         // reason and which a test reads as the holding state having been entered.
-        let wasShown = holdTimer != nil
-        holdTimer?.invalidate()
-        holdTimer = nil
+        let wasShown = cancelHoldTimer != nil
+        cancelHoldTimer?()
+        cancelHoldTimer = nil
         if wasShown { coordinator.hud.setConfirmingEnd(false) }
         if rescued {
             Log.event(category: "coordinator", action: "lifecycle_end_hold_released", attributes: [

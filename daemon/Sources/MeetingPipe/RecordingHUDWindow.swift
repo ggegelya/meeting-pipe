@@ -1,4 +1,5 @@
 import AppKit
+import MeetingPipeCore
 
 /// Floating recording-status HUD: compact vertical pill, top-right, always-on-top. Exists because the menu-bar coral dot is easy to miss when other apps are foregrounded, and one-click stop is essential for a "this got sensitive, kill it" moment without navigating menus. Draggable via `isMovableByWindowBackground` so the user can move it off a Zoom control or chat avatar.
 protocol RecordingHUDDelegate: AnyObject {
@@ -122,7 +123,9 @@ final class RecordingHUDWindow {
     private var panel: NSPanel?
     private var elapsedLabel: NSTextField?
     private var pulseDot: PulseDotView?
-    private var ticker: Timer?
+    /// Cancels the clock tick. Both HUD tickers are common-mode (CONC10), so the clock and meter
+    /// keep moving while an alert is up or a menu is open.
+    private var cancelTicker: (() -> Void)?
     private var startedAt: Date?
 
     /// Degraded-state banner (TECH-UX4). Built lazily only when the recorder
@@ -137,7 +140,7 @@ final class RecordingHUDWindow {
     /// Voice-activity meter (TECH-UX8): polls the mic level at 10 Hz so the
     /// audio render thread never has to push to the UI.
     private var levelMeter: LEDMeterView?
-    private var meterTicker: Timer?
+    private var cancelMeterTicker: (() -> Void)?
     private var levelProvider: (() -> Float)?
     private var occlusionObserver: NSObjectProtocol?
 
@@ -178,7 +181,7 @@ final class RecordingHUDWindow {
         }
 
         // Half-second cadence is smooth and cheap.
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        cancelTicker = Schedulers.mainRunLoopRepeating(0.5) { [weak self] in
             self?.refreshElapsedLabel()
         }
         refreshElapsedLabel()
@@ -208,16 +211,16 @@ final class RecordingHUDWindow {
     /// (Re)start the 10 Hz meter poll if a provider is set and it isn't already
     /// running. Idempotent, so the occlusion observer can call it freely.
     private func startMeterTickerIfNeeded() {
-        guard levelProvider != nil, meterTicker == nil else { return }
-        meterTicker = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        guard levelProvider != nil, cancelMeterTicker == nil else { return }
+        cancelMeterTicker = Schedulers.mainRunLoopRepeating(0.1) { [weak self] in
             guard let self = self, let provider = self.levelProvider else { return }
             self.levelMeter?.level = RecordingHUDWindow.normalizedLevel(db: provider())
         }
     }
 
     private func stopMeterTicker() {
-        meterTicker?.invalidate()
-        meterTicker = nil
+        cancelMeterTicker?()
+        cancelMeterTicker = nil
     }
 
     private func syncMeterToOcclusion() {
@@ -233,8 +236,8 @@ final class RecordingHUDWindow {
     }
 
     func dismiss(animated: Bool = true) {
-        ticker?.invalidate()
-        ticker = nil
+        cancelTicker?()
+        cancelTicker = nil
         stopMeterTicker()
         if let obs = occlusionObserver {
             NotificationCenter.default.removeObserver(obs)
@@ -417,7 +420,8 @@ final class RecordingHUDWindow {
 
     // MARK: Panel construction
 
-    private func makePanel(source: AppSource?, workflow: Workflow?) -> NSPanel {
+    /// Internal, not private, so `ModalSafeTimerTests` can build the panel headless and pin its flags.
+    func makePanel(source: AppSource?, workflow: Workflow?) -> NSPanel {
         let rect = NSRect(origin: .zero, size: HUDPanelGeometry.size(offRecord: false, degraded: false))
         let panel = NSPanel(
             contentRect: rect,
@@ -430,6 +434,10 @@ final class RecordingHUDWindow {
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
+        // CONC10: without this, Stop is dead while any `runModal` alert is up, because AppKit
+        // delivers mouse events in a modal session only to the modal window and to panels that
+        // work when modal. Mouse delivery only: the panel stays nonactivating and never key.
+        panel.worksWhenModal = true
         panel.isMovableByWindowBackground = true
         panel.hasShadow = true
         panel.backgroundColor = .clear

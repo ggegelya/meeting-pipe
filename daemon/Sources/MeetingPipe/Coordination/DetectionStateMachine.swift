@@ -1,4 +1,5 @@
 import Foundation
+import MeetingPipeCore
 
 /// Recording-side state machine lifted out of `Coordinator`. States: `.idle`, `.prompting`/`.suppressed` (detector locked on, recorder not yet running), `.recording`, `.stopping` (flushing). Embeds `RepromptCooldown` and exposes it via a facade. Threading: main queue only; `onIdleTransition` fires inline from the `current` `didSet`.
 final class DetectionStateMachine {
@@ -283,7 +284,9 @@ final class DetectionStateMachine {
 
     // MARK: - Prompt timeout
 
-    private var promptTimeoutTimer: Timer?
+    /// Cancels the armed prompt timeout. Common-mode (CONC10), so with `record` as the default
+    /// action an alert left open does not swallow the start of the meeting.
+    private var cancelPromptTimer: (() -> Void)?
 
     /// Arm the prompt-timeout timer. Action is invoked on main only if state is still `.prompting(source:)` when the timer fires, guarding the race where the user acts after the timer is scheduled.
     func startPromptTimeout(
@@ -292,7 +295,7 @@ final class DetectionStateMachine {
         action: @escaping () -> Void
     ) {
         cancelPromptTimeout()
-        promptTimeoutTimer = Timer.scheduledTimer(withTimeInterval: timeoutSec, repeats: false) { [weak self] _ in
+        cancelPromptTimer = Schedulers.mainRunLoopOnce(timeoutSec) { [weak self] in
             guard let self = self else { return }
             DispatchQueue.main.async {
                 guard case .prompting(let src) = self.current, src == source else { return }
@@ -302,8 +305,8 @@ final class DetectionStateMachine {
     }
 
     func cancelPromptTimeout() {
-        promptTimeoutTimer?.invalidate()
-        promptTimeoutTimer = nil
+        cancelPromptTimer?()
+        cancelPromptTimer = nil
     }
 
     // MARK: - Deferred config refresh

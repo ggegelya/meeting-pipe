@@ -1,4 +1,5 @@
 import AppKit
+import MeetingPipeCore
 
 /// Detection prompt: a Notion-style horizontal pill centered near the top of the screen. The primary action is a labelled teal capsule (`PromptRecordButton`); secondary actions (Record BYO, Always, Skip, Screen Recording Settings) live under a chevron menu rather than inline buttons, so the right cluster stays quiet. Lifecycle: `present` shows the panel and starts the mic monitor; `dismiss` fades it out and stops the monitor. One panel at a time; the delegate carries outcome clicks back to the Coordinator.
 protocol MeetingPromptDelegate: AnyObject {
@@ -121,8 +122,8 @@ final class MeetingPromptWindow {
     private var currentWorkflow: Workflow?
     private let levelMonitor = MicLevelMonitor()
 
-    /// Auto-dismiss timer; paused on hover.
-    private var dismissTimer: Timer?
+    /// Cancels the auto-dismiss timer; paused on hover. Common-mode (CONC10), like the timeout it mirrors.
+    private var cancelDismissTimer: (() -> Void)?
     private var dismissDeadline: Date?
     private var dismissRemainingOnPause: TimeInterval?
 
@@ -182,8 +183,8 @@ final class MeetingPromptWindow {
     }
 
     func dismiss(animated: Bool = true) {
-        dismissTimer?.invalidate()
-        dismissTimer = nil
+        cancelDismissTimer?()
+        cancelDismissTimer = nil
         dismissDeadline = nil
         dismissRemainingOnPause = nil
         levelMonitor.stop()
@@ -213,7 +214,8 @@ final class MeetingPromptWindow {
 
     // MARK: - Panel construction
 
-    private func makePanel(source: AppSource, timeoutSec: TimeInterval) -> NSPanel {
+    /// Internal, not private, so `ModalSafeTimerTests` can build the panel headless and pin its flags.
+    func makePanel(source: AppSource, timeoutSec: TimeInterval) -> NSPanel {
         let rect = NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight)
         let panel = NSPanel(
             contentRect: rect,
@@ -226,6 +228,11 @@ final class MeetingPromptWindow {
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
+        // CONC10: during an app-modal session (any `runModal` alert) AppKit delivers mouse events
+        // only to the modal window and to panels that work when modal, so without this Record and
+        // Skip are dead while an alert is up. It governs mouse delivery, not becoming key: the
+        // panel stays nonactivating and borderless, so it still never takes focus.
+        panel.worksWhenModal = true
         panel.isMovableByWindowBackground = false
         panel.hasShadow = true
         panel.backgroundColor = .clear
@@ -464,9 +471,9 @@ final class MeetingPromptWindow {
     }
 
     private func scheduleAutoDismiss(after seconds: TimeInterval) {
-        dismissTimer?.invalidate()
+        cancelDismissTimer?()
         dismissDeadline = Date().addingTimeInterval(seconds)
-        dismissTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+        cancelDismissTimer = Schedulers.mainRunLoopOnce(seconds) { [weak self] in
             DispatchQueue.main.async { self?.dismiss() }
         }
     }
@@ -477,8 +484,8 @@ final class MeetingPromptWindow {
             if let deadline = dismissDeadline {
                 dismissRemainingOnPause = max(0, deadline.timeIntervalSinceNow)
             }
-            dismissTimer?.invalidate()
-            dismissTimer = nil
+            cancelDismissTimer?()
+            cancelDismissTimer = nil
         } else if let remaining = dismissRemainingOnPause {
             scheduleAutoDismiss(after: remaining)
             dismissRemainingOnPause = nil

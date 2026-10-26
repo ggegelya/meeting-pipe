@@ -324,12 +324,7 @@ public final class MeetingLifecycleCoordinator {
         return attrs
     }
 
-    public static let defaultScheduler: Scheduler = { interval, action in
-        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
-            action()
-        }
-        return { timer.invalidate() }
-    }
+    public static let defaultScheduler: Scheduler = Schedulers.mainRunLoopRepeating
 }
 
 private extension NSLock {

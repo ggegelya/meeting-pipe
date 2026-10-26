@@ -209,7 +209,7 @@ final class CallTeardownHoldTests: XCTestCase {
         controller.beginTeardownHold(context: context)
 
         XCTAssertNotNil(controller.holdPolicy.hold, "a quiet log is not a dead log; the call is still up")
-        XCTAssertNotNil(controller.holdTimer, "the hold has to keep consulting, not confirm once")
+        XCTAssertNotNil(controller.cancelHoldTimer, "the hold has to keep consulting, not confirm once")
         XCTAssertEqual(host.hudSpy.confirmingEndStates, [true], "the HUD has to say why it is still recording")
         controller.releaseTeardownHold()
     }

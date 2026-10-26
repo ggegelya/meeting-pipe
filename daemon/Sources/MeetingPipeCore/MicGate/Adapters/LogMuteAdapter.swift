@@ -55,12 +55,7 @@ public final class LogMuteAdapter: MicGateAdapter {
     /// latency this path adds, and it still beats the AX read it is fused with.
     public static let defaultPollInterval: TimeInterval = 1.0
 
-    public static let defaultScheduler: Scheduler = { delay, action in
-        let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
-            action()
-        }
-        return { timer.invalidate() }
-    }
+    public static let defaultScheduler: Scheduler = Schedulers.mainRunLoopOnce
 
     private let config: LogMuteConfig
     private let eventLog: EventLog

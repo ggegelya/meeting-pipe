@@ -144,12 +144,7 @@ final class MeetingAXWindowWatcher {
     /// instead of re-arming a stopped poll (MIC16).
     private var generation: Int = 0
 
-    static let defaultScheduler: Scheduler = { delay, action in
-        let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
-            action()
-        }
-        return { timer.invalidate() }
-    }
+    static let defaultScheduler: Scheduler = Schedulers.mainRunLoopOnce
 
     init(
         pid: pid_t,

@@ -19,6 +19,6 @@ Full subsystem map in [`../../../ARCHITECTURE.md`](../../../ARCHITECTURE.md); pa
 |---|---|
 | `Lifecycle/` | "Am I in a meeting?" `MeetingLifecycleCoordinator` fuses the `Signals/` into a verdict via `PromotionEngine`; `Adapters/` specialize per meeting client. |
 | `MicGate/` | "Should my mic be audible?" `MicGate.decide` fuses the `Probes/`; `MicGateWriter` applies the verdict per buffer; `IdleStopBackstop` auto-stops a dead meeting. |
-| `Infra/` | The real system-API backends behind the probes, plus `EventLog`. |
+| `Infra/` | The real system-API backends behind the probes, plus `EventLog` and `Schedulers` (the common-mode main-run-loop timers, CONC10). |
 
 Tests live in `daemon/Tests/MeetingPipeCoreTests/`, mirroring this layout.

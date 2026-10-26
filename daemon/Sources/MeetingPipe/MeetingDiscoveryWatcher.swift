@@ -51,7 +51,9 @@ final class MeetingDiscoveryWatcher {
 
     private var nsObservers: [NSObjectProtocol] = []
     private var avObservation: NSKeyValueObservation?
-    private var pollTimer: Timer?
+    /// Cancels the armed backstop poll. A common-mode main-run-loop timer (CONC10), so an alert or
+    /// an open menu does not stall the only path for a meeting no workspace notification announces.
+    private var cancelPoll: (() -> Void)?
 
     /// The default audio input, retained so both the KVO and the backstop poll can sample its
     /// busy state (DET3). Resolved once in `wireMicObserver`.
@@ -91,9 +93,9 @@ final class MeetingDiscoveryWatcher {
     /// Arm the backstop poll for the cadence's next interval. The timer is one-shot and re-arms itself,
     /// so the interval adapts each fire (active while workspace/mic activity arrives, idle once quiet).
     private func armPollTimer() {
-        pollTimer?.invalidate()
+        cancelPoll?()
         let interval = cadence.intervalAfterPoll()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+        cancelPoll = Schedulers.mainRunLoopOnce(interval) { [weak self] in
             guard let self = self else { return }
             self.sampleMicBusy() // DET3: poll-driven backstop for a missed mic KVO edge
             self.scheduleScan(triggerBundle: nil)
@@ -106,8 +108,8 @@ final class MeetingDiscoveryWatcher {
         nsObservers.removeAll()
         avObservation?.invalidate()
         avObservation = nil
-        pollTimer?.invalidate()
-        pollTimer = nil
+        cancelPoll?()
+        cancelPoll = nil
         coalesceWork?.cancel()
         coalesceWork = nil
         // DET3: force-close any open mic-busy span so its duration is recorded, not lost at
