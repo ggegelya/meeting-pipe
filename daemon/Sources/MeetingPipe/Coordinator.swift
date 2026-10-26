@@ -436,6 +436,11 @@ final class Coordinator: NSObject {
             )
             self.session.forceStop(reason: "write_failure_\(channel)")
         }
+        // REC27: the recorder has abandoned enough wedged audio-engine calls that it stops making
+        // them. Once per process; only a restart clears it.
+        recorder.onEngineCallsExhausted = { [weak self] in
+            self?.notifier.notifyEngineCallsExhausted()
+        }
         // TECH-END3: route the idle backstop's two horizons to the session on main.
         // The nudge surfaces "still meeting?"; the auto-stop applies the native
         // stand-down (keep a quiet-but-live native call) before stopping, unlike the

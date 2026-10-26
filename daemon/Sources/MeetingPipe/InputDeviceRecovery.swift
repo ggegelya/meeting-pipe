@@ -14,16 +14,21 @@ protocol InputDeviceRecoveryHost: AnyObject {
     var micFileFormat: AVAudioFormat? { get }
     /// The mic tap's buffer counter, sampled by the stall watchdog.
     var micFires: UInt64 { get }
-    var engineIsRunning: Bool { get }
     /// The instance `AVAudioEngineConfigurationChange` is posted from. The observer binds to it,
     /// which is why the engine is swapped only through `MeetingRecorder.replaceEngine(reason:)`.
     var observedEngine: AnyObject { get }
-    /// The input node's format right now, nil while it reports 0 Hz.
-    func liveInputFormat() -> AVAudioFormat?
-    func installMicTap(captureFormat: AVAudioFormat) -> GuardedTapInstall.Outcome
+    /// REC27: `engine.isRunning`, bounded off main. Nil when the read did not return in its budget
+    /// (or the recorder has stopped issuing engine calls), which is a wedge, not an answer.
+    @MainActor func readEngineIsRunning() async -> Bool?
+    /// REC27: the input node's format right now, bounded off main.
+    @MainActor func liveInputFormat() async -> LiveInputFormatRead
+    /// REC27: the guarded tap install, bounded off main. Nil when it did not return in its budget.
+    @MainActor func installMicTap(captureFormat: AVAudioFormat) async -> GuardedTapInstall.Outcome?
     func setMicConverter(_ converter: AVAudioConverter?)
-    /// REC15: swap a condemned engine and re-apply voice processing to the new input node.
-    func replaceCondemnedEngine()
+    /// Swap the engine for a fresh one and re-apply voice processing to the new input node.
+    /// REC15 retires a condemned engine through it; REC27 retires a wedged one, so that a call
+    /// which timed out is never followed by another call into the same instance.
+    @MainActor func retireEngine(reason: String) async
     /// Enqueue `frames` of silence on the mic writer and advance the mute-timeline position.
     func padMicGap(frames: AVAudioFrameCount, format: AVAudioFormat)
     /// Fire the recorder's `onConfigurationChange`.
@@ -31,6 +36,23 @@ protocol InputDeviceRecoveryHost: AnyObject {
     /// REC13: `engine.stop()` then `removeTap`, each bounded.
     @MainActor func haltEngineForRecovery() async -> (engineStopped: Bool, tapRemoved: Bool)
     @MainActor func restartEngine() async -> EngineStartOutcome
+}
+
+/// What a bounded read of the input node's format came back with (REC27). Three cases because
+/// "the node reports 0 Hz" and "the node did not answer" need opposite handling: the first is a
+/// Bluetooth route still settling and is worth a retry, the second is a wedged engine and asking
+/// it again only strands another thread.
+enum LiveInputFormatRead {
+    case usable(AVAudioFormat)
+    /// The read returned a 0 Hz format: no usable input yet.
+    case unusable
+    /// The read did not return within its budget and was abandoned.
+    case timedOut
+
+    var format: AVAudioFormat? {
+        if case .usable(let format) = self { return format }
+        return nil
+    }
 }
 
 /// Re-arms mic capture when the input device changes under a recording, or when the tap goes
@@ -49,6 +71,12 @@ final class InputDeviceRecovery {
     /// In-flight async capture-recovery (it bounds an engine restart off the
     /// main thread). Held so `stop()` can drain it before engine teardown, and
     /// non-nil acts as a one-at-a-time guard against re-entrant recovery.
+    ///
+    /// REC27: it is also the one slot every engine touch recovery makes runs in: the format read a
+    /// device change starts with, the watchdog's `isRunning` read, the wake re-check, and the
+    /// recovery each of those can lead to. So no two of them overlap, and a watchdog tick that
+    /// lands while a read is still outstanding (a wedged one, say) starts nothing rather than a
+    /// second blocked thread a second.
     ///
     /// Main-actor-confined by convention: every write is inside a `Task { @MainActor }`
     /// or in the now-`@MainActor` `stop()`. It used to be a `@unchecked Sendable` box
@@ -182,10 +210,28 @@ final class InputDeviceRecovery {
 
     /// Inspect the input format and dispatch to recovery/retry/failure. Split
     /// out so a retry reuses the same `gapStart` for the silence padding.
+    ///
+    /// REC27: the format read is an engine call, so it is bounded and runs in the recovery slot
+    /// with everything it leads to. A change that lands while the slot is busy is dropped, the
+    /// same contract an in-flight recovery always had: the busy work is itself a read or a
+    /// recovery of this engine, and the watchdog or the next change re-triggers.
     private func evaluateConfigurationChange(gapStart: Date) {
+        guard let host, host.isRecording, host.micFileFormat != nil else { return }
+        runExclusive { recovery in
+            await recovery.evaluateLiveFormat(gapStart: gapStart)
+        }
+    }
+
+    @MainActor
+    private func evaluateLiveFormat(gapStart: Date) async {
         guard let host, let fileFormat = host.micFileFormat else { return }
 
-        let liveFormat = host.liveInputFormat()
+        let read = await host.liveInputFormat()
+        if case .timedOut = read {
+            await engineCallTimedOut(site: "configuration_change_format_read")
+            return
+        }
+        let liveFormat = read.format
 
         switch CaptureRecoveryPlanner.plan(
             isRecording: host.isRecording,
@@ -215,21 +261,43 @@ final class InputDeviceRecovery {
         case .resume(let needsConverter):
             guard let liveFormat else { return }
             configurationRecoveryAttempts = 0
-            // recoverCapture is async (it bounds the engine restart off the main
-            // thread). Run one at a time: a re-entrant device change while a
-            // restart is in flight is dropped; the watchdog or the next change
-            // re-triggers. The task clears its own handle on completion.
-            guard recoveryTask == nil else { return }
-            recoveryTask = Task { @MainActor [weak self] in
-                defer { self?.recoveryTask = nil }
-                await self?.recoverCapture(
-                    fileFormat: fileFormat,
-                    liveFormat: liveFormat,
-                    needsConverter: needsConverter,
-                    gapStart: gapStart
-                )
-            }
+            // Already inside the recovery slot, so a re-entrant device change while this
+            // restart is in flight is dropped; the watchdog or the next change re-triggers.
+            await recoverCapture(
+                fileFormat: fileFormat,
+                liveFormat: liveFormat,
+                needsConverter: needsConverter,
+                gapStart: gapStart
+            )
         }
+    }
+
+    /// Run `work` in the recovery slot, or drop it when the slot is busy. The task clears its own
+    /// handle on completion.
+    private func runExclusive(_ work: @escaping @MainActor (InputDeviceRecovery) async -> Void) {
+        guard recoveryTask == nil else { return }
+        recoveryTask = Task { @MainActor [weak self] in
+            defer { self?.recoveryTask = nil }
+            guard let self else { return }
+            await work(self)
+        }
+    }
+
+    /// REC27: a bounded engine call that did not return is a wedge, and the instance it wedged on
+    /// is not asked anything again. The host retires it (the abandoned call still holds the old
+    /// instance until it returns, and then it deinits rather than running beside the new one),
+    /// and the failure counts toward REC15's budget like any other failed recovery.
+    ///
+    /// No retry on the fresh engine in this pass. If the wedge is in the HAL or coreaudiod rather
+    /// than in that one engine's queue, the fresh engine's first `inputNode` access blocks the
+    /// same way, and asking straight away spends another thread on the same wedge. The next
+    /// device change or watchdog tick asks again, and REC15's budget and the abandonment cap both
+    /// bound how often.
+    @MainActor
+    private func engineCallTimedOut(site: String) async {
+        Log.writeLine("recorder", "WARN: an audio-engine call timed out during capture recovery (\(site)) - retiring the engine, mic capture stopped")
+        await host?.retireEngine(reason: "\(site)_timed_out")
+        reportRecoveryFailure()
     }
 
     /// Schedule a retry; held so `stop()` or a superseding change can cancel.
@@ -266,6 +334,9 @@ final class InputDeviceRecovery {
         // thread already stopped), and that ordering is worth more than sharing a
         // helper. A wedged engine ends recovery the same way a timed-out restart
         // does below: mic capture stops, system audio keeps recording.
+        //
+        // REC27: and the engine is retired, not kept. Keeping it is what let the next watchdog
+        // tick, wake or start call the wedged instance synchronously on main.
         let (engineStopped, tapRemoved) = await host.haltEngineForRecovery()
         if !(engineStopped && tapRemoved) {
             Log.event(category: "recorder", action: "engine_teardown_timed_out", attributes: [
@@ -274,6 +345,7 @@ final class InputDeviceRecovery {
                 "tap_removed": tapRemoved,
             ])
             Log.writeLine("recorder", "WARN: audio engine teardown timed out during device-change recovery (stopped=\(engineStopped) tap_removed=\(tapRemoved)) - mic capture stopped")
+            await host.retireEngine(reason: "recovery_halt_timed_out")
             reportRecoveryFailure()
             return
         }
@@ -297,7 +369,10 @@ final class InputDeviceRecovery {
         // the likeliest place for one that raises despite the check. Retrying a tap on the
         // engine that just raised is the one thing the barrier exists to prevent, and it is
         // condemned by the time this line runs.
-        var tapOutcome = host.installMicTap(captureFormat: liveFormat)
+        guard var tapOutcome = await host.installMicTap(captureFormat: liveFormat) else {
+            await engineCallTimedOut(site: "recovery_install_tap")
+            return
+        }
 
         // REC15: what REC12 left out is that a condemned engine has a way back here too, and
         // recovery never took it. `start()` has always replaced a condemned engine; this path
@@ -309,11 +384,16 @@ final class InputDeviceRecovery {
         // for the same reason: a raise is a race against a moving hardware format, not a state.
         if !tapOutcome.isInstalled, tapOutcome.requiresFreshEngine {
             Log.writeLine("recorder", "replacing the audio engine mid-recording: an installTap raise condemned it")
-            host.replaceCondemnedEngine()
+            await host.retireEngine(reason: "condemned_mid_recording")
 
             // The fresh read is the whole point of the retry: the format that raised was stale by
             // the time `installTap` re-read it, and this is the re-read.
-            let retryFormat = host.liveInputFormat() ?? liveFormat
+            let retryRead = await host.liveInputFormat()
+            if case .timedOut = retryRead {
+                await engineCallTimedOut(site: "recovery_retry_format_read")
+                return
+            }
+            let retryFormat = retryRead.format ?? liveFormat
             if retryFormat != fileFormat {
                 guard let converter = AVAudioConverter(from: retryFormat, to: fileFormat) else {
                     Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
@@ -329,7 +409,11 @@ final class InputDeviceRecovery {
                 host.setMicConverter(nil)
             }
 
-            tapOutcome = host.installMicTap(captureFormat: retryFormat)
+            guard let retryOutcome = await host.installMicTap(captureFormat: retryFormat) else {
+                await engineCallTimedOut(site: "recovery_retry_install_tap")
+                return
+            }
+            tapOutcome = retryOutcome
             Log.event(category: "recorder", action: "mic_tap_recovery_retried", attributes: [
                 "refused_sample_rate": liveFormat.sampleRate,
                 "retry_sample_rate": retryFormat.sampleRate,
@@ -379,10 +463,12 @@ final class InputDeviceRecovery {
             reportRecoveryFailure()
             return
         case .timedOut:
-            // The abandoned restart may still be wedged on this engine, so we do
-            // NOT recreate it here: its config-change observer is bound to it.
-            // Mic capture stops for the rest of the call; system audio keeps
-            // recording. Same outcome as an unrecoverable device change.
+            // The abandoned restart may still be wedged on this engine, so it is retired: the
+            // abandoned call keeps the old instance until it returns, and nothing here asks it
+            // anything again (REC27). The observer follows the swap, since REC16's
+            // `replaceEngine(reason:)` re-arms it on the new instance. Mic capture stops until the
+            // next device change or watchdog tick re-arms it on the fresh engine; system audio
+            // keeps recording.
             //
             // REC15 corrected the second half of this comment, which said the tap-liveness
             // watchdog "stops once isRunning is false". It has not since REC8 deliberately
@@ -394,6 +480,7 @@ final class InputDeviceRecovery {
                 "reason": "engine_restart_timed_out",
             ])
             Log.writeLine("recorder", "WARN: audio engine restart timed out after a device change - mic capture stopped")
+            await host.retireEngine(reason: "recovery_restart_timed_out")
             reportRecoveryFailure()
             return
         }
@@ -471,15 +558,30 @@ final class InputDeviceRecovery {
         tapLivenessTimer = nil
     }
 
+
     /// One watchdog tick: re-arm capture when the tap has silently died. REC8: a
     /// STOPPED engine re-arms regardless of the buffer counter (the old
     /// `engine.isRunning` gate disabled the very check meant to catch a silently
     /// stopped engine, e.g. across a sleep/wake); a running engine re-arms on the
     /// tap-liveness stall. On the main queue, the same thread the device-change
     /// recovery it reuses runs on.
+    ///
+    /// REC27: the `isRunning` read is an engine call, so it is bounded and runs in the recovery
+    /// slot. That makes it single-flight: a tick that lands while a read or a recovery is still
+    /// outstanding starts nothing, so a wedged read costs one thread rather than one a second.
+    /// And it is not made at all once the mic is abandoned, which REC15's flag always meant and
+    /// the read used to ignore: it ran before `TapWatchdogPolicy.decide` looked at the flag.
     func checkTapLiveness() {
+        guard let host, host.isRecording, !micCaptureAbandoned else { return }
+        runExclusive { recovery in
+            await recovery.probeTapLiveness()
+        }
+    }
+
+    @MainActor
+    private func probeTapLiveness() async {
+        guard let engineRunning = await readEngineState(site: "tap_watchdog_read") else { return }
         guard let host, host.isRecording else { return }
-        let engineRunning = host.engineIsRunning
         // Sample only while the engine runs: a stopped engine delivers no buffers,
         // so its counter is meaningless and must not advance the stall clock.
         let stalled = engineRunning ? tapLivenessMonitor.sample(count: host.micFires) : false
@@ -501,29 +603,57 @@ final class InputDeviceRecovery {
             "stall_after_s": tapLivenessMonitor.stallAfter,
         ])
         Log.writeLine("recorder", "mic tap re-arm (engine_running=\(engineRunning) stalled=\(stalled)) - re-arming capture")
-        recoverFromTapStall()
+        await recoverAfterStall()
         tapLivenessMonitor.reset(count: host.micFires)
+    }
+
+    /// REC8: on wake, re-arm the mic tap if the engine died over sleep. The same bounded,
+    /// single-flight read the watchdog makes (REC27); a wake that lands while the slot is busy is
+    /// already being handled by whatever holds it.
+    func recheckAfterWake() {
+        guard let host, host.isRecording, !micCaptureAbandoned else { return }
+        runExclusive { recovery in
+            guard let engineRunning = await recovery.readEngineState(site: "wake_read") else { return }
+            Log.event(category: "recorder", action: "did_wake_while_recording", attributes: [
+                "engine_running": engineRunning,
+            ])
+            if !engineRunning { await recovery.recoverAfterStall() }
+        }
+    }
+
+    /// The bounded `isRunning` read both of the above make. A read that does not return is a
+    /// wedge: the engine is retired and the mic given up on for this recording, because the only
+    /// caller left would be the next 1 Hz tick asking the same question of the same HAL, at one
+    /// stranded thread a second. A real device change still reaches `recoverCapture`.
+    @MainActor
+    private func readEngineState(site: String) async -> Bool? {
+        guard let host else { return nil }
+        if let running = await host.readEngineIsRunning() { return running }
+        abandonMicCapture(reason: "\(site)_timed_out")
+        await engineCallTimedOut(site: site)
+        return nil
     }
 
     /// Re-arm the mic tap after a silent stall, reusing the device-change
     /// recovery (stop engine, swap tap, restart). The input format usually has
     /// not changed, so this re-installs the same-format tap and restarts.
-    func recoverFromTapStall() {
+    /// Runs inside the recovery slot (REC27), so the format read cannot overlap another call.
+    @MainActor
+    private func recoverAfterStall() async {
         guard let host, host.isRecording, let fileFormat = host.micFileFormat else { return }
-        let liveFormat = host.liveInputFormat() ?? fileFormat
-        // One recovery at a time (see evaluateConfigurationChange). Stamp the
-        // gap start now, before the async hop, so the silence pad measures from
-        // the stall, not from when the task happens to run.
-        guard recoveryTask == nil else { return }
+        // Stamp the gap start before the read, so the silence pad measures from the stall.
         let gapStart = Date()
-        recoveryTask = Task { @MainActor [weak self] in
-            defer { self?.recoveryTask = nil }
-            await self?.recoverCapture(
-                fileFormat: fileFormat,
-                liveFormat: liveFormat,
-                needsConverter: liveFormat != fileFormat,
-                gapStart: gapStart
-            )
+        let read = await host.liveInputFormat()
+        if case .timedOut = read {
+            await engineCallTimedOut(site: "stall_format_read")
+            return
         }
+        let liveFormat = read.format ?? fileFormat
+        await recoverCapture(
+            fileFormat: fileFormat,
+            liveFormat: liveFormat,
+            needsConverter: liveFormat != fileFormat,
+            gapStart: gapStart
+        )
     }
 }

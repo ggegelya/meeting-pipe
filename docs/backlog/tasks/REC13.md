@@ -12,6 +12,8 @@ comment: Shipped 2026-08-17; every engineering line of the acceptance is green a
 
 Band origin: filed 2026-08-14 from a live incident the owner reported the same day ("my last meeting got hang, can you check why it is still in stopping?"), diagnosed against the running process before it was killed. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task, and [owner-verification.md](../owner-verification.md) carries the gate for shipped work awaiting the owner's confirmation.
 
+**REC27 note (2026-10-26):** the ship note's "nothing calls the engine synchronously and unbounded any more" held for the stop and termination paths only. The start, recovery, wake and watchdog engine calls (voice processing, the format read, `installTap`, `isRunning`, `liveInputFormat`, the failed-start unwind) were left synchronous on main at this task's ship, and a timed-out teardown kept the engine; [REC27](./REC27.md) bounded those and retires the engine on a timeout. The walkthrough below is unchanged.
+
 ## What happened
 
 `20260814-163455`, a manual recording started 16:34:55 local. The owner stopped it at **17:31:43**; the state machine logged `state_change recording -> stopping` and then emitted **nothing for 52 minutes**. No `recording_stopped`. The daemon sat in `.stopping` while the recording kept going.

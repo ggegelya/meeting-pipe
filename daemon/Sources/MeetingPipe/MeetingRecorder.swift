@@ -22,9 +22,9 @@ import os
 /// Screen Recording is granted, else the final is mic-only, no merge).
 final class MeetingRecorder {
 
-    // `var` (not `let`) so an initial-start timeout can abandon a wedged engine
-    // and swap in a fresh one for the next attempt (see unwindFailedEngineStart).
-    // Reassigned only on that failure path.
+    // `var` (not `let`) so a wedged or condemned engine can be retired and a fresh one swapped
+    // in, only ever through `replaceEngine(reason:)` (REC16). REC27: every call into it goes
+    // through a bounded helper, and a call that times out retires the instance it timed out on.
     private var engine = AVAudioEngine()
     private var micFile: AVAudioFile?
 
@@ -32,6 +32,20 @@ final class MeetingRecorder {
     /// healthy start is ~25 ms; the UI stays live during the wait, so this is
     /// "how long before we give up on a wedged device", not freeze time.
     private static let engineStartBudgetSeconds = 8.0
+
+    /// REC27: budget for every other single engine call (`engineCall`): the voice-processing
+    /// toggle, the format read, `installTap`, `removeTap`, `isRunning`, a recovery halt step. Each
+    /// is sub-millisecond when healthy, so like the teardown's this is "how long before we give
+    /// up on a wedged engine", spent as a suspension rather than a frozen UI.
+    static let engineCallBudgetSeconds = EngineTeardown.defaultBudgetSeconds
+
+    /// REC27 item 3: the process-wide count of engine calls abandoned on timeout. Injected so a
+    /// test can start a recorder past the cap without abandoning anything for real.
+    private let abandonedCalls: AbandonedEngineCalls
+
+    /// Fired on main, once per process, when the abandonment count reaches the cap and the
+    /// recorder stops issuing engine calls. The Coordinator tells the owner to restart.
+    var onEngineCallsExhausted: (() -> Void)?
 
     /// REC7: ceilings on the two unbounded waits `stop()` used to make `.stopping`
     /// inescapable. A wedged disk write (`SerialBufferWriter.finish()`) and a hung
@@ -238,6 +252,11 @@ final class MeetingRecorder {
         /// read on the render thread under the same lock as the verdict. While on, the buffer is a
         /// manual span (capture-first) or force-zeroed (regulated gate).
         var manualOffRecord: Bool = false
+        /// REC27: bumped by every `replaceEngine(reason:)`. A tap carries the generation it was
+        /// installed under, and a buffer from an older one is dropped. A wedged engine retired
+        /// mid-recording (its `stop()` timed out, so its IO may still be running) must not
+        /// interleave buffers with its replacement into the one mic file.
+        var engineGeneration: UInt64 = 0
     }
     private let gateAccess = OSAllocatedUnfairLock(initialState: GateAccess())
 
@@ -302,7 +321,8 @@ final class MeetingRecorder {
 
     var isRecording: Bool { currentFile != nil }
 
-    init() {
+    init(abandonedCalls: AbandonedEngineCalls = .shared) {
+        self.abandonedCalls = abandonedCalls
         deviceRecovery.host = self
         systemChannel.isRecordingProvider = { [weak self] in self?.isRecording ?? false }
         systemChannel.noteWriteOutcome = { [weak self] ok in self?.noteWriteOutcome(channel: .system, success: ok) }
@@ -313,6 +333,9 @@ final class MeetingRecorder {
         case engineStartTimedOut(Double)
         case fileCreateFailed(String)
         case alreadyRecording
+        /// REC27: this process has abandoned `AbandonedEngineCalls.threshold` wedged engine calls,
+        /// so the recorder no longer issues any. Carries the count. Only a restart clears it.
+        case engineCallsExhausted(Int)
 
         var errorDescription: String? {
             switch self {
@@ -320,6 +343,8 @@ final class MeetingRecorder {
             case .engineStartTimedOut(let s): return "Audio device did not respond within \(Int(s))s; it may be busy or switching. Try again."
             case .fileCreateFailed(let s):  return "Could not create output WAV: \(s)"
             case .alreadyRecording:         return "Recorder already in progress"
+            case .engineCallsExhausted:
+                return "The Mac's audio system stopped responding to MeetingPipe. Quit and reopen MeetingPipe to record again."
             }
         }
     }
@@ -392,83 +417,17 @@ final class MeetingRecorder {
         let modeMarkerURL = outputDir.appendingPathComponent("\(stamp).capturemode")
         try? captureMode.marker.write(to: modeMarkerURL, atomically: true, encoding: .utf8)
 
-        // REC12: an `installTap` raise the barrier caught leaves the engine unspecified and
-        // condemned, and a condemned engine is refused every tap from then on. That can
-        // only have happened in a previous session (a raise during this one throws out of
-        // start, or ends device-change recovery), so the cost of not asking here is a
-        // whole meeting failing to start over an engine we already knew was finished.
-        // Replacing it is the only sanctioned way back, and it is free when nothing raised.
-        if GuardedTapInstall.isCondemned(engine) {
-            Log.writeLine("recorder", "replacing the audio engine: a previous installTap raise condemned it")
-            replaceEngine(reason: "condemned_at_start")
+        // REC27 item 4: one exit for every start that fails after the marker is written. Before
+        // this, each throw below left `<stamp>.capturemode` behind in raw/, and the two
+        // `buildMicChain` throws also left voice processing on (the 2026-05-13 symptom: other
+        // apps hear the owner at reduced gain until the process exits). The paths that already
+        // had an unwind keep it; this catch is what the rest were missing.
+        do {
+            try await startMicCapture(voiceProcessing: voiceProcessing, micURL: micURL)
+        } catch {
+            await unwindFailedStart(markerURL: modeMarkerURL, micURL: micURL)
+            throw error
         }
-
-        var chain = try buildMicChain(voiceProcessing: voiceProcessing, micURL: micURL)
-
-        // REC15: give a caught raise exactly one more attempt, on an engine that has never
-        // raised. The barrier's own doc draws the line this leans on: the format check answers
-        // a *state* and the barrier covers a *race*, so a refusal is worth no retry (the HAL
-        // still has no usable input) while a raise is worth one (the hardware format moved
-        // between our read and installTap's re-read, and the next read may already have caught
-        // up). Measured on 2026-08-19: the tap was requested at 24000 Hz while the AirPods had
-        // gone back to 48000, and the owner's own manual retry read 48000 and started normally.
-        //
-        // Once, not in a loop. A second raise means the format is still moving, and a retry
-        // loop against a transitioning route is the busy-wait REC12's condemnation exists to
-        // refuse. The unwind below takes the fresh-engine path, so the retry never runs on the
-        // engine that raised.
-        if case .tapRefused(let refusal, let refusedFormat) = chain, refusal.requiresFreshEngine {
-            Log.writeLine(
-                "recorder",
-                "retrying the mic tap once on a fresh engine after a caught raise at \(refusedFormat.sampleRate) Hz"
-            )
-            unwindFailedEngineStart(micURL: micURL, recreateEngine: true)
-            chain = try buildMicChain(voiceProcessing: voiceProcessing, micURL: micURL)
-            Log.event(category: "recorder", action: "mic_tap_start_retried", attributes: [
-                "refused_sample_rate": refusedFormat.sampleRate,
-                "retry_sample_rate": chain.captureFormat.sampleRate,
-                "installed": chain.isInstalled,
-            ])
-        }
-
-        let micFormat = chain.captureFormat
-        if case .tapRefused(let refusal, _) = chain {
-            // A caught raise leaves this engine unspecified, so unwinding by reusing it
-            // (removing a tap that may not exist, reverting voice processing on a
-            // half-configured node) is exactly the retry the barrier must not permit.
-            // Take the fresh-engine path instead, the same one the abandoned-start
-            // timeout takes and for the same reason.
-            unwindFailedEngineStart(micURL: micURL, recreateEngine: refusal.requiresFreshEngine)
-            throw RecorderError.engineStartFailed(
-                refusal.requiresFreshEngine
-                    ? "installTap raised on the input node twice; the audio engine was replaced"
-                    : "the input format cannot carry a tap (\(micFormat.sampleRate) Hz, \(micFormat.channelCount) ch)"
-            )
-        }
-
-        // AVAudioEngine.start() can wedge on a transitioning audio route (a
-        // Bluetooth headset renegotiating HFP was observed 2026-06-12 to hang it
-        // ~42 s). It used to run synchronously on the main thread, so a wedge
-        // froze the whole app and "Record did nothing" until a restart. Bound it
-        // off the main thread; on timeout the abandoned start keeps running but
-        // we tear down and surface a retryable error instead of freezing.
-        switch await boundedEngineStart(seconds: MeetingRecorder.engineStartBudgetSeconds, { [engine] in
-            try engine.start()
-        }) {
-        case .started:
-            break
-        case .failed(let message):
-            unwindFailedEngineStart(micURL: micURL, recreateEngine: false)
-            throw RecorderError.engineStartFailed(message)
-        case .timedOut:
-            unwindFailedEngineStart(micURL: micURL, recreateEngine: true)
-            Log.writeLine("recorder", "WARN: engine.start() timed out after \(Int(MeetingRecorder.engineStartBudgetSeconds))s - audio device wedged; aborting start")
-            Log.event(category: "recorder", action: "engine_start_timed_out", attributes: [
-                "budget_s": MeetingRecorder.engineStartBudgetSeconds,
-            ])
-            throw RecorderError.engineStartTimedOut(MeetingRecorder.engineStartBudgetSeconds)
-        }
-        Log.writeLine("recorder", "engine started")
 
         // Re-arm capture on a mid-recording device swap (e.g. AirPods
         // unplugged) instead of flatlining the mic. Removed in `stop()`.
@@ -492,6 +451,123 @@ final class MeetingRecorder {
         return finalURL
     }
 
+    /// The part of `start()` that touches the engine: bind the mic chain, give a caught raise its
+    /// one retry, and start the engine. Every throw out of here lands in `start()`'s one catch.
+    @MainActor
+    private func startMicCapture(voiceProcessing: Bool, micURL: URL) async throws {
+        // REC27 item 3: past the cap the recorder issues no engine call at all, so fail before
+        // the first one. Inside the catch rather than ahead of the marker write so that this exit
+        // takes the same unwind as every other.
+        if abandonedCalls.isExhausted {
+            Log.writeLine("recorder", "refusing to start: \(abandonedCalls.count) wedged audio-engine calls abandoned this process - restart MeetingPipe")
+            throw RecorderError.engineCallsExhausted(abandonedCalls.count)
+        }
+
+        // REC12: an `installTap` raise the barrier caught leaves the engine unspecified and
+        // condemned, and a condemned engine is refused every tap from then on. That can
+        // only have happened in a previous session (a raise during this one throws out of
+        // start, or ends device-change recovery), so the cost of not asking here is a
+        // whole meeting failing to start over an engine we already knew was finished.
+        // Replacing it is the only sanctioned way back, and it is free when nothing raised.
+        if GuardedTapInstall.isCondemned(engine) {
+            Log.writeLine("recorder", "replacing the audio engine: a previous installTap raise condemned it")
+            replaceEngine(reason: "condemned_at_start")
+        }
+
+        var chain = try await buildMicChain(voiceProcessing: voiceProcessing, micURL: micURL)
+
+        // REC15: give a caught raise exactly one more attempt, on an engine that has never
+        // raised. The barrier's own doc draws the line this leans on: the format check answers
+        // a *state* and the barrier covers a *race*, so a refusal is worth no retry (the HAL
+        // still has no usable input) while a raise is worth one (the hardware format moved
+        // between our read and installTap's re-read, and the next read may already have caught
+        // up). Measured on 2026-08-19: the tap was requested at 24000 Hz while the AirPods had
+        // gone back to 48000, and the owner's own manual retry read 48000 and started normally.
+        //
+        // Once, not in a loop. A second raise means the format is still moving, and a retry
+        // loop against a transitioning route is the busy-wait REC12's condemnation exists to
+        // refuse. The unwind below takes the fresh-engine path, so the retry never runs on the
+        // engine that raised.
+        if case .tapRefused(let refusal, let refusedFormat) = chain, refusal.requiresFreshEngine {
+            Log.writeLine(
+                "recorder",
+                "retrying the mic tap once on a fresh engine after a caught raise at \(refusedFormat.sampleRate) Hz"
+            )
+            await unwindFailedEngineStart(micURL: micURL, recreateEngine: true)
+            chain = try await buildMicChain(voiceProcessing: voiceProcessing, micURL: micURL)
+            Log.event(category: "recorder", action: "mic_tap_start_retried", attributes: [
+                "refused_sample_rate": refusedFormat.sampleRate,
+                "retry_sample_rate": chain.captureFormat.sampleRate,
+                "installed": chain.isInstalled,
+            ])
+        }
+
+        let micFormat = chain.captureFormat
+        if case .tapRefused(let refusal, _) = chain {
+            // A caught raise leaves this engine unspecified, so unwinding by reusing it
+            // (removing a tap that may not exist, reverting voice processing on a
+            // half-configured node) is exactly the retry the barrier must not permit.
+            // Take the fresh-engine path instead, the same one the abandoned-start
+            // timeout takes and for the same reason.
+            await unwindFailedEngineStart(micURL: micURL, recreateEngine: refusal.requiresFreshEngine)
+            throw RecorderError.engineStartFailed(
+                refusal.requiresFreshEngine
+                    ? "installTap raised on the input node twice; the audio engine was replaced"
+                    : "the input format cannot carry a tap (\(micFormat.sampleRate) Hz, \(micFormat.channelCount) ch)"
+            )
+        }
+
+        // AVAudioEngine.start() can wedge on a transitioning audio route (a
+        // Bluetooth headset renegotiating HFP was observed 2026-06-12 to hang it
+        // ~42 s). It used to run synchronously on the main thread, so a wedge
+        // froze the whole app and "Record did nothing" until a restart. Bound it
+        // off the main thread; on timeout the abandoned start keeps running but
+        // we tear down and surface a retryable error instead of freezing.
+        switch await boundedEngineStart(seconds: MeetingRecorder.engineStartBudgetSeconds, { [engine] in
+            try engine.start()
+        }) {
+        case .started:
+            break
+        case .failed(let message):
+            await unwindFailedEngineStart(micURL: micURL, recreateEngine: false)
+            throw RecorderError.engineStartFailed(message)
+        case .timedOut:
+            noteAbandoned(site: "engine_start")
+            await unwindFailedEngineStart(micURL: micURL, recreateEngine: true)
+            Log.writeLine("recorder", "WARN: engine.start() timed out after \(Int(MeetingRecorder.engineStartBudgetSeconds))s - audio device wedged; aborting start")
+            Log.event(category: "recorder", action: "engine_start_timed_out", attributes: [
+                "budget_s": MeetingRecorder.engineStartBudgetSeconds,
+            ])
+            throw RecorderError.engineStartTimedOut(MeetingRecorder.engineStartBudgetSeconds)
+        }
+        Log.writeLine("recorder", "engine started")
+    }
+
+    /// `start()`'s one catch (REC27 item 4): whatever threw, the marker goes and voice processing
+    /// is reverted if this start left it on. The revert is keyed on the flag, so it acts only on
+    /// the exits that had no unwind of their own (the two `buildMicChain` throws); every other
+    /// exit has already cleared the flag on its way out. The engine has not started on those
+    /// throws, so this is not the wedge case, and it is bounded like every other engine call.
+    ///
+    /// Reverting rather than replacing the engine on purpose: nothing establishes that disposing
+    /// an engine reverts VPIO on the device, and `teardownEngine`'s doc records that macOS does
+    /// not even disable it on stop.
+    @MainActor
+    private func unwindFailedStart(markerURL: URL, micURL: URL) async {
+        try? FileManager.default.removeItem(at: markerURL)
+        micFile = nil
+        micGateWriter = nil
+        micWriter = nil
+        try? FileManager.default.removeItem(at: micURL)
+        if voiceProcessingEnabledForSession {
+            voiceProcessingEnabledForSession = false
+            let reverted: Void? = await engineCall(site: "failed_start_voice_processing_revert") { engine in
+                _ = try? engine.inputNode.setVoiceProcessingEnabled(false)
+            }
+            if reverted == nil { replaceEngine(reason: "start_call_timed_out") }
+        }
+    }
+
     /// Roll back the partial mic setup created before `engine.start()` when the
     /// start fails or times out, so the recorder returns to a clean idle and a
     /// retry starts fresh. On the throwing path the engine returned, so we reuse
@@ -500,8 +576,11 @@ final class MeetingRecorder {
     /// NOT touch that engine here (concurrent AVAudioEngine mutation is unsafe):
     /// swap in a fresh one and let the stuck start release the old one when it
     /// unwedges (or leak it harmlessly if it never does).
+    ///
+    /// REC27: the reuse path's two calls are bounded, and either one timing out retires the engine
+    /// the same way the timeout path does.
     @MainActor
-    private func unwindFailedEngineStart(micURL: URL, recreateEngine: Bool) {
+    private func unwindFailedEngineStart(micURL: URL, recreateEngine: Bool) async {
         self.micFile = nil
         self.micGateWriter = nil
         self.micWriter = nil
@@ -509,15 +588,19 @@ final class MeetingRecorder {
         if recreateEngine {
             voiceProcessingEnabledForSession = false
             replaceEngine(reason: "failed_start_unwind")
-        } else {
+            return
+        }
+        let revertVoiceProcessing = voiceProcessingEnabledForSession
+        voiceProcessingEnabledForSession = false
+        // start() failed after VP was enabled: flip it back off so the HAL
+        // device isn't stranded with degraded gain for other apps.
+        let unwound: Void? = await engineCall(site: "failed_start_unwind") { engine in
             engine.inputNode.removeTap(onBus: 0)
-            // start() failed after VP was enabled: flip it back off so the HAL
-            // device isn't stranded with degraded gain for other apps.
-            if voiceProcessingEnabledForSession {
-                try? engine.inputNode.setVoiceProcessingEnabled(false)
-                voiceProcessingEnabledForSession = false
+            if revertVoiceProcessing {
+                _ = try? engine.inputNode.setVoiceProcessingEnabled(false)
             }
         }
+        if unwound == nil { replaceEngine(reason: "start_call_timed_out") }
     }
 
     // MARK: - The mic capture chain
@@ -556,28 +639,42 @@ final class MeetingRecorder {
     /// (the Microphone grant is the likely cause) and a mic file that will not open. A tap refusal
     /// comes back as a value instead, because whether it is worth retrying depends on which
     /// refusal it was, and that is the caller's judgement rather than this seam's.
+    ///
+    /// REC27: async because every engine call in it (the voice-processing toggle, the format read,
+    /// the tap) is bounded off main and awaited before the next. One that times out retires the
+    /// engine and fails the start with the same retryable error a timed-out `engine.start()` gives.
     @MainActor
-    private func buildMicChain(voiceProcessing: Bool, micURL: URL) throws -> MicChainOutcome {
+    private func buildMicChain(voiceProcessing: Bool, micURL: URL) async throws -> MicChainOutcome {
         // Set BEFORE reading inputNode.outputFormat: voice processing
         // changes the node's output format, so reading first would write a
         // file whose declared format mismatches the tap buffers. A throw
         // here falls back to raw capture (best-effort).
         voiceProcessingEnabledForSession = false
         if voiceProcessing {
-            do {
-                try engine.inputNode.setVoiceProcessingEnabled(true)
-                voiceProcessingEnabledForSession = true
-                Log.writeLine("recorder", "voice processing enabled on inputNode")
-            } catch {
+            let enabled = await engineCall(site: "start_voice_processing_enable") { engine -> String? in
+                do {
+                    try engine.inputNode.setVoiceProcessingEnabled(true)
+                    return nil
+                } catch {
+                    return error.localizedDescription
+                }
+            }
+            guard let failure = enabled else { throw failStartOnWedge() }
+            if let failure {
                 Log.writeLine(
                     "recorder",
-                    "WARN: setVoiceProcessingEnabled failed: \(error.localizedDescription) - falling back to raw mic"
+                    "WARN: setVoiceProcessingEnabled failed: \(failure) - falling back to raw mic"
                 )
+            } else {
+                voiceProcessingEnabledForSession = true
+                Log.writeLine("recorder", "voice processing enabled on inputNode")
             }
         }
 
         // Mic via AVAudioEngine.inputNode (self-pumping).
-        let micFormat = engine.inputNode.outputFormat(forBus: 0)
+        guard let micFormat = await engineCall(site: "start_format_read", { engine in
+            engine.inputNode.outputFormat(forBus: 0)
+        }) else { throw failStartOnWedge() }
         guard micFormat.sampleRate > 0 else {
             throw RecorderError.fileCreateFailed("inputNode reports zero sample rate - Microphone permission likely not granted")
         }
@@ -635,11 +732,25 @@ final class MeetingRecorder {
         // The `sampleRate > 0` check above is a pre-flight on a format read a few lines earlier,
         // and it never looked at the channel count; this is the check at the instant of use, which
         // is the one that matters when the device is mid-transition (REC12).
-        let tapOutcome = installMicTap(captureFormat: micFormat)
+        guard let tapOutcome = await installMicTap(captureFormat: micFormat) else {
+            throw failStartOnWedge()
+        }
         guard tapOutcome.isInstalled else {
             return .tapRefused(tapOutcome, captureFormat: micFormat)
         }
         return .ready(captureFormat: micFormat, fileFormat: fileFormat)
+    }
+
+    /// A bounded call inside `start()` did not return: the engine is wedged. Retire it (the
+    /// abandoned call keeps the old instance until it returns) and fail the start. Voice
+    /// processing cannot be reverted on an instance nobody may call, so the flag is cleared
+    /// rather than left to steer `start()`'s catch onto the replacement.
+    @MainActor
+    private func failStartOnWedge() -> RecorderError {
+        voiceProcessingEnabledForSession = false
+        replaceEngine(reason: "start_call_timed_out")
+        if abandonedCalls.isExhausted { return .engineCallsExhausted(abandonedCalls.count) }
+        return .engineStartTimedOut(Self.engineCallBudgetSeconds)
     }
 
     /// Re-attempt system-audio capture (TECH-UX4, REC8, REC10). Main-thread only; the channel
@@ -697,13 +808,15 @@ final class MeetingRecorder {
 
     /// REC8: on wake, re-arm the mic tap if the engine died over sleep and re-attempt
     /// system audio if its stream dropped (`retrySystemAudio` no-ops if it is live).
+    ///
+    /// REC27: the `isRunning` read moved into recovery's bounded, single-flight slot, which also
+    /// emits `did_wake_while_recording` once it has the answer. A wake is exactly when a wedged
+    /// engine queue is likeliest (2026-08-14 was a sleep/wake storm), so this is the last place a
+    /// synchronous read belongs.
     func handleDidWake() {
         guard isRecording else { return }
-        Log.event(category: "recorder", action: "did_wake_while_recording", attributes: [
-            "engine_running": engine.isRunning,
-        ])
         Log.writeLine("recorder", "woke while recording - re-checking capture liveness")
-        if !engine.isRunning { deviceRecovery.recoverFromTapStall() }
+        deviceRecovery.recheckAfterWake()
         retrySystemAudio()
     }
 
@@ -718,18 +831,44 @@ final class MeetingRecorder {
     /// outcome rather than a `Bool` because the two failures need different recoveries:
     /// both call sites treat any of them as a capture failure rather than silently
     /// recording nothing, and a caught raise additionally retires this engine.
-    func installMicTap(captureFormat: AVAudioFormat) -> GuardedTapInstall.Outcome {
-        GuardedTapInstall.install(format: captureFormat, site: "meeting_recorder", engine: engine) {
-            engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: captureFormat) { [weak self] buffer, _ in
-                self?.processMicBuffer(buffer)
+    ///
+    /// REC27: bounded off main like every other engine call, with the guard, the ObjC barrier and
+    /// the condemnation all inside the bounded closure, and the outcome handed back through
+    /// `engineCall`'s lock-boxed value the way `boundedEngineStart` returns its own. Nil when the
+    /// install did not return in its budget.
+    @MainActor
+    func installMicTap(captureFormat: AVAudioFormat) async -> GuardedTapInstall.Outcome? {
+        // `nonisolated(unsafe)`, and why that is not the silencing CONC4 warns against: this
+        // block is the render-thread callback, and the cross-thread access it carries (the
+        // recorder's render-owned fields, `micFires`, the writers, the gate) is the recorder's
+        // threading model since TECH-CONC2, unchanged here. What REC27 adds is one hand-off of
+        // the block itself, from main to the GCD thread that calls `installTap`, which retains it
+        // and only ever invokes it on the render thread. Before REC27 `installTap` ran on main and
+        // took the same block with the same captures; the compiler sees it now only because the
+        // hand-off goes through a `@Sendable` closure. One local constant, not a type.
+        nonisolated(unsafe) let tapBlock = makeMicTapBlock()
+        return await engineCall(site: "install_tap") { engine in
+            GuardedTapInstall.install(format: captureFormat, site: "meeting_recorder", engine: engine) {
+                engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: captureFormat, block: tapBlock)
             }
+        }
+    }
+
+    /// The tap's render-thread callback, built on the caller's thread so the bounded closure
+    /// above captures only the block, never the recorder. It carries the engine generation it
+    /// was installed under, so a retired engine still rendering cannot write into the mic file.
+    private func makeMicTapBlock() -> AVAudioNodeTapBlock {
+        let generation = gateAccess.withLock { $0.engineGeneration }
+        return { [weak self] buffer, _ in
+            self?.processMicBuffer(buffer, tapGeneration: generation)
         }
     }
 
     /// Normalise one tap buffer to an owned file-format buffer (deep copy,
     /// or resample when a device change left a converter), apply the MicGate
     /// verdict, and enqueue it for the serial writer. On the delivery thread.
-    private func processMicBuffer(_ rawBuffer: AVAudioPCMBuffer) {
+    private func processMicBuffer(_ rawBuffer: AVAudioPCMBuffer, tapGeneration: UInt64) {
+        guard gateAccess.withLock({ $0.engineGeneration }) == tapGeneration else { return }
         guard micFile != nil, let fileFormat = micFileFormat else { return }
 
         // The tap buffer is engine-owned and reused after return; end up with
@@ -849,11 +988,54 @@ final class MeetingRecorder {
     private func replaceEngine(reason: String) {
         let wasArmed = deviceRecovery.disarmConfigurationChangeObserver()
         engine = AVAudioEngine()
+        gateAccess.withLock { $0.engineGeneration &+= 1 }
         Log.event(category: "recorder", action: "engine_replaced", attributes: [
             "reason": reason,
             "observer_rearmed": wasArmed,
         ])
         if wasArmed { deviceRecovery.armConfigurationChangeObserver() }
+    }
+
+    // MARK: - Bounded engine calls (REC27)
+
+    /// REC27 item 2: the one way the recorder makes a single call into its engine outside
+    /// `EngineTeardown` and `boundedEngineStart`. The call runs off main through
+    /// `runBlockingWithTimeout` with the current engine passed in, and its result comes back
+    /// through a lock-boxed value the way `boundedEngineStart` returns its outcome.
+    ///
+    /// Nil means do not trust the engine: the call did not return within its budget (it is
+    /// abandoned, counted, and its caller retires the engine) or the process is past the
+    /// abandonment cap and the call was never issued. The closure receives the engine as a
+    /// parameter so it holds the instance only while it runs; the recorder keeps no second
+    /// reference to an engine it has retired.
+    @MainActor
+    private func engineCall<Value: Sendable>(
+        site: String,
+        _ body: @escaping @Sendable (AVAudioEngine) -> Value
+    ) async -> Value? {
+        guard !abandonedCalls.isExhausted else {
+            Log.writeLine("recorder", "not calling the audio engine at \(site): past the abandoned-call cap - restart MeetingPipe")
+            return nil
+        }
+        let result = OSAllocatedUnfairLock<Value?>(initialState: nil)
+        let finished = await runBlockingWithTimeout(seconds: Self.engineCallBudgetSeconds) { [engine] in
+            let value = body(engine)
+            result.withLock { $0 = value }
+        }
+        guard finished else {
+            noteAbandoned(site: site)
+            return nil
+        }
+        return result.withLock { $0 }
+    }
+
+    /// Count one abandoned engine call, and on the one that reaches the cap tell the owner, once
+    /// per process, that only a restart gets the stranded threads back.
+    @MainActor
+    private func noteAbandoned(site: String) {
+        guard abandonedCalls.record(site: site) else { return }
+        Log.writeLine("recorder", "ERROR: \(abandonedCalls.threshold) wedged audio-engine calls abandoned - no further engine calls until MeetingPipe restarts")
+        onEngineCallsExhausted?()
     }
 
     /// Stop the recording and merge the intermediate files. Returns whether a
@@ -978,12 +1160,24 @@ final class MeetingRecorder {
     /// low until restart). That revert is the third step of the bounded
     /// `EngineTeardown.run`; it moved there with REC13 because it is an engine call
     /// like the other two and was the only one still unbounded on main.
+    ///
+    /// REC27: a teardown that timed out retires the engine. It used to only log, and the same
+    /// instance was what the next meeting's `start()` called. `deviceRecovery.standDown()` has
+    /// already disarmed the observer, so `replaceEngine` re-arms nothing. Past the abandoned-call
+    /// cap the teardown is not issued at all: the owner has been told to restart, and three more
+    /// stranded threads buy nothing a restart does not.
     @MainActor
     private func teardownEngine() async {
-        var revertVoiceProcessing: (@Sendable () -> Void)?
-        if voiceProcessingEnabledForSession {
-            voiceProcessingEnabledForSession = false
-            revertVoiceProcessing = { [engine] in
+        let revertVoiceProcessing = voiceProcessingEnabledForSession
+        voiceProcessingEnabledForSession = false
+        guard !abandonedCalls.isExhausted else {
+            Log.writeLine("recorder", "WARN: skipping the audio engine teardown: past the abandoned-call cap - finalizing the intermediates anyway")
+            return
+        }
+        let teardown = await EngineTeardown.run(
+            removeTap: { [engine] in engine.inputNode.removeTap(onBus: 0) },
+            stop: { [engine] in engine.stop() },
+            revertVoiceProcessing: revertVoiceProcessing ? ({ [engine] in
                 do {
                     try engine.inputNode.setVoiceProcessingEnabled(false)
                     Log.writeLine("recorder", "voice processing disabled on inputNode")
@@ -993,12 +1187,7 @@ final class MeetingRecorder {
                         "WARN: setVoiceProcessingEnabled(false) failed: \(error.localizedDescription) - system mic may stay degraded until app restart"
                     )
                 }
-            }
-        }
-        let teardown = await EngineTeardown.run(
-            removeTap: { [engine] in engine.inputNode.removeTap(onBus: 0) },
-            stop: { [engine] in engine.stop() },
-            revertVoiceProcessing: revertVoiceProcessing
+            } as @Sendable () -> Void) : nil
         )
         if !teardown.isClean {
             Log.writeLine("recorder", "WARN: audio engine teardown timed out (\(teardown.timedOutSteps.joined(separator: ","))) - finalizing the intermediates anyway")
@@ -1006,6 +1195,8 @@ final class MeetingRecorder {
                 "path": "stop",
                 "steps": teardown.timedOutSteps,
             ])
+            for step in teardown.timedOutSteps { noteAbandoned(site: "teardown_\(step)") }
+            replaceEngine(reason: "teardown_timed_out")
         }
     }
 
@@ -1263,24 +1454,29 @@ final class MeetingRecorder {
         // after this (a SIGTERM the user later cancels). Unbounded, these three were
         // the calls most likely to inherit a wedged engine queue on the one path that
         // has no way back: a quit that never returns needs a force-quit.
-        var revertVoiceProcessing: (@Sendable () -> Void)?
-        if voiceProcessingEnabledForSession {
-            voiceProcessingEnabledForSession = false
-            revertVoiceProcessing = { [engine] in
-                try? engine.inputNode.setVoiceProcessingEnabled(false)
+        //
+        // REC27: skipped past the abandoned-call cap, like `teardownEngine`; the process is
+        // exiting, which reverts what this would have. Timeouts here are not counted toward the
+        // cap for the same reason: the threads go with the process inside the 9 s ceiling.
+        let revertVoiceProcessing = voiceProcessingEnabledForSession
+        voiceProcessingEnabledForSession = false
+        if abandonedCalls.isExhausted {
+            Log.writeLine("recorder", "WARN: skipping the audio engine teardown at termination: past the abandoned-call cap")
+        } else {
+            let teardown = EngineTeardown.runSync(
+                removeTap: { [engine] in engine.inputNode.removeTap(onBus: 0) },
+                stop: { [engine] in engine.stop() },
+                revertVoiceProcessing: revertVoiceProcessing ? ({ [engine] in
+                    _ = try? engine.inputNode.setVoiceProcessingEnabled(false)
+                } as @Sendable () -> Void) : nil
+            )
+            if !teardown.isClean {
+                Log.writeLine("recorder", "WARN: audio engine teardown timed out at termination (\(teardown.timedOutSteps.joined(separator: ","))) - draining the writers anyway")
+                Log.event(category: "recorder", action: "engine_teardown_timed_out", attributes: [
+                    "path": "termination",
+                    "steps": teardown.timedOutSteps,
+                ])
             }
-        }
-        let teardown = EngineTeardown.runSync(
-            removeTap: { [engine] in engine.inputNode.removeTap(onBus: 0) },
-            stop: { [engine] in engine.stop() },
-            revertVoiceProcessing: revertVoiceProcessing
-        )
-        if !teardown.isClean {
-            Log.writeLine("recorder", "WARN: audio engine teardown timed out at termination (\(teardown.timedOutSteps.joined(separator: ","))) - draining the writers anyway")
-            Log.event(category: "recorder", action: "engine_teardown_timed_out", attributes: [
-                "path": "termination",
-                "steps": teardown.timedOutSteps,
-            ])
         }
 
         // Drain pending buffers to disk, then close the files so their headers
@@ -1388,37 +1584,60 @@ final class MeetingRecorder {
 
 // MARK: - InputDeviceRecoveryHost (ARCH8)
 
+/// REC27: every engine touch in here is bounded off main through `engineCall` or
+/// `boundedEngineStart`, so recovery, the watchdog and the wake handler can no longer block the
+/// main thread on a wedged engine queue.
 extension MeetingRecorder: InputDeviceRecoveryHost {
-    var engineIsRunning: Bool { engine.isRunning }
     var observedEngine: AnyObject { engine }
 
-    func liveInputFormat() -> AVAudioFormat? {
-        let format = engine.inputNode.outputFormat(forBus: 0)
-        return format.sampleRate > 0 ? format : nil
+    @MainActor
+    func readEngineIsRunning() async -> Bool? {
+        await engineCall(site: "is_running_read") { engine in engine.isRunning }
+    }
+
+    @MainActor
+    func liveInputFormat() async -> LiveInputFormatRead {
+        guard let format = await engineCall(site: "input_format_read", { engine in
+            engine.inputNode.outputFormat(forBus: 0)
+        }) else { return .timedOut }
+        return format.sampleRate > 0 ? .usable(format) : .unusable
     }
 
     func setMicConverter(_ converter: AVAudioConverter?) {
         micConverter = converter
     }
 
-    func replaceCondemnedEngine() {
-        replaceEngine(reason: "condemned_mid_recording")
+    /// REC15 retires a condemned engine through here and REC27 a wedged one.
+    @MainActor
+    func retireEngine(reason: String) async {
+        replaceEngine(reason: reason)
 
         // A replacement is a different node, so voice processing does not carry across and
         // the format has to be read again. Re-applying it matters beyond fidelity: the flag
         // and the node would otherwise disagree for the rest of the recording, and `stop()`
         // reads the flag to decide whether to flip voice processing back off.
-        if voiceProcessingEnabledForSession {
-            voiceProcessingEnabledForSession = false
+        guard voiceProcessingEnabledForSession else { return }
+        voiceProcessingEnabledForSession = false
+        let enabled = await engineCall(site: "replacement_voice_processing_enable") { engine -> String? in
             do {
                 try engine.inputNode.setVoiceProcessingEnabled(true)
-                voiceProcessingEnabledForSession = true
+                return nil
             } catch {
-                Log.writeLine(
-                    "recorder",
-                    "WARN: setVoiceProcessingEnabled failed on the replacement engine: \(error.localizedDescription) - falling back to raw mic"
-                )
+                return error.localizedDescription
             }
+        }
+        switch enabled {
+        case .some(nil):
+            voiceProcessingEnabledForSession = true
+        case .some(.some(let failure)):
+            Log.writeLine(
+                "recorder",
+                "WARN: setVoiceProcessingEnabled failed on the replacement engine: \(failure) - falling back to raw mic"
+            )
+        case .none:
+            // Timed out on the fresh engine too. The flag stays off, so nothing reverts on an
+            // instance that did not answer; the next recovery's own calls decide what is next.
+            Log.writeLine("recorder", "WARN: voice processing did not respond on the replacement engine - continuing with raw mic")
         }
     }
 
@@ -1437,22 +1656,26 @@ extension MeetingRecorder: InputDeviceRecoveryHost {
         onConfigurationChange?(outcome)
     }
 
-    // Blocking calls, so `runBlockingWithTimeout` rather than the `Task` form (CI8).
+    // Blocking calls, so `runBlockingWithTimeout` (through `engineCall`) rather than the `Task`
+    // form (CI8).
     @MainActor
     func haltEngineForRecovery() async -> (engineStopped: Bool, tapRemoved: Bool) {
-        let engineStopped = await runBlockingWithTimeout(seconds: EngineTeardown.defaultBudgetSeconds) { [engine] in
-            engine.stop()
-        }
-        let tapRemoved = await runBlockingWithTimeout(seconds: EngineTeardown.defaultBudgetSeconds) { [engine] in
+        let engineStopped = await engineCall(site: "recovery_engine_stop") { engine in engine.stop() } != nil
+        let tapRemoved = await engineCall(site: "recovery_remove_tap") { engine in
             engine.inputNode.removeTap(onBus: 0)
-        }
+        } != nil
         return (engineStopped, tapRemoved)
     }
 
     @MainActor
     func restartEngine() async -> EngineStartOutcome {
-        await boundedEngineStart(seconds: MeetingRecorder.engineStartBudgetSeconds, { [engine] in
+        guard !abandonedCalls.isExhausted else {
+            return .failed(RecorderError.engineCallsExhausted(abandonedCalls.count).localizedDescription)
+        }
+        let outcome = await boundedEngineStart(seconds: MeetingRecorder.engineStartBudgetSeconds, { [engine] in
             try engine.start()
         })
+        if outcome == .timedOut { noteAbandoned(site: "recovery_engine_start") }
+        return outcome
     }
 }

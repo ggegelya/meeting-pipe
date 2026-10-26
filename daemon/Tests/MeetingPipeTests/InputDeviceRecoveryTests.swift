@@ -20,6 +20,7 @@ final class InputDeviceRecoveryTests: XCTestCase {
 
     override func tearDown() async throws {
         host.releaseHalt()
+        host.releaseRead()
         await recovery.standDown()
         recovery = nil
         host = nil
@@ -124,10 +125,14 @@ final class InputDeviceRecoveryTests: XCTestCase {
     // MARK: - The procedure
 
     /// Bluetooth publishes the route before the format is readable, so a 0 Hz read queues a retry.
-    func test_aChangeWithNoUsableFormatSchedulesARetryNotARecovery() {
+    /// REC27: the format read is bounded now, so it runs in the recovery slot and the decision
+    /// lands once that task does.
+    func test_aChangeWithNoUsableFormatSchedulesARetryNotARecovery() async {
         host.liveFormat = nil
         recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
 
+        XCTAssertEqual(host.haltCalls, 0)
         XCTAssertNotNil(recovery.pendingRecoveryRetry)
         XCTAssertEqual(recovery.configurationRecoveryAttempts, 1)
         XCTAssertNil(recovery.recoveryTask)
@@ -147,7 +152,8 @@ final class InputDeviceRecoveryTests: XCTestCase {
         XCTAssertEqual(host.converters, [false], "a same-format change needs no converter")
     }
 
-    /// REC13: a wedged engine ends the recovery before anything touches the tap.
+    /// REC13: a wedged engine ends the recovery before anything touches the tap. REC27: and the
+    /// engine is retired, once, so nothing asks the wedged instance anything again.
     func test_aHaltThatTimesOutFailsWithoutTouchingTheTap() async {
         host.haltResult = (engineStopped: false, tapRemoved: true)
         recovery.handleConfigurationChange()
@@ -156,6 +162,49 @@ final class InputDeviceRecoveryTests: XCTestCase {
         XCTAssertEqual(host.outcomes, [.failed])
         XCTAssertEqual(host.installFormats, [])
         XCTAssertEqual(host.restartCalls, 0)
+        XCTAssertEqual(host.retireReasons, ["recovery_halt_timed_out"])
+    }
+
+    /// REC27: after a timed-out halt the watchdog still reads the engine, but only through the
+    /// bounded host call, and it reads the retired engine's replacement.
+    func test_afterAHaltTimeoutTheWatchdogReadsOnlyThroughTheBoundedCall() async {
+        host.haltResult = (engineStopped: false, tapRemoved: true)
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+        XCTAssertEqual(host.readCalls, 0)
+
+        host.haltResult = (engineStopped: true, tapRemoved: true)
+        host.engineIsRunning = false
+        recovery.checkTapLiveness()
+        await recovery.recoveryTask?.value
+
+        XCTAssertEqual(host.readCalls, 1)
+        XCTAssertEqual(host.haltCalls, 2, "the stopped replacement is re-armed by the next tick")
+        XCTAssertEqual(host.outcomes, [.failed, .resumed])
+    }
+
+    /// REC27: a format read that times out is a wedge too.
+    func test_aFormatReadThatTimesOutRetiresTheEngineWithoutHaltingIt() async {
+        host.formatReadTimesOut = true
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+
+        XCTAssertEqual(host.retireReasons, ["configuration_change_format_read_timed_out"])
+        XCTAssertEqual(host.haltCalls, 0)
+        XCTAssertEqual(host.outcomes, [.failed])
+        XCTAssertNil(recovery.pendingRecoveryRetry, "a wedge is not a route still settling")
+    }
+
+    /// REC27: an install that does not return ends the recovery before the restart.
+    func test_aTapInstallThatTimesOutRetiresTheEngineAndDoesNotRestart() async {
+        host.installResults = [nil]
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+
+        XCTAssertEqual(host.retireReasons, ["recovery_install_tap_timed_out"])
+        XCTAssertEqual(host.restartCalls, 0)
+        XCTAssertEqual(host.padFormats, [])
+        XCTAssertEqual(host.outcomes, [.failed])
     }
 
     /// REC15: a caught raise condemns the engine, so recovery replaces it once and retries.
@@ -164,7 +213,7 @@ final class InputDeviceRecoveryTests: XCTestCase {
         recovery.handleConfigurationChange()
         await recovery.recoveryTask?.value
 
-        XCTAssertEqual(host.replaceCalls, 1)
+        XCTAssertEqual(host.retireReasons, ["condemned_mid_recording"])
         XCTAssertEqual(host.installFormats.count, 2)
         XCTAssertEqual(host.outcomes, [.resumed])
         XCTAssertFalse(recovery.micCaptureAbandoned)
@@ -176,12 +225,14 @@ final class InputDeviceRecoveryTests: XCTestCase {
         recovery.handleConfigurationChange()
         await recovery.recoveryTask?.value
 
-        XCTAssertEqual(host.replaceCalls, 1, "once, never a loop against a moving format")
+        XCTAssertEqual(host.retireReasons, ["condemned_mid_recording"], "once, never a loop against a moving format")
         XCTAssertTrue(recovery.micCaptureAbandoned)
         XCTAssertEqual(host.outcomes, [.failed])
         XCTAssertEqual(host.restartCalls, 0)
     }
 
+    /// REC27: and it retires the engine the abandoned restart may still be wedged on. The comment
+    /// that used to forbid this cited an observer REC16's `replaceEngine` already re-arms.
     func test_aRestartThatTimesOutIsAFailure() async {
         host.restartResult = .timedOut
         recovery.handleConfigurationChange()
@@ -189,6 +240,17 @@ final class InputDeviceRecoveryTests: XCTestCase {
 
         XCTAssertEqual(host.outcomes, [.failed])
         XCTAssertEqual(recovery.consecutiveRecoveryFailures, 1)
+        XCTAssertEqual(host.retireReasons, ["recovery_restart_timed_out"])
+    }
+
+    /// A restart that throws is a failure but not a wedge: the engine answered.
+    func test_aRestartThatFailsDoesNotRetireTheEngine() async {
+        host.restartResult = .failed("nope")
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+
+        XCTAssertEqual(host.outcomes, [.failed])
+        XCTAssertEqual(host.retireReasons, [])
     }
 
     // MARK: - The tap watchdog
@@ -203,7 +265,8 @@ final class InputDeviceRecoveryTests: XCTestCase {
         XCTAssertEqual(host.haltCalls, 1)
     }
 
-    /// REC15: once the mic is abandoned the tick has nothing left to try.
+    /// REC15: once the mic is abandoned the tick has nothing left to try. REC27: and it does not
+    /// even read the engine, which it used to do before the policy looked at the flag.
     func test_anAbandonedMicIsNotReArmedByTheWatchdog() {
         host.engineIsRunning = false
         for _ in 0..<InputDeviceRecovery.recoveryFailureBudget {
@@ -211,6 +274,67 @@ final class InputDeviceRecoveryTests: XCTestCase {
         }
         recovery.checkTapLiveness()
         XCTAssertNil(recovery.recoveryTask)
+        XCTAssertEqual(host.readCalls, 0)
+    }
+
+    /// REC27: the watchdog's read is single-flight, so a wedged read costs one thread rather than
+    /// one a second; and a read that times out is itself a wedge: the engine is retired once and
+    /// the watchdog stops asking for this recording.
+    func test_aWatchdogReadThatTimesOutRetiresTheEngineAndIsNeverAskedTwice() async {
+        host.holdRead = true
+        let reading = expectation(description: "the first read is outstanding")
+        host.onRead = { reading.fulfill() }
+        recovery.checkTapLiveness()
+        await fulfillment(of: [reading], timeout: 2)
+
+        recovery.checkTapLiveness()
+        recovery.checkTapLiveness()
+        XCTAssertEqual(host.readCalls, 1, "no second read while the first is outstanding")
+
+        host.engineReadTimesOut = true
+        host.releaseRead()
+        await recovery.recoveryTask?.value
+
+        XCTAssertEqual(host.retireReasons, ["tap_watchdog_read_timed_out"])
+        XCTAssertTrue(recovery.micCaptureAbandoned)
+        XCTAssertEqual(host.outcomes, [.failed], "the mic is lost, and the HUD has to say so")
+        XCTAssertEqual(host.haltCalls, 0, "nothing else is asked of the wedged engine")
+
+        recovery.checkTapLiveness()
+        XCTAssertNil(recovery.recoveryTask)
+        XCTAssertEqual(host.readCalls, 1, "and the watchdog stops asking for this recording")
+    }
+
+    /// REC8 + REC27: the wake re-check reads through the same bounded slot and re-arms a stopped
+    /// engine.
+    func test_aWakeOnAStoppedEngineStartsARecoveryThroughTheBoundedRead() async {
+        host.engineIsRunning = false
+        recovery.recheckAfterWake()
+        await recovery.recoveryTask?.value
+
+        XCTAssertEqual(host.readCalls, 1)
+        XCTAssertEqual(host.haltCalls, 1)
+        XCTAssertEqual(host.outcomes, [.resumed])
+    }
+
+    func test_aWakeOnARunningEngineDoesNothingMore() async {
+        recovery.recheckAfterWake()
+        await recovery.recoveryTask?.value
+
+        XCTAssertEqual(host.readCalls, 1)
+        XCTAssertEqual(host.haltCalls, 0)
+    }
+
+    /// The watchdog does not read while a recovery holds the slot, so engine calls never overlap.
+    func test_theWatchdogDoesNotReadWhileARecoveryIsInFlight() async {
+        host.holdHalt = true
+        let halted = expectation(description: "recovery reached the engine")
+        host.onHalt = { halted.fulfill() }
+        recovery.handleConfigurationChange()
+        await fulfillment(of: [halted], timeout: 2)
+
+        recovery.checkTapLiveness()
+        XCTAssertEqual(host.readCalls, 0)
     }
 
     // MARK: - Wiring fences
@@ -259,30 +383,56 @@ private final class FakeRecoveryHost: InputDeviceRecoveryHost {
     var observedEngine: AnyObject = NSObject()
     var micFileFormat: AVAudioFormat? { fileFormat }
 
-    var installResults: [GuardedTapInstall.Outcome] = []
+    var installResults: [GuardedTapInstall.Outcome?] = []
     var haltResult = (engineStopped: true, tapRemoved: true)
     var restartResult: EngineStartOutcome = .started
     var holdHalt = false
     var onHalt: (() -> Void)?
+    /// REC27: a format read that does not return in its budget.
+    var formatReadTimesOut = false
+    /// REC27: an `isRunning` read that does not return in its budget.
+    var engineReadTimesOut = false
+    /// REC27: park the `isRunning` read until `releaseRead()`, to hold it outstanding.
+    var holdRead = false
+    var onRead: (() -> Void)?
 
     private(set) var haltCalls = 0
     private(set) var restartCalls = 0
-    private(set) var replaceCalls = 0
+    private(set) var readCalls = 0
+    private(set) var formatReads = 0
+    private(set) var retireReasons: [String] = []
     private(set) var installFormats: [AVAudioFormat] = []
     private(set) var padFormats: [AVAudioFormat] = []
     private(set) var converters: [Bool] = []
     private(set) var outcomes: [MeetingRecorder.CaptureRecoveryOutcome] = []
     private var haltRelease: CheckedContinuation<Void, Never>?
+    private var readRelease: CheckedContinuation<Void, Never>?
 
-    func liveInputFormat() -> AVAudioFormat? { liveFormat }
+    @MainActor
+    func readEngineIsRunning() async -> Bool? {
+        readCalls += 1
+        onRead?()
+        if holdRead {
+            await withCheckedContinuation { readRelease = $0 }
+        }
+        return engineReadTimesOut ? nil : engineIsRunning
+    }
 
-    func installMicTap(captureFormat: AVAudioFormat) -> GuardedTapInstall.Outcome {
+    @MainActor
+    func liveInputFormat() async -> LiveInputFormatRead {
+        formatReads += 1
+        if formatReadTimesOut { return .timedOut }
+        return liveFormat.map { .usable($0) } ?? .unusable
+    }
+
+    @MainActor
+    func installMicTap(captureFormat: AVAudioFormat) async -> GuardedTapInstall.Outcome? {
         installFormats.append(captureFormat)
         return installResults.isEmpty ? .installed : installResults.removeFirst()
     }
 
     func setMicConverter(_ converter: AVAudioConverter?) { converters.append(converter != nil) }
-    func replaceCondemnedEngine() { replaceCalls += 1 }
+    @MainActor func retireEngine(reason: String) async { retireReasons.append(reason) }
     func padMicGap(frames: AVAudioFrameCount, format: AVAudioFormat) { padFormats.append(format) }
     func reportConfigurationChange(_ outcome: MeetingRecorder.CaptureRecoveryOutcome) { outcomes.append(outcome) }
 
@@ -290,6 +440,12 @@ private final class FakeRecoveryHost: InputDeviceRecoveryHost {
         holdHalt = false
         haltRelease?.resume()
         haltRelease = nil
+    }
+
+    func releaseRead() {
+        holdRead = false
+        readRelease?.resume()
+        readRelease = nil
     }
 
     @MainActor

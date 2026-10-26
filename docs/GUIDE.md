@@ -496,6 +496,8 @@ Open **Preferences ▸ Permissions** and check all four. Accessibility is the on
 
 You can always record by hand with `⌃⌥M` while you sort it out.
 
+If a notification said **Restart MeetingPipe to keep recording**, that is the cause, and permissions are fine. The Mac's audio system stopped answering several times, so the app stopped asking rather than freeze, and it will not start a recording until it is reopened. Quit and reopen the app; if the notification comes back soon after, restarting the Mac is the reliable reset for the audio system itself.
+
 ### The recording has only one side of the call
 
 - **Only your voice.** Screen Recording is missing, or was granted after the app started. Grant it, then quit and reopen the app.

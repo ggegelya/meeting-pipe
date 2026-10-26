@@ -384,6 +384,16 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         )
     }
 
+    /// REC27: posted once per process, when the recorder has abandoned enough wedged audio-engine
+    /// calls that it stops making them. Only a restart gets the stranded threads back, and until
+    /// then a recording cannot start, so the owner hears it now rather than at the next meeting.
+    func notifyEngineCallsExhausted() {
+        post(
+            title: "Restart MeetingPipe to keep recording",
+            body: "The Mac's audio system stopped responding to MeetingPipe several times, so it has stopped asking rather than freeze. Quit and reopen MeetingPipe before your next meeting."
+        )
+    }
+
     private func post(title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title

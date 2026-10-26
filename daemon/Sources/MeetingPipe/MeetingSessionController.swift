@@ -605,6 +605,7 @@ final class MeetingSessionController: @unchecked Sendable {
         case .engineStartTimedOut: return "engine_start_timed_out"
         case .fileCreateFailed: return "file_create_failed"
         case .alreadyRecording: return "already_recording"
+        case .engineCallsExhausted: return "engine_calls_exhausted"
         }
     }
 

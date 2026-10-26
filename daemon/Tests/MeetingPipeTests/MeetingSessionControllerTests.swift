@@ -26,6 +26,10 @@ final class MeetingSessionControllerTests: XCTestCase {
             MeetingSessionController.startFailureReason(MeetingRecorder.RecorderError.alreadyRecording),
             "already_recording"
         )
+        XCTAssertEqual(
+            MeetingSessionController.startFailureReason(MeetingRecorder.RecorderError.engineCallsExhausted(8)),
+            "engine_calls_exhausted"
+        )
     }
 
     func test_startFailureReason_falls_back_to_other_for_unknown_errors() {
