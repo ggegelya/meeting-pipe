@@ -2,9 +2,14 @@ import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 
-/// `SCShareableContent`-backed PRIMARY signal. Polls at 2 Hz while a meeting window exists (sub-second
-/// reaction to window disappearance, the leading signal for Teams "click Leave") and 1 Hz otherwise
-/// to keep ScreenCaptureKit overhead minimal. Probe is injectable so tests run without Screen Recording TCC.
+/// `SCShareableContent`-backed PRIMARY signal. Polls once a second whether or not the meeting window is
+/// present (PERF19). It polled at 2 Hz while the window existed, for sub-second reaction to window-gone
+/// as the leading signal for Teams "click Leave"; END17 made that reaction immaterial, since a recording-
+/// time window-gone is a weak end held for a 60 s pair or 720 s lone dwell, and half a second is as
+/// immaterial to `.starting`'s direct end. Not slower than 1 Hz: the absent-window poll is what sees a
+/// returning window revert a window-gone provisional (END14). Each poll enumerates every on-screen window
+/// system-wide, and at most one such request is ever in flight (`makeProbe`). Probe is injectable so
+/// tests run without Screen Recording TCC.
 /// Threading (TECH-CONC3): `start`/`stop` on main; the probe + `onChange` run on the scheduler's queue,
 /// which in production is a dedicated serial queue OFF main (the prior `Timer`-on-main scheduler blocked
 /// the run loop behind the SCK call for the whole meeting). Shared mutable state is guarded by `lock` so
@@ -31,7 +36,9 @@ public final class ShareableContentSignal {
 
     public var onChange: ((Bool) -> Void)?
 
-    public static let activePollInterval: TimeInterval = 0.5
+    /// Both 1 s since PERF19 (it was 0.5); kept as two names so adapters and tests read the same
+    /// constants and a later split stays a one-line change. See the type comment for why not faster.
+    public static let activePollInterval: TimeInterval = 1.0
     public static let idlePollInterval: TimeInterval = 1.0
 
     /// Predicate applied to window title to distinguish call windows from chat threads.
@@ -56,6 +63,9 @@ public final class ShareableContentSignal {
         var cancelTick: (() -> Void)?
         var currentInterval: TimeInterval = 0
         var lastUnmatchedCandidates: [String]?
+        /// `shareable_content_unavailable` already logged for the current outage; a successful
+        /// probe clears it, so the next outage logs once again (PERF19).
+        var unavailableLogged = false
         var lastValue: Bool?
     }
     private let lock = NSLock()
@@ -133,10 +143,7 @@ public final class ShareableContentSignal {
         // Probe OFF the lock: the production probe blocks on ScreenCaptureKit, and the
         // lock also guards stop()/start() on main.
         guard let summaries = probe() else {
-            eventLog.emit(category: "signal", action: "shareable_content_unavailable", attributes: [
-                "bundle_id": context.bundleID,
-                "reason": reason
-            ])
+            noteUnavailable(context: context, reason: reason, session: session)
             return
         }
         let present = summaries.contains { summary in
@@ -150,6 +157,7 @@ public final class ShareableContentSignal {
         let isCurrent: Bool = lock.withLock {
             // The session stopped while the probe ran: its reading belongs to nobody.
             guard generation == session else { return false }
+            state.unavailableLogged = false
             if present {
                 state.lastUnmatchedCandidates = nil
             } else {
@@ -186,6 +194,27 @@ public final class ShareableContentSignal {
             ])
             onChange?(transition.value)
         }
+    }
+
+    /// The nil path: hold prior state, log the outage once rather than on every poll (a wedged
+    /// `replayd` used to log a row every 2 s for the rest of the session), and arm the poll if nothing
+    /// is armed yet. Only `adjustCadence` arms otherwise, and it runs after a successful probe, so a
+    /// nil initial probe (Screen Recording not granted yet, an SCK timeout while the meeting app draws
+    /// its call UI) left the signal dead for the whole engage. Now it costs one idle interval (PERF19).
+    private func noteUnavailable(context: MeetingLifecycleContext, reason: String, session: Int) {
+        let (shouldLog, shouldArm): (Bool, Bool) = lock.withLock {
+            guard generation == session else { return (false, false) }
+            let log = !state.unavailableLogged
+            state.unavailableLogged = true
+            return (log, state.currentInterval == 0)
+        }
+        if shouldLog {
+            eventLog.emit(category: "signal", action: "shareable_content_unavailable", attributes: [
+                "bundle_id": context.bundleID,
+                "reason": reason
+            ])
+        }
+        if shouldArm { restartTick(interval: idleInterval, session: session) }
     }
 
     private func adjustCadence(forActive active: Bool, session: Int) {
@@ -239,43 +268,124 @@ public final class ShareableContentSignal {
     /// Hard cap on a single ScreenCaptureKit probe (TECH-CONC3). A hung
     /// `SCShareableContent` call would otherwise wedge the poll queue for the rest of the
     /// meeting; on timeout we return nil (the established "unavailable, hold prior state"
-    /// path) so the next poll retries.
+    /// path) and the request stays outstanding until SCK answers (`RequestGate`).
     static let probeTimeout: TimeInterval = 2.0
 
-    /// Bridge `SCShareableContent.excludingDesktopWindows` synchronously via a semaphore-gated wait.
-    /// Safe because every production evaluate runs on `pollQueue`, the initial one included since
-    /// PERF15 (before it, `start`'s inline evaluate ran this on main at every engage).
-    public static let defaultProbe: Probe = {
-        // Preflight before touching SCShareableContent. On macOS 14.4+ that API
-        // surfaces the Screen Recording TCC dialog whenever access is not
-        // authorized, so calling it on every poll turns a missing or stale grant
-        // (e.g. a fresh cdhash after a rebuild) into a non-stop prompt storm.
-        // CGPreflightScreenCaptureAccess reads the grant without ever prompting;
-        // when it is false, return nil (the established "unavailable, hold prior
-        // state" path) and leave the one real request to PermissionsCenter. This
-        // mirrors the discipline PermissionsCenter.refreshScreenRecording already
-        // follows for its own reads.
-        guard CGPreflightScreenCaptureAccess() else { return nil }
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: [ShareableWindowSummary]?
+    /// One asynchronous window enumeration: calls back exactly once with the summaries, or nil
+    /// on an error. The seam `makeProbe` bridges, so the in-flight rule is testable without SCK.
+    public typealias Fetch = (@escaping ([ShareableWindowSummary]?) -> Void) -> Void
+
+    /// Production fetch: `SCShareableContent.getExcludingDesktopWindows`, every on-screen window
+    /// on the system through WindowServer and `replayd`, mapped to summaries.
+    public static let defaultFetch: Fetch = { completion in
         SCShareableContent.getExcludingDesktopWindows(
             false, onScreenWindowsOnly: true
         ) { content, _ in
-            defer { semaphore.signal() }
-            guard let content = content else { return }
-            result = content.windows.map { window in
+            completion(content?.windows.map { window in
                 ShareableWindowSummary(
                     bundleIdentifier: window.owningApplication?.bundleIdentifier,
                     title: window.title
                 )
+            })
+        }
+    }
+
+    /// The production probe. One gate for the process, shared by every signal instance, so the
+    /// native and browser adapters cannot put two enumerations in flight between them either.
+    public static let defaultProbe: Probe = ShareableContentSignal.makeProbe(fetch: ShareableContentSignal.defaultFetch)
+
+    /// Bridge an asynchronous `fetch` into a synchronous `Probe` (semaphore-gated wait) with at
+    /// most one request in flight. Safe to block because every production evaluate runs on
+    /// `pollQueue`, the initial one included since PERF15.
+    ///
+    /// Preflight before touching SCShareableContent. On macOS 14.4+ that API surfaces the Screen
+    /// Recording TCC dialog whenever access is not authorized, so calling it on every poll turns a
+    /// missing or stale grant (e.g. a fresh cdhash after a rebuild) into a non-stop prompt storm.
+    /// CGPreflightScreenCaptureAccess reads the grant without ever prompting; when it is false,
+    /// return nil (the established "unavailable, hold prior state" path) and leave the one real
+    /// request to PermissionsCenter, the discipline PermissionsCenter.refreshScreenRecording
+    /// already follows for its own reads. `preflight` and `timeout` are seams for tests.
+    static func makeProbe(
+        fetch: @escaping Fetch,
+        preflight: @escaping () -> Bool = { CGPreflightScreenCaptureAccess() },
+        timeout: TimeInterval = probeTimeout,
+        abandonAfter: TimeInterval = RequestGate.defaultAbandonAfter,
+        now: @escaping () -> Date = { Date() }
+    ) -> Probe {
+        let gate = RequestGate(fetch: fetch, timeout: timeout, abandonAfter: abandonAfter, now: now)
+        return {
+            guard preflight() else { return nil }
+            return gate.request()
+        }
+    }
+
+    /// At most one ScreenCaptureKit request in flight (PERF19). A timed-out wait used to abandon
+    /// its request with the completion still pending inside SCK, and nothing recorded that it was
+    /// outstanding, so the next poll issued another: against a wedged `replayd` that was about one
+    /// more request every `probeTimeout`. Here the request is recorded before the fetch and cleared
+    /// only by its completion, even one that lands after the waiter gave up, and a request made
+    /// while one is outstanding returns nil at once without fetching. The completion hands its
+    /// result over under the same lock, which also removes the late write to a captured `var` the
+    /// old bridge made after its waiter had returned.
+    final class RequestGate {
+        /// How long an unanswered request blocks new ones before the gate gives up on it and issues
+        /// another. Not in the PERF19 spec, which clears the flag only on completion: whether SCK
+        /// always calls back cannot be read from code, and the gate is process-wide, so a callback
+        /// SCK dropped would otherwise leave every later meeting's window signal reading nil until
+        /// the app restarted. 30 s is 15 `probeTimeout`s: a wedged `replayd` costs one request per
+        /// 30 s instead of one per 2 s, and a dropped callback costs 30 s of unavailable, not the
+        /// process lifetime. An abandoned request's late completion is ignored by identity.
+        static let defaultAbandonAfter: TimeInterval = 30
+
+        /// One request's hand-over slot. `result` is written and read only under the gate's lock.
+        private final class Slot {
+            let done = DispatchSemaphore(value: 0)
+            var result: [ShareableWindowSummary]?
+        }
+
+        private let fetch: Fetch
+        private let timeout: TimeInterval
+        private let abandonAfter: TimeInterval
+        private let now: () -> Date
+        private let lock = NSLock()
+        /// The outstanding request, if any: its identity and when it was issued. Guarded by `lock`.
+        private var inFlight: (id: UInt64, since: Date)?
+        private var nextID: UInt64 = 0
+
+        init(fetch: @escaping Fetch, timeout: TimeInterval, abandonAfter: TimeInterval, now: @escaping () -> Date) {
+            self.fetch = fetch
+            self.timeout = timeout
+            self.abandonAfter = abandonAfter
+            self.now = now
+        }
+
+        /// The summaries, or nil when a request is already outstanding, the fetch failed, or the
+        /// wait ran past `timeout`.
+        func request() -> [ShareableWindowSummary]? {
+            let issued: UInt64? = lock.withLock {
+                let timestamp = now()
+                if let outstanding = inFlight, timestamp.timeIntervalSince(outstanding.since) < abandonAfter {
+                    return nil
+                }
+                nextID &+= 1
+                inFlight = (id: nextID, since: timestamp)
+                return nextID
             }
+            guard let id = issued else { return nil }
+            let slot = Slot()
+            // Strong capture on purpose: the gate must outlive a request SCK answers late.
+            fetch { summaries in
+                self.lock.withLock {
+                    slot.result = summaries
+                    // Only the request still on record clears it; one the gate gave up on does not.
+                    if self.inFlight?.id == id { self.inFlight = nil }
+                }
+                slot.done.signal()
+            }
+            // Bound the wait: a hung SCK call must not freeze the poll queue indefinitely.
+            guard slot.done.wait(timeout: .now() + timeout) == .success else { return nil }
+            return lock.withLock { slot.result }
         }
-        // Bound the wait: a hung SCK call must not freeze the poll queue indefinitely.
-        // nil = "unavailable, hold prior state"; the next poll retries.
-        guard semaphore.wait(timeout: .now() + probeTimeout) == .success else {
-            return nil
-        }
-        return result
     }
 }
 

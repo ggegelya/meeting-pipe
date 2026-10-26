@@ -1,9 +1,10 @@
 import ApplicationServices
 import Foundation
 
-/// `kAXUIElementDestroyedNotification` + 1 Hz health poll on the Leave-button element.
+/// `kAXUIElementDestroyedNotification` + health poll on the Leave-button element.
 /// Dual path because macOS Sequoia drops AX destruction notifications silently: the notification gives
-/// sub-100 ms on the happy path; the poll bounds worst-case lag to ~1 s.
+/// sub-100 ms on the happy path; the poll bounds worst-case lag to ~1 s just after an arm and to ~5 s
+/// once it has backed off in steady state (PERF19), which END17's end dwell absorbs.
 /// Threading: all state and the poll are confined to a private serial queue in production, so the poll's
 /// synchronous AX IPC never runs on the main thread. `start`/`stop`/`armIfNeeded` (called on main) hop onto
 /// it via `runAsync` and return at once (PERF15): with `runSync` main waited behind any walk already on the
@@ -34,8 +35,8 @@ public final class AXLeaveButtonSignal {
     public var isArmed: Bool { element != nil }
 
     public static let defaultPollInterval: TimeInterval = 1.0
-    /// TECH-PERF5: the backed-off health-poll rate used while the AX destruction
-    /// notification is delivering.
+    /// TECH-PERF5: the backed-off health-poll rate, held once polls stop
+    /// bringing news (PERF19; worst case beside `AdaptivePollCadence.steadyPollsBeforeSlow`).
     public static let defaultSlowPollInterval: TimeInterval = 5.0
 
     private let axBus: AXObserverBus
@@ -187,16 +188,17 @@ public final class AXLeaveButtonSignal {
         _evaluate(reason: "initial")
     }
 
-    /// Arm (or re-arm) the health poll at `interval`, backing the rate off while
-    /// the AX destruction notification is delivering and speeding back up once it
-    /// goes quiet (TECH-PERF5). Re-armed only from the poll callback's own thread.
+    /// Arm (or re-arm) the health poll at `interval`, backing the rate off once polls
+    /// stop finding anything the destruction notification missed and speeding back up
+    /// on an unannounced change or an unreadable tick (TECH-PERF5, PERF19). Re-armed
+    /// only from the poll callback's own thread.
     private func startPoll(interval: TimeInterval) {
         cancelPoll?()
         currentPollInterval = interval
         cancelPoll = scheduler(interval) { [weak self] in
             guard let self = self else { return }
-            self._evaluate(reason: "health_poll")
-            let next = self.cadence.intervalAfterPoll()
+            let observation = self._evaluate(reason: "health_poll")
+            let next = self.cadence.intervalAfterPoll(observation)
             if next != self.currentPollInterval {
                 self.startPoll(interval: next)
             }
@@ -250,8 +252,12 @@ public final class AXLeaveButtonSignal {
         lastWalkAt = nil
     }
 
-    private func _evaluate(reason: String) {
-        guard let context = context else { return }
+    /// Returns what the read said against `lastState`, which the health poll hands to its
+    /// cadence (PERF19). No element with a resolver (the self-arm retry) reads `.unknown`, so
+    /// that retry keeps its 1 Hz tick; its walk is throttled to `slowPollInterval` on its own.
+    @discardableResult
+    private func _evaluate(reason: String) -> AdaptivePollCadence.PollObservation {
+        guard let context = context else { return .unknown }
         // Self-arm: the start-time walk handed us no Leave button (Teams renders the
         // "Meeting controls" media toolbar but not the "Calling controls" Leave
         // button while the call window is compact / minimal; verified via
@@ -261,15 +267,18 @@ public final class AXLeaveButtonSignal {
         // meeting end is bounded by the window-gone backstop. No resolver (browser /
         // AX-denied) means nothing to adopt: stay inert, as before.
         if element == nil {
+            // Inert (no button, no resolver): there is nothing to read and nothing to look for,
+            // so no poll can bring news and the cadence may back off (PERF19).
+            if resolveElement == nil { return .steady }
             // Self-arm is the sustained "button not present yet" retry, so it is
             // always throttled (no edge to recover from when nothing was adopted).
             guard let fresh = throttledResolve(bypassThrottle: false),
                   isCurrentSession,
-                  probe(fresh) == .healthy else { return }
+                  probe(fresh) == .healthy else { return .unknown }
             adopt(fresh, context: context)
             // Fall through so the healthy baseline reaches the engine this tick.
         }
-        guard let element = element else { return }
+        guard let element = element else { return .unknown }
         var state = probe(element)
         // TECH-END2: before treating the Leave control as gone (which ends the meeting),
         // re-walk for a live one. A Teams call-UI re-render (screen-share start/stop, layout
@@ -298,8 +307,8 @@ public final class AXLeaveButtonSignal {
         // engine is unaffected; this only collapses the redundant log lines.
         // PERF15: a walk above can outlast its session. Once `stop()` has returned nothing may
         // reach the engine, whatever the queue still has to run.
-        guard isCurrentSession else { return }
-        if lastState == state { return }
+        guard isCurrentSession else { return .unknown }
+        if lastState == state { return .steady }
         let previous = lastState
         lastState = state
         eventLog.emit(category: "signal", action: "ax_leave_button_state", attributes: [
@@ -315,6 +324,7 @@ public final class AXLeaveButtonSignal {
         } else if state == .healthy && previous != .healthy {
             onChange?(state)
         }
+        return .changed
     }
 
     /// Throttled wrapper around the injected `resolveElement` fresh-tree walk.

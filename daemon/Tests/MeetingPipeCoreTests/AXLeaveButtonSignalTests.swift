@@ -587,4 +587,41 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         XCTAssertEqual(observed, [], "no onChange once stop() has returned")
         XCTAssertFalse(signal.isArmed, "the arm queued before the stop belonged to the stopped session")
     }
+
+    // MARK: - PERF19: the backoff holds in steady state
+
+    /// Records every interval the signal arms, so the cadence is visible.
+    final class IntervalScheduler {
+        var tick: (() -> Void)?
+        var armed: [TimeInterval] = []
+        var scheduler: AXLeaveButtonSignal.Scheduler {
+            return { [self] interval, action in
+                armed.append(interval)
+                tick = action
+                return { [weak self] in self?.tick = nil }
+            }
+        }
+    }
+
+    /// Red against the PERF5 rule: a healthy button with a quiet destruction listener polled at
+    /// 1 Hz all meeting, because quiet is what that edge-only listener is in steady state.
+    func test_steady_healthy_polls_back_off_to_slow_and_stay_there() {
+        let scheduler = IntervalScheduler()
+        var probeReturn: AXLeaveButtonSignal.State = .healthy
+        let signal = AXLeaveButtonSignal(
+            axBus: AXObserverBus(),
+            probe: { _ in probeReturn },
+            scheduler: scheduler.scheduler
+        )
+        signal.start(context: teamsContext, leaveButton: stubElement())
+        XCTAssertEqual(scheduler.armed, [AXLeaveButtonSignal.defaultPollInterval])
+
+        for _ in 0..<20 { scheduler.tick?() }
+        XCTAssertEqual(scheduler.armed.last, AXLeaveButtonSignal.defaultSlowPollInterval)
+        XCTAssertEqual(scheduler.armed.count, 2, "one back-off, then slow holds")
+
+        probeReturn = .invalid   // a destruction the notification never delivered
+        scheduler.tick?()
+        XCTAssertEqual(scheduler.armed.last, AXLeaveButtonSignal.defaultPollInterval)
+    }
 }

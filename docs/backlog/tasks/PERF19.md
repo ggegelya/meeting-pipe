@@ -2,9 +2,10 @@
 id: PERF19
 title: In-call signal polls never slow down: ScreenCaptureKit is enumerated up to twice a second with no in-flight guard, and the adaptive backoff lasts one poll
 category: Performance
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. `ShareableContentSignal` calls `SCShareableContent.getExcludingDesktopWindows` (every on-screen window system-wide) at `activePollInterval = 0.5` while the meeting window is present and 1 s otherwise, from engage to disengage, 3,600 to 7,200 enumerations an hour; a timed-out request is abandoned with its completion pending, the next poll issues another, and each nil re-emits `shareable_content_unavailable` (DETECTION-10). The 2 Hz tier existed for sub-second window-gone reaction, which END17 (2026-10-24) made immaterial: window-gone is a weak end held for a 60 s pair or 720 s lone dwell. `AdaptivePollCadence.intervalAfterPoll` backs off for one poll after an edge-only listener fires, so the AX Leave, AX mute and process-audio polls stay at 1 Hz all meeting (DETECTION-11). Also found at HEAD: a nil first probe arms no timer, so the signal is dead for that engage. Scope: a 1 s floor, one SCK request in flight, a deduped unavailable event, arm on nil, a backoff that holds in steady state. [Spec](./PERF19.md)
+closed: 2026-10-26
+comment: Shipped 2026-10-26. `ShareableContentSignal` polls at 1 s in both window states (the 2 Hz tier retired against END17's dwell); its SCK bridge is a `RequestGate` over an injected fetch with one request in flight, cleared by the completion (even a late one) and handing the result over under its lock, plus a 30 s give-up on an unanswered request (not in the spec: the gate is process-wide, so a dropped callback would otherwise blind the signal until restart); `shareable_content_unavailable` logs once per outage; a nil probe arms the poll when nothing is armed. `AdaptivePollCadence` keys on what polls find (`slow` after 3 steady polls, `fast` on an unannounced change or an unknown read, `fast` after every arm), with each owner's worst case beside the constant; all three callers pass their poll's observation. 14 new tests; `swift test` 3202 green (after rebasing onto PERF10) and `bash scripts/ci-local.sh` green. [Spec](./PERF19.md)
 ---
 
 # PERF19: in-call signal polls never slow down: ScreenCaptureKit is enumerated up to twice a second with no in-flight guard, and the adaptive backoff lasts one poll

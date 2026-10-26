@@ -2,8 +2,8 @@ import CoreAudio
 import Foundation
 
 /// `kAudioProcessPropertyIsRunningInput` PRIMARY signal. HAL property listener fires immediately when
-/// the process starts or stops capturing input; supplemented by a 1 Hz poll because macOS Sequoia drops
-/// HAL property-listener notifications silently.
+/// the process starts or stops capturing input; supplemented by a poll (1 Hz, backing off to 5 s in
+/// steady state, PERF19) because macOS Sequoia drops HAL property-listener notifications silently.
 ///
 /// DET8 (2026-08-05) brought this signal back to life, and why it was ever dead is worth keeping. It
 /// resolved 0 times in 19.8 days of dogfood (13,419 `process_audio_unresolved`, every OSStatus `noErr`)
@@ -88,7 +88,8 @@ public final class ProcessAudioSignal {
     }
 
     public static let defaultPollInterval: TimeInterval = 1.0
-    /// TECH-PERF5: the backed-off poll rate used while the HAL listener is delivering.
+    /// TECH-PERF5: the backed-off poll rate, held once polls stop bringing news (PERF19;
+    /// worst case beside `AdaptivePollCadence.steadyPollsBeforeSlow`).
     public static let defaultSlowPollInterval: TimeInterval = 5.0
 
     private let halBus: CoreAudioHALBus
@@ -319,26 +320,29 @@ public final class ProcessAudioSignal {
         }
     }
 
-    /// Arm (or re-arm) the fallback poll at `interval`, adapting the rate to the
-    /// HAL listener's health (TECH-PERF5): fast while the listener is quiet, slow
-    /// once it has delivered. The re-arm happens only here, on the poll callback's
-    /// own thread (the queue), so the timer is never scheduled from the bus queue.
+    /// Arm (or re-arm) the fallback poll at `interval`, adapting the rate to what the
+    /// polls find (TECH-PERF5, PERF19): fast after an arm, an unannounced change or an
+    /// unreadable tick, slow once polls stop bringing news. The re-arm happens only here,
+    /// on the poll callback's own thread (the queue), so the timer is never scheduled
+    /// from the bus queue.
     private func startPoll(interval: TimeInterval, generation: UInt64) {
         cancelPoll?()
         currentPollInterval = interval
         cancelPoll = scheduler(interval) { [weak self] in
             guard let self, self.isCurrent(generation) else { return }
-            self.evaluate(reason: "poll", generation: generation)
-            let next = self.cadence.intervalAfterPoll()
+            let observation = self.evaluate(reason: "poll", generation: generation)
+            let next = self.cadence.intervalAfterPoll(observation)
             if next != self.currentPollInterval {
                 self.startPoll(interval: next, generation: generation)
             }
         }
     }
 
-    /// Re-read the probe and emit `onChange` if the value flipped. Queue-confined.
-    private func evaluate(reason: String, generation: UInt64) {
-        guard let context = context, isCurrent(generation) else { return }
+    /// Re-read the probe and emit `onChange` if the value flipped. Queue-confined. Returns what
+    /// the read said against `lastValue`, which the poll hands to its cadence (PERF19).
+    @discardableResult
+    private func evaluate(reason: String, generation: UInt64) -> AdaptivePollCadence.PollObservation {
+        guard let context = context, isCurrent(generation) else { return .unknown }
 
         var reading = probe(context, resolvedObjects)
         if reading == nil && !reResolvedThisStreak {
@@ -360,14 +364,14 @@ public final class ProcessAudioSignal {
                     "reason": reason
                 ])
             }
-            return
+            return .unknown
         }
         unresolvedLogged = false
         reResolvedThisStreak = false
-        if lastValue == value { return }
+        if lastValue == value { return .steady }
         // The probe is a HAL round-trip and `stop` may have run during it, so re-check: an edge read
         // for a stopped session is neither logged nor delivered.
-        guard isCurrent(generation) else { return }
+        guard isCurrent(generation) else { return .unknown }
         let previous = lastValue
         lastValue = value
         eventLog.emit(category: "signal", action: "process_audio_is_running_input", attributes: [
@@ -381,6 +385,7 @@ public final class ProcessAudioSignal {
         // the one window left, and the coordinator's own generation (AUD-29) drops that straggler.
         let deliver: ((Bool) -> Void)? = lock.withLock { self.generation == generation ? _onChange : nil }
         deliver?(value)
+        return .changed
     }
 
     // MARK: - Matching (pure)

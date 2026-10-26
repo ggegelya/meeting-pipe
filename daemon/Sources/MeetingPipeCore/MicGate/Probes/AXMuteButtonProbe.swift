@@ -1,7 +1,7 @@
 import ApplicationServices
 import Foundation
 
-/// AX mute-button probe. Watches `kAXValueChangedNotification` and `kAXTitleChangedNotification` on the meeting app's mute `AXUIElement`. A 1 Hz health poll absorbs Sequoia notification drops; transient `.unknown` results latch the prior known state (see `evaluate` inline comment).
+/// AX mute-button probe. Watches `kAXValueChangedNotification` and `kAXTitleChangedNotification` on the meeting app's mute `AXUIElement`. A health poll (1 Hz, backing off to 5 s once its reads stop bringing news, PERF19) absorbs Sequoia notification drops; transient `.unknown` results latch the prior known state (see `evaluate` inline comment).
 ///
 /// Threading (PERF10): every mutable field is confined to `queue`, a private serial queue, and the
 /// production poll is a `DispatchSourceTimer` on it, so the button reads (cross-process AX IPC into the
@@ -65,13 +65,13 @@ public final class AXMuteButtonProbe {
     private(set) var lastEvent: Event?
 
     public static let defaultPollInterval: TimeInterval = 1.0
-    /// TECH-PERF5: the backed-off health-poll rate used while the AX
-    /// value/title notifications are delivering.
+    /// TECH-PERF5: the backed-off health-poll rate, held once polls stop
+    /// bringing news (PERF19; worst case beside `AdaptivePollCadence.steadyPollsBeforeSlow`).
     public static let defaultSlowPollInterval: TimeInterval = 5.0
     /// TECH-MIC6: consecutive `.unknown` reads before the probe re-resolves its
-    /// cached element via a fresh tree walk. At the ~1 Hz health-poll rate a
-    /// stale element keeps (no notifications back the cadence off), so this is
-    /// ~5 s of an unreadable control before a recovery attempt.
+    /// cached element via a fresh tree walk. An `.unknown` read returns the
+    /// health poll to its 1 Hz `fast` rate (PERF19), so this is ~5 s of an
+    /// unreadable control, counted from its first unknown read, before a recovery attempt.
     public static let defaultRearmThreshold: Int = 5
     /// PERF10: the messaging timeout set on the mute button and on every element the re-arm resolver
     /// returns, in seconds. A timeout set on one element bounds that element's reads only, so it goes on
@@ -193,7 +193,8 @@ public final class AXMuteButtonProbe {
     }
 
     /// Test seam for the inline path: one evaluate under the current session.
-    func evaluate(reason: String) {
+    @discardableResult
+    func evaluate(reason: String) -> AdaptivePollCadence.PollObservation {
         evaluate(reason: reason, generation: lock.withLock { generation })
     }
 
@@ -280,27 +281,32 @@ public final class AXMuteButtonProbe {
         consecutiveUnknown = 0
     }
 
-    /// Arm (or re-arm) the health poll at `interval`, backing the rate off while
-    /// the AX value/title notifications are delivering and speeding back up once
-    /// they go quiet (TECH-PERF5). Re-armed only from the poll callback, on the queue.
+    /// Arm (or re-arm) the health poll at `interval`, backing the rate off once
+    /// polls stop finding anything the notifications missed and speeding back up on
+    /// an unannounced change or an unknown read (TECH-PERF5, PERF19). Re-armed only
+    /// from the poll callback, on the queue.
     private func startPoll(interval: TimeInterval, generation: UInt64) {
         cancelPoll?()
         currentPollInterval = interval
         cancelPoll = scheduler(interval) { [weak self] in
             guard let self, self.isCurrent(generation) else { return }
-            self.evaluate(reason: "health_poll", generation: generation)
-            let next = self.cadence.intervalAfterPoll()
+            let observation = self.evaluate(reason: "health_poll", generation: generation)
+            let next = self.cadence.intervalAfterPoll(observation)
             if next != self.currentPollInterval {
                 self.startPoll(interval: next, generation: generation)
             }
         }
     }
 
-    private func evaluate(reason: String, generation: UInt64) {
-        guard let element = element, isCurrent(generation) else { return }
+    /// Returns what the read said against the state already held, which the health poll hands to its
+    /// cadence (PERF19). A read for a session that has moved on is `.unknown`; nothing re-arms on it,
+    /// since the poll callback checks the generation first.
+    @discardableResult
+    private func evaluate(reason: String, generation: UInt64) -> AdaptivePollCadence.PollObservation {
+        guard let element = element, isCurrent(generation) else { return .unknown }
         let blob = probe(element)
         // The read can outlast its session (up to the element timeout against a hung client).
-        guard isCurrent(generation) else { return }
+        guard isCurrent(generation) else { return .unknown }
         let locale = localeResolver()
         let state = catalogue.recognize(
             app: app, locale: locale,
@@ -318,12 +324,12 @@ public final class AXMuteButtonProbe {
         if state == .unknown {
             noteUnknownAndMaybeRearm(reason: reason, generation: generation)
             // So can the walk.
-            guard isCurrent(generation) else { return }
+            guard isCurrent(generation) else { return .unknown }
         } else {
             consecutiveUnknown = 0
         }
 
-        if event == lastEvent { return }
+        if event == lastEvent { return state == .unknown ? .unknown : .steady }
 
         // Suppress transient `.unknown` once a real state was
         // observed. Teams 2 shows "Mic is not available" on its
@@ -345,7 +351,7 @@ public final class AXMuteButtonProbe {
                 "kept_state": prev.state == .muted ? "muted" : "unmuted",
                 "transient_label": label as Any
             ])
-            return
+            return .unknown
         }
 
         let previous = lastEvent
@@ -368,6 +374,7 @@ public final class AXMuteButtonProbe {
         // gap a stop opens, where nothing records, and the next start clears it.
         let deliver: ((Event) -> Void)? = lock.withLock { self.generation == generation ? _onChange : nil }
         deliver?(event)
+        return state == .unknown ? .unknown : .changed
     }
 
     /// Count the `.unknown` streak and, once it crosses `rearmThreshold`,

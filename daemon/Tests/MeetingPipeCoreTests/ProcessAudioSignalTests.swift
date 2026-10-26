@@ -617,4 +617,43 @@ final class ProcessAudioSignalTests: XCTestCase {
         XCTAssertNil(ProcessAudioSignal.reduceIsRunningInput([nil, nil]))
         XCTAssertNil(ProcessAudioSignal.reduceIsRunningInput([]))
     }
+
+    // MARK: - PERF19: the backoff holds in steady state
+
+    /// Records every interval the signal arms, so the cadence is visible.
+    final class IntervalScheduler {
+        var tick: (() -> Void)?
+        var armed: [TimeInterval] = []
+        var scheduler: ProcessAudioSignal.Scheduler {
+            return { [self] interval, action in
+                armed.append(interval)
+                tick = action
+                return { [weak self] in self?.tick = nil }
+            }
+        }
+    }
+
+    /// Red against the PERF5 rule: a call in progress with a quiet `isRunningInput` listener
+    /// polled at 1 Hz all meeting.
+    func test_steady_input_backs_off_to_slow_and_an_unannounced_change_returns_fast() throws {
+        let scheduler = IntervalScheduler()
+        var running = true
+        let signal = ProcessAudioSignal(
+            halBus: CoreAudioHALBus(),
+            probe: { _, _ in running },
+            scheduler: scheduler.scheduler,
+            resolver: stubResolver()
+        )
+        try signal.start(context: teamsContext)
+        XCTAssertEqual(scheduler.armed, [ProcessAudioSignal.defaultPollInterval])
+
+        for _ in 0..<20 { scheduler.tick?() }
+        XCTAssertEqual(scheduler.armed.last, ProcessAudioSignal.defaultSlowPollInterval)
+        XCTAssertEqual(scheduler.armed.count, 2, "one back-off, then slow holds")
+
+        running = false   // the leave the listener dropped
+        scheduler.tick?()
+        XCTAssertEqual(scheduler.armed.last, ProcessAudioSignal.defaultPollInterval)
+        signal.stop()
+    }
 }

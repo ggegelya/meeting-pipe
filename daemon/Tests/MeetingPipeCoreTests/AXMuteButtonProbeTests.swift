@@ -439,6 +439,42 @@ final class AXMuteButtonProbeTests: XCTestCase {
             elementTimeout: elementTimeout, rearmThreshold: 1
         )
     }
+
+    // MARK: - PERF19: the backoff holds in steady state
+
+    /// Records every interval the probe arms, so the cadence is visible.
+    final class IntervalScheduler {
+        var tick: (() -> Void)?
+        var armed: [TimeInterval] = []
+        var scheduler: AXMuteButtonProbe.Scheduler {
+            return { [self] interval, action in
+                armed.append(interval)
+                tick = action
+                return { [weak self] in self?.tick = nil }
+            }
+        }
+    }
+
+    /// Red against the PERF5 rule: a steady mute state with quiet value/title listeners polled
+    /// at 1 Hz all meeting.
+    func test_steady_state_backs_off_to_slow_and_an_unknown_read_returns_fast() {
+        let scheduler = IntervalScheduler()
+        var title: String? = "Mute"
+        let probe = makeProbe(
+            probe: { _ in .init(title: title, help: nil, description: nil) },
+            scheduler: scheduler.scheduler
+        )
+        probe.start(pid: 1, bundleID: "com.microsoft.teams2", button: stubElement())
+        XCTAssertEqual(scheduler.armed, [AXMuteButtonProbe.defaultPollInterval])
+
+        for _ in 0..<20 { scheduler.tick?() }
+        XCTAssertEqual(scheduler.armed.last, AXMuteButtonProbe.defaultSlowPollInterval)
+        XCTAssertEqual(scheduler.armed.count, 2, "one back-off, then slow holds")
+
+        title = nil   // unreadable: back to 1 Hz so the MIC6 re-resolve keeps its timing
+        scheduler.tick?()
+        XCTAssertEqual(scheduler.armed.last, AXMuteButtonProbe.defaultPollInterval)
+    }
 }
 
 // MARK: - PERF10 fakes (every field lock-guarded: the probe's queue writes them)
