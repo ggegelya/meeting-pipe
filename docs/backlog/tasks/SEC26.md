@@ -1,6 +1,15 @@
+---
+id: SEC26
+title: A recording held back by SEC16, or a quarantined orphan, is moved as its only copy into `originals/`, which OriginalsReaper deletes after 30 days or past 10 GB, while the row says it is kept and offers a Retry that cannot work
+category: Security
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O14: UI-4, SW-13, SW-14): the reaper has no exemption for held or quarantined files, Retry returns noAudio, an unopenable WAV is logged as speech_in_muted_span, a failed restore logs restored, at-rest protection is try?. A `held/` folder the reaper skips, Show recording instead of Retry, `audio_unreadable` reason, checked restore and protection. [Spec](./SEC26.md)
+---
+
 # SEC26: a recording held back by SEC16, or a quarantined orphan, is moved as its only copy into `originals/`, which `OriginalsReaper` permanently deletes after 30 days or past 10 GB, while the row says the recording "is kept" and offers a Retry that cannot work
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) row O14, finders UI-4, SW-13, SW-14). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) row O14, finders UI-4, SW-13, SW-14). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

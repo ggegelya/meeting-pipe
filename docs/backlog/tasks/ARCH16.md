@@ -1,6 +1,15 @@
+---
+id: ARCH16
+title: The detection prompt and the recording HUD are 2,435 lines of hand-laid AppKit beside a SwiftUI app, so their look, accessibility and focus are built a second time
+category: Architecture
+status: new
+priority: P3
+comment: Filed 2026-10-24 (go-live SA-13; the audit band mapped it to UX27, which owns only keyboard operability at P4): both panels lay out NSTextField and NSButton by hand, and six AppKit primitives in Design/ exist only for them. P3 under the refactor rule; promote on the next non-trivial design change to either panel, or when UX27 is promoted. Keep the NSPanel shells, host SwiftUI content, prove nonactivation on the HUD first. [Spec](./ARCH16.md)
+---
+
 # ARCH16: The detection prompt and the recording HUD are 2,435 lines of hand-laid AppKit beside a SwiftUI app, so their look, accessibility and focus are built a second time
 
-Band origin: filed 2026-10-24 (go-live assessment SA-13; the 2026-10-24 audit band mapped SA-13 to [UX27](./UX27.md), which owns only keyboard operability and sits at P4 by the owner's 2026-07-22 decision). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 (go-live assessment SA-13; the 2026-10-24 audit band mapped SA-13 to [UX27](./UX27.md), which owns only keyboard operability and sits at P4 by the owner's 2026-07-22 decision). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## What is wrong
 

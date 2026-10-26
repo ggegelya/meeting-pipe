@@ -1,6 +1,15 @@
+---
+id: SEC25
+title: An unreadable or unwritten `<stem>.meta.json` drops the meeting's NDA routing in both trees: every reader treats a file it cannot read as "no workflow", and a failed stop-time write is swallowed after the recovery manifest holding the same routing is deleted
+category: Security
+status: new
+priority: P1
+comment: Filed 2026-10-25 (observability band, O1: PY-1, FB-1, SW-1, SW-2, LG-10, FB-11): `read_meta` returns {} on EDEADLK (seen 2026-10-16), so the overlay, `cloudSecretPolicy` and `isZeroEgress` fall to cloud; the stop-time write fails to os.Logger only. Three-outcome read that fails closed in both trees, a throwing write that keeps the manifest and holds NDA jobs, two events. [Spec](./SEC25.md)
+---
+
 # SEC25: an unreadable or unwritten `<stem>.meta.json` drops the meeting's NDA routing in both trees, because every reader treats a file it cannot read as "no workflow" and a failed stop-time write is swallowed after the recovery manifest that held the same routing is deleted
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) row O1, finders PY-1, FB-1, SW-1, SW-2, LG-10, FB-11). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) row O1, finders PY-1, FB-1, SW-1, SW-2, LG-10, FB-11). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

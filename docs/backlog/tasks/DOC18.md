@@ -1,6 +1,15 @@
+---
+id: DOC18
+title: The owner's global instructions and this repo's instructions contradict each other on branching, Plan Mode, commit attribution and ADR location, and nothing says which wins here
+category: Docs
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, architecture review H3, harness conflicts and D): global rules demand feature branches and Plan Mode and ban AI trailers; the repo says commit on main and is silent on the rest, and all 8 commits of 2026-10-24 now carry a Claude trailer. One precedence paragraph under 800 B in the root CLAUDE.md; owner picks the trailer rule; global-side fixes listed for the owner. [Spec](./DOC18.md)
+---
+
 # DOC18: the owner's global instructions and this repo's instructions contradict each other on branching, Plan Mode, commit attribution and ADR location, and nothing says which wins here
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) H3, [AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) "Conflicts between global and project instructions" and proposal D). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) H3, [AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) "Conflicts between global and project instructions" and proposal D). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

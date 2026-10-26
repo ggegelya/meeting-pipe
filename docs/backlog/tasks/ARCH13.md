@@ -1,6 +1,15 @@
+---
+id: ARCH13
+title: 200 of the daemon's 257 Swift files sit flat in Sources/MeetingPipe, so a doc table stands in for folder structure
+category: Architecture
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch A9): 200 of 257 daemon files are top-level while Library/ holds 2 and ten Library* files sit at the root, and ARCHITECTURE's file index stands in for folders. One move-only git mv commit into feature folders, updating the 62 test path literals, two truth_fences paths and 98 doc links in the same commit, then shrink the file index to one row per folder. [Spec](./ARCH13.md)
+---
+
 # ARCH13: 200 of the daemon's 257 Swift files sit flat in Sources/MeetingPipe, so a doc table stands in for folder structure
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) A9). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) A9). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

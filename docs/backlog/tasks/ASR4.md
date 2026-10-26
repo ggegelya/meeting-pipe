@@ -1,6 +1,15 @@
+---
+id: ASR4
+title: Transcription accuracy has never been measured on the owner's audio, and no test runs ASR or diarization inference, so there is no regression net for the speech stack
+category: Transcription
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live FQ-9, QG-9): no WER exists anywhere and the only real FluidAudioRunner in the tests cancels before loading models, so a FluidAudio bump or mixdown change can move transcripts with every suite green. Owner-held EN/UK/code-switched golden set outside the repo, an env-gated XCTest through production code, and valid1_check.py --wer with CER and term recall. [Spec](./ASR4.md)
+---
+
 # ASR4: transcription accuracy has never been measured on the owner's audio, and no test runs ASR or diarization inference, so there is no regression net for the speech stack
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-9, QG-9, and its "Improving transcription and people identification" item 5, first half). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-9, QG-9, and its "Improving transcription and people identification" item 5, first half). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

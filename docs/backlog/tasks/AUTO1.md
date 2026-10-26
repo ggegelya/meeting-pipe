@@ -1,6 +1,15 @@
+---
+id: AUTO1
+title: Automation surface: App Intents + URL scheme
+category: Automation
+status: deferred
+priority: P3
+comment: **Blocked on a Developer ID; deferred by the owner 2026-07-20** (their signing plan slipped), so this sits out of the active band until D8 lands. **The half that matters is already done and needs nothing**: the `meetingpipe://` URL scheme is done-done and hardware-verified (2026-07-20, an `automation command` event with verb `open_library`), which meets AUTO1's stated acceptance and gives Shortcuts (via Open URL), Raycast, and Stream Deck a working surface. Only the **native App Intents** leg is blocked, and not on engineering: the six intents, their `AppShortcutsProvider`, 8 drift-fence tests, and the `install.sh` metadata extraction are all built and correct, and the actions DISCOVER properly in Shortcuts, but invoking one fails with "Shortcuts couldn't communicate with the app". Six causes were excluded by measurement (symbols present + AppIntents linked, Launch Services registers the app, `openAppWhenRun` both ways, launchd vs `open -a`, `LSUIElement` both ways, no crash); what is left is that the bundle is `spctl`-rejected with `TeamIdentifier=not set`, since the intent XPC handoff needs that trust while the URL path does not. `install.sh` therefore emits the metadata only under `MP_APP_INTENTS=1` (default off), so an unsigned build shows no always-failing actions. **Promote when D8 gives the app a real Developer ID**: the only step then is flipping that flag and re-checking Shortcuts. Full trail in `docs/spikes/auto1-app-intents-metadata.md`.
+---
+
 # AUTO1: Automation surface: App Intents + URL scheme
 
-Band origin: feature review 2026-07 (owner approved 2026-07-05). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: feature review 2026-07 (owner approved 2026-07-05). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 **AUTO1 (P2, promoted from P3 on 2026-07-10): automation surface, App Intents + URL scheme.** Promoted by the architecture review as the highest-leverage de-CLI enabler (Shortcuts, Raycast, and Stream Deck ride for free). The daemon is driveable only by two hotkeys and the menu bar. Expose start/stop/toggle record (with a BYO variant), open Library (optionally scoped), ask, and digest via App Intents (Shortcuts) and a `meetingpipe://` URL scheme, so Raycast and Stream Deck ride for free. External triggers respect exactly the gates the hotkey does (mic permission, cooldowns, no start while recording); local IPC only, no new egress. Acceptance: a Shortcut toggles a recording end-to-end and a denied-mic trigger routes to the Permissions tab instead of silently failing.
 

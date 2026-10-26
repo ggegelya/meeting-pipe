@@ -1,6 +1,15 @@
+---
+id: OBS6
+title: The Verbose logging toggle adds no diagnostic detail anywhere, yet turning it on writes verbatim transcript text into the event log
+category: Observability
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O22: LG-7): nothing in pipeline/src reads MP_VERBOSE (zero debug calls), the daemon gates no detail on it and os.Logger debug is not persisted, yet it adds correction and vocabulary text to events.jsonl. Owner picks: make it real (mp logger at DEBUG, gated daemon writeLine narration, honest sublabel) or remove it; either way fence exported MP_ env vars. [Spec](./OBS6.md)
+---
+
 # OBS6: the Verbose logging toggle adds no diagnostic detail anywhere, yet turning it on writes verbatim transcript text into the event log
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O22; finder LG-7). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O22; finder LG-7). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

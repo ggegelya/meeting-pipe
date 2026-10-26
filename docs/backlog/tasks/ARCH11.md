@@ -1,6 +1,15 @@
+---
+id: ARCH11
+title: Features are implemented in both trees, and the Swift copies drift; write the ADR that fixes the Swift/Python boundary, then make Apple Intelligence a provider only
+category: Architecture
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch A5, go-live DI-14): the Swift Apple summarizer has its own prompt, schema, chunking and renderer and has drifted (no WF7 extra_sections, prior context, evidence or language repair); prep, doctor and egress rules are doubled; DIST2's hybrid dismissal is stale. Owner-approved ADR on the boundary first, then Apple as a provider only and Swift asking Python for policy. [Spec](./ARCH11.md)
+---
+
 # ARCH11: features are implemented in both trees, and the Swift copies drift; write the ADR that fixes the Swift/Python boundary, then make Apple Intelligence a provider only
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) A5, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) DI-14). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) A5, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) DI-14). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

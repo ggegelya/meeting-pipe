@@ -1,6 +1,15 @@
+---
+id: CONC5
+title: Fourteen files hand-roll Process() with four drain and timeout policies, so a stuck security call hangs launch, ffmpeg drains stderr after exit, and a timed-out merge leaves ffmpeg running
+category: Concurrency
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, architecture review M5 M6, go-live PD-7): 14 files hand-roll Process(); four unbounded `security` reads run before NSApplication starts, two ffmpeg wrappers drain stderr after exit, a timed-out merge never kills ffmpeg, and reapStorage blocks the cooperative pool via Task.detached. One ProcessRunner (concurrent drain, SIGTERM then SIGKILL); migrate Keychain and ffmpeg first. Amended 2026-10-25 (performance review): item 3's serial queue also fixes overlapping retention sweeps, which share `<stem>.flac.writing` and with three in flight can delete a verified FLAC after its WAV; add a coalescing flag, run LocalServerReaper first, and give the FLAC encode a measured ceiling. `StopStallWatchdog`'s 90 s ceiling claims the merge is bounded well below it, but `mergeCeilingSeconds` is 300 s and `stop()`'s own bounds add up to about 348 s, so a slow but bounded merge posts the 'Still finishing a recording' error; when item 2 makes the merge ceiling a kill, phase the canary (teardown half 90 s, merge half above the merge ceiling) and correct its comment. Low: field merges run at about 1100x realtime (a 2116 s meeting in 1.9 s on 2026-10-16). the redaction ffmpeg gets its own duration-scaled ceiling mapped to `.failed(.ffmpegFailed)`, a killed merge never promotes and cannot truncate the next attempt, handler-based drains clear themselves at EOF, MCP status stderr goes to nullDevice, the Preferences schedule bindings run apply off main, serialised, debounced and skipped when the plist is unchanged, and a timed-out Keychain read is SEC23's `unreadable`, not missing. [Spec](./CONC5.md)
+---
+
 # CONC5: fourteen files hand-roll `Process()` with four drain and timeout policies, so a stuck `security` call hangs launch, ffmpeg drains stderr after exit, and a timed-out merge leaves ffmpeg running
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) M5 and M6, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PD-7). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) M5 and M6, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PD-7). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

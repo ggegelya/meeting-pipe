@@ -1,6 +1,15 @@
+---
+id: CONC6
+title: SystemAudioCapture's statics are written from the cooperative pool and main with no lock, and the spine's main-queue invariant is not checked at runtime either
+category: Concurrency
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch M10, go-live SA-3 + PD-14 runtime half): cachedContent, permissionState and displayReconfigObserver are written from Task.detached prewarm and nonisolated start() on the pool and from main, unguarded, and MeetingSessionController's main-queue rule is only a comment. Put them behind OSAllocatedUnfairLock, add a debug dispatchPrecondition on the controller's entry points, measure complete mode on Core once. [Spec](./CONC6.md)
+---
+
 # CONC6: SystemAudioCapture's statics are written from the cooperative pool and main with no lock, and the spine's main-queue invariant is not checked at runtime either
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) M10, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-3 and PD-14 runtime half). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) M10, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-3 and PD-14 runtime half). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

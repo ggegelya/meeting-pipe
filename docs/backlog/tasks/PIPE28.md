@@ -1,6 +1,15 @@
+---
+id: PIPE28
+title: A retired, mistyped or refused model id fails as unknown with a generic Retry, auto does not fall back, and mp doctor checks a different model
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live PP-6): a 404 or 403 on the model id classifies as unknown with remedy retry, NotFoundError is not in the auto fallback set, and doctor probes claude-haiku-4-5 instead of summarization.model. New model_rejected cause landed with Swift, auto falls back on it, doctor and Preferences validate the configured id through the models endpoint. [Spec](./PIPE28.md)
+---
+
 # PIPE28: a retired, mistyped or refused model id fails as "unknown" with a generic Retry, `auto` does not fall back, and `mp doctor` checks a different model
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PP-6). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PP-6). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

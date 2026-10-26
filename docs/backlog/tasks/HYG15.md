@@ -1,6 +1,15 @@
+---
+id: HYG15
+title: The never-NSError(domain:) rule has twelve live violations outside the PipelineDriver stubs, and no fence
+category: Hygiene
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit CV3): 28 NSError(domain:) constructions in daemon/Sources, 16 of them A7's PipelineDriver stubs and 12 in PipelineLauncher (4), LibraryListView (2), NotionDatabaseList (2) and FluidAudioRunner (4), none branched on by a caller. Named LocalizedError cases (the ARCH4 shape, messages unchanged) and an exact-count allowlist fence in truth_fences.py seeded with A7's 16. [Spec](./HYG15.md)
+---
+
 # HYG15: The never-NSError(domain:) rule has twelve live violations outside the PipelineDriver stubs, and no fence
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) CV3). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) CV3). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

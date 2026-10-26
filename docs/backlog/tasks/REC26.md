@@ -1,6 +1,15 @@
+---
+id: REC26
+title: Flagged moments are written only at stop, so a crash, a quit or a rebuild mid-meeting recovers the audio and loses every flag
+category: Recording
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. `markerSeconds` lives in memory and `MarkerFile.write` has one call site, in the stop path; a crash or kill, and also a quit, a rebuild relaunch or a reinstall during a recording (`Coordinator.shutdown` runs only `flushIntermediatesForTermination`), leave intermediates the orphan sweep recovers with no `<stem>.markers.json`, so the summary's flagged excerpts and the Transcript chips are gone while GUIDE.md says whatever was captured is picked up. Scope: write the sidecar atomically on each flag press, keep the stop-time flush, pin that recovery keeps it, fix CONVENTIONS. [Spec](./REC26.md)
+---
+
 # REC26: flagged moments are written only at stop, so a crash, a quit or a rebuild mid-meeting recovers the audio and loses every flag
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

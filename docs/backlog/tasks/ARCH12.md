@@ -1,6 +1,15 @@
+---
+id: ARCH12
+title: The Library UI holds the concrete Coordinator and reaches through it for 12 members, and MeetingLibraryService takes ten closures whose defaults silently do nothing
+category: Architecture
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch A8, go-live SA-8 adjacent): LibraryWindowModel.coordinator is a concrete Coordinator used for 12 members, three views repeat coordinator?.preferencesWindow?.show chains, no test can supply them, and backend fallbacks disagree. Add a LibraryHost protocol of intents, route the views through the model, group the service's closures into port structs with no defaults. [Spec](./ARCH12.md)
+---
+
 # ARCH12: the Library UI holds the concrete Coordinator and reaches through it for 12 members, and MeetingLibraryService takes ten closures whose defaults silently do nothing
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) A8, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-8 adjacency). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) A8, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-8 adjacency). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

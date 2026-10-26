@@ -1,6 +1,15 @@
+---
+id: SEC19
+title: The pipeline's egress guard is a monkeypatch on httpx's transport classes, so any network path that is not httpx bypasses regulated and NDA mode
+category: Security
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch S3, go-live PP-1 structural half): egress_guard patches only httpx transports, kept valid by the anthropic<1 and httpx<1 caps CI8 added; a urllib, requests or httpx2 path would egress under regulated mode silently. Add a socket.connect loopback-only layer in arm(), keep the httpx patch for the error message, fix the docstring; caps lifted later in a separate lock bump. [Spec](./SEC19.md)
+---
+
 # SEC19: the pipeline's egress guard is a monkeypatch on httpx's transport classes, so any network path that is not httpx bypasses regulated and NDA mode
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) S3, structural half of [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PP-1). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) S3, structural half of [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PP-1). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

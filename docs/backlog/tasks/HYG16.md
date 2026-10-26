@@ -1,6 +1,15 @@
+---
+id: HYG16
+title: Python small duplication and dead code: copied helpers, fourteen logging setups, import-time log paths that bypass MEETINGPIPE_LOGS_DIR, the 23-branch dispatch ladder and dead symbols
+category: Hygiene
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit PY6, PY9, PY10, PY11, PY13, PY15, CV8): a copied bytes_on_disk, twin log helpers, 14 basicConfig copies, three log readers frozen at import that ignore MEETINGPIPE_LOGS_DIR, a 23-branch dispatch ladder, four dead symbols (one, CLI_BACKENDS, cited as live by ARCHITECTURE.md), preexec_fn setsid. One sweep, a commit per item; the dispatch table changes CONVENTIONS and both AST dispatch tests together. [Spec](./HYG16.md)
+---
+
 # HYG16: Python small duplication and dead code: copied helpers, fourteen logging setups, import-time log paths that bypass MEETINGPIPE_LOGS_DIR, the 23-branch dispatch ladder and dead symbols
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) PY6, PY9, PY10 dispatch and describe, PY11, PY13, PY15, CV8). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) PY6, PY9, PY10 dispatch and describe, PY11, PY13, PY15, CV8). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

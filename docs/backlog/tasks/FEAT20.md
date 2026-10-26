@@ -1,6 +1,15 @@
+---
+id: FEAT20
+title: Spike: can the meeting app's own participant list supply name candidates locally, since every speaker name today has to come from the user
+category: Feature
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live FQ-14, UX-16): every speaker name comes from the user; the calendar stays closed for this owner (CAL1 false-zero NO-GO, declined to connect) and the window title carries little (CAL3), but the Teams participant list is unmeasured. /spike shaped: owner-run read-only AX probe, names never printed, GO/MARGINAL/NO-GO pre-registered. [Spec](./FEAT20.md)
+---
+
 # FEAT20: spike, can the meeting app's own participant list supply name candidates locally, since every speaker name today has to come from the user
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-14, UX-16, and its "Improving transcription and people identification" item 3). `/spike` shaped: an owner-run read-only probe plus a decision rule committed before any number exists. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-14, UX-16, and its "Improving transcription and people identification" item 3). `/spike` shaped: an owner-run read-only probe plus a decision rule committed before any number exists. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## The one question
 

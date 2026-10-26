@@ -1,6 +1,15 @@
+---
+id: PIPE34
+title: A failed write of the run or publish sidecar leaves the previous run's file in place, and the daemon reads it as this run's outcome
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O20: PY-5, FB-8): run.json and publish.json write failures only log a WARNING, so a stale sidecar keeps the old backend attribution, the UX41 staleness ts and the Unpublished badge, and blocks retention. Unlink a stale run.json on failure, write an unknown publish marker before sinks run, a failed final write exits 3, Swift reads unknown, sidecar_write_failed event. [Spec](./PIPE34.md)
+---
+
 # PIPE34: a failed write of `<stem>.run.json` or `<stem>.publish.json` leaves the previous run's sidecar in place, and the daemon reads it as this run's outcome
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) O20: PY-5, FB-8). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) O20: PY-5, FB-8). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

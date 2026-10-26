@@ -1,6 +1,15 @@
+---
+id: FEAT19
+title: The roster learns only from clicks, the naming sheet is a blank text field with exact-case matching and no merge, and its copy promises recognition the matcher delivers about a third of the time
+category: Feature
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live FQ-1, UX-7, FQ-15): FEAT17 found enrolment is the bottleneck (median top similarity 0.481, 33 percent of voices auto-named) and only a hand click enrols; the sheet is a blank exact-case field with no merge or playback, and the copy promises automatic recognition. Five legs: passive enrolment on confident matches, picker, merge, play sample, apply across meetings. [Spec](./FEAT19.md)
+---
+
 # FEAT19: the roster learns only from clicks, the naming sheet is a blank text field with exact-case matching and no merge, and its copy promises recognition the matcher delivers about a third of the time
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-1, UX-7, FQ-15, and its "Improving transcription and people identification" item 2). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-1, UX-7, FQ-15, and its "Improving transcription and people identification" item 2). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

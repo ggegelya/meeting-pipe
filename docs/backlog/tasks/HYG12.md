@@ -1,6 +1,15 @@
+---
+id: HYG12
+title: No session ever sees the state of CI, so a red main stays invisible until the owner reports it
+category: Hygiene
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, harness #1 and A3): CI was red 82 days and no session checked; CI8's weekly run mails the owner but reaches no session, and the latest two main runs are still failure. A SessionStart hook prints one line: last completed main CI conclusion, sha and date, plus local commits CI has not seen; silent offline, bounded without timeout(1). [Spec](./HYG12.md)
+---
+
 # HYG12: no session ever sees the state of CI, so a red main stays invisible until the owner reports it
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) failure mode 1 and proposal A3). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) failure mode 1 and proposal A3). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

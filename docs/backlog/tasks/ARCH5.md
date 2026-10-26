@@ -1,6 +1,15 @@
+---
+id: ARCH5
+title: Refactoring band
+category: Architecture
+status: partial
+priority: P3
+comment: Owner-promoted 2026-07-24 for the mechanical half, shipped green-to-green: the whole duplication list plus the `RecordingPostProcessor` extraction (`MeetingRecorder` 1899 to 1594 lines, every member moved was already `static`). Both suites green (1641 Swift, 982 Python), no behaviour change except one intended copy convergence. Two legs stay deliberately unshipped and keep the spec's promote-on-touch rule, since they move behaviour-carrying summarize-path code: PipelineLauncher's embedded Apple-Intelligence engine + the 17-method driver protocol, and the LocalSummaryClient supervisor split (LOCAL12's NO-GO cleared its sequencing blocker, so it is unblocked whenever a task next touches that file). Amended 2026-10-24 (audit band, arch A7 + B4, go-live SA-14): driver leg regrew (PipelineLauncher 1,483 lines, PipelineDriver 24 requirements with 16 NSError defaults, five views build their own PipelineLauncher()); new oversized-view leg (PipelineSectionView body ~261 lines, TranscriptTab 494 to 1,573, makeContentView ~216, MeetingDetailView split by extension is no invalidation boundary). Still promote-on-touch.
+---
+
 # ARCH5: Refactoring band
 
-Band origin: assessment review 2026-07-12. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: assessment review 2026-07-12. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 **ARCH5 (P3): refactoring band, promote when touching the files.** The unfiled structural debt the principles pass named, for green-to-green extraction whenever a task next touches these files (do not refactor speculatively): `MeetingRecorder.swift` (the repo's largest file: extract a RecordingPostProcessor for the ffmpeg merge / plausibility / recordfail / orphan-recovery half; `stop()` spans ~211 lines); `PipelineLauncher.swift` (hosts the whole in-Swift Apple-Intelligence summarization flow plus a 17-method driver protocol with NSError stub defaults; extract the engine beside AppleIntelligenceSummarizer and consider a typed command enum); `summarize_local.LocalSummaryClient` (~590 lines mixing server supervision, HTTP client, retry policy, and map-reduce; extract an MLXServerSupervisor, but sequence against LOCAL12 since a port deletes the file); and the small duplication list: `_parse_summary` byte-identical across both PROV1 providers, the six-way backend dispatch duplicated between `summarize._select_backend` and `engine.complete_text`, LibraryWindowModel's ~11 identical continuation bridges, the tri-plicated delete/export dialog copy (already drifted), and daemon config defaults written three to four times. Suites green after each extraction; no behavior change.
 

@@ -1,6 +1,15 @@
+---
+id: ASR5
+title: Spike: does FluidAudio's bundled CTC vocabulary boosting, fed by glossary terms and roster names, improve term recall on the owner's audio without hurting WER
+category: Transcription
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live FQ-10): the pinned FluidAudio 0.14.8 ships CTC keyword boosting that nothing uses, while the ASR1 glossary can only rewrite terms ASR already produced. Spike gated on ASR4: a priori checks (does the CTC 110M encoder cover Cyrillic, batch-path fit, language-pin interplay, model download), then boost off vs on with thresholds pre-registered. [Spec](./ASR5.md)
+---
+
 # ASR5: spike, does FluidAudio's bundled CTC vocabulary boosting, fed by glossary terms and roster names, improve term recall on the owner's audio without hurting WER
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-10, and its "Improving transcription and people identification" item 5, second half). Gated on [ASR4](./ASR4.md): there is nothing to measure against until its golden set and WER mode exist. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-10, and its "Improving transcription and people identification" item 5, second half). Gated on [ASR4](./ASR4.md): there is nothing to measure against until its golden set and WER mode exist. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

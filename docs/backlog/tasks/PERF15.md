@@ -1,6 +1,15 @@
+---
+id: PERF15
+title: Engaging, arming and disengaging a meeting runs full AX walks, a ScreenCaptureKit wait and queue syncs on the main thread, so the prompt, Record and Stop stall while the meeting app is slow
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. Each discovery winner runs `MeetingAXHandleBuilder.build` (window list, Leave DFS, scoped mute walk, a 4000-node budget per window per walk) on main, about 0.5 s for a healthy Teams (pick to `ax_handles_built` 547 ms on 2026-08-19) and up to 2 s per AX call when Teams hangs; engage then waits on `ShareableContentSignal`'s initial SCK probe (up to 2 s) and on `AXLeaveButtonSignal`'s `serialQueue.sync` start with an unthrottled Leave walk, record start builds again on main, and Stop's `disengage` queues behind any in-flight Leave re-walk before `recorder.stop`. Scope: builds on `axWalkQueue` with a staleness-checked hop back, one build per record start that keeps the `not_started` zero-fill, async signal start/stop/arm with a generation token; takes over PERF10's bullet 3. [Spec](./PERF15.md)
+---
+
 # PERF15: engaging, arming and disengaging a meeting runs full AX walks, a ScreenCaptureKit wait and queue syncs on the main thread, so the prompt, Record and Stop stall while the meeting app is slow
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+id: REC18
+title: The meeting prompt opens the microphone with a second AVAudioEngine only to animate a level meter, before the user has said yes
+category: Recording
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch M12): MeetingPromptWindow.present starts MicLevelMonitor, its own AVAudioEngine tapping the input, so the mic opens and macOS shows MeetingPipe using it while the consent question is still on screen, in the window where all four REC12 crashes happened. Owner picks a static glyph or a mic-busy pulse, then delete MicLevelMonitor and update the design kit. [Spec](./REC18.md)
+---
+
 # REC18: the meeting prompt opens the microphone with a second AVAudioEngine only to animate a level meter, before the user has said yes
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) M12). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) M12). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

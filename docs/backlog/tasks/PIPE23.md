@@ -1,6 +1,15 @@
+---
+id: PIPE23
+title: A Notion create that fails after Notion committed it duplicates the page on retry, a page deleted in Notion breaks every republish, and each republish resets Date and Status
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch P1, go-live UX-12, PP-13): a Notion create that fails after commit writes no sidecar, so Retry duplicates the page; a deleted page fails every republish; updates reset Date and Status; doctor checks reachability, not schema. Scope: Meeting ID key or pending-marker adoption, GET before update, no Date or Status on update, atomic sidecar, schema check, one version per tree. [Spec](./PIPE23.md)
+---
+
 # PIPE23: a Notion create that fails after Notion committed it duplicates the page on retry, a page deleted in Notion breaks every republish, and each republish resets Date and Status
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) P1, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) UX-12 and PP-13). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) P1, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) UX-12 and PP-13). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

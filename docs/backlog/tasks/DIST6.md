@@ -1,6 +1,15 @@
+---
+id: DIST6
+title: Every build is version 0.1.0 build 1 with no commit recorded, and an install deletes the previous bundle, so a bug report cannot be tied to code and a bad build cannot be rolled back
+category: Distribution
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live PD-4 identity half, DI-7, harness D): install.sh hard-codes 0.1.0 build 1, no tags, the failure report says 0.1.0 and rejects non-numeric versions, rebuild.sh never rewrites the plist, install rm -rf's the old app. Stamp an integer build plus commit in both scripts, show it in reports, a log event and Preferences, keep an APFS-cloned app.prev and venv.prev, rollback.sh. [Spec](./DIST6.md) Amended 2026-10-25 (observability band): findMP picks embedded, venv, uv run from the clone, or PATH mp silently on every spawn and run_started records none of it, so the plist commit can name code that did not run. Item 2 adds a tier on MPInvocation, a pipeline_invocation_resolved event on change, executable, version, build commit and tier on run_started, and a doctor WARN for a clone or PATH tier.
+---
+
 # DIST6: every build is version 0.1.0 build 1 with no commit recorded, and an install deletes the previous bundle, so a bug report cannot be tied to code and a bad build cannot be rolled back
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) fix 4 / PD-4 identity half, DI-7; [AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) section D). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) fix 4 / PD-4 identity half, DI-7; [AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) section D). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

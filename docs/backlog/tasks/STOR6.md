@@ -1,6 +1,15 @@
+---
+id: STOR6
+title: New installs put the library in iCloud-synced ~/Documents, the welcome screen promises nothing leaves the Mac, and a library left in iCloud is read with no dataless or download handling
+category: Storage
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, architecture review M9, go-live UX-5 PD-10 DI-11): SEC12 only warns; the default is still ~/Documents/Meetings, six of the owner's library files are already iCloud-evicted, and the welcome step says notes never leave the Mac while the default engine is Anthropic. Default new installs to ~/Meetings, pin existing paths, welcome copy from PrivacyReach, download-status checks before heavy reads. [Spec](./STOR6.md)
+---
+
 # STOR6: new installs put the library in iCloud-synced `~/Documents`, the welcome screen promises nothing leaves the Mac, and a library left in iCloud is read with no dataless or download handling
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) M9, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) UX-5, PD-10, DI-11 and "Fix before anyone else installs it" item 9). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) M9, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) UX-5, PD-10, DI-11 and "Fix before anyone else installs it" item 9). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

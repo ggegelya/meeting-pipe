@@ -1,6 +1,15 @@
+---
+id: PERF19
+title: In-call signal polls never slow down: ScreenCaptureKit is enumerated up to twice a second with no in-flight guard, and the adaptive backoff lasts one poll
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. `ShareableContentSignal` calls `SCShareableContent.getExcludingDesktopWindows` (every on-screen window system-wide) at `activePollInterval = 0.5` while the meeting window is present and 1 s otherwise, from engage to disengage, 3,600 to 7,200 enumerations an hour; a timed-out request is abandoned with its completion pending, the next poll issues another, and each nil re-emits `shareable_content_unavailable` (DETECTION-10). The 2 Hz tier existed for sub-second window-gone reaction, which END17 (2026-10-24) made immaterial: window-gone is a weak end held for a 60 s pair or 720 s lone dwell. `AdaptivePollCadence.intervalAfterPoll` backs off for one poll after an edge-only listener fires, so the AX Leave, AX mute and process-audio polls stay at 1 Hz all meeting (DETECTION-11). Also found at HEAD: a nil first probe arms no timer, so the signal is dead for that engage. Scope: a 1 s floor, one SCK request in flight, a deduped unavailable event, arm on nil, a backoff that holds in steady state. [Spec](./PERF19.md)
+---
+
 # PERF19: in-call signal polls never slow down: ScreenCaptureKit is enumerated up to twice a second with no in-flight guard, and the adaptive backoff lasts one poll
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

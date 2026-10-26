@@ -1,6 +1,15 @@
+---
+id: STOR12
+title: Automatic backups are never pruned, so a daily full-library archive fills its destination, and backup and restore decompress the whole archive several extra times against a fixed 30-minute cap
+category: Storage
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. Every scheduled run writes a new full-library archive, audio included (about 0.3 GB a day for the owner's 324 MB library on 2026-10-25, plus 230 MB per recorded hour), and nothing ever deletes one, so the destination fills, a startup-disk destination eats recording space, and nothing checks free space first; the summary decompresses the archive it just wrote again, an in-app restore decompresses it about six times, and all three in-app runs are killed at a fixed 30 minutes, which restore's own comment says is unsafe. Latent: no backup agent installed. Scope: owner-chosen retention after a successful run, a free-space refusal, print the in-memory manifest, a one-pass preview and two-pass restore, a size-scaled cap. Owner may re-band to P1 before turning Automatic backup on. [Spec](./STOR12.md)
+---
+
 # STOR12: Automatic backups are never pruned, so a daily full-library archive fills its destination, and backup and restore decompress the whole archive several extra times against a fixed 30-minute cap
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

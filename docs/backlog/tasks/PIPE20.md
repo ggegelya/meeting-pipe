@@ -1,6 +1,15 @@
+---
+id: PIPE20
+title: The staged local summarizer sits behind a flag nothing sets with no verdict date, and owner dev tooling ships as product mp subcommands
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch B2, go-live SA-11 part): summarize_staged.py (1,010 lines) runs only under MP_STAGED_LOCAL, which nothing sets, and waits on LOCAL13 and LOCAL14 benches unrun since July; dogfood, train-adapter and analyze-detection ship in the bundle. Owner picks delete now or a dated verdict; move dev tools behind mp dev, out of the runtime; one language repair on the local path. [Spec](./PIPE20.md)
+---
+
 # PIPE20: the staged local summarizer sits behind a flag nothing sets with no verdict date, and owner dev tooling ships as product `mp` subcommands
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) B2, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-11 in part). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) B2, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-11 in part). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

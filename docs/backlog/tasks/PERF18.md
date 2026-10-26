@@ -1,6 +1,15 @@
+---
+id: PERF18
+title: The mute backstop re-walks every Teams window once a second for the whole recording, including the Calendar or chat window that never has a mute button
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. `MeetingAXWindowWatcher` polls at `defaultPollInterval = 1.0`, and every poll's `readMuteStates` calls `MeetingAXHandleBuilder.findMeetingWindowMuteButtons`: a fresh Mute DFS of every Teams window plus a Leave DFS of each window that has a mute button. The Calendar or chat window open during calls has none, so it is walked to the end of its tree or the 4000-node budget every second, about 7,200 to 10,800 walks over a 2 to 3 h meeting, all serviced on Teams' main thread during the call and queued on the same serial `axWalkQueue` the end-rescue walk uses (DETECTION-6, verified high). MIC16 moved it off our main thread; nothing bounded its cost. Scope: cache the live buttons per window behind the existing `stateResolver` and read only those at 1 Hz, re-walking on a window-set or subrole change, an unknown read, or a 10 to 15 s backstop. [Spec](./PERF18.md)
+---
+
 # PERF18: the mute backstop re-walks every Teams window once a second for the whole recording, including the Calendar or chat window that never has a mute button
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

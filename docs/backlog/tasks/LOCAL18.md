@@ -1,6 +1,15 @@
+---
+id: LOCAL18
+title: Nobody has seen the free-RAM watchdog fire, and its floor may be unreachable
+category: Local models
+status: new
+priority: P2
+comment: Split out of LOCAL16 on 2026-07-31 by owner decision, on the VALID1-to-EGRESS1 precedent that an unmeasured leg is split rather than dressed up as a pass. LOCAL16's **tier refusal is verified** (Preferences annotations, `mp doctor`, and the refusal copy all confirmed by the owner that day) and it is the protection that would have stopped the documented 14B-on-32GB incident. The **runtime watchdog is not**: it has never fired in the entire event-log history, and an attempt to make it fire failed, with `memory_pressure -p 8 -y 45` reporting "Run out of allocable memory" while still at 65% by its own reckoning and the summarize completing normally. The doubt is about the metric rather than the code: `free_pct` sums `free`, `inactive`, `speculative` and `purgeable` (`resource_guard.py:309`) for a documented and sound reason (macOS keeps `Pages free` near zero, so a floor on free alone would fire constantly), but `inactive` and `purgeable` are what macOS reclaims **under** pressure, so the sum stays high exactly while the machine copes by compressing and swapping; during the test `vm_stat` showed 10.1M swapouts and ~7.5 GB in the compressor while the metric read 65% free. Scope splits in two: whether the abort path works at all, answerable safely today by raising the `summarization.local_memory_floor_pct` knob so any run trips it; and whether 10% is reachable, which needs an instrumented heavy run rather than synthetic allocation. Owner may re-band: this is the backstop under a P1's "never hangs the machine" promise, and P2 assumes the verified tier refusal carries the known case.
+---
+
 # LOCAL18: Nobody has seen the free-RAM watchdog fire, and its floor may be unreachable
 
-Band origin: split out of LOCAL16 on 2026-07-31 by owner decision, following the VALID1 to EGRESS1 precedent (a leg that was not measured is split out rather than dressed up as a pass). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: split out of LOCAL16 on 2026-07-31 by owner decision, following the VALID1 to EGRESS1 precedent (a leg that was not measured is split out rather than dressed up as a pass). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

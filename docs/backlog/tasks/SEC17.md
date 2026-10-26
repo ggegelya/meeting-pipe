@@ -1,6 +1,15 @@
+---
+id: SEC17
+title: The app holds microphone, Screen Recording and Accessibility grants but is signed without hardened runtime, and its signing key is imported for use by any app
+category: Security
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch M2, go-live DI-6): codesign shows flags=0x0(none) and no entitlements, so same-user DYLD injection inherits the TCC grants, and dev-cert.sh imports the key with -A. Sign with --options runtime plus an audio-input entitlements file in sign_app_with_resources, import new keys with -T /usr/bin/codesign, fix the existing key's ACL without recreating the cert. [Spec](./SEC17.md)
+---
+
 # SEC17: the app holds microphone, Screen Recording and Accessibility grants but is signed without hardened runtime, and its signing key is imported for use by any app
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) M2, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) DI-6). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) M2, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) DI-6). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

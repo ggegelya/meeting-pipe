@@ -1,6 +1,15 @@
+---
+id: OBS3
+title: Failure events carry only a caption, a signal death is read as an exit code, and three pipeline commands fail with no event at all
+category: Observability
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O9: FB-7, PY-8, PY-9, PY-10, PY-11, SW-19): pipeline_failed and siblings carry only the caption, terminationReason is never read so SIGQUIT hits the exit-3 publish rule, merge, paste-publish and finalize emit nothing, run-all exits 1 on a missing secret. Structured rows via OBS1, uncaughtSignal case, one command_failed helper, emit never raises, typed transcript read. [Spec](./OBS3.md)
+---
+
 # OBS3: failure events carry only a caption, a signal death is read as an exit code, and three pipeline commands fail with no event at all
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O9; finders FB-7, PY-8, PY-9 run-all half, PY-10, PY-11, SW-19). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O9; finders FB-7, PY-8, PY-9 run-all half, PY-10, PY-11, SW-19). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+id: PIPE22
+title: Mp has no SIGTERM handler, so a user Cancel skips every finally and orphans a multi-GB mlx_lm.server, and the daemon only reaps on timeout
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch M3): Cancel SIGTERMs mp with no handler, so no finally runs and the setsid'd mlx_lm.server stays resident; the reaper runs only on watchdog timeout or the next successful job, since route() returns early on cancel. Map SIGTERM to SystemExit(143), reap on cancel too, fix the reaper and reapStorage comments. [Spec](./PIPE22.md) Amended 2026-10-25 (observability band): terminate_server and LocalSummaryClient._terminate_proc both clear the mlx-server.json marker without confirming the server died (PY-12), so a survivor is invisible to doctor and the reaper. Clear only on a confirmed exit, emit local_server_survived_kill, no respawn onto a survivor's port. Amended 2026-10-25 (performance review): a client that reuses a warm server must re-stamp the marker's owner_pid, or the reap on cancel kills a server a live mp ask is using, and the owner-liveness rule on both sides matches any command containing "mp" and must be tightened together.
+---
+
 # PIPE22: `mp` has no SIGTERM handler, so a user Cancel skips every `finally` and orphans a multi-GB `mlx_lm.server`, and the daemon only reaps on timeout
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) M3). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) M3). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

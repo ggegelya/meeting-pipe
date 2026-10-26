@@ -1,6 +1,15 @@
+---
+id: END15
+title: Switching the microphone inside a Teams call ends the recording, because Teams' brief input release corroborates a flickering Leave button
+category: Detection
+status: partial
+priority: P1
+comment: Fix shipped inside END17 (owner folded it in, 2026-10-24): a process-audio drop no longer confirms an end on arrival, and its return reverts the hold in both orders. Remaining: the owner measures the device-switch gap (switch mics 3 to 5 times in a test call) so it can sit beside `PromotionEngine.defaultConfirmDwell` (60 s), and the walkthrough. Filed 2026-10-22 from the owner reporting that changing the mic in Teams mid-call stops the recording; broken promise: a live call is recorded as one file. `20261022-150025.wav`: the Leave button read invalid at 12:14:53Z, END9's hold opened (no `UnregisterCall`, `live_signal=call_is_up`), then Teams released its input while reopening the new device at 12:14:59Z and `PromotionEngine.handleEndingProvisional` took that as cross-class corroboration and ended at once, bypassing the hold; the owner re-attached 22 s later with the mic already back. Recorder unaffected. Two unconfirmed same-shape splits (2026-09-18, 2026-09-22). Scope: a process-audio `.ended` corroborates or leads only after a measured dwell, and a `.live` inside it reverts. Owner may re-band. [Spec](./END15.md)
+---
+
 # END15: switching the microphone inside a Teams call ends the recording, because Teams' brief input release corroborates a flickering Leave button
 
-Band origin: filed 2026-10-22 from the owner reporting that changing the microphone in Teams mid-call stops the recording. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-22 from the owner reporting that changing the microphone in Teams mid-call stops the recording. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## What happened
 

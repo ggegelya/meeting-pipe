@@ -1,6 +1,15 @@
+---
+id: PERF11
+title: A main-thread stall is invisible unless someone runs `sample` at the right moment, so app-or-OS cannot be answered from the logs
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-23: diagnosing the owner's lag took three live traces, two of them mistimed, and macOS writes no hang report for a 1-3 s stutter. Scope: a background watchdog that emits a rate-limited `main_thread_stall` event with its duration and context, the way `StopStallWatchdog` does for stops. [Spec](./PERF11.md)
+---
+
 # PERF11: a main-thread stall is invisible unless someone runs `sample` at the right moment, so "is it the app or the OS" cannot be answered from the logs
 
-Band origin: filed 2026-10-23 from the investigation into the owner's "the app feels slow" report. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-23 from the investigation into the owner's "the app feels slow" report. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## What prompted it
 

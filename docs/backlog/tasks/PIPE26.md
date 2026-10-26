@@ -1,6 +1,15 @@
+---
+id: PIPE26
+title: The base summary prompt and the shipped team_context describe the owner's employer, so every new install's meetings are summarized as a regulated SaaS team's
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live FQ-4): meeting_summary.md opens as a regulated-domain summarizer with a regulated-SaaS rule and colleague names, and config.example.toml ships an FDA Part 11 team_context the migrator seeds into every new default workflow. Scope: neutral base prompt, empty shipped context, the owner moves the domain rule into their workflow context. [Spec](./PIPE26.md)
+---
+
 # PIPE26: the base summary prompt and the shipped team_context describe the owner's employer, so every new install's meetings are summarized as a regulated SaaS team's
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-4, "Fix before anyone else installs it" #8). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-4, "Fix before anyone else installs it" #8). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

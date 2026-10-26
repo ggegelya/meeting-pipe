@@ -1,6 +1,15 @@
+---
+id: HYG14
+title: /tech-task never checks a spec's premises against the code, never requires proof that production calls a new component, and never asks anyone to refute a detection or capture change
+category: Hygiene
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, harness #2, #3, #6, #7, C1 to C3): 6 of 15 tech-task sessions hit a false spec premise, END9 shipped 28 green tests for a watcher nothing started, and 46 fix(detector/lifecycle/micgate) commits show self-review missing regressions. Add a premise-check step, a wiring-test rule, and a skeptic subagent review for lifecycle, micgate and capture diffs. [Spec](./HYG14.md)
+---
+
 # HYG14: /tech-task never checks a spec's premises against the code, never requires proof that production calls a new component, and never asks anyone to refute a detection or capture change
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) failure modes 2, 3, 6 and 7, proposals C1 to C3). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) failure modes 2, 3, 6 and 7, proposals C1 to C3). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+id: ARCH15
+title: The view state layer is ObservableObject only, so any published write re-renders every view holding the object, and each hot surface gets its own workaround
+category: Architecture
+status: new
+priority: P2
+comment: Filed 2026-10-24 (go-live SA-2 root cause; the audit band mapped it to PERF12, which fixes only the playback clock): 24 ObservableObject classes, 141 @Published and 0 @Observable on a macOS 14 floor, and the right-click pause, the TECH-A12 and A13 isolation, the ProcessingTracker split and the MeetingStore.revision fingerprint guards each work around it. Migrate LibraryWindowModel, MeetingStore, then AudioPlaybackController (after PERF12) to @Observable, one per commit, Combine only for non-view subscribers, CONVENTIONS rewritten. [Spec](./ARCH15.md)
+---
+
 # ARCH15: The view state layer is ObservableObject only, so any published write re-renders every view holding the object, and each hot surface gets its own workaround
 
-Band origin: filed 2026-10-24 (go-live assessment SA-2, the root-cause class behind it; the 2026-10-24 audit band mapped SA-2 to [PERF12](./PERF12.md), which fixes one symptom, the 15 Hz playback clock). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 (go-live assessment SA-2, the root-cause class behind it; the 2026-10-24 audit band mapped SA-2 to [PERF12](./PERF12.md), which fixes one symptom, the 15 Hz playback clock). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## What is wrong
 

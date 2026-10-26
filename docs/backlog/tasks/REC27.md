@@ -1,6 +1,15 @@
+---
+id: REC27
+title: A wedged AVAudioEngine survives a timed-out teardown or restart and is then called synchronously on the main thread by the next start, wake or watchdog tick, so one audio wedge can freeze the app
+category: Recording
+status: new
+priority: P1
+comment: Filed 2026-10-25 from the performance review. REC13 bounded the stop path but kept the engine: `teardownEngine` only logs `engine_teardown_timed_out`, and recovery's halt and restart timeouts keep it too, under a comment citing an observer that REC16's `replaceEngine` already re-arms. The next `buildMicChain` (voice processing, `outputFormat(forBus:)`, `installTap`), `handleDidWake` and the 1 Hz `checkTapLiveness` (`engine.isRunning`, read even after the mic is abandoned) then call it synchronously on main, and the repo's own 2026-08-14 record is that every engine call queues behind a wedged engine queue, so one wedge can freeze the menu, HUD and hotkeys until a force-quit; each abandoned bounded call also strands a GCD thread for good (about 13 to 15 per bad recording, in a daemon that runs a week between restarts). A failed start also leaves voice processing on and a `.capturemode` marker behind. P1: the broken promise is boundedEngineStart's (2026-06-12) and REC13's, that an audio wedge cannot freeze the app; plausible rather than observed (no engine timeout in the log since 2026-10-12), so the owner may re-band to P2 by the REC15 precedent. Scope: retire the engine on every timeout, every remaining engine call through runBlockingWithTimeout, cap abandoned calls with a restart notice, one unwind for every failed start. [Spec](./REC27.md)
+---
+
 # REC27: a wedged AVAudioEngine survives a timed-out teardown or restart and is then called synchronously on the main thread by the next start, wake or watchdog tick, so one audio wedge can freeze the app
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+id: ASR6
+title: Transcription and diarization depend on one vendor package pinned exact, with a known macOS 27 Neural Engine issue tracked only in a manifest comment and no fallback runner
+category: Transcription
+status: new
+priority: P3
+comment: Filed 2026-10-24 (audit band, go-live DI-15): FluidAudio is the only TranscriptionRunner, pinned exact at 0.14.8, and upstream #738 (macOS 27 ANE access) lives only in a Package.swift comment with no doctor check. Watch task: on promotion re-check upstream, qualify any bump on ASR4's golden set plus voiceprint compatibility, add a doctor check, and only then spike a second runner. [Spec](./ASR6.md)
+---
+
 # ASR6: transcription and diarization depend on one vendor package pinned exact, with a known macOS 27 Neural Engine issue tracked only in a manifest comment and no fallback runner
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) DI-15). A watch task: P3, promote on a real macOS 27 transcription failure, or on upstream confirming the restriction. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) DI-15). A watch task: P3, promote on a real macOS 27 transcription failure, or on upstream confirming the restriction. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

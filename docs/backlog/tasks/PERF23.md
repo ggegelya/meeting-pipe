@@ -1,6 +1,15 @@
+---
+id: PERF23
+title: Facts, People and Meeting time re-read the whole library on every store revision in uncancelled passes that can land out of order, and Meeting time's transcript cache dies on every rail switch
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. Every `MeetingStore.revision` runs `reloadFacts()` (every summary.json, whether or not Facts is visible, for the badge) and, when People is open, `PeopleView.reaggregate()` in uncancelled `Task.detached` passes applied in completion order, so a burst of revisions runs N full passes and an older snapshot can land last as a stale list or badge; Meeting time's `talkCache` is `@State` on a view built inside the scope switch, so every visit re-parses the library's transcripts (about 80 MB at the work library, the view's own figure) and revisions during the first pass each start another with an empty cache, and `TranscriptLoader.load` parses embeddings.json twice. Scope: a generation-checked, cancelling loader per projection, a model-owned fingerprint-keyed talk cache, one embeddings read, per-stem summary caches. [Spec](./PERF23.md)
+---
+
 # PERF23: Facts, People and Meeting time re-read the whole library on every store revision in uncancelled passes that can land out of order, and Meeting time's transcript cache dies on every rail switch
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

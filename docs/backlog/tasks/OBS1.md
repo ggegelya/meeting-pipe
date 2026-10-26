@@ -1,6 +1,15 @@
+---
+id: OBS1
+title: 51 of the daemon's 60 warning and error sites log only to os.Logger, which stores their reason as `<private>` and never writes it to `~/Library/Logs/MeetingPipe`
+category: Observability
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O4: SW-4, FB-5, LG-2): 51 of 60 daemon warning and error sites go only to os.Logger, which redacts the reason and writes no file, so a failed Keychain, config, meta-sidecar or schedule save leaves no trace. Add Log.failure (event with error domain and code, writeLine, os.Logger), migrate the sites, fence bare calls; the band's shared primitive. [Spec](./OBS1.md)
+---
+
 # OBS1: 51 of the daemon's 60 warning and error sites log only to os.Logger, which stores their reason as `<private>` and never writes it to `~/Library/Logs/MeetingPipe`
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O4; finders SW-4, FB-5, LG-2). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O4; finders SW-4, FB-5, LG-2). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 This task is the band's shared primitive. OBS3, OBS4 and OBS5 emit their failure rows through the helper it adds, and UX91, SEC25, STOR9, STOR10 and SEC21 log their refusals through it rather than each inventing a pair of calls.
 

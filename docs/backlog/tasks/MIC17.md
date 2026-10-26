@@ -1,6 +1,15 @@
+---
+id: MIC17
+title: A mic that records speech far too quietly passes the dead-mic check, so nobody is told, and the owner's own voice becomes the hardest to transcribe and to separate
+category: Recording
+status: new
+priority: P2
+comment: Filed 2026-10-24 (go-live FQ-3 and FQ-8 evidence, left unfiled by DIAR6): MIC15 warns only when the un-muted peak stays under -65 dBFS; this Mac's two October recordings on the built-in mic peak at -26 and -30 dBFS with 1.5 s and 0.9 s above -40 dBFS (AirPods in September: 187 s), and nothing warned. A quiet tier in MicCoverageWarning, a notification and event naming the device, thresholds set by an owner-run probe on the work library. [Spec](./MIC17.md)
+---
+
 # MIC17: A mic that records speech far too quietly passes the dead-mic check, so nobody is told, and the owner's own voice becomes the hardest to transcribe and to separate
 
-Band origin: filed 2026-10-24 (go-live assessment FQ-3 and FQ-8 evidence; [DIAR6](./DIAR6.md) names this warning as observed but unfiled). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 (go-live assessment FQ-3 and FQ-8 evidence; [DIAR6](./DIAR6.md) names this warning as observed but unfiled). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## What is wrong
 

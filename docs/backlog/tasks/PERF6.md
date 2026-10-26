@@ -1,6 +1,15 @@
+---
+id: PERF6
+title: Idle discovery walks an open Teams' accessibility tree three times per scan all day, because DET5's lone-native admission and the permissive Teams title reopened the walk gate
+category: Performance
+status: new
+priority: P2
+comment: Reopened 2026-10-26 by the owner from the 2026-10-25 performance review (DETECTION-3, DETECTION-5). PERF6 (shipped 2026-07-11) gated the three control-button AX walks on a meeting title or process audio so an idle app skipped them; DET5 (2026-07-12) added `isLoneNative` and `isFrontmost` to `shouldWalkControlAX`, so a lone Teams (the owner's usual setup) walks on every scan, and the scanner's Teams recognizer reads any non-chrome title (`Chat
+---
+
 # PERF6: idle discovery walks an open Teams' accessibility tree three times per scan all day, because DET5's lone-native admission and the permissive Teams title reopened the walk gate
 
-Band origin: PERF6 shipped 2026-07-11 and is archived in [q6-final.md](../q6-final.md); reopened 2026-10-26 by the owner from the 2026-10-25 performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified), review findings DETECTION-3 and DETECTION-5. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: PERF6 shipped 2026-07-11 and is archived in [q6-final.md](../q6-final.md); reopened 2026-10-26 by the owner from the 2026-10-25 performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified), review findings DETECTION-3 and DETECTION-5. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 **This reverses part of DET5.** Scope item 1 narrows the walk admissions DET5 added on 2026-07-12 (`isLoneNative` and `isFrontmost` in `shouldWalkControlAX`, its walk-gate decouple, archived in [q6-final.md](../q6-final.md)), which exist so a native call whose window was renamed still gets its control walk. The owner reopened PERF6 at P2 on 2026-10-26 on that understanding; which admission goes, and how the renamed-window case stays covered, is still put to them at pickup (Owner walkthrough step 1).
 

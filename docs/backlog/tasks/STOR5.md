@@ -1,6 +1,16 @@
+---
+id: STOR5
+title: Restore from backup in Preferences
+category: Storage
+status: owner-verify
+priority: P2
+verification: simple
+comment: Shipped 2026-08-03; every engineering line of the acceptance is green and the status is the eyeball clause only. **Preferences ▸ Storage ▸ Restore from backup…** picks an archive, spawns a mandatory dry run, renders that plan as the confirm's blast radius, and only then spawns the real run. The preview needed a contract, so `mp restore` grew `--dry-run --json [--out PATH]` (`plan_restore` -> a `RestorePlan` TypedDict: per-root destination, files landing, how many are new, how many already exist and get overwritten, whether the root is occupied at all, plus capped samples so the confirm can *name* the meeting that comes back). Plan and real run are one walk seen twice through a shared `_restorable_members`. **The real run passes `--force`, always**, because every in-app restore writes into live roots that a plain `mp restore` refuses, so the preview *is* the refusal it replaces. `RestoreFlow.confirm()` only acts from `.confirming`, so the real run is unreachable except through a shown plan; `StorageBusyGate` makes backup and restore mutually exclusive. 2052 daemon tests green (23 new), 1171 pipeline (14 new), ruff/pyright/truth fences/dash guard clean. **Owner-owed:** the walkthrough at the end of the spec. Its load-bearing step is step 6, reading the confirm before pressing it: that the preview names the files that were moved out, admits how many it overwrites, and can be cancelled with nothing written. It is the only guard in front of a `--force` overwrite of the library, so it stays owner-owed rather than done.
+---
+
 # STOR5: Restore from backup in Preferences (the recovery half of the backup story)
 
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 16: surface capabilities that exist but are CLI-only; the inventory ranked this the top gap by stakes). Status and priority live in this task's ToC row in [owner-verification.md](../owner-verification.md), the queue of shipped work awaiting owner confirmation.
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 16: surface capabilities that exist but are CLI-only; the inventory ranked this the top gap by stakes). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task, and [owner-verification.md](../owner-verification.md) carries the gate for shipped work awaiting the owner's confirmation.
 
 ## Context
 

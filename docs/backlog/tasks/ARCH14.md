@@ -1,6 +1,15 @@
+---
+id: ARCH14
+title: The summarization backend is a String in ConfigStore and three forwarders, so locality and needs-the-local-model are re-derived by string comparison at each site
+category: Architecture
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch B5): ConfigStore.summarizationBackend is a String passed through three forwarders, nine sites re-derive on-device, needs-MLX or needs-key by string comparison, and fallbacks disagree (anthropic vs local). Type the field as SummarizationEngine with an unknown-id case, add usesLocalModel and requiredSecret, replace the predicates, fix the four-value docstring. [Spec](./ARCH14.md)
+---
+
 # ARCH14: the summarization backend is a String in ConfigStore and three forwarders, so locality and "needs the local model" are re-derived by string comparison at each site
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) B5). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) B5). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

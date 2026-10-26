@@ -1,6 +1,15 @@
+---
+id: PIPE32
+title: LocalSummaryClient is assembled at seven sites from different subsets of its eleven parameters, which already caused LOCAL19 and PIPE12
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit PY2): 7 constructions after PIPE19 pass between 2 and 9 of the 9 config-backed parameters, the LOCAL19 fence checks one of them, and `providers._local_cleanup` already ignores both local timeouts. `LocalSummaryClient.from_config(cfg, **overrides)` at every site, the fence shrinks to "no direct construction". [Spec](./PIPE32.md)
+---
+
 # PIPE32: LocalSummaryClient is assembled at seven sites from different subsets of its eleven parameters, which already caused LOCAL19 and PIPE12
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) PIPE32, finder PY2). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) PIPE32, finder PY2). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

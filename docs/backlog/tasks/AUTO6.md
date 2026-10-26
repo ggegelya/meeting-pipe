@@ -1,6 +1,15 @@
+---
+id: AUTO6
+title: The MCP server ignores global `regulated_mode`, so meetings recorded before regulated mode was switched on stay readable by a cloud MCP client
+category: Automation
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch S5): visibility.withheld_reason reads only per-meeting sidecar flags, so with global regulated mode on, every meeting recorded before it stays served by mp mcp-serve, and a running server never re-reads config. allow_stems re-checks zero_egress per call and serves nothing, main refuses to start under regulated mode, status reports a regulated_global reason Preferences renders. Amended 2026-10-25 (performance review): `Library.index` builds the search index once with the first call's allowlist and returns it for the session, and `search_meetings` deliberately never re-checks, so a meeting withheld later (including by this task's regulated check) keeps returning excerpts from search while `get_meeting` hides it; new meetings never become searchable, two first searches race into two builds, and the embedder stays loaded. Refresh on a fingerprint change under a lock, short-circuit an empty allowlist, release the embedder. [Spec](./AUTO6.md)
+---
+
 # AUTO6: the MCP server ignores global `regulated_mode`, so meetings recorded before regulated mode was switched on stay readable by a cloud MCP client
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) S5). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) S5). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

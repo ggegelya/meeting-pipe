@@ -1,6 +1,15 @@
+---
+id: SEC18
+title: Zero-egress (regulated mode or an NDA workflow) is enforced only for HTTP, so synced folders, BYO bundles and backups still carry meeting content off the Mac
+category: Security
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch S2, go-live fix 9 and DI-11 privacy half): zero_egress clamps only network calls; the filesystem sink defaults into iCloud-synced ~/Documents, BYO bundles and mp backup have no gate, and the mic usage string says audio never leaves the Mac. One sink rule on both paths, a synced-target gate at publish, a record-time warning, BYO and backup gates, honest copy. [Spec](./SEC18.md)
+---
+
 # SEC18: zero-egress (regulated mode or an NDA workflow) is enforced only for HTTP, so synced folders, BYO bundles and backups still carry meeting content off the Mac
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) S2, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) fix 9 and the privacy half of DI-11). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) S2, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) fix 9 and the privacy half of DI-11). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

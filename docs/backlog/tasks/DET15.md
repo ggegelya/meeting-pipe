@@ -1,6 +1,15 @@
+---
+id: DET15
+title: End-of-call signals are calibrated to English-UI Teams: the Leave and toolbar matchers are English-only, Teams title stems miss accented spellings, and every native app's hold reads Teams' log
+category: Detection
+status: new
+priority: P3
+comment: Filed 2026-10-24 (audit band, go-live PD-2): Leave labels and toolbar needles are English-only, Teams title stems miss accented spellings and Ukrainian, and Zoom, Webex and Slack holds read Teams' teardown log. Scope: a leave-label catalogue beside MuteLabels.toml, diacritic-folded title matching, a per-app oracle. P3 until a non-English UI or non-Teams end is recorded. [Spec](./DET15.md)
+---
+
 # DET15: end-of-call signals are calibrated to English-UI Teams: the Leave and toolbar matchers are English-only, Teams title stems miss accented spellings, and every native app's hold reads Teams' log
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PD-2). Filed P3: nothing has failed in the field yet, because the owner records English-UI Teams. Promote on the first recorded meeting in a non-English client UI, or the first false or missed end on Zoom, Webex or Slack. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PD-2). Filed P3: nothing has failed in the field yet, because the owner records English-UI Teams. Promote on the first recorded meeting in a non-English client UI, or the first false or missed end on Zoom, Webex or Slack. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+id: STOR7
+title: Deleting a meeting trashes its raw/ files but leaves its published copies, its corrections, its search vectors and its voice samples behind, and the confirm says every file
+category: Storage
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live PP-10): softDeleteMeeting trashes the sink sidecars that are the only pointers to the published copies, leaves corrections/<stem>.json and semantic index rows behind, and roster samples have no provenance, yet the confirm says every file goes. One footprint enumerator, delete local derived data, opt-in Notion and LAN removal via mp unpublish, an honest confirm. [Spec](./STOR7.md) Amended 2026-10-25 (observability band): delete and forget report success they never checked (SW-18). meeting_deleted logs matched not trashed files, Voiceprint Reset is try? and zeroes the UI, roster rename carry failures are redacted os.Logger only, model eviction logs bytes_freed before removal. Real trashed and failed counts, a voiceprint_reset event, meetings_failed on roster_rename_done. Amended 2026-10-25 (performance review): delete lists the whole library once per stem and trashes on main, and the batch delete and export loops never yield, so progress and Cancel are dead; locate from one listing per batch and run the batch off main.
+---
+
 # STOR7: deleting a meeting trashes its `raw/` files but leaves its published copies, its corrections, its search vectors and its voice samples behind, and the confirm says "every file"
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PP-10). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PP-10). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

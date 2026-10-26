@@ -1,6 +1,15 @@
+---
+id: SEC22
+title: Voiceprints are written world-readable because four writers bypass `storage.atomic_write_text`, and `roster forget` leaves the person's embeddings in every meeting
+category: Security
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch S8, go-live PP-4 file-mode half): voiceprint.json is -rw-r--r-- in a drwxr-xr-x config dir because Voiceprint, Roster, the per-meeting embeddings writer and roster_cmd hand-roll writes without the 0600 helper, and forget never touches embeddings. Route all through atomic_write_text, make the config dir 0700, cascade forget into embeddings.json, fence hand-rolled atomic writes. [Spec](./SEC22.md)
+---
+
 # SEC22: voiceprints are written world-readable because four writers bypass `storage.atomic_write_text`, and `roster forget` leaves the person's embeddings in every meeting
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) S8, file-mode half of [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PP-4). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) S8, file-mode half of [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PP-4). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

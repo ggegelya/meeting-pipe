@@ -1,6 +1,15 @@
+---
+id: PERF17
+title: Discovery keeps scanning and AX-walking through every prompt and recording although nothing reads the result, and scans queue behind a slow one with no in-flight guard
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. `MeetingDiscoveryWatcher.armPollTimer` re-arms and calls `scheduleScan` unconditionally, so a full `MeetingSourceScanner.scan()` with its control-button AX walks runs every 3 to 12 s through every prompt and recording (300 to 3,600 scans for a 1 to 3 h meeting, on top of the 1 Hz mute backstop on the same Teams tree), while `handleDiscovery` and `handleMeetingStarted` both return at `guard ... isAcceptingPrompts` outside `.idle`, so the results only become log lines (DETECTION-4). `runScan` also enqueues a full scan on the serial `scanQueue` for every coalesced trigger with no in-flight guard, so scans slower than their triggers queue up and deliver stale winners late (DETECTION-8, verified low: the queue drains once activity stops). Scope: a pure single-flight gate with one pending follow-up, no scans outside `.idle` with mic-busy sampling kept, an immediate scan on the idle transition. [Spec](./PERF17.md)
+---
+
 # PERF17: discovery keeps scanning and AX-walking through every prompt and recording although nothing reads the result, and scans queue behind a slow one with no in-flight guard
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

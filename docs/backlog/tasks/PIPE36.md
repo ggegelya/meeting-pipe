@@ -1,6 +1,15 @@
+---
+id: PIPE36
+title: The pipeline lane's in-daemon phases have no ceiling and Cancel cannot reach two of them, so one hung redaction, transcription or Apple Intelligence pass holds every later meeting until a restart
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. SinkDispatcher holds one serial lane, but only the mp subprocess is bounded (runMP's 90 min watchdog) and only it arms the 30 s stall flag. The redaction ffmpeg (waitUntilExit with no ceiling, before the row has an entry or a Cancel), the FluidAudio pass (first-load download and compile, a synchronous diarizer, uncancellable CoreML) and the Apple Intelligence summarize (an unretained Task of about 200 sequential on-device calls for a 3 h meeting at the measured 11 chars a second, which Cancel never reaches, whose publish runs with retain .none, and which trips the stall flag 30 s into a healthy run) have none, so one hang holds every later meeting until a restart, while healthy transcription runs at about 125 to 165 times real time. Scope: a main-queue GCD deadline sized to audio length that fails the job, fences the late return and rebuilds the runner, and an Apple phase that is cancellable, bounded per call and beats progress. [Spec](./PIPE36.md)
+---
+
 # PIPE36: The pipeline lane's in-daemon phases have no ceiling and Cancel cannot reach two of them, so one hung redaction, transcription or Apple Intelligence pass holds every later meeting until a restart
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+id: DEP2
+title: Ffmpeg is still a hard runtime dependency at three spawn sites although DEP1 measured the AVFoundation replacement as GO
+category: Distribution
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live DI-12): RecordingPostProcessor merge, MuteRedactor and AudioTranscoder still spawn ffmpeg, so install needs Homebrew, the bundle needs a licensed static ffmpeg, and CI installs it. DEP1 measured native FLAC and merge as GO. Port FLAC, then the merge with REC9 and REC14's length policy, then redaction after SEC16, then delete findFFmpeg and every install and CI step. [Spec](./DEP2.md)
+---
+
 # DEP2: ffmpeg is still a hard runtime dependency at three spawn sites although DEP1 measured the AVFoundation replacement as GO
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) DI-12). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) DI-12). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

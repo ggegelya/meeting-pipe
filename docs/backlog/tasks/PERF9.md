@@ -1,6 +1,15 @@
+---
+id: PERF9
+title: Scrolling the Library meeting list lags, because the SwiftUI `List` measures and rebuilds every row on the main thread
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-23 from the owner reporting 1-3 s scroll lag that worsens further down the list while Teams and Claude scroll smoothly. Traced the same day: idle main thread 99% asleep, but while scrolling about 60% busy, mostly NSTableView automatic row heights measuring each SwiftUI `MeetingRow` (about 5,400 samples), row rendering (about 5,700), and whole-list re-diffs (about 5,980). Scope: `LazyVStack` with app-owned selection (or fixed row heights), cheaper rows, no whole-list selection animation. [Spec](./PERF9.md)
+---
+
 # PERF9: scrolling the Library meeting list lags, because the SwiftUI `List` measures and rebuilds every row on the main thread
 
-Band origin: filed 2026-10-23 from the owner reporting that the app "feels slow", that scrolling lags by 1 to 3 s and does not react immediately, and that it gets worse "the more down I scroll", while Teams and Claude Desktop scroll smoothly on the same machine at the same time. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-23 from the owner reporting that the app "feels slow", that scrolling lags by 1 to 3 s and does not react immediately, and that it gets worse "the more down I scroll", while Teams and Claude Desktop scroll smoothly on the same machine at the same time. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## What was measured
 

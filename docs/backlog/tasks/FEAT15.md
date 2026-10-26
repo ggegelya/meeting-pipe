@@ -1,6 +1,16 @@
+---
+id: FEAT15
+title: An interactive tutorial, which reverses a standing scope decision
+category: Feature
+status: owner-verify
+priority: P2
+verification: simple
+comment: **Owner approved the move 2026-08-18**, and promoted the task off P3 the same day (it stays P2 here: at P3 a later session would skip a shipped task under the P3 rule). Both questions the spec reserved were answered before any code: the deferral lifts for **this surface only** (first-run wizards, coach marks, videos and a hosted docs site stay deferred, and this is explicitly not a precedent for them), and the shape is **drive the real UI**, picked over the rehearsal surface with the trade stated (most work, most fragile against layout, the only option that cannot go stale about what exists). Shipped: the menu bar's **Tutorial…** rings seven real controls across three surfaces (the Library's rail, Record, search and the Preferences gear; Vocabulary and Speaker labels on Pipeline; Regulated mode on Permissions), dimming the window it is in and placing a narration card on whichever side does not cover the control. The root `CLAUDE.md` carve-out landed in the same commit with the launch-path clause fenced rather than promised. `swift build` clean, `swift test` 2633 tests 0 failures with 35 new, `truth_fences.py both` green. **What the owner does:** `./scripts/rebuild.sh`, then open the menu bar, pick **Tutorial…**, and press Next seven times. **A pass:** seven steps, each ringing a control that exists and is where the card says; Back and Next move between them; the Preferences leg opens the right pane; Esc closes. A fail reads "Not on screen right now" on a step, meaning the control exists but was not laid out where the tour could reach it (most likely scrolled out of a Preferences pane). **Cost:** a few minutes, no live call, no recording, no special hardware. **Why not a harness:** the suite already proves every control exists and is named correctly, which is the half a checkout can see; the `.missing` verdict depends on real layout at a real window size, and SwiftUI offers no headless way to lay out an `NSHostingView` and read a geometry probe out of it. Walkthrough and the recorded decisions are in [`tasks/FEAT15.md`](./FEAT15.md).
+---
+
 # FEAT15: an interactive tutorial, which reverses a standing scope decision
 
-Band origin: filed 2026-08-04 at the owner's explicit request during DOC11's eyeball: "better to make some tutor overflow with fancy animations etc. you can file a ticket for this." Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-08-04 at the owner's explicit request during DOC11's eyeball: "better to make some tutor overflow with fancy animations etc. you can file a ticket for this." Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## The scope reversal, stated first because it is the reason this file exists
 

@@ -1,6 +1,15 @@
+---
+id: CI9
+title: CI builds only the debug configuration on macOS 15, so the release build that ships, the declared macOS 14 floor, and new compiler warnings are never checked
+category: CI
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live QG-6, QG-7, QG-10): CI builds debug on macos-15 only, so the shipped release config, the declared macOS 14 floor and new warnings go unchecked; two Swift-6-mode diagnostics are back in production code. Scope: release build plus relocation smoke, a warning gate with an allowlist, a macos-14 floor job, runner names in docs. [Spec](./CI9.md)
+---
+
 # CI9: CI builds only the debug configuration on macOS 15, so the release build that ships, the declared macOS 14 floor, and new compiler warnings are never checked
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) QG-6, QG-7 remainder, QG-10). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) QG-6, QG-7 remainder, QG-10). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

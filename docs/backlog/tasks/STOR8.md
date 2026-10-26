@@ -1,6 +1,15 @@
+---
+id: STOR8
+title: Mp backup writes the whole corpus, voiceprints included, to a world-readable archive under its final name, with no check that the destination is encrypted
+category: Storage
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live PP-12): create_backup writes the tar.gz at umask mode (0644 by default) under its final name, so a crash leaves a truncated archive the restore panel accepts, writes the marker non-atomically, and never checks destination encryption, though the archive holds transcripts and voiceprints. 0600, .partial plus os.replace, atomic marker, warn on an unencrypted volume. [Spec](./STOR8.md)
+---
+
 # STOR8: `mp backup` writes the whole corpus, voiceprints included, to a world-readable archive under its final name, with no check that the destination is encrypted
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PP-12). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PP-12). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

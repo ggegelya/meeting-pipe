@@ -1,6 +1,15 @@
+---
+id: LOCAL21
+title: Mlx_lm.server has two owners, the short-lived mp and the daemon, and about 900 lines of lifecycle and lsof/ps identity probing exist to reconcile them
+category: Local models
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch A11): Python spawns a setsid mlx_lm.server per mp, and the daemon preloads, restarts and reaps it via /bin/ps, with local_server.py using lsof and ps to learn whose server serves what. The daemon becomes the only owner (on-demand start, restart on change, idle stop, quit); mp only connects, with one start-and-retry on not-running; the reconciliation code is deleted. Amended 2026-10-25 (performance review): mlx-server.log is rotated only when opened, so once daemon-run mp stops spawning, the supervisor's long-lived server never rotates it; pass --log-level WARNING (mlx-lm 0.31.3 defaults to INFO) and keep every (re)start going through serve-local's rotating open. [Spec](./LOCAL21.md)
+---
+
 # LOCAL21: `mlx_lm.server` has two owners, the short-lived `mp` and the daemon, and about 900 lines of lifecycle and `lsof`/`ps` identity probing exist to reconcile them
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) A11). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) A11). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+id: ARCH10
+title: The per-meeting file contract has no owner type: 30 Swift files spell sidecar paths, views rewrite summary.json through try?, and job outcome is inferred from which files exist
+category: Architecture
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch A4 + A10, go-live SA-10): writeTitle replaces a summary.json that fails to parse with only a title key, persistEdit returns true when its summary write fails, and run_all builds a result dict that main() throws away. Add MeetingFiles in Core, a Codable MeetingMeta, one SummaryDocument.update writer that refuses on parse failure or a busy stem, and an mp --result envelope. [Spec](./ARCH10.md) Amended 2026-10-25 (observability band): two more summary.json writers (SW-16). setActionResolved round-trips through the tolerant MeetingSummary decoder, so one malformed evidence row empties every citation, and its write failure only reloads; performRevert has no running-job check and try? removes the record. Both route through SummaryDocument.update with a surfaced refusal. Amended 2026-10-25 (performance review): writeTitle's meta.json branch (a meeting with no summary yet) has SEC25's destructive shape and goes through item 2's writer; the writers' reads move off main, since a dataless iCloud file blocks main.
+---
+
 # ARCH10: the per-meeting file contract has no owner type, so 30 Swift files spell sidecar paths by hand, views rewrite pipeline-owned summary.json through try?, and a job's outcome is inferred from which files exist
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) A4 with the A10 placement note, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-10 writer half). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) A4 with the A10 placement note, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-10 writer half). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

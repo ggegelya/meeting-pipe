@@ -39,17 +39,22 @@ checker, a linter, or a test:
      entry a merge left glued to the paragraph above it. HYG6 swept 88 of the
      first and HYG8 another 24; neither class shows up in a diff, which is why
      both were found by hand months later (HYG8 item 4).
+  5. A **stale backlog index or an invalid task header**: `docs/backlog/INDEX.md`
+     is generated from the header of every `tasks/<ID>.md` and union-merged on
+     rebase, so a landing that skipped `scripts/backlog.py index` leaves it
+     wrong in a way no diff reviewer reads 200 rows to notice (2026-10-26).
 
 The first two are drift between prose and code, which is exactly what a human
 reviewer stops noticing. The third is drift between a file's job and its size.
-The fourth is drift between a document and the tree around it. This script is
-the mechanical reader.
+The fourth and fifth are drift between a document and the tree around it. This
+script is the mechanical reader.
 
-    python3 scripts/truth_fences.py            # all four fences
+    python3 scripts/truth_fences.py            # all five fences
     python3 scripts/truth_fences.py config     # config keys only
     python3 scripts/truth_fences.py events     # event categories only
     python3 scripts/truth_fences.py claude     # CLAUDE.md size budget only
     python3 scripts/truth_fences.py links      # doc links + run-on entries only
+    python3 scripts/truth_fences.py backlog    # task headers + INDEX.md freshness only
 
 Stdlib only (tomllib, ast, re), so CI can run it without installing anything.
 
@@ -64,6 +69,7 @@ only for drift a named backlog task will clear, and expect to delete it soon.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import re
 import sys
 import tomllib
@@ -822,6 +828,25 @@ def check_links() -> bool:
     return fence.report()
 
 
+# --------------------------------------------------------------------------
+# Fence 5: the generated backlog index
+# --------------------------------------------------------------------------
+
+
+def check_backlog() -> bool:
+    fence = Fence("backlog index")
+    # `scripts/backlog.py` owns the header contract and the renderer; this
+    # fence only runs its check, so the two can never disagree about it.
+    spec = importlib.util.spec_from_file_location("backlog", REPO / "scripts" / "backlog.py")
+    assert spec and spec.loader
+    backlog = importlib.util.module_from_spec(spec)
+    sys.modules["backlog"] = backlog
+    spec.loader.exec_module(backlog)
+    for error in backlog.check():
+        fence.fail(error)
+    return fence.report()
+
+
 def main(argv: list[str]) -> int:
     which = argv[0] if argv else "both"
     print(f"CI5 truth fences ({which})")
@@ -834,8 +859,10 @@ def main(argv: list[str]) -> int:
         ok &= check_claude()
     if which in ("both", "links"):
         ok &= check_links()
-    if which not in ("both", "config", "events", "claude", "links"):
-        print("usage: truth_fences.py [both|config|events|claude|links]", file=sys.stderr)
+    if which in ("both", "backlog"):
+        ok &= check_backlog()
+    if which not in ("both", "config", "events", "claude", "links", "backlog"):
+        print("usage: truth_fences.py [both|config|events|claude|links|backlog]", file=sys.stderr)
         return 2
     return 0 if ok else 1
 

@@ -1,6 +1,15 @@
+---
+id: PIPE37
+title: Quitting or restarting the daemon leaves its in-flight mp jobs running with no watchdog, and the relaunch marks their meetings interrupted while they still write, so a Retry runs a second pipeline on the same stem
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. flushAndExit stops the preloader and the recorder but never the launcher, the runMP watchdog is a DispatchSource that dies with the process, and an NSTask child sits in its own process group, so a run-all, ask or Library re-run outlives a Quit (which relaunches by default, UX82), rebuild.sh or a crash with no 90 min cap (the May 2026 incident pinned 4 cores for 13 h); the relaunch's reconcileStrandedJobs then marks that stem interrupted while the orphan still writes it, and a Retry starts a second run-all on it, the overlap PIPE11 exists to stop. Scope: SIGTERM every meeting-bound and ask spawn in shutdown, and a stdin-EOF parent watch in mp (after PIPE22) so a crash or SIGKILL ends them too. [Spec](./PIPE37.md)
+---
+
 # PIPE37: Quitting or restarting the daemon leaves its in-flight mp jobs running with no watchdog, and the relaunch marks their meetings interrupted while they still write, so a Retry runs a second pipeline on the same stem
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

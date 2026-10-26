@@ -1,6 +1,15 @@
+---
+id: PIPE29
+title: One meta.json that is valid JSON but not an object crashes every library-wide command, because the pipeline's hand-rolled JSON readers have three failure behaviours
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit PY1): reproduced with a `[1]` meta.json: `read_meta` returns the list and `visibility.withheld_reason` raises AttributeError, taking down ask, digest, mcp and actions plus every later summary in that workflow; 9 of 38 file readers skip the object check. One `storage.read_json_object` for all of them, the visibility gate stays fail-closed. [Spec](./PIPE29.md)
+---
+
 # PIPE29: One meta.json that is valid JSON but not an object crashes every library-wide command, because the pipeline's hand-rolled JSON readers have three failure behaviours
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) PIPE29, finder PY1). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) PIPE29, finder PY1). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

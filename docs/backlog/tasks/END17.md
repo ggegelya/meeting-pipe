@@ -1,6 +1,15 @@
+---
+id: END17
+title: End-of-call detection stops the recording on the first end it believes, so every new third-party UI shape chops a live meeting; invert it to record long and trim later
+category: Detection
+status: partial
+priority: P1
+comment: Shipped 2026-10-24 on the owner's four decisions (inversion accepted, lone_dwell 12 min, keep-and-suggest-trim, END15 folded in; T8 to follow, synthetic traces meanwhile): definitive/weak tiers in PromotionEngine with a 60 s pair dwell and 12 min lone dwell, the hold keeps recording on every weak end, CallTeardownOracle is teardown-or-nothing, `held_end_trim_sec` with the Audio tab's Restore, `resumed_from` with a header Merge, no 120 s browser floor, `debounce_end_sec` retired, ADR 0017. Remaining: re-verify against T8's raw incident traces once they exist, the owner's END15 mic-switch measurement for `defaultConfirmDwell`, and the field walkthrough. [Spec](./END17.md)
+---
+
 # END17: end-of-call detection stops the recording on the first end it believes, so every new third-party UI shape chops a live meeting; invert it to record long and trim later
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) "Fix before anyone else installs it" #2: PD-1, PD-3, PD-9, FQ-6, UX-15; [harness audit](../../audits/2026-10-24-ai-harness-audit.md) #2; [architecture review](../../audits/2026-10-24-architecture-review.md) D4). P1: the broken promise is that a live meeting is recorded whole; the owner may re-band. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) "Fix before anyone else installs it" #2: PD-1, PD-3, PD-9, FQ-6, UX-15; [harness audit](../../audits/2026-10-24-ai-harness-audit.md) #2; [architecture review](../../audits/2026-10-24-architecture-review.md) D4). P1: the broken promise is that a live meeting is recorded whole; the owner may re-band. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

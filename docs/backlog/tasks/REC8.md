@@ -1,6 +1,15 @@
+---
+id: REC8
+title: Self-healing capture
+category: Recording
+status: partial
+priority: P2
+comment: Implementation shipped + unit-tested: one automatic ~7 s system-audio retry then the manual banner; an `IOPMAssertPreventUserIdleSystemSleep` assertion held across recording (released in stop + termination); an `NSWorkspace.didWakeNotification` re-arm; and the tap watchdog un-gated from `engine.isRunning` via a pure `TapWatchdogPolicy` (3 tests). Owner-owed runtime eyeball (not exercisable here): `pmset -g assertions` shows the assertion during recording and not after, a killed SCStream recovers hands-off, and a real sleep/wake mid-recording ends with a usable artifact.
+---
+
 # REC8: Self-healing capture
 
-Band origin: assessment review 2026-07-12. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: assessment review 2026-07-12. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 **REC8 (P2): self-healing capture.** Mid-meeting system-audio death recovery is gated on the owner noticing a HUD banner and clicking Retry (REC4 deliberately chose manual; the plumbing exists: `handleSystemAudioLost`, `retrySystemAudio`, `onSystemAudioRecovered`); the daemon holds no power assertion, so an in-person manual recording with no meeting client can idle-sleep the Mac mid-recording; there is no wake hook, and the tap-liveness watchdog is gated on `engine.isRunning`, so a silently stopped engine is never re-armed. Scope: one automatic bounded retry ~5-10 s after a system-audio loss, then fall back to the banner (preserves REC4's partial-recording rationale) **[Corrected by REC10, 2026-08-14: it did not. The retry re-entered `startSystemCapture` with the same URL and `AVAudioFile(forWriting:)` truncates, so the automatic recovery this task made hands-off destroyed the very partial REC4 kept on disk for the merge. REC10 makes the retry resume the open file behind a silence pad, which is what finally makes this sentence true.]**; `IOPMAssertionCreateWithName` (prevent idle sleep) across recording, released in `stop()` and the termination flush; observe `NSWorkspace.didWakeNotification` and re-arm or fail cleanly if recording; fix the watchdog gate. Acceptance: a killed SCStream recovers hands-off on the first retry; `pmset -g assertions` shows the assertion during recording and not after; a sleep/wake mid-recording ends with a usable artifact.
 

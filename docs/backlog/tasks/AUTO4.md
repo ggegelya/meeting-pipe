@@ -1,6 +1,16 @@
+---
+id: AUTO4
+title: In-app automation reference for the meetingpipe:// verbs
+category: Automation
+status: owner-verify
+priority: P2
+verification: simple
+comment: **Promoted off P3 by the owner on 2026-08-03** (the spec's own promote-on-demand clause, the AUTO2 precedent), shipped the same day: daemon green at 2038 (9 new), no pipeline change. **Preferences ▸ Advanced ▸ Automation** now lists all eight verbs, each with its URL in mono, a one-line purpose written for someone who has never read the parser, and a Copy button that confirms itself for a moment so it does not read as dead; the footer names the two consumption routes (a Shortcuts "Open URL" action today, MeetingPipe's own Shortcuts actions once the app has a Developer ID, AUTO1/D8). The vocabulary lives in the pure `Automation/AutomationReference.swift` and the pane renders that array, which is what makes the fence a fence rather than a fence over a second copy: `AutomationReferenceTests` walks every template through `AutomationCommand.parse` (each lands on the exact command its row claims, associated values included), walks the enum back the other way behind an exhaustive switch that stops compiling the moment a case is added, pins the row count against the command count so a verb added on one side only fails at runtime too, checks that the parser's three aliases (`start`, a bare `byo`, `open` for `library`) land on listed commands, pins the copy against a scratch pasteboard rather than the owner's real clipboard, and pins in source that the pane carries no URL literal of its own. **Both directions were proved to bite before this was called shipped**: a mangled template and a deleted row each failed the test that should catch them. The templates keep the README's `<placeholder>` spelling, which costs nothing because `URL(string:)` percent-encodes angle brackets instead of refusing them, so the exact string the owner copies is the string the fence parses. No new verbs, no App Intents unblocking, no AppleScript surface. **Owner-owed:** the walkthrough at the end of the spec, whose one live leg is copying the ask template out of the pane and firing it from Raycast; nothing is owed on the engineering side.
+---
+
 # AUTO4: In-app automation reference for the meetingpipe:// verbs
 
-Band origin: filed 2026-07-29 (owner exploratory sweep, item 16: capabilities with zero discoverability). Status and priority live in this task's ToC row in [owner-verification.md](../owner-verification.md), the queue of shipped work awaiting owner confirmation. Filed P3 by the band's own definition (power-user payoff) with a promote-on-demand clause; **the owner promoted it to P2 on 2026-08-03**, which is that clause firing, the same way AUTO2's did.
+Band origin: filed 2026-07-29 (owner exploratory sweep, item 16: capabilities with zero discoverability). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task, and [owner-verification.md](../owner-verification.md) carries the gate for shipped work awaiting the owner's confirmation. Filed P3 by the band's own definition (power-user payoff) with a promote-on-demand clause; **the owner promoted it to P2 on 2026-08-03**, which is that clause firing, the same way AUTO2's did.
 
 ## Progress (2026-08-03, shipped; owner-owed eyeball)
 

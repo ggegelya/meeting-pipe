@@ -1,6 +1,15 @@
+---
+id: VALOWN1
+title: Run the CAL3 Teams title probe across five real meetings
+category: Validation
+status: new
+priority: P4
+comment: Filed 2026-07-30 at the owner's request, and the first entry in a new **VALOWN** band: validation only the owner can run, fully built, needing no engineering, blocked purely on being in front of real conditions. Everything here is P4 and sits at the bottom of the table. It exists because twelve items sat `owner-owed` on 2026-07-30 and it was not obvious which a session could advance and which needed a live meeting; EGRESS1 was already this shape at P4 without a name. Holds CAL3's leg-1 measurement: three captures of one named recurring Teams meeting sharing a `--label`, plus a 1:1 and an ad-hoc, then `--report` for a GO / MARGINAL / NO-GO against bars pre-registered before any data. Captures accumulate in `docs/spikes/cal3-title-captures.jsonl` across as many weeks as it takes. Whatever the verdict, three follow-ups are worth doing: the emitted block replaces the 21 seeded `window_titles.json` entries (wrong today either way, and the suite prints `0/21 captured` on every run), the verdict goes into the spike doc with its titles quoted, and CAL3 re-bands. A NO-GO is a pre-registered acceptable outcome.
+---
+
 # VALOWN1: Run the CAL3 Teams title probe across five real meetings
 
-Band origin: filed 2026-07-30, at the owner's request, to hold CAL3's owner-run measurement rather than leave CAL3 itself sitting in the P2 band with nothing an engineering session can do ("CAL3 - not sure, I need more team calls, for now we can keep with lower or create something like 'VALOWN' task and put it in the bottom of backlog with definitive instructions"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-30, at the owner's request, to hold CAL3's owner-run measurement rather than leave CAL3 itself sitting in the P2 band with nothing an engineering session can do ("CAL3 - not sure, I need more team calls, for now we can keep with lower or create something like 'VALOWN' task and put it in the bottom of backlog with definitive instructions"). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 **VALOWN is a new letter band, and it is deliberately a band rather than a one-off task.** It means *validation only the owner can run*: work that is fully built, needs no engineering, and is blocked purely on the owner being in front of real conditions. The repo already had the pattern without a name (EGRESS1 is a waived validation leg at P4), and it is worth a home because twelve items sat `owner-owed` on 2026-07-30 and it was not obvious which of them a session could advance and which needed the owner in a live meeting. Anything landing here is P4, sits at the bottom of the backlog, and carries instructions complete enough to follow without reading the task it came from.
 

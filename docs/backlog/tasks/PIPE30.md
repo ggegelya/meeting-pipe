@@ -1,6 +1,15 @@
+---
+id: PIPE30
+title: The atomic-write helper is re-implemented ten times, nine of them without its 0600 chmod, and several writers rewrite the only copy of a file in place
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit PY3, CV4): 10 hand-rolled temp-and-replace writers, 9 without the chmod; non-atomic rewrites include publish_from_paste's summary.json and .md (which summarize writes atomically), the manual bundle, digest and the file sinks, and AppleIntelligenceSummarizer is the daemon's one non-atomic summary writer. All through atomic_write_text, `.atomic` plus 0600 in Swift, one fence shared with SEC22. Amended 2026-10-25 (performance review): the Apple Intelligence writer writes the .md before the .json, and the helper gains F_FULLFSYNC, a temp created at its final mode, and a stale-temp sweep (PYTHON-11). [Spec](./PIPE30.md)
+---
+
 # PIPE30: The atomic-write helper is re-implemented ten times, nine of them without its 0600 chmod, and several writers rewrite the only copy of a file in place
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) PIPE30, finders PY3 and CV4). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) PIPE30, finders PY3 and CV4). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

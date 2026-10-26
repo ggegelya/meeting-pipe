@@ -1,6 +1,15 @@
+---
+id: PERF21
+title: Library playback leaves the audio output running after pause, end of file and window close, and calls its engine unbounded on the main thread
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. `AudioPlaybackController.pause()` and the end-of-file branch only touch the player node, `engine.stop()` runs only in `teardown()` (a different file's `load`) and `deinit`, and the Library window is kept alive (`isReleasedWhenClosed = false`), so one play then pause leaves the output IO running until another meeting's audio loads or the app quits, and audio playing at window close keeps playing with no control on screen. Its `engine.start()` and `stop()` run synchronously on main, against the rule `boundedEngineStart` exists for (a 42 s main-thread start hang on the recorder engine on 2026-06-12); during a recording that would freeze Stop and the hotkeys, but no playback freeze is recorded, so P2 and the owner may re-band. Every row selection also decodes the whole recording for Skip silence when it is off. Scope: stop the engine on pause, end of file and disappear, bound and sequence every engine call behind an injected seam, silent spans only on demand and cancellable. [Spec](./PERF21.md)
+---
+
 # PERF21: Library playback leaves the audio output running after pause, end of file and window close, and calls its engine unbounded on the main thread
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+id: PERF25
+title: Smaller pipeline costs: every summarize reads every earlier meeting's sidecar to find one, and a local run reloads the model between speaker cleanup and summarize or after any request longer than five minutes
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. `summarize._prior_meeting_context` (AI6) reads the meta sidecar of every earlier summarized meeting on every summarize to find the newest one in the same workflow (PERF9 counted about 434 meetings on 2026-10-23, and the owner's library sits in iCloud-synced ~/Documents); with speaker cleanup on and a local backend, cleanup and summarize each spawn their own `mlx_lm.server`, so the model loads twice per meeting; and the idle timer, armed only when a request starts, kills the server as soon as a request longer than 300 s returns. Scan newest-first and stop at the first match, one shared local client in run_all, a last-activity check in the timer. [Spec](./PERF25.md)
+---
+
 # PERF25: Smaller pipeline costs: every summarize reads every earlier meeting's sidecar to find one, and a local run reloads the model between speaker cleanup and summarize or after any request longer than five minutes
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Each item is small; this is the [PERF13](./PERF13.md) shape, one task for the low-severity remainder of the review's Python area. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Each item is small; this is the [PERF13](./PERF13.md) shape, one task for the low-severity remainder of the review's Python area. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Items
 

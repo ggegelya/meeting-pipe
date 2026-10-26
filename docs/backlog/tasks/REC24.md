@@ -1,6 +1,15 @@
+---
+id: REC24
+title: A failed orphan re-merge is retried after every job forever, and two job completions can merge the same orphan at once over one temp file
+category: Recording
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. reapStorage runs the orphan sweep at launch and after every successful job (a ten-meeting Library batch runs it ten times); a `.recordfail.json` exempts a stem from the 24 h cutoff and `writePostProcessFailure` keeps no attempt count, so a merge that fails deterministically re-reads about 2.07 GB of intermediates per recorded hour after every job forever, and with no in-flight guard a second completion starts a second merge of the same stem that unlinks the first's `<stem>.merging.wav`. The raw/ scan also runs on main (0.6 ms at 61 entries, tens of ms at a year's). Scope: single-flight with one coalesced rerun, `attempts` in the breadcrumb with a cap on after-job retries (launch still tries once), the scan off main. [Spec](./REC24.md)
+---
+
 # REC24: a failed orphan re-merge is retried after every job forever, and two job completions can merge the same orphan at once over one temp file
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

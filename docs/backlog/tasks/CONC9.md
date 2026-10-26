@@ -1,6 +1,15 @@
+---
+id: CONC9
+title: ProcessAudioSignal, HALSystemMuteProbe and HALVoiceActivityProbe change their state from the main thread and the CoreAudio bus queue with no lock, so a process-list change races the 1 Hz poll
+category: Concurrency
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. ProcessAudioSignal's poll runs on the main run loop (`defaultScheduler` is a `Timer.scheduledTimer`) while its HAL listeners run `resolve` and `evaluate` on CoreAudioHALBus's queue, and both reassign `resolvedObjects` and `halTokens` with no lock; the owner's log has six bus-queue re-resolves inside 33 ms on 2026-10-13. Worst case a use-after-free crash mid-recording, otherwise a lost or doubled edge or a listener leaked after stop; HALSystemMuteProbe and HALVoiceActivityProbe share the shape. No crash observed, so P2 like CONC6; the owner may re-band to P1 on a crash report. Scope: one serial queue per signal, a DispatchSourceTimer poll, async-only hops from bus handlers, generation-guarded start/stop; takes over PERF10's ProcessAudioSignal leg. [Spec](./CONC9.md)
+---
+
 # CONC9: `ProcessAudioSignal`, `HALSystemMuteProbe` and `HALVoiceActivityProbe` change their state from the main thread and the CoreAudio bus queue with no lock, so a process-list change races the 1 Hz poll
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

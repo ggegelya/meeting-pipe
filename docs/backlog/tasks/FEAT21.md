@@ -1,6 +1,15 @@
+---
+id: FEAT21
+title: Run-all summarizes and publishes before anyone can name the speakers, so attendees and action owners go out as diarization labels and fixing them costs a manual re-summarize and republish per meeting
+category: Feature
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live UX-8): run-all publishes THEM-x labels as attendees and owners before naming is possible; UX41's Re-summarize repairs it one meeting and one engine call at a time, and DV5 counted 570 of 1126 owned actions as diarization artifacts. Opt-in per-workflow wait-for-names gate before summarize, parked in Needs you with one Summarize and publish button. [Spec](./FEAT21.md)
+---
+
 # FEAT21: run-all summarizes and publishes before anyone can name the speakers, so attendees and action owners go out as diarization labels and fixing them costs a manual re-summarize and republish per meeting
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) UX-8). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) UX-8). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

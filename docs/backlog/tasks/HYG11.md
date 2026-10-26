@@ -1,6 +1,15 @@
+---
+id: HYG11
+title: The harness still carries defects CI8 did not touch: a wrong byte budget, a docs-sync list missing two contract docs, six claims that CI blocks em-dashes, two mandatory scripts CI never runs, and duplicated landing text
+category: Hygiene
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, architecture review H2, harness defects list, A4, A6, B1): after CI8, still open: tech-task cites a 12 KB budget (caps are 800 B and 24,000 B), docs-sync omits GUIDE and SETUP, six docs say CI blocks em-dashes though the owner dropped that job 2026-08-18, two mandatory test scripts skip ci-local.sh, step 0 is copied 4 times, allowlist gaps. One commit; em-dash hook is an owner call. [Spec](./HYG11.md)
+---
+
 # HYG11: the harness still carries defects CI8 did not touch: a wrong byte budget, a docs-sync list missing two contract docs, six claims that CI blocks em-dashes, two mandatory scripts CI never runs, and 9 KB of duplicated landing text
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) H2, [AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) defects list, proposals A4, A6 and B1, and the allowlist defect). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) H2, [AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) defects list, proposals A4, A6 and B1, and the allowlist defect). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

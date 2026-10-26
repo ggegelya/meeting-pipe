@@ -1,6 +1,15 @@
+---
+id: SEC20
+title: The `claude_cli` summarization backend runs a full Claude Code agent session (built-in tools, the owner's MCP servers, hooks and memory, cwd `/`, saved sessions, the API key in its environment) for a pure text turn
+category: Security
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch S4, go-live PP-2): --allowed-tools "" only pre-approves, so built-in tools stay on; the spawn also loads the owner's MCP servers, hooks and memory, runs from cwd /, saves every summary as a session, and passes the API key. Spawn with --tools "", an empty strict MCP config, no session persistence, narrowed setting sources, an empty temp cwd and tokens stripped; fix both false comments. [Spec](./SEC20.md)
+---
+
 # SEC20: the `claude_cli` summarization backend runs a full Claude Code agent session (built-in tools, the owner's MCP servers, hooks and memory, cwd `/`, saved sessions, the API key in its environment) for a pure text turn
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) S4, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PP-2). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) S4, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PP-2). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

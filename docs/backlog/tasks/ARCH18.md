@@ -1,6 +1,15 @@
+---
+id: ARCH18
+title: The app's on-disk folders are spelled by hand at ten sites that bypass Endpoints.Paths, four of them the config folder
+category: Architecture
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit SW5): 10 sites spell the app's folders by hand instead of Endpoints.Paths (4 config, 2 Application Support, 3 Caches, 1 Logs), and nothing fences it. Folder constants and URL accessors in Endpoints.Paths, migrate the 10, a source fence; ARCH9 keeps config.toml, ARCH10 the sidecars. [Spec](./ARCH18.md)
+---
+
 # ARCH18: The app's on-disk folders are spelled by hand at ten sites that bypass Endpoints.Paths, four of them the config folder
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) SW5). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) SW5). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

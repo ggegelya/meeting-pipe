@@ -1,6 +1,15 @@
+---
+id: REC21
+title: The start-time markers that make an interrupted off-the-record or redact-opt-in recording fail closed are written with `try?`, and orphan recovery reads a missing or malformed recovery manifest as an ordinary recording and auto-processes it
+category: Recording
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O17: SW-3): `.capturemode` and `.offrecord` writes are try?, so a failed write plus a crash, or plus a failed timeline write at stop, publishes uncut audio; an unreadable manifest recovers as auto. Report marker failures, copy both facts into the manifest, carry redactionOwed on the job, quarantine on unreadable. [Spec](./REC21.md)
+---
+
 # REC21: the two start-time markers that make an interrupted off-the-record or redact-opt-in recording fail closed are written with `try?`, and orphan recovery reads a missing or malformed recovery manifest as an ordinary recording and processes it automatically
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) row O17, finder SW-3). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) row O17, finder SW-3). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

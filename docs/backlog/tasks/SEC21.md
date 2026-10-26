@@ -1,6 +1,15 @@
+---
+id: SEC21
+title: NDA workflow classification fails open: a meeting whose title is not known yet, or whose rule regex does not compile, silently falls through to the default (non-NDA) workflow, and turning NDA on later does not cover past meetings
+category: Security
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch S7): WorkflowMatcher scores an NDA rule 0 when the title is not known at record start or its regex fails to compile, so the default workflow wins with no trace, and workflow_nda_mode is stamped only at record time. Matcher returns a reason, an undecided NDA fallback records as NDA, the editor rejects bad regexes, turning NDA on offers a re-stamp of that workflow's past meetings. [Spec](./SEC21.md) Amended 2026-10-25 (observability band): SW-9, FB-6, PY-13 add the load step. An unparseable workflow file vanishes from the app (os.Logger only) and from doctor (no log), `nda_mode = "true"` or a backend typo decodes toward cloud, a missing id is a new UUID each launch. Keep broken files as blocking rail entries, strict decode, doctor FAIL.
+---
+
 # SEC21: NDA workflow classification fails open: a meeting whose title is not known yet, or whose rule regex does not compile, silently falls through to the default (non-NDA) workflow, and turning NDA on later does not cover past meetings
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) S7). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) S7). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

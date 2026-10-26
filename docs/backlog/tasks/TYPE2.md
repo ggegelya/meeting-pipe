@@ -1,6 +1,15 @@
+---
+id: TYPE2
+title: The Python lint and type config states more than it enforces: 34 noqa directives for rules that are off, an unchecked line length, an unlinted scripts tree, and blanket type ignores hiding two real errors
+category: CI
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit PY14, CV1, CV5): 34 noqa name rules ruff never enables, line-length 100 goes unchecked, scripts/ is unlinted with a live F401, and 7 blanket type ignores hide 2 type errors. Select E4 E7 E9 F B A PIE SIM RUF100 I UP (137 findings over src, tests and scripts, BLE001 kept external), lint ../scripts, pyright standard with type ignores disabled, fix the 2. [Spec](./TYPE2.md)
+---
+
 # TYPE2: The Python lint and type config states more than it enforces: 34 noqa directives for rules that are off, an unchecked line length, an unlinted scripts tree, and blanket type ignores hiding two real errors
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) PY14, CV1, CV5). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) PY14, CV1, CV5). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

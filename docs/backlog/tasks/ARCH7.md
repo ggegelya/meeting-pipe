@@ -1,6 +1,15 @@
+---
+id: ARCH7
+title: The session spine is one object behind a 26-member seam, so MeetingSessionController reaches back into Coordinator 150 times and owns none of the meeting-scoped subsystems it drives
+category: Architecture
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch A1, go-live SA-4): Coordinator is 851 lines with 38 stored properties and two IUOs wired after super.init, and the controller reads all 26 SessionHost members 150 times, a service locator not a seam. Freeze the seam with a count fence, move MicGate, lifecycle, backstop, teardown and the state machine into the controller, collapse the live* reads into one snapshot. [Spec](./ARCH7.md)
+---
+
 # ARCH7: the session spine is one object behind a 26-member seam, so MeetingSessionController reaches back into Coordinator 150 times and owns none of the meeting-scoped subsystems it drives
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) A1, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-4 session half). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) A1, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-4 session half). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

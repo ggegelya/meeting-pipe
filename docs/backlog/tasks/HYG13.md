@@ -1,6 +1,15 @@
+---
+id: HYG13
+title: The repo has no project skills, so contract changes, daemon UI work, ADRs and live verification each depend on a session reassembling the procedure from three CLAUDE.md files
+category: Hygiene
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, harness B2 to B5 and C5): .gitignore ignores all of .claude/skills, so no project skill is tracked; contract-change steps are spread over three CLAUDE.md files; ADR format and live-verify steps are unwritten. Un-ignore all but impeccable; add contract-change, daemon-ui, adr, verify-live skills and a read-only /backlog-query command. [Spec](./HYG13.md)
+---
+
 # HYG13: the repo has no project skills, so cross-tree contract changes, daemon UI work, ADRs and live verification each depend on a session reassembling the procedure from three CLAUDE.md files
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) proposals B2 to B5 and C5; B1 is [HYG11](./HYG11.md)). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) proposals B2 to B5 and C5; B1 is [HYG11](./HYG11.md)). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

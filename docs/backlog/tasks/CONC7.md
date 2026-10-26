@@ -1,6 +1,15 @@
+---
+id: CONC7
+title: PipelineLauncher.runMP and DoctorRunner drop the last stderr chunk on exit and share an unlocked stderr buffer across threads
+category: Concurrency
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit SW1, SW12): both nil their readabilityHandlers inside terminationHandler with no final drain, so the last stderr chunk (the failure text the user sees) can be lost, and runMP's stderrTail is an unlocked var raced across two queues (5 complete-mode diagnostics). One ProcessOutputDrain that finishes on exit plus EOF, and the 130-line runMP split into named steps. Amended 2026-10-25 (performance review): runMP's spawn-failure branch leaks the log handle, both pipes and the slot through a terminationHandler cycle that never fires, and ModelDownloadSupervisor's stderr handler is never cleared, so its 'correct enough today' exclusion is wrong; both join the scope. [Spec](./CONC7.md)
+---
+
 # CONC7: PipelineLauncher.runMP and DoctorRunner drop the last stderr chunk on exit and share an unlocked stderr buffer across threads
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) SW1, SW12). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) SW1, SW12). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

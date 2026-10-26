@@ -1,6 +1,15 @@
+---
+id: LOCAL23
+title: Local summarize sizes its requests in characters against the cloud gate's knob, so one call can run past Qwen2.5's 32K context or a tight tier's ceiling, and map-reduce makes about 115 calls for two hours of speech
+category: Local models
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. `LocalSummaryClient.summarize` map-reduces only past `skip_above_chars` (80,000 chars) and never reads `tier_for(ram).context_token_ceiling`, which only `mp ask` consults: an 80,000-char Ukrainian meeting is about 39,000 tokens plus a 15,857-char fixed prompt in one request, past every preset's 32,768-token native context and five times the 8K ceiling AI2 measured for the 14B on 32 GB, and the watchdog checks only before each request. Past the threshold, 1,500-char windows sized for a 1.7 tokens-per-char rate LOCAL13 measured at 0.49 make 85 map plus 30 reduce full-schema calls for a 110,000-char transcript, likely past the Library re-summarize's 20-minute cap, and a LANG1 repair re-runs all of it. Route and size windows on estimated tokens against the native context and, for a tight-fit model, the tier ceiling; a LANG1 repair of a map-reduced summary re-runs only the reduce. [Spec](./LOCAL23.md)
+---
+
 # LOCAL23: Local summarize sizes its requests in characters against the cloud gate's knob, so one call can run past Qwen2.5's 32K context or a tight tier's ceiling, and map-reduce makes about 115 calls for two hours of speech
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

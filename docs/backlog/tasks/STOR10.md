@@ -1,6 +1,15 @@
+---
+id: STOR10
+title: A scheduled backup or digest that fails, or whose LaunchAgent never loaded, leaves no event and no in-app trace while the schedule-installed event still fires
+category: Storage
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O15: UI-5, SW-11, LG-15): install discards the launchctl bootstrap status and stderr yet logs backup_schedule_installed; mp backup prints [FAIL] to a launchd log nothing reads, no event; Preferences shows only the last success age; doctor is info only. Checked bootstrap, last-attempt markers, run events, a menu row and Storage line, doctor WARN when scheduled and overdue. [Spec](./STOR10.md)
+---
+
 # STOR10: a scheduled backup or digest that fails, or whose LaunchAgent never loaded, leaves no event and no in-app trace, while `backup_schedule_installed` still fires and Preferences only ever shows the age of the last success
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) O15: UI-5, SW-11, LG-15). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) O15: UI-5, SW-11, LG-15). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

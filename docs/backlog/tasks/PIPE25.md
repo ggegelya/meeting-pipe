@@ -1,6 +1,15 @@
+---
+id: PIPE25
+title: Apple Intelligence fails every Ukrainian meeting and the only recovery is a manual local re-summarize; fall back to local automatically on the typed unsupported-language error
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live FQ-13): 3 of 5 runs on the assessment Mac failed because Apple Intelligence rejects Ukrainian; PIPE6's typed error only enables a manual Re-summarize, and completeViaAppleIntelligence fails the job. Auto-fallback to the local chain on unsupportedLanguage, pre-check supported languages when the language is known, record the substitution in an event and run.json. [Spec](./PIPE25.md) Amended 2026-10-25 (observability band): the language-refusal notice leads with Retry summary and the unknown-cause retry line while Re-summarize with local sits below it (two futile retries on 2026-10-16); add a Swift-only unsupported_language cause derived from the marker so the notice leads with Re-summarize (or Download model) and withholds Retry, with GUIDE and README wording.
+---
+
 # PIPE25: Apple Intelligence fails every Ukrainian meeting and the only recovery is a manual local re-summarize; fall back to local automatically on the typed unsupported-language error
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-13). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-13). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

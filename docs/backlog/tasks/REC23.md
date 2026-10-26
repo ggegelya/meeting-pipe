@@ -1,6 +1,15 @@
+---
+id: REC23
+title: The after-job orphan sweep can merge a recording that is still starting, delete its live intermediates, and publish a few-second stub in place of the meeting
+category: Recording
+status: new
+priority: P1
+comment: Filed 2026-10-25 from the performance review. The sweep's only guard for the live recording is `libraryModel.liveRecordingStem`, which `setRecording` sets after `recorder.start()` returns, while `<stem>.mic.wav` exists from before the engine start (39 to 68 ms on the built-in mic on 2026-10-13 and 2026-10-16, up to the 8 s budget on a headset). A job finishing in that window lists the new stem; when an earlier orphan's merge runs first, `recoverOrphan` merges the growing files, deletes them, clears the manifest and publishes a stub, the meeting is lost, and stop says it will be recovered. Broken promise: REC6's never merged mid-write; owner may re-band to P2 by the REC14 precedent (loss only after another failure). Scope: a recorder-owned stem set, set before the first file and held through stop and an abandoned drain, checked at scan and again per stem. [Spec](./REC23.md)
+---
+
 # REC23: the after-job orphan sweep can merge a recording that is still starting, delete its live intermediates, and publish a few-second stub in place of the meeting
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

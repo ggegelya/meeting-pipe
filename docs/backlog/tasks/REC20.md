@@ -1,6 +1,15 @@
+---
+id: REC20
+title: A recording starts with no free-space check and is never watched for low space, transcription loads the whole meeting into the recorder's process, and the library only ever grows unless a workflow opts in
+category: Recording
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live PD-13): intermediates grow about 2 GB an hour with no free-space check at start or during recording, FluidAudioRunner holds the whole meeting in RAM inside the recording daemon with no measured peak, and retention never covers untagged meetings. Preflight and live low-space stop, measure the transcription footprint before deciding, a growth projection. Amended 2026-10-25 (performance review): the 2 GB peak is a whole-file stereo Float32 buffer (1.38 GB at 3 h) alive beside its mono copy (0.69 GB); a block-wise read into a preallocated array cuts it to about a third with bit-identical samples and no diarizer change, and item 3 also measures the post-job footprint of the FluidAudio models the runner never releases. measured 64,000 B/s final (about 230 MB per kept hour; library 324 MB on 2026-10-25); Workflow.swift's ~0.7 GB/h comment is wrong; the keep-default rationale covers .drop but not lossless .compress, so that is an owner question to record (after the retention sweep is single-flight); intermediates in the iCloud-synced raw/ noted as unfiled. [Spec](./REC20.md)
+---
+
 # REC20: a recording starts with no free-space check and is never watched for low space, transcription loads the whole meeting into the recorder's process, and the library only ever grows unless a workflow opts in
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PD-13). Takes over the "Transcription RAM peak (2026-07-12)" item from the watch list in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PD-13). Takes over the "Transcription RAM peak (2026-07-12)" item from the watch list in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

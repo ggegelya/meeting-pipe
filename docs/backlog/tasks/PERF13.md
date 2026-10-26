@@ -1,6 +1,15 @@
+---
+id: PERF13
+title: Smaller main-thread costs in the Library rails, the Guide and Diagnostics windows, and the logger
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-23 from the slow-app traces and audit: `PeopleRail.derive` on main (146 samples), Facts `agingLabel` in row bodies (81), `Log.appendData` file I/O on the caller's thread, `GuideView` re-parsing markdown while scrolling, `DiagnosticsView.reload` reading logs on main. One task because each is small. [Spec](./PERF13.md) Filed 2026-10-23 from the slow-app traces and audit; amended 2026-10-24 (audit band, architecture review M8): the logger is also not thread-safe (no lock, no O_APPEND), so concurrent lines can overwrite each other, a first-create can drop a line and rotation can double-shift; pipeline.log's per-spawn handles collide too. Item 3's serial queue must use O_APPEND and keep every line. Amended 2026-10-25 (observability band): pipeline.log has two writers on every run (Python's FileHandler plus the daemon's stale-offset stderr copy), so 5 of 8 real runs end torn and a traceback appears twice; readers skip torn JSONL rows uncounted; a non-JSON attribute drops the event. Item 3 adds one owner per file, coerce not drop, report failed appends, count skipped lines. Amended 2026-10-25 (performance review): item 7, the menu's failed count lists the whole library on every menu rebuild (fold into the status-bar filing of review finding UI-2 (PERF24) if one exists); item 8, Move library planning walks the library on main. the overwrite race is in the live log (events.jsonl's only corrupt row, a stop-cascade event half-overwritten at 2026-10-16 09:46:28.265Z); the other events.jsonl process is the doctor CLI, not Python; logsDir must stay per-call since 11 test files setenv it; Python's own FileHandler is a second pipeline.log writer (a run-all failure record doubled on 2026-10-16); item 5 gains a cost model (every line parsed and formatted before any filter), a stale-result token and bounded reads. UI-15 adds the trigger, a rail hover re-evaluating the whole `GuideView` body and re-parsing the 56,931-byte guide once per row the pointer crosses, and corrects item 4's fix: `LazyVStack` is optional, since the current-section mark reads every heading's offset; parse once in `load()` and move `hovered` into a rail child view.
+---
+
 # PERF13: smaller main-thread costs in the Library rails, the Guide and Diagnostics windows, and the logger
 
-Band origin: filed 2026-10-23 from the traces and code audit run for the owner's "the app feels slow" report. Each item is small; together they are the remaining main-thread work after [PERF9](./PERF9.md), [PERF10](./PERF10.md) and [PERF12](./PERF12.md). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-23 from the traces and code audit run for the owner's "the app feels slow" report. Each item is small; together they are the remaining main-thread work after [PERF9](./PERF9.md), [PERF10](./PERF10.md) and [PERF12](./PERF12.md). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Items
 

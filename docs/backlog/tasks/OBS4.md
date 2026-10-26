@@ -1,6 +1,15 @@
+---
+id: OBS4
+title: One meeting cannot be followed from recording to summary in the logs, because no run id crosses the daemon/mp boundary, most rows carry no stem, and pipeline.log is local time with no zone
+category: Observability
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O10: LG-8): no run id crosses runMP, in-recording, lifecycle and stage rows name no meeting, the key is spelled file, wav, stem and md, and pipeline.log is zone-less local time while the JSONL is UTC. Export MP_RUN_ID and MP_STEM, stamp them in events.emit and on daemon job rows, stem on recorder rows, one UTC formatter, a spawn header, stem as the canonical key. [Spec](./OBS4.md)
+---
+
 # OBS4: one meeting cannot be followed from recording to summary in the logs, because no run id crosses the daemon/mp boundary, most rows carry no stem, and pipeline.log is local time with no zone
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O10; finder LG-8). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O10; finder LG-8). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+id: PERF14
+title: The daemon declares no ProcessType and holds no activity assertion, so launchd's light resource limits and App Nap may be throttling detection between meetings; measure first
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, architecture review M13): launchd.plist.template has no ProcessType (unspecified means light CPU and I/O limits per man launchd.plist; the live job shows spawn type = daemon) and nothing calls beginActivity, so idle detection may be throttled. Unmeasured. Owner reads the App Nap column and a backgrounded detection gap first; only then an activity token and ProcessType Interactive. [Spec](./PERF14.md)
+---
+
 # PERF14: the daemon declares no `ProcessType` and holds no activity assertion, so launchd's light resource limits and App Nap may be throttling detection between meetings; measure first
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) M13, marked "unverified" there). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) M13, marked "unverified" there). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

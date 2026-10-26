@@ -1,6 +1,15 @@
+---
+id: DET6
+title: Browser-tab meetings other than Meet are undetectable
+category: Detection
+status: partial
+priority: P2
+comment: Filed 2026-07-20 off the DET2 close. Only Google Meet clears the plain-browser admission gate: `strongTitleMatchers` holds one entry (the Meet room-code pattern), and the URL-fragment disjunct reads the AX window title while browsers put the page title there and never the URL, so it effectively never fires. A tab running Teams, Webex or a Slack huddle matches weakly and is refused; Zoom-in-browser has no title matcher at all. P2 rather than P1 because the dogfood is Teams-native with 0 recorded browser meetings; re-band to P1 the moment a browser meeting is wanted. **Probe-first spike shipped 2026-08-18, measurement owner-owed.** Shipped: the admission decision lifted into a pure `MeetingSourceScanner.decideBrowserAdmission` (admit / noMeetingSignal / weakTitleOnly) so every case is testable without a live browser, and as a side effect one AX window walk per browser per scan instead of up to three; the refusal made visible as `detector.browser_tab_rejected` carrying bundle id, the weakly-matching title and a reason, which needed its own `Result.rejectedBrowserTabs` list for the same structural reason DET11's `unreadableNatives` did (both neighbouring events filter the candidate array, and a refused tab never enters it), read via `mp logs --action browser_tab_rejected`; an owner-run read-only probe `daemon/scripts/det6-browser-url-probe.swift` that refuses to capture or emit a verdict without an Accessibility grant, since an untrusted read is a false zero that agrees with the expected answer; and a pre-registered verdict tree in `docs/spikes/det6-browser-url-readability.md` (URL readable -> repoint the fragment check; title discriminating -> per-product strong matchers; neither -> close the leg as a permanent limitation). 13 tests added, split into unconditional fences (the two Meet admissions, and "Webex vs Zoom Comparison" which must stay refused in every branch) and pre-verdict pins of today's brand-token refusals. Remainder, all owner-gated on the probe: the measurement itself, whatever widening it names, and the two adjacent gaps that close with it (no Zoom `defaultTitleMatchers` entry, no Slack URL fragment). `strongTitleMatchers` deliberately NOT widened on a guess. Note the MIC7 interaction: its build gate is "a real browser meeting appears in the corpus", which this gap partly suppresses.
+---
+
 # DET6: Browser-tab meetings other than Meet are undetectable
 
-Band origin: filed 2026-07-20, off the DET2 close (the removal of the dead process-audio corroborator exposed it). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-20, off the DET2 close (the removal of the dead process-audio corroborator exposed it). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

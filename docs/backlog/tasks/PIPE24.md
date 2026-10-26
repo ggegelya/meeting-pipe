@@ -1,6 +1,15 @@
+---
+id: PIPE24
+title: Three Anthropic call sites build their client with three different timeout and retry policies, and a 529 overload is neither retried nor dropped to local
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch D5): summarize uses 120 s and 0 SDK retries plus tenacity, engine uses 120 s and 2 SDK retries, cleanup uses SDK defaults (600 s, 2 retries) under tenacity; and SDK 0.97.0 raises OverloadedError for 529, which neither the retry nor the auto fallback lists. One make_anthropic_client factory at all three sites, every call through _create_message, 529 added to both. Amended 2026-10-25 (performance review): even on the shared client policy the cleanup windows run back to back with no pass deadline, and a stall there runs into run-all's 90-minute watchdog, which SIGKILLs the meeting's summary and publish with it; add an overall deadline that applies the edits gathered so far. [Spec](./PIPE24.md)
+---
+
 # PIPE24: three Anthropic call sites build their client with three different timeout and retry policies, and a 529 overload is neither retried nor dropped to local
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) D5). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) D5). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

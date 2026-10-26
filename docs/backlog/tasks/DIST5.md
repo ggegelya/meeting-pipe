@@ -1,6 +1,15 @@
+---
+id: DIST5
+title: Install.sh reports running without checking the daemon came up and never checks for Swift 6, uninstall.sh leaves the digest and backup agents and the local model behind, and the Gatekeeper guidance describes a dialog a local build never shows
+category: Distribution
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live DI-8, DI-9 toolchain, DI-10, DI-16, PP-14): install.sh swallows the bootstrap and kickstart errors rebuild.sh fixed, FluidAudio 0.14.8 needs Swift tools 6.0 but only swift presence is checked, uninstall leaves com.meetingpipe.digest and .backup loaded plus a 4.3 GB model, SETUP and README describe a Gatekeeper dialog. Shared relaunch helper, Swift check, uninstall agents, true text. [Spec](./DIST5.md)
+---
+
 # DIST5: install.sh reports "running" without checking the daemon came up and never checks for Swift 6, uninstall.sh leaves the digest and backup agents and the local model behind, and the Gatekeeper guidance describes a dialog a local build never shows
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) DI-8, DI-9 toolchain half, DI-10, DI-16, PP-14). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) DI-8, DI-9 toolchain half, DI-10, DI-16, PP-14). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

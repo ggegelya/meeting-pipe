@@ -1,6 +1,15 @@
+---
+id: OBS2
+title: Degraded summaries are recorded as ordinary successes: an `auto` run that dropped to local on a rejected key, a failed language repair, and an unparseable speaker-cleanup reply leave no event and no field a reader can key on
+category: Observability
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O7: PY-3, FB-3, PY-4): an auto run that fell to local on a rejected key or empty balance, a failed language repair and an unparseable cleanup reply all read as success, with a WARNING line and run.json backend local. backend_fallback event plus fallback_from and fallback_cause in run.json on the provenance line, language_check event, parse_failed_windows on diarize_cleanup. [Spec](./OBS2.md)
+---
+
 # OBS2: Degraded summaries are recorded as ordinary successes: an `auto` run that dropped to local on a rejected key, a failed language repair, and an unparseable speaker-cleanup reply leave no event and no field a reader can key on
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O7: PY-3, FB-3, PY-4). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O7: PY-3, FB-3, PY-4). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

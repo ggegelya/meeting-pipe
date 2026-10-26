@@ -1,6 +1,15 @@
+---
+id: PERF27
+title: A failure's Details window leaks on every click, and tutorial anchors republish on every scroll and resize while no tour runs
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. UI-11: `FailureDialog.showDetails`' close closure captures its own window strongly (window, hosting controller, root view, closure), so the window and its diagnostics text leak once per Details click, the one window in the app not released on close. UI-14: `TutorialSession.report` publishes anchor frames with no `run != nil` gate, so every Preferences scroll and Library resize re-evaluates both `TutorialStage` modifiers while no tour runs. Both low and cheap per event. `[weak window]` plus `contentViewController = nil` after `runModal`; an unpublished frame cache, published only during a run and seeded when one starts. [Spec](./PERF27.md)
+---
+
 # PERF27: A failure's Details window leaks on every click, and tutorial anchors republish on every scroll and resize while no tour runs
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

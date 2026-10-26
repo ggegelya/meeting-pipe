@@ -1,6 +1,15 @@
+---
+id: FEAT18
+title: About one tenth of the production code serves secondary surfaces, and the owner has not decided which of them to keep, hide or delete
+category: Feature
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, architecture review B1, go-live SA-11): digests, Meeting time, tutorial, Guide reader, prep card, facts, self-voiceprint, App Intents and the LAN sink cost every change. An owner decision table, one row per surface with dedicated LOC, evidence of use, open tasks and the audits' lean; then one delete commit per surface, or one Experimental switch. [Spec](./FEAT18.md)
+---
+
 # FEAT18: about one tenth of the production code serves secondary surfaces, and the owner has not decided which of them to keep, hide or delete
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) B1, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-11 and its "Maintainability and process" section). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) B1, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-11 and its "Maintainability and process" section). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

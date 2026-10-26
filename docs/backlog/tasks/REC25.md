@@ -1,6 +1,15 @@
+---
+id: REC25
+title: The capture writers queue without bound and count only thrown errors, so a stalled disk grows memory about 2 GB an hour unseen, and an abandoned writer's failures can force-stop the next recording
+category: Recording
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. `SerialBufferWriter.enqueue` is an unbounded `queue.async` with no pending count and the trackers see only thrown errors, so a disk that hangs (a network or file-provider output dir) piles up buffers at about 576 kB/s (2.07 GB an hour) with the HUD showing live levels; separately, `start()` replaces the recorder-owned `WriteFailureTracker`s on main while a writer abandoned by the previous stop keeps reporting into them, so its failures can force-stop a healthy recording or post a false disk-full notice. Scope: a pending-bytes counter, a warn-then-force-stop backlog policy on the existing 1 Hz liveness ticks (never dropping buffers), and a tracker owned by each writer with a recording generation on escalation. [Spec](./REC25.md)
+---
+
 # REC25: the capture writers queue without bound and count only thrown errors, so a stalled disk grows memory about 2 GB an hour unseen, and an abandoned writer's failures can force-stop the next recording
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

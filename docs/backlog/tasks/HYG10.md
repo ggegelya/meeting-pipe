@@ -1,6 +1,15 @@
+---
+id: HYG10
+title: Comments and always-loaded rules state things the code does not do, several about security, and two of the rules are counts that have already drifted
+category: Hygiene
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, architecture review D2, harness #9 and A5): verified false: --allowed-tools "" disables tools, claude_cli needs no key, no daemon HTTP (NotionDatabaseList uses URLSession), two @unchecked Sendable (seven), lazy imports, secrets.env, a misplaced doc comment, require_env exits. Fix them; allowlist fences for @unchecked Sendable, URLSession, raw Process(); owner call on the Notion rule. Amended 2026-10-25 (performance review): its verifiers listed 71 perf-relevant comments and rules the code contradicts (about 50 distinct claims), among them `daemon/CLAUDE.md`'s "Every `launchctl` call is watchdogged and off-main" (false at three sites), `AXMuteButtonProbe`'s "poll fires on the scheduler's queue" (a main-run-loop Timer) and `MeetingAXHandleBuilder`'s "walked once at start". Grouped by owner: the two always-loaded rules fixed here first, unowned comments rewritten here, the rest corrected by the task that fixes the behaviour and re-checked here at pickup. [Spec](./HYG10.md)
+---
+
 # HYG10: comments and always-loaded rules state things the code does not do, several about security, and two of the rules are counts that have already drifted
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) D2, [AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) failure mode 9 and proposal A5). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) D2, [AI harness audit](../../audits/2026-10-24-ai-harness-audit.md) failure mode 9 and proposal A5). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+id: PERF20
+title: The Library search index is wiped at every launch and rebuilt with one full-table scan per meeting, and every search keystroke queries it synchronously on main
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. `SearchIndexer.init` subscribes to `store.$revision`, whose replayed value arrives while `MeetingStore.meetings` is still `[]` (nothing scans until the Library or Quick Find opens), so the first reconcile deletes every indexed row at launch; the rebuild on first open runs one `DELETE FROM docs WHERE stem = ?` full-table scan and one commit per meeting (stem is UNINDEXED), health flips to ready on the empty pass so UX23's 'Indexing transcripts…' hint never shows, and doctor's `search.index` probe reported ok with '0 meetings indexed' 19 times on 2026-10-24 against a 9-stem library. Every keystroke also runs an un-debounced, bm25-ranked prefix query through `queue.sync` on main, and the Quick Find ranker's word-boundary boost is unreachable. Scope: reconcile only a scanned store, never wipe on an unconfirmed empty scan, rowid deletes plus a prefix index in one schema bump, chunked rebuild, honest health and probe, debounced off-main query. [Spec](./PERF20.md)
+---
+
 # PERF20: The Library search index is wiped at every launch and rebuilt with one full-table scan per meeting, and every search keystroke queries it synchronously on main
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+id: PIPE35
+title: The digest, mp actions, the MCP tools and the prep card skip every summary or sidecar they cannot read without a log line or a count
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O21: PY-6): actions.discover, digest decisions, mcp_tools._summary, prep and the index title lookup drop unreadable files silently; EDEADLK on evicted iCloud sidecars is in pipeline.log on 2026-10-16, so digests and MCP answers go partial with no count. One storage.read_library_json with an errno tally, skipped_unreadable on digest_generated and in digest, actions and MCP JSON. [Spec](./PIPE35.md)
+---
+
 # PIPE35: the digest, `mp actions`, the MCP tools and the prep card skip every summary or sidecar they cannot read without a log line or a count, so with an iCloud-evicted library their answers are silently partial
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) O21: PY-6). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) O21: PY-6). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+id: PERF24
+title: The status menu spawns launchctl and lists the whole recordings folder on the main thread at every open, rebuilds and discards the whole menu on every queue, state and download tick, and the in-app doctor runs its self-check on main
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. menuNeedsUpdate runs launchctl print-disabled on main (bounded only by UX67's 5 s kill, which a busy launchd during rebuild.sh reached on 2026-08-04) and failedMeetingCount lists all of raw/ on main; rebuildMenu repeats the listing and the model-cache scan on every state change, queue change and 2 s download tick for a menu nobody opens. raw/ holds about 7 files per meeting (61 for 9 stems on 2026-10-25), so 5k to 20k entries after a year. The in-app doctor's self-check (AX reads of running meeting apps, a raw/ scan, a second SQLite connection) also runs on the main actor. Scope: populate only on open, a cached off-main failed count, an off-main launch-agent read updated in place, doctor probes off main. [Spec](./PERF24.md)
+---
+
 # PERF24: The status menu spawns launchctl and lists the whole recordings folder on the main thread at every open, rebuilds and discards the whole menu on every queue, state and download tick, and the in-app doctor runs its self-check on main
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

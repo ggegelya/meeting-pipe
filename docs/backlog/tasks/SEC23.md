@@ -1,6 +1,15 @@
+---
+id: SEC23
+title: Every Preferences token edit rewrites all three API tokens through `security ... -w `<value>``, putting them in `ps` output, and the daemon `setenv`s them into its own environment for every child to inherit
+category: Security
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch S9, go-live DI-17 and PP-11): SecretsStore.persist writes all three tokens on each debounce via security add-generic-password -w, visible in ps, and the daemon setenvs them so doctor and MCP status spawns inherit them. Write only changed accounts, feed security -i on stdin, stop setenv and build tokens into runMP's env only, read the Notion token from SecretsStore, fix stale comments. [Spec](./SEC23.md) Amended 2026-10-25 (observability band): SW-6, PY-9 Keychain half. Both trees read every `security` failure as absent (so the user is told a key is not set), remove's status is ignored, and both secrets.env migrations delete the file after a failed set; install.sh omits OPENAI_API_KEY. Typed reads, checked remove, delete only after every set.
+---
+
 # SEC23: every Preferences token edit rewrites all three API tokens through `security ... -w <value>`, putting them in `ps` output, and the daemon `setenv`s them into its own environment for every child to inherit
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) S9, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) DI-17 and PP-11). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) S9, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) DI-17 and PP-11). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

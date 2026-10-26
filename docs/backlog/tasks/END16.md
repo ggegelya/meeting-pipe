@@ -1,6 +1,15 @@
+---
+id: END16
+title: The call-teardown watcher stats Teams' log folder every second around the clock, and reports the folder unreadable thousands of times
+category: Detection
+status: new
+priority: P2
+comment: Filed 2026-10-23. A 60 s idle trace had the `CallTeardownWatcher` queue busy about 21% of the window, mostly `attributesOfItem` / `getxattr` on Teams' Group Container. `call_teardown_source_missing` transitions number about 21,700 since 2026-09-17, a median 68 s apart, so the END9 oracle is intermittently blind. Scope: find the flapping cause, cheap stat-only tailing, idle cadence, count blind confirms. Amended 2026-10-25 (performance review): since END17 an unreadable log is no evidence rather than a confirm, so the flapping now costs holds that wait out a dwell, not chopped calls; added legs for the per-tick `DispatchQueue` and timer, the regex and `DateFormatter` in the sort comparator, chunk parsing under the lock `snapshot()` takes, and a Teams-running cadence that keeps END10's warm tail. [Spec](./END16.md)
+---
+
 # END16: the call-teardown watcher stats Teams' log folder every second around the clock, and reports the folder unreadable thousands of times
 
-Band origin: filed 2026-10-23, found while sampling the daemon for the owner's "the app feels slow" report and while investigating [END15](./END15.md). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-23, found while sampling the daemon for the owner's "the app feels slow" report and while investigating [END15](./END15.md). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## What was observed
 

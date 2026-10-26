@@ -1,6 +1,15 @@
+---
+id: LOCAL17
+title: Retrain the LoRA when a post-FEAT10 evidence-bearing corpus exists
+category: Local models
+status: deferred
+priority: P3
+comment: Filed 2026-07-30 at the owner's request off the LOCAL9 close, placed at the bottom on the lowest engineering band per that request. LOCAL9's run proved the distillation mechanism works and the corpus failed it: every pair predated FEAT10 (so the adapter learned evidence-free output) and the 32 GB ceiling kept only 42 short-meeting pairs. Promote when a `train-adapter --dry-run` at 8192 reports >= 100 kept pairs with evidence-bearing summaries (accumulating since 2026-07-24; 0 at filing), or the machine gains RAM. Then: a tiny `--since` filter, the exact LOCAL9 protocol rerun (train, loss triple, dogfood A/B, hand-grade), adopt only on a win; a second honest negative closes permanently. Full runbook and pitfalls in the LOCAL9 archive entry.
+---
+
 # LOCAL17: Retrain the LoRA when a post-FEAT10 evidence-bearing corpus exists
 
-Band origin: filed 2026-07-30 at the owner's request, off the LOCAL9 close the same evening ("fill a task for this to not forget one day revisit it. at the bottom of backlog. with lowest priority"). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-07-30 at the owner's request, off the LOCAL9 close the same evening ("fill a task for this to not forget one day revisit it. at the bottom of backlog. with lowest priority"). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

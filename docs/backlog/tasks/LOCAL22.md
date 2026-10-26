@@ -1,6 +1,15 @@
+---
+id: LOCAL22
+title: mlx_lm.server runs with its default prompt cache of ten full KV caches and no byte cap, so a warm server keeps gigabytes of finished requests resident for the daemon's lifetime
+category: Local models
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. `build_server_command` passes only model, host, port and adapter, so the locked mlx-lm 0.31.3 keeps its defaults: up to 10 distinct KV caches (`--prompt-cache-size` 10) with no byte limit, a full prompt-plus-generation copy inserted after every completion, under a wired-memory limit raised to the GPU's working set at launch. At Qwen2.5-7B's ~56 KB per token (14B ~192 KB) one long map-reduce holds about 3 to 5 GB on the 7B and 10 to 18 GB on the 14B beyond the weights, and the opt-in warm `mp serve-local` keeps that plateau for as long as the daemon runs (up 7 days 8 hours on 2026-10-25). Pass `--prompt-cache-size 2` from the one argv builder, pinned by a test. [Spec](./LOCAL22.md)
+---
+
 # LOCAL22: mlx_lm.server runs with its default prompt cache of ten full KV caches and no byte cap, so a warm server keeps gigabytes of finished requests resident for the daemon's lifetime
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

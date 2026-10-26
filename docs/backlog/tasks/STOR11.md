@@ -1,6 +1,15 @@
+---
+id: STOR11
+title: A recordings folder that exists but cannot be read shows as an empty library, stops live updates, skips orphan and stranded-job sweeps silently, and doctor reports it healthy
+category: Storage
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O18: SW-10): performScan, the watcher, OrphanScan, reconcileStrandedJobs, orphan recovery and the menu failed count all treat a failed listing as empty, doctor says No orphaned recordings, and mp doctor prints library 0 B as ok. One root state with an unreadable case beside UX89's missing one, a named Library state, watcher retry, library.readable probe. [Spec](./STOR11.md)
+---
+
 # STOR11: a recordings folder that exists but cannot be read shows as an empty library everywhere, stops live updates, skips orphan recovery and stranded-job marking without a word, and doctor reports it healthy
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) O18: SW-10). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) O18: SW-10). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

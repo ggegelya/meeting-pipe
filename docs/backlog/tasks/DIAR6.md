@@ -1,6 +1,15 @@
+---
+id: DIAR6
+title: The owner's name is stamped on a whole diarizer cluster with no per-segment channel check, and ASR and diarization run on an unnormalized (L+R)/2 mixdown, so a quiet mic merges remote speech into me
+category: Transcription
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live FQ-3, FQ-8): identify_user_speaker accepts a cluster at 60 percent mic time and then labels all of it, and mixDownToMono averages channels unscaled, so a quiet mic hides the owner and up to 40 percent remote speech ships under their name (30 to 39 percent measured). Per-segment veto to speaker_unknown, then per-channel gain normalization landed only on a DER measurement. [Spec](./DIAR6.md)
+---
+
 # DIAR6: the owner's name is stamped on a whole diarizer cluster with no per-segment channel check, and ASR and diarization run on an unnormalized (L+R)/2 mixdown, so a quiet mic merges remote speech into "me"
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-3, FQ-8, and its "Improving transcription and people identification" item 1, first half). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-3, FQ-8, and its "Improving transcription and people identification" item 1, first half). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

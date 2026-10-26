@@ -1,6 +1,15 @@
+---
+id: DOC17
+title: The process documents outweigh the source, because every shipped spec is copied whole into one 1.43 MB archive, ARCHITECTURE.md is 188 KB, and filing has no brake while P1s wait on the owner
+category: Docs
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, architecture review D6, go-live SA-5, SA-6): tracked Markdown is 4.35 MB against 4.27 MB of source, q6-final.md is 1.43 MB of copied specs, ARCHITECTURE.md is 188 KB, and 14 P1s await owner confirmation. Archive a one-line ship note plus sha instead of the spec, split ARCHITECTURE.md per subsystem after ARCH13, add a P1 WIP brake to /file-task and /audit. Scope item 1 superseded 2026-10-26: closed tasks now stay in `tasks/` as `status: done` and nothing is copied into an archive. [Spec](./DOC17.md)
+---
+
 # DOC17: the process documents outweigh the source, because every shipped spec is copied whole into one 1.43 MB archive, ARCHITECTURE.md is 188 KB, and filing has no brake while P1s wait on the owner
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) D6, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-5 and SA-6). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) D6, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-5 and SA-6). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 
@@ -42,3 +51,5 @@ Three mechanisms produce this, each written into the process:
 - `ARCHITECTURE.md` is at most 40 KB after the split, each subsystem file stands alone, and a one-off script run in the commit body resolves every inbound `ARCHITECTURE.md#anchor` link in tracked files (7 on 2026-10-24) to a heading that exists, at its new path where it moved.
 - `file-task.md` and `audit.md` carry the brake with the owner's threshold; a dry run on the landing tree prints the count and the list, and stops when the count is over the threshold.
 - `python3 scripts/truth_fences.py both` and `bash scripts/ci-local.sh fences` green.
+
+**Progress (2026-10-26): scope item 1 is superseded, items 2 and 3 stand.** The per-task header change (fifth structural change in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md)) moved every task's state into its own `tasks/<ID>.md` header and made `INDEX.md` a generated file. Closing a task now sets `status: done` and a one-line `comment:` in place, and `/tech-task` step 8 no longer copies the spec into `q6-final.md` or deletes the file, so the archive stops growing. What this task still owns: `q6-final.md` stays 1.43 MB as a frozen record (shrinking it is optional and was not done), the `ARCHITECTURE.md` split (item 2), and the P1 WIP brake (item 3), which can now count with `python3 scripts/backlog.py list --priority P1 --status partial` and `--status owner-verify` instead of reading tables.

@@ -1,6 +1,15 @@
+---
+id: STOR9
+title: Eight user-data stores read a file they cannot parse or open as empty and save that empty state over it, and summarize silently drops speaker and text overlays it cannot read
+category: Storage
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O5: PY-2, SW-7, SW-8, PY-7): roster enroll, voiceprint update, glossary (any Vocabulary pane exit), speaker labels, transcript fixes, saved folders, workflow corrections and consent overwrite an unreadable file; re-summarize ships raw labels. Missing vs unparseable vs unreadable per store; quarantine to `.corrupt-<ts>` or refuse; glossary follows ARCH9; store_unreadable event. Amended 2026-10-25 (performance review): two quick in-app namings run two unlocked roster enrolls and one name is dropped; flock around RosterStore and VoiceprintStore updates (PYTHON-9). [Spec](./STOR9.md)
+---
+
 # STOR9: eight user-data stores read a file they cannot parse or open as empty and then save that empty state over it, and summarize silently drops the speaker and text overlays it cannot read
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) O5: PY-2, SW-7, SW-8, PY-7). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([observability audit](../../audits/2026-10-25-observability-audit.md) O5: PY-2, SW-7, SW-8, PY-7). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

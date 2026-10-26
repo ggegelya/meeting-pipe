@@ -1,6 +1,15 @@
+---
+id: CONC8
+title: The debounced-save template is copied three times, and the SecretsStore copy runs three blocking security subprocesses on the main thread per Preferences edit
+category: Concurrency
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit SW2, SW3): the 500 ms debounce is hand-copied into ConfigStore, GlossaryStore and SecretsStore and has diverged; SecretsStore persists inside its main-thread Timer, so each token edit runs 3 unbounded security round-trips on main. One DebouncedSaver that persists on a utility queue, each store keeps its policy; SEC23 owns what is written, CONC5 the ceiling. Amended 2026-10-25 (performance review): ConfigStore converts rawDocument on writeQueue while saveNow mutates it on main; render the TOML string on main and hand only that to the write (MAINTHREAD-13). [Spec](./CONC8.md)
+---
+
 # CONC8: The debounced-save template is copied three times, and the SecretsStore copy runs three blocking security subprocesses on the main thread per Preferences edit
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) SW2, SW3). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) SW2, SW3). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

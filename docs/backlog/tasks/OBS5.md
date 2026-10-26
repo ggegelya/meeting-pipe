@@ -1,6 +1,15 @@
+---
+id: OBS5
+title: The logs cannot say why a recording stopped, why the daemon exited, which backend a run expected, which mic took over mid-meeting, or that a permission or the meeting-apps overlay was lost
+category: Observability
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O11: LG-6, LG-1, LG-3, LG-9, LG-12, LG-16): five stop paths share toggleManual with no trigger, exit writes nothing, each launch logs 4 fake grants and no revocation, saves and expected backend go unlogged, a mic change names no device, a bad overlay is silent. Stop trigger, daemon terminating, permission_changed, expectedBackend, names-only save events, registry_loaded. Amended 2026-10-25 (performance review): UI-13: `PermissionsCenter.commit` assigns every probe result unconditionally, so the 2 s Permissions-pane poll fires four `objectWillChange` per tick with nothing changed (three more per menu open); item 3's `commit` starts with `guard prev != status else { return }`, before the assignment and both sends. [Spec](./OBS5.md)
+---
+
 # OBS5: the logs cannot say why a recording stopped, why the daemon exited, which backend a run expected, which mic took over mid-meeting, or that a permission or the meeting-apps overlay was lost
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O11; finders LG-6, LG-1 remainder, LG-3, LG-9, LG-12, LG-16). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O11; finders LG-6, LG-1 remainder, LG-3, LG-9, LG-12, LG-16). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

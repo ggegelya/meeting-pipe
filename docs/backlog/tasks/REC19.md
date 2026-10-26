@@ -1,6 +1,15 @@
+---
+id: REC19
+title: Every recording force-stops at about 3 h 6 min because the system-audio intermediate is a 32-bit WAV, and the stop notification tells the user the disk may be full
+category: Recording
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live PD-11): the system intermediate is 48 kHz stereo Float32 (384 kB/s), so its RIFF WAV hits 2^32 bytes at 3 h 6 min and REC3's write-failure force-stop notifies the disk may be full. Promotes the REC3 watch-list item. Reproduce the cap once, write CAF intermediates read under both suffixes, and decide the stop cause from free space. Amended 2026-10-25 (performance review): the mic ties the cap at 96 kHz and reaches it first at 192 kHz (1 h 33 min), so the cause and the HUD notice need each channel's own rate; item 1 must record whether Core Audio throws 'off8' or writes RF64, which audioDurationSec reads as nil; a CAF duration reader must not read an unfinalized file as zero (REC14); Int16 plus mono is a 12 h 25 min no-rename alternative. Owner asked to consider P1. [Spec](./REC19.md)
+---
+
 # REC19: every recording force-stops at about 3 h 6 min because the system-audio intermediate is a 32-bit WAV, and the stop notification tells the user the disk may be full
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PD-11). Promotes the "REC3 deferred >3h cap-raising" item from the watch list in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md), which said "Promote if >3 h meetings become a real need"; the go-live review makes the wrong stop message the trigger, since that half is a correctness defect at any meeting length. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PD-11). Promotes the "REC3 deferred >3h cap-raising" item from the watch list in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md), which said "Promote if >3 h meetings become a real need"; the go-live review makes the wrong stop message the trigger, since that half is a correctness defect at any meeting length. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

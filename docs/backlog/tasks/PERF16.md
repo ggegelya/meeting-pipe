@@ -1,6 +1,15 @@
+---
+id: PERF16
+title: Smaller costs in the mute plumbing: LogMuteAdapter re-copies its buffer once per line on the main thread, and RealAXBackend keeps an AXObserver on the main run loop after a failed first registration
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. `LogMuteAdapter.completeLines` copies the remaining buffer once per line on main and applies its 256 KiB cap only after the loop: milliseconds for a normal SlimCore burst, on the order of gigabytes of copying for a whole-generation re-read after a truncation. `RealAXBackend.register` leaves a cached AXObserver and its main-run-loop source behind when `AXObserverAddNotification` fails, one per affected client PID. One task because both are small. Scope: a single-pass split with the cap first, and cleanup on a failed add plus eviction of dead PIDs. [Spec](./PERF16.md)
+---
+
 # PERF16: smaller costs in the mute plumbing: `LogMuteAdapter` re-copies its buffer once per line on the main thread, and `RealAXBackend` keeps an `AXObserver` on the main run loop after a failed first registration
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

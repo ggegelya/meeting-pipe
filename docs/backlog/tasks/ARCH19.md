@@ -1,6 +1,15 @@
+---
+id: ARCH19
+title: Meeting-app bundle ids drive switch statements in four files and literals in nine, so adding a meeting app means editing six or more files
+category: Architecture
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit SW6): a new native app touches about ten files and MeetingAppRegistryFenceTests covers four of those seams; two drifts already pass it (MeetingTitleResolver has no com.cisco.spark case, Coordinator builds its adapters by hand rather than from NativeLifecycleConfig.all). Owner decides first: a MeetingApp enum (M) or more fence tests (S, the default); either fixes the two gaps. [Spec](./ARCH19.md)
+---
+
 # ARCH19: Meeting-app bundle ids drive switch statements in four files and literals in nine, so adding a meeting app means editing six or more files
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) SW6). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) SW6). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+id: ARCH20
+title: MeetingStore.buildMeeting is a 189-line status ladder that mixes the failure rule, the duration source and cacheability
+category: Architecture
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit SW12): 189 lines (127 code) of failure precedence, status, cacheable and no-row rules, with two more copies outside it; the menu-bar badge's copy already disagrees on publish-stage failures, which UX90 owns. A pure MeetingStatus.decide with an injected now, called by LibraryMover and (after UX90) unrecoveredFailureStems. [Spec](./ARCH20.md)
+---
+
 # ARCH20: MeetingStore.buildMeeting is a 189-line status ladder that mixes the failure rule, the duration source and cacheability
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) SW12). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) SW12). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

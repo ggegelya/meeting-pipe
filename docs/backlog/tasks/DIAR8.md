@@ -1,6 +1,15 @@
+---
+id: DIAR8
+title: When diarization throws, nothing is logged or evented, and the channel-aware fallback never runs because Swift labels every segment `speaker_unknown` while Python only treats `Speaker?` as unlabelled
+category: Transcription
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O8: FB-4, LG-17): the FluidAudioRunner diarization catch logs nothing and engine_succeeded has no flag, and Swift's speaker_unknown passes Python's != Speaker? test, so the stereo channel fallback never runs. Key finalize on diarization_failed, keep it plus speaker_fallback, a diarization_failed event, diarization_ok and language on engine_succeeded, a Transcript tab notice. [Spec](./DIAR8.md)
+---
+
 # DIAR8: When diarization throws, nothing is logged or evented, and the channel-aware fallback never runs because Swift labels every segment `speaker_unknown` while Python only treats `Speaker?` as unlabelled
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O8: FB-4, LG-17). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O8: FB-4, LG-17). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

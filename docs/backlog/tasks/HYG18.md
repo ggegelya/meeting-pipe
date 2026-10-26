@@ -1,6 +1,15 @@
+---
+id: HYG18
+title: Fences and written rules are weaker than they read: the design-token fence's word-boundary alternatives never match under Apple Git, 32 user-visible lines carry em-dashes, and three rules are stronger as written than anything checks
+category: Hygiene
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit CV2, CV6, CV9): the design-token fence's three \b alternatives match nothing under Apple Git 2.50.1, so local fences are weaker than CI; 32 user-visible lines carry em-dashes; three written rules overstate (53 test files, loopback servers, 8 spawns). A portable regex plus a self-test, sweep the 32 strings, reword the rules, a Core island fence. [Spec](./HYG18.md)
+---
+
 # HYG18: Fences and written rules are weaker than they read: the design-token fence's word-boundary alternatives never match under Apple Git, 32 user-visible lines carry em-dashes, and three rules are stronger as written than anything checks
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) CV2, CV6, CV9). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) CV2, CV6, CV9). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

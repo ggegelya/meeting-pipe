@@ -1,6 +1,15 @@
+---
+id: REC22
+title: Capture write failures shorter than 32 consecutive buffers are never counted, so intermittent disk errors can drop up to 15% of a meeting with no trace in any log or event
+category: Recording
+status: new
+priority: P2
+comment: Filed 2026-10-25 (observability band, O19: SW-12): failed capture writes go only to redacted os.Logger and WriteFailureTracker resets on success, so failures under 32 in a row are never counted and up to 15% of a meeting can drop below the 0.85 parity floor. Total and first error per channel in the tracker, a once-per-recording WARN, totals on the stopping line and a capture_write_failures event. [Spec](./REC22.md)
+---
+
 # REC22: Capture write failures shorter than 32 consecutive buffers are never counted, so intermittent disk errors can drop up to 15% of a meeting with no trace in any log or event
 
-Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O19: SW-12). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 observability audit band ([audit](../../audits/2026-10-25-observability-audit.md) row O19: SW-12). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+id: CONC10
+title: An open alert or menu stalls every default-mode Timer on the detection, end-of-call, prompt and HUD paths, and the prompt and HUD cannot be clicked while an alert is up
+category: Concurrency
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. UI-7: `Timer.scheduledTimer` fires only in the default run-loop mode, and AppKit runs main in the modal-panel mode for the whole of each of the 21 `runModal` sites (and in event-tracking while a menu is open), so the discovery backstop, prompt timeout and auto-dismiss, END17's provisional-end tick, the teardown-hold 1 Hz oracle, the window watcher, the Teams log mute reader and the HUD clock all stop while an alert is up, possibly behind Teams (an ended meeting keeps recording); nothing sets `worksWhenModal`, so the prompt's buttons and the HUD's Stop are dead too. P2 on the verifier's medium; if the owner check finds the force-stop hotkey also dead under a modal, a live recording cannot be stopped until the alert is found, and the owner may promote to P1. Common-mode main-run-loop helpers (on HYG17 item 4's), `worksWhenModal` on both panels, an allowlist fence on default-mode timers. [Spec](./CONC10.md)
+---
+
 # CONC10: An open alert or menu stalls every default-mode Timer on the detection, end-of-call, prompt and HUD paths, and the prompt and HUD cannot be clicked while an alert is up
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

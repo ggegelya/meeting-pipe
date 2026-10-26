@@ -1,6 +1,15 @@
+---
+id: PIPE31
+title: Republishing an Obsidian note with a changed body on a later day writes a second note and orphans the first, and file_url mis-encodes #, % and ?
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit PY7, PY8): reproduced, a changed-body republish a day later leaves 2 notes in the vault because the filename takes the publish day's UTC date and the sidecar's `note_path` is ignored; two hand-rolled `file://` builders encode only spaces. Reuse the recorded note_path, date from the stem (paired with PIPE23), one `Path.as_uri()` helper. [Spec](./PIPE31.md)
+---
+
 # PIPE31: Republishing an Obsidian note with a changed body on a later day writes a second note and orphans the first, and file_url mis-encodes #, % and ?
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) PIPE31, finders PY7 and PY8). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) PIPE31, finders PY7 and PY8). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

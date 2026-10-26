@@ -1,6 +1,15 @@
+---
+id: PIPE33
+title: The Python side of the meeting-file contract has no owner: the stem is derived four ways and transcripts and segments travel as anonymous dicts
+category: Architecture
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit PY4, PY5): the stem comes from a first-dot split (9 sites), Path.stem, removesuffix and two bespoke helpers; `.summary.json` is spelled on 39 lines in 18 modules and `t: dict[str, Path]` threads 7 orchestrate helpers. `mp.meeting_files` plus a `TranscriptFiles` NamedTuple pinned to ARCH10's suffix list now, a `Segment` TypedDict once ARCH10 lands. [Spec](./PIPE33.md)
+---
+
 # PIPE33: The Python side of the meeting-file contract has no owner: the stem is derived four ways and transcripts and segments travel as anonymous dicts
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) PIPE33, finders PY4 and PY5). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) PIPE33, finders PY4 and PY5). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

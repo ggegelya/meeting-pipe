@@ -1,6 +1,15 @@
+---
+id: HYG17
+title: Swift small duplication and dead code: eight scheduler typealiases, re-declared NSLock.withLock, dead symbols, dialog boilerplate, bare sample rates and release-compiled test seams
+category: Hygiene
+status: new
+priority: P2
+comment: Filed 2026-10-25 (code-quality audit SW4, SW8, SW9, SW10, SW11, CV7, TS8): 9 dead symbols, 3 NSLock.withLock shadows, 3 swiftUIColor copies, 8 Scheduler aliases with 2 meanings, 9 bare sample rates, 5 confirm dialogs, 5 folder pickers, an 11-param CorrectionStore.write and 3 test seams compiled into release. One commit per item, deletions first. [Spec](./HYG17.md)
+---
+
 # HYG17: Swift small duplication and dead code: eight scheduler typealiases, re-declared NSLock.withLock, dead symbols, dialog boilerplate, bare sample rates and release-compiled test seams
 
-Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) SW4, SW8, SW9, SW10, SW11, CV7, TS8). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the 2026-10-25 code-quality audit band ([code-quality audit](../../audits/2026-10-25-code-quality-audit.md) SW4, SW8, SW9, SW10, SW11, CV7, TS8). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

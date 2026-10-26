@@ -1,6 +1,15 @@
+---
+id: PIPE21
+title: Summarize.py and summarize_local.py are god modules, and five private helpers are imported across module boundaries
+category: Pipeline
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, arch B3): summarize.py (1,001 lines, 51 commits) mixes transport, prompts, prior-meeting scan, backend choice, attribution, evidence, language repair, CLI and sidecar; summarize_local.py (1,128) owns requests and the server lifecycle; five private helpers cross modules. Green-to-green split into prompting, provider_anthropic and a small summarize, after PIPE19 and PIPE24. [Spec](./PIPE21.md)
+---
+
 # PIPE21: summarize.py and summarize_local.py are god modules, and five private helpers are imported across module boundaries
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) B3). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) B3). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

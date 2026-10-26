@@ -1,6 +1,15 @@
+---
+id: DIAR7
+title: Speakers are assigned per sentence bucket by majority overlap rather than per word, and the diarizer discards speech under 1 s, so interjections and handovers land on the wrong person
+category: Transcription
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, go-live FQ-7): SegmentBuilder.build gives each sentence or gap bucket to its majority-overlap span, so a speaker change inside a bucket is invisible, and FluidAudio's minSpeechDuration 1.0 drops sub-second speech. Assign per word with hysteresis and split on change, then measure a lower minSpeechDuration on --der --reviewed before keeping it. [Spec](./DIAR7.md)
+---
+
 # DIAR7: speakers are assigned per sentence bucket by majority overlap rather than per word, and the diarizer discards speech under 1 s, so interjections and handovers land on the wrong person
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-7, and its "Improving transcription and people identification" item 4). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) FQ-7, and its "Improving transcription and people identification" item 4). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

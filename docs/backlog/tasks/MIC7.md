@@ -1,6 +1,15 @@
+---
+id: MIC7
+title: Browser/PWA mute oracle via a platform signal
+category: Detection
+status: partial
+priority: P2
+comment: Spike shipped: analysis doc (`docs/spikes/mic7-browser-mute-oracle.md`) + an owner-run read-only DOM probe (`daemon/scripts/mic7-meet-mute-probe.js`, pasted into a live Meet tab's console). Verdict: architecture GO (a `MeetMuteAdapter` fed by a content-script extension, no fusion changes), build DEFER (gate on a real browser meeting, END5's trigger). **Signal gate resolved GO 2026-07-20:** owner ran the probe on a live Meet call and `data-is-muted` flips `'false'`/`'true'` on every toggle (the spike's candidate 1); `aria-pressed` is absent entirely, and the localized `aria-label` + obfuscated `className` stay rejected. Gotchas pinned for the build: the attribute is *state* while the label is the *inverse action*, and it is a string that can be absent, so absent must degrade to unknown, not to unmuted. Remainder narrowed to one item: a real browser meeting (still 0 recorded; the 2026-07-20 probe call was prompted twice and declined both times, so the trigger has not fired).
+---
+
 # MIC7: Browser/PWA mute oracle via a platform signal
 
-Band origin: carried from Q4; base spec in q4-final.md, progress notes here. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: carried from Q4; base spec in q4-final.md, progress notes here. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Progress (2026-07-20): signal gate resolved GO; build gate still closed
 

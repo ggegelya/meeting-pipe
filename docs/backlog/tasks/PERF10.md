@@ -1,6 +1,15 @@
+---
+id: PERF10
+title: The Teams mute-button probe and the process-audio signal still poll on the main thread, so a busy Teams or coreaudiod can freeze the UI for seconds during a call
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-23 from the slow-app audit; confirmed by code reading, not yet caught in a trace. `AXMuteButtonProbe.defaultScheduler` and `ProcessAudioSignal.defaultScheduler` are main-run-loop `Timer`s, and the only AX bound is the system-wide 2 s timeout, so one evaluate can hold main for seconds. Scope: queue schedulers like `AXLeaveButtonSignal`, a per-element AX timeout. Owner may re-band. Amended 2026-10-25 (performance review): DETECTION-1 (verified critical) and MAINTHREAD-1 add the hung-client magnitude (three 2 s reads per 1 Hz tick, a rearm DFS with a 4000-node budget per window every 5 s while the reading stays unknown, verdicts reaching the recorder only through MainActor.run) and the legs a bare queue scheduler would miss (notification handlers and the rearm on the probe queue, async start/stop with a generation token, the short timeout on every resolved element); the ProcessAudioSignal leg and bullet 3 move to the 2026-10-25 HAL-confinement and engage-path filings; P1 proposed to the owner, not applied. [Spec](./PERF10.md)
+---
+
 # PERF10: the Teams mute-button probe and the process-audio signal still poll on the main thread, so a busy Teams or coreaudiod can freeze the UI for seconds during a call
 
-Band origin: filed 2026-10-23 from the code audit run for the owner's "the app feels slow" report ([PERF9](./PERF9.md) is the measured half). This half is confirmed by reading code and was not caught in a trace, because no call was live while sampling. Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-23 from the code audit run for the owner's "the app feels slow" report ([PERF9](./PERF9.md) is the measured half). This half is confirmed by reading code and was not caught in a trace, because no call was live while sampling. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## What is wrong
 

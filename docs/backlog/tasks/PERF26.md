@@ -1,6 +1,15 @@
+---
+id: PERF26
+title: The Library's status spinners and pulses and the recording HUD's pulse redraw at the display's full refresh rate while visible, and a Paste pending row spins until someone pastes
+category: Performance
+status: new
+priority: P2
+comment: Filed 2026-10-25 from the performance review. UI-6, UI-10: `MPRingSpinner`, `MPSteadyPulseDot` and the toolbar `PulseDot` use `TimelineView(.animation)` with no `minimumInterval`, so they redraw at the display rate (up to 120 Hz on the owner's ProMotion panel) while visible; Paste pending reuses the processing spinner and is a terminal status, so a BYO row spins until pasted (the design kit and README draw it static; 0 such rows on the owner's library on 2026-10-25); the HUD's infinite opacity CABasicAnimation has no frame-rate range and its 10 Hz meter and 2 Hz elapsed timers carry no tolerance for the whole recording. Cap the three schedules, a static Paste pending (owner picks the look), `preferredFrameRateRange` on the HUD pulse, meter tolerance and a 1 Hz second-aligned elapsed tick. [Spec](./PERF26.md)
+---
+
 # PERF26: The Library's status spinners and pulses and the recording HUD's pulse redraw at the display's full refresh rate while visible, and a Paste pending row spins until someone pastes
 
-Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-25 from the performance review (eight subsystem finders over HEAD 01e904a, every finding adversarially re-verified). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

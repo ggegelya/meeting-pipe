@@ -1,6 +1,15 @@
+---
+id: HYG9
+title: Production comments carry about 3,000 ticket-ID tokens as a changelog, against the comments policy, and nothing stops the count from growing
+category: Hygiene
+status: new
+priority: P2
+comment: Filed 2026-10-24 (audit band, architecture review D1, go-live SA-6): 18,645 of 70,160 Swift lines are comments and about 2,750 of them cite ticket IDs (636 more in pipeline/src), against CONVENTIONS' own ban; the narration is where false comments live. Ratchet in truth_fences.py (ID tokens in comments may not rise, prefixes from the backlog), plus a /tech-task rule to swap narration for the invariant on touch. [Spec](./HYG9.md)
+---
+
 # HYG9: production comments carry about 3,000 ticket-ID tokens as a changelog, against the comments policy, and nothing stops the count from growing
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) D1, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-6 docs half). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md).
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture review](../../audits/2026-10-24-architecture-review.md) D1, [go-live assessment](../../audits/2026-10-21-go-live-assessment.md) SA-6 docs half). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## Context
 

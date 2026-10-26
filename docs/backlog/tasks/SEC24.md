@@ -1,6 +1,15 @@
+---
+id: SEC24
+title: The app never tells its user that the other people in a meeting may need to consent, and it stores a voice embedding for every speaker of every meeting with no switch and no end date
+category: Security
+status: new
+priority: P3
+comment: Filed 2026-10-24 (audit band, go-live PP-3, PP-4 posture half): no consent disclosure anywhere, Always for {App} silences the prompt for good, and every finalize writes a 256-d embedding per speaker to <stem>.embeddings.json with no setting. P3 under the selling rule; promote before a second user or a public push. One-time acknowledgement, an opt-in speaker_recognition switch, disclosure copy. [Spec](./SEC24.md)
+---
+
 # SEC24: the app never tells its user that the other people in a meeting may need to consent, and it stores a voice embedding for every speaker of every meeting with no switch and no end date
 
-Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PP-3, the posture half of PP-4, and its "Fix before anyone else installs it" item 10). Status and priority live in this task's ToC row in [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md). **P3 by the root `CLAUDE.md` selling rule**: compliance posture is deferred while the owner is the only user. Promote it before any second person installs the app or the repo is pushed publicly, whichever comes first.
+Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([go-live assessment](../../audits/2026-10-21-go-live-assessment.md) PP-3, the posture half of PP-4, and its "Fix before anyone else installs it" item 10). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task. **P3 by the root `CLAUDE.md` selling rule**: compliance posture is deferred while the owner is the only user. Promote it before any second person installs the app or the repo is pushed publicly, whichever comes first.
 
 ## Context
 
