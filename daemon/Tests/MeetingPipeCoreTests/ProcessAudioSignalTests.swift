@@ -45,7 +45,6 @@ final class ProcessAudioSignalTests: XCTestCase {
 
         try signal.start(context: teamsContext)
         XCTAssertEqual(observed, [true])
-        XCTAssertEqual(signal.lastValue, true)
     }
 
     func test_repeat_probe_value_does_not_re_emit() throws {
@@ -156,12 +155,14 @@ final class ProcessAudioSignalTests: XCTestCase {
     func test_stop_releases_bus_subscription_and_resets_state() throws {
         let bus = CoreAudioHALBus()
         let scheduler = ManualScheduler()
+        var observed: [Bool] = []
         let signal = ProcessAudioSignal(
             halBus: bus,
             probe: { _, _ in true },
             scheduler: manualScheduler(scheduler),
             resolver: stubResolver()
         )
+        signal.onChange = { observed.append($0) }
         try signal.start(context: teamsContext)
         XCTAssertEqual(bus.activeSubscriptionCount, 1 + listListenerCount)
         XCTAssertNotNil(scheduler.tick)
@@ -169,7 +170,11 @@ final class ProcessAudioSignalTests: XCTestCase {
         signal.stop()
         XCTAssertEqual(bus.activeSubscriptionCount, 0)
         XCTAssertNil(scheduler.tick)
-        XCTAssertNil(signal.lastValue)
+
+        // `lastValue` is no longer readable from outside (CONC9), so pin its reset by behaviour: a
+        // restart reports the same reading again rather than swallowing it as a repeat.
+        try signal.start(context: teamsContext)
+        XCTAssertEqual(observed, [true, true])
     }
 
     func test_unresolved_process_object_degrades_to_poll_only() throws {
@@ -266,6 +271,224 @@ final class ProcessAudioSignalTests: XCTestCase {
         scheduler.tick?()
         scheduler.tick?()
         XCTAssertEqual(resolveCount, 2, "one re-resolution per unresolved streak, not per tick")
+    }
+
+    // MARK: - CONC9 production queue
+
+    /// No injected scheduler: the production path, a private serial queue and a `DispatchSourceTimer`
+    /// poll. Every test below runs on it, because the inline test path is the one thing they must not use.
+    private func productionSignal(
+        bus: CoreAudioHALBus = CoreAudioHALBus(),
+        eventLog: EventLog = NoopEventLog(),
+        probe: @escaping ProcessAudioSignal.Probe,
+        resolver: @escaping ProcessAudioSignal.ProcessObjectResolver,
+        pollInterval: TimeInterval = 3600
+    ) -> ProcessAudioSignal {
+        ProcessAudioSignal(
+            halBus: bus,
+            eventLog: eventLog,
+            probe: probe,
+            resolver: resolver,
+            pollInterval: pollInterval,
+            slowPollInterval: pollInterval
+        )
+    }
+
+    /// Fulfils `expectation` exactly once, however often `body` runs.
+    private func fulfilOnce(_ expectation: XCTestExpectation, _ done: LockedBox<Bool>) {
+        var first = false
+        done.mutate { if !$0 { $0 = true; first = true } }
+        if first { expectation.fulfill() }
+    }
+
+    func test_production_evaluate_never_runs_on_main() throws {
+        // Red on main before CONC9: `defaultScheduler` was a main-run-loop `Timer` and `start` ran the
+        // initial evaluate inline, so every read below landed on main. Recorded rather than trapped with
+        // `dispatchPrecondition`, so a regression fails this test instead of killing the whole suite.
+        let reads = LockedBox<[Bool]>([])
+        let done = LockedBox(false)
+        let twoReads = expectation(description: "the initial read and at least one poll")
+        let signal = productionSignal(
+            probe: { [self] _, _ in
+                reads.mutate { $0.append(Thread.isMainThread) }
+                if reads.get().count >= 2 { fulfilOnce(twoReads, done) }
+                return true
+            },
+            resolver: stubResolver([136]),
+            pollInterval: 0.01
+        )
+        try signal.start(context: teamsContext)
+        wait(for: [twoReads], timeout: 5)
+        signal.stop()
+        signal.drainForTesting()
+        XCTAssertFalse(reads.get().contains(true), "evaluate ran on main: \(reads.get())")
+    }
+
+    func test_start_returns_before_a_blocked_resolver_finishes() throws {
+        // The start-time resolve is a whole process-object enumeration; it moves off main with the rest.
+        let release = DispatchSemaphore(value: 0)
+        let done = LockedBox(false)
+        let resolved = expectation(description: "resolver finished")
+        let signal = productionSignal(
+            probe: { _, _ in true },
+            resolver: { [self] _ in
+                _ = release.wait(timeout: .now() + 3)
+                fulfilOnce(resolved, done)
+                return .resolved([136])
+            }
+        )
+        let began = Date()
+        try signal.start(context: teamsContext)
+        let elapsed = Date().timeIntervalSince(began)
+        release.signal()
+        wait(for: [resolved], timeout: 5)
+        signal.stop()
+        signal.drainForTesting()
+        XCTAssertLessThan(elapsed, 1.0, "start waited on the resolver")
+    }
+
+    func test_stop_while_a_resolve_is_in_flight_leaves_no_subscription() throws {
+        // The leaked-listener mechanism: a resolve that subscribes after `stop` cleared the tokens. The
+        // queue's FIFO order runs `stop`'s teardown after the resolve, so whatever it subscribed goes.
+        let backend = ConcurrentHALBackend()
+        let bus = CoreAudioHALBus(backend: backend)
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let observed = LockedBox<[Bool]>([])
+        let signal = productionSignal(
+            bus: bus,
+            probe: { _, _ in true },
+            resolver: { _ in
+                entered.signal()
+                _ = release.wait(timeout: .now() + 5)
+                return .resolved([136, 141])
+            }
+        )
+        signal.onChange = { value in observed.mutate { $0.append(value) } }
+
+        try signal.start(context: teamsContext)
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success, "the start-time resolve never began")
+        signal.stop()
+        release.signal()
+        signal.drainForTesting()
+
+        XCTAssertEqual(bus.activeSubscriptionCount, 0)
+        XCTAssertEqual(observed.get(), [], "a session stopped mid-resolve must not report its first reading")
+    }
+
+    func test_a_listener_delivery_queued_before_stop_emits_nothing_after_it() throws {
+        let backend = ConcurrentHALBackend()
+        let bus = CoreAudioHALBus(backend: backend)
+        let reading = LockedBox(true)
+        let blockNextRead = LockedBox(false)
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let observed = LockedBox<[Bool]>([])
+        let signal = productionSignal(
+            bus: bus,
+            probe: { _, _ in
+                var block = false
+                blockNextRead.mutate { block = $0; $0 = false }
+                if block {
+                    entered.signal()
+                    _ = release.wait(timeout: .now() + 5)
+                }
+                return reading.get()
+            },
+            resolver: stubResolver([136])
+        )
+        signal.onChange = { value in observed.mutate { $0.append(value) } }
+        try signal.start(context: teamsContext)
+        signal.drainForTesting()
+        XCTAssertEqual(observed.get(), [true])
+
+        // One delivery parks the queue inside its HAL read, a second waits behind it, then `stop`.
+        reading.set(false)
+        blockNextRead.set(true)
+        backend.fire(kAudioProcessPropertyIsRunningInput)
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success, "the listener never reached the probe")
+        backend.fire(kAudioProcessPropertyIsRunningInput)
+        signal.stop()
+        release.signal()
+        _ = bus.activeSubscriptionCount   // drains the bus queue, so the second delivery has hopped
+        signal.drainForTesting()
+
+        XCTAssertEqual(observed.get(), [true], "an edge read for a stopped session reached onChange")
+        XCTAssertEqual(bus.activeSubscriptionCount, 0)
+    }
+
+    func test_bus_handlers_racing_the_poll_stay_consistent() throws {
+        // The 2026-10-13 shape: process-list changes in a burst while the poll reads `resolvedObjects`.
+        // Before CONC9 the poll ran on main and both handlers on the bus queue, writing the same arrays
+        // with no lock; run under `swift test --sanitize=thread` this is the race detector's case.
+        let backend = ConcurrentHALBackend()
+        let bus = CoreAudioHALBus(backend: backend)
+        let flip = LockedBox(false)
+        let resolveCount = LockedBox(0)
+        let edges = LockedBox(0)
+        let signal = productionSignal(
+            bus: bus,
+            probe: { _, objects in
+                guard !objects.isEmpty else { return nil }
+                var value = false
+                flip.mutate { $0.toggle(); value = $0 }
+                return value
+            },
+            resolver: { _ in
+                var count = 0
+                resolveCount.mutate { $0 += 1; count = $0 }
+                // A different object set every time, as a re-registered helper produces.
+                return .resolved([AudioObjectID(100 + count % 7), AudioObjectID(200 + count % 3)])
+            },
+            pollInterval: 0.001
+        )
+        signal.onChange = { _ in edges.mutate { $0 += 1 } }
+        try signal.start(context: teamsContext)
+
+        let burst = DispatchGroup()
+        DispatchQueue.global().async(group: burst) {
+            DispatchQueue.concurrentPerform(iterations: 1_000) { index in
+                if index.isMultiple(of: 2) {
+                    backend.fire(kAudioHardwarePropertyProcessObjectList)
+                } else {
+                    backend.fire(kAudioProcessPropertyIsRunningInput)
+                }
+            }
+        }
+        // Spin main's run loop while the burst lands. Before CONC9 the poll was a main-run-loop
+        // `Timer`, so this is what put it beside the bus handlers; after, it is simply idle time.
+        let spinUntil = Date().addingTimeInterval(0.3)
+        while Date() < spinUntil || burst.wait(timeout: .now()) == .timedOut {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+        }
+        // Let the burst finish landing before stopping, so the handlers really ran against the poll.
+        _ = bus.activeSubscriptionCount
+        signal.drainForTesting()
+        signal.stop()
+        _ = bus.activeSubscriptionCount
+        signal.drainForTesting()
+
+        XCTAssertGreaterThan(resolveCount.get(), 1, "the list listener never re-resolved")
+        XCTAssertGreaterThan(edges.get(), 1, "the toggling probe never produced an edge")
+        XCTAssertEqual(bus.activeSubscriptionCount, 0)
+        XCTAssertEqual(backend.liveCount(kAudioProcessPropertyIsRunningInput), 0)
+        XCTAssertEqual(backend.liveCount(kAudioHardwarePropertyProcessObjectList), 0)
+    }
+
+    func test_on_change_is_delivered_off_main() throws {
+        let onMain = LockedBox<Bool?>(nil)
+        let done = LockedBox(false)
+        let delivered = expectation(description: "first edge delivered")
+        let signal = productionSignal(probe: { _, _ in true }, resolver: stubResolver([136]))
+        signal.onChange = { [self] _ in
+            onMain.set(Thread.isMainThread)
+            fulfilOnce(delivered, done)
+        }
+        try signal.start(context: teamsContext)
+        wait(for: [delivered], timeout: 5)
+        signal.stop()
+        signal.drainForTesting()
+        XCTAssertEqual(onMain.get(), false)
     }
 
     // MARK: - DET8 matching (pure)

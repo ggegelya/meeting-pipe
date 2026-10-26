@@ -2,9 +2,10 @@
 id: CONC9
 title: ProcessAudioSignal, HALSystemMuteProbe and HALVoiceActivityProbe change their state from the main thread and the CoreAudio bus queue with no lock, so a process-list change races the 1 Hz poll
 category: Concurrency
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. ProcessAudioSignal's poll runs on the main run loop (`defaultScheduler` is a `Timer.scheduledTimer`) while its HAL listeners run `resolve` and `evaluate` on CoreAudioHALBus's queue, and both reassign `resolvedObjects` and `halTokens` with no lock; the owner's log has six bus-queue re-resolves inside 33 ms on 2026-10-13. Worst case a use-after-free crash mid-recording, otherwise a lost or doubled edge or a listener leaked after stop; HALSystemMuteProbe and HALVoiceActivityProbe share the shape. No crash observed, so P2 like CONC6; the owner may re-band to P1 on a crash report. Scope: one serial queue per signal, a DispatchSourceTimer poll, async-only hops from bus handlers, generation-guarded start/stop; takes over PERF10's ProcessAudioSignal leg. [Spec](./CONC9.md)
+closed: 2026-10-26
+comment: Shipped 2026-10-26. `ProcessAudioSignal` confines every mutable field to a private serial queue; its production poll is a `DispatchSourceTimer` on it (the main-run-loop `defaultScheduler` is gone); `start`/`stop` return at once, bump a lock-guarded generation and hop `async`, so the start-time resolve no longer runs on main; both bus handlers hop `async` and check the generation; the cross-thread public `lastValue` is removed (no production reader). `HALSystemMuteProbe` and `HALVoiceActivityProbe` get the same confinement with `sync` start/stop (so `start` still throws to `MicGate`) and a queue-confined generation. Threading docs corrected in all three and in the coordinator's `liveCallSignalState` comment. 10 new tests, TSan clean (`swift test --sanitize=thread`, three runs); the old code measured red (evaluate on main, start blocked 3.0 s on the resolver, three TSan races in `evaluate`). `bash scripts/ci-local.sh` green. [Spec](./CONC9.md)
 ---
 
 # CONC9: `ProcessAudioSignal`, `HALSystemMuteProbe` and `HALVoiceActivityProbe` change their state from the main thread and the CoreAudio bus queue with no lock, so a process-list change races the 1 Hz poll

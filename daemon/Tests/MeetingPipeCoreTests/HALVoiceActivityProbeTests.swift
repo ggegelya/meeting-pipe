@@ -80,4 +80,68 @@ final class HALVoiceActivityProbeTests: XCTestCase {
         let result = HALVoiceActivityProbe.defaultEnableProbe(AudioDeviceID(0))
         XCTAssertFalse(result)
     }
+
+    // MARK: - CONC9
+
+    func test_a_vad_delivery_racing_stop_emits_nothing_after_it() throws {
+        // `stop` used to clear `currentDevice`, `lastValue` and `support` on main while the listener's
+        // `evaluate` read them on the bus queue.
+        for round in 0..<200 {
+            let backend = ConcurrentHALBackend()
+            let bus = CoreAudioHALBus(backend: backend)
+            let active = LockedBox(false)
+            let stopped = LockedBox(false)
+            let lateEmits = LockedBox(0)
+            let probe = HALVoiceActivityProbe(
+                halBus: bus,
+                enableProbe: { _ in true },
+                // Toggles on every read, so any delivery that runs would emit an edge.
+                stateProbe: { _ in
+                    var value = false
+                    active.mutate { $0.toggle(); value = $0 }
+                    return value
+                },
+                deviceLookup: { 7 }
+            )
+            probe.onChange = { _ in if stopped.get() { lateEmits.mutate { $0 += 1 } } }
+            try probe.start()
+
+            // Queue the deliveries on the bus queue first, then stop while they are being handled.
+            for _ in 0..<10 { backend.fire(kAudioDevicePropertyVoiceActivityDetectionState) }
+            probe.stop()
+            stopped.set(true)
+            _ = bus.activeSubscriptionCount   // drain the bus queue, so every delivery has hopped
+            probe.drainForTesting()
+
+            XCTAssertEqual(bus.activeSubscriptionCount, 0, "round \(round)")
+            XCTAssertEqual(lateEmits.get(), 0, "round \(round): an edge was emitted after stop")
+            XCTAssertNil(probe.lastValue)
+            XCTAssertEqual(probe.support, .unsupported)
+        }
+    }
+
+    func test_a_vad_delivery_is_evaluated_off_main() throws {
+        let backend = ConcurrentHALBackend()
+        let bus = CoreAudioHALBus(backend: backend)
+        let active = LockedBox(false)
+        let onMain = LockedBox<[Bool]>([])
+        let probe = HALVoiceActivityProbe(
+            halBus: bus,
+            enableProbe: { _ in true },
+            stateProbe: { _ in active.get() },
+            deviceLookup: { 7 }
+        )
+        probe.onChange = { _ in onMain.mutate { $0.append(Thread.isMainThread) } }
+        try probe.start()
+
+        active.set(true)
+        backend.fire(kAudioDevicePropertyVoiceActivityDetectionState)
+        _ = bus.activeSubscriptionCount
+        probe.drainForTesting()
+        probe.stop()
+
+        // `start` is a `sync` hop, and GCD runs a `sync` block on the calling thread, so the baseline
+        // is read on main inside the queue's exclusion, exactly as before. The listener's edge is not.
+        XCTAssertEqual(onMain.get(), [true, false])
+    }
 }

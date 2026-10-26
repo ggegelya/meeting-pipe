@@ -33,13 +33,12 @@ public final class MeetingLifecycleCoordinator {
 
     /// END13: the last state `processAudioIsRunningInput` reported for the engaged session, as the
     /// tri-state `CallTeardownOracle.LiveCallSignal` the host logs. Guarded by `lock` because adapter sink callbacks
-    /// fire on the HAL bus queue or a poll timer queue while the reader (the teardown hold's
-    /// once-a-second consult) runs on main.
+    /// fire on background queues (`ProcessAudioSignal`'s own serial queue, CONC9) while the reader
+    /// (the teardown hold's once-a-second consult) runs on main.
     ///
-    /// Cached here rather than read off `ProcessAudioSignal.lastValue` for two reasons. The signal
-    /// is owned by the adapter and its `lastValue` is written from those background queues with no
-    /// synchronisation of its own, so reaching through to it would be the cross-thread read strict
-    /// concurrency exists to catch. And the signal emits **only on change**, so a value read at an
+    /// Cached here because the signal keeps its last value confined to that queue and no longer
+    /// exposes it (CONC9 removed the unsynchronised public `lastValue` this used to warn against
+    /// reaching through to). And the signal emits **only on change**, so a value read at an
     /// arbitrary later moment is the same value this cache holds anyway.
     private var liveCallSignalState: CallTeardownOracle.LiveCallSignal = .unknown
 
