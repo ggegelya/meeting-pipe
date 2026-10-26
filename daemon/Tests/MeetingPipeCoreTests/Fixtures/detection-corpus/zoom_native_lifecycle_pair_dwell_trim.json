@@ -1,0 +1,24 @@
+{
+  "scenario": "zoom_native_lifecycle_pair_dwell_trim",
+  "description": "A genuine Zoom leave, synthetic: no teardown oracle reads Zoom. The window goes while Zoom still holds the mic (vetoed, no hold), the Leave button reads invalid and opens the hold, Zoom releases the mic, and the pair confirms once both evidence classes have stayed ended for the 60 s dwell. The held minute is the trim point.",
+  "engine": "lifecycle",
+  "origin": "synthetic",
+  "expected_outcome": "ended",
+  "ended_at": 1863.0,
+  "trim_at": 1801.5,
+  "context": {
+    "bundle_id": "us.zoom.xos",
+    "kind": "native",
+    "pid": 1234
+  },
+  "until": 1900.0,
+  "events": [
+    {"t": 0.0, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 0.1, "kind": "shareable_content_window", "state": "live"},
+    {"t": 0.2, "kind": "ax_leave_button", "state": "live"},
+    {"t": 3.0, "kind": "recording_started"},
+    {"t": 1800.0, "kind": "shareable_content_window", "state": "ended"},
+    {"t": 1801.5, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 1803.0, "kind": "process_audio_is_running_input_false", "state": "ended"}
+  ]
+}

@@ -53,10 +53,30 @@ Output carries no titles and pid 1234, so it is redaction-clean by construction;
 still run every emitted file through `redact_detection_trace.py --check` before
 committing (the mechanical PII gate).
 
+RAW MODE (T8). The distilled traces above can only say what the engine of their day
+decided, so a false end replays as the false end it was, and the raw flicker that
+caused it is not in any of them. `--raw --from <iso> --to <iso>` instead emits an
+`engine: "lifecycle"` trace: the window's raw `signal` rows mapped one-to-one onto
+the engine's signal kinds, the host inputs the hold reads (`recording_started`, the
+teardown watcher's snapshots, the live-call reading, the AX re-walk's result) from
+the `coordinator` rows, and the window's `lifecycle` rows kept as `logged_verdicts`,
+a record of what the engine of that day decided, never asserted. The last reading of
+each signal from before the window, and the recording's start, are carried in at
+their real negative offsets so the replay starts in the right state. The expected
+outcome is the CORRECT one, which the log cannot know: `--expect no_end` (the
+default, every END incident) or `--expect ended`, which writes the logged end as a
+draft to confirm against the replay. Every other field is copied from a closed
+vocabulary, never from a row's free text, so a title cannot reach the output.
+`--check-against <committed.json>` re-extracts and reports whether the replayed
+content (`context`, `until`, `events`, `source_window`) still matches, which is how a
+committed raw trace is shown to be reproducible.
+
 Usage:
   scripts/extract_detection_trace.py --inventory          # per-session breakdown, nothing written
   scripts/extract_detection_trace.py --emit-all --out-dir /tmp/traces
   scripts/extract_detection_trace.py --events <path> --inventory
+  scripts/extract_detection_trace.py --raw --from 2026-10-22T12:14:50Z --to 2026-10-22T12:15:25Z --out t.json
+  scripts/extract_detection_trace.py --raw --from <iso> --to <iso> --check-against <committed.json>
 
 Stdlib only, so it runs on a clean Mac without `uv`.
 """
@@ -278,13 +298,266 @@ def synthesize(s: Session, scenario: str) -> tuple[dict | None, str]:
     return trace, shape
 
 
+# ---------------------------------------------------------------------------------- raw (T8)
+
+# The engine's state rows, one per `onChange` its signal fires (the signals log each edge
+# and only the edges). Mapped to the corpus loader's short kinds.
+def _signal_event(row: dict, context_kind: str) -> dict | None:
+    act = row.get("action")
+    if act == "ax_leave_button_state" and row.get("state") in ("healthy", "invalid"):
+        return {"kind": "ax_leave_button", "state": "live" if row["state"] == "healthy" else "ended"}
+    if act == "process_audio_is_running_input" and isinstance(row.get("value"), bool):
+        return {"kind": "process_audio_is_running_input_false", "state": "live" if row["value"] else "ended"}
+    if act == "shareable_content_window_present" and isinstance(row.get("value"), bool):
+        # The browser adapter wires the same ScreenCaptureKit signal as the tab-title kind.
+        kind = "browser_tab_title" if context_kind == "browser" else "shareable_content_window"
+        return {"kind": kind, "state": "live" if row["value"] else "ended"}
+    if act == "workspace_app_terminated":
+        return {"kind": "workspace_app_terminated", "state": "ended"}
+    return None
+
+
+# Signal rows the raw mode cannot map without content it must not copy. `window_title_changed`
+# decides live or ended by matching the title, and the title is exactly what never leaves.
+UNMAPPABLE_SIGNALS = {"window_title_changed"}
+LIVE_SIGNALS = {"call_is_up", "call_is_down", "unknown"}
+VERDICTS = {"idle", "starting", "in_meeting", "ending_provisional", "ended"}
+
+
+def _host_events(row: dict, t: float, report: list[str]) -> list[dict]:
+    """The host inputs one `coordinator` row carries, as lifecycle-trace events."""
+    act = row.get("action")
+    out: list[dict] = []
+    if act == "recording_started":
+        out.append({"kind": "recording_started"})
+    elif act == "lifecycle_end_held":
+        # The hold row records the watcher's view when the hold opened. Rows older than END17
+        # lack `oracle_available`; the snapshot is then left to later rows.
+        available = row.get("oracle_available")
+        ago = row.get("log_written_sec_ago")
+        if isinstance(available, bool):
+            out.append({"kind": "teardown_snapshot", "available": available, "teardown_at": None,
+                        "log_written_at": round(t - ago, 3) if isinstance(ago, (int, float)) else None})
+        if row.get("live_signal") in LIVE_SIGNALS:
+            out.append({"kind": "live_signal", "value": row["live_signal"]})
+    elif act == "lifecycle_provisional_end_confirmed":
+        oracle = row.get("oracle")
+        if oracle == "teardown_observed":
+            # The old host's consult saw the teardown line here, so it was on disk by now; the
+            # replay consults on a snapshot row, which reproduces the logged moment.
+            out.append({"kind": "teardown_snapshot", "available": True, "teardown_at": t, "log_written_at": None})
+        else:
+            # oracle_unavailable, hold_cap_reached, live_signal_ceiling_reached, or the pre-END9
+            # empty re-walk: retired confirms, none of them evidence a teardown happened.
+            report.append(f"t={t}: retired confirm ({oracle or 'pre-END9 re-walk'}) is not teardown evidence; not replayed")
+    elif act == "lifecycle_provisional_end_rescued":
+        out.append({"kind": "rewalk", "found": True})
+    elif act == "call_teardown_source_missing":
+        out.append({"kind": "teardown_snapshot", "available": False, "teardown_at": None, "log_written_at": None})
+    return out
+
+
+def _verdict_record(row: dict, t: float) -> dict | None:
+    act = row.get("action")
+    if act not in VERDICTS:
+        return None
+    rec: dict = {"t": t, "verdict": act}
+    if isinstance(row.get("leading_signal"), str):
+        rec["leading"] = row["leading_signal"]
+    if act == "ended" and isinstance(row.get("confirmed_by"), list):
+        rec["confirmed_by"] = [c for c in row["confirmed_by"] if isinstance(c, str)]
+    return rec
+
+
+def _engagement(events: list[dict], start: datetime, bundle: str | None) -> tuple[str | None, int, int | None]:
+    """For the engagement still open at `start`: (bundle, index of the first row after the
+    previous engagement closed, index of its `lifecycle.starting`), or (None, 0, None).
+    An `idle` or `ended` row closes an engagement. The first signal reading lands a few
+    milliseconds BEFORE the `starting` row it causes, so carried state is read from the
+    boundary, not from `starting`."""
+    open_bundle: str | None = None
+    open_index: int | None = None
+    boundary = 0
+    for i, e in enumerate(events):
+        ts = _parse_ts(e.get("ts"))
+        if ts is None or ts >= start:
+            break
+        if e.get("category") != "lifecycle":
+            continue
+        if e.get("action") == "starting" and (bundle is None or e.get("bundle_id") == bundle):
+            open_bundle, open_index = e.get("bundle_id"), i
+        elif e.get("action") in ("idle", "ended"):
+            open_bundle, open_index, boundary = None, None, i + 1
+    return open_bundle, boundary, open_index
+
+
+def extract_raw(
+    events: list[dict],
+    start: datetime,
+    end: datetime,
+    bundle: str | None = None,
+    scenario: str | None = None,
+    expect: str = "no_end",
+) -> tuple[dict, list[str]]:
+    """Build a raw lifecycle trace for [start, end] from a time-sorted event list.
+
+    Returns (trace, report). Raises ValueError when the window names no single meeting app."""
+    report: list[str] = []
+    window = [e for e in events if (ts := _parse_ts(e.get("ts"))) is not None and start <= ts <= end]
+
+    if bundle is None:
+        in_window = {e.get("bundle_id") for e in window if e.get("category") == "lifecycle" and e.get("bundle_id")}
+        if len(in_window) == 1:
+            bundle = next(iter(in_window))
+        elif not in_window:
+            bundle, _, _ = _engagement(events, start, None)
+        if bundle is None:
+            raise ValueError(f"window names {sorted(in_window) or 'no'} meeting app(s); pass --bundle")
+
+    engaged_bundle, boundary, _ = _engagement(events, start, bundle)
+    # The context kind: the window's own lifecycle rows first, then the newest one before it.
+    before = [e for e in events if (ts := _parse_ts(e.get("ts"))) is not None and ts < start]
+    kind = None
+    for e in window + before[::-1]:
+        if e.get("category") == "lifecycle" and e.get("bundle_id") == bundle and e.get("kind") in ("native", "browser"):
+            kind = e["kind"]
+            break
+    if kind is None:
+        raise ValueError(f"no lifecycle row says what kind of meeting {bundle} is in or before the window")
+
+    def rel(e: dict) -> float:
+        ts = _parse_ts(e.get("ts"))
+        assert ts is not None
+        return round((ts - start).total_seconds(), 3)
+
+    out: list[dict] = []
+
+    # Carried state: the last reading of each signal, and the recording's start, from the
+    # engagement still open when the window begins.
+    if engaged_bundle is not None:
+        last: dict[str, tuple[int, dict]] = {}
+        for i in range(boundary, len(events)):
+            e = events[i]
+            ts = _parse_ts(e.get("ts"))
+            if ts is None or ts >= start:
+                break
+            if e.get("bundle_id") != bundle:
+                continue
+            if e.get("category") == "signal" and (sig := _signal_event(e, kind)) is not None:
+                last[sig["kind"]] = (i, {"t": rel(e), **sig, "carried": True})
+            elif e.get("category") == "coordinator" and e.get("action") == "recording_started":
+                last["recording_started"] = (i, {"t": rel(e), "kind": "recording_started", "carried": True})
+        out.extend(ev for _, ev in sorted(last.values(), key=lambda pair: pair[0]))
+
+    logged: list[dict] = []
+    dropped: dict[str, int] = {}
+    for e in window:
+        cat, act, own = e.get("category"), e.get("action"), e.get("bundle_id")
+        t = rel(e)
+        if cat == "signal" and own == bundle:
+            sig = _signal_event(e, kind)
+            if sig is not None:
+                out.append({"t": t, **sig})
+            elif act in UNMAPPABLE_SIGNALS:
+                dropped[act] = dropped.get(act, 0) + 1
+        elif cat == "coordinator" and (own == bundle or (own is None and act == "call_teardown_source_missing")):
+            out.extend({"t": t, **ev} for ev in _host_events(e, t, report))
+        elif cat == "lifecycle" and (own == bundle or own is None):
+            rec = _verdict_record(e, t)
+            if rec is not None:
+                logged.append(rec)
+    for act, n in sorted(dropped.items()):
+        report.append(f"dropped {n} {act} row(s): they decide on a title, which never leaves the log")
+
+    app = "teams" if bundle == "com.microsoft.teams2" else bundle.split(".")[-1]
+    trace: dict = {
+        "scenario": scenario or f"{app}_{kind}_raw_{start.strftime('%Y%m%dT%H%M%SZ')}",
+        "description": (f"Raw lifecycle trace (redacted), extracted by scripts/extract_detection_trace.py --raw: "
+                        f"{bundle} {kind}, {len(out)} events. Titles dropped and pid set to 1234; readings from "
+                        "before the window are carried at their real offsets; logged_verdicts is what the engine "
+                        "of that day decided, kept as a record and never asserted."),
+        "engine": "lifecycle",
+        "origin": "raw",
+        "source_window": {"from": _iso(start), "to": _iso(end)},
+        "expected_outcome": expect,
+    }
+    if expect == "ended":
+        ends = [v["t"] for v in logged if v["verdict"] == "ended"]
+        if not ends:
+            raise ValueError("--expect ended, but the window logs no end")
+        trace["ended_at"] = ends[-1]
+        trace["trim_at"] = None
+        report.append("ended_at is the logged end and trim_at is null: confirm both against the replay before committing")
+    trace["context"] = {"bundle_id": bundle, "kind": kind, "pid": 1234}
+    trace["until"] = round((end - start).total_seconds(), 3)
+    trace["events"] = out
+    trace["logged_verdicts"] = logged
+    return trace, report
+
+
+def _iso(ts: datetime) -> str:
+    return ts.isoformat().replace("+00:00", "Z")
+
+
+# What a re-extraction must reproduce. `scenario`, `description` and the expectation are the
+# session's to write, so they are not compared.
+REPRODUCED_KEYS = ("source_window", "context", "until", "events")
+
+
+def reproduction_drift(fresh: dict, committed: dict) -> list[str]:
+    return [k for k in REPRODUCED_KEYS if fresh.get(k) != committed.get(k)]
+
+
+def _main_raw(args: argparse.Namespace) -> int:
+    start, end = _parse_ts(args.start), _parse_ts(args.end)
+    if start is None or end is None or end <= start:
+        print("error: --raw needs --from and --to as ISO timestamps, --to after --from", file=sys.stderr)
+        return 2
+    try:
+        trace, report = extract_raw(_load(args.events), start, end, bundle=args.bundle,
+                                    scenario=args.scenario, expect=args.expect)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    for line in report:
+        print(f"note: {line}", file=sys.stderr)
+    if args.check_against is not None:
+        committed = json.loads(args.check_against.read_text(encoding="utf-8"))
+        drift = reproduction_drift(trace, committed)
+        if drift:
+            print(f"DRIFT  {args.check_against.name}: {', '.join(drift)} differ from a fresh extraction", file=sys.stderr)
+            return 1
+        print(f"OK: {args.check_against.name} reproduces from the event log.")
+        return 0
+    text = json.dumps(trace, indent=2, ensure_ascii=False) + "\n"
+    if args.out is not None:
+        args.out.write_text(text, encoding="utf-8")
+        print(f"wrote {args.out}; now run scripts/redact_detection_trace.py {args.out} --check", file=sys.stderr)
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Derive detection-corpus traces from a real events.jsonl.")
     ap.add_argument("--events", type=Path, default=DEFAULT_EVENTS, help="events.jsonl path (rotations read too)")
     ap.add_argument("--inventory", action="store_true", help="print a per-session breakdown, write nothing")
     ap.add_argument("--emit-all", action="store_true", help="write every reproducible session as a trace")
     ap.add_argument("--out-dir", type=Path, default=None, help="destination dir for --emit-all")
+    ap.add_argument("--raw", action="store_true", help="T8: emit a raw lifecycle trace for --from..--to")
+    ap.add_argument("--from", dest="start", default=None, help="--raw window start (ISO, UTC)")
+    ap.add_argument("--to", dest="end", default=None, help="--raw window end (ISO, UTC)")
+    ap.add_argument("--bundle", default=None, help="--raw: the meeting app, when the window names several")
+    ap.add_argument("--scenario", default=None, help="--raw: scenario name (default derived from app and window)")
+    ap.add_argument("--expect", choices=("no_end", "ended"), default="no_end",
+                    help="--raw: the correct outcome (default no_end, every END incident)")
+    ap.add_argument("--out", type=Path, default=None, help="--raw: write here instead of stdout")
+    ap.add_argument("--check-against", type=Path, default=None,
+                    help="--raw: compare a fresh extraction with this committed trace, write nothing")
     args = ap.parse_args(argv)
+
+    if args.raw:
+        return _main_raw(args)
 
     events = _load(args.events)
     sessions = sessionize(events)

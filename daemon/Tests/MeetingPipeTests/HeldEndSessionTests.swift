@@ -64,7 +64,7 @@ final class HeldEndSessionTests: XCTestCase {
         await waitUntil({ host.stateMachine.current.isRecording }, "the meeting to record")
         host.recorderSpy.startedAt = Date().addingTimeInterval(-600)
         controller.beginTeardownHold(context: context)
-        let openedAt = controller.teardownHold?.startedAt ?? Date()
+        let openedAt = controller.holdPolicy.hold?.startedAt ?? Date()
         controller.concludeTeardownHold(now: openedAt.addingTimeInterval(PromotionEngine.defaultLoneDwell))
         controller.stopRecording(file: file, source: teams, summaryMode: .auto)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")

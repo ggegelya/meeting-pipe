@@ -5,7 +5,7 @@
   "context": {
     "bundle_id": "com.microsoft.teams2",
     "kind": "native",
-    "pid": 4321
+    "pid": 1234
   },
   "events": [
     {"t": 0.0, "kind": "shareable_content_window", "state": "live"},

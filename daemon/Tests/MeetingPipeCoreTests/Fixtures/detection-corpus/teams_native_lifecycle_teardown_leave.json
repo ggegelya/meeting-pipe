@@ -1,0 +1,25 @@
+{
+  "scenario": "teams_native_lifecycle_teardown_leave",
+  "description": "A genuine Teams leave, synthetic: Teams writes its UnregisterCall line 1.3 s before the Leave button reads invalid, so the hold's first consult finds it and the call ends at the AX edge with no added latency and nothing to trim.",
+  "engine": "lifecycle",
+  "origin": "synthetic",
+  "expected_outcome": "ended",
+  "ended_at": 2400.0,
+  "trim_at": null,
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "until": 2460.0,
+  "events": [
+    {"t": 0.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": 0.1, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 0.2, "kind": "shareable_content_window", "state": "live"},
+    {"t": 1.0, "kind": "teardown_snapshot", "available": true, "teardown_at": null, "log_written_at": 1.0},
+    {"t": 5.0, "kind": "recording_started"},
+    {"t": 2398.7, "kind": "teardown_snapshot", "available": true, "teardown_at": 2398.7, "log_written_at": 2398.7},
+    {"t": 2400.0, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 2401.2, "kind": "process_audio_is_running_input_false", "state": "ended"}
+  ]
+}

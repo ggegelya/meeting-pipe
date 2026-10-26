@@ -1,0 +1,42 @@
+{
+  "scenario": "safari_browser_raw_tab_left_held",
+  "description": "Raw lifecycle trace (redacted), extracted by scripts/extract_detection_trace.py --raw: com.apple.Safari browser, 3 events. Titles dropped and pid set to 1234; readings from before the window are carried at their real offsets; logged_verdicts is what the engine of that day decided, kept as a record and never asserted.",
+  "engine": "lifecycle",
+  "origin": "raw",
+  "source_window": {
+    "from": "2026-10-16T09:45:30Z",
+    "to": "2026-10-16T09:46:28Z"
+  },
+  "expected_outcome": "no_end",
+  "context": {
+    "bundle_id": "com.apple.Safari",
+    "kind": "browser",
+    "pid": 1234
+  },
+  "until": 58.0,
+  "events": [
+    {
+      "t": -1074.523,
+      "kind": "browser_tab_title",
+      "state": "live",
+      "carried": true
+    },
+    {
+      "t": -1061.722,
+      "kind": "recording_started",
+      "carried": true
+    },
+    {
+      "t": 38.611,
+      "kind": "browser_tab_title",
+      "state": "ended"
+    }
+  ],
+  "logged_verdicts": [
+    {
+      "t": 38.612,
+      "verdict": "ending_provisional",
+      "leading": "browser_tab_title_left_meet_pattern"
+    }
+  ]
+}

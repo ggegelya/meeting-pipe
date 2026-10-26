@@ -5,7 +5,7 @@
   "context": {
     "bundle_id": "com.google.Chrome.app.fmgjjmmmlfnkbppncabfkddbjimcfncm",
     "kind": "browser",
-    "pid": 7890
+    "pid": 1234
   },
   "events": [
     {"t": 0.0, "kind": "browser_tab_title", "state": "live"},

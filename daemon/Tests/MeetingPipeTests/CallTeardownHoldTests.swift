@@ -129,7 +129,7 @@ final class CallTeardownHoldTests: XCTestCase {
 
         controller.beginTeardownHold(context: context)
 
-        XCTAssertNotNil(controller.teardownHold, "the recording must not be stopped on an empty AX walk")
+        XCTAssertNotNil(controller.holdPolicy.hold, "the recording must not be stopped on an empty AX walk")
         XCTAssertEqual(host.hudSpy.confirmingEndStates, [true], "the HUD has to say why it is still recording")
         controller.releaseTeardownHold()
     }
@@ -139,11 +139,11 @@ final class CallTeardownHoldTests: XCTestCase {
     func test_the_call_coming_back_releases_the_hold_without_ending_anything() throws {
         let (controller, host) = try makeController(logLines: ["2026-08-20T09:00:00.000000+03:00 0x1 <INFO> noise"])
         controller.beginTeardownHold(context: context)
-        XCTAssertNotNil(controller.teardownHold)
+        XCTAssertNotNil(controller.holdPolicy.hold)
 
         controller.releaseTeardownHold(rescued: true)
 
-        XCTAssertNil(controller.teardownHold)
+        XCTAssertNil(controller.holdPolicy.hold)
         XCTAssertEqual(host.hudSpy.confirmingEndStates, [true, false])
         XCTAssertNil(controller.pendingEndTrimAt, "nothing ended, so there is nothing to trim")
     }
@@ -157,7 +157,7 @@ final class CallTeardownHoldTests: XCTestCase {
 
         controller.beginTeardownHold(context: context)
 
-        XCTAssertNil(controller.teardownHold, "a real end must not be delayed by this")
+        XCTAssertNil(controller.holdPolicy.hold, "a real end must not be delayed by this")
         XCTAssertTrue(
             host.hudSpy.confirmingEndStates.isEmpty,
             "a confirm on the first consult never shows the holding state, so an ordinary end looks unchanged"
@@ -175,7 +175,7 @@ final class CallTeardownHoldTests: XCTestCase {
 
         controller.beginTeardownHold(context: context)
 
-        XCTAssertNotNil(controller.teardownHold, "a ten-minute-old teardown belongs to another call")
+        XCTAssertNotNil(controller.holdPolicy.hold, "a ten-minute-old teardown belongs to another call")
         controller.releaseTeardownHold()
     }
 
@@ -189,7 +189,7 @@ final class CallTeardownHoldTests: XCTestCase {
         controller.beginTeardownHold(context: context)
         controller.consultTeardownOracle(now: Date().addingTimeInterval(3_600))
 
-        XCTAssertNotNil(controller.teardownHold, "an oracle that cannot see is not evidence of an end")
+        XCTAssertNotNil(controller.holdPolicy.hold, "an oracle that cannot see is not evidence of an end")
         XCTAssertEqual(host.hudSpy.confirmingEndStates, [true])
         controller.releaseTeardownHold()
     }
@@ -208,8 +208,8 @@ final class CallTeardownHoldTests: XCTestCase {
 
         controller.beginTeardownHold(context: context)
 
-        XCTAssertNotNil(controller.teardownHold, "a quiet log is not a dead log; the call is still up")
-        XCTAssertNotNil(controller.teardownHold?.timer, "the hold has to keep consulting, not confirm once")
+        XCTAssertNotNil(controller.holdPolicy.hold, "a quiet log is not a dead log; the call is still up")
+        XCTAssertNotNil(controller.holdTimer, "the hold has to keep consulting, not confirm once")
         XCTAssertEqual(host.hudSpy.confirmingEndStates, [true], "the HUD has to say why it is still recording")
         controller.releaseTeardownHold()
     }
@@ -224,13 +224,13 @@ final class CallTeardownHoldTests: XCTestCase {
         try ageGeneration(by: 180)
         host.recorderSpy.startedAt = Date().addingTimeInterval(-30)
         controller.beginTeardownHold(context: context)
-        XCTAssertNotNil(controller.teardownHold, "the stale-looking mtime must not confirm on its own")
+        XCTAssertNotNil(controller.holdPolicy.hold, "the stale-looking mtime must not confirm on its own")
 
         try appendToGeneration([teardownLine(secondsAgo: 0.5)])
         scheduler.fire()
         controller.consultTeardownOracle()
 
-        XCTAssertNil(controller.teardownHold, "the teardown belongs to this call and confirms it")
+        XCTAssertNil(controller.holdPolicy.hold, "the teardown belongs to this call and confirms it")
         XCTAssertEqual(host.hudSpy.confirmingEndStates, [true, false], "a confirmed hold clears the HUD")
         XCTAssertNil(controller.pendingEndTrimAt, "a sub-second hold is not trimmed")
     }
@@ -257,13 +257,13 @@ final class CallTeardownHoldTests: XCTestCase {
         host.recorderSpy.startedAt = Date().addingTimeInterval(-1_872)
 
         controller.beginTeardownHold(context: context)
-        guard let openedAt = controller.teardownHold?.startedAt else {
+        guard let openedAt = controller.holdPolicy.hold?.startedAt else {
             return XCTFail("the provisional must open a hold")
         }
         controller.consultTeardownOracle(now: openedAt.addingTimeInterval(160.8))
 
         XCTAssertNotNil(
-            controller.teardownHold,
+            controller.holdPolicy.hold,
             "160.8 s in, four independent readings said the call was live; the recording must still be running"
         )
         XCTAssertNil(controller.pendingEndTrimAt, "nothing confirmed, so nothing is cut")
@@ -281,12 +281,12 @@ final class CallTeardownHoldTests: XCTestCase {
         host.liveCallSignal = .unknown
 
         controller.beginTeardownHold(context: context)
-        guard let openedAt = controller.teardownHold?.startedAt else {
+        guard let openedAt = controller.holdPolicy.hold?.startedAt else {
             return XCTFail("the provisional must open a hold")
         }
         for held in [150.0, 160.8, 7_201.0] {
             controller.consultTeardownOracle(now: openedAt.addingTimeInterval(held))
-            XCTAssertNotNil(controller.teardownHold, "\(held) s held is not evidence the call ended")
+            XCTAssertNotNil(controller.holdPolicy.hold, "\(held) s held is not evidence the call ended")
         }
         XCTAssertNil(controller.pendingEndTrimAt)
         controller.releaseTeardownHold()
@@ -303,7 +303,7 @@ final class CallTeardownHoldTests: XCTestCase {
 
         controller.beginTeardownHold(context: browser)
 
-        XCTAssertNotNil(controller.teardownHold, "a Teams teardown says nothing about a browser meeting")
+        XCTAssertNotNil(controller.holdPolicy.hold, "a Teams teardown says nothing about a browser meeting")
         XCTAssertEqual(host.hudSpy.confirmingEndStates, [true])
         controller.releaseTeardownHold()
     }
@@ -314,13 +314,13 @@ final class CallTeardownHoldTests: XCTestCase {
         let (controller, host) = try makeController(logLines: nil)
         defer { withExtendedLifetime(host) {} }
         controller.beginTeardownHold(context: context)
-        guard let openedAt = controller.teardownHold?.startedAt else {
+        guard let openedAt = controller.holdPolicy.hold?.startedAt else {
             return XCTFail("the provisional must open a hold")
         }
 
         controller.concludeTeardownHold(now: openedAt.addingTimeInterval(PromotionEngine.defaultLoneDwell))
 
-        XCTAssertNil(controller.teardownHold)
+        XCTAssertNil(controller.holdPolicy.hold)
         XCTAssertEqual(controller.pendingEndTrimAt, openedAt)
         XCTAssertEqual(host.hudSpy.confirmingEndStates, [true, false])
     }
@@ -333,11 +333,11 @@ final class CallTeardownHoldTests: XCTestCase {
         let (controller, host) = try makeController(logLines: ["2026-08-20T09:00:00.000000+03:00 0x1 <INFO> noise"])
         defer { withExtendedLifetime(host) {} }
         controller.beginTeardownHold(context: context)
-        let firstStamp = controller.teardownHold?.startedAt
+        let firstStamp = controller.holdPolicy.hold?.startedAt
 
         controller.beginTeardownHold(context: context)
 
-        XCTAssertEqual(controller.teardownHold?.startedAt, firstStamp)
+        XCTAssertEqual(controller.holdPolicy.hold?.startedAt, firstStamp)
         controller.releaseTeardownHold()
     }
 

@@ -1,0 +1,21 @@
+{
+  "scenario": "teams_native_lifecycle_end12_quiet_log",
+  "description": "END12 host half, synthetic until the raw 2026-09-02 window is extracted: the Leave button reads invalid five minutes into a live call whose SlimCore log was last written before the recording began. The old host read that stale-looking log as dead and confirmed on the first consult; the hold now waits, and the button's return three minutes later reverts it.",
+  "engine": "lifecycle",
+  "origin": "synthetic",
+  "expected_outcome": "no_end",
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "until": 600.0,
+  "events": [
+    {"t": -20.0, "kind": "teardown_snapshot", "available": true, "teardown_at": null, "log_written_at": -20.0},
+    {"t": 0.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": 2.0, "kind": "recording_started"},
+    {"t": 300.0, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 300.01, "kind": "live_signal", "value": "unknown"},
+    {"t": 480.0, "kind": "ax_leave_button", "state": "live"}
+  ]
+}

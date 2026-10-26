@@ -58,8 +58,13 @@ final class MeetingSessionController: @unchecked Sendable {
     /// bring-up is bounded off the main thread now, so the UI stays live during
     /// it; this guard stops a second Record/toggle press from stacking another
     /// `recorder.start()` (five stacked starts were seen in the 2026-06-12 freeze).
-    /// END9: the open call-teardown hold, or nil. Main-queue only, like everything else here.
-    var teardownHold: TeardownHold?
+    /// END9: the open call-teardown hold's decisions (T8: `TeardownHoldPolicy`, in Core so the
+    /// detection corpus replays them on a virtual clock). Main-queue only, like everything else here.
+    var holdPolicy = TeardownHoldPolicy()
+
+    /// The 1 Hz consult timer while a hold is shown, or nil. Host-side, since Core has no run loop.
+    /// Non-nil is also the record that the HUD was told the hold is showing.
+    var holdTimer: Timer?
 
     /// END9: where to cut the recording when the held end confirms, or nil for an ordinary end.
     /// Read once by `stopRecording` and cleared there, so it can never leak into the next meeting.
@@ -188,7 +193,7 @@ final class MeetingSessionController: @unchecked Sendable {
                         // and the native rescue re-walk still runs so a Leave button that merely
                         // moved reverts the hold through END8.
                         self.beginTeardownHold(context: context)
-                        if self.teardownHold != nil {
+                        if self.holdPolicy.isOpen {
                             self.rescueProvisionalEnd(context: context)
                         }
                     case .ended(let context, let reason):
@@ -1557,16 +1562,11 @@ final class MeetingSessionController: @unchecked Sendable {
 
     // MARK: - END9 / END17: the hold
 
-    /// A weak end being held with the recorder running (END17), waiting on a definitive signal, a
-    /// dwell in the engine, or the call coming back.
-    struct TeardownHold {
-        let context: MeetingLifecycleContext
-        let startedAt: Date
-        var timer: Timer?
-    }
-
     /// Open a hold and consult Teams' teardown line immediately, then once a second until something
-    /// resolves it.
+    /// resolves it. A weak end is held with the recorder running (END17), waiting on a definitive
+    /// signal, a dwell in the engine, or the call coming back. What the hold decides (its stamp,
+    /// re-entry, the consult, the trim point) is `TeardownHoldPolicy`'s (T8); this side owns the
+    /// clock, the timer, the watcher read, the log rows and the HUD.
     ///
     /// The immediate consult is what keeps a genuine Teams end free: the teardown line **leads** the
     /// AX edge (p50 about 1.3 s), so on a real end the answer is already on disk when this runs and
@@ -1577,20 +1577,18 @@ final class MeetingSessionController: @unchecked Sendable {
     /// Re-entrant by design. A second provisional for the same call keeps the first stamp, because
     /// the stamp is where the held tail starts and a flapping signal must not move it.
     func beginTeardownHold(context: MeetingLifecycleContext) {
-        if teardownHold != nil {
+        guard holdPolicy.open(context: context, at: Date()) else {
             consultTeardownOracle()
             return
         }
-        teardownHold = TeardownHold(context: context, startedAt: Date(), timer: nil)
         consultTeardownOracle()
         // A confirm on the first consult already concluded it, and that is the common Teams case:
         // a genuine end never reaches the lines below and looks exactly as it looked before END9,
         // timer and HUD included.
-        guard teardownHold != nil else { return }
-        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        guard holdPolicy.isOpen else { return }
+        holdTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.consultTeardownOracle()
         }
-        teardownHold?.timer = timer
         let snapshot = coordinator.callTeardown.snapshot()
         var held: [String: Any] = [
             "bundle_id": context.bundleID,
@@ -1623,17 +1621,14 @@ final class MeetingSessionController: @unchecked Sendable {
     /// `now` is a parameter so a test can drive the hold without sleeping through it; production
     /// always takes the default. An unreadable log is "no evidence" since END17, never a confirm.
     func consultTeardownOracle(now: Date = Date()) {
-        guard let hold = teardownHold, hold.context.kind == .native else { return }
+        guard let hold = holdPolicy.hold else { return }
         let snapshot = coordinator.callTeardown.snapshot()
-        let verdict = CallTeardownOracle.decide(CallTeardownOracle.Input(
+        let verdict = holdPolicy.consult(
             now: now,
-            provisionalStartedAt: hold.startedAt,
             lastTeardownAt: snapshot.available ? snapshot.lastTeardownAt : nil,
-            // END10 item 6. Without the recording's own start, a previous call's teardown inside
-            // the lookback confirms this one.
             recordingStartedAt: coordinator.audioRecorder.startedAt
-        ))
-        guard case .confirm(let reason) = verdict else { return }
+        )
+        guard case .confirm(let reason)? = verdict else { return }
         concludeTeardownHold(now: now)
         Log.event(category: "coordinator", action: "lifecycle_provisional_end_confirmed", attributes: [
             "bundle_id": hold.context.bundleID,
@@ -1645,28 +1640,26 @@ final class MeetingSessionController: @unchecked Sendable {
         coordinator.lifecycleCoord.confirmProvisionalEnd(evidence: PromotionEngine.teardownEvidence)
     }
 
-    /// The hold ended in an end, by whichever route. Everything captured since it opened is
-    /// post-call audio by construction, so its start becomes the trim point `stopRecording` acts on:
-    /// cut at stop under the regulated and NDA postures, suggested and kept everywhere else
-    /// (END17). Sub-second holds are the normal Teams path and marking them would be churn.
+    /// The hold ended in an end, by whichever route. Its trim point becomes the cut `stopRecording`
+    /// acts on: cut at stop under the regulated and NDA postures, suggested and kept everywhere else
+    /// (END17). `TeardownHoldPolicy.trimPoint` leaves sub-second holds, the normal Teams path, alone.
     func concludeTeardownHold(now: Date = Date()) {
-        guard let hold = teardownHold else { return }
-        let heldFor = now.timeIntervalSince(hold.startedAt)
-        if heldFor >= 1.0 { pendingEndTrimAt = hold.startedAt }
+        guard holdPolicy.isOpen else { return }
+        if let trimAt = holdPolicy.trimPoint(concludingAt: now) { pendingEndTrimAt = trimAt }
         releaseTeardownHold()
     }
 
     /// Drop the hold without concluding it. Called when the call comes back (the whole point) and
     /// on every path that leaves `.endingProvisional`, so a stale timer can never outlive its meeting.
     func releaseTeardownHold(rescued: Bool = false) {
-        guard let hold = teardownHold else { return }
-        // `timer != nil` is the record of whether the holding state was ever shown. Without it, an
-        // end that confirmed on its first consult would still push a `setConfirmingEnd(false)` at a
-        // HUD that was never told true, which is a state change the surface has to handle for no
+        guard let hold = holdPolicy.release() else { return }
+        // `holdTimer != nil` is the record of whether the holding state was ever shown. Without it,
+        // an end that confirmed on its first consult would still push a `setConfirmingEnd(false)` at
+        // a HUD that was never told true, which is a state change the surface has to handle for no
         // reason and which a test reads as the holding state having been entered.
-        let wasShown = hold.timer != nil
-        hold.timer?.invalidate()
-        teardownHold = nil
+        let wasShown = holdTimer != nil
+        holdTimer?.invalidate()
+        holdTimer = nil
         if wasShown { coordinator.hud.setConfirmingEnd(false) }
         if rescued {
             Log.event(category: "coordinator", action: "lifecycle_end_hold_released", attributes: [

@@ -1,0 +1,21 @@
+{
+  "scenario": "teams_native_lifecycle_end9_empty_rewalk",
+  "description": "END9 host half, synthetic until the raw 2026-08-20 window is extracted: the Leave button reads invalid during an accessibility blackout, the host's re-walk 120 ms later finds no Leave button either, and the teardown log is readable and holds no teardown. Before END9 the empty walk confirmed the end; it is not evidence, and the button's return 16 s later reverts the hold.",
+  "engine": "lifecycle",
+  "origin": "synthetic",
+  "expected_outcome": "no_end",
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "until": 2800.0,
+  "events": [
+    {"t": 0.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": 1.0, "kind": "teardown_snapshot", "available": true, "teardown_at": null, "log_written_at": 1.0},
+    {"t": 3.0, "kind": "recording_started"},
+    {"t": 2700.0, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 2700.12, "kind": "rewalk", "found": false},
+    {"t": 2716.0, "kind": "ax_leave_button", "state": "live"}
+  ]
+}

@@ -4,8 +4,10 @@ import XCTest
 
 /// Detection regression corpus (TECH-C6). Loads every trace named in
 /// `Fixtures/detection-corpus/INDEX.json` and replays it through the
-/// matching engine (PromotionEngine for lifecycle, MicGate.decide for
-/// gate). Any deviation between the replay and the captured
+/// matching engine (PromotionEngine for `promotion`, MicGate.decide for
+/// `micgate`, and since T8 `LifecycleTraceReplay` for `lifecycle`: the
+/// engine, the hold policy and the teardown oracle together on a virtual
+/// clock). Any deviation between the replay and the captured
 /// expectation fails CI; new regressions to either engine surface
 /// here before they reach the dogfood window.
 ///
@@ -49,6 +51,8 @@ final class DetectionCorpusTests: XCTestCase {
             try replayPromotion(traceName: traceName, json: json)
         case "micgate":
             try replayMicGate(traceName: traceName, json: json)
+        case "lifecycle":
+            try replayLifecycle(traceName: traceName, json: json)
         default:
             XCTFail("\(traceName) unknown engine \(engine)")
         }
@@ -123,6 +127,109 @@ final class DetectionCorpusTests: XCTestCase {
             let actual = observed[i].verdict
             try assertMatches(traceName: traceName, expectation: expectation, actual: actual, context: context)
         }
+    }
+
+    /// T8: a lifecycle trace replays the engine, the hold policy and the teardown oracle together
+    /// (`LifecycleTraceReplay`) and asserts only the outcome: the call survives the window, or it
+    /// ends at `ended_at` with the tail cut at `trim_at`. Times are within a second, because the
+    /// consult runs at 1 Hz.
+    private func replayLifecycle(traceName: String, json: [String: Any]) throws {
+        let replay = try makeLifecycleReplay(traceName: traceName, json: json)
+        guard let origin = json["origin"] as? String, ["raw", "synthetic"].contains(origin) else {
+            return XCTFail("\(traceName) needs an 'origin' of raw or synthetic")
+        }
+        let outcome = replay.run()
+        switch json["expected_outcome"] as? String {
+        case "no_end":
+            XCTAssertNil(
+                outcome.endedAt,
+                "\(traceName) is a live call and must never reach .ended (ended at \(outcome.endedAt.map { "\($0.timeIntervalSince1970)" } ?? "-"))"
+            )
+        case "ended":
+            guard let endedAt = json["ended_at"] as? Double else {
+                return XCTFail("\(traceName) expects an end but has no 'ended_at'")
+            }
+            guard let actual = outcome.endedAt else {
+                return XCTFail("\(traceName) never ended; expected an end at \(endedAt)")
+            }
+            XCTAssertEqual(actual.timeIntervalSince1970, endedAt, accuracy: 1.0, "\(traceName) ended at the wrong moment")
+            if let trimAt = json["trim_at"] as? Double {
+                XCTAssertEqual(outcome.trimAt?.timeIntervalSince1970 ?? .nan, trimAt, accuracy: 1.0, "\(traceName) trim point")
+            } else {
+                XCTAssertNil(outcome.trimAt, "\(traceName) expects no trim (a sub-second hold, or none)")
+            }
+        default:
+            XCTFail("\(traceName) 'expected_outcome' must be no_end or ended")
+        }
+    }
+
+    /// The harness has to be able to fail. Replayed against an engine whose lone dwell is 30 s, the
+    /// END12 shape (a Leave button invalid for three minutes of a live call) ends and is trimmed back
+    /// to where the hold opened, which is the class of regression a lifecycle trace exists to catch.
+    func test_a_lifecycle_trace_catches_a_policy_that_ends_too_early() throws {
+        let name = "teams_native_lifecycle_end12_quiet_log.json"
+        guard let url = traceURL(name: name),
+              let json = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
+            return XCTFail("missing \(name)")
+        }
+        let replay = try makeLifecycleReplay(traceName: name, json: json)
+
+        XCTAssertNil(replay.run().endedAt, "the shipped dwells hold it")
+
+        let early = replay.run(engine: PromotionEngine(loneDwell: 30))
+        let endedAt = try XCTUnwrap(early.endedAt, "a 30 s lone dwell ends the live call")
+        XCTAssertEqual(endedAt.timeIntervalSince1970, 330, accuracy: 0.5)
+        XCTAssertEqual(early.trimAt?.timeIntervalSince1970 ?? .nan, 300, accuracy: 0.01, "cut where the hold opened")
+    }
+
+    private func makeLifecycleReplay(traceName: String, json: [String: Any]) throws -> LifecycleTraceReplay {
+        guard let contextJson = json["context"] as? [String: Any],
+              let events = json["events"] as? [[String: Any]],
+              let until = json["until"] as? Double else {
+            XCTFail("\(traceName) missing context/events/until")
+            throw NSError(domain: "DetectionCorpus", code: 2)
+        }
+        let context = try makeContext(contextJson)
+        var timeline: [(at: Date, event: LifecycleTraceReplay.Event)] = []
+        for (index, event) in events.enumerated() {
+            guard let t = event["t"] as? Double, let kind = event["kind"] as? String else {
+                XCTFail("\(traceName).events[\(index)] needs 't' and 'kind'")
+                throw NSError(domain: "DetectionCorpus", code: 3)
+            }
+            let at = Date(timeIntervalSince1970: t)
+            switch kind {
+            case "recording_started":
+                timeline.append((at, .recordingStarted))
+            case "teardown_snapshot":
+                guard let available = event["available"] as? Bool else {
+                    XCTFail("\(traceName).events[\(index)] teardown_snapshot needs 'available'")
+                    throw NSError(domain: "DetectionCorpus", code: 4)
+                }
+                let teardownAt = (event["teardown_at"] as? Double).map { Date(timeIntervalSince1970: $0) }
+                timeline.append((at, .teardownSnapshot(available: available, teardownAt: teardownAt)))
+            case "live_signal":
+                let value = (event["value"] as? String) ?? ""
+                guard CallTeardownOracle.LiveCallSignal(rawValue: value) != nil else {
+                    XCTFail("\(traceName).events[\(index)] live_signal value \(value) is not a LiveCallSignal")
+                    throw NSError(domain: "DetectionCorpus", code: 5)
+                }
+                timeline.append((at, .liveSignal(value)))
+            case "rewalk":
+                timeline.append((at, .rewalk(found: (event["found"] as? Bool) ?? false)))
+            default:
+                let signal = try mapSignalKind(kind)
+                let state: PrimarySignalState
+                switch event["state"] as? String {
+                case "live": state = .live
+                case "ended": state = .ended
+                default:
+                    XCTFail("\(traceName).events[\(index)] signal state must be live or ended")
+                    throw NSError(domain: "DetectionCorpus", code: 6)
+                }
+                timeline.append((at, .signal(signal, state)))
+            }
+        }
+        return LifecycleTraceReplay(context: context, events: timeline, until: Date(timeIntervalSince1970: until))
     }
 
     private func replayMicGate(traceName: String, json: [String: Any]) throws {

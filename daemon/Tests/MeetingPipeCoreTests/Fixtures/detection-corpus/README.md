@@ -3,7 +3,19 @@
 Each trace here replays a recorded scenario through `PromotionEngine` (meeting
 start/end lifecycle) and `MicGate.decide` (mute gating) and asserts the produced
 verdict sequence matches the captured expectation, so a regression in either is
-caught by CI (`DetectionCorpusTests`). `INDEX.json` lists the active scenarios.
+caught by CI (`DetectionCorpusTests`). Since T8 a third kind, `engine: "lifecycle"`,
+replays the whole end decision (the engine, the host's hold and Teams' teardown
+oracle together) from raw signal rows. `INDEX.json` lists the active scenarios.
+
+## The rule (T8)
+
+**An END or REC change lands with this replay green, and a fix for an end-of-call
+incident lands with a new raw trace of that incident** (`engine: "lifecycle"`,
+`origin: "raw"`, extracted with `--raw` below), whose `expected_outcome` is the
+correct one. Each END fix from END9 to END14 was validated only by the next real
+meeting, because the corpus could not express the incident; a raw trace is how the
+fix is shown to hold against what actually happened. When the incident happened on
+another Mac, the spec names the UTC window and the owner runs the extraction there.
 
 The corpus is nine synthetic seeds, twenty real dogfood traces
 (`teams_native_{rewalk,debounce,flicker}_end_*`) derived from the daemon event
@@ -11,7 +23,14 @@ log by `scripts/extract_detection_trace.py`, and seven synthetic incident traces
 END17 added (`teams_native_end{9,12,13,14,15}_*`,
 `google_meet_browser_tab_away_ten_minutes`), each built from the raw rows its END
 spec quotes and marked `"expected_outcome": "no_end"`: a live call that must
-never reach `.ended`. T8 replaces them with raw extracted traces. The seeds lock in the format and the
+never reach `.ended`. T8 replaces them with raw extracted traces once those exist;
+until then they stay. T8 added the lifecycle kind with four synthetic traces
+(`*_lifecycle_*`: a Teams teardown leave, a Zoom pair-dwell leave with its trim
+point, and the host halves of END9 and END12 that the engine-only traces could not
+express) and one raw trace from the owner's personal Mac
+(`safari_browser_raw_tab_left_held`, 2026-10-16, a browser hold the owner stopped
+by hand 20 s in). The END incident windows themselves are in the work laptop's log,
+not that one, so they are still owed. The seeds lock in the format and the
 cross-app scenarios (Zoom / Webex / Meet / PWA); the real traces cover the
 endings actually observed in dogfood. Real traces are derived from live meetings,
 which means the source carries meeting subjects, customer names, and other PII,
@@ -60,6 +79,29 @@ scripts/extract_detection_trace.py --emit-all --out-dir /tmp/traces
 scripts/redact_detection_trace.py /tmp/traces/<name>.json --check   # mandatory PII gate
 ```
 
+Those are distilled: each reproduces the verdicts the engine of its day logged, so
+a false end replays as the false end it was. For an incident, extract the raw
+window instead (UTC, a few seconds either side of the rows the spec quotes):
+
+```bash
+scripts/extract_detection_trace.py --raw --from 2026-10-22T12:14:50Z --to 2026-10-22T12:15:25Z \
+    --scenario teams_native_end15_mic_switch_raw --out teams_native_end15_mic_switch_raw.json
+scripts/redact_detection_trace.py teams_native_end15_mic_switch_raw.json --check
+# later, on the same Mac: does the committed file still reproduce from the log?
+scripts/extract_detection_trace.py --raw --from <same> --to <same> --check-against <committed>.json
+```
+
+It reads the window's `signal`, `coordinator` and `lifecycle` rows for one meeting
+app (`--bundle` when the window names several), copies only closed-vocabulary
+fields (no title, no file name, no workflow name ever leaves the log), and carries
+in each signal's last reading and the recording's start from before the window at
+their real negative offsets. It writes `"expected_outcome": "no_end"` unless told
+`--expect ended`, because the log records what happened, not what should have. Rows
+it cannot map are reported on stderr: `window_title_changed` (decided by a title,
+which never leaves), and the retired confirms (`oracle_unavailable`,
+`hold_cap_reached`, `live_signal_ceiling_reached`, the pre-END9 empty re-walk),
+which are not teardown evidence and so are deliberately not replayed.
+
 ## Redaction note (read before committing any real trace)
 
 This corpus is committed to a public repository. A trace must contain only the
@@ -94,7 +136,12 @@ structural signal, never meeting content. Before a real trace lands:
   locale's mute labels.
 
 Run every candidate through the redaction helper before committing. It rewrites
-pids and title fields and fails on any residual PII or unknown signal kind:
+pids and title fields and fails on any residual PII or unknown signal kind, and
+since T8 `--check` also fails a file that still needs that rewrite (it used to
+redact in memory and pass); every key of a lifecycle trace is closed, so an
+unexpected field is an error rather than a place for a title to hide.
+`pipeline/tests/test_detection_trace_scripts.py` runs the strict check over every
+committed trace:
 
 ```bash
 scripts/redact_detection_trace.py draft.json --out teams_native_<scenario>.json
@@ -103,7 +150,7 @@ scripts/redact_detection_trace.py teams_native_<scenario>.json --check   # valid
 
 ## Trace format
 
-Two engine shapes. See the seeds for full examples.
+Three engine shapes. See the seeds for full examples.
 
 **`engine: "promotion"`** drives `PromotionEngine` over a timeline:
 
@@ -160,5 +207,51 @@ ends with the host's confirm event rather than a `tick`:
   ]
 }
 ```
+
+**`engine: "lifecycle"`** (T8) replays `PromotionEngine`, `TeardownHoldPolicy` and
+`CallTeardownOracle.decide` together, wired as `MeetingSessionController` wires them,
+on a virtual clock (`LifecycleTraceReplay`): the engine tick runs every 0.25 s while a
+provisional is pending, the hold consults Teams' teardown line when it opens and once
+a second after, and a confirmed hold is trimmed at its start when it ran a second or
+more. `t` is seconds from the window start and may be negative for state carried in
+from before it. There are no control events; the clock runs to `until` by itself.
+
+```json
+{
+  "scenario": "teams_native_end15_mic_switch_raw",
+  "description": "generic, PII-free",
+  "engine": "lifecycle",
+  "origin": "raw",
+  "source_window": {"from": "2026-10-22T12:14:50Z", "to": "2026-10-22T12:15:25Z"},
+  "expected_outcome": "no_end",
+  "context": {"bundle_id": "com.microsoft.teams2", "kind": "native", "pid": 1234},
+  "until": 35.0,
+  "events": [
+    {"t": -865.0, "kind": "recording_started", "carried": true},
+    {"t": 3.286, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 3.443, "kind": "live_signal", "value": "call_is_up"},
+    {"t": 9.002, "kind": "process_audio_is_running_input_false", "state": "ended"}
+  ],
+  "logged_verdicts": [
+    {"t": 9.006, "verdict": "ended", "leading": "ax_leave_button_invalid",
+     "confirmed_by": ["process_audio_is_running_input_false"]}
+  ]
+}
+```
+
+- **Signal events** use the promotion kinds and `state`.
+- **Host inputs:** `recording_started` (arms the engine, and is the oracle's floor for
+  a previous call's teardown); `teardown_snapshot` (`available`, `teardown_at`,
+  `log_written_at`: the watcher's view of Teams' log, consulted the moment it arrives,
+  since a snapshot row is the host having read it; `log_written_at` is carried for the
+  record and never decides, per END12); `live_signal` (the host's attribution reading,
+  inert since END17 moved the veto into the engine); `rewalk` (`found`: the AX
+  re-walk's result, inert by design, because an empty walk is not evidence and a found
+  button reaches the engine as the re-armed signal's own row).
+- **Expected:** `"expected_outcome": "no_end"`, or `"ended"` with `ended_at` and
+  `trim_at` (`null` for a sub-second hold), each matched within a second.
+- **`origin`** is `raw` or `synthetic`; a synthetic one holds the place of a window
+  nobody has extracted yet. **`logged_verdicts`** is what the engine of that day logged,
+  kept so the incident reads on its own; it is never asserted.
 
 After adding a trace, append its filename to `INDEX.json` `scenarios`.
