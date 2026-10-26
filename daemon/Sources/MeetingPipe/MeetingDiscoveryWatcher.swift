@@ -23,11 +23,22 @@ final class MeetingDiscoveryWatcher {
     /// release debounce means a brief flap keeps the span open, so this never false-stops.
     var onMicBusyBundle: ((String?) -> Void)?
 
+    /// PERF17: whether the session accepts prompts (`DetectionStateMachine.isAcceptingPrompts`,
+    /// true only in `.idle`), read on main. The one thing the watcher learns about the state
+    /// machine: outside `.idle` nothing reads a scan's result, so no scan runs, while the mic-busy
+    /// sampling (DET1's level-check stop, DET3's spans) and the poll's re-arm carry on. Defaults to
+    /// true, so an unwired watcher scans as it always did rather than going dark.
+    var isAcceptingPrompts: () -> Bool = { true }
+
     private let scanner = MeetingSourceScanner()
 
-    /// DET1: the mic-busy span start for which the tier has already prompted, so it fires at most
-    /// once per span (the session's cooldown / skip-latch then govern any repeat). Main-queue only.
-    private var micTierFiredForSpanSince: Date?
+    /// DET1: the tier's once-per-span latch (PERF17 lifted it onto `MicInUseTier.SpanLatch`, which
+    /// also latches any span seen while the session is not idle). Main-queue only.
+    private var micTierLatch = MicInUseTier.SpanLatch()
+
+    /// PERF17: one scan in flight, at most one pending, none outside `.idle`. Main-queue only.
+    private var scanGate = DiscoveryScanGate()
+
     /// DET1: the "catch-all" set - browsers (an unlisted-domain call has no whitelist title match)
     /// and the adapterless mic-plausible apps (FaceTime/Discord/WhatsApp/Telegram). Native whitelist
     /// apps are DELIBERATELY excluded: discovery owns them, and a native pre-join holds the mic
@@ -106,7 +117,7 @@ final class MeetingDiscoveryWatcher {
         micDevice = nil
     }
 
-    /// Immediate scan, bypassing the poll interval. Called by Coordinator on permission grant so an in-progress meeting is picked up the moment Accessibility/Mic flips on.
+    /// Immediate scan, bypassing the poll interval. Called by Coordinator on permission grant so an in-progress meeting is picked up the moment Accessibility/Mic flips on, and on every transition to `.idle` (PERF17) so the first post-recording scan runs at once rather than up to a 12 s poll later: DET13's cooldown candidate, DET14's cooldown grace and END17's resume window all read the first idle sightings.
     func refreshNow() {
         cadence.noteActivity()
         scheduleScan(triggerBundle: nil)
@@ -173,6 +184,9 @@ final class MeetingDiscoveryWatcher {
             frontmostName: front?.localizedName
         )
         emitMicBusy(transition)
+        // PERF17: no scan runs outside `.idle`, so the tier is not evaluated there; latch the span
+        // now so one seen during a recording never prompts once the recording ends.
+        if !isAcceptingPrompts() { micTierLatch.noteNotAcceptingPrompts(openSpan: micBusyTracker.open) }
         // DET1: report the currently-held bundle (nil when released) so the owner can stop a DET1
         // recording whose app is no longer holding the mic. A level check, so it also catches a
         // recording that started after its span closed. `open` is the debounced span, so a flap
@@ -198,11 +212,14 @@ final class MeetingDiscoveryWatcher {
         }
     }
 
-    /// Schedule a coalesced scan. Skips when `triggerBundle` is a non-meeting app (prevents an AX walk on every Cmd+Tab). A nil trigger (mic KVO, poll, initial pass) always scans. Must be called on the main run loop.
+    /// Schedule a coalesced scan. Skips when `triggerBundle` is a non-meeting app (prevents an AX walk on every Cmd+Tab). A nil trigger (mic KVO, poll, initial pass) scans whenever the session is idle. Must be called on the main run loop.
+    ///
+    /// PERF17: skips every trigger (poll, workspace event, mic KVO, `refreshNow`) while the session does not accept prompts, since nothing reads the result there; the callers' `noteActivity()` and `sampleMicBusy()` still run. The return to `.idle` calls `refreshNow()`, so the first idle scan is immediate.
     private func scheduleScan(triggerBundle: String?) {
         if let bid = triggerBundle, !isMeetingBundle(bid) {
             return
         }
+        guard isAcceptingPrompts() else { return }
         coalesceWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.runScan() }
         coalesceWork = work
@@ -216,7 +233,16 @@ final class MeetingDiscoveryWatcher {
             || BrowserMeetingLifecycleAdapter.isPWABundleID(bid)
     }
 
+    /// The coalesced work item's body, on main. PERF17: asks the single-flight gate first, so a
+    /// trigger while a scan runs marks one follow-up instead of queueing another full scan behind it.
     private func runScan() {
+        guard scanGate.request(acceptingPrompts: isAcceptingPrompts()) else { return }
+        dispatchScan()
+    }
+
+    /// Run one scan on `scanQueue` and hop its result to main. Only ever called with the gate
+    /// holding this scan as in flight; the main hop releases it and starts the one follow-up, if any.
+    private func dispatchScan() {
         scanQueue.async { [weak self] in
             guard let self = self else { return }
             let result = self.scanner.scan()
@@ -254,36 +280,38 @@ final class MeetingDiscoveryWatcher {
                 guard let self = self else { return }
                 if let winnerSource { self.onDiscovered?(winnerSource) }
                 self.evaluateMicInUseTier(hasWinner: winnerSource != nil)
+                // PERF17: release the gate; a trigger that arrived mid-scan gets exactly one
+                // follow-up, unless the session has left `.idle` meanwhile.
+                if self.scanGate.complete(acceptingPrompts: self.isAcceptingPrompts()) {
+                    self.dispatchScan()
+                }
             }
         }
     }
 
     /// DET1: after a scan, check whether the current mic-busy dwell (with no whitelist winner)
     /// warrants a quiet generic prompt for the plausible holder. Fires at most once per span; the
-    /// session's cooldown / skip-latch then govern any repeat. Main-queue only.
+    /// session's cooldown / skip-latch then govern any repeat. A span seen while the session is not
+    /// idle is latched instead and never prompts (PERF17; the rule is `MicInUseTier.SpanLatch`'s).
+    /// Main-queue only.
     private func evaluateMicInUseTier(hasWinner: Bool) {
-        guard let span = micBusyTracker.open else {
-            micTierFiredForSpanSince = nil // mic idle: reset the per-span latch
-            return
-        }
-        guard micTierFiredForSpanSince != span.since else { return } // already prompted this span
+        let span = micBusyTracker.open
         let now = Date()
-        let kind: AppSourceKind = scanner.browserBundles.contains(span.bundleID ?? "") ? .browser : .native
-        guard let source = MicInUseTier.decide(
-            dwellSec: max(0, now.timeIntervalSince(span.since)),
-            threshold: MicInUseTier.defaultDwellSec,
+        let kind: AppSourceKind = scanner.browserBundles.contains(span?.bundleID ?? "") ? .browser : .native
+        guard let source = micTierLatch.evaluate(
+            openSpan: span,
+            acceptingPrompts: isAcceptingPrompts(),
+            now: now,
             hasScannerWinner: hasWinner,
-            bundleID: span.bundleID,
-            displayName: span.displayName,
             kind: kind,
             plausibleBundles: plausibleBundles
         ) else { return }
-        micTierFiredForSpanSince = span.since
         Log.event(category: "detector", action: "mic_in_use_prompt", attributes: [
             "bundle_id": source.bundleID,
             "display_name": source.displayName,
             "kind": source.kind == .browser ? "browser" : "native",
-            "dwell_sec": now.timeIntervalSince(span.since),
+            // A source is only ever returned for an open span, so `span` is non-nil here.
+            "dwell_sec": now.timeIntervalSince(span?.since ?? now),
         ])
         onMicInUseDwell?(source)
     }

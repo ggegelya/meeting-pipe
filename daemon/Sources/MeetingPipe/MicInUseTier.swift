@@ -60,3 +60,62 @@ enum MicInUseTier {
         return AppSource(bundleID: bundle, displayName: displayName ?? bundle, kind: kind)
     }
 }
+
+extension MicInUseTier {
+
+    /// The tier's once-per-span latch, lifted out of `MeetingDiscoveryWatcher` so its PERF17 rule
+    /// has a harness. The tier fires at most once per mic-busy span, keyed on the span's `since`;
+    /// the session's cooldown / skip-latch then govern any repeat. Main-queue only, like the
+    /// watcher state it replaced.
+    ///
+    /// **A span seen while the session is not idle never prompts, then or afterwards** (PERF17).
+    /// Outside `.idle` the watcher runs no scans, so this tier stops being evaluated, and a span
+    /// that opened during a recording (the call's own mic) would otherwise raise a generic prompt
+    /// the moment the recording ended. So while the session does not accept prompts, any open span
+    /// is latched as already handled. A span that opens after the return to idle has a new `since`
+    /// and can still prompt.
+    struct SpanLatch {
+
+        /// The `since` of the span the tier has already handled, or nil.
+        private(set) var firedForSpanSince: Date?
+
+        /// The session does not accept prompts: latch the open span, if any, as handled.
+        mutating func noteNotAcceptingPrompts(openSpan: MicBusySpanTracker.Span?) {
+            if let span = openSpan { firedForSpanSince = span.since }
+        }
+
+        /// After a scan: the source to prompt for, or nil. Latches the span when it fires, and
+        /// latches without firing while the session does not accept prompts. Resets the latch once
+        /// the mic is idle.
+        mutating func evaluate(
+            openSpan: MicBusySpanTracker.Span?,
+            acceptingPrompts: Bool,
+            now: Date,
+            hasScannerWinner: Bool,
+            kind: AppSourceKind,
+            plausibleBundles: Set<String>,
+            threshold: TimeInterval = MicInUseTier.defaultDwellSec
+        ) -> AppSource? {
+            guard let span = openSpan else {
+                firedForSpanSince = nil // mic idle: reset the per-span latch
+                return nil
+            }
+            guard acceptingPrompts else {
+                noteNotAcceptingPrompts(openSpan: span)
+                return nil
+            }
+            guard firedForSpanSince != span.since else { return nil } // already handled this span
+            guard let source = MicInUseTier.decide(
+                dwellSec: max(0, now.timeIntervalSince(span.since)),
+                threshold: threshold,
+                hasScannerWinner: hasScannerWinner,
+                bundleID: span.bundleID,
+                displayName: span.displayName,
+                kind: kind,
+                plausibleBundles: plausibleBundles
+            ) else { return nil }
+            firedForSpanSince = span.since
+            return source
+        }
+    }
+}

@@ -284,6 +284,10 @@ final class Coordinator: NSObject {
             // timeout, stale-prompt end) tears down the lifecycle
             // adapter through this single hook.
             self?.session.disengageLifecycle()
+            // PERF17: discovery runs no scans outside idle, so scan at once on the way back
+            // rather than up to a 12 s poll later; the cooldown candidate, its grace and the
+            // END17 resume window all read the first idle sightings.
+            self?.discoveryWatcher.refreshNow()
         }
         // PipelineJobDispatcher wraps the SinkDispatcher queue and owns
         // the per-job completion routing (done notification + error
@@ -485,6 +489,11 @@ final class Coordinator: NSObject {
 
         discoveryWatcher.onDiscovered = { [weak self] source in
             self?.session.handleDiscovery(source)
+        }
+        // PERF17: outside idle every consumer of a scan returns at this same guard, so the
+        // watcher skips the scan (and its AX walks) instead of producing log lines nobody reads.
+        discoveryWatcher.isAcceptingPrompts = { [weak self] in
+            self?.stateMachine.isAcceptingPrompts ?? false
         }
         // DET1: a sustained mic-busy dwell with no whitelist winner routes through the same prompt
         // path as a discovered meeting (skip-latch / cooldown / auto-consent all apply).

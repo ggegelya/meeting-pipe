@@ -2,9 +2,10 @@
 id: PERF17
 title: Discovery keeps scanning and AX-walking through every prompt and recording although nothing reads the result, and scans queue behind a slow one with no in-flight guard
 category: Performance
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. `MeetingDiscoveryWatcher.armPollTimer` re-arms and calls `scheduleScan` unconditionally, so a full `MeetingSourceScanner.scan()` with its control-button AX walks runs every 3 to 12 s through every prompt and recording (300 to 3,600 scans for a 1 to 3 h meeting, on top of the 1 Hz mute backstop on the same Teams tree), while `handleDiscovery` and `handleMeetingStarted` both return at `guard ... isAcceptingPrompts` outside `.idle`, so the results only become log lines (DETECTION-4). `runScan` also enqueues a full scan on the serial `scanQueue` for every coalesced trigger with no in-flight guard, so scans slower than their triggers queue up and deliver stale winners late (DETECTION-8, verified low: the queue drains once activity stops). Scope: a pure single-flight gate with one pending follow-up, no scans outside `.idle` with mic-busy sampling kept, an immediate scan on the idle transition. [Spec](./PERF17.md)
+closed: 2026-10-26
+comment: Shipped 2026-10-26. `DiscoveryScanGate` (pure, beside `DiscoveryScanCadence`) keeps one discovery scan in flight with at most one pending follow-up and refuses scans while `isAcceptingPrompts` reads false; `Coordinator` sets that closure from `stateMachine.isAcceptingPrompts` and `onIdleTransition` calls `refreshNow()`. Mic-busy sampling and the poll re-arm keep running outside idle, and `MicInUseTier.SpanLatch` latches any span seen there so it never prompts afterwards. Verified: `bash scripts/ci-local.sh` green, 3159 daemon tests (15 new: gate, span latch, two wiring fences). The post-install `events.jsonl` evidence confirms and does not gate. [Spec](./PERF17.md)
 ---
 
 # PERF17: discovery keeps scanning and AX-walking through every prompt and recording although nothing reads the result, and scans queue behind a slow one with no in-flight guard

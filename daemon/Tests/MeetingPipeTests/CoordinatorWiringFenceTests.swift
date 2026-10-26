@@ -39,11 +39,19 @@ final class CoordinatorWiringFenceTests: XCTestCase {
 
     /// The body of `func start()` in `Coordinator.swift`, brace-matched from its opening line.
     private func coordinatorStartBody() throws -> String {
+        try coordinatorBlock(
+            opening: "\n    func start() {",
+            missing: "Coordinator.start() was renamed or moved; this fence needs updating with it"
+        )
+    }
+
+    /// The block in `Coordinator.swift` that opens at `opening`, brace-matched. Fails, never skips,
+    /// when the opening line cannot be found (T7).
+    private func coordinatorBlock(opening: String, missing: String) throws -> String {
         let text = try source("daemon/Sources/MeetingPipe/Coordinator.swift")
-        guard let start = text.range(of: "\n    func start() {") else {
-            let message = "Coordinator.start() was renamed or moved; this fence needs updating with it"
-            XCTFail(message)
-            throw FenceTargetMissing(message: message)
+        guard let start = text.range(of: opening) else {
+            XCTFail(missing)
+            throw FenceTargetMissing(message: missing)
         }
         var depth = 0
         var body = ""
@@ -78,6 +86,35 @@ final class CoordinatorWiringFenceTests: XCTestCase {
         XCTAssertTrue(
             text.contains("CallTeardownWatcher.teams("),
             "Coordinator no longer builds the Teams call-teardown watcher"
+        )
+    }
+
+    /// PERF17: the watcher's session input defaults to "accepting", so dropping this line would
+    /// silently put the 300 to 3,600 per-meeting scans back with every test still green.
+    func testCoordinatorWiresTheDiscoverySessionInput() throws {
+        let text = try source("daemon/Sources/MeetingPipe/Coordinator.swift")
+        let wired = text.range(
+            of: #"discoveryWatcher\.isAcceptingPrompts = \{[^}]*stateMachine\.isAcceptingPrompts"#,
+            options: .regularExpression
+        )
+        XCTAssertNotNil(
+            wired,
+            "Coordinator no longer feeds the discovery watcher stateMachine.isAcceptingPrompts, so "
+                + "discovery AX-walks every 3 to 12 s through every prompt and recording again (PERF17)"
+        )
+    }
+
+    /// PERF17: with no scans outside idle, the first idle scan comes from this call; without it the
+    /// cooldown candidate, its grace and END17's resume window wait up to a 12 s poll.
+    func testTheIdleTransitionRefreshesDiscovery() throws {
+        let body = try coordinatorBlock(
+            opening: "stateMachine.onIdleTransition = {",
+            missing: "Coordinator's onIdleTransition hook was renamed or moved; this fence needs updating"
+        )
+        XCTAssertTrue(
+            body.contains("discoveryWatcher.refreshNow()"),
+            "onIdleTransition no longer refreshes discovery, so the first post-recording scan waits "
+                + "for the next poll (PERF17)"
         )
     }
 
