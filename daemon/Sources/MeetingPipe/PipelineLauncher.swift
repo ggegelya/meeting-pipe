@@ -309,7 +309,7 @@ struct PublishResult: Equatable {
         var failure: FailureMetadata? = nil
     }
 
-    /// `"full"`, `"partial"`, or `"none"` (every sink failed, or none ran).
+    /// `"full"`, `"partial"`, `"none"` (every sink failed, or none of the configured ones ran), or `"local"` (no sink configured at all, WF10).
     let state: String
     /// The page URL of the first successful sink that produced one. Nil for a local-only workflow, and nil when no page-producing sink succeeded.
     let pageURL: URL?

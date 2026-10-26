@@ -516,6 +516,9 @@ struct WorkflowEditor: View {
                 isOn: $sinks.lanEnabled
             )
             unconfiguredNote(.lan)
+            if let caption = WorkflowNoDestination.editorCaption(sinks: sinks.toWorkflowSinks(), ndaMode: ndaMode) {
+                note(caption, color: Color(MPColors.fgMuted))
+            }
             if ndaMode {
                 note("NDA mode forces filesystem-only; toggles above are ignored at run time.", color: .mpWarning)
             }

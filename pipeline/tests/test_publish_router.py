@@ -386,9 +386,11 @@ def test_default_output_sinks_is_notion_only() -> None:
 
 def test_publish_state_classifies_fanout_result() -> None:
     # TECH-I6: full when all sinks succeed, partial when mixed, none when all
-    # fail or nothing ran.
+    # fail or none of the configured ones ran. WF10: local when no sink was
+    # configured at all, which only `fanout` can know and so marks.
     assert publish_state({"sinks": {}}) == "none"
     assert publish_state({}) == "none"
+    assert publish_state({"sinks": {}, "no_sinks_configured": True}) == "local"
     assert publish_state(
         {"sinks": {"notion": {"page_id": "x"}, "filesystem": {"ok": True}}}
     ) == "full"
@@ -492,3 +494,71 @@ def test_fanout_with_no_publishers_is_a_success_not_a_failure(tmp_path: Path) ->
     res = fanout(summary_json=summary_json, cfg=cfg, transcript_md=None, publishers=[])
     assert all_sinks_failed(res) is False
     assert json.loads((tmp_path / "m.publish.json").read_text())["state"] == "none"
+
+
+# ----- WF10: "nothing was meant to run" is its own state -----
+
+
+def test_publish_state_is_local_when_no_sink_was_configured(tmp_path: Path) -> None:
+    # A workflow saved with every destination unchecked resolves to
+    # `output.sinks == []`. Nothing was meant to run, so this is neither a
+    # failure ("none", which the Library renders as Unpublished under Needs you
+    # and retention treats as unsettled) nor a publish ("full").
+    cfg = Config.model_validate({"output": {"sinks": []}})
+    summary_json = tmp_path / "20260506-150000.summary.json"
+    _write_summary_json(summary_json)
+
+    res = fanout(summary_json=summary_json, cfg=cfg, transcript_md=None)
+
+    assert publish_state(res) == "local"
+    assert not all_sinks_failed(res)
+    sidecar = json.loads((tmp_path / "20260506-150000.publish.json").read_text())
+    assert sidecar["state"] == "local"
+    assert sidecar["sinks"] == {}
+    assert sidecar["page_url"] is None
+
+
+def test_publish_state_is_local_for_a_regulated_notion_only_run(tmp_path: Path) -> None:
+    # The case `fanout`'s no-publisher branch was first written for: the egress
+    # clamp in `effective_sinks` drops the only configured sink, so nothing was
+    # meant to run here either. It used to read "none" and render as a failure.
+    cfg = Config.model_validate({
+        "output": {"sinks": ["notion"]},
+        "modes": {"regulated_mode": True},
+    })
+    summary_json = tmp_path / "m.summary.json"
+    _write_summary_json(summary_json)
+
+    res = fanout(summary_json=summary_json, cfg=cfg, transcript_md=None)
+
+    assert publish_state(res) == "local"
+    assert not all_sinks_failed(res)
+    assert json.loads((tmp_path / "m.publish.json").read_text())["state"] == "local"
+
+
+def test_publish_state_stays_none_when_the_only_sink_was_skipped_for_missing_config(
+    tmp_path: Path,
+) -> None:
+    # A sink the user listed but half-configured (obsidian with no vault path) is
+    # skipped by `build_publishers`, so no publisher runs, but a destination WAS
+    # asked for. That has to keep surfacing as Unpublished, not settle as local.
+    cfg = Config.model_validate({"output": {"sinks": ["obsidian"]}})
+    assert build_publishers(cfg) == []
+    summary_json = tmp_path / "m.summary.json"
+    _write_summary_json(summary_json)
+
+    res = fanout(summary_json=summary_json, cfg=cfg, transcript_md=None)
+
+    assert publish_state(res) == "none"
+    assert json.loads((tmp_path / "m.publish.json").read_text())["state"] == "none"
+
+
+def test_publish_state_stays_none_when_every_configured_sink_failed(tmp_path: Path) -> None:
+    cfg = Config.model_validate({"output": {"sinks": ["notion", "obsidian"]}})
+    summary_json = tmp_path / "m.summary.json"
+    _write_summary_json(summary_json)
+    res = fanout(summary_json=summary_json, cfg=cfg, transcript_md=None,
+                 publishers=[_RecordingPublisher("notion", fail=True),
+                             _RecordingPublisher("obsidian", fail=True)])
+    assert publish_state(res) == "none"
+    assert all_sinks_failed(res)

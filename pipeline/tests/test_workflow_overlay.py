@@ -370,16 +370,77 @@ def test_zero_egress_collapses_the_lan_sink_too(tmp_path: Path) -> None:
     assert result.output.sinks == ["filesystem"]
 
 
-def test_empty_sinks_list_is_ignored(tmp_path: Path) -> None:
-    # A workflow that ended up with no sinks (UI bug, hand-edited TOML)
-    # must not silently strip publishing. Fall back to the global default.
+def test_empty_sinks_list_means_publish_nowhere(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # WF10: an empty list is what the workflow editor saves when every
+    # destination is unchecked, and the Workflows inspector tells the user that
+    # means "No destination set". This used to be skipped on purpose and fall
+    # back to the global default, which is `["notion"]`, so a workflow meant to
+    # keep meetings in the Library published every one of them to Notion. A
+    # present list is authoritative even when empty: the summary stays in the
+    # Library and nothing is published. It is also the direction that cannot
+    # egress by accident.
     cfg = Config()
+    assert cfg.output.sinks == ["notion"]
     stem = "20260512-emptysinks"
-    _write_meta(tmp_path, stem, {"workflow_sinks": []})
+    _write_meta(tmp_path, stem, {"workflow_name": "Library only", "workflow_sinks": []})
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    with caplog.at_level(logging.INFO, logger="mp.workflow"):
+        result = apply_overrides(cfg, wav)
+    assert result.output.sinks == []
+    assert build_publishers(result) == []
+    assert "sinks=(none)" in caplog.text
+    # Original unchanged.
+    assert cfg.output.sinks == ["notion"]
+
+
+def test_missing_sinks_key_keeps_the_global_default(tmp_path: Path) -> None:
+    # The inherit contract is unchanged by WF10: only a present list overrides.
+    cfg = Config.model_validate({"output": {"sinks": ["notion", "filesystem"]}})
+    stem = "20260512-nosinkskey"
+    _write_meta(tmp_path, stem, {"workflow_context_prompt": "no sinks key"})
     wav = tmp_path / f"{stem}.wav"
     wav.write_bytes(b"")
     result = apply_overrides(cfg, wav)
-    assert result.output.sinks == cfg.output.sinks
+    assert result.output.sinks == ["notion", "filesystem"]
+
+
+def test_nda_with_empty_sinks_still_resolves_to_filesystem(tmp_path: Path) -> None:
+    # The zero-egress clamp runs after the sink overlay, so an NDA workflow saved
+    # with nothing checked still writes its local copy, as it always has.
+    cfg = Config()
+    stem = "20260512-ndaempty"
+    _write_meta(tmp_path, stem, {"workflow_nda_mode": True, "workflow_sinks": []})
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    result = apply_overrides(cfg, wav)
+    assert result.output.sinks == ["filesystem"]
+
+
+def test_empty_sinks_and_the_unreadable_sidecar_fail_closed_compose(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # WF10 meets SEC25. "Publish nowhere" is a meaning the overlay can only take
+    # from a sidecar it actually read: the same `workflow_sinks: []` read cleanly
+    # resolves to no sinks, but when the sidecar exists and cannot be read the
+    # empty list is never seen, and SEC25's fail-closed overlay (on-device,
+    # filesystem only) wins. Both directions are egress-safe; neither may fall
+    # back to the global Notion default.
+    stem = "20260512-102400"
+    _write_meta(tmp_path, stem, {"workflow_name": "Library only", "workflow_sinks": []})
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+
+    readable = apply_overrides(_anthropic_notion_cfg(), wav)
+    assert readable.output.sinks == []
+    assert build_publishers(readable) == []
+
+    _deadlock_on_sidecar_reads(monkeypatch)
+    unreadable = apply_overrides(_anthropic_notion_cfg(), wav)
+    _assert_on_device(unreadable)
+    assert unreadable.output.sinks == ["filesystem"]
 
 
 def test_overlay_does_not_carry_action_state(tmp_path: Path) -> None:
@@ -455,10 +516,25 @@ def test_contract_fixture_lan_sink_resolves_to_the_lan_publisher(tmp_path: Path)
     assert result.summarization.backend == cfg.summarization.backend
 
 
+def test_contract_fixture_no_sinks_resolves_to_publish_nowhere() -> None:
+    # WF10's other direction: the committed sidecar is the one Swift's
+    # `MetaContractFixtureTests` builds from a non-NDA workflow saved with every
+    # destination unchecked, so this pins the literal the daemon writes (`[]`,
+    # not an absent key) and what it means here.
+    cfg = Config()
+    fixture = _CONTRACT / "workflow-no-sinks.meta.json"
+    assert json.loads(fixture.read_text(encoding="utf-8"))["workflow_sinks"] == []
+    result = apply_overrides(cfg, fixture)
+    assert result.output.sinks == []
+    assert build_publishers(result) == []
+    assert result.modes.workflow_nda_mode is False
+
+
 def test_contract_fixtures_carry_schema_version() -> None:
     for name in (
         "source-only-regulated", "workflow-full", "workflow-lan",
         "workflow-nda", "workflow-reassigned-to-nda", "held-end-trim",
+        "workflow-no-sinks",
     ):
         data = json.loads((_CONTRACT / f"{name}.meta.json").read_text(encoding="utf-8"))
         assert data["schema_version"] == 4

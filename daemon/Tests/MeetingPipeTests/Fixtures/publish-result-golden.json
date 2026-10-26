@@ -3,6 +3,7 @@
   "contract": {
     "publish_states": [
       "full",
+      "local",
       "none",
       "partial"
     ],
@@ -104,6 +105,19 @@
         }
       },
       "expected_state": "full",
+      "expected_page_url": null,
+      "all_sinks_failed": false
+    },
+    {
+      "name": "local_no_sink_configured",
+      "payload": {
+        "schema_version": 1,
+        "state": "local",
+        "page_url": null,
+        "ts": "2026-01-01T00:00:00+00:00",
+        "sinks": {}
+      },
+      "expected_state": "local",
       "expected_page_url": null,
       "all_sinks_failed": false
     }

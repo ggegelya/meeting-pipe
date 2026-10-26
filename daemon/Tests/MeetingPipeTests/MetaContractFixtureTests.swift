@@ -86,6 +86,31 @@ final class MetaContractFixtureTests: XCTestCase {
         XCTAssertEqual(dict as NSDictionary, try fixture("workflow-lan"))
     }
 
+    /// WF10: a non-NDA workflow saved with every destination unchecked. `build`
+    /// writes `workflow_sinks: []` (present and empty, never omitted), and the
+    /// Python side asserts that resolves to `output.sinks == []`, publish
+    /// nowhere, rather than to the global default. Its own fixture because the
+    /// empty list is the whole point and no other fixture carries it.
+    func test_workflow_no_sinks_matches_fixture() throws {
+        let source = AppSource(
+            bundleID: "us.zoom.xos",
+            displayName: "Zoom",
+            kind: .native,
+            meetingTitle: "Weekly 1:1"
+        )
+        let wf = Workflow(
+            id: UUID(uuidString: "0A2B3C4D-0000-0000-0000-00000000F004")!,
+            name: "Library only",
+            color: "#0E8C82",
+            contextPrompt: "Kept in the Library, never published.",
+            sinks: []
+        )
+        XCTAssertFalse(wf.flags.ndaMode)
+        let dict = MeetingMetaSidecar.build(source: source, workflow: wf)
+        XCTAssertEqual(dict["workflow_sinks"] as? [String], [], "an empty list is written, not omitted")
+        XCTAssertEqual(dict as NSDictionary, try fixture("workflow-no-sinks"))
+    }
+
     func test_workflow_nda_matches_fixture() throws {
         let source = AppSource(
             bundleID: "com.microsoft.teams2",
@@ -133,7 +158,7 @@ final class MetaContractFixtureTests: XCTestCase {
     }
 
     func test_all_fixtures_carry_schema_version_four() throws {
-        for name in ["source-only-regulated", "workflow-full", "workflow-lan", "workflow-nda", "workflow-reassigned-to-nda", "held-end-trim"] {
+        for name in ["source-only-regulated", "workflow-full", "workflow-lan", "workflow-nda", "workflow-reassigned-to-nda", "held-end-trim", "workflow-no-sinks"] {
             let f = try fixture(name)
             XCTAssertEqual(f["schema_version"] as? Int, 4, "\(name) must carry schema_version 4")
         }

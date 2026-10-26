@@ -136,7 +136,8 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
       - `workflow_backend`         → `summarization.backend` (applied only when
         present; the daemon omits it when the workflow inherits the global
         default, so a global `apple_intelligence` setting stays in effect)
-      - `workflow_sinks`           → `output.sinks`
+      - `workflow_sinks`           → `output.sinks`; an empty list means publish
+        nowhere (WF10), an absent key keeps the global default
       - `workflow_notion_database_id` → `notion.database_id`
       - `workflow_nda_mode`        → forces local backend + filesystem sink
       - `regulated_mode`           → global zero-egress at record time (TECH-DSN6);
@@ -208,12 +209,17 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
             overlay.summarization.extra_sections = specs
             changed.append(f"extra_sections={len(specs)}")
 
+    # WF10: a present list is authoritative even when empty, and empty means
+    # publish nowhere (the summary stays in the Library). It is what the editor
+    # saves with every destination unchecked and what the Workflows inspector
+    # already called "No destination set"; reading it as "inherit" used to fall
+    # back to the global default, which is Notion. Only an absent key inherits.
     sinks = meta.get("workflow_sinks")
-    if isinstance(sinks, list) and sinks:
+    if isinstance(sinks, list):
         clean = [s for s in sinks if isinstance(s, str) and s]
-        if clean and overlay.output.sinks != clean:
+        if overlay.output.sinks != clean:
             overlay.output.sinks = clean
-            changed.append(f"sinks={','.join(clean)}")
+            changed.append(f"sinks={','.join(clean)}" if clean else "sinks=(none)")
 
     notion_db = meta.get("workflow_notion_database_id")
     if isinstance(notion_db, str) and notion_db:

@@ -149,6 +149,36 @@ final class LibraryScopeTests: XCTestCase {
         ))
     }
 
+    /// WF10: `"local"` is what a run records when its workflow has no
+    /// destinations. Nothing was meant to publish, so the row is settled: out of
+    /// Needs you, a Ready pill that says why there is nothing to open, and no
+    /// Publish offer. It used to be `"none"`, which rendered as Unpublished with
+    /// "Every publish target failed for this meeting." and sat in Needs you.
+    func test_a_meeting_its_workflow_keeps_local_is_not_in_needsYou_and_reads_ready() {
+        XCTAssertFalse(LibraryScope.needsYou.includes(
+            makeMeeting(stem: "l", status: .done, publishState: "local"), workflows: [], now: now
+        ))
+        let badge = DonePublishBadge.decide(publishState: "local")
+        XCTAssertEqual(badge.kind, .ready)
+        XCTAssertEqual(badge.label, "Ready")
+        XCTAssertEqual(badge.help, "Kept in the Library; this workflow publishes nowhere.")
+    }
+
+    /// The rest of the vocabulary, so the pill is pinned for every value
+    /// `publish_router.publish_state` can write and for a never-published row.
+    func test_done_publish_badge_covers_the_whole_vocabulary() {
+        XCTAssertEqual(DonePublishBadge.decide(publishState: "full"),
+                       DonePublishBadge(kind: .ready, label: "Ready", help: nil))
+        XCTAssertEqual(DonePublishBadge.decide(publishState: nil),
+                       DonePublishBadge(kind: .ready, label: "Ready", help: nil))
+        XCTAssertEqual(DonePublishBadge.decide(publishState: "partial"),
+                       DonePublishBadge(kind: .warning, label: "Partial",
+                                        help: "Published to some targets; at least one sink failed."))
+        XCTAssertEqual(DonePublishBadge.decide(publishState: "none"),
+                       DonePublishBadge(kind: .warning, label: "Unpublished",
+                                        help: "Every publish target failed for this meeting."))
+    }
+
     func test_isWorkflow_and_workflowID_accessors() {
         let id = UUID()
         XCTAssertFalse(LibraryScope.allMeetings.isWorkflow)

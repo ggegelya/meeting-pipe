@@ -155,7 +155,8 @@ enum LibraryScope: Hashable {
             // partially landed ("partial"). A never-published local/NDA meeting
             // has a nil publishState, so it is intentionally absent here
             // (TECH-DSN17; `.empty` added in UX15 so no-speech recordings surface
-            // rather than sitting silently in All meetings).
+            // rather than sitting silently in All meetings). So is "local" (WF10):
+            // its workflow has no destinations, so nothing was meant to publish.
             switch meeting.status {
             case .failed, .manualPasteReady, .empty:
                 return true

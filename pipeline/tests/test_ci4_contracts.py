@@ -119,7 +119,7 @@ def test_publish_payload_shape(case: dict) -> None:
     payload = case["payload"]
     assert set(payload) == {"schema_version", "state", "page_url", "ts", "sinks"}
     assert payload["schema_version"] == 1
-    assert payload["state"] in {"full", "partial", "none"}
+    assert payload["state"] in {"full", "partial", "none", "local"}
     assert payload["page_url"] is None or isinstance(payload["page_url"], str)
     assert isinstance(payload["sinks"], dict)
     for sink in payload["sinks"].values():
@@ -143,15 +143,27 @@ def test_publish_ts_stays_iso8601(tmp_path: Path) -> None:
 
 
 def test_publish_state_and_exit_three_stay_distinct() -> None:
-    """Zero sinks configured is a clean success. `all_sinks_failed` (the exit-3
+    """No publisher running is never exit 3. `all_sinks_failed` (the exit-3
     trigger) is deliberately narrower than `state == "none"`, and the fixture
-    covers a case where they agree; this pins the case where they do not."""
+    covers a case where they agree; this pins the cases where they do not: a
+    configured sink that was skipped (state `none`, exit 0) and, since WF10, no
+    sink configured at all (state `local`, exit 0)."""
     from mp.publish_router import EXIT_PUBLISH_FAILED, all_sinks_failed, publish_state
 
-    no_sinks: dict = {"sinks": {}}
-    assert publish_state(no_sinks) == "none"
-    assert all_sinks_failed(no_sinks) is False
+    skipped: dict = {"sinks": {}}
+    assert publish_state(skipped) == "none"
+    assert all_sinks_failed(skipped) is False
+    nothing_configured: dict = {"sinks": {}, "no_sinks_configured": True}
+    assert publish_state(nothing_configured) == "local"
+    assert all_sinks_failed(nothing_configured) is False
     assert EXIT_PUBLISH_FAILED == 3
+
+
+def test_publish_state_vocabulary_is_exactly_four_values() -> None:
+    """Six Swift sites branch on these literals; a fifth value is a deliberate,
+    cross-tree change, never a widening (WF10 added `local`)."""
+    doc = json.loads(_committed("publish-result-golden.json"))
+    assert sorted(doc["contract"]["publish_states"]) == ["full", "local", "none", "partial"]
 
 
 # --------------------------------------------------------------------------

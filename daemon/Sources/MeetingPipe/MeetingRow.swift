@@ -195,15 +195,11 @@ struct MeetingRow: View, Equatable {
             MPStatusPill(kind: .failed, label: "Failed")
                 .help(failureHelpText)
         case (.done, _):
-            switch meeting.publishState {
-            case "partial":
-                MPStatusPill(kind: .warning, label: "Partial")
-                    .help("Published to some targets; at least one sink failed.")
-            case "none":
-                MPStatusPill(kind: .warning, label: "Unpublished")
-                    .help("Every publish target failed for this meeting.")
-            default:
-                MPStatusPill(kind: .ready, label: "Ready")
+            let badge = DonePublishBadge.decide(publishState: meeting.publishState)
+            if let help = badge.help {
+                MPStatusPill(kind: badge.kind, label: badge.label).help(help)
+            } else {
+                MPStatusPill(kind: badge.kind, label: badge.label)
             }
         case (.empty, _):
             MPStatusPill(kind: .neutral, label: (meeting.emptyReason ?? .noSpeech).pillLabel)
@@ -267,7 +263,9 @@ struct MeetingRow: View, Equatable {
 
     /// The row's inline triage action, or nil when nothing is actionable. NDA /
     /// local-only rows never publish (nil publishState), so they only ever surface
-    /// a reveal for a no-speech recording, never an egress action.
+    /// a reveal for a no-speech recording, never an egress action. A row whose
+    /// workflow has no destinations (`"local"`, WF10) offers nothing either: it
+    /// ran no sink, so `needsRepublish` (which needs one that landed) stays false.
     private var inlineFix: InlineFix? {
         switch effectiveStatus {
         case .failed:           return .retryRun
@@ -276,6 +274,7 @@ struct MeetingRow: View, Equatable {
         case .done:
             if meeting.publishState == "none"    { return .publish }
             if meeting.publishState == "partial" { return .retryPublish }
+            if meeting.publishState == "local"   { return nil }
             if meeting.needsRepublish            { return .republish }
             return nil
         default:                return nil
@@ -577,6 +576,40 @@ struct MeetingRow: View, Equatable {
             return String(format: "%d:%02d:%02d", h, m, sec)
         }
         return String(format: "%d:%02d", m, sec)
+    }
+}
+
+// MARK: - Done-row publish pill
+
+/// The status pill a finished (`.done`) row wears, from its publish state
+/// (TECH-I6, WF10). Pure so the whole vocabulary is pinned without a view.
+///
+/// Every value `publish_router.publish_state` writes is named here rather than
+/// left to a default branch, because a state this switch does not know renders
+/// as a clean "Ready" (CI4's reason for pinning the vocabulary at all). `"local"`
+/// is Ready on purpose: the workflow has no destinations, so nothing was meant
+/// to publish, and the help text says so instead of leaving an Open-less row to
+/// look broken.
+struct DonePublishBadge: Equatable {
+    let kind: MPStatusPill.Kind
+    let label: String
+    let help: String?
+
+    static func decide(publishState: String?) -> DonePublishBadge {
+        switch publishState {
+        case "partial":
+            return DonePublishBadge(kind: .warning, label: "Partial",
+                                    help: "Published to some targets; at least one sink failed.")
+        case "none":
+            return DonePublishBadge(kind: .warning, label: "Unpublished",
+                                    help: "Every publish target failed for this meeting.")
+        case "local":
+            return DonePublishBadge(kind: .ready, label: "Ready",
+                                    help: "Kept in the Library; this workflow publishes nowhere.")
+        default:
+            // "full", or nil for a row that never reached publish.
+            return DonePublishBadge(kind: .ready, label: "Ready", help: nil)
+        }
     }
 }
 

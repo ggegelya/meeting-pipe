@@ -341,7 +341,9 @@ extension MeetingDetailView {
             if meeting.publishState == "partial" {
                 return nil
             }
-            return nil   // cleanly published: stay calm
+            // Cleanly published, or "local" (WF10: the workflow has no
+            // destinations, said on the row's Ready pill): stay calm.
+            return nil
         default:
             return nil
         }

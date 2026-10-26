@@ -71,7 +71,7 @@ def _envelope(
 # --------------------------------------------------------------------------
 
 # Each case is a `publish_router.fanout` result shape, run through the real
-# sidecar writer. The four cover every `publish_state` branch plus the
+# sidecar writer. The five cover every `publish_state` branch plus the
 # local-only (no page URL) case the daemon renders differently.
 PUBLISH_CASES: list[tuple[str, dict[str, Any]]] = [
     (
@@ -104,6 +104,12 @@ PUBLISH_CASES: list[tuple[str, dict[str, Any]]] = [
     (
         "full_local_only_no_page_url",
         {"page_url": None, "sinks": {"filesystem": {}}},
+    ),
+    (
+        # WF10: no sink configured at all (a workflow saved with no
+        # destinations), which `fanout` marks. Settled, not a failure.
+        "local_no_sink_configured",
+        {"page_url": None, "sinks": {}, "no_sinks_configured": True},
     ),
 ]
 
@@ -167,6 +173,7 @@ def gen_publish(tmp: Path) -> str:
             publish_router.publish_state({"sinks": {"a": {}}}),
             publish_router.publish_state({"sinks": {"a": {}, "b": {"error": "x"}}}),
             publish_router.publish_state({"sinks": {"a": {"error": "x"}}}),
+            publish_router.publish_state({"sinks": {}, "no_sinks_configured": True}),
         }
     )
     return _envelope(

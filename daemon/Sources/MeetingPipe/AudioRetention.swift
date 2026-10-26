@@ -39,8 +39,9 @@ enum AudioRetention {
         /// Derived exactly as the Library derives it, so the sweep and the list
         /// agree on what "settled" means.
         let status: Meeting.Status
-        /// `<stem>.run.json["publish_state"]`: "full" / "partial" / "none", nil
-        /// when the meeting never published (an NDA or local-only run).
+        /// `PublishResult.resolveState`: "full" / "partial" / "none" / "local"
+        /// (WF10, a workflow with no destinations), nil when the meeting never
+        /// reached publish.
         let publishState: String?
     }
 
@@ -50,7 +51,8 @@ enum AudioRetention {
     /// members are exempt", and this is that single gate.
     ///
     /// It resolves to: `.done` and either fully published or never published at
-    /// all (the zero-egress case, where publishing was never on the table). It
+    /// all (the zero-egress case, where publishing was never on the table, and
+    /// `"local"`, a workflow with no destinations, WF10). It
     /// excludes `.recording` / `.processing` as non-terminal, and `.failed` /
     /// `.manualPasteReady` / `.empty` / partially-published rows as work the owner
     /// still owes. Kept in step with `LibraryScope.needsYou.includes`.

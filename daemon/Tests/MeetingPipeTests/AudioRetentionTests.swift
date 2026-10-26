@@ -127,6 +127,18 @@ final class AudioRetentionTests: XCTestCase {
         XCTAssertEqual(actions.count, 1)
     }
 
+    /// WF10: a meeting whose workflow publishes nowhere records `state: "local"`.
+    /// It finished and was never meant to publish, so retention applies to it.
+    func test_a_meeting_kept_local_by_its_workflow_is_settled() {
+        XCTAssertTrue(AudioRetention.isSettled(status: .done, publishState: "local"))
+        let policies = [workflowA: WorkflowRetention(policy: .drop, afterDays: 30)]
+        let actions = decide(
+            [candidate(daysAgo: 400, workflow: workflowA, publishState: "local")],
+            policies
+        )
+        XCTAssertEqual(actions.count, 1)
+    }
+
     func test_the_live_recording_is_never_touched() {
         let policies = [workflowA: WorkflowRetention(policy: .drop, afterDays: 1)]
         let actions = decide(
@@ -141,7 +153,7 @@ final class AudioRetentionTests: XCTestCase {
 
     func test_isSettled_is_the_exact_complement_of_needsYou_for_terminal_rows() {
         let cases: [(Meeting.Status, String?)] = [
-            (.done, "full"), (.done, nil), (.done, "none"), (.done, "partial"),
+            (.done, "full"), (.done, nil), (.done, "none"), (.done, "partial"), (.done, "local"),
             (.failed, nil), (.manualPasteReady, nil), (.empty, nil),
             (.processing, nil), (.recording, nil),
         ]

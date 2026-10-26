@@ -154,9 +154,34 @@ final class WorkflowInspectorTests: XCTestCase {
         XCTAssertEqual(pane.row("Output")?.value, "Obsidian and Local folder")
     }
 
+    /// WF10: an empty sink list means publish nowhere on both sides now, so the
+    /// row says what that does rather than only that nothing is set.
     func test_output_says_so_when_nothing_is_configured() {
         let pane = make(workflow(sinks: []))
-        XCTAssertEqual(pane.row("Output")?.value, "No destination set")
+        XCTAssertEqual(
+            pane.row("Output")?.value,
+            "No destination set: summaries stay in the Library and are never published"
+        )
+    }
+
+    // MARK: - Editor caption (WF10)
+
+    func test_editor_caption_explains_an_empty_destination_list() {
+        XCTAssertEqual(
+            WorkflowNoDestination.editorCaption(sinks: [], ndaMode: false),
+            "No destinations: summaries stay in the Library and are never published."
+        )
+    }
+
+    func test_editor_caption_is_absent_once_any_destination_is_on() {
+        XCTAssertNil(WorkflowNoDestination.editorCaption(sinks: [.filesystem], ndaMode: false))
+        XCTAssertNil(WorkflowNoDestination.editorCaption(sinks: [.notion(databaseId: "")], ndaMode: false))
+    }
+
+    /// NDA forces the local folder whatever the toggles say, and the editor
+    /// already carries its own NDA caption, so this one would be false there.
+    func test_editor_caption_is_absent_under_nda() {
+        XCTAssertNil(WorkflowNoDestination.editorCaption(sinks: [], ndaMode: true))
     }
 
     /// NDA forces filesystem-only, and the row reports where the summary will

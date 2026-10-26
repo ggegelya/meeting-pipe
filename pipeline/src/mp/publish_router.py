@@ -176,12 +176,20 @@ def fanout(
         # No sink ran, which is not the same as every sink failing: a regulated
         # run with only the Notion sink configured lands here and is a clean
         # success. `all_sinks_failed` keeps the two apart (PIPE1).
+        #
+        # WF10 splits "no sink ran" once more, for `publish_state`: nothing was
+        # *meant* to run (the resolved sink list is empty: a workflow with no
+        # destinations, or the egress clamp dropping its only sink) reads
+        # "local", a settled meeting kept in the Library. Sinks were configured
+        # and `build_publishers` skipped every one (an obsidian sink with no
+        # vault path) stays "none", so the half-configuration still surfaces.
         result = {
             "page_id": None,
             "page_url": None,
             "sinks": {},
             "failures": [],
             "regulated": cfg.modes.regulated_mode,
+            "no_sinks_configured": not effective_sinks(cfg),
         }
         _write_publish_sidecar(summary_json, result)
         return result
@@ -251,12 +259,18 @@ def publish_state(result: dict[str, Any]) -> str:
     """Classify a `fanout` result for the Library row indicator (TECH-I6).
 
     ``"full"`` when every sink succeeded, ``"partial"`` when some succeeded and
-    some failed, ``"none"`` when every sink failed or none ran. A failed sink is
-    recorded in the per-sink map as a dict carrying an ``error`` key.
+    some failed, ``"none"`` when every sink failed or none of the configured ones
+    ran, and ``"local"`` when no sink was configured at all (WF10: `fanout` marks
+    that with ``no_sinks_configured``, since only it can see the resolved sink
+    list). A failed sink is recorded in the per-sink map as a dict carrying an
+    ``error`` key.
+
+    The four values are a cross-tree vocabulary pinned by CI4's
+    `publish-result-golden.json`; six Swift sites branch on the literals.
     """
     sinks = result.get("sinks") or {}
     if not sinks:
-        return "none"
+        return "local" if result.get("no_sinks_configured") else "none"
     failed = sum(1 for r in sinks.values() if isinstance(r, dict) and r.get("error"))
     if failed == 0:
         return "full"

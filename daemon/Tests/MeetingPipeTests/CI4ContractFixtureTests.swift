@@ -125,13 +125,16 @@ final class CI4ContractFixtureTests: XCTestCase {
         let contract = try XCTUnwrap(try document("publish-result-golden")["contract"] as? [String: Any])
         let states = Set(try XCTUnwrap(contract["publish_states"] as? [String]))
 
-        XCTAssertEqual(states, ["full", "partial", "none"])
+        // WF10 added "local": no sink was configured at all (a workflow saved
+        // with no destinations), so the meeting is kept in the Library by design.
+        XCTAssertEqual(states, ["full", "partial", "none", "local"])
 
-        // Pin the semantics too, not just the spelling: a state Swift does not
-        // know is unsettled + needs-you, and only "full" is a finished publish.
+        // Pin the semantics too, not just the spelling: "full" is a finished
+        // publish and "local" a finished meeting that was never meant to publish;
+        // both are settled. "partial" and "none" still want the owner.
         for state in states {
             let settled = AudioRetention.isSettled(status: .done, publishState: state)
-            XCTAssertEqual(settled, state == "full", "isSettled disagrees for \(state)")
+            XCTAssertEqual(settled, state == "full" || state == "local", "isSettled disagrees for \(state)")
         }
     }
 

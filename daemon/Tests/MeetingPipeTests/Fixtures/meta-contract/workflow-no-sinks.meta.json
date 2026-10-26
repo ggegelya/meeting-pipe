@@ -1,0 +1,13 @@
+{
+  "schema_version": 4,
+  "source_bundle_id": "us.zoom.xos",
+  "source_display_name": "Zoom",
+  "source_kind": "native",
+  "meeting_title": "Weekly 1:1",
+  "workflow_id": "0A2B3C4D-0000-0000-0000-00000000F004",
+  "workflow_name": "Library only",
+  "workflow_color": "#0E8C82",
+  "workflow_context_prompt": "Kept in the Library, never published.",
+  "workflow_sinks": [],
+  "workflow_nda_mode": false
+}

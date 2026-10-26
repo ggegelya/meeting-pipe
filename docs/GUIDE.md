@@ -111,6 +111,8 @@ Open the Library (menu bar ▸ **Open Library…**). Under the **WORKFLOWS** hea
 
 The menu bar's **Manage Workflows…** is the same editor without opening the Library first.
 
+The editor's **Sinks** are where the workflow's summaries go. Uncheck every one and the workflow publishes nowhere: its summaries stay in the Library and are never published, and the editor says so under the checkboxes. Those meetings still read **Ready** (hover the pill and it says the workflow publishes nowhere) and never land in **Needs you**, because nothing went wrong. To keep a plain Markdown copy on your Mac as well, check **Filesystem** instead.
+
 ### How a meeting picks one
 
 Highest priority first:

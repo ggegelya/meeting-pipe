@@ -1012,6 +1012,47 @@ def test_run_all_completes_when_no_sink_was_configured(tmp_path: Path, monkeypat
     assert "publish_failed" not in result
 
 
+def test_run_all_with_a_no_sinks_workflow_exits_0_and_records_local(
+    tmp_path: Path, monkeypatch
+):
+    """WF10, end to end through `main`, the overlay and the real fanout: a
+    workflow saved with every destination unchecked writes `workflow_sinks: []`.
+    That used to fall back to the global default (`["notion"]`), so with no
+    `NOTION_TOKEN` it was an exit-3 publish failure for a publish nobody asked
+    for. It now publishes nowhere, exits 0, and records `state: "local"`."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    monkeypatch.setattr("mp.entry.load_secrets", lambda *a, **k: None)
+    monkeypatch.setattr(Config, "load", classmethod(lambda cls, *a, **k: Config()))
+
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
+    (tmp_path / f"{stem}.meta.json").write_text(
+        json.dumps({"workflow_name": "Library only", "workflow_sinks": [],
+                    "workflow_nda_mode": False}),
+        encoding="utf-8",
+    )
+    summary_json = tmp_path / f"{stem}.summary.json"
+    summary_json.write_text(
+        MeetingSummary(
+            title="Standup", summary=["a"], decisions=[], actions=[],
+            questions=[], attendees=[], detected_language="en",
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    with patch("mp.orchestrate.summarize",
+               return_value={"json": summary_json, "md": tmp_path / f"{stem}.summary.md"}):
+        assert orchestrate_main([str(wav)]) == 0
+
+    sidecar = json.loads((tmp_path / f"{stem}.publish.json").read_text(encoding="utf-8"))
+    assert sidecar["state"] == "local"
+    assert sidecar["sinks"] == {}
+    assert not (tmp_path / f"{stem}.notion.json").exists()
+
+
 def test_main_returns_the_publish_failed_exit_code(tmp_path: Path, monkeypatch):
     """The exit code is the whole Swift-side contract: it is what tells the daemon
     to stamp stage=publish rather than clear the failure sidecar."""

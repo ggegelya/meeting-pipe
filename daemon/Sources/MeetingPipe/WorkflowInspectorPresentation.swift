@@ -194,7 +194,7 @@ struct WorkflowInspectorPresentation: Equatable {
     /// than the sinks its editor still holds.
     private static func outputRow(_ workflow: Workflow, notionNames: [String: String]) -> Row {
         let sinks = workflow.effectiveSinks
-        guard !sinks.isEmpty else { return Row(label: "Output", value: "No destination set") }
+        guard !sinks.isEmpty else { return Row(label: "Output", value: WorkflowNoDestination.inspectorValue) }
         let names = sinks.map { sink -> String in
             switch sink {
             case .notion(let id) where !id.isEmpty:
