@@ -179,20 +179,32 @@ enum OrphanRecordingRecovery {
     /// sidecar already exists (a `stop()` that wrote one before the merge failed,
     /// or a prior recovery), so a hand-edited or stop-written sidecar is never
     /// clobbered.
-    static func restoreMetaSidecar(_ meta: [String: Any], forStem stem: String, in directory: URL) {
-        guard !meta.isEmpty else { return }
+    ///
+    /// Returns whether a readable sidecar carrying the routing is on disk afterwards
+    /// (SEC25): true for an empty payload (nothing to route), a readable existing
+    /// sidecar, or a successful write; false when the write failed or the file in the
+    /// way cannot be read, which the Library's retry turns into a refusal.
+    @discardableResult
+    static func restoreMetaSidecar(_ meta: [String: Any], forStem stem: String, in directory: URL) -> Bool {
+        guard !meta.isEmpty else { return true }
         let sidecar = directory.appendingPathComponent("\(stem).meta.json")
-        guard !FileManager.default.fileExists(atPath: sidecar.path) else { return }
+        switch MeetingMetaRead.load(at: sidecar) {
+        case .loaded: return true
+        case .unreadable: return false
+        case .absent: break
+        }
         guard let data = try? JSONSerialization.data(
             withJSONObject: meta, options: [.prettyPrinted, .sortedKeys]
-        ) else { return }
+        ) else { return false }
         do {
             try data.write(to: sidecar, options: .atomic)
             Log.event(category: "coordinator", action: "orphan_meta_restored", attributes: [
                 "stem": stem,
             ])
+            return true
         } catch {
             Log.writeLine("daemon", "WARN: could not restore meta sidecar for orphan \(stem): \(error.localizedDescription)")
+            return false
         }
     }
 

@@ -87,3 +87,20 @@ def test_prepare_does_not_mutate_the_callers_config(tmp_path: Path) -> None:
     original = Config()
     entry.prepare(original, _meeting(tmp_path, workflow_nda_mode=True))
     assert original.modes.workflow_nda_mode is False
+
+
+def test_prepare_arms_on_an_anchor_whose_sidecar_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC25: a `<stem>.meta.json` that exists but cannot be read (here a
+    directory in its place, so the read raises IsADirectoryError) is no longer
+    "no workflow". The run arms before the secrets load, so the Keychain tokens
+    never reach this process."""
+    wav = _meeting(tmp_path)
+    (tmp_path / "20260710-101500.meta.json").mkdir()
+    armed_at_call = _spy_on_secrets(monkeypatch)
+    cfg = entry.prepare(Config(), wav)
+    assert cfg.summarization.backend == "local"
+    assert cfg.output.sinks == ["filesystem"]
+    assert egress_guard.is_armed()
+    assert armed_at_call == [True]

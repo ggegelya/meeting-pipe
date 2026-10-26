@@ -776,23 +776,43 @@ final class MeetingSessionController: @unchecked Sendable {
                         "device": recorder.lastInputDevice?.displayName ?? "(unknown)",
                     ])
                 }
-                self.writeMetaSidecar(
-                    file: file,
-                    source: source,
-                    micDeviceName: recorder.lastInputDevice?.displayName,
-                    micSilent: micWarning == .micRecordedNothing,
-                    heldEndTrimSec: suggestedTrimSeconds
-                )
+                let stem = file.deletingPathExtension().lastPathComponent
+                do {
+                    try self.writeMetaSidecar(
+                        file: file,
+                        source: source,
+                        micDeviceName: recorder.lastInputDevice?.displayName,
+                        micSilent: micWarning == .micRecordedNothing,
+                        heldEndTrimSec: suggestedTrimSeconds
+                    )
+                } catch {
+                    // SEC25: the write is atomic, so a failure leaves no sidecar and the
+                    // pipeline would read "no workflow". The recovery manifest holds the same
+                    // routing, so it is kept, and a private workflow's job waits for a retry
+                    // that restores the sidecar from it (`MeetingLibraryService.retryMeeting`).
+                    let held = MetaWriteFailure.holdsJob(workflow: self.activeWorkflow)
+                    self.reportMetaWriteFailure(error, stem: stem, held: held)
+                    if held {
+                        PipelineFailureSidecar.write(
+                            stem: stem, in: file.deletingLastPathComponent(),
+                            stage: .pipeline, reason: MetaWriteFailure.heldReason
+                        )
+                        self.coordinator.notifications.notifyError(MetaWriteFailure.heldReason)
+                    } else {
+                        self.coordinator.notifications.notifyProcessing(file: file)
+                        self.coordinator.jobs.enqueue(file: file, summaryMode: summaryMode)
+                    }
+                    self.resetAfterStop(source: source)
+                    return
+                }
                 self.coordinator.notifications.notifyProcessing(file: file)
                 self.coordinator.jobs.enqueue(file: file, summaryMode: summaryMode)
                 // Clean finish: the meta sidecar is now on disk and the job is
                 // enqueued, so drop the start-time recovery manifest. Kept on the
                 // else branch below, where the merge failed and the orphan sweep
-                // still needs it to route the retried recording (REC2 / AUD-6).
-                RecordingManifest.remove(
-                    forStem: file.deletingPathExtension().lastPathComponent,
-                    in: file.deletingLastPathComponent()
-                )
+                // still needs it to route the retried recording (REC2 / AUD-6), and
+                // kept above when the sidecar write failed (SEC25).
+                RecordingManifest.remove(forStem: stem, in: file.deletingLastPathComponent())
                 // The MIC14 `.offrecord` marker is deliberately NOT dropped here (SEC16). It used
                 // to be, which left nothing on disk saying the recording had an off-record span
                 // if the timeline write had failed. The job removes it once redaction succeeds.
@@ -803,32 +823,62 @@ final class MeetingSessionController: @unchecked Sendable {
                 // after every job completion, not only at the next launch). Preserve
                 // the meeting title / workflow for that run, and surface the failure
                 // now rather than enqueueing a missing file (REC1 / AUD-5).
-                self.writeMetaSidecar(file: file, source: source, heldEndTrimSec: suggestedTrimSeconds)
+                do {
+                    try self.writeMetaSidecar(file: file, source: source, heldEndTrimSec: suggestedTrimSeconds)
+                } catch {
+                    // The manifest is kept on this branch anyway, and orphan recovery restores
+                    // the sidecar from it before the recovered recording is enqueued.
+                    self.reportMetaWriteFailure(
+                        error, stem: file.deletingPathExtension().lastPathComponent, held: false
+                    )
+                }
                 self.coordinator.notifications.notifyError(
                     "Could not finalize \(file.lastPathComponent). The raw recording was kept and will be recovered automatically."
                 )
             }
-            // Drop the workflow + markers so they can't bleed into the next meeting.
-            self.activeWorkflow = nil
-            self.activeCaptureMode = nil
-            self.activeResumedFrom = nil
-            self.markerSeconds = []
-            self.coordinator.hud.resetFlagCount()  // UX73: paired with every markerSeconds reset
-            self.offTheRecordOn = false
-            // Arm the re-prompt cooldown so a post-call mic grab (Teams chat,
-            // Zoom teardown toast) can't re-prompt right after the flush.
-            if let bid = source?.bundleID {
-                self.coordinator.stateMachine.recordCooldownEnd(bundleID: bid)
-            }
-            self.coordinator.stateMachine.setIdle()
-            self.coordinator.statusUI.setIdle()
+            self.resetAfterStop(source: source)
         }
+    }
+
+    /// The tail of every stop: drop the workflow + markers so they can't bleed into the next
+    /// meeting, arm the re-prompt cooldown, and go idle.
+    private func resetAfterStop(source: AppSource?) {
+        activeWorkflow = nil
+        activeCaptureMode = nil
+        activeResumedFrom = nil
+        markerSeconds = []
+        coordinator.hud.resetFlagCount()  // UX73: paired with every markerSeconds reset
+        offTheRecordOn = false
+        // Arm the re-prompt cooldown so a post-call mic grab (Teams chat,
+        // Zoom teardown toast) can't re-prompt right after the flush.
+        if let bid = source?.bundleID {
+            coordinator.stateMachine.recordCooldownEnd(bundleID: bid)
+        }
+        coordinator.stateMachine.setIdle()
+        coordinator.statusUI.setIdle()
+    }
+
+    /// SEC25: a failed stop-time sidecar write reaches the daemon file log and the event log,
+    /// not only os.Logger (whose interpolated reason is stored as `<private>`).
+    private func reportMetaWriteFailure(_ error: Error, stem: String, held: Bool) {
+        let ns = error as NSError
+        Log.writeLine(
+            "daemon",
+            "WARN: could not write meta sidecar for \(stem) (\(ns.domain) \(ns.code)): \(error.localizedDescription); recovery manifest kept\(held ? ", job held" : "")"
+        )
+        Log.event(category: "recorder", action: "meta_write_failed", attributes: [
+            "stem": stem,
+            "domain": ns.domain,
+            "code": ns.code,
+            "held": held,
+        ])
     }
 
     /// Drop a `<wav-stem>.meta.json` next to the recording so the pipeline
     /// can pick up the meeting name + source app for a contextual Notion
-    /// title. Best-effort: a write failure is logged but doesn't block the
-    /// pipeline (the LLM-derived title is the existing fallback).
+    /// title. Throws on a failed write (SEC25): the caller decides whether the
+    /// job can run without it, since the sidecar also carries the workflow's
+    /// NDA routing.
     ///
     /// TECH-B4 piggy-backs the active workflow onto the same sidecar
     /// (`workflow_id`, `workflow_name`, `workflow_color`, plus the per-
@@ -841,7 +891,7 @@ final class MeetingSessionController: @unchecked Sendable {
         micDeviceName: String? = nil,
         micSilent: Bool = false,
         heldEndTrimSec: Double? = nil
-    ) {
+    ) throws {
         let dict = MeetingMetaSidecar.build(
             source: source,
             workflow: activeWorkflow,
@@ -854,16 +904,12 @@ final class MeetingSessionController: @unchecked Sendable {
         if dict.isEmpty { return }
         let stem = file.deletingPathExtension().lastPathComponent
         let sidecar = file.deletingLastPathComponent().appendingPathComponent("\(stem).meta.json")
-        do {
-            let data = try JSONSerialization.data(
-                withJSONObject: dict,
-                options: [.prettyPrinted, .sortedKeys]
-            )
-            try data.write(to: sidecar, options: .atomic)
-            Log.writeLine("daemon", "meta sidecar → \(sidecar.lastPathComponent) title=\(source?.meetingTitle ?? "(none)") workflow=\(activeWorkflow?.name ?? "(none)")")
-        } catch {
-            Log.main.warning("Failed to write meta sidecar: \(error.localizedDescription)")
-        }
+        let data = try JSONSerialization.data(
+            withJSONObject: dict,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        try data.write(to: sidecar, options: .atomic)
+        Log.writeLine("daemon", "meta sidecar → \(sidecar.lastPathComponent) title=\(source?.meetingTitle ?? "(none)") workflow=\(activeWorkflow?.name ?? "(none)")")
     }
 
     /// Write the start-time recovery manifest (`<stem>.recovery.json`, REC2 /

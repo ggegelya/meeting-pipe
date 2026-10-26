@@ -1361,23 +1361,32 @@ final class PipelineLauncher: PipelineDriver {
     /// parse reads as regulated and strips both tokens (ARCH9). It used to read
     /// `regulated = false` there, keeping both tokens for a user whose file said
     /// regulated.
+    ///
+    /// SEC25: the sidecar is read through `MeetingMetaRead`, so one that exists but cannot be
+    /// read or parsed strips both tokens (it may be hiding `workflow_nda_mode`) instead of reading
+    /// as "no workflow". The sidecar's own `regulated_mode` counts too (FB-11): a meeting recorded
+    /// under regulated mode and reprocessed after the global flag was turned off keeps neither
+    /// token, matching the pipeline's overlay.
     static func cloudSecretPolicy(
         for meeting: URL?,
         backendOverride: String? = nil,
         configURL: URL = Config.defaultPath
     ) -> (stripAnthropic: Bool, stripNotion: Bool) {
         let config = ConfigStore(configURL: configURL)
-        let regulated = config.regulatedMode
+        var regulated = config.regulatedMode
         let globalBackend = config.summarizationBackend
         var nda = false
         var sidecarBackend: String?
         if let meeting = meeting {
-            let metaURL = meeting.deletingLastPathComponent()
-                .appendingPathComponent("\(MeetingStore.stem(of: meeting)).meta.json")
-            if let data = try? Data(contentsOf: metaURL),
-               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            switch MeetingMetaRead.load(stem: MeetingStore.stem(of: meeting), in: meeting.deletingLastPathComponent()) {
+            case .absent:
+                break
+            case .loaded(let obj):
                 nda = (obj["workflow_nda_mode"] as? Bool) ?? false
+                regulated = regulated || ((obj["regulated_mode"] as? Bool) ?? false)
                 sidecarBackend = obj["workflow_backend"] as? String
+            case .unreadable:
+                nda = true
             }
         }
         // PIPE6: a one-shot backend override (Library "Re-summarize with...") wins

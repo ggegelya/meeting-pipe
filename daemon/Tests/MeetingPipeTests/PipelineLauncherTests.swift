@@ -196,6 +196,65 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertTrue(policy.stripNotion)
     }
 
+    // MARK: - SEC25: a sidecar that cannot be read is not "no workflow"
+
+    /// A meeting directory holding `<stem>.wav`, with `meta` (if any) staged by the caller.
+    private func meetingDir(_ stem: String) throws -> (dir: URL, wav: URL) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sec25-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return (dir, dir.appendingPathComponent("\(stem).wav"))
+    }
+
+    func testPolicyUnparseableSidecarStripsBoth() throws {
+        let cfg = writeConfig("[summarization]\nbackend = \"anthropic\"\n")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        let (dir, wav) = try meetingDir("20261026-1000")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data("{not json".utf8).write(to: dir.appendingPathComponent("20261026-1000.meta.json"))
+        let policy = PipelineLauncher.cloudSecretPolicy(for: wav, configURL: cfg)
+        XCTAssertTrue(policy.stripAnthropic)
+        XCTAssertTrue(policy.stripNotion)
+    }
+
+    func testPolicySidecarThatCannotBeReadStripsBoth() throws {
+        // A directory in the sidecar's place: present, and its bytes out of reach, the shape of
+        // the 2026-10-16 EDEADLK on a dataless iCloud file.
+        let cfg = writeConfig("[summarization]\nbackend = \"anthropic\"\n")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        let (dir, wav) = try meetingDir("20261026-1001")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("20261026-1001.meta.json"), withIntermediateDirectories: true)
+        let policy = PipelineLauncher.cloudSecretPolicy(for: wav, configURL: cfg)
+        XCTAssertTrue(policy.stripAnthropic)
+        XCTAssertTrue(policy.stripNotion)
+    }
+
+    func testPolicyMissingSidecarKeepsTheGlobalPosture() throws {
+        let cfg = writeConfig("[summarization]\nbackend = \"anthropic\"\n")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        let (dir, wav) = try meetingDir("20261026-1002")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let policy = PipelineLauncher.cloudSecretPolicy(for: wav, configURL: cfg)
+        XCTAssertFalse(policy.stripAnthropic)
+        XCTAssertFalse(policy.stripNotion)
+    }
+
+    func testPolicySidecarRegulatedModeStripsBothWithGlobalRegulatedOff() throws {
+        // FB-11: a meeting recorded under regulated mode, reprocessed after the global flag was
+        // turned off. The sidecar still says regulated, so neither token reaches the child.
+        let cfg = writeConfig("[modes]\nregulated_mode = false\n[summarization]\nbackend = \"anthropic\"\n")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        let (dir, wav) = try meetingDir("20261026-1003")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data(#"{"regulated_mode": true, "workflow_backend": "anthropic"}"#.utf8)
+            .write(to: dir.appendingPathComponent("20261026-1003.meta.json"))
+        let policy = PipelineLauncher.cloudSecretPolicy(for: wav, configURL: cfg)
+        XCTAssertTrue(policy.stripAnthropic)
+        XCTAssertTrue(policy.stripNotion)
+    }
+
     func testPolicyBackendOverrideAnthropicKeepsKeyOnApplePinnedMeeting() throws {
         // PIPE6 gotcha: "Re-summarize with Anthropic" on a meeting whose persisted
         // backend is apple_intelligence must keep ANTHROPIC_API_KEY, or the re-run

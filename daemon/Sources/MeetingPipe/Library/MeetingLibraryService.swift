@@ -33,6 +33,9 @@ final class MeetingLibraryService {
         case emptyPastedSummary
         /// A workflow reassignment (WF8) could not rewrite `<stem>.meta.json`.
         case metaWriteFailed(stem: String)
+        /// `<stem>.meta.json` exists but could not be read or parsed (SEC25), so a reassignment
+        /// that rebuilds it would drop whatever it holds. Nothing was written.
+        case metaUnreadable(stem: String)
         /// Re-transcribe (ASR3) was called before the Coordinator wired the
         /// transcription queue. Only reachable headless; the Library is not on
         /// screen until it is wired.
@@ -58,6 +61,8 @@ final class MeetingLibraryService {
                 return "Paste a summary before saving."
             case .metaWriteFailed(let stem):
                 return "Could not update the workflow for \(stem)."
+            case .metaUnreadable(let stem):
+                return "Could not read the workflow settings for \(stem), so they were left as they are. Try again in a moment."
             case .transcriptionUnavailable:
                 return "Transcription is not available yet."
             }
@@ -166,14 +171,10 @@ final class MeetingLibraryService {
     /// sinks, read fresh off `<stem>.meta.json` (PIPE11 leg c). Mirrors
     /// `Meeting.isZeroEgress`, which reads the same two keys off the same file;
     /// this one exists because a chain has to re-read the sidecar mid-flight
-    /// rather than trust the `Meeting` the UI handed it minutes ago.
+    /// rather than trust the `Meeting` the UI handed it minutes ago. A sidecar that cannot be read
+    /// counts as zero-egress (SEC25), so the publish leg holds rather than guessing.
     private static func isZeroEgress(stem: String, in dir: URL) -> Bool {
-        guard let data = try? Data(contentsOf: dir.appendingPathComponent("\(stem).meta.json")),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return false
-        }
-        return (obj["workflow_nda_mode"] as? Bool ?? false)
-            || (obj["regulated_mode"] as? Bool ?? false)
+        MeetingMetaRead.load(stem: stem, in: dir).isZeroEgress
     }
 
     /// Retry a failed meeting, reusing whatever the failed run already produced (PIPE1).
@@ -183,6 +184,18 @@ final class MeetingLibraryService {
     /// Fails immediately when the work the chosen path needs is missing (no recording for a full retry, no summary for a publish retry); all other errors surface via the existing pipeline notifier.
     func retryMeeting(stem: String) -> Result<Void, Error> {
         let dir = outputDir()
+        // SEC25: a stop whose `<stem>.meta.json` write failed kept the recovery manifest, the only
+        // other copy of the meeting's routing, and an NDA or on-device meeting was held rather than
+        // run. Rebuild the sidecar from it before any path below reads the meeting, and refuse
+        // when that still cannot land, so the run never goes out without its routing. Gated on a
+        // final recording: a manifest beside capture intermediates belongs to the orphan sweep.
+        let manifest = RecordingManifest.read(forStem: stem, in: dir)
+        if let manifest, MeetingStore.finalRecordingURL(stem: stem, in: dir) != nil {
+            guard OrphanRecordingRecovery.restoreMetaSidecar(manifest.meta, forStem: stem, in: dir) else {
+                return .failure(LibraryError.metaWriteFailed(stem: stem))
+            }
+            RecordingManifest.remove(forStem: stem, in: dir)
+        }
         let failure = PipelineFailureSidecar.read(stem: stem, in: dir)
         let summaryURL = dir.appendingPathComponent("\(stem).summary.json")
 
@@ -213,7 +226,8 @@ final class MeetingLibraryService {
         ])
         // Drop the failure sidecar immediately so the row leaves the failed set before the run finishes. The dispatcher writes a fresh sidecar if it fails again.
         PipelineFailureSidecar.clear(stem: stem, in: dir)
-        enqueue(audioURL, .auto)
+        // A held meeting's manifest also carries the summary mode it was recorded under.
+        enqueue(audioURL, manifest?.summaryMode ?? .auto)
         return .success(())
     }
 
@@ -274,13 +288,15 @@ final class MeetingLibraryService {
                     case .success:
                         // Drop any stale failure sidecar: a retry clears via the dispatcher, but a regenerate bypasses run-all, so it clears here. Then chain into publish.
                         PipelineFailureSidecar.clear(stem: stem, in: dir)
-                        guard startedZeroEgress || !Self.isZeroEgress(stem: stem, in: dir) else {
+                        let nowRead = MeetingMetaRead.load(stem: stem, in: dir)
+                        guard startedZeroEgress || !nowRead.isZeroEgress else {
                             Log.event(category: "coordinator", action: "regenerate_publish_skipped", attributes: [
                                 "stem": stem,
-                                "reason": "moved_into_nda",
+                                "reason": nowRead.isUnreadable ? "sidecar_unreadable" : "moved_into_nda",
                             ])
-                            self.notifyError(
-                                "Summary regenerated but not published: \(stem) moved into an NDA workflow while it was running. Republish it to send it to that workflow's sinks."
+                            self.notifyError(nowRead.isUnreadable
+                                ? "Summary regenerated but not published: the workflow settings for \(stem) could not be read, so it stays on this Mac. Republish it once they can be read."
+                                : "Summary regenerated but not published: \(stem) moved into an NDA workflow while it was running. Republish it to send it to that workflow's sinks."
                             )
                             token.finish(.success(nil))
                             return
@@ -524,10 +540,13 @@ final class MeetingLibraryService {
     func reassignWorkflow(stem: String, to workflow: Workflow) -> Result<Void, Error> {
         let dir = outputDir()
         let metaURL = dir.appendingPathComponent("\(stem).meta.json")
-        var existing: [String: Any] = [:]
-        if let data = try? Data(contentsOf: metaURL),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            existing = obj
+        // SEC25: rebuilding over a sidecar that could not be read would write `[:]` plus the new
+        // workflow block over it, dropping `regulated_mode`, the source and the title. Refuse.
+        let existing: [String: Any]
+        switch MeetingMetaRead.load(at: metaURL) {
+        case .absent: existing = [:]
+        case .loaded(let obj): existing = obj
+        case .unreadable: return .failure(LibraryError.metaUnreadable(stem: stem))
         }
         let updated = MeetingMetaSidecar.reassigned(existing: existing, to: workflow)
         guard JSONSerialization.isValidJSONObject(updated),

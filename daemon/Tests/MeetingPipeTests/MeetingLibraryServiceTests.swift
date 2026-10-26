@@ -327,6 +327,20 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertTrue(corrections.isEmpty)
     }
 
+    /// SEC25: a sidecar that cannot be parsed used to read as `[:]`, and the rebuilt dictionary
+    /// was written over it, dropping `regulated_mode`, the source and the title. Now the
+    /// reassignment refuses and the file is left byte for byte.
+    func test_reassignWorkflow_over_an_unparseable_sidecar_fails_and_leaves_the_bytes() throws {
+        let bytes = #"{"regulated_mode": true, "source_bundle_id": "us.zoom.xos", "#
+        try touch("m3.meta.json", contents: bytes)
+        let result = service.reassignWorkflow(stem: "m3", to: Workflow(name: "Personal"))
+        guard case .failure(let error) = result else { return XCTFail("expected the reassignment to refuse") }
+        XCTAssertEqual(error as? MeetingLibraryService.LibraryError, .metaUnreadable(stem: "m3"))
+        XCTAssertEqual(
+            try String(contentsOf: dir.appendingPathComponent("m3.meta.json"), encoding: .utf8), bytes)
+        XCTAssertTrue(corrections.isEmpty, "nothing was reassigned, so nothing is learned")
+    }
+
     func test_reassignWorkflow_of_a_manual_recording_passes_an_empty_bundle_through() throws {
         // A manual recording has no source, so the store refuses the pair. The
         // service still calls, and reports what happened on the event.
@@ -723,6 +737,26 @@ final class MeetingLibraryServiceTests: XCTestCase {
         guard case .success(let url)? = captured else { return XCTFail("expected a terminal success") }
         XCTAssertNil(url, "nothing was published, so there is no page")
         XCTAssertEqual(errors.count, 1, "the skip is surfaced, not silent")
+    }
+
+    /// SEC25: the PIPE11 guard re-reads the sidecar mid-chain. A sidecar that has become
+    /// unreadable by then is not "no workflow"; the chain treats it as zero-egress and holds the
+    /// publish leg, the same way it holds a move into NDA.
+    func test_a_sidecar_unreadable_mid_chain_stops_the_publish_leg() throws {
+        try touch("m.md")
+        try touch("m.summary.json")
+        try writeMeta(nda: false)
+        let lane = FakeLane()
+        let service = makeService(lane: lane)
+
+        service.regenerateMeeting(stem: "m") { _ in }
+        lane.startNext()
+        try touch("m.meta.json", contents: "{not json")
+        driver.finishSummarize(.success(()))
+        drainMain()
+
+        XCTAssertTrue(driver.publishInputs.isEmpty, "an unreadable posture is not permission to publish")
+        XCTAssertEqual(errors.count, 1)
     }
 
     func test_an_unchanged_workflow_still_chains_into_publish() throws {

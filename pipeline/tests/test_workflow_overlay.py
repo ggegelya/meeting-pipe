@@ -7,12 +7,17 @@ single run. The rest of the pipeline never has to know workflows exist.
 """
 from __future__ import annotations
 
+import errno
 import json
+import logging
+import os
 from pathlib import Path
 
-from mp.config import Config
+import pytest
+
+from mp.config import Config, zero_egress
 from mp.publish_router import build_publishers
-from mp.workflow import apply_overrides
+from mp.workflow import MetaRead, apply_overrides, load_meta, read_meta
 
 
 def _write_meta(dir: Path, stem: str, data: dict) -> None:
@@ -119,14 +124,173 @@ def test_overlay_works_for_summary_and_transcript_paths(tmp_path: Path) -> None:
     assert apply_overrides(cfg, transcript).summarization.team_context == "Test seasoning"
 
 
-def test_malformed_sidecar_yields_unchanged_cfg(tmp_path: Path) -> None:
-    cfg = Config()
-    stem = "20260512-broken"
+# SEC25: a sidecar that exists but cannot be read or parsed used to read exactly
+# like an absent one, so the meeting's NDA routing fell back to the global (cloud)
+# config. The third outcome now fails closed: on-device backend, filesystem sink,
+# and the egress guard arms through `zero_egress`.
+
+
+def _assert_on_device(cfg: Config) -> None:
+    assert cfg.summarization.backend == "local"
+    assert cfg.output.sinks == ["filesystem"]
+    assert zero_egress(cfg)
+
+
+def _anthropic_notion_cfg() -> Config:
+    return Config.model_validate({
+        "summarization": {"backend": "anthropic"},
+        "output": {"sinks": ["notion", "filesystem"]},
+    })
+
+
+def test_missing_sidecar_still_yields_the_global_config(tmp_path: Path) -> None:
+    wav = tmp_path / "20260512-101531.wav"
+    wav.write_bytes(b"")
+    result = apply_overrides(_anthropic_notion_cfg(), wav)
+    assert result.summarization.backend == "anthropic"
+    assert result.output.sinks == ["notion", "filesystem"]
+    assert not zero_egress(result)
+
+
+def test_unparseable_sidecar_runs_the_meeting_on_device(tmp_path: Path) -> None:
+    stem = "20260512-102000"
     (tmp_path / f"{stem}.meta.json").write_text("{not json", encoding="utf-8")
     wav = tmp_path / f"{stem}.wav"
     wav.write_bytes(b"")
-    result = apply_overrides(cfg, wav)
-    assert result.summarization.team_context == cfg.summarization.team_context
+    _assert_on_device(apply_overrides(_anthropic_notion_cfg(), wav))
+
+
+def test_a_sidecar_that_is_not_an_object_runs_the_meeting_on_device(tmp_path: Path) -> None:
+    # A JSON array parses but is not a sidecar; it used to reach `meta.get` and raise.
+    stem = "20260512-102100"
+    (tmp_path / f"{stem}.meta.json").write_text('["workflow_nda_mode"]', encoding="utf-8")
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _assert_on_device(apply_overrides(_anthropic_notion_cfg(), wav))
+
+
+def _deadlock_on_sidecar_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every read of a `*.meta.json` fail the way a dataless iCloud file did
+    on 2026-10-16 (Errno 11, EDEADLK), leaving every other read alone."""
+    real_read_bytes = Path.read_bytes
+
+    def fake_read_bytes(self: Path) -> bytes:
+        if self.name.endswith(".meta.json"):
+            raise OSError(errno.EDEADLK, os.strerror(errno.EDEADLK))
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", fake_read_bytes)
+
+
+def test_an_io_error_on_the_sidecar_runs_the_meeting_on_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stem = "20260512-102200"
+    _write_meta(tmp_path, stem, {"workflow_backend": "anthropic"})
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _deadlock_on_sidecar_reads(monkeypatch)
+    result = apply_overrides(_anthropic_notion_cfg(), wav)
+    _assert_on_device(result)
+    assert result.modes.workflow_nda_mode is True
+
+
+def test_an_unreadable_sidecar_emits_one_event_per_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # run-all prepares, then hands its config to summarize, which prepares again:
+    # one meeting's unreadable sidecar is one row, not one per overlay.
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        "mp.workflow.events.emit",
+        lambda cat, action, **attrs: emitted.append((cat, action, attrs)),
+    )
+    stem = "20260512-102300"
+    _write_meta(tmp_path, stem, {"workflow_nda_mode": True})
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _deadlock_on_sidecar_reads(monkeypatch)
+    apply_overrides(Config(), wav)
+    apply_overrides(Config(), tmp_path / f"{stem}.md")
+
+    rows = [(c, attrs) for c, a, attrs in emitted if a == "sidecar_unreadable"]
+    assert rows == [("pipeline", {"stem": stem, "kind": "io", "errno": "EDEADLK"})]
+
+
+def test_a_parse_failure_event_names_the_kind_and_no_errno(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        "mp.workflow.events.emit",
+        lambda cat, action, **attrs: emitted.append((cat, action, attrs)),
+    )
+    stem = "20260512-102400"
+    (tmp_path / f"{stem}.meta.json").write_text("{not json", encoding="utf-8")
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    apply_overrides(Config(), wav)
+    assert [attrs for _, a, attrs in emitted if a == "sidecar_unreadable"] == [
+        {"stem": stem, "kind": "parse", "errno": None}
+    ]
+
+
+def test_a_missing_sidecar_emits_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    emitted: list[str] = []
+    monkeypatch.setattr("mp.workflow.events.emit", lambda cat, action, **attrs: emitted.append(action))
+    wav = tmp_path / "20260512-102500.wav"
+    wav.write_bytes(b"")
+    apply_overrides(Config(), wav)
+    assert emitted == []
+
+
+def test_the_io_log_line_says_could_not_be_read_not_malformed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The 2026-10-16 rows called an EDEADLK "malformed", which sends a reader
+    # looking for a JSON bug instead of a dataless file.
+    stem = "20260512-102600"
+    _write_meta(tmp_path, stem, {})
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _deadlock_on_sidecar_reads(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="mp.workflow"):
+        apply_overrides(Config(), wav)
+    text = caplog.text
+    assert "could not be read" in text
+    assert "EDEADLK" in text
+    assert "running this meeting on-device" in text
+    assert "malformed" not in text
+
+
+def test_the_parse_log_line_keeps_the_malformed_wording(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    stem = "20260512-102700"
+    (tmp_path / f"{stem}.meta.json").write_text("{not json", encoding="utf-8")
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    with caplog.at_level(logging.WARNING, logger="mp.workflow"):
+        apply_overrides(Config(), wav)
+    assert "malformed" in caplog.text
+    assert "running this meeting on-device" in caplog.text
+
+
+def test_read_meta_still_reads_an_unreadable_sidecar_as_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The informational callers (actions, mcp_tools, glossary, the AI6 scan,
+    # visibility) keep the old signature: no dict means nothing to show, and
+    # visibility withholds a meeting it cannot read as `no_sidecar`.
+    stem = "20260512-102800"
+    _write_meta(tmp_path, stem, {"workflow_name": "Client"})
+    assert load_meta(tmp_path / "20260512-102801.wav").state == "absent"
+    assert load_meta(tmp_path / f"{stem}.wav").data == {"workflow_name": "Client"}
+    _deadlock_on_sidecar_reads(monkeypatch)
+    assert read_meta(tmp_path / f"{stem}.wav") == {}
+    unreadable = load_meta(tmp_path / f"{stem}.wav")
+    assert isinstance(unreadable, MetaRead)
+    assert (unreadable.state, unreadable.kind, unreadable.errno) == ("unreadable", "io", "EDEADLK")
 
 
 def test_unknown_backend_value_is_ignored(tmp_path: Path) -> None:

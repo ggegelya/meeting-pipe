@@ -95,6 +95,9 @@ struct Meeting: Identifiable, Hashable {
     /// Defaulted so test constructors need not supply them.
     var workflowNDAMode: Bool? = nil
     var regulatedMode: Bool? = nil
+    /// `<stem>.meta.json` exists but could not be read or parsed (SEC25). The NDA flag may be in
+    /// there, so the row counts as zero-egress rather than as a meeting with no workflow.
+    var metaUnreadable: Bool = false
 
     /// The input device the recorder captured, from `<stem>.meta.json["mic_device_name"]`
     /// (MIC15). Shown in the detail pane so the user can tell which mic a recording used. Nil for
@@ -178,7 +181,8 @@ struct Meeting: Identifiable, Hashable {
     /// True when the meeting was recorded zero-egress, i.e. forced on-device and
     /// local-only by an NDA workflow or global regulated mode. Drives the
     /// "Local only" privacy badge, which must never be inferred (TECH-DSN6).
-    var isZeroEgress: Bool { (workflowNDAMode ?? false) || (regulatedMode ?? false) }
+    /// A sidecar that could not be read counts too (SEC25): unknown is not permission.
+    var isZeroEgress: Bool { (workflowNDAMode ?? false) || (regulatedMode ?? false) || metaUnreadable }
 
     /// Best-effort display label: summary title > meeting title > "{source} at HH:mm" > raw stem. Never empty.
     var displayTitle: String {
@@ -645,7 +649,12 @@ final class MeetingStore: ObservableObject {
         // added and says nothing when it is not; this cannot fall behind.
         let transcriptJSON = files.first { $0.lastPathComponent == "\(stem).json" }
 
-        let meta = metaURL.flatMap { readJSON(at: $0) }
+        // SEC25: three outcomes, not two. An unreadable sidecar leaves `meta` nil like an absent
+        // one, but marks the row zero-egress and keeps it out of the cache below, so the row
+        // re-reads once iCloud materializes the file (that changes no mtime).
+        let metaRead = metaURL.map { MeetingMetaRead.load(at: $0) }
+        let meta = metaRead?.dictionary
+        let metaUnreadable = metaRead?.isUnreadable ?? false
         let run = runURL.flatMap { readJSON(at: $0) }
         let summary: MeetingSummary? = summaryURL.flatMap { MeetingSummary.load(from: $0) }
         // A saved summary supersedes a legacy processing marker. Publish failures
@@ -762,6 +771,7 @@ final class MeetingStore: ObservableObject {
             detectedLanguage: (summary?.detectedLanguage).flatMap { $0.isEmpty ? nil : $0 },
             workflowNDAMode: (meta?["workflow_nda_mode"] as? Bool),
             regulatedMode: (meta?["regulated_mode"] as? Bool),
+            metaUnreadable: metaUnreadable,
             micDeviceName: (meta?["mic_device_name"] as? String),
             micWarning: (meta?["mic_silent"] as? Bool) ?? false,
             heldEndTrimSec: meta.flatMap(HeldEndTrim.trimSeconds(meta:)),
@@ -780,7 +790,7 @@ final class MeetingStore: ObservableObject {
                 runTimestamp: run?["ts"] as? String
             )
         )
-        return (meeting, cacheable)
+        return (meeting, cacheable && !metaUnreadable)
     }
 
     /// Content-modification date for a file, `.distantPast` when unreadable. The

@@ -28,11 +28,13 @@ reasons withhold a meeting:
     fail-closed, so a meeting recorded under regulated mode stays clamped even
     after the global flag is turned off. Withholding it here is the same rule
     applied to the same evidence.
-  - `no_sidecar`: there is no `<stem>.meta.json`, or it does not parse. These
-    predate the workflow feature, so their policy stance is genuinely unknown,
-    and unknown is not permission. A malformed sidecar reads the same as a
-    missing one on purpose (`workflow.read_meta` already returns `{}` for
-    both): a policy gate must not be openable by corrupting a file.
+  - `no_sidecar`: there is no `<stem>.meta.json`, or it cannot be read or does
+    not parse. These predate the workflow feature, so their policy stance is
+    genuinely unknown, and unknown is not permission. An unreadable sidecar
+    reads the same as a missing one on purpose (`workflow.read_meta` returns
+    `{}` for all three): a policy gate must not be openable by corrupting a
+    file. `workflow.apply_overrides` reaches the same verdict by the other road
+    (SEC25): it tells the three apart and runs an unreadable one on-device.
 
 Everything else is visible. On the owner's library at filing time that was 175
 of 217 (3 NDA, 39 with no sidecar).

@@ -11,21 +11,114 @@ The contract is one-way: the daemon produces a sidecar, the pipeline
 consumes it. There is no Python-side workflow CRUD; the daemon owns the
 TOML files under `~/.config/meeting-pipe/workflows/`.
 
-Failure mode: a missing or malformed sidecar yields the unmodified
-config. We deliberately don't raise on bad JSON — the pipeline must
-still produce a summary when the daemon never wrote a sidecar (manual
-`mp run-all` invocations from a shell).
+Reading the sidecar has three outcomes (SEC25), and only one of them is
+"no workflow":
+
+  - absent: the daemon never wrote one (a manual `mp run-all` from a shell,
+    a workflow-less non-regulated recording). The global config applies.
+  - ok: the overlay below.
+  - unreadable: it exists but could not be read (an I/O error, such as the
+    EDEADLK a dataless iCloud file returned on 2026-10-16) or parsed. The
+    meeting's NDA posture lives only in this file, so the overlay fails
+    closed: the run goes on-device exactly as a `workflow_nda_mode` meeting
+    would. Reading it as absent is what used to send such a meeting to cloud.
+
+`read_meta` keeps its old dict-or-empty shape for the informational callers
+(actions, mcp_tools, glossary, the AI6 sibling scan, visibility, which
+already withholds a meeting it cannot read).
 """
 from __future__ import annotations
 
+import errno as errno_mod
 import json
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+from . import events
 from .config import BACKENDS, Config, ExtraSectionSpec, zero_egress
 
 log = logging.getLogger("mp.workflow")
+
+
+@dataclass(frozen=True)
+class MetaRead:
+    """One read of `<stem>.meta.json` (SEC25). `state` is the outcome; `data` is
+    the parsed object only for `ok`; `kind` and `errno` (the symbolic name, e.g.
+    `EDEADLK`) only for `unreadable`."""
+
+    sidecar: Path
+    state: Literal["absent", "ok", "unreadable"]
+    data: dict[str, Any] = field(default_factory=dict)
+    kind: Literal["io", "parse"] | None = None
+    errno: str | None = None
+    reason: str = ""
+
+
+def _sidecar_path(any_meeting_path: Path) -> Path:
+    # Mirror the daemon's `MeetingStore.stem(of:)` rule: stem is the
+    # filename substring before the first dot. Lets a single function
+    # handle every per-meeting filename (`.wav`, `.md`, `.summary.json`,
+    # `.READY_FOR_MANUAL.md`, …).
+    stem = any_meeting_path.name.split(".", 1)[0]
+    return any_meeting_path.parent / f"{stem}.meta.json"
+
+
+def load_meta(any_meeting_path: Path) -> MetaRead:
+    """Read the meeting's sidecar into one of three outcomes. Never raises.
+
+    Only a missing file is `absent`; every other `OSError` (EDEADLK, EISDIR,
+    EACCES, ...) is `unreadable` with `kind="io"`, and bytes that are not a
+    JSON object are `unreadable` with `kind="parse"`.
+    """
+    sidecar = _sidecar_path(any_meeting_path)
+    try:
+        raw = sidecar.read_bytes()
+    except FileNotFoundError:
+        return MetaRead(sidecar, "absent")
+    except OSError as e:
+        name = errno_mod.errorcode.get(e.errno, str(e.errno)) if e.errno is not None else None
+        return MetaRead(sidecar, "unreadable", kind="io", errno=name, reason=str(e))
+    try:
+        obj = json.loads(raw.decode("utf-8"))
+    except ValueError as e:  # JSONDecodeError and UnicodeDecodeError both derive from it
+        return MetaRead(sidecar, "unreadable", kind="parse", reason=str(e))
+    if not isinstance(obj, dict):
+        return MetaRead(
+            sidecar, "unreadable", kind="parse", reason=f"top level is {type(obj).__name__}, not an object"
+        )
+    return MetaRead(sidecar, "ok", data=obj)
+
+
+def _describe_unreadable(read: MetaRead) -> str:
+    if read.kind == "io":
+        return f"Workflow meta sidecar at {read.sidecar} could not be read ({read.errno}: {read.reason})"
+    return f"Workflow meta sidecar at {read.sidecar} is malformed ({read.reason})"
+
+
+# Sidecars already reported as unreadable in this process. `run-all` prepares and
+# then hands its config to `summarize`, which prepares again, so without this one
+# meeting would write two event rows for one run.
+_reported_unreadable: set[Path] = set()
+
+
+def _fail_closed(cfg: Config, read: MetaRead) -> Config:
+    """SEC25: the overlay for a sidecar that exists but could not be read. Same
+    effect as `workflow_nda_mode`: local backend, filesystem sink, and the egress
+    guard arms through `zero_egress` at entry."""
+    overlay = cfg.model_copy(deep=True)
+    overlay.modes.workflow_nda_mode = True
+    overlay.summarization.backend = "local"  # type: ignore[assignment]
+    overlay.output.sinks = ["filesystem"]
+    if read.sidecar not in _reported_unreadable:
+        _reported_unreadable.add(read.sidecar)
+        log.warning("%s; running this meeting on-device", _describe_unreadable(read))
+        events.emit(
+            "pipeline", "sidecar_unreadable",
+            stem=read.sidecar.name.split(".", 1)[0], kind=read.kind, errno=read.errno,
+        )
+    return overlay
 
 
 def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
@@ -57,8 +150,14 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
         the tail so the owner can restore it.
       - `resumed_from` (END17), the stem a recording resumed from after an end
         the call outlived, for the Library's merge offer
+
+    A sidecar that exists but cannot be read or parsed is not "no workflow"
+    (SEC25): the run goes on-device, and `sidecar_unreadable` is emitted once.
     """
-    meta = read_meta(any_meeting_path)
+    read = load_meta(any_meeting_path)
+    if read.state == "unreadable":
+        return _fail_closed(cfg, read)
+    meta = read.data
     if not meta:
         return cfg
 
@@ -142,17 +241,10 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
 
 
 def read_meta(any_meeting_path: Path) -> dict[str, Any]:
-    # Mirror the daemon's `MeetingStore.stem(of:)` rule: stem is the
-    # filename substring before the first dot. Lets a single function
-    # handle every per-meeting filename (`.wav`, `.md`, `.summary.json`,
-    # `.READY_FOR_MANUAL.md`, …).
-    name = any_meeting_path.name
-    stem = name.split(".", 1)[0]
-    sidecar = any_meeting_path.parent / f"{stem}.meta.json"
-    if not sidecar.exists():
-        return {}
-    try:
-        return json.loads(sidecar.read_text(encoding="utf-8"))
-    except Exception as e:  # noqa: BLE001
-        log.warning("Workflow meta sidecar at %s is malformed: %s", sidecar, e)
-        return {}
+    """The sidecar as a dict, or `{}` when it is absent or unreadable. For the
+    informational callers only; anything that routes a run uses `load_meta`
+    (through `apply_overrides`), where unreadable fails closed."""
+    read = load_meta(any_meeting_path)
+    if read.state == "unreadable":
+        log.warning("%s", _describe_unreadable(read))
+    return read.data

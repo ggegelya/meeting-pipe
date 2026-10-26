@@ -466,6 +466,8 @@ Once you press Retry the button steps aside and the pane says what is happening,
 
 Some failures lead with a more specific fix than plain Retry, because plain Retry would just fail again. A summary the engine refused because of the language leads with re-summarizing on the on-device model. A confidential meeting that needed a model you have not downloaded leads with **Download model**, then Retry.
 
+A confidential meeting, or one whose workflow keeps the summary on your Mac, can also be held before anything runs: "This meeting's workflow settings could not be saved, so it was not processed." That happens when the meeting's settings file could not be written as the recording stopped, most often because the disk was full. Nothing was transcribed or sent. Free some space, then **Retry**; the settings are rebuilt from the copy saved when the recording started before the meeting is processed, so it keeps its confidential handling. A meeting whose settings file exists but cannot be read is treated the same careful way: it shows **Local only** and is summarized on your Mac until the file reads again.
+
 Ask uses a separate search model. If that model is missing during a confidential run, **Details…** retains the specific download command to run before asking again; downloading the summary model does not install the search model.
 
 A meeting you stopped yourself lands here too, and says **Processing cancelled**. A run stranded by an app restart says **Processing interrupted**. Cancel sends no error notification; the row remains available to resume when you choose.

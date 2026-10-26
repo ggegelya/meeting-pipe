@@ -353,7 +353,17 @@ Current keys (May 2026):
 | `resumed_from` | string? | END17 item 5: the stem of the recording a lifecycle end stopped, on the recording that resumed because the same app's call was sighted again within `ResumeAfterEnd.windowSec` (120 s). Top-level, informational; drives the detail header's "Picks up where ... stopped" Merge offer. Python ignores it |
 | `schema_version` | int | sidecar shape version (CI2), currently `4` (MIC15 added `mic_device_name` + `mic_silent` at 2; WF7 added `workflow_extra_sections` at 3; END17 added `held_end_trim_sec` + `resumed_from` at 4). Stamped on every non-empty sidecar; the reader is fail-open on it (unknown values are ignored, not rejected). Bump when the key set or a key's semantics change |
 
-Absence of the sidecar (`<stem>.meta.json` missing) is valid — the pipeline falls back to global config + LLM-derived title.
+Reading the sidecar has **three outcomes, and only one of them is "no workflow"** (SEC25). Both trees keep them apart through one reader each: `mp.workflow.load_meta` (a `MetaRead`) and Swift's `MeetingMetaRead`.
+
+| Outcome | What it is | Python (`apply_overrides`) | Swift |
+|---|---|---|---|
+| absent | the file does not exist (a manual `mp run-all`, a workflow-less non-regulated recording) | the global config, LLM-derived title | no workflow: `cloudSecretPolicy` keeps the global posture, `isZeroEgress` false |
+| loaded | parsed into a JSON object | the overlay above | the keys above, and `cloudSecretPolicy` reads the sidecar's `regulated_mode` as well as `workflow_nda_mode` |
+| unreadable | exists but an I/O error (`io`, e.g. EDEADLK from a dataless iCloud file) or bytes that are not a JSON object (`parse`) | fails closed: `workflow_nda_mode = True`, backend `local`, sinks `["filesystem"]`, guard armed; logs "could not be read" (or "malformed" for `parse`) and emits `pipeline` / `sidecar_unreadable` once per process | fails closed: `cloudSecretPolicy` strips both tokens, `isZeroEgress` and `Meeting.isZeroEgress` are true (Local only badge, batch cloud count, merge posture), the row is not cached, `reassignWorkflow` refuses to write over it |
+
+The meeting's NDA posture lives only in this file, which is why an unreadable one may not read as absent: absent means the global config, and on this Mac that is cloud. `read_meta` keeps the old dict-or-`{}` shape for the informational callers (`actions`, `mcp_tools`, `glossary`, the AI6 scan), and `visibility` withholds an unreadable sidecar as `no_sidecar`, the same verdict reached the other way.
+
+The writer reports too. `MeetingSessionController.writeMetaSidecar` throws; a failed stop-time write goes to `daemon.log` and to `recorder` / `meta_write_failed` (`stem`, `domain`, `code`, `held`), and the recovery manifest (`<stem>.recovery.json`, the only other copy of the routing) is kept. Under a workflow that is NDA or pins an on-device backend (`MetaWriteFailure.holdsJob`) the job is held with a `<stem>.error.json` whose reason `FailurePresentation` shows as written, and `MeetingLibraryService.retryMeeting` rebuilds the sidecar from the manifest (`OrphanRecordingRecovery.restoreMetaSidecar`) before anything runs, refusing if it still cannot. Any other workflow enqueues as before.
 
 A golden-fixture contract test pins these keys across both suites (CI2): four committed sidecar shapes in `daemon/Tests/MeetingPipeTests/Fixtures/meta-contract/` are built and verified by `MetaContractFixtureTests` (Swift) and read through `apply_overrides` by `test_workflow_overlay.py` (Python). A key rename on either side breaks one suite, so drift can't pass CI unnoticed.
 

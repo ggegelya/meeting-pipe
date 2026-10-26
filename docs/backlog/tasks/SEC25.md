@@ -2,9 +2,10 @@
 id: SEC25
 title: An unreadable or unwritten `<stem>.meta.json` drops the meeting's NDA routing in both trees: every reader treats a file it cannot read as "no workflow", and a failed stop-time write is swallowed after the recovery manifest holding the same routing is deleted
 category: Security
-status: new
+status: done
 priority: P1
-comment: Filed 2026-10-25 (observability band, O1: PY-1, FB-1, SW-1, SW-2, LG-10, FB-11): `read_meta` returns {} on EDEADLK (seen 2026-10-16), so the overlay, `cloudSecretPolicy` and `isZeroEgress` fall to cloud; the stop-time write fails to os.Logger only. Three-outcome read that fails closed in both trees, a throwing write that keeps the manifest and holds NDA jobs, two events. [Spec](./SEC25.md)
+comment: Shipped 2026-10-26. `mp.workflow.load_meta` and Swift `MeetingMetaRead` read the sidecar in three outcomes; unreadable fails closed in `apply_overrides` (on-device, `sidecar_unreadable` once per process), `cloudSecretPolicy` (strips both, now also reads the sidecar's `regulated_mode`), `isZeroEgress`, the Library row and `reassignWorkflow` (refuses). `writeMetaSidecar` throws: `meta_write_failed`, manifest kept, NDA/on-device jobs held until `retryMeeting` restores the sidecar from it. Verified by `bash scripts/ci-local.sh` (pytest 1444, swift 3094 / 1 listed skip). [Spec](./SEC25.md)
+closed: 2026-10-26
 ---
 
 # SEC25: an unreadable or unwritten `<stem>.meta.json` drops the meeting's NDA routing in both trees, because every reader treats a file it cannot read as "no workflow" and a failed stop-time write is swallowed after the recovery manifest that held the same routing is deleted
