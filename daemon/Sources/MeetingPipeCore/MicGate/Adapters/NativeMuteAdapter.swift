@@ -51,8 +51,9 @@ public final class NativeMuteAdapter: MicGateAdapter {
         sink: @escaping (AXMuteButtonProbe.Event) -> Void
     ) throws {
         probe.onChange = sink
+        // Returns at once: the probe subscribes and reads on its own queue (PERF10).
         if let button = handle.muteButton {
-            try probe.start(
+            probe.start(
                 pid: context.pid,
                 bundleID: context.bundleID,
                 button: button,
