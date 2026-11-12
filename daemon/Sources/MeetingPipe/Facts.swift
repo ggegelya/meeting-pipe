@@ -113,37 +113,117 @@ enum FactsLoader {
     /// only the undated decisions need a window.
     static let decisionWindowDays = 30
 
-    /// Read every meeting's summary sidecar and return the open actions and recent
-    /// decisions. Blocking disk I/O over the whole library: call it off-main.
-    static func load(meetings: [Meeting], now: Date = Date()) -> (actions: [OpenActionFact], decisions: [DecisionFact]) {
-        let cutoff = Calendar.current.date(byAdding: .day, value: -decisionWindowDays, to: now)
+    /// What one `<stem>.summary.json` contributes, before the meeting's title, its
+    /// date and the decision window are applied (PERF23). Only this disk-derived
+    /// half is cached: the title and date come from the current `Meeting` row and
+    /// the window from `now`, so a renamed meeting or a new day is never served stale.
+    struct StemFacts: Equatable, Sendable {
+        struct Action: Equatable, Sendable {
+            let index: Int
+            let task: String
+            let owner: String?
+            let due: String?
+        }
+        struct Decision: Equatable, Sendable {
+            let index: Int
+            let text: String
+        }
+        let actions: [Action]
+        let decisions: [Decision]
+
+        /// Open, non-blank actions and non-blank decisions, trimmed.
+        init(summary: MeetingSummary) {
+            actions = summary.actions.enumerated().compactMap { i, a in
+                guard !a.resolved else { return nil }
+                let task = a.task.trimmingCharacters(in: .whitespacesAndNewlines)
+                return task.isEmpty ? nil : Action(index: i, task: task, owner: a.owner, due: a.due)
+            }
+            decisions = summary.decisions.enumerated().compactMap { i, d in
+                let text = d.trimmingCharacters(in: .whitespacesAndNewlines)
+                return text.isEmpty ? nil : Decision(index: i, text: text)
+            }
+        }
+    }
+
+    /// Per stem, keyed on the summary sidecar's modification date. Resolving an
+    /// action rewrites that file, so the next pass re-reads exactly that stem.
+    typealias Cache = StemFileCache<StemFacts>
+
+    /// One pass's result. `complete` is false when the pass was cancelled part-way,
+    /// in which case `actions` and `decisions` cover only the meetings it reached and
+    /// must not be shown; its `cache` is still worth keeping.
+    struct Pass: Sendable {
         var actions: [OpenActionFact] = []
         var decisions: [DecisionFact] = []
+        var cache: Cache
+        var complete = false
+        /// Stems whose summary this pass decoded rather than took from the cache.
+        var decoded: [String] = []
+    }
+
+    /// Read every meeting's summary sidecar that `cache` does not already hold at
+    /// its current modification date, and return the open actions and recent
+    /// decisions. Blocking disk I/O over the whole library: call it off-main. Stops
+    /// between meetings once its task is cancelled.
+    static func load(meetings: [Meeting], now: Date = Date(), cache: Cache = Cache()) -> Pass {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -decisionWindowDays, to: now)
+        var pass = Pass(cache: cache)
         for m in meetings where m.hasSummaryJSON {
+            if Task.isCancelled { return pass }
             let url = m.recordingsDir.appendingPathComponent("\(m.stem).summary.json")
-            guard let summary = MeetingSummary.load(from: url) else { continue }
-            for (i, a) in summary.actions.enumerated() where !a.resolved {
-                let task = a.task.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !task.isEmpty else { continue }
-                actions.append(OpenActionFact(
+            // Stamped before the read, so a write landing mid-read leaves a stale key.
+            let stamp = Cache.stamp([url])
+            let stemFacts: StemFacts
+            if let cached = pass.cache.value(for: m.stem, stamp: stamp) {
+                stemFacts = cached
+            } else {
+                // A failed decode is not cached: an iCloud placeholder materializing
+                // changes no mtime, so a stored failure would be pinned.
+                guard let summary = MeetingSummary.load(from: url) else { continue }
+                stemFacts = StemFacts(summary: summary)
+                pass.cache.set(stemFacts, for: m.stem, stamp: stamp)
+                pass.decoded.append(m.stem)
+            }
+            for a in stemFacts.actions {
+                pass.actions.append(OpenActionFact(
                     stem: m.stem, summaryURL: url, meetingTitle: m.displayTitle,
-                    meetingDate: m.startedAt, actionIndex: i,
-                    task: task, owner: a.owner, due: a.due
+                    meetingDate: m.startedAt, actionIndex: a.index,
+                    task: a.task, owner: a.owner, due: a.due
                 ))
             }
             if let cutoff, m.startedAt >= cutoff {
-                for (i, d) in summary.decisions.enumerated() {
-                    let text = d.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !text.isEmpty else { continue }
-                    decisions.append(DecisionFact(
-                        stem: m.stem, decisionIndex: i, meetingTitle: m.displayTitle,
-                        meetingDate: m.startedAt, text: text
+                for d in stemFacts.decisions {
+                    pass.decisions.append(DecisionFact(
+                        stem: m.stem, decisionIndex: d.index, meetingTitle: m.displayTitle,
+                        meetingDate: m.startedAt, text: d.text
                     ))
                 }
             }
         }
-        decisions.sort { $0.meetingDate > $1.meetingDate }
-        return (actions, decisions)
+        pass.decisions.sort { $0.meetingDate > $1.meetingDate }
+        pass.cache.prune(keeping: Set(meetings.map(\.stem)))
+        pass.complete = true
+        return pass
+    }
+}
+
+extension FactsSnapshot {
+    /// Group a load's actions under the cluster assignment known *now*. A reload
+    /// landing and a clustering pass landing both go through here, so a pass that
+    /// started before a clustering result arrived still lands grouped by it.
+    static func build(
+        actions: [OpenActionFact],
+        decisions: [DecisionFact],
+        assignments: [String: Int],
+        now: Date = Date()
+    ) -> FactsSnapshot {
+        let clusters = ActionClusterBuilder.group(actions, assignments: assignments)
+        return FactsSnapshot(
+            clusters: clusters,
+            decisions: decisions,
+            overdueCount: ActionClusterBuilder.overdueCount(clusters, now: now),
+            loaded: true
+        )
     }
 }
 

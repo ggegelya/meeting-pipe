@@ -381,33 +381,84 @@ enum MeetingStats {
 /// this one carries a cache instead.
 enum StatsLoader {
 
-    /// Build the facts, measuring only stems the cache has not seen.
+    /// Talk measurements per stem, keyed on `TranscriptLoader.fingerprint` (the
+    /// transcript, the speaker overlay, the corrections and the markers), and valid
+    /// only for the owner name they were measured under (PERF23). A present entry
+    /// holding nil means "read, and your voice was not identifiable".
     ///
-    /// `cache` maps a stem to its measurement, where a present entry holding nil
-    /// means "read, and your voice was not identifiable". Returned alongside the
-    /// facts so the caller can hand it back on the next pass: a `MeetingStore`
-    /// revision bumps on any sidecar write in the recordings directory, so a
-    /// pipeline run finishing while the view is open would otherwise re-parse the
-    /// whole library several times over. A transcript is written once at finalize,
-    /// so a stale entry needs a re-transcribe to happen, which the view's own
-    /// lifetime bounds.
+    /// It used to be `@State` on `StatsView`, keyed by stem alone, so every rail
+    /// switch threw it away and a speaker rename kept the old split. It lives on
+    /// `LibraryProjections` now, so a second visit measures only what changed.
+    struct TalkCache: Sendable {
+        var ownerLabel: String
+        var stems = StemFileCache<MeetingStats.Talk?>()
+
+        init(ownerLabel: String = "") {
+            self.ownerLabel = ownerLabel
+        }
+
+        /// Fold in another pass's measurements, but only ones taken under the same
+        /// owner name: a pass started before a Preferences change measured someone
+        /// else as "you".
+        mutating func merge(_ other: TalkCache) {
+            guard other.ownerLabel == ownerLabel else { return }
+            stems.merge(other.stems)
+        }
+    }
+
+    /// One pass's result. `complete` is false when the pass was cancelled part-way:
+    /// its `facts` then cover only the meetings it reached and must not be shown,
+    /// while its `cache` is still worth keeping.
+    struct Pass: Sendable {
+        var facts: [MeetingStats.MeetingFacts] = []
+        var cache: TalkCache
+        var complete = false
+        /// Stems this pass read a transcript for, rather than took from the cache.
+        /// The counting seam the cache tests assert on.
+        var measured: [String] = []
+    }
+
+    /// What reading one meeting's transcript produced.
+    enum Reading: Equatable {
+        /// The transcript exists and could not be read. Never cached: an iCloud
+        /// placeholder materializing changes no mtime, so a stored failure would be
+        /// pinned for the life of the process.
+        case unreadable
+        /// Read (or absent, which is a stable answer keyed on its nil mtime). Nil
+        /// talk is "your voice was not identifiable".
+        case talk(MeetingStats.Talk?)
+    }
+
+    /// Build the facts, measuring only stems whose fingerprint the cache does not
+    /// already hold under `ownerLabel`. A cache measured under another name is
+    /// dropped, because that changes who every past measurement counted as you.
+    /// Stops between meetings once its task is cancelled.
     static func load(
         meetings: [Meeting],
         ownerLabel: String,
-        cache: [String: MeetingStats.Talk?] = [:]
-    ) -> (facts: [MeetingStats.MeetingFacts], cache: [String: MeetingStats.Talk?]) {
-        var measured = cache
-        var facts: [MeetingStats.MeetingFacts] = []
-        facts.reserveCapacity(meetings.count)
+        cache: TalkCache = TalkCache(),
+        read: (Meeting, String) -> Reading = StatsLoader.read
+    ) -> Pass {
+        var pass = Pass(cache: cache.ownerLabel == ownerLabel ? cache : TalkCache(ownerLabel: ownerLabel))
+        pass.facts.reserveCapacity(meetings.count)
         for meeting in meetings {
+            if Task.isCancelled { return pass }
+            // Stamped before the read, so a write landing mid-read leaves a stale key.
+            let stamp = TranscriptLoader.fingerprint(stem: meeting.stem, in: meeting.recordingsDir)
             let talk: MeetingStats.Talk?
-            if let cached = measured[meeting.stem] {
+            if let cached = pass.cache.stems.value(for: meeting.stem, stamp: stamp) {
                 talk = cached
             } else {
-                talk = measure(meeting: meeting, ownerLabel: ownerLabel)
-                measured[meeting.stem] = talk
+                pass.measured.append(meeting.stem)
+                switch read(meeting, ownerLabel) {
+                case .unreadable:
+                    talk = nil
+                case .talk(let measured):
+                    talk = measured
+                    pass.cache.stems.set(measured, for: meeting.stem, stamp: stamp)
+                }
             }
-            facts.append(MeetingStats.MeetingFacts(
+            pass.facts.append(MeetingStats.MeetingFacts(
                 stem: meeting.stem,
                 date: meeting.startedAt,
                 workflowName: meeting.workflowName,
@@ -416,20 +467,28 @@ enum StatsLoader {
                 talk: talk
             ))
         }
-        return (facts, measured)
+        pass.cache.stems.prune(keeping: Set(meetings.map(\.stem)))
+        pass.complete = true
+        return pass
     }
 
-    /// One meeting's speech split, or nil when it has no transcript to read. Goes
-    /// through the canonical `TranscriptLoader` rather than a second parser, so
-    /// this counts exactly the lines the Transcript tab shows, in-app speaker
-    /// naming included.
-    static func measure(meeting: Meeting, ownerLabel: String) -> MeetingStats.Talk? {
-        guard let loaded = TranscriptLoader.load(stem: meeting.stem, in: meeting.recordingsDir)
-        else { return nil }
-        return MeetingStats.talk(
+    /// One meeting's speech split. Goes through `TranscriptLoader`'s own parser
+    /// rather than a second one, so this counts exactly the lines the Transcript
+    /// tab shows, in-app speaker naming included; it takes the speech-only load
+    /// (PERF23), which skips the embeddings sidecar and the corrections, neither of
+    /// which moves a line's time or speaker.
+    static func read(meeting: Meeting, ownerLabel: String) -> Reading {
+        guard let loaded = TranscriptLoader.loadSpeech(stem: meeting.stem, in: meeting.recordingsDir)
+        else {
+            let exists = FileManager.default.fileExists(
+                atPath: TranscriptLoader.path(stem: meeting.stem, in: meeting.recordingsDir).path
+            )
+            return exists ? .unreadable : .talk(nil)
+        }
+        return .talk(MeetingStats.talk(
             segments: loaded.segments,
-            overlay: loaded.speakerOverlay,
+            overlay: loaded.overlay,
             ownerLabel: ownerLabel
-        )
+        ))
     }
 }

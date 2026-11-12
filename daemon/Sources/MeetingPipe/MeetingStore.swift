@@ -610,13 +610,7 @@ final class MeetingStore: ObservableObject {
     /// per-line overlay label, not a roster enroll (enrolling one hard-failed with
     /// "pipeline exited 2"). Read by the transcript menu and by `nameSpeaker`'s guard.
     static func voiceprintLabels(stem: String, in directory: URL) -> Set<String> {
-        let url = directory.appendingPathComponent("\(stem).embeddings.json")
-        guard let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let embeddings = obj["embeddings"] as? [String: Any] else {
-            return []
-        }
-        return Set(embeddings.keys)
+        embeddingsSidecar(stem: stem, in: directory).voiceprintLabels
     }
 
     /// The near misses the pipeline recorded in `<stem>.embeddings.json` (FEAT14),
@@ -632,14 +626,37 @@ final class MeetingStore: ObservableObject {
     /// Empty for a missing or malformed sidecar, and for every meeting finalized
     /// before this key existed, which reads as "nothing to suggest".
     static func nearMisses(stem: String, in directory: URL) -> [String: String] {
+        embeddingsSidecar(stem: stem, in: directory).nearMisses
+    }
+
+    /// Both readings of `<stem>.embeddings.json` above, from one read and one parse (PERF23).
+    /// `TranscriptLoader.load` wants both, and used to read and parse the file twice to get them.
+    /// The two keys stay independent: a sidecar missing or mangling one still answers the other.
+    struct EmbeddingsSidecar: Equatable {
+        var voiceprintLabels: Set<String> = []
+        var nearMisses: [String: String] = [:]
+    }
+
+    static func embeddingsSidecar(stem: String, in directory: URL) -> EmbeddingsSidecar {
         let url = directory.appendingPathComponent("\(stem).embeddings.json")
         guard let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let raw = obj["near_misses"] as? [String: Any] else {
-            return [:]
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return EmbeddingsSidecar()
         }
-        return raw.compactMapValues { $0 as? String }
-            .filter { !$0.key.isEmpty && !$0.value.isEmpty }
+        return embeddingsSidecar(from: obj)
+    }
+
+    /// The parse behind `embeddingsSidecar(stem:in:)`, internal so a test can drive it directly.
+    static func embeddingsSidecar(from obj: [String: Any]) -> EmbeddingsSidecar {
+        var out = EmbeddingsSidecar()
+        if let embeddings = obj["embeddings"] as? [String: Any] {
+            out.voiceprintLabels = Set(embeddings.keys)
+        }
+        if let raw = obj["near_misses"] as? [String: Any] {
+            out.nearMisses = raw.compactMapValues { $0 as? String }
+                .filter { !$0.key.isEmpty && !$0.value.isEmpty }
+        }
+        return out
     }
 
     /// A `.mic.wav` capture intermediate modified within `liveCaptureFreshnessSec`,

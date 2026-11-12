@@ -18,6 +18,9 @@ import SwiftUI
 /// this rail stale until the next reload.
 struct PeopleView: View {
     @ObservedObject var store: MeetingStore
+    /// The latest-wins attendee read and its per-stem cache (PERF23), owned by the
+    /// Library's model so a rail switch does not throw the cache away.
+    let projection: PeopleProjection
     /// The library's open commitments, already grouped and ordered by the host.
     let commitments: [ActionCluster]
     /// Navigate to a meeting (set by the host: All Meetings + selected row).
@@ -128,34 +131,15 @@ struct PeopleView: View {
     /// Reload the roster + every meeting's resolved attendee names off-main.
     /// Triggered on appear and on each `MeetingStore.revision` bump, so a finished
     /// pipeline run or a rename's overlay writes land here. The open actions are
-    /// not read here at all; they arrive as `commitments` from the host.
+    /// not read here at all; they arrive as `commitments` from the host. PERF23: one
+    /// pass at a time, latest wins, re-reading only the stems whose overlay or
+    /// summary changed (`PeopleLoader`).
     private func reaggregate() {
-        let meetings = store.meetings        // value snapshot
-        Task.detached(priority: .userInitiated) {
-            let roster = RosterProfile.people()
-            var facts: [PeopleRail.MeetingFacts] = []
-            facts.reserveCapacity(meetings.count)
-            for m in meetings {
-                let overlay = SpeakerLabelStore.read(stem: m.stem, in: m.recordingsDir)
-                let summary = m.hasSummaryJSON
-                    ? MeetingSummary.load(
-                        from: m.recordingsDir.appendingPathComponent("\(m.stem).summary.json"))
-                    : nil
-                facts.append(PeopleRail.MeetingFacts(
-                    stem: m.stem,
-                    title: m.displayTitle,
-                    date: m.startedAt,
-                    people: PeopleRail.resolvedPeople(
-                        attendees: summary?.attendees ?? [], overlay: overlay)
-                ))
-            }
-            let loaded = facts, people = roster
-            await MainActor.run {
-                self.facts = loaded
-                self.roster = people
-                self.loading = false
-                rederive()
-            }
+        projection.reload(meetings: store.meetings) { pass in
+            facts = pass.facts
+            roster = pass.roster
+            loading = false
+            rederive()
         }
     }
 

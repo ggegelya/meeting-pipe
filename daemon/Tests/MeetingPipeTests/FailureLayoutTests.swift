@@ -239,7 +239,7 @@ final class FailureLayoutTests: XCTestCase {
         while ask.isAsking { await Task.yield() }
         let surfaces: [(String, AnyView, NSSize)] = [
             ("digest", AnyView(DigestsView(model: digest, libraryModel: model)), NSSize(width: 320, height: 480)),
-            ("people", AnyView(PeopleView(store: model.meetingStore, commitments: [], onOpenMeeting: { _ in },
+            ("people", AnyView(PeopleView(store: model.meetingStore, projection: model.projections.people, commitments: [], onOpenMeeting: { _ in },
                 errorText: FailurePresentation(diagnostics: Self.longDiagnostic, operation: .renameVoice))), NSSize(width: 320, height: 480)),
             ("ask", AnyView(AskView(model: model, askModel: ask, onOpenMeeting: { _ in })), NSSize(width: 660, height: 640)),
             ("narrow", AnyView(FailureNotice(failure: FailurePresentation(diagnostics: "", operation: .summary,

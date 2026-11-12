@@ -2,9 +2,10 @@
 id: PERF23
 title: Facts, People and Meeting time re-read the whole library on every store revision in uncancelled passes that can land out of order, and Meeting time's transcript cache dies on every rail switch
 category: Performance
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. Every `MeetingStore.revision` runs `reloadFacts()` (every summary.json, whether or not Facts is visible, for the badge) and, when People is open, `PeopleView.reaggregate()` in uncancelled `Task.detached` passes applied in completion order, so a burst of revisions runs N full passes and an older snapshot can land last as a stale list or badge; Meeting time's `talkCache` is `@State` on a view built inside the scope switch, so every visit re-parses the library's transcripts (about 80 MB at the work library, the view's own figure) and revisions during the first pass each start another with an empty cache, and `TranscriptLoader.load` parses embeddings.json twice. Scope: a generation-checked, cancelling loader per projection, a model-owned fingerprint-keyed talk cache, one embeddings read, per-stem summary caches. [Spec](./PERF23.md)
+closed: 2026-11-12
+comment: Shipped 2026-11-12. ProjectionPass (cancel the pass in flight, apply only the current generation, fold every finished pass into its content-keyed cache) drives Facts, People and Meeting time from LibraryWindowModel.projections; loaders check Task.isCancelled between meetings; StemFileCache keys Facts on the summary mtime, People on overlay + summary mtimes, and the talk cache on TranscriptLoader.fingerprint plus the owner name, and never stores a failed read; Facts groups at apply time with the current cluster assignment; TranscriptLoader.load reads embeddings.json once and Meeting time uses loadSpeech (no embeddings, no corrections). 17 new tests; bash scripts/ci-local.sh green. The sample(1) evidence was not run (needs the real library). [Spec](./PERF23.md)
 ---
 
 # PERF23: Facts, People and Meeting time re-read the whole library on every store revision in uncancelled passes that can land out of order, and Meeting time's transcript cache dies on every rail switch

@@ -184,6 +184,12 @@ final class LibraryWindowModel: ObservableObject {
     /// Coordinator calls `load()`, so a headless model never touches the real file.
     let savedSearches: SavedSearchStore
 
+    /// Facts, People and Meeting time's latest-wins passes and the per-stem caches they read through
+    /// (PERF23). Here rather than on the views because a rail switch destroys `PeopleView` and
+    /// `StatsView`, and Meeting time's transcript cache used to die with it. Not `@Published`: the
+    /// views hold what they render, and this only holds what is expensive to recompute.
+    let projections = LibraryProjections()
+
     /// The FTS5 search index over transcripts + summaries (UX16). Attached by the Coordinator so
     /// headless tests don't touch the real cache; when nil the list falls back to in-memory search.
     private(set) var searchIndexer: SearchIndexer?
@@ -665,8 +671,12 @@ struct LibraryRootView: View {
         // workflow inspector is what the detail column shows. The rule itself is
         // `LibraryScope.clearsMeetingSelection`, which is why the jumps above can
         // set `.allMeetings` and then a selection without this undoing them.
-        .onChange(of: scope) { _, newScope in
+        .onChange(of: scope) { oldScope, newScope in
             if newScope.clearsMeetingSelection { meetingSelection = [] }
+            // PERF23: a rail switch destroys People / Meeting time, so stop the pass it
+            // started. What the pass already read stays in the model's cache.
+            if case .people = oldScope { model.projections.people.cancel() }
+            if case .stats = oldScope { model.projections.stats.cancel() }
         }
         .sheet(item: $editingWorkflow, onDismiss: { editingWorkflow = nil }) { wf in
             if let store = model.workflowStore {
@@ -895,7 +905,11 @@ struct LibraryRootView: View {
                         // The open actions are the same grouped commitments Facts
                         // renders (AI7), so a restated promise is one row in both
                         // and resolving it in Facts drops it here at once.
-                        PeopleView(store: meetingStore, commitments: facts.clusters) { stem in
+                        PeopleView(
+                            store: meetingStore,
+                            projection: model.projections.people,
+                            commitments: facts.clusters
+                        ) { stem in
                             model.openedFromInsight = .init(stem: stem, source: "People")
                             scope = .allMeetings
                             meetingSelection = [stem]
@@ -904,7 +918,11 @@ struct LibraryRootView: View {
                         // Meeting time (AI8): the same center-column shape again,
                         // with rows that are workflows rather than people. Read-only,
                         // so unlike Facts and People it hands back no navigation.
-                        StatsView(store: meetingStore, ownerLabel: model.ownerLabel)
+                        StatsView(
+                            store: meetingStore,
+                            projection: model.projections.stats,
+                            ownerLabel: model.ownerLabel
+                        )
                     } else if case .ask = scope {
                         // Ask-AI (AI3) also takes the center column: a question box
                         // over a cited answer, each citation navigating back to its
@@ -1016,28 +1034,24 @@ struct LibraryRootView: View {
 
     // MARK: - Facts aggregate (DV1 + AI7)
 
-    /// Reload the cross-meeting facts off-main and regroup them with whatever cluster
-    /// assignment is already known, then ask the pipeline for a fresh one if the set
-    /// of open actions grew. Runs on appear and on each store revision, because the
-    /// rail badge has to be right whether or not Facts is the active scope.
+    /// Reload the cross-meeting facts off-main, group them with the cluster assignment
+    /// known when the pass lands, then ask the pipeline for a fresh one if the set of
+    /// open actions grew. Runs on appear and on each store revision, because the rail
+    /// badge has to be right whether or not Facts is the active scope. PERF23: one
+    /// pass at a time, latest wins, through a per-stem cache, so a revision burst
+    /// re-decodes only the summaries that changed and an older pass never lands last.
     private func reloadFacts() {
-        let meetings = meetingStore.meetings   // value snapshot
-        let assignments = clusterAssignments
-        Task.detached(priority: .userInitiated) {
-            let now = Date()
-            let raw = FactsLoader.load(meetings: meetings, now: now)
-            let clusters = ActionClusterBuilder.group(raw.actions, assignments: assignments)
-            let snapshot = FactsSnapshot(
-                clusters: clusters,
-                decisions: raw.decisions,
-                overdueCount: ActionClusterBuilder.overdueCount(clusters, now: now),
-                loaded: true
+        model.projections.facts.reload(meetings: meetingStore.meetings) { pass in
+            // Grouped here rather than off-main: a clustering result that landed
+            // while this pass was reading would otherwise be overwritten by the
+            // assignment the pass started with, and `refreshClustersIfNeeded` would
+            // then see nothing new and never regroup.
+            facts = FactsSnapshot.build(
+                actions: pass.actions,
+                decisions: pass.decisions,
+                assignments: clusterAssignments
             )
-            let keys = Set(raw.actions.map(\.clusterKey))
-            await MainActor.run {
-                facts = snapshot
-                refreshClustersIfNeeded(for: keys)
-            }
+            refreshClustersIfNeeded(for: Set(pass.actions.map(\.clusterKey)))
         }
     }
 

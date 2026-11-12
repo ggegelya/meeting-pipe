@@ -15,6 +15,13 @@ import SwiftUI
 /// view in register and put the coaching-shaped rest of that family out of it.
 struct StatsView: View {
     @ObservedObject var store: MeetingStore
+    /// The latest-wins pass and the talk cache it reads through (PERF23). Reading
+    /// every transcript is the expensive half of this view (the whole library is
+    /// roughly 80 MB of `<stem>.json` against under 1 MB of summaries). The cache
+    /// used to be `@State` here, so every rail switch destroyed it and every visit
+    /// re-measured the library; it lives on the Library's model now, keyed by
+    /// `TranscriptLoader.fingerprint`, so a rename re-measures exactly its meeting.
+    let projection: StatsProjection
     /// `summarization.user_label`, the display name the pipeline stamps on your
     /// own diarized speaker. Empty when it was never configured, which is what
     /// makes every talk share unmeasurable, so the footer says so.
@@ -25,18 +32,6 @@ struct StatsView: View {
     /// The per-meeting facts behind the current snapshot, kept so changing the
     /// range re-derives in memory instead of re-reading 80 MB of transcripts.
     @State private var facts: [MeetingStats.MeetingFacts] = []
-    /// stem to its talk measurement, where a present entry holding nil means "read
-    /// and unmeasurable". Reading every transcript is the expensive half of this
-    /// view (the whole library is roughly 80 MB of `<stem>.json` against under 1 MB
-    /// of summaries), and a `MeetingStore` revision bumps on any sidecar write in
-    /// the recordings directory, so a pipeline run finishing while this view is open
-    /// would otherwise re-parse all of it several times over. A transcript is
-    /// written once at finalize; the cache lives only as long as the view, so a
-    /// re-transcribe is picked up on the next visit.
-    @State private var talkCache: [String: MeetingStats.Talk?] = [:]
-    /// The owner name the cache was measured under. Changing it in Preferences
-    /// changes who counts as you, so the cache is dropped rather than kept.
-    @State private var cachedOwnerLabel = ""
     @State private var loading = true
 
     var body: some View {
@@ -151,21 +146,13 @@ struct StatsView: View {
 
     /// Rebuild the per-meeting facts off-main, then re-derive. Triggered on appear
     /// and on each `MeetingStore.revision` bump, so a finished pipeline run lands
-    /// here. The cache is dropped when the owner name changed, because that
-    /// changes who every past measurement counted as you.
+    /// here. The projection drops its cache when the owner name changed, because
+    /// that changes who every past measurement counted as you.
     private func reload() {
-        let meetings = store.meetings          // value snapshot
-        let owner = ownerLabel
-        let cache = owner == cachedOwnerLabel ? talkCache : [:]
-        Task.detached(priority: .userInitiated) {
-            let loaded = StatsLoader.load(meetings: meetings, ownerLabel: owner, cache: cache)
-            await MainActor.run {
-                self.facts = loaded.facts
-                self.talkCache = loaded.cache
-                self.cachedOwnerLabel = owner
-                self.loading = false
-                rederive()
-            }
+        projection.reload(meetings: store.meetings, ownerLabel: ownerLabel) { pass in
+            facts = pass.facts
+            loading = false
+            rederive()
         }
     }
 

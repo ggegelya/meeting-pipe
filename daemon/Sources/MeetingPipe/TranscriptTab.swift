@@ -114,25 +114,39 @@ enum TranscriptLoader {
     }
 
     static func load(stem: String, in directory: URL) -> Result? {
-        let url = path(stem: stem, in: directory)
-        guard let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
+        guard let obj = readPayload(stem: stem, in: directory) else { return nil }
         let parsed = parse(obj)
         let corrections = TranscriptCorrectionStore.read(stem: stem, in: directory)
         let overlaid = TranscriptCorrectionStore.apply(
             corrections: corrections,
             to: parsed.segments
         )
+        // One read of `<stem>.embeddings.json` for both values (PERF23); it used to be two.
+        let embeddings = MeetingStore.embeddingsSidecar(stem: stem, in: directory)
         return Result(
             segments: overlaid,
             language: parsed.language,
             speakerOrder: parsed.speakerOrder,
             speakerOverlay: SpeakerLabelStore.read(stem: stem, in: directory),
-            voiceprintLabels: MeetingStore.voiceprintLabels(stem: stem, in: directory),
-            nearMisses: MeetingStore.nearMisses(stem: stem, in: directory)
+            voiceprintLabels: embeddings.voiceprintLabels,
+            nearMisses: embeddings.nearMisses
         )
+    }
+
+    /// Who spoke when, and nothing else: the transcript's segments and the speaker overlay, for
+    /// Meeting time's talk split (PERF23). Skips the embeddings sidecar, which only the chip menu
+    /// needs, and the corrections, which retext a line but never move its times or its speaker
+    /// (`TranscriptCorrectionStore.apply`), so `MeetingStats.talk` reads the same numbers either way.
+    static func loadSpeech(
+        stem: String, in directory: URL
+    ) -> (segments: [TranscriptSegment], overlay: SpeakerLabelStore.Overlay)? {
+        guard let obj = readPayload(stem: stem, in: directory) else { return nil }
+        return (parse(obj).segments, SpeakerLabelStore.read(stem: stem, in: directory))
+    }
+
+    private static func readPayload(stem: String, in directory: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: path(stem: stem, in: directory)) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
     /// Parses the transcript JSON payload. Internal so tests can drive it directly.
