@@ -1,3 +1,4 @@
+import SQLite3
 import XCTest
 @testable import MeetingPipe
 
@@ -194,5 +195,87 @@ final class DoctorCommandTests: XCTestCase {
         let result = DoctorCommand.probeSearchIndex(indexURL: f.indexURL, recordingsDir: f.library)
         XCTAssertEqual(result.status, .ok, result.message)
         XCTAssertEqual(result.message, "FTS index reachable; 2 meetings indexed.")
+    }
+
+    // MARK: - search.index is read-only: a diagnostic never creates or migrates the cache
+
+    /// A raw-SQLite index at `version`, built without `SearchIndex` so it can carry a schema this
+    /// build does not use. WAL like the real one.
+    private func writeRawIndex(at url: URL, version: Int32, stems: [String]) throws {
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        var sql = "PRAGMA journal_mode=WAL; PRAGMA user_version = \(version);"
+            + "CREATE TABLE doc_meta(stem TEXT PRIMARY KEY, sig TEXT NOT NULL, docid INTEGER NOT NULL);"
+        for (i, stem) in stems.enumerated() { sql += "INSERT INTO doc_meta VALUES('\(stem)', 's', \(i));" }
+        sql += "PRAGMA wal_checkpoint(TRUNCATE);"
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
+    }
+
+    private func rawUserVersionAndTables(at url: URL) throws -> (Int32, [String]) {
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        var stmt: OpaquePointer?
+        sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nil)
+        sqlite3_step(stmt)
+        let version = sqlite3_column_int(stmt, 0)
+        sqlite3_finalize(stmt)
+        var tables: [String] = []
+        sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name;", -1, &stmt, nil)
+        while sqlite3_step(stmt) == SQLITE_ROW { tables.append(String(cString: sqlite3_column_text(stmt, 0))) }
+        sqlite3_finalize(stmt)
+        return (version, tables)
+    }
+
+    /// The 2026-11-12 incident: a newer build's doctor opened the live cache through `SearchIndex`,
+    /// whose `prepareSchema` dropped and recreated the tables under a running older daemon.
+    func test_probeSearchIndex_reports_another_schema_without_migrating_it() throws {
+        let f = try searchProbeFixture()
+        defer { try? FileManager.default.removeItem(at: f.dir) }
+        try writeRawIndex(at: f.indexURL, version: 1, stems: ["20260301-100000"])
+        let result = DoctorCommand.probeSearchIndex(indexURL: f.indexURL, recordingsDir: f.library)
+        XCTAssertEqual(result.status, .warn)
+        XCTAssertTrue(result.message.contains("schema 1"), result.message)
+        XCTAssertTrue(result.message.contains("schema \(SearchIndex.schemaVersion)"), result.message)
+        let (version, tables) = try rawUserVersionAndTables(at: f.indexURL)
+        XCTAssertEqual(version, 1, "doctor migrated the index")
+        XCTAssertEqual(tables, ["doc_meta"], "doctor changed the index's tables")
+    }
+
+    func test_probeSearchIndex_does_not_create_a_missing_index() throws {
+        let f = try searchProbeFixture()
+        defer { try? FileManager.default.removeItem(at: f.dir) }
+        let result = DoctorCommand.probeSearchIndex(indexURL: f.indexURL, recordingsDir: f.library)
+        XCTAssertEqual(result.status, .warn)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.indexURL.path), "doctor created the index")
+    }
+
+    func test_probeSearchIndex_missing_index_beside_an_empty_library_is_ok() throws {
+        let f = try searchProbeFixture()
+        defer { try? FileManager.default.removeItem(at: f.dir) }
+        let empty = f.dir.appendingPathComponent("empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        let result = DoctorCommand.probeSearchIndex(indexURL: f.indexURL, recordingsDir: empty)
+        XCTAssertEqual(result.status, .ok, result.message)
+        XCTAssertEqual(result.message, "FTS index not built yet; 0 meetings indexed.")
+    }
+
+    /// A stopped daemon leaves a WAL-mode file with no `-shm`, where a plain read-only open fails
+    /// with SQLITE_CANTOPEN; the probe still has to read it, and still without writing.
+    func test_probeSearchIndex_reads_a_wal_index_with_no_shm_file() throws {
+        let f = try searchProbeFixture()
+        defer { try? FileManager.default.removeItem(at: f.dir) }
+        try writeRawIndex(at: f.indexURL, version: SearchIndex.schemaVersion, stems: ["20260301-100000", "20260302-100000"])
+        for suffix in ["-wal", "-shm"] {
+            try? FileManager.default.removeItem(atPath: f.indexURL.path + suffix)
+        }
+        let before = try FileManager.default.attributesOfItem(atPath: f.indexURL.path)[.modificationDate] as? Date
+        let result = DoctorCommand.probeSearchIndex(indexURL: f.indexURL, recordingsDir: f.library)
+        XCTAssertEqual(result.status, .ok, result.message)
+        XCTAssertEqual(result.message, "FTS index reachable; 2 meetings indexed.")
+        let after = try FileManager.default.attributesOfItem(atPath: f.indexURL.path)[.modificationDate] as? Date
+        XCTAssertEqual(before, after, "doctor wrote the index")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.indexURL.path + "-shm"), "doctor created a -shm file")
     }
 }

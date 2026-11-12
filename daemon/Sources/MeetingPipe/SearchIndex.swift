@@ -221,3 +221,86 @@ final class SearchIndex {
         exec("PRAGMA user_version = \(v);")
     }
 }
+
+// MARK: - Read-only inspection (the doctor's view)
+
+extension SearchIndex {
+
+    /// What a read-only look at an index file found. The doctor's `search.index` probe reads the
+    /// live cache through this and never through `init?`, whose `prepareSchema` creates the file,
+    /// sets WAL, and drops and recreates the tables on a schema mismatch. A newer build's doctor
+    /// did exactly that to the owner's cache on 2026-11-12, under a running older daemon that then
+    /// could not write its own index until reinstalled.
+    enum Inspection: Equatable {
+        /// No file at the path: the Library has not opened yet on this account.
+        case absent
+        /// The file exists but SQLite could not read the version or the stems.
+        case unreadable
+        /// The file carries a schema this build does not use. Reported, never migrated.
+        case otherSchema(Int32)
+        /// The stems in `doc_meta`.
+        case indexed(Set<String>)
+    }
+
+    /// Whether the linked SQLite has FTS5, checked on a throwaway in-memory database.
+    static func fts5Available() -> Bool {
+        var db: OpaquePointer?
+        defer { sqlite3_close(db) }
+        guard sqlite3_open_v2(":memory:", &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_MEMORY, nil) == SQLITE_OK else { return false }
+        return sqlite3_exec(db, "CREATE VIRTUAL TABLE t USING fts5(x);", nil, nil, nil) == SQLITE_OK
+    }
+
+    /// Read `url` without writing it: `SQLITE_OPEN_READONLY`, no `CREATE`, no pragma that sets.
+    /// A WAL-mode file with no `-shm` (the daemon is not running) fails a plain read-only open
+    /// with SQLITE_CANTOPEN, since the reader cannot create the shared-memory file; only then is it
+    /// re-read as `immutable=1`, which is safe because no writer holds the file without a `-shm`.
+    static func inspect(url: URL) -> Inspection {
+        guard FileManager.default.fileExists(atPath: url.path) else { return .absent }
+        let plain = read(url.path, flags: SQLITE_OPEN_READONLY)
+        if case .failed(SQLITE_CANTOPEN) = plain {
+            var uri = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            uri?.queryItems = [URLQueryItem(name: "mode", value: "ro"), URLQueryItem(name: "immutable", value: "1")]
+            guard let uriString = uri?.url?.absoluteString else { return .unreadable }
+            return read(uriString, flags: SQLITE_OPEN_READONLY | SQLITE_OPEN_URI).inspection
+        }
+        return plain.inspection
+    }
+
+    private enum ReadResult {
+        case failed(Int32)
+        case read(Inspection)
+
+        var inspection: Inspection {
+            switch self {
+            case .failed: return .unreadable
+            case .read(let inspection): return inspection
+            }
+        }
+    }
+
+    private static func read(_ path: String, flags: Int32) -> ReadResult {
+        var db: OpaquePointer?
+        defer { sqlite3_close(db) }
+        let opened = sqlite3_open_v2(path, &db, flags, nil)
+        guard opened == SQLITE_OK else { return .failed(opened) }
+        sqlite3_busy_timeout(db, 2000)
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nil) == SQLITE_OK else {
+            return .failed(sqlite3_errcode(db))
+        }
+        let step = sqlite3_step(stmt)
+        let version = step == SQLITE_ROW ? sqlite3_column_int(stmt, 0) : -1
+        sqlite3_finalize(stmt)
+        guard step == SQLITE_ROW else { return .failed(sqlite3_extended_errcode(db) & 0xff) }
+        guard version == schemaVersion else { return .read(.otherSchema(version)) }
+        guard sqlite3_prepare_v2(db, "SELECT stem FROM doc_meta;", -1, &stmt, nil) == SQLITE_OK else {
+            return .failed(sqlite3_errcode(db))
+        }
+        defer { sqlite3_finalize(stmt) }
+        var stems = Set<String>()
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let s = sqlite3_column_text(stmt, 0) { stems.insert(String(cString: s)) }
+        }
+        return .read(.indexed(stems))
+    }
+}

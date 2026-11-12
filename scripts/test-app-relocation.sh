@@ -13,16 +13,25 @@
 #
 # --with-pipeline also syncs a staged venv (scripts/lib/pipeline-venv.sh) from a
 # copy of pipeline/, moves the copy away, and requires that venv to run mp the
-# two ways it is run: `bin/python3 -m mp` (what findMP invokes) and `bin/mp`
-# (the ~/.local/bin/mp symlink). It checks the venv directly rather than through
-# the staged doctor because the daemon resolves its home from the user record,
-# not $HOME, so the staged app always finds the live venv. CI (scripts/ci-local.sh
-# daemon) runs without the flag: on the macOS runner the venv sync would pull the
-# darwin-only mlx stack, a download the Swift half does not need.
+# two ways it is run: through the staged doctor's pipeline.binary and
+# pipeline.roundtrip probes (findMP's `bin/python3 -m mp`), and as `bin/mp` (the
+# ~/.local/bin/mp symlink). CI (scripts/ci-local.sh daemon) runs without the
+# flag: on the macOS runner the venv sync would pull the darwin-only mlx stack,
+# a download the Swift half does not need.
 #
-# Touches nothing of a live install: no ~/Applications, no LaunchAgent, no
-# ~/.local/share, no keychain (signs ad-hoc). The staged doctor reads this Mac's
-# config and logs its probe events like any `MeetingPipe doctor` run.
+# Touches nothing live. The staged doctor and every mp call run in a throwaway
+# home inside the stage dir: CFFIXED_USER_HOME (the daemon resolves its home
+# from the user record, which ignores $HOME, and CoreFoundation honours this
+# override for homeDirectoryForCurrentUser, the Caches and Application Support
+# lookups and tilde expansion), HOME (what Python reads), MEETINGPIPE_LOGS_DIR,
+# and a system-only PATH so findMP cannot fall through to a live ~/.local/bin/mp.
+# So the config, library root, logs, search cache and venv doctor resolves are
+# all the sandbox's, and the run fails if doctor prints a path under the real
+# home. A newer build's doctor once migrated the owner's live search cache from
+# here (2026-11-12). What it still reads of the real machine: the login
+# keychain (Secrets.loadIfPresent runs `security`, whose search list does not
+# follow the home override), TCC and AX state, and the installed meeting apps.
+# No ~/Applications, no LaunchAgent, no keychain write (signs ad-hoc).
 # daemon/.build is moved back on every exit.
 #
 # Usage: scripts/test-app-relocation.sh [--with-pipeline] [build_dir]
@@ -76,7 +85,17 @@ trap restore EXIT
 trap 'exit 130' INT TERM
 
 APP="$STAGE/MeetingPipe.app"
-VENV="$STAGE/venv"
+# The sandbox home. The venv goes where findMP looks under it, so the staged
+# doctor exercises the staged venv rather than whatever this Mac has installed.
+SANDBOX="$STAGE/home"
+VENV="$SANDBOX/.local/share/meeting-pipe/venv"
+REAL_HOME="$HOME"
+mkdir -p "$SANDBOX"
+sandboxed() {
+    env CFFIXED_USER_HOME="$SANDBOX" HOME="$SANDBOX" \
+        MEETINGPIPE_LOGS_DIR="$SANDBOX/Library/Logs/MeetingPipe" \
+        PATH=/usr/bin:/bin:/usr/sbin:/sbin "$@"
+}
 
 say "Assembling a staging app from $BUILD_DIR"
 mkdir -p "$APP/Contents/MacOS"
@@ -121,9 +140,9 @@ fi
 say "Moving $DAEMON_BUILD aside"
 mv "$DAEMON_BUILD" "$ASIDE"
 
-say "Running the staged app's doctor"
+say "Running the staged app's doctor in a sandbox home"
 set +e
-OUT="$("$APP/Contents/MacOS/MeetingPipe" doctor 2>&1)"
+OUT="$(cd / && sandboxed "$APP/Contents/MacOS/MeetingPipe" doctor 2>&1)"
 STATUS=$?
 set -e
 printf '%s\n' "$OUT"
@@ -137,11 +156,23 @@ printf '%s\n' "$OUT"
 grep -F "[ OK ] app.resources: Loaded from " <<<"$OUT" \
     | grep -qF "/$(basename "$STAGE")/MeetingPipe.app/Contents/Resources/" \
     || fail "app.resources is not OK from the staged app's Contents/Resources"
+# The sandbox held: doctor resolved its events log under the sandbox home and
+# its probe rows landed there (a positive control, not an absence of rows in the
+# live log), and it printed no path under the real home.
+STAGE_NAME="/$(basename "$STAGE")/home/"
+grep -F "[ OK ] events.writable: " <<<"$OUT" | grep -qF "$STAGE_NAME" \
+    || fail "events.writable is not under the sandbox home, so doctor ran against this Mac's state"
+grep -qF '"category":"doctor"' "$SANDBOX/Library/Logs/MeetingPipe/events.jsonl" \
+    || fail "the sandbox events.jsonl has no doctor probe rows, so they went somewhere else"
+! grep -F "$REAL_HOME/" <<<"$OUT" >&2 \
+    || fail "doctor printed a path under $REAL_HOME (above), so the sandbox leaked"
 if (( WITH_PIPELINE )); then
-    say "Running the staged venv with its pipeline source moved away"
-    (cd / && "$VENV/bin/python3" -m mp --help >/dev/null) \
-        || fail "\`$VENV/bin/python3 -m mp --help\` failed with the source copy moved away"
-    (cd / && "$VENV/bin/mp" --version) \
+    grep -F "[ OK ] pipeline.binary: Found at " <<<"$OUT" | grep -qF "$STAGE_NAME.local/share/meeting-pipe/venv/" \
+        || fail "the staged doctor did not find the staged venv"
+    grep -qF "[ OK ] pipeline.roundtrip: " <<<"$OUT" \
+        || fail "the staged doctor could not run mp from the staged venv"
+    say "Running the staged venv's bin/mp with its pipeline source moved away"
+    (cd / && sandboxed "$VENV/bin/mp" --version) \
         || fail "\`$VENV/bin/mp --version\` failed with the source copy moved away"
 fi
 

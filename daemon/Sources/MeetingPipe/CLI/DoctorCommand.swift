@@ -389,35 +389,61 @@ enum DoctorCommand {
         )
     }
 
-    /// Open the FTS5 search index and report whether Library search has its full-text depth (UX23).
-    /// A `.fail` is the permanent degraded case (SQLite could not open the cache, or FTS5 is not
-    /// compiled into the linked SQLite), where search silently falls back to titles + summaries only.
+    /// Report whether Library search has its full-text depth (UX23). A `.fail` is the permanent
+    /// degraded case (FTS5 is not compiled into the linked SQLite, or the cache cannot be read),
+    /// where search silently falls back to titles + summaries only.
     ///
     /// PERF20: reachable is not the same as caught up. The probe reported ok with "0 meetings
     /// indexed" 19 times in a day beside a 9-meeting library, so it now compares the index with
     /// the library's `<stem>.md` transcripts and warns, naming both counts, when any transcript is
     /// not indexed.
+    ///
+    /// Read-only (`SearchIndex.inspect`): a diagnostic never creates, migrates or rebuilds the
+    /// cache. Opening it through `SearchIndex(url:)` once let a newer build's doctor migrate the
+    /// cache of a running older daemon (2026-11-12).
     static func probeSearchIndex(
         indexURL: URL = SearchIndexer.defaultIndexURL(),
         recordingsDir: URL? = nil
     ) -> ProbeResult {
-        guard let index = SearchIndex(url: indexURL) else {
+        guard SearchIndex.fts5Available() else {
             return ProbeResult(
                 name: "search.index",
                 status: .fail,
-                message: "FTS index could not open at \(indexURL.path); Library search is limited to titles and summaries."
+                message: "The linked SQLite has no FTS5; Library search is limited to titles and summaries."
             )
         }
-        let indexed = Set(index.indexedSignatures().keys)
+        let indexed: Set<String>
+        let reachable: String
+        switch SearchIndex.inspect(url: indexURL) {
+        case .unreadable:
+            return ProbeResult(
+                name: "search.index",
+                status: .fail,
+                message: "FTS index could not be read at \(indexURL.path); Library search is limited to titles and summaries."
+            )
+        case .otherSchema(let version):
+            return ProbeResult(
+                name: "search.index",
+                status: .warn,
+                message: "FTS index at \(indexURL.path) is schema \(version), this build uses schema "
+                    + "\(SearchIndex.schemaVersion); it is rebuilt when this build's Library opens it. Doctor leaves it as is."
+            )
+        case .absent:
+            indexed = []
+            reachable = "FTS index not built yet"
+        case .indexed(let stems):
+            indexed = stems
+            reachable = "FTS index reachable"
+        }
         let indexedText = "\(indexed.count) meeting\(indexed.count == 1 ? "" : "s") indexed"
         let dir = recordingsDir ?? resolveRecordingsDir()
         guard let transcripts = transcriptStems(in: dir) else {
             // An unreadable library is STOR11's probe to report; there is nothing to compare here.
-            return ProbeResult(name: "search.index", status: .ok, message: "FTS index reachable; \(indexedText).")
+            return ProbeResult(name: "search.index", status: .ok, message: "\(reachable); \(indexedText).")
         }
         let missing = transcripts.subtracting(indexed)
         if missing.isEmpty {
-            return ProbeResult(name: "search.index", status: .ok, message: "FTS index reachable; \(indexedText).")
+            return ProbeResult(name: "search.index", status: .ok, message: "\(reachable); \(indexedText).")
         }
         let sample = missing.sorted().prefix(3).joined(separator: ", ")
         let more = missing.count > 3 ? ", …" : ""
