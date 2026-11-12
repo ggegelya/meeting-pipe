@@ -1,3 +1,4 @@
+import os
 import XCTest
 @testable import MeetingPipe
 
@@ -928,5 +929,169 @@ final class PipelineLauncherTests: XCTestCase {
                 .first { $0.contains("runMP(\(args)") })
             XCTAssertFalse(line.contains("30 * 60"), line)
         }
+    }
+
+    // MARK: - PIPE36: the Apple phase is cancellable, bounded and beats
+
+    /// A run-all that leaves the Apple sentinel and exits 0, and a publish that records it ran
+    /// and then either exits or parks, so the test can Cancel it. `/bin/sh -c` puts the
+    /// subcommand in `$0` and its path in `$1`. The summarize is the real map/reduce loop over
+    /// a fake `respond`, so nothing reaches the on-device model.
+    private struct AppleRig {
+        let dir: URL
+        let wav: URL
+        let published: URL
+        let launcher: PipelineLauncher
+    }
+
+    private func appleRig(
+        publishParks: Bool,
+        windows: Int = 5,
+        ceiling: Double = 5,
+        reaped: XCTestExpectation? = nil,
+        respond: @escaping AppleIntelligenceSummarizer.Respond
+    ) throws -> AppleRig {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("apple-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let wav = dir.appendingPathComponent("m.wav")
+        try Data().write(to: wav)
+        let published = dir.appendingPathComponent("published")
+        let publishTail = publishParks ? "exec sleep 30" : "exit 0"
+        let script = """
+        case "$0" in
+          run-all) : > "${1%.wav}.apple_pending.json"; exit 0 ;;
+          publish) : > '\(published.path)'; \(publishTail) ;;
+        esac
+        exit 2
+        """
+        let launcher = PipelineLauncher(
+            invocation: { .init(shell: "/bin/sh", args: ["-c", script]) },
+            environment: ["PATH": "/usr/bin:/bin"],
+            reapOrphanedServer: { reaped?.fulfill() },
+            appleSummarize: { _, _, onCall in
+                _ = try await AppleIntelligenceSummarizer.mapReduce(
+                    windows: (0..<windows).map { "w\($0)" },
+                    instructions: "map", reduceInstructions: "reduce",
+                    reduceBatch: 4, callCeiling: ceiling,
+                    respond: respond, onCall: onCall
+                )
+            }
+        )
+        return AppleRig(dir: dir, wav: wav, published: published, launcher: launcher)
+    }
+
+    private static let partial = AppleIntelligenceSummarizer.parse(
+        #"{"title":"t","summary":["s"],"decisions":[],"actions":[],"questions":[],"attendees":[],"detected_language":"en"}"#
+    )!
+
+    /// Cancel during the map loop stops before the next call, completes as a cancellation
+    /// (so the row lands `.interrupted`), and spawns no publish. Before PIPE36 the Task was
+    /// unretained and run-all's slot already empty, so the click stopped nothing.
+    func test_a_cancel_during_the_apple_summarize_stops_it_and_spawns_no_publish() throws {
+        let gate = TestGate()
+        defer { gate.open() }
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let inFirstCall = expectation(description: "first model call running")
+        let rig = try appleRig(publishParks: false) { _, _, _ in
+            if calls.withLock({ $0 += 1; return $0 }) == 1 {
+                inFirstCall.fulfill()
+                await gate.wait()
+            }
+            return Self.partial
+        }
+        defer { try? FileManager.default.removeItem(at: rig.dir) }
+        let done = expectation(description: "completed")
+        var outcome: Result<URL?, Error>?
+        rig.launcher.runAll(wav: rig.wav, summaryMode: .auto, onProgress: nil) { result in
+            outcome = result
+            done.fulfill()
+        }
+        wait(for: [inFirstCall], timeout: 10)
+        rig.launcher.cancelActiveRun()
+        gate.open()
+        wait(for: [done], timeout: 10)
+
+        guard case .failure(let error)? = outcome else { return XCTFail("a cancelled summarize cannot succeed") }
+        XCTAssertTrue(PipelineLauncher.isCancellation(error), "\(error)")
+        XCTAssertEqual(SinkDispatcher.stage(for: error), .interrupted)
+        XCTAssertEqual(calls.withLock { $0 }, 1, "no model call after the click")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rig.published.path), "no publish spawned")
+    }
+
+    /// A call past the per-call ceiling fails the run with `.timedOut`, and nothing publishes.
+    func test_an_apple_call_past_its_ceiling_fails_the_run_timed_out() throws {
+        let gate = TestGate()
+        defer { gate.open() }
+        let rig = try appleRig(publishParks: false, ceiling: 0.2) { _, _, _ in
+            await gate.wait()
+            return Self.partial
+        }
+        defer { try? FileManager.default.removeItem(at: rig.dir) }
+        let done = expectation(description: "completed")
+        var outcome: Result<URL?, Error>?
+        rig.launcher.runAll(wav: rig.wav, summaryMode: .auto, onProgress: nil) { result in
+            outcome = result
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 10)
+
+        guard case .failure(let error)? = outcome,
+              case AppleIntelligenceError.timedOut? = error as? AppleIntelligenceError else {
+            return XCTFail("expected .timedOut, got \(String(describing: outcome))")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rig.published.path))
+    }
+
+    /// The publish that follows the summarize is retained in the run slot, so a Cancel that
+    /// lands during it terminates it, as the owner's cancellation, and reaps.
+    func test_a_cancel_after_the_apple_summarize_terminates_the_publish() throws {
+        let reaped = expectation(description: "reaped")
+        let rig = try appleRig(publishParks: true, reaped: reaped) { _, _, _ in Self.partial }
+        defer { try? FileManager.default.removeItem(at: rig.dir) }
+        let done = expectation(description: "completed")
+        var outcome: Result<URL?, Error>?
+        rig.launcher.runAll(wav: rig.wav, summaryMode: .auto, onProgress: nil) { result in
+            outcome = result
+            done.fulfill()
+        }
+        let publishing = expectation(description: "publish spawned")
+        func poll() {
+            if FileManager.default.fileExists(atPath: rig.published.path) { publishing.fulfill(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() }
+        }
+        DispatchQueue.main.async { poll() }
+        wait(for: [publishing], timeout: 10)
+        rig.launcher.cancelActiveRun()
+        wait(for: [done, reaped], timeout: 15)
+
+        guard case .failure(let error)? = outcome else { return XCTFail("a cancelled publish cannot succeed") }
+        XCTAssertTrue(PipelineLauncher.isCancellation(error), "\(error)")
+    }
+
+    /// One beat per planned model call, as stage `summarize`, so the 30 s stall flag reads a
+    /// working summarize as working.
+    func test_the_apple_summarize_beats_once_per_planned_call() throws {
+        let rig = try appleRig(publishParks: false, windows: 4) { _, _, _ in Self.partial }
+        defer { try? FileManager.default.removeItem(at: rig.dir) }
+        var beats: [PipelineProgress] = []
+        let done = expectation(description: "completed")
+        var outcome: Result<URL?, Error>?
+        rig.launcher.runAll(
+            wav: rig.wav, summaryMode: .auto, onProgress: { beats.append($0) }
+        ) { result in
+            outcome = result
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 10)
+        let drained = expectation(description: "main drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 2)
+
+        if case .failure(let error)? = outcome { XCTFail("\(error)") }
+        let planned = AppleIntelligenceSummarizer.plannedCalls(windows: 4, reduceBatch: 4)
+        XCTAssertEqual(beats.count, planned)
+        XCTAssertTrue(beats.allSatisfy { $0.stage == "summarize" && $0.stemsTotal == planned })
+        XCTAssertEqual(beats.compactMap(\.stemsDone), Array(0..<planned))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rig.published.path), "the publish followed")
     }
 }

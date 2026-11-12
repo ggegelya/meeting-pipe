@@ -128,22 +128,25 @@ final class Coordinator: NSObject {
         self.launcher = resolvedLauncher
         // FluidAudio is the only ASR path: in-process Parakeet TDT +
         // pyannote on the ANE; Python does summarize + publish only.
-        let runner = TranscriptionService.makeRunner(
-            clusteringThreshold: config.transcription.diarizationClusteringThreshold
-        )
-        Log.event(category: "transcription", action: "engine_resolved", attributes: [
-            "engine": runner.backendName,
-        ])
+        // PIPE36: a factory, not one runner, so a runner the job deadline gave up on is
+        // replaced with one built the same way, clustering threshold included.
+        let clusteringThreshold = config.transcription.diarizationClusteringThreshold
         // HYG2: honor the ASR language knob. It was read into ConfigStore and shown
         // as a Preferences picker but never reached the runner, which always got
         // `languageHint: nil`. Read once at init (edits apply next launch), like the
         // end-debounce and silence-backstop windows below.
         let transcriptionLanguage = configStore?.transcriptionLanguage ?? config.transcription.language
-        self.sinkDispatcher = SinkDispatcher(
+        let sinkDispatcher = SinkDispatcher(
             launcher: resolvedLauncher,
-            transcriptionRunner: runner,
+            makeTranscriptionRunner: {
+                TranscriptionService.makeRunner(clusteringThreshold: clusteringThreshold)
+            },
             languageHint: transcriptionLanguage
         )
+        self.sinkDispatcher = sinkDispatcher
+        Log.event(category: "transcription", action: "engine_resolved", attributes: [
+            "engine": sinkDispatcher.transcriptionBackendName,
+        ])
         // Snapshot the recordings dir at init for the library root; a live
         // change needs a daemon restart for the library window (rare).
         let recordingsDir: URL = {

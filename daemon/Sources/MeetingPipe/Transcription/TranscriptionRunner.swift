@@ -77,6 +77,17 @@ protocol TranscriptionRunner: AnyObject {
         wavURL: URL,
         languageHint: String?
     ) async throws -> TranscriptSidecar
+
+    /// The pass in flight has been given up on (PIPE36): `SinkDispatcher`'s deadline expired,
+    /// the job was failed, and this runner is about to be replaced. The pass itself may never
+    /// return, because a wedged CoreML call cannot be stopped, so anything the runner owes the
+    /// world for that pass (`FluidAudioRunner`'s REC20 memory row) is settled here instead of
+    /// on a return that may never come or may come during the next job. Called on main.
+    func abandonInFlightPass()
+}
+
+extension TranscriptionRunner {
+    func abandonInFlightPass() {}
 }
 
 enum TranscriptionError: Error, LocalizedError {

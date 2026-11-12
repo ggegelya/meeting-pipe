@@ -34,7 +34,7 @@ final class PipelineJobDispatcherTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        sink = SinkDispatcher(launcher: NoopDriver(), transcriptionRunner: PassRunner())
+        sink = SinkDispatcher(launcher: NoopDriver(), makeTranscriptionRunner: { PassRunner() })
         done = []
         errors = []
         activities = []
@@ -193,7 +193,7 @@ final class PipelineJobDispatcherTests: XCTestCase {
     /// the meeting interrupted rather than cancelled.
     func test_terminateSupervised_reaches_the_launcher_and_cancels_nothing() {
         let driver = CountingDriver()
-        let sink = SinkDispatcher(launcher: driver, transcriptionRunner: PassRunner())
+        let sink = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { PassRunner() })
         let dispatcher = PipelineJobDispatcher(
             sinkDispatcher: sink, onDone: { _, _, _ in }, onError: { _ in }, onQueueActivity: { _ in }
         )

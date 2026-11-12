@@ -218,6 +218,32 @@ PIPE37, from the 2026-10-25 performance review (SUBPROCESS-7). Nothing in the ex
 
 **Which spawns, and why not the rest.** Supervised: the ask and every spawn that names a meeting, which is what the relaunch reconciles and a Retry re-runs (`PipelineLauncher.isSupervised`). Backup, restore, digest, actions and roster are left to finish: nothing reconciles them, and a restore stopped half way is worse than one that completes unsupervised. `roster enroll` names a meeting only to find its embeddings, so it is excluded by name. `uv run` (the dev tier) was checked on 2026-11-12 with uv 0.11.8: it forwards SIGTERM to the Python child (which exited 143 through its handler) and the child inherits the stdin pipe, so the EOF reaches Python directly.
 
+### A deadline that gives up on work has to fence its late return
+
+PIPE36, from the 2026-10-25 performance review (MAINTHREAD-9, SUBPROCESS-4, SUBPROCESS-5). `SinkDispatcher` holds one serial lane, and before PIPE36 only the `mp` subprocess in it was bounded. A redaction ffmpeg that never exited, a FluidAudio pass wedged in CoreML or the synchronous diarizer, or an Apple Intelligence summarize that kept going held every later meeting until a restart. The fix is a job deadline over the in-daemon half, and the deadline is the easy part.
+
+**The hard part is that giving up on a pass does not stop it.** Nothing can cancel a stuck CoreML prediction, so the pass the deadline abandons may return at any later moment, during the next job. Before the fence, that late return did three wrong things. Its success path wrote `<stem>.json` and spawned a pipeline for a meeting already marked failed. Its cancellation branch, which the deadline's own `transcriptionTask.cancel()` sends a cooperative runner down, overwrote the timeout reason with "You cancelled this run". And either path called `completeActiveJob`, which cleared `activeJob` and started the next queued job beside the one already running, so there were two lanes. The fence has two layers:
+
+- Every exit of `runDaemonTranscription` asks `isLive(job)` on main before writing anything.
+- `completeActiveJob` ignores any job that is not `activeJob`.
+
+The check has to be on main, in the same block as the decision, because the deadline fires on main too. A check followed by an off-main write leaves a window in which the deadline lands between them. That is why the success path claims the job (`claimCompletion`, which also disarms the deadline) before it writes the transcript, rather than writing first and checking at the hand-off.
+
+**Do not hand a suspect runner the next meeting.** A wedged `AsrManager` would wedge it too, so the runner comes from a factory and is rebuilt after an expiry in the `transcribe` phase. A `redact`-phase expiry keeps it: the runner never saw that job, and rebuilding a healthy warm runner would only cost the next meeting a cold model load. Two consequences:
+
+- The runner is resolved on main at job start and passed into the pass. The pass never reads `transcriptionRunner`, which the deadline can now replace while the pass runs.
+- The abandoned runner's REC20 memory row is settled at the deadline (`abandonInFlightPass`, which emits it with `abandoned: true`) rather than in the pass's `defer`. A return that never comes would leave the 4 Hz sampler running forever. A return that comes late would fold the next job and the replacement's models into its peak.
+
+**The timer is GCD on the main queue, not a Task.** The deadline exists for the synchronous diarizer, which holds a cooperative-pool thread, and a `Task.sleep` deadline needs a pool thread to fire (CI8). Its clock is `DispatchTime`, which stops while the Mac sleeps, so a pass paused by a closed lid is not failed for time it spent asleep.
+
+**The Apple phase is the opposite case: there `runWithTimeout` is right.** `LanguageModelSession.respond` suspends rather than blocking, so a per-call ceiling built on `runWithTimeout` works. The bugs there were different:
+
+- The Task was unretained, and by the time it ran, run-all's `.run` slot was already empty, so Cancel stopped nothing.
+- The publish after it was spawned with `retain: .none`.
+- It never beat, so the stall flag `invokePipeline` armed called a healthy 30-second summarize stalled.
+
+Cancel now lands before the next model call. A call in flight finishes, because nothing interrupts it, and is bounded by the ceiling. One residual is narrow and named here: a click that lands in the microseconds between run-all's slot release and the Apple Task being stored reaches neither.
+
 ### Nothing blocking inside an audio render callback
 
 Don't log or write files from inside an audio render callback (`MeetingRecorder` taps, `SystemAudioCapture`). Those run on real-time threads; blocking work there glitches the recording.

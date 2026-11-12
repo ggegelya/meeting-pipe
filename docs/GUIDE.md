@@ -480,6 +480,8 @@ A confidential meeting, or one whose workflow keeps the summary on your Mac, can
 
 Ask uses a separate search model. If that model is missing during a confidential run, **Details…** retains the specific download command to run before asking again; downloading the summary model does not install the search model.
 
+A meeting whose processing got stuck lands here on its own, so the meetings behind it are not held up. "Transcription did not finish" means turning the recording into words was still running long after it should have ended, so the app stopped it and went on to the next meeting; nothing was published. **Retry** runs it again. If the same meeting stops the same way twice, quit and reopen MeetingPipe from the menu bar, then **Retry**. With Apple Intelligence as the summary engine, "Apple Intelligence did not answer" is the same kind of stop at the summary step: the transcript is saved, and **Retry** asks again.
+
 A meeting you stopped yourself lands here too, and says **Processing cancelled**. Quitting or restarting the app stops a run in progress rather than leaving it working out of sight, and that meeting says **Processing interrupted** when the app comes back; **Retry** resumes it. Cancel sends no error notification; the row remains available to resume when you choose.
 
 ### When a re-transcribe is the answer

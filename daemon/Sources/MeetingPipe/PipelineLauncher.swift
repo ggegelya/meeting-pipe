@@ -490,7 +490,7 @@ final class PipelineRunSlots: @unchecked Sendable {
 
 /// Spawns `mp` pipeline subcommands out of process so transcription doesn't block the daemon.
 final class PipelineLauncher: PipelineDriver {
-    /// Hard wallclock cap for `run-all`. Worst legitimate run is ~30 min for a 3-hour input; 90 min ensures the daemon never sits in `.handoff` indefinitely (May 2026 incident: a 3h file pinned 4 cores for 13h before manual kill).
+    /// Hard wallclock cap for `run-all`. Worst legitimate run is ~30 min for a 3-hour input; 90 min ensures the daemon never sits in `.handoff` indefinitely (May 2026 incident: a 3h file pinned 4 cores for 13h before manual kill). It bounds the subprocess only: the in-daemon phases around it have their own bounds since PIPE36, `SinkDispatcher`'s job deadline over redaction and transcription, and `AppleIntelligenceSummarizer.callCeilingSeconds` per on-device call after it.
     static let defaultMaxRuntime: TimeInterval = 90 * 60
 
     /// Exit code `mp run-all` / `mp publish` / `mp publish-from-paste` use for "every configured sink failed" (PIPE1). Mirrors `publish_router.EXIT_PUBLISH_FAILED`. Distinct from 1 (any other failure) and 2 (usage) so the failure can be attributed to the publish stage without parsing stderr.
@@ -503,14 +503,49 @@ final class PipelineLauncher: PipelineDriver {
     /// queue. `LocalServerReaper.reapIfOrphaned` in production; a test counts calls.
     private let reapOrphanedServer: @Sendable () -> Void
 
+    /// The on-device summarize a run-all hands off to when it leaves `<stem>.apple_pending.json`
+    /// (PIPE36): the recording (which names the meeting's context), its transcript, and a beat
+    /// `(done, planned)` before every model call. `onDeviceSummarize` in production; a test injects one that never
+    /// touches the model, which also keeps the CI runner, which has no `FoundationModels`,
+    /// able to reach the launcher's half of the phase.
+    typealias AppleSummarize = @Sendable (
+        _ wav: URL, _ transcriptMD: URL, _ onCall: @escaping (Int, Int) -> Void
+    ) async throws -> Void
+    private let appleSummarize: AppleSummarize
+
+    /// The Apple phase's Task, held where `cancelActiveRun` can reach it (PIPE36). It used to
+    /// be unretained, and by the time it ran run-all's `.run` slot was already empty, so a
+    /// Cancel logged `pipeline_cancelled` and stopped nothing. Never cleared: cancelling a
+    /// finished Task is a no-op, the same reasoning `SinkDispatcher.transcriptionTask` uses.
+    private var appleTask: Task<Void, Never>?
+    private let appleTaskLock = NSLock()
+
     init(maxRuntime: TimeInterval = PipelineLauncher.defaultMaxRuntime,
          invocation: @escaping () -> MPInvocation? = PipelineLauncher.findMP,
          environment: [String: String]? = nil,
-         reapOrphanedServer: @escaping @Sendable () -> Void = { LocalServerReaper.reapIfOrphaned() }) {
+         reapOrphanedServer: @escaping @Sendable () -> Void = { LocalServerReaper.reapIfOrphaned() },
+         appleSummarize: @escaping AppleSummarize = PipelineLauncher.onDeviceSummarize) {
         self.maxRuntime = maxRuntime
         self.invocation = invocation
         self.environment = environment
         self.reapOrphanedServer = reapOrphanedServer
+        self.appleSummarize = appleSummarize
+    }
+
+    /// Production's `AppleSummarize`: the availability check, the meeting's context, then the
+    /// on-device map/reduce.
+    static let onDeviceSummarize: AppleSummarize = { wav, transcriptMD, onCall in
+        guard AppleIntelligenceSummarizer.isAvailable else {
+            throw AppleIntelligenceError.unavailable(
+                AppleIntelligenceSummarizer.availabilityReason ?? "unavailable")
+        }
+        let (teamContext, summaryLanguage) = PipelineLauncher.appleContext(for: wav)
+        try await AppleIntelligenceSummarizer().summarizeFile(
+            transcriptMD: transcriptMD,
+            teamContext: teamContext,
+            summaryLanguage: summaryLanguage,
+            onCall: onCall
+        )
     }
 
     enum LaunchError: Error, LocalizedError {
@@ -671,8 +706,13 @@ final class PipelineLauncher: PipelineDriver {
     /// Terminate the in-flight run-all (TECH-UX5 Cancel). The termination handler
     /// then completes the job as `LaunchError.cancelled`, so the row is still
     /// retryable (which is deliberate) without anything reporting a failure the
-    /// owner asked for (UX50).
+    /// owner asked for (UX50). PIPE36: the Apple phase that follows a run-all is a Task,
+    /// not a spawn, so it is cancelled too; whichever of the two is live answers.
     func cancelActiveRun() {
+        appleTaskLock.lock()
+        let apple = appleTask
+        appleTaskLock.unlock()
+        apple?.cancel()
         terminate(slots.markCancelled(.run)?.process, what: "pipeline run")
     }
 
@@ -817,7 +857,7 @@ final class PipelineLauncher: PipelineDriver {
                 let sentinel = appleDir.appendingPathComponent("\(appleStem).apple_pending.json")
                 if FileManager.default.fileExists(atPath: sentinel.path) {
                     try? FileManager.default.removeItem(at: sentinel)
-                    self.completeViaAppleIntelligence(wav: wav, completion: completion)
+                    self.completeViaAppleIntelligence(wav: wav, onProgress: onProgress, completion: completion)
                     return
                 }
                 // The orchestrator writes <stem>.publish.json for this run; read the
@@ -1212,31 +1252,44 @@ final class PipelineLauncher: PipelineDriver {
     /// transcript on-device in Swift, then `mp publish` to fan out to all sinks.
     /// Surfaces unavailability / errors through the same `completion` failure path
     /// the rest of the launcher uses, so the failure-visibility UI catches them.
+    ///
+    /// PIPE36: cancellable, bounded, and beating. The Task is held for `cancelActiveRun`; the
+    /// summarize checks for cancellation before every model call and bounds each one
+    /// (`AppleIntelligenceSummarizer.mapReduce`); each call beats `onProgress` as stage
+    /// `summarize`, so the 30 s stall flag `SinkDispatcher.invokePipeline` armed reads a
+    /// working summarize as working; and the follow-up publish is retained in the `.run` slot,
+    /// so a Cancel after the summarize stops it too. A cancelled summarize completes as the
+    /// `CancellationError` it threw, which `isCancellation` answers, so it lands as UX50's
+    /// `.interrupted` and spawns no publish.
     private func completeViaAppleIntelligence(
         wav: URL,
+        onProgress: ((PipelineProgress) -> Void)?,
         completion: @escaping (Result<URL?, Error>) -> Void
     ) {
         let dir = wav.deletingLastPathComponent()
         let stem = wav.deletingPathExtension().lastPathComponent
         let transcriptMD = dir.appendingPathComponent("\(stem).md")
         let summaryJSON = dir.appendingPathComponent("\(stem).summary.json")
-
-        guard AppleIntelligenceSummarizer.isAvailable else {
-            completion(.failure(AppleIntelligenceError.unavailable(
-                AppleIntelligenceSummarizer.availabilityReason ?? "unavailable")))
-            return
+        let summarize = appleSummarize
+        let startedAt = Date()
+        // `onProgress` already lands on main for run-all's own beats; these do the same.
+        let beat: (Int, Int) -> Void = { done, planned in
+            let progress = PipelineProgress(
+                stage: "summarize",
+                elapsedSec: Int(Date().timeIntervalSince(startedAt)),
+                stemsDone: done,
+                stemsTotal: planned
+            )
+            DispatchQueue.main.async { onProgress?(progress) }
         }
-        let (teamContext, summaryLanguage) = Self.appleContext(for: wav)
 
-        Task {
+        let task = Task {
             do {
-                try await AppleIntelligenceSummarizer().summarizeFile(
-                    transcriptMD: transcriptMD,
-                    teamContext: teamContext,
-                    summaryLanguage: summaryLanguage
-                )
+                try await summarize(wav, transcriptMD, beat)
+                // A click that landed after the last call returned: nothing left to throw from.
+                try Task.checkCancellation()
             } catch {
-                completion(.failure(error))
+                completion(.failure(Task.isCancelled ? CancellationError() : error))
                 return
             }
             // TECH-FEAT6: snapshot the run before publish, matching the Python
@@ -1245,7 +1298,8 @@ final class PipelineLauncher: PipelineDriver {
             Self.writeAppleRunSidecar(
                 dir: dir, stem: stem, transcriptMD: transcriptMD, summaryJSON: summaryJSON
             )
-            self.runMP(["publish", summaryJSON.path], timeout: 10 * 60, meeting: summaryJSON) { result in
+            self.runMP(["publish", summaryJSON.path], timeout: 10 * 60, meeting: summaryJSON,
+                       retain: .run) { result in
                 switch result {
                 case .failure(let error):
                     completion(.failure(error))
@@ -1253,7 +1307,16 @@ final class PipelineLauncher: PipelineDriver {
                     completion(.success(PublishResult.load(stem: stem, in: dir)?.pageURL))
                 }
             }
+            // `runMP` retained the publish before returning. A Cancel that landed between the
+            // check above and that retain found this Task cancelled and the slot still empty,
+            // so it is honoured here, against the publish it missed.
+            if Task.isCancelled {
+                self.terminate(self.slots.markCancelled(.run)?.process, what: "pipeline run")
+            }
         }
+        appleTaskLock.lock()
+        appleTask = task
+        appleTaskLock.unlock()
     }
 
     /// TECH-FEAT6: write `<stem>.run.json` for an Apple-Intelligence run so the

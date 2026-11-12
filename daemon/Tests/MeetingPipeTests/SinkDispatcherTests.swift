@@ -118,7 +118,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     private func makeDispatcher(_ driver: FakeDriver) -> SinkDispatcher {
-        SinkDispatcher(launcher: driver, transcriptionRunner: PassRunner())
+        SinkDispatcher(launcher: driver, makeTranscriptionRunner: { PassRunner() })
     }
 
     private func makeTempWav() throws -> URL {
@@ -344,7 +344,7 @@ final class SinkDispatcherTests: XCTestCase {
     func test_runner_writes_sidecar_before_launching_pipeline() throws {
         let driver = FakeDriver()
         let runner = FakeRunner()
-        let dispatcher = SinkDispatcher(launcher: driver, transcriptionRunner: runner)
+        let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
 
@@ -366,7 +366,7 @@ final class SinkDispatcherTests: XCTestCase {
         let driver = FakeDriver()
         let runner = FakeRunner()
         runner.shouldThrow = true
-        let dispatcher = SinkDispatcher(launcher: driver, transcriptionRunner: runner)
+        let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
         var completed: [(ProcessingJob, Result<URL?, Error>)] = []
         dispatcher.onJobCompleted = { completed.append(($0, $1)) }
 
@@ -474,7 +474,7 @@ final class SinkDispatcherTests: XCTestCase {
         let driver = FakeDriver()
         let runner = FakeRunner()
         runner.shouldThrow = true
-        let dispatcher = SinkDispatcher(launcher: driver, transcriptionRunner: runner)
+        let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
         var completed: [(ProcessingJob, Result<URL?, Error>)] = []
         dispatcher.onJobCompleted = { completed.append(($0, $1)) }
 
@@ -498,7 +498,7 @@ final class SinkDispatcherTests: XCTestCase {
         _ driver: FakeDriver, _ runner: FakeRunner, originals: URL,
         redactor: @escaping @Sendable (URL) async -> MuteRedactor.Outcome
     ) -> SinkDispatcher {
-        SinkDispatcher(launcher: driver, transcriptionRunner: runner, redactor: redactor, originalsDir: originals)
+        SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner }, redactor: redactor, originalsDir: originals)
     }
 
     func test_a_failed_redaction_never_transcribes_or_publishes_and_moves_the_recording_out() throws {
@@ -827,7 +827,7 @@ final class SinkDispatcherTests: XCTestCase {
         let driver = FakeDriver()
         let runner = LanguageRecordingRunner()
         let dispatcher = SinkDispatcher(
-            launcher: driver, transcriptionRunner: runner, languageHint: "uk"
+            launcher: driver, makeTranscriptionRunner: { runner }, languageHint: "uk"
         )
         dispatcher.enqueue(file: try makeTempWav(), summaryMode: .auto)
         waitForPipelineStart(driver)
@@ -840,7 +840,7 @@ final class SinkDispatcherTests: XCTestCase {
         // untouched config transcribes exactly as it did before the wiring.
         let driver = FakeDriver()
         let runner = LanguageRecordingRunner()
-        let dispatcher = SinkDispatcher(launcher: driver, transcriptionRunner: runner)
+        let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
         dispatcher.enqueue(file: try makeTempWav(), summaryMode: .auto)
         waitForPipelineStart(driver)
         XCTAssertEqual(runner.seenHints, ["auto"])
@@ -965,7 +965,7 @@ final class SinkDispatcherTests: XCTestCase {
     func test_a_library_run_never_transcribes_or_runs_run_all() {
         let driver = FakeDriver()
         let runner = FakeRunner()
-        let dispatcher = SinkDispatcher(launcher: driver, transcriptionRunner: runner)
+        let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
 
         var started = false
         enqueueRun(dispatcher, regenerate("m")) { token in
@@ -1324,7 +1324,7 @@ final class SinkDispatcherTests: XCTestCase {
     private func makeParkedDispatcher(
         _ driver: FakeDriver, _ runner: TranscriptionRunner
     ) -> SinkDispatcher {
-        SinkDispatcher(launcher: driver, transcriptionRunner: runner)
+        SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
     }
 
     /// Leg (a), the acceptance: the row's entry is published when the subprocess is
@@ -1527,5 +1527,400 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertFalse(PipelineLauncher.isCancellation(Boom()))
         XCTAssertEqual(SinkDispatcher.stage(for: Boom()), .pipeline,
                        "a genuine transcription fault is still a fault")
+    }
+
+    // MARK: - PIPE36: a job deadline over the transcription half
+
+    private typealias Gate = TestGate
+
+    /// A runner whose pass never returns until its gate opens, and ignores cancellation while
+    /// it waits, then returns a sidecar: the late return a wedged pass could make.
+    private final class StuckRunner: TranscriptionRunner {
+        let backendName = "stuck"
+        let gate = Gate()
+        let started = XCTestExpectation(description: "the stuck pass is running")
+        private(set) var abandonCalls = 0
+
+        func transcribe(wavURL: URL, languageHint: String?) async throws -> TranscriptSidecar {
+            started.fulfill()
+            await gate.wait()
+            return TranscriptSidecar(
+                language: "en", segments: [], audioPath: wavURL.path, audioSeconds: 1,
+                model: "stuck", backend: backendName, diarization: false,
+                diarizationFailed: false, diarizationFailureReason: nil,
+                streaming: false, finalized: true
+            )
+        }
+
+        func abandonInFlightPass() { abandonCalls += 1 }
+    }
+
+    /// Gates opened at the end of each test, so no parked continuation outlives it.
+    private var openAtTearDown: [Gate] = []
+
+    override func tearDown() {
+        openAtTearDown.forEach { $0.open() }
+        openAtTearDown = []
+        super.tearDown()
+    }
+
+    private static let shortDeadline: (Double?, Bool) -> TimeInterval = { _, _ in 0.3 }
+
+    private func timedOutEvents(in logs: URL) throws -> [[String: Any]] {
+        let url = logs.appendingPathComponent("events.jsonl")
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        return try String(contentsOf: url, encoding: .utf8)
+            .split(separator: "\n")
+            .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            .filter { $0["action"] as? String == "transcription_timed_out" }
+    }
+
+    private func isolatedLogs(_ dir: URL) throws -> URL {
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        return logs
+    }
+
+    private func waitUntil(_ timeout: TimeInterval = 3, _ condition: @escaping () -> Bool) {
+        let exp = expectation(description: "condition")
+        let deadline = Date().addingTimeInterval(timeout - 0.5)
+        func poll() {
+            if condition() { exp.fulfill(); return }
+            if Date() >= deadline { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() }
+        }
+        DispatchQueue.main.async { poll() }
+        wait(for: [exp], timeout: timeout)
+    }
+
+    /// Acceptance 1: a redaction that never returns. The job fails at stage `.transcribe` with
+    /// the timeout reason, the event names the redact phase, nothing downstream runs for it,
+    /// and the next queued job starts.
+    func test_a_redaction_that_never_returns_fails_the_job_and_the_next_one_runs() throws {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        let stuck = try makeTempWav()
+        let next = try makeTempWav()
+        defer {
+            try? FileManager.default.removeItem(at: stuck.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: next.deletingLastPathComponent())
+            unsetenv("MEETINGPIPE_LOGS_DIR")
+        }
+        let logs = try isolatedLogs(stuck.deletingLastPathComponent())
+        let gate = Gate()
+        openAtTearDown.append(gate)
+        var built = 0
+        let dispatcher = SinkDispatcher(
+            launcher: driver,
+            makeTranscriptionRunner: {
+                built += 1
+                return runner
+            },
+            redactor: { url in
+                if url == stuck { await gate.wait() }
+                return .notNeeded
+            },
+            transcriptionDeadline: Self.shortDeadline
+        )
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+
+        dispatcher.enqueue(file: stuck, summaryMode: .auto)
+        dispatcher.enqueue(file: next, summaryMode: .auto)
+        waitForPipelineStart(driver)
+
+        XCTAssertEqual(completed.first?.0.file, stuck)
+        guard case .failure(let error)? = completed.first?.1 else { return XCTFail("expected a failure") }
+        XCTAssertEqual((error as? SinkDispatcher.TranscriptionTimedOut)?.phase, .redact)
+        XCTAssertFalse(PipelineLauncher.isCancellation(error), "nobody asked for this; it reports")
+        let failure = try XCTUnwrap(PipelineFailureSidecar.read(stem: "clip", in: stuck.deletingLastPathComponent()))
+        XCTAssertEqual(failure.stage, .transcribe)
+        XCTAssertTrue(failure.reason.hasPrefix("Transcription did not finish"), failure.reason)
+        XCTAssertEqual(runner.calls, [next], "the stuck recording never reached transcription")
+        XCTAssertEqual(driver.startedFiles, [next], "nor the pipeline; the next job did")
+        XCTAssertEqual(built, 1, "a redact-phase expiry never reached the runner, so it is kept")
+
+        let events = try timedOutEvents(in: logs)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?["phase"] as? String, "redact")
+        XCTAssertEqual(events.first?["runner_warm"] as? Bool, false)
+        XCTAssertTrue(events.first?["audio_seconds"] is NSNull, "an empty fixture has no readable header")
+        XCTAssertNotNil(events.first?["elapsed_sec"] as? Double)
+    }
+
+    /// Acceptance 2: a pass that ignores cancellation and never returns. The job fails with
+    /// `phase` transcribe, and the next job runs on a freshly built runner.
+    func test_a_stuck_pass_fails_the_job_and_the_next_job_gets_a_fresh_runner() throws {
+        let driver = FakeDriver()
+        let stuckRunner = StuckRunner()
+        openAtTearDown.append(stuckRunner.gate)
+        let freshRunner = FakeRunner()
+        var built = 0
+        let stuck = try makeTempWav()
+        let next = try makeTempWav()
+        defer {
+            try? FileManager.default.removeItem(at: stuck.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: next.deletingLastPathComponent())
+            unsetenv("MEETINGPIPE_LOGS_DIR")
+        }
+        let logs = try isolatedLogs(stuck.deletingLastPathComponent())
+        let dispatcher = SinkDispatcher(
+            launcher: driver,
+            makeTranscriptionRunner: {
+                built += 1
+                return built == 1 ? stuckRunner : freshRunner
+            },
+            transcriptionDeadline: Self.shortDeadline
+        )
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+
+        dispatcher.enqueue(file: stuck, summaryMode: .auto)
+        dispatcher.enqueue(file: next, summaryMode: .auto)
+        wait(for: [stuckRunner.started], timeout: 2)
+        waitForPipelineStart(driver)
+
+        XCTAssertEqual(built, 2, "the factory built the first runner and its replacement")
+        XCTAssertEqual(stuckRunner.abandonCalls, 1, "the suspect runner was told its pass is abandoned")
+        XCTAssertEqual(freshRunner.calls, [next], "the next meeting ran on the fresh runner")
+        XCTAssertEqual(driver.startedFiles, [next])
+        guard case .failure(let error)? = completed.first?.1 else { return XCTFail("expected a failure") }
+        XCTAssertEqual((error as? SinkDispatcher.TranscriptionTimedOut)?.phase, .transcribe)
+        let events = try timedOutEvents(in: logs)
+        XCTAssertEqual(events.map { $0["phase"] as? String }, ["transcribe"])
+    }
+
+    /// Acceptance 3: the stuck pass returns while the next job is active. The lane still holds
+    /// the second job, no third starts beside it, and the abandoned stem gets no transcript, no
+    /// pipeline, and keeps its timeout reason.
+    func test_a_late_return_from_an_abandoned_pass_writes_nothing_and_starts_nothing() throws {
+        let driver = FakeDriver()
+        let stuckRunner = StuckRunner()
+        openAtTearDown.append(stuckRunner.gate)
+        let freshRunner = FakeRunner()
+        var built = 0
+        let stuck = try makeTempWav()
+        let second = try makeTempWav()
+        let third = try makeTempWav()
+        defer {
+            for wav in [stuck, second, third] {
+                try? FileManager.default.removeItem(at: wav.deletingLastPathComponent())
+            }
+        }
+        let dispatcher = SinkDispatcher(
+            launcher: driver,
+            makeTranscriptionRunner: {
+                built += 1
+                return built == 1 ? stuckRunner : freshRunner
+            },
+            transcriptionDeadline: Self.shortDeadline
+        )
+        dispatcher.enqueue(file: stuck, summaryMode: .auto)
+        dispatcher.enqueue(file: second, summaryMode: .auto)
+        dispatcher.enqueue(file: third, summaryMode: .auto)
+        wait(for: [stuckRunner.started], timeout: 2)
+        waitForPipelineStart(driver)
+        XCTAssertEqual(driver.startedFiles, [second])
+
+        stuckRunner.gate.open()
+        // Give the late return every chance to do damage: its hop to main and anything after.
+        drainMain()
+        let settled = expectation(description: "settled")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+
+        XCTAssertEqual(driver.startedFiles, [second], "no pipeline for the abandoned stem, no third job")
+        XCTAssertEqual(freshRunner.calls, [second], "the third job is still waiting its turn")
+        XCTAssertEqual(dispatcher.queueDepth, 2, "the second job is active and the third queued")
+        let transcript = stuck.deletingPathExtension().appendingPathExtension("json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: transcript.path), "no <stem>.json for it")
+        let failure = try XCTUnwrap(PipelineFailureSidecar.read(stem: "clip", in: stuck.deletingLastPathComponent()))
+        XCTAssertTrue(failure.reason.hasPrefix("Transcription did not finish"), "the timeout reason stands: \(failure.reason)")
+
+        driver.finish(.success(nil))
+        waitUntil { driver.startedFiles.count == 2 }
+        XCTAssertEqual(driver.startedFiles, [second, third], "the lane carries on one job at a time")
+    }
+
+    /// The deadline's own cancel reaches a pass that honours it, and that pass's cancellation
+    /// branch must not overwrite the timeout with "You cancelled this run".
+    func test_a_cooperative_pass_cut_by_the_deadline_keeps_the_timeout_reason() throws {
+        let driver = FakeDriver()
+        let runner = ParkedRunner()
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+        let dispatcher = SinkDispatcher(
+            launcher: driver, makeTranscriptionRunner: { runner }, transcriptionDeadline: Self.shortDeadline
+        )
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForJobCompletion { completed.count }
+        // Let the cancelled pass unwind through its catch.
+        let settled = expectation(description: "settled")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+
+        XCTAssertEqual(completed.count, 1, "one completion, the deadline's")
+        guard case .failure(let error)? = completed.first?.1 else { return XCTFail("expected a failure") }
+        XCTAssertTrue(error is SinkDispatcher.TranscriptionTimedOut)
+        let failure = try XCTUnwrap(PipelineFailureSidecar.read(stem: "clip", in: wav.deletingLastPathComponent()))
+        XCTAssertNotEqual(failure.reason, SinkDispatcher.cancelledReason)
+        XCTAssertEqual(failure.stage, .transcribe)
+        XCTAssertTrue(driver.startedFiles.isEmpty)
+    }
+
+    /// Acceptance 4: a job that finishes inside its deadline is unchanged, and the deadline is
+    /// disarmed at the hand-off, so a pipeline running past the transcription allowance is not
+    /// failed by it.
+    func test_a_job_inside_its_deadline_hands_off_and_is_never_timed_out() throws {
+        let driver = FakeDriver()
+        let wav = try makeTempWav()
+        defer {
+            try? FileManager.default.removeItem(at: wav.deletingLastPathComponent())
+            unsetenv("MEETINGPIPE_LOGS_DIR")
+        }
+        let logs = try isolatedLogs(wav.deletingLastPathComponent())
+        let dispatcher = SinkDispatcher(
+            launcher: driver, makeTranscriptionRunner: { PassRunner() }, transcriptionDeadline: Self.shortDeadline
+        )
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        // Past the 0.3 s deadline plus the timer's 1 s leeway, so a deadline left armed
+        // would have fired by now rather than merely not yet.
+        let past = expectation(description: "past the deadline")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { past.fulfill() }
+        wait(for: [past], timeout: 3)
+
+        XCTAssertTrue(completed.isEmpty, "the pipeline half is runMP's to bound, not this deadline's")
+        XCTAssertNil(PipelineFailureSidecar.read(stem: "clip", in: wav.deletingLastPathComponent()))
+        XCTAssertTrue(try timedOutEvents(in: logs).isEmpty)
+        driver.finish(.success(nil))
+        waitForJobCompletion { completed.count }
+        if case .failure = completed.first?.1 { XCTFail("an on-time job succeeds") }
+    }
+
+    /// A runner that sticks (ignoring cancellation) on one recording and passes the rest.
+    private final class StuckOnOneRunner: TranscriptionRunner {
+        let backendName = "stuck-on-one"
+        let stuckOn: URL
+        let gate = Gate()
+        init(stuckOn: URL) { self.stuckOn = stuckOn }
+
+        func transcribe(wavURL: URL, languageHint: String?) async throws -> TranscriptSidecar {
+            if wavURL == stuckOn { await gate.wait() }
+            return TranscriptSidecar(
+                language: "en", segments: [], audioPath: wavURL.path, audioSeconds: 2,
+                model: "m", backend: backendName, diarization: false,
+                diarizationFailed: false, diarizationFailureReason: nil,
+                streaming: false, finalized: true
+            )
+        }
+    }
+
+    /// A 16 kHz mono 16-bit PCM WAV of `seconds` of silence, so the header read measures it.
+    private func writeWav(_ url: URL, seconds: Int) throws {
+        let dataBytes = UInt32(seconds * 16_000 * 2)
+        var header = Data()
+        func le32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { header.append(contentsOf: $0) } }
+        func le16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { header.append(contentsOf: $0) } }
+        header.append(contentsOf: Array("RIFF".utf8)); le32(36 + dataBytes)
+        header.append(contentsOf: Array("WAVE".utf8))
+        header.append(contentsOf: Array("fmt ".utf8)); le32(16); le16(1); le16(1)
+        le32(16_000); le32(32_000); le16(2); le16(16)
+        header.append(contentsOf: Array("data".utf8)); le32(dataBytes)
+        try (header + Data(count: Int(dataBytes))).write(to: url)
+    }
+
+    /// The deadline is armed on the fallback and then tightened from the measured header, and
+    /// the first-load allowance follows the runner: cold for a fresh one, warm once it has
+    /// completed a pass, cold again after a stuck pass replaced it. Every other test injects a
+    /// deadline that ignores its inputs, so this is the one that fails if the wiring goes.
+    func test_the_deadline_is_tightened_from_the_header_and_follows_the_runners_warmth() throws {
+        let driver = FakeDriver()
+        let wavs = try (0..<4).map { _ in try makeTempWav() }
+        defer {
+            for wav in wavs { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+            unsetenv("MEETINGPIPE_LOGS_DIR")
+        }
+        for wav in wavs { try writeWav(wav, seconds: 2) }
+        XCTAssertEqual(RecordingPostProcessor.audioDurationSec(of: wavs[0]), 2)
+        let logs = try isolatedLogs(wavs[0].deletingLastPathComponent())
+        let first = StuckOnOneRunner(stuckOn: wavs[2])
+        openAtTearDown.append(first.gate)
+        var built = 0
+        var asked: [(Double?, Bool)] = []
+        var seconds: TimeInterval = 60
+        let dispatcher = SinkDispatcher(
+            launcher: driver,
+            makeTranscriptionRunner: {
+                built += 1
+                return built == 1 ? first : FakeRunner()
+            },
+            transcriptionDeadline: { audio, warm in
+                asked.append((audio, warm))
+                return seconds
+            }
+        )
+
+        dispatcher.enqueue(file: wavs[0], summaryMode: .auto)
+        waitUntil { driver.startedFiles.count == 1 }
+        dispatcher.enqueue(file: wavs[1], summaryMode: .auto)
+        driver.finish(.success(nil))
+        waitUntil { driver.startedFiles.count == 2 }
+        // The third recording sticks on the first runner; the fourth must get a fresh one.
+        seconds = 0.3
+        dispatcher.enqueue(file: wavs[2], summaryMode: .auto)
+        dispatcher.enqueue(file: wavs[3], summaryMode: .auto)
+        driver.finish(.success(nil))
+        waitUntil { driver.startedFiles.count == 3 }
+
+        XCTAssertEqual(driver.startedFiles, [wavs[0], wavs[1], wavs[3]])
+        XCTAssertEqual(built, 2)
+        let expected: [(Double?, Bool)] = [
+            (nil, false), (2, false),   // first job, runner cold
+            (nil, true), (2, true),     // second job, runner warm
+            (nil, true), (2, true),     // third job, warm, then stuck
+            (nil, false), (2, false),   // fourth job, fresh runner, cold again
+        ]
+        XCTAssertEqual(asked.map(\.0), expected.map(\.0))
+        XCTAssertEqual(asked.map(\.1), expected.map(\.1))
+        let events = try timedOutEvents(in: logs)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?["audio_seconds"] as? Double, 2)
+        XCTAssertEqual(events.first?["runner_warm"] as? Bool, true)
+    }
+
+    func test_the_deadline_scales_with_audio_and_adds_first_load_only_when_cold() {
+        // 110 minutes, the UX69 meeting: 10 min base + 6,600 s x 0.2.
+        XCTAssertEqual(SinkDispatcher.transcriptionDeadline(audioSeconds: 6_600, runnerWarm: true), 600 + 1_320)
+        XCTAssertEqual(SinkDispatcher.transcriptionDeadline(audioSeconds: 6_600, runnerWarm: false), 600 + 1_320 + 3_600)
+        // Unreadable header: the 6 h fallback, and a zero is treated as unreadable, not as empty.
+        XCTAssertEqual(SinkDispatcher.transcriptionDeadline(audioSeconds: nil, runnerWarm: true), 600 + 4_320)
+        XCTAssertEqual(SinkDispatcher.transcriptionDeadline(audioSeconds: 0, runnerWarm: true), 600 + 4_320)
+        // A 30 s clip still gets the base.
+        XCTAssertEqual(SinkDispatcher.transcriptionDeadline(audioSeconds: 30, runnerWarm: true), 606)
+        // At least 20 times both measured healthy rates (52.5 s for 6,600 s; 12.5 s for 2,078 s).
+        XCTAssertGreaterThanOrEqual(SinkDispatcher.deadlineSecPerAudioSec, 20 * 52.5 / 6_600)
+        XCTAssertGreaterThanOrEqual(SinkDispatcher.deadlineSecPerAudioSec, 20 * 12.5 / 2_078)
+    }
+
+    /// The reason renders as the row's explanation (FailurePresentation's validation path) in
+    /// both phases and at the longest deadline, rather than "open Details".
+    func test_the_timeout_reason_is_shown_on_the_row_as_written() {
+        for phase in [SinkDispatcher.TranscriptionPhase.redact, .transcribe] {
+            for minutes in [1, 9_999] {
+                let reason = SinkDispatcher.timedOutReason(phase: phase, minutes: minutes)
+                XCTAssertTrue(
+                    FailurePresentation(diagnostics: reason).explanation.contains(reason),
+                    "\(phase) \(minutes): \(reason.count) chars"
+                )
+            }
+        }
     }
 }

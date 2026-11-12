@@ -35,6 +35,31 @@ final class TranscriptionMemoryProbeTests: XCTestCase {
         XCTAssertEqual(attributes["audio_sec"] as? Double, 7_200.0)
         XCTAssertNil(probe.finish(audioSec: 1), "once per probe")
         XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(attributes["abandoned"] as? Bool, false)
+    }
+
+    /// PIPE36: a pass the job deadline gave up on is finished at the deadline, marked, and its
+    /// late return (if one ever comes, from another thread) emits nothing more, so its row
+    /// never takes in the next job's footprint.
+    func test_an_abandoned_pass_is_finished_once_at_the_deadline_and_its_late_return_is_dropped() throws {
+        let rows = OSAllocatedUnfairLock<[[String: Any]]>(uncheckedState: [])
+        let probe = TranscriptionMemoryProbe(
+            read: { .init(footprint: 500, lifetimePeak: 600) },
+            emit: { _, attributes in rows.withLockUnchecked { $0.append(attributes) } },
+            idleDelaySeconds: nil,
+            physicalMemory: 1_000,
+            startsSampler: false
+        )
+        let atDeadline = try XCTUnwrap(probe.finish(audioSec: 60, abandoned: true))
+        XCTAssertEqual(atDeadline["abandoned"] as? Bool, true)
+
+        let late = expectation(description: "the late return ran")
+        DispatchQueue.global().async {
+            XCTAssertNil(probe.finish(audioSec: 60), "the pass's own defer finds it finished")
+            late.fulfill()
+        }
+        wait(for: [late], timeout: 2)
+        XCTAssertEqual(rows.withLockUnchecked { $0.count }, 1)
     }
 
     func test_the_idle_reading_follows_the_last_job_only() {
@@ -84,7 +109,11 @@ final class TranscriptionMemoryProbeTests: XCTestCase {
             encoding: .utf8
         )
         XCTAssertTrue(runner.contains(
-            "let memory = TranscriptionMemoryProbe()\n        var audioSec: Double?\n        defer { memory.finish(audioSec: audioSec) }"
+            "let memory = TranscriptionMemoryProbe()\n        var audioSec: Double?\n"
+                + "        inFlight.withLockUnchecked { $0 = InFlightPass(probe: memory) }\n"
+                + "        defer {\n            memory.finish(audioSec: audioSec)\n"
         ))
+        // PIPE36: and a pass the job deadline abandons is closed at the deadline, marked.
+        XCTAssertTrue(runner.contains("pass.probe.finish(audioSec: pass.audioSec, abandoned: true)"))
     }
 }

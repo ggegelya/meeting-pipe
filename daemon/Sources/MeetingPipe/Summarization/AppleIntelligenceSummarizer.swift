@@ -1,4 +1,5 @@
 import Foundation
+import os
 #if canImport(FoundationModels)
 import FoundationModels
 #endif
@@ -11,6 +12,10 @@ enum AppleIntelligenceError: Error, LocalizedError {
     /// case that stranded `20260707-150057`). Deterministic: a same-backend retry
     /// fails again, so the Library offers a local re-summarize instead.
     case unsupportedLanguage(String)
+    /// PIPE36: one on-device call ran past `AppleIntelligenceSummarizer.callCeilingSeconds`.
+    /// Not deterministic: a hang is a framework state, not a property of the transcript, so
+    /// `isDeterministicBackendFailure` leaves it out and a plain retry stays the way back.
+    case timedOut(seconds: Double)
 
     /// PIPE6: stable phrase embedded in the unsupported-language reason so the
     /// Library can recognize it from `<stem>.error.json` (which carries only a
@@ -25,6 +30,8 @@ enum AppleIntelligenceError: Error, LocalizedError {
         case .parseFailed(let detail): return "Apple Intelligence returned an unparseable summary: \(detail)"
         case .unsupportedLanguage(let detail):
             return "Apple Intelligence: \(Self.unsupportedLanguageMarker) for this transcript. \(detail)"
+        case .timedOut(let seconds):
+            return "Apple Intelligence did not answer within \(Int(seconds)) seconds on one part of the transcript, so the summary was stopped. Retry when you are ready."
         }
     }
 
@@ -77,6 +84,8 @@ struct AppleIntelligenceSummarizer {
     /// and overflowed on real meetings; partials are now merged in rounds of this
     /// size until one remains (LOCAL3).
     var reduceBatch: Int = 4
+    /// PIPE36: the per-call ceiling `generate` applies; see the constant.
+    var callCeilingSeconds: Double = AppleIntelligenceSummarizer.callCeilingSeconds
 
     /// nil when Apple Intelligence can summarize right now; otherwise a
     /// human-readable reason. Safe to call on any macOS (false below 26).
@@ -118,39 +127,103 @@ struct AppleIntelligenceSummarizer {
         transcriptMD: URL,
         teamContext: String,
         summaryLanguage: String,
-        outputSuffix: String = ""
+        outputSuffix: String = "",
+        onCall: ((Int, Int) -> Void)? = nil
     ) async throws {
         guard let raw = try? String(contentsOf: transcriptMD, encoding: .utf8),
               !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AppleIntelligenceError.emptyTranscript
         }
         let summary = try await summarize(
-            transcript: raw, teamContext: teamContext, summaryLanguage: summaryLanguage
+            transcript: raw, teamContext: teamContext, summaryLanguage: summaryLanguage, onCall: onCall
         )
         try Self.write(summary: summary, transcriptMD: transcriptMD, suffix: outputSuffix)
     }
 
-    func summarize(transcript: String, teamContext: String, summaryLanguage: String) async throws -> MeetingSummary {
+    /// `onCall(done, planned)` beats once before every on-device call (PIPE36).
+    func summarize(
+        transcript: String, teamContext: String, summaryLanguage: String,
+        onCall: ((Int, Int) -> Void)? = nil
+    ) async throws -> MeetingSummary {
         guard Self.isAvailable else {
             throw AppleIntelligenceError.unavailable(Self.availabilityReason ?? "unavailable")
         }
         #if canImport(FoundationModels)
         if #available(macOS 26.0, *) {
             return try await generate(
-                transcript: transcript, teamContext: teamContext, summaryLanguage: summaryLanguage
+                transcript: transcript, teamContext: teamContext, summaryLanguage: summaryLanguage,
+                onCall: onCall
             )
         }
         #endif
         throw AppleIntelligenceError.unavailable("macOS 26 or later is required")
     }
 
-    #if canImport(FoundationModels)
-    @available(macOS 26.0, *)
-    private func generate(transcript: String, teamContext: String, summaryLanguage: String) async throws -> MeetingSummary {
-        let instructions = Self.instructions(teamContext: teamContext, summaryLanguage: summaryLanguage)
-        let windows = TranscriptChunker.windows(transcript, maxChars: maxWindowChars, overlapChars: overlapChars)
+    /// PIPE36: the ceiling on one on-device call, map or reduce. Measured on the owner's Mac
+    /// (macOS 27.2) on 2026-11-12 with a synthetic 1,000-character English window and this
+    /// file's schema directive: 7.2 s for the first call of a process, then 3.0 s three times.
+    /// A reduce merges `reduceBatch` partials of about 600 characters each, so its input is a
+    /// few map windows long, and Cyrillic tokenizes at about 1.7 tokens a character against
+    /// about 0.3 for English (LOCAL3). 180 s is 25 times the slowest call measured, which
+    /// leaves a slow reduce on a Ukrainian meeting well inside it. Every call is bounded by
+    /// the model's 4,096-token context, so one past this is a framework hang, not a big window.
+    static let callCeilingSeconds: Double = 180
+
+    /// One on-device call: the window or merged partials, its instructions, and whether it is
+    /// a reduce. The seam `mapReduce` drives, so its loop is tested without the model.
+    typealias Respond = @Sendable (_ body: String, _ instructions: String, _ isReduce: Bool) async throws -> MeetingSummary
+
+    /// How many calls `mapReduce` makes over `windows` map windows (PIPE36), so a progress
+    /// beat can say "n of total". One per window, then one per reduce group of two or more,
+    /// round after round until one partial remains. A single window is one call, no reduce.
+    static func plannedCalls(windows: Int, reduceBatch: Int) -> Int {
+        guard windows > 1 else { return 1 }
+        let batch = max(2, reduceBatch)
+        var calls = windows
+        var remaining = windows
+        while remaining > 1 {
+            calls += remaining / batch + (remaining % batch >= 2 ? 1 : 0)
+            remaining = (remaining + batch - 1) / batch
+        }
+        return calls
+    }
+
+    /// The map then hierarchical reduce (LOCAL3), with what PIPE36 put around every call: a
+    /// cancellation check before it, so a Cancel lands before the next call rather than after
+    /// the last of about 200 on a 3 h meeting; a beat before it (`onCall(done, planned)`), so
+    /// a healthy summarize never trips the 30 s stall flag; and a ceiling on it. A call that
+    /// fails or times out after the Task was cancelled reports the cancellation rather than
+    /// the fault, because the owner's click is why it ended.
+    ///
+    /// Outside the `FoundationModels` gate on purpose: the CI runner has no such framework,
+    /// and this loop is the part a test has to reach.
+    static func mapReduce(
+        windows: [String],
+        instructions: String,
+        reduceInstructions: String,
+        reduceBatch: Int,
+        callCeiling: Double,
+        respond: @escaping Respond,
+        onCall: ((Int, Int) -> Void)? = nil
+    ) async throws -> MeetingSummary {
+        let planned = plannedCalls(windows: windows.count, reduceBatch: reduceBatch)
+        var done = 0
+        func call(_ body: String, _ instructions: String, isReduce: Bool) async throws -> MeetingSummary {
+            try Task.checkCancellation()
+            onCall?(done, planned)
+            do {
+                let summary = try await withCallCeiling(seconds: callCeiling) {
+                    try await respond(body, instructions, isReduce)
+                }
+                done += 1
+                return summary
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                throw error
+            }
+        }
         if windows.count <= 1 {
-            return try await respondSummary(windows.first?.text ?? transcript, instructions: instructions)
+            return try await call(windows.first ?? "", instructions, isReduce: false)
         }
         // Chunked map then a hierarchical reduce: each window yields a partial
         // summary, then partials are merged in rounds of `reduceBatch` until one
@@ -158,22 +231,18 @@ struct AppleIntelligenceSummarizer {
         // the ~4K-token context (LOCAL3).
         var partials: [MeetingSummary] = []
         for window in windows {
-            partials.append(try await respondSummary(window.text, instructions: instructions))
+            partials.append(try await call(window, instructions, isReduce: false))
         }
         let batch = max(2, reduceBatch)  // >= 2 so each round strictly shrinks the set
         while partials.count > 1 {
             var next: [MeetingSummary] = []
-            for group in Self.batched(partials, size: batch) {
+            for group in batched(partials, size: batch) {
                 if group.count == 1 {
                     next.append(group[0])
                     continue
                 }
-                let combined = group.map(Self.renderForReduce).joined(separator: "\n\n---\n\n")
-                next.append(try await respondSummary(
-                    combined,
-                    instructions: Self.reduceInstructions(summaryLanguage: summaryLanguage),
-                    isReduce: true
-                ))
+                let combined = group.map(renderForReduce).joined(separator: "\n\n---\n\n")
+                next.append(try await call(combined, reduceInstructions, isReduce: true))
             }
             partials = next
         }
@@ -181,6 +250,50 @@ struct AppleIntelligenceSummarizer {
             throw AppleIntelligenceError.parseFailed("no partial summaries produced")
         }
         return merged
+    }
+
+    /// Run one call under `seconds` (PIPE36). `runWithTimeout` is the right tool here, unlike
+    /// for the blocking work CI8 is about: `LanguageModelSession.respond` suspends rather than
+    /// holding a thread. A call past the ceiling is abandoned, not stopped (nothing can stop a
+    /// wedged framework call), and its late answer is dropped.
+    static func withCallCeiling<T: Sendable>(
+        seconds: Double,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let box = OSAllocatedUnfairLock<Result<T, Error>?>(initialState: nil)
+        let finished = await runWithTimeout(seconds: seconds) {
+            let result: Result<T, Error>
+            do { result = .success(try await operation()) } catch { result = .failure(error) }
+            box.withLock { $0 = result }
+        }
+        guard finished, let result = box.withLock({ $0 }) else {
+            throw AppleIntelligenceError.timedOut(seconds: seconds)
+        }
+        return try result.get()
+    }
+
+    #if canImport(FoundationModels)
+    @available(macOS 26.0, *)
+    private func generate(
+        transcript: String, teamContext: String, summaryLanguage: String,
+        onCall: ((Int, Int) -> Void)?
+    ) async throws -> MeetingSummary {
+        let instructions = Self.instructions(teamContext: teamContext, summaryLanguage: summaryLanguage)
+        let windows = TranscriptChunker.windows(transcript, maxChars: maxWindowChars, overlapChars: overlapChars)
+        // A transcript that fits one window is summarized whole, as before.
+        let texts = windows.count <= 1 ? [windows.first?.text ?? transcript] : windows.map(\.text)
+        let summarizer = self
+        return try await Self.mapReduce(
+            windows: texts,
+            instructions: instructions,
+            reduceInstructions: Self.reduceInstructions(summaryLanguage: summaryLanguage),
+            reduceBatch: reduceBatch,
+            callCeiling: callCeilingSeconds,
+            respond: { body, instructions, isReduce in
+                try await summarizer.respondSummary(body, instructions: instructions, isReduce: isReduce)
+            },
+            onCall: onCall
+        )
     }
 
     @available(macOS 26.0, *)

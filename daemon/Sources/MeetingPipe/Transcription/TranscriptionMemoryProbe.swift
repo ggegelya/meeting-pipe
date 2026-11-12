@@ -38,7 +38,10 @@ final class TranscriptionMemoryProbe {
     private let start: Reading?
     private let peak: OSAllocatedUnfairLock<UInt64>
     private var timer: DispatchSourceTimer?
-    private var finished = false
+    /// Locked since PIPE36: a pass `SinkDispatcher` abandoned is finished from main at the
+    /// deadline, and its own `defer` may finish it again from the pass's thread if it ever
+    /// returns. Exactly one of them emits.
+    private let finished = OSAllocatedUnfairLock(initialState: false)
 
     /// The one pending idle reading, replaced by every job so only the last job's fires.
     private static let pendingIdle = OSAllocatedUnfairLock<DispatchWorkItem?>(initialState: nil)
@@ -85,10 +88,17 @@ final class TranscriptionMemoryProbe {
     /// Stop sampling, emit the job's row, and arm the idle reading. Once per probe; `audioSec` is
     /// nil when the job failed before its audio was read. Returns the attributes it emitted, or
     /// nil when no reading could be taken at all.
+    ///
+    /// `abandoned` (PIPE36) is a pass the job deadline gave up on, finished at the deadline
+    /// rather than at a return that may never come. Its row stops there, so its peak never
+    /// takes in the next job's pass, and the next job's own probe starts clean.
     @discardableResult
-    func finish(audioSec: Double?) -> [String: Any]? {
-        guard !finished else { return nil }
-        finished = true
+    func finish(audioSec: Double?, abandoned: Bool = false) -> [String: Any]? {
+        let first = finished.withLock { done -> Bool in
+            defer { done = true }
+            return !done
+        }
+        guard first else { return nil }
         timer?.cancel()
         timer = nil
         let end = read()
@@ -105,6 +115,7 @@ final class TranscriptionMemoryProbe {
             "lifetime_peak_bytes": end.lifetimePeak,
             "physical_memory_bytes": physicalMemory,
             "peak_fraction": Self.fraction(peakBytes, of: physicalMemory),
+            "abandoned": abandoned,
         ]
         emit("transcription_memory", attributes)
         return attributes

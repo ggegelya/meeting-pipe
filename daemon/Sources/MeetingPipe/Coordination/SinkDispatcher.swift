@@ -4,16 +4,31 @@ import Foundation
 ///
 /// `@unchecked Sendable` records the main-queue invariant so `runDaemonTranscription`
 /// (spawned in a `Task`) can hop back to main via `MainActor.run` capturing `self`. The
-/// queue state is only ever touched on main (the stall Timer fires on the main run loop),
-/// and the one off-main stretch reads only the immutable transcription runner, so there is
-/// no unsynchronized shared state (CONC4). See `MeetingSessionController` for why `@MainActor`
-/// is not used here.
+/// queue state is only ever touched on main (the stall Timer fires on the main run loop, the
+/// PIPE36 job deadline on the main queue), and the one off-main stretch reads only immutable
+/// fields plus the runner it was handed at job start, never `transcriptionRunner` itself,
+/// which PIPE36 made replaceable, so there is no unsynchronized shared state (CONC4). See
+/// `MeetingSessionController` for why `@MainActor` is not used here.
 final class SinkDispatcher: @unchecked Sendable {
 
     /// Held as protocol for test injection (see `PipelineLauncherTests`).
     private let launcher: PipelineDriver
 
-    private let transcriptionRunner: TranscriptionRunner
+    /// The runner the next job is handed. Main only. Replaced, never reused, after a job
+    /// deadline expires (PIPE36): a runner whose pass wedged may be holding a stuck
+    /// `AsrManager`, and handing it the next meeting would wedge that one too.
+    private var transcriptionRunner: TranscriptionRunner
+    private let makeTranscriptionRunner: () -> TranscriptionRunner
+
+    /// Whether `transcriptionRunner` has completed a pass (PIPE36). Until it has, the job
+    /// deadline adds the first-load allowance, since the pass may include the model download
+    /// and CoreML compile. Main only.
+    private var runnerWarm = false
+
+    /// Seconds a job's transcription half may take, from its audio length (nil when the
+    /// header could not be read) and whether the runner is warm (PIPE36). Production's is
+    /// the pure `transcriptionDeadline`; a test injects a short one.
+    private let deadlineFor: (_ audioSeconds: Double?, _ runnerWarm: Bool) -> TimeInterval
 
     /// The offline mute redaction every recording passes before anything reads it
     /// (TECH-MIC5). Injected so `SinkDispatcherTests` can make it fail (SEC16);
@@ -108,19 +123,41 @@ final class SinkDispatcher: @unchecked Sendable {
     private var stallTimer: Timer?
     private var stalledFired = false
 
+    /// The job deadline over the transcription half (PIPE36). Armed when a full or
+    /// re-transcribe job starts, disarmed when it commits to its result (the hand-off to the
+    /// pipeline or finalize, or a failure it is about to record) and on every completion.
+    /// A GCD timer on the main queue, not `Task.sleep` or `runWithTimeout`: the synchronous
+    /// diarizer this bounds can hold the cooperative pool such a deadline would need to fire
+    /// on (CI8). Its clock is `DispatchTime`, which does not run while the Mac sleeps, so a
+    /// pass paused by a closed lid is not timed out for the time it spent asleep.
+    private var deadlineTimer: DispatchSourceTimer?
+    private var deadlineArmedAt: DispatchTime?
+    /// The active job's measured audio length and phase, for the deadline's event row.
+    private var activeAudioSeconds: Double?
+    private var activePhase: TranscriptionPhase = .redact
+    /// Jobs the deadline gave up on (PIPE36). Their pass may still return, and every exit
+    /// of `runDaemonTranscription` asks this first so a late return writes nothing.
+    private var abandonedJobs: Set<UUID> = []
+
     init(
         launcher: PipelineDriver,
-        transcriptionRunner: TranscriptionRunner = TranscriptionService.makeRunner(),
+        makeTranscriptionRunner: @escaping () -> TranscriptionRunner = { TranscriptionService.makeRunner() },
         languageHint: String = "auto",
         redactor: @escaping @Sendable (URL) async -> MuteRedactor.Outcome = { await MuteRedactor.redactIfNeeded(wav: $0) },
-        originalsDir: URL? = nil
+        originalsDir: URL? = nil,
+        transcriptionDeadline: @escaping (Double?, Bool) -> TimeInterval = { SinkDispatcher.transcriptionDeadline(audioSeconds: $0, runnerWarm: $1) }
     ) {
         self.launcher = launcher
-        self.transcriptionRunner = transcriptionRunner
+        self.makeTranscriptionRunner = makeTranscriptionRunner
+        self.transcriptionRunner = makeTranscriptionRunner()
         self.languageHint = languageHint
         self.redactor = redactor
         self.originalsDir = originalsDir
+        self.deadlineFor = transcriptionDeadline
     }
+
+    /// The current runner's engine name, for `Coordinator`'s `engine_resolved` row.
+    var transcriptionBackendName: String { transcriptionRunner.backendName }
 
     // MARK: - Pipeline-job queue
 
@@ -354,8 +391,15 @@ final class SinkDispatcher: @unchecked Sendable {
         // own FluidAudio pass and Cancel has to be able to stop it. Before that,
         // the click reached `cancelActiveRun`, which had nothing to signal until
         // the pipeline spawned about a minute later on a long meeting.
+        //
+        // PIPE36: the runner is resolved here, on main, and handed to the pass, so a deadline
+        // that replaces `transcriptionRunner` mid-pass never races the pass reading it. The
+        // deadline is armed on the unknown-length fallback and tightened once the pass has
+        // read the header off main.
+        let runner = transcriptionRunner
+        armDeadline(for: next)
         transcriptionTask = Task { [weak self] in
-            await self?.runDaemonTranscription(job: next)
+            await self?.runDaemonTranscription(job: next, runner: runner)
         }
     }
 
@@ -379,7 +423,18 @@ final class SinkDispatcher: @unchecked Sendable {
     }
 
     /// Run the in-process transcription runner, write `<stem>.json`, then invoke the Python pipeline. Runner failure is a hard job failure: the pipeline no longer carries its own ASR.
-    private func runDaemonTranscription(job: ProcessingJob) async {
+    ///
+    /// PIPE36: every exit asks, on main, whether the job deadline has already given up on this
+    /// job, and an abandoned job's exits write nothing: no `<stem>.json`, no pipeline spawn, no
+    /// sidecar over the timeout reason, no quarantine, no progress entry. Asking on main is
+    /// what makes it a fence rather than a hint, since the deadline fires there too.
+    private func runDaemonTranscription(job: ProcessingJob, runner: TranscriptionRunner) async {
+        let loc = SinkDispatcher.sidecarLocation(for: job)
+        // PIPE36: the header read is off main (a dataless iCloud file would block on it) and
+        // tightens the deadline armed at job start on the unknown-length fallback.
+        let audioSeconds = RecordingPostProcessor.audioDurationSec(of: job.file)
+        await MainActor.run { self.tightenDeadline(for: job, audioSeconds: audioSeconds) }
+
         // TECH-MIC5: redact muted spans from the canonical WAV before any
         // consumer reads it. Both this on-device transcription and the Python
         // pipeline read `job.file`, so redacting here makes the redacted artifact
@@ -390,8 +445,11 @@ final class SinkDispatcher: @unchecked Sendable {
         // SEC16: the outcome used to be discarded, so every failure published the
         // uncut recording. A redaction that was owed and did not happen now holds
         // the meeting back: nothing below runs.
-        let loc = SinkDispatcher.sidecarLocation(for: job)
         if case .failed(let reason) = await redactor(job.file) {
+            guard await MainActor.run(body: { self.claimCompletion(of: job) }) else {
+                logLateReturn(job)
+                return
+            }
             let kept = quarantineHeldBack(job.file)
             await MainActor.run {
                 if job.kind == .full {
@@ -404,9 +462,6 @@ final class SinkDispatcher: @unchecked Sendable {
             }
             return
         }
-        // The MIC14 marker stays on disk until here, so a lost timeline is caught
-        // above as `timeline_missing` rather than read as "nothing to cut".
-        OffRecordMarker.remove(forFinal: job.file)
         // UX69 leg (b): the row's live entry begins here, not at the pipeline's
         // first heartbeat. On the owner's 110 minute meeting those were 58.6 s
         // apart, and about 52.5 s of that gap was this pass, which scales with
@@ -418,32 +473,34 @@ final class SinkDispatcher: @unchecked Sendable {
         // Library surface that already shows its own progress and result (ASR3),
         // so an entry here would render one run in two places, and its Cancel is
         // withheld for the same reason.
-        if job.kind == .full {
-            await MainActor.run {
+        let proceed = await MainActor.run { () -> Bool in
+            guard self.isLive(job) else { return false }
+            self.activePhase = .transcribe
+            if job.kind == .full {
                 self.onActiveProgress?(
                     loc.stem,
                     PipelineProgress(stage: SinkDispatcher.transcribeStage, elapsedSec: 0)
                 )
             }
+            return true
         }
+        guard proceed else {
+            // A redaction that landed after the deadline leaves the MIC14 marker in place;
+            // the retry's redactor finds the work already done (its own idempotency check)
+            // and the marker goes then.
+            logLateReturn(job)
+            return
+        }
+        // The MIC14 marker stays on disk until here, so a lost timeline is caught
+        // above as `timeline_missing` rather than read as "nothing to cut".
+        OffRecordMarker.remove(forFinal: job.file)
 
         Log.event(category: "transcription", action: "engine_started", attributes: [
             "file": job.file.lastPathComponent,
-            "engine": transcriptionRunner.backendName,
+            "engine": runner.backendName,
         ])
         do {
-            var sidecar = try await transcriptionRunner.transcribe(wavURL: job.file, languageHint: languageHint)
-            // END17: a held end kept its post-call tail in the WAV; the words stop where the hold
-            // began, so the summary and every sink see the meeting and not the minutes after it.
-            // A re-transcribe honours it too until the owner restores the tail.
-            if let trimAt = HeldEndTrim.trimSeconds(forAudio: job.file) {
-                sidecar = HeldEndTrim.apply(sidecar, at: trimAt)
-                Log.event(category: "transcription", action: "held_end_excluded", attributes: [
-                    "file": job.file.lastPathComponent,
-                    "trim_sec": trimAt,
-                    "audio_seconds": sidecar.audioSeconds,
-                ])
-            }
+            var sidecar = try await runner.transcribe(wavURL: job.file, languageHint: languageHint)
             // UX69: the pass can also finish in the moments after the click, with
             // nothing left to throw from. Checking here, before anything is
             // written, is what stops that click being silently swallowed and the
@@ -452,13 +509,36 @@ final class SinkDispatcher: @unchecked Sendable {
             // audio anyway, so discarding it costs nothing and keeps a cancelled
             // job from leaving half its artifacts behind.
             try Task.checkCancellation()
+            // PIPE36: the commit point. On main, so it and the deadline cannot both win: past
+            // here the deadline is disarmed and what is left (a small read, one local write,
+            // then the hand-off) is bounded; before here an expired deadline already failed
+            // the job, and the transcript this pass produced is dropped unwritten.
+            guard await MainActor.run(body: { self.claimCompletion(of: job, passSucceeded: true) }) else {
+                logLateReturn(job)
+                return
+            }
+            // The hop to main above is a moment a Cancel can land in, so UX69's check runs
+            // again on this side of it.
+            try Task.checkCancellation()
+            // END17: a held end kept its post-call tail in the WAV; the words stop where the hold
+            // began, so the summary and every sink see the meeting and not the minutes after it.
+            // A re-transcribe honours it too until the owner restores the tail. Below the commit
+            // point so an abandoned pass's late return logs no `held_end_excluded` row.
+            if let trimAt = HeldEndTrim.trimSeconds(forAudio: job.file) {
+                sidecar = HeldEndTrim.apply(sidecar, at: trimAt)
+                Log.event(category: "transcription", action: "held_end_excluded", attributes: [
+                    "file": job.file.lastPathComponent,
+                    "trim_sec": trimAt,
+                    "audio_seconds": sidecar.audioSeconds,
+                ])
+            }
             let jsonURL = job.file
                 .deletingPathExtension()
                 .appendingPathExtension("json")
             try sidecar.write(to: jsonURL)
             Log.event(category: "transcription", action: "engine_succeeded", attributes: [
                 "file": job.file.lastPathComponent,
-                "engine": transcriptionRunner.backendName,
+                "engine": runner.backendName,
                 "segments": sidecar.segments.count,
                 "audio_seconds": sidecar.audioSeconds,
                 "kind": job.kind == .retranscribe ? "retranscribe" : "full",
@@ -489,9 +569,19 @@ final class SinkDispatcher: @unchecked Sendable {
             // Processing into a `Failed` naming no reason at all. That is the
             // empty-recording bug this repo has already been burned by, and it is
             // why every way out of a cancelled pass writes one.
-            if PipelineLauncher.isCancellation(error) {
-                Log.writeLine("daemon", "transcription cancelled -> \(loc.stem)")
-                await MainActor.run {
+            //
+            // PIPE36: one main-queue block per outcome, fenced first. The deadline's own
+            // `transcriptionTask.cancel()` sends a cooperative runner down the cancellation
+            // branch, and without the fence that branch would overwrite the timeout reason
+            // with `cancelledReason` and complete whichever job is now active.
+            let backend = runner.backendName
+            await MainActor.run {
+                guard self.claimCompletion(of: job) else {
+                    self.logLateReturn(job)
+                    return
+                }
+                if PipelineLauncher.isCancellation(error) {
+                    Log.writeLine("daemon", "transcription cancelled -> \(loc.stem)")
                     if job.kind == .full {
                         PipelineFailureSidecar.write(
                             stem: loc.stem, in: loc.dir,
@@ -500,17 +590,15 @@ final class SinkDispatcher: @unchecked Sendable {
                         )
                     }
                     self.completeActiveJob(job, with: .failure(error))
+                    return
                 }
-                return
-            }
-            Log.main.error("\(self.transcriptionRunner.backendName) transcription failed: \(error.localizedDescription)")
-            Log.event(category: "transcription", action: "engine_failed", attributes: [
-                "file": job.file.lastPathComponent,
-                "engine": transcriptionRunner.backendName,
-                "error": error.localizedDescription,
-                "kind": job.kind == .retranscribe ? "retranscribe" : "full",
-            ])
-            await MainActor.run {
+                Log.main.error("\(backend) transcription failed: \(error.localizedDescription)")
+                Log.event(category: "transcription", action: "engine_failed", attributes: [
+                    "file": job.file.lastPathComponent,
+                    "engine": backend,
+                    "error": error.localizedDescription,
+                    "kind": job.kind == .retranscribe ? "retranscribe" : "full",
+                ])
                 // A failed re-transcribe wrote nothing: the meeting still has the
                 // transcript and summary it had before, so marking the row failed
                 // would be a lie about a healthy meeting. The caller surfaces the
@@ -630,6 +718,14 @@ final class SinkDispatcher: @unchecked Sendable {
     }
 
     private func completeActiveJob(_ job: ProcessingJob, with result: Result<URL?, Error>) {
+        // PIPE36: only the active job completes. A late return from a job the deadline
+        // already completed used to clear `activeJob` here and start the next queued job
+        // beside the one already running, breaking PIPE11's one lane.
+        guard activeJob?.id == job.id else {
+            Log.writeLine("daemon", "pipeline completion ignored for a job that is no longer active -> \(job.file.lastPathComponent)")
+            return
+        }
+        disarmDeadline()
         stopStallTracking()
         // UX69: this job's pass is over however it ended, so drop the handle
         // before the next job's is taken below. Holding a finished one would make
@@ -661,6 +757,161 @@ final class SinkDispatcher: @unchecked Sendable {
         }
         publishQueueState()
         startNextJobIfNeeded()
+    }
+
+    // MARK: - Job deadline over the transcription half (PIPE36)
+
+    /// Which in-daemon phase a job was in when its deadline expired.
+    enum TranscriptionPhase: String {
+        case redact
+        case transcribe
+    }
+
+    /// A job the deadline gave up on. Its message is the reason the row and the error banner
+    /// show, and it is not a cancellation: nobody asked for it, so it reports as a failure.
+    struct TranscriptionTimedOut: LocalizedError, Equatable {
+        let phase: TranscriptionPhase
+        let minutes: Int
+        var errorDescription: String? { SinkDispatcher.timedOutReason(phase: phase, minutes: minutes) }
+    }
+
+    /// The deadline's parts (PIPE36). Each is set at no less than 20 times what was measured,
+    /// because the deadline is a backstop for a hang and a false positive fails a healthy
+    /// meeting:
+    ///
+    /// - **Per audio second, 0.2 s**: healthy transcription measured 52.5 s for a 110-minute
+    ///   meeting (UX69, `20260716-163031`, 0.008 s per audio second) and 12.5 s for 2,078 s
+    ///   (`20261016-095827`, 0.006). 0.2 is 25 times the slower of the two. A 3 h meeting gets
+    ///   36 minutes against about 90 s healthy.
+    /// - **Base, 10 minutes**: what does not scale with length or scales far faster than ASR,
+    ///   the redaction ffmpeg (about 1,100 times real time on 2026-10-16, so about 10 s for 3 h),
+    ///   the header and audio reads, a warm model hand-off. It is also what a 30 s clip gets.
+    /// - **First load, 60 minutes, only until the runner completes a pass**: the 461 MB model
+    ///   download and CoreML compile. Nothing measured it, so it is sized from FluidAudio's own
+    ///   bound instead: `DownloadUtils` allows each request 1,800 s, and 60 minutes covers one
+    ///   request at that limit plus the compile. A cold runner after a daemon restart, models
+    ///   already cached, gets it too; the cost is a later backstop, never a false timeout.
+    /// - **Unknown length, 6 hours of audio**: when `audioDurationSec` cannot read the header,
+    ///   the deadline is the one a 6 h recording would get (82 minutes warm), well past any
+    ///   meeting on record.
+    static let deadlineBaseSec: TimeInterval = 10 * 60
+    static let deadlineSecPerAudioSec: Double = 0.2
+    static let deadlineFirstLoadSec: TimeInterval = 60 * 60
+    static let deadlineUnknownAudioSec: Double = 6 * 3600
+
+    /// Seconds the transcription half of a job may take. Pure, so its values are pinned.
+    static func transcriptionDeadline(audioSeconds: Double?, runnerWarm: Bool) -> TimeInterval {
+        let audio = audioSeconds.flatMap { $0 > 0 ? $0 : nil } ?? deadlineUnknownAudioSec
+        return deadlineBaseSec + audio * deadlineSecPerAudioSec + (runnerWarm ? 0 : deadlineFirstLoadSec)
+    }
+
+    /// The reason a timed-out job's row carries. It opens with a prefix
+    /// `FailurePresentation.isValidation` knows, and stays inside that check's 260 characters
+    /// with no slash, so the row shows it rather than a generic "open Details". It names the
+    /// way back.
+    static func timedOutReason(phase: TranscriptionPhase, minutes: Int) -> String {
+        let span = minutes == 1 ? "1 minute" : "\(minutes) minutes"
+        let stuck = phase == .redact ? "Cutting out the muted stretches" : "Transcribing"
+        return "Transcription did not finish: \(stuck) was still running after \(span), so it was stopped and the next meeting went ahead. Nothing was published. Retry; if it stops again, quit and reopen MeetingPipe first."
+    }
+
+    /// Arm the deadline for a job about to start its transcription half, on the
+    /// unknown-length fallback (the header is read off main, then `tightenDeadline`).
+    private func armDeadline(for job: ProcessingJob) {
+        disarmDeadline()
+        activeAudioSeconds = nil
+        activePhase = .redact
+        let armedAt = DispatchTime.now()
+        deadlineArmedAt = armedAt
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        deadlineTimer = timer
+        timer.setEventHandler { [weak self] in self?.deadlineExpired(for: job) }
+        scheduleDeadline(timer, armedAt: armedAt, audioSeconds: nil)
+        timer.resume()
+    }
+
+    /// Reschedule the active job's deadline from its measured length, counted from when it
+    /// was armed. A job that has already been abandoned or committed keeps what it has.
+    private func tightenDeadline(for job: ProcessingJob, audioSeconds: Double?) {
+        guard isLive(job), let timer = deadlineTimer, let armedAt = deadlineArmedAt else { return }
+        activeAudioSeconds = audioSeconds
+        scheduleDeadline(timer, armedAt: armedAt, audioSeconds: audioSeconds)
+    }
+
+    private func scheduleDeadline(_ timer: DispatchSourceTimer, armedAt: DispatchTime, audioSeconds: Double?) {
+        let seconds = max(0, deadlineFor(audioSeconds, runnerWarm))
+        timer.schedule(deadline: armedAt + seconds, leeway: .seconds(1))
+    }
+
+    private func disarmDeadline() {
+        deadlineTimer?.cancel()
+        deadlineTimer = nil
+        deadlineArmedAt = nil
+    }
+
+    /// Whether `job` is still the active job and the deadline has not given up on it.
+    private func isLive(_ job: ProcessingJob) -> Bool {
+        activeJob?.id == job.id && !abandonedJobs.contains(job.id)
+    }
+
+    /// The pass is about to record its outcome: if the job is still live, disarm its
+    /// deadline and say so. False means the deadline already failed the job and the caller
+    /// writes nothing. `passSucceeded` marks the runner warm, since it has now completed a
+    /// pass and holds loaded models.
+    private func claimCompletion(of job: ProcessingJob, passSucceeded: Bool = false) -> Bool {
+        guard isLive(job) else { return false }
+        disarmDeadline()
+        if passSucceeded { runnerWarm = true }
+        return true
+    }
+
+    private func logLateReturn(_ job: ProcessingJob) {
+        Log.writeLine("daemon", "transcription returned after its deadline; discarded -> \(job.file.lastPathComponent)")
+    }
+
+    /// The deadline fired: fail the job, replace the runner if its pass was the stuck phase,
+    /// and let the next job start.
+    private func deadlineExpired(for job: ProcessingJob) {
+        guard isLive(job), deadlineTimer != nil else { return }
+        let elapsed = deadlineArmedAt.map {
+            Double(DispatchTime.now().uptimeNanoseconds &- $0.uptimeNanoseconds) / 1_000_000_000
+        } ?? 0
+        disarmDeadline()
+        abandonedJobs.insert(job.id)
+        let phase = activePhase
+        let warm = runnerWarm
+        let loc = SinkDispatcher.sidecarLocation(for: job)
+        Log.writeLine("daemon", "transcription timed out (\(phase.rawValue)) -> \(job.file.lastPathComponent)")
+        Log.event(category: "transcription", action: "transcription_timed_out", attributes: [
+            "file": job.file.lastPathComponent,
+            "kind": job.kind.label,
+            "audio_seconds": activeAudioSeconds.map { ($0 * 10).rounded() / 10 } ?? NSNull(),
+            "elapsed_sec": (elapsed * 10).rounded() / 10,
+            "phase": phase.rawValue,
+            "runner_warm": warm,
+        ])
+        // Best effort: a pass that honours cancellation stops; one wedged in CoreML or the
+        // synchronous diarizer does not, which is why the runner is replaced below rather
+        // than waited on.
+        transcriptionTask?.cancel()
+        // Only a runner whose pass was in flight is suspect. A redact-phase expiry never
+        // reached it, and rebuilding a healthy warm runner would only cost the next meeting
+        // a cold model load.
+        if phase == .transcribe {
+            transcriptionRunner.abandonInFlightPass()
+            transcriptionRunner = makeTranscriptionRunner()
+            runnerWarm = false
+        }
+        let error = TranscriptionTimedOut(phase: phase, minutes: max(1, Int((elapsed / 60).rounded())))
+        // A full job's row is marked the way any transcription failure marks it; a
+        // re-transcribe wrote nothing over the meeting, so its caller reports the error.
+        if job.kind == .full {
+            PipelineFailureSidecar.write(
+                stem: loc.stem, in: loc.dir,
+                stage: .transcribe, reason: error.errorDescription ?? "Transcription did not finish."
+            )
+        }
+        completeActiveJob(job, with: .failure(error))
     }
 
     // MARK: - Stall tracking + cancel (TECH-UX5)
@@ -714,7 +965,10 @@ final class SinkDispatcher: @unchecked Sendable {
     /// pipeline is a subprocess and stops by SIGTERM. Each call is a no-op for
     /// the half that is not running (a finished Task ignores `cancel()`, and
     /// `cancelActiveRun` finds an empty slot), which is why this asks neither
-    /// which phase is live nor keeps a second copy of that answer.
+    /// which phase is live nor keeps a second copy of that answer. PIPE36: the
+    /// Apple summarize after a run-all is a third phase, held by the launcher
+    /// and reached through the same `cancelActiveRun`. The redaction phase
+    /// before the pass still offers no Cancel (CONC5); the job deadline bounds it.
     func cancelActiveJob() {
         guard activeJob != nil else { return }
         Log.event(category: "coordinator", action: "pipeline_cancelled", attributes: [:])

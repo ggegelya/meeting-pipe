@@ -1,6 +1,7 @@
 import AVFoundation
 import FluidAudio
 import Foundation
+import os
 
 /// Swift-native ASR + diarization via FluidAudio (Parakeet TDT + pyannote on ANE).
 /// The default (and only) ASR runner, returned by `TranscriptionService.makeRunner()`;
@@ -33,6 +34,25 @@ final class FluidAudioRunner: TranscriptionRunner {
     private var diarizer: DiarizerManager?
     private var diarizerModels: DiarizerModels?
 
+    /// The pass in flight and what it has measured so far (PIPE36), so a pass the job
+    /// deadline abandons still gets its one REC20 memory row, cut at the deadline.
+    private struct InFlightPass {
+        let probe: TranscriptionMemoryProbe
+        var audioSec: Double?
+    }
+    private let inFlight = OSAllocatedUnfairLock<InFlightPass?>(uncheckedState: nil)
+
+    /// PIPE36: finish the stuck pass's memory row now, marked `abandoned`, rather than on a
+    /// return that may never come or that would come during the next job and fold that job's
+    /// footprint (and the replacement runner's models) into this one's peak.
+    func abandonInFlightPass() {
+        guard let pass = inFlight.withLockUnchecked({ current -> InFlightPass? in
+            defer { current = nil }
+            return current
+        }) else { return }
+        pass.probe.finish(audioSec: pass.audioSec, abandoned: true)
+    }
+
     init(
         asrVersion: AsrModelVersion = .v3,
         unknownSpeaker: String = "speaker_unknown",
@@ -63,9 +83,14 @@ final class FluidAudioRunner: TranscriptionRunner {
         // does not first download or compile anything.
         try Task.checkCancellation()
         // REC20 item 3: one `transcription_memory` row per job, whatever way it exits.
+        // PIPE36: held where `abandonInFlightPass` can finish it at the job deadline.
         let memory = TranscriptionMemoryProbe()
         var audioSec: Double?
-        defer { memory.finish(audioSec: audioSec) }
+        inFlight.withLockUnchecked { $0 = InFlightPass(probe: memory) }
+        defer {
+            memory.finish(audioSec: audioSec)
+            inFlight.withLockUnchecked { if $0?.probe === memory { $0 = nil } }
+        }
         let asr = try await ensureAsr()
         let language = Self.resolveLanguage(hint: languageHint)
 
@@ -80,6 +105,8 @@ final class FluidAudioRunner: TranscriptionRunner {
             throw TranscriptionError.audioReadFailed(wavURL, underlying: error)
         }
         audioSec = Double(samples.count) / 16_000
+        let readSec = audioSec
+        inFlight.withLockUnchecked { if $0?.probe === memory { $0?.audioSec = readSec } }
 
         try Task.checkCancellation()
         var decoderState = TdtDecoderState.make()
