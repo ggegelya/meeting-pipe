@@ -200,10 +200,6 @@ public final class LogMuteAdapter: MicGateAdapter {
         for line in completeLines() {
             if let reading = SlimCoreMuteLog.parse(line: line) { latest = reading }
         }
-        // Whatever is left is a partial line, which is the normal case. Dropped past
-        // a cap, because a file with no newline at all would otherwise grow the
-        // buffer without bound; a real SlimCore line is a few hundred bytes.
-        if pending.count > LogMuteAdapter.maxPendingBytes { pending = Data() }
         guard let reading = latest, reading.muted != lastMuted else { return }
         lastMuted = reading.muted
         eventLog.emit(category: "micgate", action: "log_mute_event", attributes: [
@@ -224,12 +220,34 @@ public final class LogMuteAdapter: MicGateAdapter {
 
     /// Split `pending` on newlines, decoding only complete lines and leaving any
     /// trailing partial in the buffer for the next tick.
+    ///
+    /// One forward pass over slices, then one copy of the remainder (PERF16). The
+    /// old loop re-copied the whole remaining buffer once per line, on main, which
+    /// is O(lines x bytes): milliseconds for a normal SlimCore burst, gigabytes of
+    /// copying for a whole-generation re-read after a rotation or truncation.
+    ///
+    /// The cap is decided before the split. Whatever follows the last newline is a
+    /// partial line, which is the normal case; past `maxPendingBytes` it is dropped,
+    /// because a file with no newline at all would otherwise grow the buffer without
+    /// bound (a real SlimCore line is a few hundred bytes). A newline-free buffer is
+    /// therefore dropped without being scanned line by line. The cap bounds only the
+    /// remainder, never the complete lines ahead of it: truncating a large delta
+    /// could cut off the last transition in a re-read and leave a stale state.
     private func completeLines() -> [String] {
-        var lines: [String] = []
-        while let newline = pending.firstIndex(of: 0x0A) {
-            lines.append(String(decoding: pending[pending.startIndex..<newline], as: UTF8.self))
-            pending = Data(pending[pending.index(after: newline)...])
+        guard let lastNewline = pending.lastIndex(of: 0x0A) else {
+            if pending.count > LogMuteAdapter.maxPendingBytes { pending = Data() }
+            return []
         }
+        let remainderStart = pending.index(after: lastNewline)
+        var lines: [String] = []
+        var lineStart = pending.startIndex
+        while lineStart < remainderStart,
+              let newline = pending[lineStart..<remainderStart].firstIndex(of: 0x0A) {
+            lines.append(String(decoding: pending[lineStart..<newline], as: UTF8.self))
+            lineStart = pending.index(after: newline)
+        }
+        let remainder = pending.endIndex - remainderStart
+        pending = remainder > LogMuteAdapter.maxPendingBytes ? Data() : Data(pending[remainderStart...])
         return lines
     }
 

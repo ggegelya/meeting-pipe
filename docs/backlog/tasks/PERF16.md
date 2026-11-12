@@ -2,9 +2,10 @@
 id: PERF16
 title: Smaller costs in the mute plumbing: LogMuteAdapter re-copies its buffer once per line on the main thread, and RealAXBackend keeps an AXObserver on the main run loop after a failed first registration
 category: Performance
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. `LogMuteAdapter.completeLines` copies the remaining buffer once per line on main and applies its 256 KiB cap only after the loop: milliseconds for a normal SlimCore burst, on the order of gigabytes of copying for a whole-generation re-read after a truncation. `RealAXBackend.register` leaves a cached AXObserver and its main-run-loop source behind when `AXObserverAddNotification` fails, one per affected client PID. One task because both are small. Scope: a single-pass split with the cap first, and cleanup on a failed add plus eviction of dead PIDs. [Spec](./PERF16.md)
+closed: 2026-11-12
+comment: Shipped 2026-11-12. `LogMuteAdapter.completeLines` splits in one forward pass over slices and copies only the remainder, with the 256 KiB cap decided first on the unterminated remainder (a newline-free buffer is dropped unscanned; complete lines are never truncated, so a re-read keeps its last transition); the split and parse stay on main (optional `readQueue` move not taken). `RealAXBackend` gains a `Calls` seam (opaque observer, liveness included); `obtainObserver` reserves the handler slot under the lock, a failed add releases it through the same `releaseObserver(entry, pid:)` a teardown uses, a dead-PID entry (`ESRCH` only) is replaced, and release acts on the captured entry so a replaced one's late teardown cannot touch its successor. 10 new tests (3 LogMuteAdapter written first and green on the old code; 7 RealAXBackend, 3 red before the fix, one a smoke test through the live calls against a reaped child); `bash scripts/ci-local.sh` all green. [Spec](./PERF16.md)
 ---
 
 # PERF16: smaller costs in the mute plumbing: `LogMuteAdapter` re-copies its buffer once per line on the main thread, and `RealAXBackend` keeps an `AXObserver` on the main run loop after a failed first registration

@@ -241,6 +241,73 @@ final class LogMuteAdapterTests: XCTestCase {
         )
     }
 
+    /// PERF16: a whole-generation re-read (a rotation, a truncation) hands one tick
+    /// thousands of lines, well past `maxPendingBytes`. The split is one forward pass
+    /// now, but the result must be what the old per-line copy produced: the last
+    /// transition wins and the trailing partial carries to the next tick intact.
+    func test_a_5000_line_chunk_yields_its_last_transition_and_carries_its_partial() throws {
+        let dir = try TempDir()
+        let generation = "MSTeamsNM_SlimCore_2026-07-31_20-32-53.21.log"
+        try dir.write(generation, "")
+        let rig = try Rig(directory: dir)
+        try rig.start(context: teams)
+
+        var lines = [String](repeating: SlimCoreFixtures.setMuteState, count: 4_990)
+        lines.append(SlimCoreFixtures.mute)
+        lines.append(contentsOf: [String](repeating: SlimCoreFixtures.notification, count: 9))
+        XCTAssertEqual(lines.count, 5_000)
+        let split = SlimCoreFixtures.unmute.index(SlimCoreFixtures.unmute.startIndex, offsetBy: 60)
+        let chunk = lines.joined(separator: "\n") + "\n" + String(SlimCoreFixtures.unmute[..<split])
+        XCTAssertGreaterThan(chunk.utf8.count, 256 * 1024, "the batch must exceed the partial-line cap")
+
+        try dir.append(generation, chunk)
+        rig.step()
+        XCTAssertEqual(rig.events, [.muted], "the last complete transition in the batch wins")
+
+        try dir.append(generation, String(SlimCoreFixtures.unmute[split...]) + "\n")
+        rig.step()
+        XCTAssertEqual(rig.events, [.muted, .unmuted], "the partial was carried, not dropped or re-split")
+    }
+
+    /// A file with no newline at all must not grow the buffer without bound: past the
+    /// cap the unterminated bytes are dropped, so the next real line parses on its own.
+    func test_a_newline_free_chunk_over_the_cap_is_dropped() throws {
+        let dir = try TempDir()
+        let generation = "MSTeamsNM_SlimCore_2026-07-31_20-32-53.21.log"
+        try dir.write(generation, "")
+        let rig = try Rig(directory: dir)
+        try rig.start(context: teams)
+        // What makes the next assertion discriminate: a line carrying the junk prefix
+        // does not parse, so `.muted` below is only reachable if the junk was dropped.
+        XCTAssertNil(SlimCoreMuteLog.parse(line: "xxxx" + SlimCoreFixtures.mute))
+
+        try dir.append(generation, String(repeating: "x", count: 300 * 1024))
+        rig.step()
+        XCTAssertEqual(rig.events, [])
+
+        try dir.append(generation, SlimCoreFixtures.mute + "\n")
+        rig.step()
+        XCTAssertEqual(rig.events, [.muted])
+    }
+
+    /// The cap applies to the unterminated remainder only: complete lines ahead of an
+    /// oversized partial are still read.
+    func test_complete_lines_before_an_oversized_partial_are_still_read() throws {
+        let dir = try TempDir()
+        let generation = "MSTeamsNM_SlimCore_2026-07-31_20-32-53.21.log"
+        try dir.write(generation, "")
+        let rig = try Rig(directory: dir)
+        try rig.start(context: teams)
+
+        try dir.append(generation, SlimCoreFixtures.mute + "\n" + String(repeating: "x", count: 300 * 1024))
+        rig.step()
+        XCTAssertEqual(rig.events, [.muted])
+
+        try dir.append(generation, SlimCoreFixtures.unmute + "\n")
+        rig.step()
+        XCTAssertEqual(rig.events, [.muted, .unmuted], "the oversized partial was dropped, not prefixed")
+    }
+
     func test_stop_disarms_the_poll() throws {
         let dir = try TempDir()
         let generation = "MSTeamsNM_SlimCore_2026-07-31_20-32-53.21.log"
