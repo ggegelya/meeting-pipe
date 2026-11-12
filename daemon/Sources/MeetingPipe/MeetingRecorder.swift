@@ -231,10 +231,11 @@ final class MeetingRecorder {
     }
 
     /// Fired on main when a capture writer has failed enough consecutive writes
-    /// that the recording is silently losing audio (disk full, or the 4 GiB WAV
-    /// cap). The string is the channel (`"mic"` / `"system"`). The Coordinator
-    /// surfaces it and force-stops to preserve the intact prefix (REC3 / AUD-7).
-    var onWriteFailure: ((String) -> Void)?
+    /// that the recording is silently losing audio. The decision carries the
+    /// channel, the cause (`disk_full` from the volume's free space, else
+    /// `unknown`, REC19) and the notification text. The Coordinator surfaces it
+    /// and force-stops to preserve the intact prefix (REC3 / AUD-7).
+    var onWriteFailure: ((RecordingWriteFailure.Decision) -> Void)?
 
     /// Cross-thread mic-gate state (TECH-CONC2): the latest verdict (main writes
     /// it via `setMicGateVerdict`; the render thread reads it to gate each
@@ -325,7 +326,9 @@ final class MeetingRecorder {
         self.abandonedCalls = abandonedCalls
         deviceRecovery.host = self
         systemChannel.isRecordingProvider = { [weak self] in self?.isRecording ?? false }
-        systemChannel.noteWriteOutcome = { [weak self] ok in self?.noteWriteOutcome(channel: .system, success: ok) }
+        systemChannel.noteWriteOutcome = { [weak self] ok, directory in
+            self?.noteWriteOutcome(channel: .system, success: ok, directory: directory)
+        }
     }
 
     enum RecorderError: Error, LocalizedError {
@@ -717,6 +720,7 @@ final class MeetingRecorder {
         // Serial writer: the tap enqueues, the disk write runs off-thread. A
         // failed write is counted (REC3 / AUD-7): a sustained run escalates to a
         // force-stop instead of silently dropping audio.
+        let micDirectory = micURL.deletingLastPathComponent()
         self.micWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.mic-writer") { [weak self] buffer in
             let ok: Bool
             do {
@@ -726,7 +730,7 @@ final class MeetingRecorder {
                 Log.recorder.error("mic write: \(error.localizedDescription)")
                 ok = false
             }
-            self?.noteWriteOutcome(channel: .mic, success: ok)
+            self?.noteWriteOutcome(channel: .mic, success: ok, directory: micDirectory)
         }
 
         // The `sampleRate > 0` check above is a pre-flight on a format read a few lines earlier,
@@ -1530,9 +1534,14 @@ final class MeetingRecorder {
     /// Fold one write outcome into the channel's failure tracker, on that
     /// writer's serial queue. On the buffer that first crosses the threshold,
     /// emit `recording_error` and hand off to `onWriteFailure` on main exactly
-    /// once, so a disk-full / 4 GiB-cap run of swallowed write errors becomes a
-    /// force-stop that preserves the intact prefix instead of silent data loss.
-    private func noteWriteOutcome(channel: WriteChannel, success: Bool) {
+    /// once, so a run of swallowed write errors becomes a force-stop that
+    /// preserves the intact prefix instead of silent data loss.
+    ///
+    /// REC19: the cause is decided here, off main, from the free space on the
+    /// volume holding `directory`. It used to say "disk full or the 4 GiB WAV
+    /// cap" unconditionally; the cap never fires on macOS 27.2 (the writer goes
+    /// to BW64), so anything that is not a full disk is reported as unknown.
+    private func noteWriteOutcome(channel: WriteChannel, success: Bool, directory: URL) {
         let shouldEscalate: Bool
         let consecutive: Int
         switch channel {
@@ -1546,13 +1555,19 @@ final class MeetingRecorder {
         guard shouldEscalate else { return }
 
         let label = channel == .mic ? "mic" : "system"
+        let space = RecordingWriteFailure.freeSpace(at: directory)
+        let decision = RecordingWriteFailure.decide(
+            channel: label, freeBytes: space.freeBytes, volumeName: space.volumeName
+        )
         Log.event(category: "recorder", action: "recording_error", attributes: [
             "channel": label,
             "consecutive_failures": consecutive,
+            "cause": decision.cause.rawValue,
+            "free_bytes": decision.freeBytes as Any,
         ])
-        Log.writeLine("recorder", "ERROR: \(label) writer failed \(consecutive) consecutive writes - disk full or the 4 GiB WAV cap; force-stopping to preserve the intact prefix")
+        Log.writeLine("recorder", "ERROR: \(label) writer failed \(consecutive) consecutive writes (cause=\(decision.cause.rawValue) free_bytes=\(decision.freeBytes.map(String.init) ?? "unreadable")); force-stopping to preserve the intact prefix")
         let cb = onWriteFailure
-        DispatchQueue.main.async { cb?(label) }
+        DispatchQueue.main.async { cb?(decision) }
     }
 
     /// After stop, sanity-check the WAV's audio duration vs wallclock.

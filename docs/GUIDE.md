@@ -507,7 +507,11 @@ If a notification said **Restart MeetingPipe to keep recording**, that is the ca
 
 You get a notification at the end when a finished recording holds noticeably less audio than the time it was running, so this is something the app tells you rather than something you find out weeks later. Play the meeting back before you rely on its summary, and if it keeps happening, **Diagnostics…** in the menu bar shows the recorder's own account of each recording.
 
-The cause that used to be behind it was the app's own doing and is fixed. When only one side of the call was being captured, the finished file used to end where that side stopped, taking the rest of your own voice with it. Now the short side is padded with silence, and a side that started late is placed where it actually began, so the recording is as long as the meeting was.
+The cause that used to be behind it was the app's own doing and is fixed. When only one side of the call was being captured, the finished file used to end where that side stopped, taking the rest of your own voice with it. Now the short side is padded with silence, and a side that started late is placed where it actually began, so the recording is as long as the meeting was. The same goes for meetings over about three hours, which could lose the end of the other side of the call before.
+
+### A notification said "Recording stopped" in the middle of a meeting
+
+The app could not keep saving the audio, so it stopped the recording rather than carry on capturing nothing. Everything up to that point was kept and is processed as normal. If the notification says the disk is full, it names the disk and how much space is left: free up space before the next meeting. If it does not mention the disk, the app could not tell why, and **Preferences ▸ Integrations ▸ Run doctor…** is the place to look.
 
 ### The recording did not stop when the call did
 

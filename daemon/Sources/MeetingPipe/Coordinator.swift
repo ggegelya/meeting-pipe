@@ -429,16 +429,15 @@ final class Coordinator: NSObject {
             Log.event(category: "recording", action: "recovered", attributes: [:])
             self.recordingHUD.clearSystemAudioDegraded()
         }
-        // Escalate a sustained run of swallowed write failures (disk full, or the
-        // 4 GiB WAV cap) from silent os_log-and-drop to a force-stop that
-        // preserves the intact prefix, plus a notification (REC3 / AUD-7). The
-        // force-stop tears down the HUD, so there is no lingering banner to clear.
-        recorder.onWriteFailure = { [weak self] channel in
+        // Escalate a sustained run of swallowed write failures from silent
+        // os_log-and-drop to a force-stop that preserves the intact prefix, plus a
+        // notification (REC3 / AUD-7). The text names the disk only when its free
+        // space says it is full (REC19). The force-stop tears down the HUD, so there
+        // is no lingering banner to clear.
+        recorder.onWriteFailure = { [weak self] decision in
             guard let self = self else { return }
-            self.notifier.notifyError(
-                "Recording stopped: couldn't keep writing \(channel) audio to disk (the disk may be full). The recording up to that point was kept."
-            )
-            self.session.forceStop(reason: "write_failure_\(channel)")
+            self.notifier.notifyError(decision.message)
+            self.session.forceStop(reason: "write_failure_\(decision.channel)")
         }
         // REC27: the recorder has abandoned enough wedged audio-engine calls that it stops making
         // them. Once per process; only a restart clears it.

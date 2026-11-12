@@ -554,13 +554,25 @@ enum RecordingPostProcessor {
     /// or not a PCM WAV. Walks the chunk list rather than assuming a 44-byte
     /// header: AVAudioFile writes extra chunks (JUNK/PEAK/fact) before `data`,
     /// which a fixed-offset parse misread as a zero byte-rate.
+    ///
+    /// REC19: a WAV over 4 GiB is not a RIFF file once its writer closes it. `AVAudioFile` reserves a
+    /// 28-byte `JUNK` chunk for exactly this, and at close it rewrites the magic to `BW64` and the
+    /// `JUNK` to a `ds64` chunk carrying the 64-bit sizes, leaving `0xFFFFFFFF` in the 32-bit fields
+    /// (measured on macOS 27.2: 14,401 s of 48 kHz stereo Float32 wrote 5,529,988,096 bytes with no
+    /// write ever failing). The old `RIFF`-only guard returned nil for it, so every cleanly closed
+    /// intermediate past 3 h 6 min (the system channel; the mic at 6 h 13 min at 48 kHz) reached
+    /// `mergeLengths` unmeasured, and the merge ran with no `-t` cut and ended at the mic. `RF64` is
+    /// the same layout under the older EBU name and is read the same way. A writer killed past
+    /// 4 GiB never got as far as the rewrite: it leaves `RIFF` with a `0` size, which REC14's
+    /// on-disk measurement below already covers.
     static func audioDurationSec(of url: URL) -> Double? {
         guard FileManager.default.fileExists(atPath: url.path),
               let h = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? h.close() }
         // 8 KB covers the chunk headers before `data` (not the payload).
         guard let head = try? h.read(upToCount: 8192), head.count >= 44 else { return nil }
-        guard head.range(of: Data("RIFF".utf8))?.lowerBound == 0,
+        let magic = head.subdata(in: 0..<4)
+        guard [Data("RIFF".utf8), Data("BW64".utf8), Data("RF64".utf8)].contains(magic),
               head.range(of: Data("WAVE".utf8))?.lowerBound == 8 else { return nil }
 
         func u32(_ offset: Int) -> UInt32? {
@@ -568,13 +580,20 @@ enum RecordingPostProcessor {
             return head.subdata(in: offset..<offset + 4)
                 .withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
         }
+        func u64(_ offset: Int) -> UInt64? {
+            guard offset >= 0, offset + 8 <= head.count else { return nil }
+            return head.subdata(in: offset..<offset + 8)
+                .withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }
+        }
         func fourCC(_ offset: Int) -> Data? {
             guard offset >= 0, offset + 4 <= head.count else { return nil }
             return head.subdata(in: offset..<offset + 4)
         }
 
         var byteRate: UInt32?
-        var dataSize: UInt32?
+        var dataSize: UInt64?
+        /// The `ds64` chunk's 64-bit `data` size (body offset 8, after the RIFF size), REC19.
+        var ds64DataSize: UInt64?
         /// Where the `data` payload starts, so REC14 can measure it against the file's real size.
         var dataPayloadOffset = 0
         // Chunks after "WAVE": [id(4)][size(4 LE)][body], body even-padded.
@@ -585,8 +604,15 @@ enum RecordingPostProcessor {
             if id == Data("fmt ".utf8) {
                 // byteRate is at fmt body offset 8.
                 byteRate = u32(body + 8)
+            } else if id == Data("ds64".utf8) {
+                ds64DataSize = u64(body + 8)
             } else if id == Data("data".utf8) {
-                dataSize = size
+                // `0xFFFFFFFF` is the BW64/RF64 sentinel for "the real size is in `ds64`".
+                if size == UInt32.max, let wide = ds64DataSize {
+                    dataSize = wide
+                } else {
+                    dataSize = UInt64(size)
+                }
                 dataPayloadOffset = body
                 break
             }
@@ -594,6 +620,7 @@ enum RecordingPostProcessor {
         }
 
         guard let rate = byteRate, rate > 0, let declared = dataSize else { return nil }
+
 
         // REC14, route B: derive the payload length from the file itself rather than trusting the
         // `data` chunk's size field.
@@ -616,7 +643,7 @@ enum RecordingPostProcessor {
         // file declares more than it holds.
         let payload: UInt64
         if declared > 0 {
-            payload = min(UInt64(declared), payloadOnDisk ?? UInt64(declared))
+            payload = min(declared, payloadOnDisk ?? declared)
         } else if let onDiskPayload = payloadOnDisk, onDiskPayload > 0 {
             payload = onDiskPayload
         } else {

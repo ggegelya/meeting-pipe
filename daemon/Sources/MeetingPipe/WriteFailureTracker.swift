@@ -4,10 +4,12 @@ import Foundation
 /// when the per-buffer os_log-and-drop must escalate to a user-visible
 /// force-stop (REC3 / AUD-7).
 ///
-/// A single failed write is rare and self-correcting; a *run* of them means the
-/// disk is full or the intermediate WAV hit the RIFF u32 size cap (~3 h of
-/// Float32 system audio), after which every write fails the same silent way
-/// while the HUD keeps showing live mic levels. Crossing the threshold lets the
+/// A single failed write is rare and self-correcting; a *run* of them usually
+/// means the disk is full, after which every write fails the same silent way
+/// while the HUD keeps showing live mic levels. (It was also thought to mean the
+/// intermediate WAV hit the 4 GiB RIFF cap at ~3 h; REC19 measured that it does
+/// not: `AVAudioFile` writes BW64 past 4 GiB and no write fails.
+/// `RecordingWriteFailure` decides which cause to report.) Crossing the threshold lets the
 /// recorder force-stop, which preserves the intact prefix (REC1's merge-or-keep
 /// path) and tells the user, instead of recording nothing for hours.
 ///

@@ -20,8 +20,9 @@ final class SystemAudioChannel {
     private var isRecording: Bool { isRecordingProvider() }
 
     /// Fold one write outcome into the recorder's failure tracker (REC3 / AUD-7), on the writer's
-    /// own queue. Set once by the recorder.
-    var noteWriteOutcome: ((Bool) -> Void)?
+    /// own queue, with the directory the system file is in so a failure can read its volume's free
+    /// space (REC19). Set once by the recorder.
+    var noteWriteOutcome: ((Bool, URL) -> Void)?
 
     /// The ~1 Hz system RMS average on the main queue, feeding the idle backstop's
     /// `hasSystemAudio` mirror (TECH-END3). `nil` short-circuits the math when nobody listens.
@@ -408,6 +409,7 @@ final class SystemAudioChannel {
         // the offset that places it (REC10).
         self.systemFirstFrameUptime = 0
         if let systemFile {
+            let directory = systemURL.deletingLastPathComponent()
             self.systemWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.system-writer") { [weak self] buffer in
                 let ok: Bool
                 do {
@@ -417,7 +419,7 @@ final class SystemAudioChannel {
                     Log.recorder.error("system write: \(error.localizedDescription)")
                     ok = false
                 }
-                self?.noteWriteOutcome?(ok)
+                self?.noteWriteOutcome?(ok, directory)
             }
         }
     }
