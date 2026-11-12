@@ -28,8 +28,8 @@ import Foundation
 /// the view has somewhere to ask.
 enum GuideDocument {
 
-    /// One rendered block. Inline emphasis inside `text` is left as markdown for
-    /// the view to parse per block, matching `SummaryRenderedView`.
+    /// One parsed block. Inline emphasis inside `text` is left as markdown for
+    /// `rendered(_:)` to parse once per load, matching `SummaryRenderedView`.
     enum Block: Equatable {
         /// `level` is 1, 2, or 3. Level 2 is what the section rail lists.
         case heading(level: Int, text: String)
@@ -38,6 +38,52 @@ enum GuideDocument {
         case numbered(index: Int, text: String)
         case table(headers: [String], rows: [[String]])
         case rule
+    }
+
+    /// A `Block` with its inline markdown already parsed, which is what the window renders.
+    ///
+    /// PERF13: the view used to call `AttributedString(markdown:)` per paragraph, bullet,
+    /// numbered item and table cell inside its `body`, over a non-lazy stack of the whole
+    /// guide (56,931 bytes on 2026-10-25), so every body evaluation re-parsed the document:
+    /// once per section the reader scrolled past, and once per rail row the pointer crossed,
+    /// since the rail's hover state lived on the same view. `rendered(_:)` parses each block
+    /// once, when the window loads. `Block` stays the plain-text model the parser tests pin.
+    enum RenderedBlock: Equatable {
+        case heading(level: Int, text: String)
+        case paragraph(AttributedString)
+        case bullet(AttributedString)
+        case numbered(index: Int, text: AttributedString)
+        case table(headers: [AttributedString], rows: [[AttributedString]])
+        case rule
+    }
+
+    /// Parse every block's inline markdown, once.
+    static func rendered(_ blocks: [Block]) -> [RenderedBlock] {
+        blocks.map { block in
+            switch block {
+            case .heading(let level, let text): return .heading(level: level, text: text)
+            case .paragraph(let text): return .paragraph(inline(text))
+            case .bullet(let text): return .bullet(inline(text))
+            case .numbered(let index, let text): return .numbered(index: index, text: inline(text))
+            case .table(let headers, let rows):
+                return .table(headers: headers.map(inline), rows: rows.map { $0.map(inline) })
+            case .rule: return .rule
+            }
+        }
+    }
+
+    /// Per-block inline parsing (bold, italic, code, real links), the treatment
+    /// `SummaryRenderedView` gives a summary bullet, preserving the guide's whitespace.
+    /// Links the window cannot follow were already flattened to their label by `flatten`,
+    /// since one in a window resolves to nothing (DOC11 for `#anchor`s, DOC13 for every
+    /// other unresolvable shape). Moved here from `GuideView` unchanged by PERF13.
+    static func inline(_ s: String) -> AttributedString {
+        let opts = AttributedString.MarkdownParsingOptions(
+            allowsExtendedAttributes: false,
+            interpretedSyntax: .inlineOnlyPreservingWhitespace,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+        return (try? AttributedString(markdown: s, options: opts)) ?? AttributedString(s)
     }
 
     /// A level-2 heading plus where it starts, for the section rail.

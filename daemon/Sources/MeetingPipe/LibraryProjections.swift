@@ -80,15 +80,42 @@ final class FactsProjection {
 @MainActor
 final class PeopleProjection {
     typealias Loader = @Sendable (_ meetings: [Meeting], _ cache: PeopleLoader.Cache) async -> PeopleLoader.Pass
+    typealias Deriver = @Sendable (
+        _ roster: [RosterProfile.Person], _ meetings: [PeopleRail.MeetingFacts], _ commitments: [ActionCluster]
+    ) -> [PeopleRail.Person]
 
     private let loader: Loader
+    private let deriver: Deriver
     private let pass = ProjectionPass<PeopleLoader.Pass>()
+    /// The derivation's own pass (PERF13): `PeopleRail.derive` used to run on main, 146 samples
+    /// in the 2026-10-23 rail-switch trace.
+    private let derivePass = ProjectionPass<[PeopleRail.Person]>()
     private(set) var cache = PeopleLoader.Cache()
 
+    /// - Parameter deriver: the pure derivation, injectable so a test can see which thread runs it.
     nonisolated init(
-        loader: @escaping Loader = { meetings, cache in PeopleLoader.load(meetings: meetings, cache: cache) }
+        loader: @escaping Loader = { meetings, cache in PeopleLoader.load(meetings: meetings, cache: cache) },
+        deriver: @escaping Deriver = { roster, meetings, commitments in
+            PeopleRail.derive(roster: roster, meetings: meetings, commitments: commitments)
+        }
     ) {
         self.loader = loader
+        self.deriver = deriver
+    }
+
+    /// Run `PeopleRail.derive` off main and hand the newest result to `apply`. Two things start
+    /// one: a disk pass landing, and the Facts commitments changing (the clustering result
+    /// arriving, a resolve). Both go through the one pass, so whichever was asked for last wins
+    /// even when an older derivation finishes after it.
+    @discardableResult
+    func derive(
+        roster: [RosterProfile.Person],
+        meetings: [PeopleRail.MeetingFacts],
+        commitments: [ActionCluster],
+        apply: @escaping @MainActor ([PeopleRail.Person]) -> Void
+    ) -> Task<Void, Never> {
+        let deriver = self.deriver
+        return derivePass.start(work: { deriver(roster, meetings, commitments) }, apply: apply)
     }
 
     @discardableResult
@@ -111,7 +138,10 @@ final class PeopleProjection {
     }
 
     /// Stop the pass in flight, keeping what it read. Called when the rail leaves People.
-    func cancel() { pass.cancel() }
+    func cancel() {
+        pass.cancel()
+        derivePass.cancel()
+    }
 }
 
 /// The disk half of the People rail: one `PeopleRail.MeetingFacts` per library row.

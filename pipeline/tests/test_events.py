@@ -91,6 +91,32 @@ def test_logs_cmd_reads_across_generations(tmp_path, monkeypatch):
     assert "old" in actions
 
 
+def test_logs_cmd_reports_one_skipped_torn_line(tmp_path, monkeypatch, capsys):
+    """PERF13: the shape of the one torn row in the owner's live log, a row's
+    tail left behind when a second write overwrote its head, is counted and
+    named on stderr rather than skipped in silence."""
+    from mp import logs_cmd
+
+    monkeypatch.setattr(logs_cmd, "LOGS_DIR", tmp_path)
+    (tmp_path / "events.jsonl").write_text(
+        json.dumps({"ts": "2026-10-16T09:46:28.265Z", "category": "lifecycle", "action": "idle"}) + "\n"
+        + 'n ","ts":"2026-10-16T09:46:28.265Z"}\n'
+    )
+    assert logs_cmd.main([]) == 0
+    captured = capsys.readouterr()
+    assert "1 unparseable line skipped" in captured.err
+    assert "idle" in captured.out
+
+
+def test_skip_counter_is_silent_at_zero_and_pluralises(capsys):
+    counter = events.SkipCounter()
+    counter.report()
+    assert capsys.readouterr().err == ""
+    counter.count = 3
+    counter.report()
+    assert capsys.readouterr().err.strip() == "3 unparseable lines skipped"
+
+
 # ------------------------------------------------- test isolation (the writer guard)
 
 

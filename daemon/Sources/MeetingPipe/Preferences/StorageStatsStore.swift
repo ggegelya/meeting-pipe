@@ -16,13 +16,27 @@ final class StorageStatsStore: ObservableObject {
     /// workflow), which turns a synced library from a warning into a contradiction.
     @Published private(set) var promisesZeroEgress = false
     @Published var moveError: String?
+    /// True while a move plan is being measured (PERF13). The Move library button is disabled
+    /// meanwhile, so a second pick cannot start a second walk of the library.
+    @Published private(set) var isPlanningMove = false
+
+    /// `LibraryMover.plan`, injectable so a test can see which thread runs it.
+    typealias MovePlanner = @Sendable (_ source: URL, _ destinationParent: URL) throws -> LibraryMover.Plan
 
     private let workflowStore: WorkflowStore
     private let configStore: ConfigStore
+    private let planner: MovePlanner
 
-    init(configStore: ConfigStore, workflowStore: WorkflowStore) {
+    init(
+        configStore: ConfigStore,
+        workflowStore: WorkflowStore,
+        planner: @escaping MovePlanner = { source, destination in
+            try LibraryMover.plan(source: source, destinationParent: destination)
+        }
+    ) {
         self.configStore = configStore
         self.workflowStore = workflowStore
+        self.planner = planner
     }
 
     var libraryURL: URL {
@@ -98,11 +112,26 @@ final class StorageStatsStore: ObservableObject {
 
     /// Build the move plan for a user-chosen destination, or surface why not.
     /// Never moves anything: the caller confirms the returned plan first.
-    func planMove(to destinationParent: URL) -> LibraryMover.Plan? {
-        do {
-            moveError = nil
-            return try LibraryMover.plan(source: libraryURL, destinationParent: destinationParent)
-        } catch {
+    ///
+    /// PERF13: off main, like `rescan()` and `executeMove(_:)`. `LibraryMover.plan` runs the
+    /// in-flight check, the cloud-sync detection and an enumerator over every file in the
+    /// library, which at tens of thousands of files (longer with iCloud-evicted ones) was a
+    /// beachball straight after the folder picker. Returns nil, planning nothing, while a plan
+    /// is already being measured.
+    func planMove(to destinationParent: URL) async -> LibraryMover.Plan? {
+        guard !isPlanningMove else { return nil }
+        isPlanningMove = true
+        defer { isPlanningMove = false }
+        moveError = nil
+        let source = libraryURL
+        let planner = self.planner
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { try planner(source, destinationParent) }
+        }.value
+        switch result {
+        case .success(let plan):
+            return plan
+        case .failure(let error):
             moveError = error.localizedDescription
             return nil
         }

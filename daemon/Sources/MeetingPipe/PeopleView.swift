@@ -23,6 +23,9 @@ struct PeopleView: View {
     let projection: PeopleProjection
     /// The library's open commitments, already grouped and ordered by the host.
     let commitments: [ActionCluster]
+    /// Their aging labels, computed once by the host's `FactsSnapshot` (PERF13), the same map
+    /// the Facts rows read, so the two rails cannot word one deadline differently.
+    let aging: ActionAging
     /// Navigate to a meeting (set by the host: All Meetings + selected row).
     let onOpenMeeting: (String) -> Void
 
@@ -37,6 +40,9 @@ struct PeopleView: View {
     /// in memory instead of re-reading every summary off disk.
     @State private var facts: [PeopleRail.MeetingFacts] = []
     @State private var roster: [RosterProfile.Person] = []
+    /// True once a disk pass has landed, so a commitments change before then does not derive
+    /// a roster with no meetings and drop the spinner for it.
+    @State private var hasFacts = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -63,6 +69,7 @@ struct PeopleView: View {
                     ForEach(people) { person in
                         PersonDisclosure(
                             person: person,
+                            aging: aging,
                             isExpanded: expansionBinding(person.name),
                             isRenaming: renaming == person.name,
                             onRename: { beginRename(person) },
@@ -138,16 +145,21 @@ struct PeopleView: View {
         projection.reload(meetings: store.meetings) { pass in
             facts = pass.facts
             roster = pass.roster
-            loading = false
+            hasFacts = true
             rederive()
         }
     }
 
     /// Re-run the pure derivation against the current `commitments`. No disk read:
     /// a clustering pass landing (or a Facts resolve removing one) changes which
-    /// commitments a person owns, never which meetings they were in.
+    /// commitments a person owns, never which meetings they were in. PERF13: off main,
+    /// latest wins, through the projection's derive pass; only the result lands here.
     private func rederive() {
-        people = PeopleRail.derive(roster: roster, meetings: facts, commitments: commitments)
+        guard hasFacts else { return }
+        projection.derive(roster: roster, meetings: facts, commitments: commitments) { derived in
+            people = derived
+            loading = false
+        }
     }
 
     // MARK: - Rename
@@ -178,6 +190,7 @@ struct PeopleView: View {
 /// One person: a summary line that expands to their open actions and meetings.
 private struct PersonDisclosure: View {
     let person: PeopleRail.Person
+    let aging: ActionAging
     @Binding var isExpanded: Bool
     let isRenaming: Bool
     let onRename: () -> Void
@@ -196,6 +209,7 @@ private struct PersonDisclosure: View {
                 ForEach(person.actions) { commitment in
                     PersonActionRow(
                         commitment: commitment,
+                        aging: aging.label(for: commitment),
                         onOpen: { onOpenMeeting(commitment.representative.stem) }
                     )
                 }
@@ -285,12 +299,14 @@ private struct PersonDisclosure: View {
 }
 
 /// One owned commitment: the task, its aging, how often the series restated it,
-/// and a link back to the meeting it came from. Aging comes from `ActionCluster`
-/// itself rather than a local copy, so this row and the Facts row can never word
-/// the same deadline differently. Read-only here; "mark done" stays in Facts,
-/// which owns the resolved-flag write across every restatement.
+/// and a link back to the meeting it came from. Aging comes from the host's
+/// `ActionAging`, the map the Facts rows read, rather than a local copy, so this row
+/// and the Facts row can never word the same deadline differently (and since PERF13
+/// it is no longer recomputed in this body). Read-only here; "mark done" stays in
+/// Facts, which owns the resolved-flag write across every restatement.
 private struct PersonActionRow: View {
     let commitment: ActionCluster
+    let aging: AgingLabel?
     let onOpen: () -> Void
 
     var body: some View {
@@ -300,7 +316,7 @@ private struct PersonActionRow: View {
                 .foregroundStyle(Color(MPColors.fg))
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 6) {
-                if let aging = commitment.agingLabel(now: Date()) {
+                if let aging {
                     Text(aging.text)
                         .foregroundStyle(aging.overdue ? Color.mpWarning : Color(MPColors.fgSubtle))
                     Text("·")

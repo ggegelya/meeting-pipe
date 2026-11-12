@@ -1,6 +1,6 @@
 import Foundation
 
-/// Structured-event sink for the lifecycle + gate subsystems. `MeetingPipeCore` can't call `Log.event` directly (no link to the executable target); the executable wires a concrete implementation at `MeetingLifecycleCoordinator` construction time and tests pass `RecordingEventLog`. Attribute values must be JSON-serialisable (String, Bool, Int, Double, Array, Dictionary, NSNull); the forwarder drops non-serialisable entries silently.
+/// Structured-event sink for the lifecycle + gate subsystems. `MeetingPipeCore` can't call `Log.event` directly (no link to the executable target); the executable wires a concrete implementation at `MeetingLifecycleCoordinator` construction time and tests pass `RecordingEventLog`. Attribute values must be JSON-serialisable (String, Bool, Int, Double, Array, Dictionary, NSNull); the forwarder (`Log.event`) coerces anything else to its string form, and a non-finite number to null, rather than dropping the event (PERF13).
 public protocol EventLog: AnyObject {
     func emit(category: String, action: String, attributes: [String: Any])
 }

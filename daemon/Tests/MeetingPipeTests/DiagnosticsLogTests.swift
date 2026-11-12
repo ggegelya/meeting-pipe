@@ -1,4 +1,5 @@
 import XCTest
+import os
 @testable import MeetingPipe
 
 /// UX20: the read-only diagnostics reader. Covers the pure parse/filter/sort and
@@ -32,25 +33,145 @@ final class DiagnosticsLogTests: XCTestCase {
         XCTAssertNil(DiagnosticsLog.parseLine("{not json", id: 0))
     }
 
-    func test_filterAndSort_applies_filters_and_orders_newest_first() {
-        let events = [
-            DiagnosticEvent(id: 0, timestamp: "a", date: Date(timeIntervalSince1970: 100), category: "detector", action: "started", detail: ""),
-            DiagnosticEvent(id: 1, timestamp: "b", date: Date(timeIntervalSince1970: 300), category: "detector", action: "ended", detail: ""),
-            DiagnosticEvent(id: 2, timestamp: "c", date: Date(timeIntervalSince1970: 200), category: "pipeline", action: "started", detail: ""),
-        ]
+    func test_load_applies_filters_and_orders_newest_first_across_both_families() throws {
+        let dir = try tempDir()
+        // The two families interleave in time; each ascends within its own file.
+        try write(dir.appendingPathComponent("events.jsonl"), [
+            line("1970-01-01T00:01:40.000Z", "detector", "started"),
+            line("1970-01-01T00:05:00.000Z", "detector", "ended"),
+        ])
+        try write(dir.appendingPathComponent("pipeline_events.jsonl"), [
+            line("1970-01-01T00:03:20.000Z", "pipeline", "started"),
+        ])
+        func actions(_ q: DiagnosticsQuery) -> [String] {
+            DiagnosticsLog.load(logsDir: dir, query: q).events.map { "\($0.category).\($0.action)" }
+        }
+        XCTAssertEqual(actions(.init()), ["detector.ended", "pipeline.started", "detector.started"])
+        XCTAssertEqual(actions(.init(category: "detector")), ["detector.ended", "detector.started"])
+        XCTAssertEqual(actions(.init(action: "started")), ["pipeline.started", "detector.started"])
+        XCTAssertEqual(actions(.init(since: Date(timeIntervalSince1970: 250))), ["detector.ended"])
+    }
 
-        // Newest first, no filter.
-        XCTAssertEqual(DiagnosticsLog.filterAndSort(events, since: nil, category: nil, action: nil).map(\.id), [1, 2, 0])
+    // MARK: - PERF13: off main, bounded, counted
 
-        // Category filter.
-        XCTAssertEqual(DiagnosticsLog.filterAndSort(events, since: nil, category: "detector", action: nil).map(\.id), [1, 0])
+    private var dirs: [URL] = []
 
-        // Action filter.
-        XCTAssertEqual(DiagnosticsLog.filterAndSort(events, since: nil, category: nil, action: "started").map(\.id), [2, 0])
+    override func tearDown() {
+        for dir in dirs { try? FileManager.default.removeItem(at: dir) }
+        dirs = []
+        super.tearDown()
+    }
 
-        // Since filter (>= cutoff).
-        let cutoff = Date(timeIntervalSince1970: 250)
-        XCTAssertEqual(DiagnosticsLog.filterAndSort(events, since: cutoff, category: nil, action: nil).map(\.id), [1])
+    private func tempDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mp-diag13-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        dirs.append(dir)
+        return dir
+    }
+
+    private func write(_ url: URL, _ lines: [String]) throws {
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: url)
+    }
+
+    private func iso(_ date: Date) -> String {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.string(from: date)
+    }
+
+    func test_generations_wholly_before_since_are_never_opened() throws {
+        let dir = try tempDir()
+        let base = dir.appendingPathComponent("events.jsonl")
+        let now = Date()
+        let old = now.addingTimeInterval(-3 * 3600)
+        try write(base, [line(iso(now.addingTimeInterval(-60)), "coordinator", "recent")])
+        for k in 1...2 {
+            let g = Log.generationURL(base, k)
+            try write(g, [line(iso(old), "coordinator", "old\(k)")])
+            try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: g.path)
+        }
+        var opened: [String] = []
+        let result = DiagnosticsLog.load(
+            logsDir: dir, query: .init(since: now.addingTimeInterval(-3600)),
+            read: { url in opened.append(url.lastPathComponent); return try? String(contentsOf: url, encoding: .utf8) }
+        )
+        XCTAssertEqual(result.events.map(\.action), ["recent"])
+        XCTAssertEqual(opened, ["events.jsonl"], "rotated generations older than since must not be read")
+    }
+
+    func test_detail_is_built_only_for_returned_rows() throws {
+        let dir = try tempDir()
+        let rows = (0..<10_000).map { i in
+            line(iso(Date(timeIntervalSince1970: TimeInterval(1_000_000 + i))), "detector", "tick", ["i": i])
+        }
+        try write(dir.appendingPathComponent("events.jsonl"), rows)
+        var formatted = 0
+        let counting: DiagnosticsLog.Formatter = { formatted += 1; return DiagnosticsLog.formatDetail($0) }
+
+        let none = DiagnosticsLog.load(logsDir: dir, query: .init(category: "micgate"), formatDetail: counting)
+        XCTAssertTrue(none.events.isEmpty)
+        XCTAssertEqual(formatted, 0, "a row rejected by its category must never have its detail built")
+
+        let all = DiagnosticsLog.load(logsDir: dir, query: .init(), formatDetail: counting)
+        XCTAssertEqual(all.events.count, DiagnosticsLog.displayLimit)
+        XCTAssertEqual(formatted, DiagnosticsLog.displayLimit, "detail only for the rows returned")
+        XCTAssertEqual(all.events.first?.detail, "i=9999", "newest first")
+        XCTAssertEqual(Set(all.events.map(\.id)).count, all.events.count, "ids stay unique")
+    }
+
+    func test_a_torn_line_is_counted_as_skipped() throws {
+        let dir = try tempDir()
+        // The shape of the one torn row in the owner's log: a row's tail after a second write
+        // overwrote its head.
+        try write(dir.appendingPathComponent("events.jsonl"), [
+            line("2026-10-16T09:46:28.257Z", "coordinator", "state_change"),
+            #"n ","ts":"2026-10-16T09:46:28.265Z"}"#,
+            line("2026-10-16T09:46:28.265Z", "lifecycle", "idle"),
+        ])
+        let result = DiagnosticsLog.load(logsDir: dir, query: .init())
+        XCTAssertEqual(result.skipped, 1)
+        XCTAssertEqual(result.events.map(\.action), ["idle", "state_change"])
+    }
+
+    /// Holds a load on a continuation rather than blocking a cooperative-pool thread (CI8).
+    private actor Gate {
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        private var open = false
+        func wait() async {
+            if open { return }
+            await withCheckedContinuation { waiters.append($0) }
+        }
+        func release() {
+            open = true
+            waiters.forEach { $0.resume() }
+            waiters = []
+        }
+    }
+
+    @MainActor
+    func test_an_older_reload_finishing_last_does_not_overwrite_the_newer_one() async {
+        let olderGate = Gate()
+        let ranOnMain = OSAllocatedUnfairLock(initialState: false)
+        let model = DiagnosticsModel { query in
+            if pthread_main_np() != 0 { ranOnMain.withLock { $0 = true } }
+            if query.category == "older" { await olderGate.wait() }
+            let event = DiagnosticEvent(
+                id: 0, timestamp: "", date: nil, category: query.category ?? "", action: "", detail: ""
+            )
+            return DiagnosticsResult(events: [event], skipped: 0)
+        }
+        let older = model.reload(.init(category: "older"))
+        XCTAssertTrue(model.isLoading)
+        let newer = model.reload(.init(category: "newer"))
+        await newer.value
+        XCTAssertEqual(model.result.events.first?.category, "newer")
+        await olderGate.release()
+        await older.value
+        XCTAssertEqual(model.result.events.first?.category, "newer", "a stale reload landed over a newer one")
+        XCTAssertFalse(model.isLoading)
+        XCTAssertTrue(model.hasLoaded)
+        XCTAssertFalse(ranOnMain.withLock { $0 }, "the log read must run off main")
     }
 
     func test_load_reads_across_rotated_generations() throws {

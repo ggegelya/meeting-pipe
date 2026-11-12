@@ -25,6 +25,7 @@ from mp import providers, storage
 from mp.config import Config
 from mp.diarize import cosine_similarity
 from mp.orchestrate import (
+    PIPELINE_LOG_OWNER_ENV,
     _check_too_long,
     _configure_logging,
     finalize_streamed_transcript,
@@ -1301,3 +1302,40 @@ def test_configure_logging_still_opens_the_log_when_it_configures_the_root(
         for handler in list(fresh.handlers):
             handler.close()
             fresh.removeHandler(handler)
+
+
+# ---------------------------------------------------------------------------
+# PERF13: `pipeline.log` has one writer per run. The daemon copies a spawned
+# run's stderr into it, so with the daemon's flag set Python must add no
+# FileHandler (both used to write, doubling every record); a hand run keeps it.
+# ---------------------------------------------------------------------------
+
+def _configured_handlers(monkeypatch, tmp_path: Path, name: str) -> tuple[list[logging.Handler], Path]:
+    logs_dir = _redirect_home(monkeypatch, tmp_path)
+    fresh = logging.Logger(name)
+    _install_root_logger(monkeypatch, fresh)
+    _configure_logging()
+    handlers = list(fresh.handlers)
+    for handler in handlers:
+        handler.close()
+        fresh.removeHandler(handler)
+    return handlers, logs_dir
+
+
+def test_configure_logging_leaves_the_file_to_the_daemon_that_spawned_it(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv(PIPELINE_LOG_OWNER_ENV, "daemon")
+    handlers, logs_dir = _configured_handlers(monkeypatch, tmp_path, "mp-perf13-spawned")
+    assert not any(isinstance(h, logging.FileHandler) for h in handlers)
+    assert any(isinstance(h, logging.StreamHandler) for h in handlers), (
+        "stderr is the channel the daemon copies into pipeline.log, so it must stay"
+    )
+    assert not logs_dir.exists(), "a spawned run must not touch or rotate the daemon's file"
+
+
+def test_configure_logging_keeps_its_file_handler_on_a_hand_run(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv(PIPELINE_LOG_OWNER_ENV, raising=False)
+    handlers, logs_dir = _configured_handlers(monkeypatch, tmp_path, "mp-perf13-hand")
+    assert [type(h) for h in handlers if isinstance(h, logging.FileHandler)] == [logging.FileHandler]
+    assert (logs_dir / "pipeline.log").exists()

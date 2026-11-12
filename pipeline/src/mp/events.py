@@ -75,6 +75,24 @@ def log_generations(path: Path) -> list[Path]:
     return out
 
 
+class SkipCounter:
+    """Counts the JSONL lines a reader could not parse (PERF13).
+
+    `mp logs` and `mp analyze-detection` skip a torn line rather than abort, which
+    is right, but they used to skip it silently, so a row lost to a concurrent
+    write was indistinguishable from an event that never fired. Readers bump
+    `count` and `report` names the total on stderr when there is one.
+    """
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    def report(self) -> None:
+        if self.count:
+            noun = "line" if self.count == 1 else "lines"
+            print(f"{self.count} unparseable {noun} skipped", file=sys.stderr)
+
+
 #: The engine that actually transcribes. Anything else in a ``transcription`` row is a
 #: test double (the ``fake`` / ``pass`` runners in the Swift suite).
 REAL_ENGINE = "fluidaudio"
@@ -163,9 +181,11 @@ def _events_path() -> Path:
 
 #: Sentinel prefix for the live progress channel the Swift daemon parses off a
 #: pipeline subprocess's stdout (TECH-UX5). Mirrored by
-#: `PipelineLauncher.progressSentinel`; the printed line is ephemeral (and
-#: stripped from the daemon's view of `pipeline.log`), while the durable record
-#: is the `pipeline.stage_progress` event `emit_progress` writes alongside it.
+#: `PipelineLauncher.progressSentinel`. The printed line is not stripped: the
+#: daemon copies stdout into `pipeline.log` before it scans a chunk for the
+#: sentinel, so beats do appear there (PERF13 corrected this comment, which
+#: said otherwise). The durable record is the `pipeline.stage_progress` event
+#: `emit_progress` writes alongside it.
 PROGRESS_SENTINEL = "__MP_PROGRESS__"
 
 

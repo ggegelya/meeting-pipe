@@ -73,15 +73,19 @@ struct ActionCluster: Identifiable, Equatable {
 
     /// Day-granular aging off the ISO `due` date (AI1's rule). `overdue` is the
     /// attention cue (past due or due today); future dates read quiet.
-    func agingLabel(now: Date) -> (text: String, overdue: Bool)? {
+    ///
+    /// Not for a row's `body`: it parses dates and asks the calendar, and the rows used
+    /// to call it on every render (PERF13, 81 samples under `OpenActionRow.body`). The
+    /// views read `ActionAging`, computed once per derivation.
+    func agingLabel(now: Date) -> AgingLabel? {
         guard let due = dueDate else { return nil }
         let cal = Calendar.current
         let days = cal.dateComponents(
             [.day], from: cal.startOfDay(for: now), to: cal.startOfDay(for: due)
         ).day ?? 0
-        if days < 0 { return ("\(-days)d overdue", true) }
-        if days == 0 { return ("due today", true) }
-        return ("in \(days)d", false)
+        if days < 0 { return AgingLabel(text: "\(-days)d overdue", overdue: true) }
+        if days == 0 { return AgingLabel(text: "due today", overdue: true) }
+        return AgingLabel(text: "in \(days)d", overdue: false)
     }
 
     /// True when this commitment is what the rail badge counts. Deliberately the
@@ -91,19 +95,80 @@ struct ActionCluster: Identifiable, Equatable {
     func isOverdue(now: Date) -> Bool { agingLabel(now: now)?.overdue == true }
 }
 
+/// One commitment's "3d overdue" / "due today" / "in 2d", and whether it is the amber cue.
+struct AgingLabel: Equatable {
+    let text: String
+    let overdue: Bool
+}
+
+/// Every commitment's aging label, computed once per derivation for one calendar day (PERF13).
+///
+/// The Facts and People rows used to call `ActionCluster.agingLabel(now:)` in their `body`,
+/// so every render parsed due dates and asked the calendar again per row. Now the snapshot
+/// carries the labels, and both rails read the same map, which is also what keeps them from
+/// wording one deadline two ways. Keyed on the day so a midnight rollover is a recompute, not
+/// a stale "due today": `FactsSnapshot.refreshAging(now:)` checks `isCurrent`, and the Library
+/// calls it on the calendar-day-changed notification and on each counts pass.
+struct ActionAging: Equatable {
+    /// The start of the day these labels were computed for.
+    let day: Date
+    private let labels: [ActionCluster.ID: AgingLabel]
+
+    static let empty = ActionAging(day: .distantPast, labels: [:])
+
+    private init(day: Date, labels: [ActionCluster.ID: AgingLabel]) {
+        self.day = day
+        self.labels = labels
+    }
+
+    init(clusters: [ActionCluster], now: Date) {
+        var labels: [ActionCluster.ID: AgingLabel] = [:]
+        for cluster in clusters {
+            if let label = cluster.agingLabel(now: now) { labels[cluster.id] = label }
+        }
+        self.init(day: Calendar.current.startOfDay(for: now), labels: labels)
+    }
+
+    func label(for cluster: ActionCluster) -> AgingLabel? { labels[cluster.id] }
+
+    func isCurrent(now: Date) -> Bool { day == Calendar.current.startOfDay(for: now) }
+
+    /// How many labels carry the amber cue; the rail badge's count.
+    var overdueCount: Int { labels.values.reduce(0) { $0 + ($1.overdue ? 1 : 0) } }
+}
+
 /// What the Facts view renders and the rail badge counts, produced by one pass
 /// over the library so the two can never drift.
 struct FactsSnapshot: Equatable {
-    var clusters: [ActionCluster] = []
+    private(set) var clusters: [ActionCluster] = []
     var decisions: [DecisionFact] = []
     /// Commitments wanting attention today (AI7's amber rail count). Counts
     /// clusters, not instances: a restated promise is one thing to do.
-    var overdueCount: Int = 0
+    private(set) var overdueCount: Int = 0
+    /// Each commitment's aging label, for the day it was computed (PERF13).
+    private(set) var aging: ActionAging = .empty
     /// False until the first load completes, so the view can show a spinner
     /// rather than an empty state it has not earned.
     var loaded: Bool = false
 
     static let empty = FactsSnapshot()
+
+    /// The one way the commitments change: a load landing, a clustering regroup, or a resolve
+    /// removing one all come through here, so the labels and the badge are always derived from
+    /// the clusters on screen. Cluster ids change on a regroup, which is why a resolve or a
+    /// regroup cannot keep the old labels.
+    mutating func setClusters(_ clusters: [ActionCluster], now: Date = Date()) {
+        self.clusters = clusters
+        aging = ActionAging(clusters: clusters, now: now)
+        overdueCount = aging.overdueCount
+    }
+
+    /// Recompute the labels when the day has turned since they were computed. Cheap when it
+    /// has not, so it can sit on any frequent path.
+    mutating func refreshAging(now: Date = Date()) {
+        guard !aging.isCurrent(now: now) else { return }
+        setClusters(clusters, now: now)
+    }
 }
 
 // MARK: - Loading
@@ -217,13 +282,9 @@ extension FactsSnapshot {
         assignments: [String: Int],
         now: Date = Date()
     ) -> FactsSnapshot {
-        let clusters = ActionClusterBuilder.group(actions, assignments: assignments)
-        return FactsSnapshot(
-            clusters: clusters,
-            decisions: decisions,
-            overdueCount: ActionClusterBuilder.overdueCount(clusters, now: now),
-            loaded: true
-        )
+        var snapshot = FactsSnapshot(decisions: decisions, loaded: true)
+        snapshot.setClusters(ActionClusterBuilder.group(actions, assignments: assignments), now: now)
+        return snapshot
     }
 }
 

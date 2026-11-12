@@ -145,8 +145,12 @@ struct StorageSectionView: View {
                             icon: "icloud.and.arrow.up",
                             text: provider.name
                         )
+                        if stats.isPlanningMove {
+                            ProgressView().controlSize(.small)
+                        }
                         Button("Move library…") { chooseNewLibraryRoot() }
                             .buttonStyle(.mpGhost)
+                            .disabled(stats.isPlanningMove)
                     }
                 }
             } footer: {
@@ -178,7 +182,8 @@ struct StorageSectionView: View {
         panel.prompt = "Choose"
         panel.message = "Pick a folder outside every cloud-sync folder. Your recordings folder keeps its name inside it."
         guard panel.runModal() == .OK, let destination = panel.url else { return }
-        pendingMove = stats.planMove(to: destination)
+        // PERF13: measured off main; the button stays disabled until the plan lands.
+        Task { pendingMove = await stats.planMove(to: destination) }
     }
 
     // MARK: Groups

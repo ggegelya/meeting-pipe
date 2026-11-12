@@ -630,6 +630,12 @@ final class PipelineLauncher: PipelineDriver {
         runAll(wav: wav, summaryMode: summaryMode, onProgress: nil, completion: completion)
     }
 
+    /// PERF13: set on every `mp` spawn, read by `orchestrate._configure_logging`, which then
+    /// leaves `pipeline.log` to this process (the copy of the child's stderr in `runMP`) and
+    /// adds no FileHandler of its own. A hand-run `mp` has no flag and keeps its handler.
+    static let pipelineLogOwnerKey = "MP_PIPELINE_LOG_OWNER"
+    static let pipelineLogOwnerDaemon = "daemon"
+
     /// Sentinel prefix the pipeline prints for live progress (TECH-UX5); mirrors `orchestrate.PROGRESS_SENTINEL`.
     private static let progressSentinel = "__MP_PROGRESS__"
 
@@ -1260,6 +1266,10 @@ final class PipelineLauncher: PipelineDriver {
         for (k, v) in extraEnv { env[k] = v }
         let failureURL = FileManager.default.temporaryDirectory.appendingPathComponent("mp-failure-\(UUID().uuidString).json")
         env["MP_FAILURE_PATH"] = failureURL.path
+        // PERF13: this process copies the child's stderr into `pipeline.log` below, so it is
+        // that file's one writer. The flag tells `_configure_logging` to skip its own
+        // FileHandler, which used to put every run-all record into the file twice.
+        env[Self.pipelineLogOwnerKey] = Self.pipelineLogOwnerDaemon
         p.environment = env
         // TECH-UX5 / UX37: retained so Cancel can terminate it. UX50: the handle
         // carries the cancel flag with it, so the termination handler below reads
@@ -1274,21 +1284,19 @@ final class PipelineLauncher: PipelineDriver {
         // Pipeline log co-located with daemon logs so the user can tail one place.
         // Created 0600 (SEC14): it carries pipeline output, matching the SEC11 log posture,
         // rather than landing 0644 until the next-launch sweep tightens it.
+        // PERF13: every chunk is its own `Log.append`, a locked `O_APPEND` write that rotates
+        // first, rather than a long-lived handle sought to the end once at spawn. That handle
+        // wrote at a stale offset over whatever else had appended since (Python's own
+        // FileHandler, a second spawn), and after a rotation it kept writing into the renamed
+        // generation. Appending nothing creates the file up front.
         let logURL = Log.logsDir.appendingPathComponent("pipeline.log")
-        Log.rotateIfNeeded(logURL)  // PERF7: rotate before opening the run's handle
-        if !FileManager.default.fileExists(atPath: logURL.path) {
-            FileManager.default.createFile(
-                atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600]
-            )
-        }
-        let logHandle = (try? FileHandle(forWritingTo: logURL))
-        _ = try? logHandle?.seekToEnd()
+        Log.append(Data(), to: logURL)
 
         var stderrTail = Data()
         let stderrLimit = 4096
         outPipe.fileHandleForReading.readabilityHandler = { h in
             let d = h.availableData; if d.isEmpty { return }
-            try? logHandle?.write(contentsOf: d)
+            Log.append(d, to: logURL)
             // TECH-UX5: scan for the progress heartbeat sentinel without
             // disturbing the log stream. Each heartbeat is a single flushed
             // line, so a chunk-split miss just drops one beat (harmless).
@@ -1302,7 +1310,7 @@ final class PipelineLauncher: PipelineDriver {
         }
         errPipe.fileHandleForReading.readabilityHandler = { h in
             let d = h.availableData; if d.isEmpty { return }
-            try? logHandle?.write(contentsOf: d)
+            Log.append(d, to: logURL)
             stderrTail.append(d)
             if stderrTail.count > stderrLimit {
                 stderrTail.removeFirst(stderrTail.count - stderrLimit)
@@ -1329,7 +1337,6 @@ final class PipelineLauncher: PipelineDriver {
             watchdog.cancel()
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
-            try? logHandle?.close()
             self.slots.release(handle, from: retain)   // TECH-UX5 / UX37: run finished/killed
             if timedOut.isSet || handle.isCancelled {
                 // LOCAL10 / PIPE22: we just stopped an `mp` that may have been

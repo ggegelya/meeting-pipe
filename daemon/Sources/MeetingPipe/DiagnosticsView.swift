@@ -5,11 +5,17 @@ import SwiftUI
 /// `mp logs` since / category / action filters into the app so a detection
 /// incident is triageable without a terminal. No mutation, no follow: a Reload
 /// button re-reads on demand.
+///
+/// PERF13: the read happens off main in `DiagnosticsModel`, latest wins. It used to run on
+/// main from every appear, filter change and Reload, which at the logs' size cap is seconds of
+/// a frozen app, HUD Stop and global hotkeys included.
 struct DiagnosticsView: View {
     @State private var since: SinceChoice = .hour1
     @State private var category: String = ""
     @State private var actionFilter: String = ""
-    @State private var events: [DiagnosticEvent] = []
+    @StateObject private var model = DiagnosticsModel()
+
+    private var events: [DiagnosticEvent] { model.result.events }
 
     enum SinceChoice: String, CaseIterable, Identifiable {
         case min15 = "15m", hour1 = "1h", hour6 = "6h", day1 = "1d", all = "All"
@@ -60,9 +66,20 @@ struct DiagnosticsView: View {
 
             Spacer()
 
+            if model.isLoading {
+                ProgressView().controlSize(.small)
+            }
             Text("\(events.count) event\(events.count == 1 ? "" : "s")")
                 .font(.mpTextSM)
                 .foregroundStyle(Color(MPColors.fgSubtle))
+            // PERF13: a torn line is counted, so a lost row is visible rather than silent.
+            if model.result.skipped > 0 {
+                let n = model.result.skipped
+                Text("\(n) unreadable line\(n == 1 ? "" : "s") skipped")
+                    .font(.mpTextSM)
+                    .foregroundStyle(Color.mpWarning)
+                    .help("Lines in the event logs that are not complete JSON, usually two writes that collided. They are left out of the list.")
+            }
 
             Button("Reload", action: reload)
             Button("Logs Folder") { NSWorkspace.shared.open(Log.logsDir) }
@@ -72,7 +89,10 @@ struct DiagnosticsView: View {
 
     @ViewBuilder
     private var content: some View {
-        if events.isEmpty {
+        if !model.hasLoaded {
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if events.isEmpty {
             VStack(spacing: MPSpace.s2) {
                 Spacer()
                 Text("No events match these filters.")
@@ -125,10 +145,10 @@ struct DiagnosticsView: View {
 
     private func reload() {
         let action = actionFilter.trimmingCharacters(in: .whitespaces)
-        events = DiagnosticsLog.load(
+        model.reload(DiagnosticsQuery(
             since: since.date,
             category: category.isEmpty ? nil : category,
             action: action.isEmpty ? nil : action
-        )
+        ))
     }
 }

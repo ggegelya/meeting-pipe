@@ -119,7 +119,7 @@ final class FactsClusterTests: XCTestCase {
     // MARK: - Aging + the rail badge
 
     func testAgingLabelWording() {
-        func label(_ offset: Int) -> (text: String, overdue: Bool)? {
+        func label(_ offset: Int) -> AgingLabel? {
             ActionClusterBuilder
                 .group([action(stem: "20270101-100000", task: "A", due: isoDay(offset))])
                 .first?

@@ -142,11 +142,12 @@ def _parse_ts(s: str) -> datetime:
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
-def iter_events(path: Path) -> Iterator[dict]:
+def iter_events(path: Path, skipped: events.SkipCounter | None = None) -> Iterator[dict]:
     """Yield every well-formed JSON event from ``path``.
 
-    Skips truncated tail lines silently so a live-tailed file does not
-    crash the analyzer mid-workday.
+    Skips torn lines so a live-tailed file does not crash the analyzer
+    mid-workday, counting them into ``skipped`` (PERF13) so ``main`` can say
+    how many rows the report could not see.
     """
     if not path.exists():
         return
@@ -158,6 +159,8 @@ def iter_events(path: Path) -> Iterator[dict]:
             try:
                 yield json.loads(line)
             except json.JSONDecodeError:
+                if skipped is not None:
+                    skipped.count += 1
                 continue
 
 
@@ -676,7 +679,9 @@ def main(argv: list[str]) -> int:
     # and there is not one residue `recording_started`, `recording_stopped`, `force_stop`
     # or `mic_busy_*` row in the log. Filtering here would buy nothing and would strip the
     # synthetic sessions this module's own tests feed through main().
-    raw = [ev for p in events.log_generations(source) for ev in iter_events(p)]
+    skipped = events.SkipCounter()
+    raw = [ev for p in events.log_generations(source) for ev in iter_events(p, skipped)]
+    skipped.report()
     sessions = [classify_session(s) for s in pair_sessions(raw, since=since)]
     stats = aggregate(sessions)
 

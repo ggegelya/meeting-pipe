@@ -642,6 +642,12 @@ struct LibraryRootView: View {
             // undecidable into an answer.
             resolveTranscriptJump()
         }
+        // PERF13: aging labels are computed once per derivation, so a window left open across
+        // midnight needs this to turn "due today" into "1d overdue" (and the day-relative
+        // counts with it). macOS posts it at midnight and on a wake that crossed one.
+        .onReceive(
+            NotificationCenter.default.publisher(for: .NSCalendarDayChanged).receive(on: DispatchQueue.main)
+        ) { _ in recomputeCounts() }
         .onChange(of: model.workflowStore?.workflows.count ?? 0) { _, _ in recomputeCounts() }
         .onChange(of: model.searchIndexRevision) { _, _ in recomputeCounts() }
         // UX24: adding, editing, or deleting a folder changes its rail count.
@@ -908,7 +914,8 @@ struct LibraryRootView: View {
                         PeopleView(
                             store: meetingStore,
                             projection: model.projections.people,
-                            commitments: facts.clusters
+                            commitments: facts.clusters,
+                            aging: facts.aging
                         ) { stem in
                             model.openedFromInsight = .init(stem: stem, source: "People")
                             scope = .allMeetings
@@ -997,6 +1004,8 @@ struct LibraryRootView: View {
             searchRevision: model.searchIndexRevision,
             day: Calendar.current.startOfDay(for: Date())
         )
+        // PERF13: the commitments' aging labels are per day too; a no-op on the same day.
+        facts.refreshAging()
         if key == lastCountsKey { return }
         lastCountsKey = key
         let meetings = meetingStore.meetings
@@ -1080,10 +1089,7 @@ struct LibraryRootView: View {
     private func regroupFacts() {
         let actions = facts.clusters.flatMap(\.instances)
         guard !actions.isEmpty else { return }
-        let now = Date()
-        let clusters = ActionClusterBuilder.group(actions, assignments: clusterAssignments)
-        facts.clusters = clusters
-        facts.overdueCount = ActionClusterBuilder.overdueCount(clusters, now: now)
+        facts.setClusters(ActionClusterBuilder.group(actions, assignments: clusterAssignments))
     }
 
     /// AI7 resolve-the-cluster: mark every restatement of one commitment done.
@@ -1094,8 +1100,7 @@ struct LibraryRootView: View {
     /// cluster now logs one row per summary it actually changed, each naming that
     /// meeting, rather than a single row naming only the representative.
     private func resolveCommitment(_ cluster: ActionCluster) {
-        facts.clusters.removeAll { $0.id == cluster.id }
-        facts.overdueCount = ActionClusterBuilder.overdueCount(facts.clusters)
+        facts.setClusters(facts.clusters.filter { $0.id != cluster.id })
         Task.detached(priority: .userInitiated) {
             FactsResolver.resolve(cluster)
         }

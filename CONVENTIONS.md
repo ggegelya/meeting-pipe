@@ -265,7 +265,7 @@ Two append-only JSONL files at `~/Library/Logs/MeetingPipe/`:
 - `events.jsonl` — written by the daemon via `Log.event(category:action:attributes:)` in `Logger.swift`.
 - `pipeline_events.jsonl` — written by the pipeline via `mp.events.emit(category, action, **attrs)` in `events.py`.
 
-Both self-bound by size (PERF7). A file that reaches ~5 MiB rotates `foo.ext` -> `foo.1.ext` (index before the extension so it stays valid JSONL), shifting older generations up and dropping the oldest past 3 backups. The same size cap covers the four tail-able text logs (`main.log`, `daemon.log`, `recorder.log`, `pipeline.log`). Both sides own the rotation: `Log.rotateIfNeeded` in Swift (called before every append) and `mp.events.rotate_if_needed` in Python (called before each open-for-append); the cap is `MEETINGPIPE_LOG_MAX_BYTES`-overridable for tests. Readers span the boundary via `Log.logGenerations` / `events.log_generations` (base plus generations, oldest first), so `mp logs` and `mp analyze-detection` keep working on the recent window.
+Both self-bound by size (PERF7). A file that reaches ~5 MiB rotates `foo.ext` -> `foo.1.ext` (index before the extension so it stays valid JSONL), shifting older generations up and dropping the oldest past 3 backups. The same size cap covers the four tail-able text logs (`main.log`, `daemon.log`, `recorder.log`, `pipeline.log`). Both sides own the rotation of their own files: `Log.rotateIfNeeded` in Swift (run under the write lock before every append, `pipeline.log` included) and `mp.events.rotate_if_needed` in Python (called before each open-for-append, which for `pipeline.log` happens only on a hand run, since a daemon-spawned run leaves that file to the daemon, PERF13); the cap is `MEETINGPIPE_LOG_MAX_BYTES`-overridable for tests. Readers span the boundary via `Log.logGenerations` / `events.log_generations` (base plus generations, oldest first), so `mp logs` and `mp analyze-detection` keep working on the recent window.
 
 Every line is one JSON object with at least three fields:
 
@@ -338,10 +338,18 @@ Two things it deliberately does not do, both worth knowing before you trust a nu
 
 ### Non-serializable attributes
 
-- Swift: a non-serializable value silently drops the event (per `Logger.swift`). Convert to a string / dict before passing.
-- Python: `default=str` coerces silently rather than dropping. Same outcome: don't pass raw objects, convert first.
+Both sides coerce rather than drop (PERF13), so a stray attribute degrades one value instead of losing the whole row:
 
-The principle is: a missing event line is preferable to a crashed daemon or a corrupted file. Don't add try/except scaffolding around emit calls.
+- Swift: `Log.event` writes a value JSON cannot hold as its string form (a file `URL` as its path, any other `URL` as its absolute string, a `UUID` as its `uuidString`, a `Date` in the log's ISO 8601 form, anything else as `String(describing:)`), recursing into arrays and dictionaries. A non-finite `Double` (NaN, infinity) becomes `null`, and at the top level gains a sibling `<key>_invalid: true` so a NaN stays distinguishable from a value that was absent. It used to return without writing, which `CONVENTIONS.md` documented as intended.
+- Python: `default=str` coerces silently. Same outcome.
+
+Still convert first where the string form is not what a reader wants: coercion is a floor, not a format. Don't add try/except scaffolding around emit calls.
+
+### Writing and reading the logs (PERF13)
+
+- **Every Swift append goes through `Log.append`.** One in-process lock covers check-rotate-append, and the file is opened per write with `O_WRONLY | O_APPEND | O_CREAT`, mode 0600, so two threads cannot overwrite each other, double-rotate, or lose a line to a first-create, and a second process appending the same file (the `MeetingPipe doctor` CLI writes `events.jsonl` too) cannot either. Writes are synchronous, so a line is in the kernel when `Log.event` returns: there is no unflushed tail on a crash, and no drain is needed at quit. Don't keep a long-lived `FileHandle` on a log; that is the shape that tore rows.
+- **`pipeline.log` has one writer per run.** `PipelineLauncher.runMP` copies the child's stdout and stderr through `Log.append`, one call per chunk, and sets `MP_PIPELINE_LOG_OWNER=daemon` on every spawn; `orchestrate._configure_logging` then adds no `FileHandler` and does not touch or rotate the file. A hand-run `mp run-all` has no flag and keeps its `FileHandler`.
+- **Readers count what they skip.** A torn line is skipped, never fatal, and counted: `mp logs` and `mp analyze-detection` print `N unparseable lines skipped` to stderr, and the Diagnostics window shows the count beside its event total.
 
 ---
 
@@ -477,6 +485,8 @@ Absent whenever the pipeline short-circuited before publish (no speech, suspect 
 ### Optional failure metadata (UX80)
 
 `PipelineLauncher` gives each subprocess a unique temporary `MP_FAILURE_PATH`, independent of its stderr tail and of every other process. `mp.failure_details` writes the first caught failure there atomically with owner-only permissions. Command-specific catches retain native evidence before returning: run-all, standalone summarize, Ask, and each publishing destination. The CLI boundary covers unhandled commands. A wrapper cannot replace an inner operation with a less specific one. No environment variable means no transport file. This metadata is optional; existing exit codes, cancellation, logs, and successful output contracts are unchanged.
+
+The same spawn sets `MP_PIPELINE_LOG_OWNER=daemon` (PERF13): the daemon copies the child's output into `pipeline.log`, so `orchestrate._configure_logging` adds no `FileHandler` of its own when it sees the flag. The constant is `PipelineLauncher.pipelineLogOwnerKey` in Swift and `orchestrate.PIPELINE_LOG_OWNER_ENV` in Python, pinned to each other by `PipelineLogOwnerPERF13Tests`.
 
 ```json
 {"schema_version":1,"cause":"credits","provider":"anthropic","operation":"summary","remedy":"billing","http_status":400,"request_id":"req_0123456789abcdef"}

@@ -373,6 +373,57 @@ final class GuideDocumentTests: XCTestCase {
         }
     }
 
+    // MARK: - PERF13: parsed once per load, never in body
+
+    func test_every_prose_block_carries_its_parsed_inline_markdown() {
+        let md = """
+            ## Section
+
+            A **bold** paragraph with `code`.
+
+            - a *bullet*
+            1. a **numbered** item
+
+            | Key | Does |
+            | --- | --- |
+            | **K** | a [link](https://example.com) |
+            """
+        let blocks = D.parse(md)
+        let rendered = D.rendered(blocks)
+        XCTAssertEqual(rendered.count, blocks.count)
+        var checked = 0
+        for (block, out) in zip(blocks, rendered) {
+            switch (block, out) {
+            case (.heading(let l, let t), .heading(let rl, let rt)):
+                XCTAssertEqual(l, rl); XCTAssertEqual(t, rt)
+            case (.paragraph(let t), .paragraph(let a)), (.bullet(let t), .bullet(let a)):
+                XCTAssertEqual(a, D.inline(t)); checked += 1
+            case (.numbered(let i, let t), .numbered(let ri, let a)):
+                XCTAssertEqual(i, ri); XCTAssertEqual(a, D.inline(t)); checked += 1
+            case (.table(let h, let rows), .table(let rh, let rrows)):
+                XCTAssertEqual(rh, h.map(D.inline))
+                XCTAssertEqual(rrows, rows.map { $0.map(D.inline) })
+                checked += 1
+            case (.rule, .rule):
+                break
+            default:
+                XCTFail("block kind changed in rendering: \(block)")
+            }
+        }
+        XCTAssertEqual(checked, 4, "paragraph, bullet, numbered item and table all parsed")
+        // The markdown really was parsed, not passed through: the emphasis markers are gone.
+        guard case .paragraph(let p) = rendered[1] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(String(p.characters), "A bold paragraph with code.")
+    }
+
+    func test_the_view_never_parses_markdown_in_its_body() throws {
+        let view = try repoFile("daemon/Sources/MeetingPipe/GuideView.swift")
+        XCTAssertFalse(view.contains("AttributedString(markdown"),
+                       "GuideView must render GuideDocument.rendered, parsed once in load()")
+        XCTAssertFalse(view.contains("@State private var hovered"),
+                       "the rail's hover state belongs to GuideRailRow, not the view that owns the document")
+    }
+
     /// Every markdown link destination in a string: the `x` of `[label](x)`.
     private func linkTargets(in text: String) -> [String] {
         guard let re = try? NSRegularExpression(pattern: #"\]\(([^)]*)\)"#) else { return [] }

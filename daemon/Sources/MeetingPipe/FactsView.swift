@@ -20,7 +20,6 @@ struct FactsView: View {
     let onOpenMeeting: (String) -> Void
 
     var body: some View {
-        let now = Date()
         Group {
             if !snapshot.loaded {
                 ProgressView()
@@ -34,7 +33,7 @@ struct FactsView: View {
                             ForEach(snapshot.clusters) { cluster in
                                 OpenActionRow(
                                     cluster: cluster,
-                                    now: now,
+                                    aging: snapshot.aging.label(for: cluster),
                                     onDone: { onResolve(cluster) },
                                     onOpen: { onOpenMeeting(cluster.representative.stem) }
                                 )
@@ -83,7 +82,8 @@ struct FactsView: View {
 
 private struct OpenActionRow: View {
     let cluster: ActionCluster
-    let now: Date
+    /// Computed once per derivation by `FactsSnapshot` (PERF13), never in this body.
+    let aging: AgingLabel?
     let onDone: () -> Void
     let onOpen: () -> Void
 
@@ -112,7 +112,7 @@ private struct OpenActionRow: View {
                     if let owner = fact.owner, !owner.isEmpty {
                         Text(owner)
                     }
-                    if let aging = cluster.agingLabel(now: now) {
+                    if let aging {
                         if fact.owner?.isEmpty == false { Text("·") }
                         Text(aging.text)
                             .foregroundStyle(aging.overdue ? Color.mpWarning : Color(MPColors.fgSubtle))

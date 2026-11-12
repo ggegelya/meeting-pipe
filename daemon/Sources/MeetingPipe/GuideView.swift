@@ -32,9 +32,18 @@ import SwiftUI
 ///   few points above each section heading. Body copy is `fg` now (what the
 ///   transcript and the summary use), the heading leads step, and the parser
 ///   lets a section heading own its own break.
+///
+/// PERF13: the document's inline markdown is parsed once in `load()`
+/// (`GuideDocument.rendered`), never in `body`, and each rail row keeps its own
+/// hover state (`GuideRailRow`), so moving the pointer down the rail re-renders
+/// that row rather than re-evaluating, and re-parsing, the whole document. The
+/// stack stays non-lazy on purpose: the rail's mark reads every heading's offset,
+/// and a lazy stack reports none for the headings it has not realized.
 struct GuideView: View {
-    @State private var blocks: [GuideDocument.Block] = []
+    @State private var blocks: [GuideDocument.RenderedBlock] = []
     @State private var sections: [GuideDocument.Section] = []
+    /// The block indices `sections` points at, for `headingProbe`'s per-block check.
+    @State private var sectionIndices: Set<Int> = []
 
     /// Block index of the section the reader is currently inside, from
     /// `GuideDocument.currentSection` over the heading probes below.
@@ -42,7 +51,6 @@ struct GuideView: View {
     /// The rail's jump target. Held here rather than in the rail so the two
     /// columns share one reader.
     @State private var jumpTarget: Int?
-    @State private var hovered: Int?
 
     /// Named so a heading's probe can report its offset inside the reading
     /// viewport rather than in an ancestor that scrolls with it.
@@ -75,7 +83,11 @@ struct GuideView: View {
                     .padding(.bottom, MPSpace.s1)
 
                 ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
-                    railRow(section)
+                    GuideRailRow(
+                        section: section,
+                        isCurrent: current == section.blockIndex,
+                        onJump: { jumpTarget = section.blockIndex }
+                    )
                 }
             }
             .padding(.vertical, MPSpace.s3)
@@ -85,47 +97,6 @@ struct GuideView: View {
         // rather than being 12pt apart for no reason anybody could name.
         .frame(width: LibraryLayout.sidebarIdealWidth)
         .background(Color(MPColors.bgSunk))
-    }
-
-    private func railRow(_ section: GuideDocument.Section) -> some View {
-        let isCurrent = current == section.blockIndex
-        return Button {
-            jumpTarget = section.blockIndex
-        } label: {
-            Text(section.title)
-                .font(.mpTextSM)
-                // A rail is chrome, so it keeps the fixed mac-native size while
-                // the document beside it scales (PRODUCT.md's a11y section draws
-                // that line: content surfaces take Dynamic Type, chrome does not).
-                .foregroundStyle(Color(isCurrent ? MPColors.fg : MPColors.fgMuted))
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, MPSpace.s1)
-                .padding(.horizontal, MPSpace.s2)
-                .background(
-                    RoundedRectangle(cornerRadius: MPRadius.sm)
-                        .fill(rowFill(isCurrent: isCurrent, isHovered: hovered == section.blockIndex))
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { inside in
-            if inside { hovered = section.blockIndex }
-            else if hovered == section.blockIndex { hovered = nil }
-        }
-        // The mark is a wash, so it is a colour-only state on its own; the trait
-        // is what carries it to VoiceOver (PRODUCT.md: no colour-only state).
-        .accessibilityAddTraits(isCurrent ? [.isSelected] : [])
-    }
-
-    /// Teal wash for the section being read, the app's ink/white hover wash under
-    /// the pointer, nothing at rest. Both are tokens (`No-System-Blue` for the
-    /// first, DSN19 for the second, which exists because a white-on-white hover
-    /// fill vanishes on the paper canvas).
-    private func rowFill(isCurrent: Bool, isHovered: Bool) -> Color {
-        if isCurrent { return .mpSelectionWash }
-        return isHovered ? .mpOverlayHover : .clear
     }
 
     // MARK: - Document
@@ -168,7 +139,7 @@ struct GuideView: View {
     /// magnitude of geometry for the same answer.
     @ViewBuilder
     private func headingProbe(at index: Int) -> some View {
-        if sections.contains(where: { $0.blockIndex == index }) {
+        if sectionIndices.contains(index) {
             GeometryReader { geo in
                 Color.clear.preference(
                     key: GuideHeadingOffsets.self,
@@ -183,7 +154,7 @@ struct GuideView: View {
     }
 
     @ViewBuilder
-    private func view(for block: GuideDocument.Block) -> some View {
+    private func view(for block: GuideDocument.RenderedBlock) -> some View {
         switch block {
         case .heading(let level, let text):
             Text(text)
@@ -195,7 +166,7 @@ struct GuideView: View {
                 .textSelection(.enabled)
 
         case .paragraph(let text):
-            Text(inline(text))
+            Text(text)
                 .font(.body)
                 .foregroundStyle(Color(MPColors.fg))
                 .lineSpacing(4)
@@ -206,7 +177,7 @@ struct GuideView: View {
         case .bullet(let text):
             HStack(alignment: .firstTextBaseline, spacing: MPSpace.s2) {
                 marker(Text("•"))
-                Text(inline(text))
+                Text(text)
                     .foregroundStyle(Color(MPColors.fg))
                     .lineSpacing(4)
                     .fixedSize(horizontal: false, vertical: true)
@@ -219,7 +190,7 @@ struct GuideView: View {
         case .numbered(let index, let text):
             HStack(alignment: .firstTextBaseline, spacing: MPSpace.s2) {
                 marker(Text("\(index).").monospacedDigit())
-                Text(inline(text))
+                Text(text)
                     .foregroundStyle(Color(MPColors.fg))
                     .lineSpacing(4)
                     .fixedSize(horizontal: false, vertical: true)
@@ -267,18 +238,18 @@ struct GuideView: View {
             .frame(minWidth: 16, alignment: .trailing)
     }
 
-    private func tableRow(_ cells: [String], isHeader: Bool) -> some View {
+    private func tableRow(_ cells: [AttributedString], isHeader: Bool) -> some View {
         HStack(alignment: .top, spacing: MPSpace.s3) {
             ForEach(Array(cells.enumerated()), id: \.offset) { position, cell in
                 Group {
                     if isHeader {
-                        Text(inline(cell))
+                        Text(cell)
                             .font(.caption.weight(.semibold))
                             .tracking(MPType.trackingCaps * MPType.textXS)
                             .textCase(.uppercase)
                             .foregroundStyle(Color(MPColors.fgMuted))
                     } else {
-                        Text(inline(cell))
+                        Text(cell)
                             .font(.callout)
                             .foregroundStyle(Color(MPColors.fg))
                     }
@@ -321,31 +292,65 @@ struct GuideView: View {
         }
     }
 
-    /// Per-block inline parsing (bold, italic, code, real links), the same
-    /// treatment `SummaryRenderedView` gives a summary bullet. Links the window
-    /// cannot follow were already flattened to their label by the parser, since
-    /// one in a window resolves to nothing (DOC11 for `#anchor`s, DOC13 for
-    /// every other unresolvable shape).
-    private func inline(_ s: String) -> AttributedString {
-        let opts = AttributedString.MarkdownParsingOptions(
-            allowsExtendedAttributes: false,
-            interpretedSyntax: .inlineOnlyPreservingWhitespace,
-            failurePolicy: .returnPartiallyParsedIfPossible
-        )
-        return (try? AttributedString(markdown: s, options: opts)) ?? AttributedString(s)
-    }
-
     private func updateCurrent(from offsets: [Int: CGFloat]) {
         let resolved = GuideDocument.currentSection(offsets: offsets, sections: sections)
         if resolved != current { current = resolved }
     }
 
+    /// The one parse, inline markdown included (PERF13).
     private func load() {
         let markdown = GuideDocument.bundledMarkdown() ?? GuideDocument.missingCopy
         let parsed = GuideDocument.parse(markdown)
-        blocks = parsed
+        blocks = GuideDocument.rendered(parsed)
         sections = GuideDocument.sections(of: parsed)
+        sectionIndices = Set(sections.map(\.blockIndex))
         current = sections.first?.blockIndex
+    }
+}
+
+/// One row of the guide's contents rail. Its hover state is its own (PERF13): held on
+/// `GuideView`, a pointer crossing the rail re-evaluated the whole document's body once
+/// per row it crossed. The mark (`isCurrent`) and the jump stay with `GuideView`, which
+/// shares one scroll reader between the two columns.
+private struct GuideRailRow: View {
+    let section: GuideDocument.Section
+    let isCurrent: Bool
+    let onJump: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onJump) {
+            Text(section.title)
+                .font(.mpTextSM)
+                // A rail is chrome, so it keeps the fixed mac-native size while
+                // the document beside it scales (PRODUCT.md's a11y section draws
+                // that line: content surfaces take Dynamic Type, chrome does not).
+                .foregroundStyle(Color(isCurrent ? MPColors.fg : MPColors.fgMuted))
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, MPSpace.s1)
+                .padding(.horizontal, MPSpace.s2)
+                .background(
+                    RoundedRectangle(cornerRadius: MPRadius.sm)
+                        .fill(rowFill)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        // The mark is a wash, so it is a colour-only state on its own; the trait
+        // is what carries it to VoiceOver (PRODUCT.md: no colour-only state).
+        .accessibilityAddTraits(isCurrent ? [.isSelected] : [])
+    }
+
+    /// Teal wash for the section being read, the app's ink/white hover wash under
+    /// the pointer, nothing at rest. Both are tokens (`No-System-Blue` for the
+    /// first, DSN19 for the second, which exists because a white-on-white hover
+    /// fill vanishes on the paper canvas).
+    private var rowFill: Color {
+        if isCurrent { return .mpSelectionWash }
+        return isHovered ? .mpOverlayHover : .clear
     }
 }
 

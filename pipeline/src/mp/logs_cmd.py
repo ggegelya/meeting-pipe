@@ -46,7 +46,7 @@ def _parse_since(s: str) -> datetime:
     return dt
 
 
-def _iter_events() -> Iterator[dict]:
+def _iter_events(skipped: events_mod.SkipCounter | None = None) -> Iterator[dict]:
     for name in SOURCES:
         # PERF7: read the base log plus its rotated generations, so `mp logs`
         # keeps working on the recent window after a rotation.
@@ -59,9 +59,12 @@ def _iter_events() -> Iterator[dict]:
                     try:
                         yield json.loads(line)
                     except json.JSONDecodeError:
-                        # A truncated tail line during concurrent write. Skip
-                        # rather than abort: the user is debugging, not
-                        # forensically auditing.
+                        # A torn line from a concurrent write. Skip rather than
+                        # abort: the user is debugging, not forensically
+                        # auditing. Counted, though (PERF13), so a lost row
+                        # does not read as an event that never fired.
+                        if skipped is not None:
+                            skipped.count += 1
                         continue
 
 
@@ -112,9 +115,11 @@ def main(argv: list[str]) -> int:
     args = p.parse_args(argv)
 
     since = _parse_since(args.since) if args.since else None
-    matched = list(_filter(_iter_events(),
+    skipped = events_mod.SkipCounter()
+    matched = list(_filter(_iter_events(skipped),
                             since=since, category=args.category, action=args.action))
     matched.sort(key=lambda e: e.get("ts", ""))
+    skipped.report()
 
     if args.json:
         for ev in matched:

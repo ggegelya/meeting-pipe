@@ -458,7 +458,7 @@ The menu bar's **Finish setup** row is the shorter version, present only while s
 
 ### The Diagnostics window
 
-The menu bar's **Diagnostics…** opens a read-only view of what the app has been doing, with filters for how far back, what kind of event, and which action. It is the readable version of the logs, and it is where to look when the question is "did it even notice the meeting". **Open Logs Folder** in the same menu gets you the raw files if you want them.
+The menu bar's **Diagnostics…** opens a read-only view of what the app has been doing, with filters for how far back, what kind of event, and which action. It is the readable version of the logs, and it is where to look when the question is "did it even notice the meeting". If it also says some unreadable lines were skipped, a log line got damaged as it was written and is left out of the list; one now and then is harmless, but it means that moment may be missing an entry. **Open Logs Folder** in the same menu gets you the raw files if you want them.
 
 ### A meeting that failed
 

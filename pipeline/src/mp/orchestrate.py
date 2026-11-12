@@ -5,8 +5,9 @@ Stages:
   2. summarize    →  <stem>.summary.json + <stem>.summary.md
   3. publish      →  per-sink sidecars (e.g. <stem>.notion.json)
 
-Each stage logs to ~/Library/Logs/MeetingPipe/pipeline.log via the root logger
-configured here. Daemon's PipelineLauncher tails this file too.
+Each stage logs to ~/Library/Logs/MeetingPipe/pipeline.log: through the root
+logger configured here on a hand run, and through the daemon's copy of our
+stderr when the daemon spawned us (PERF13, one writer per run).
 
 Long-meeting guard: if the transcript markdown is longer than
 `summarization.skip_above_chars`, stages 2 and 3 are skipped — instead we
@@ -57,7 +58,7 @@ log = logging.getLogger("mp.run_all")
 
 # Sentinel prefix for the live progress channel the Swift daemon parses off our
 # stdout (TECH-UX5). The durable record is the `pipeline.stage_progress` event;
-# this line is ephemeral and stripped from the daemon's pipeline.log. AI11 moved
+# the daemon copies this line into pipeline.log with the rest of stdout. AI11 moved
 # the constant and the emit to `events` once `mp ask` needed the same channel;
 # this alias keeps the name run-all's readers already know.
 PROGRESS_SENTINEL = events.PROGRESS_SENTINEL
@@ -99,6 +100,12 @@ class _ProgressHeartbeat:
             events.emit_progress(stage, elapsed_s=elapsed, beat=beat)
 
 
+#: Set by the daemon's `PipelineLauncher.runMP` on every spawn (PERF13); mirrored
+#: by `PipelineLauncher.pipelineLogOwnerKey`. "daemon" means the daemon owns
+#: `pipeline.log` and this process must not open it.
+PIPELINE_LOG_OWNER_ENV = "MP_PIPELINE_LOG_OWNER"
+
+
 def _configure_logging() -> None:
     """Mirror logs to stderr (captured by the Swift launcher) and ~/Library/Logs.
 
@@ -114,6 +121,14 @@ def _configure_logging() -> None:
     ships for that file, and bumped the real one's mtime on a developer's Mac.
     A run that reaches the handler below still gets the file, which is the only
     caller the promise above was ever about.
+
+    PERF13: `pipeline.log` has one writer per run. When the daemon spawned us
+    (`MP_PIPELINE_LOG_OWNER=daemon`) it copies our stderr into the file through
+    its own `O_APPEND` writes, so this returns after the stream handler and
+    touches the file not at all: no FileHandler, no rotation under the daemon's
+    feet. Both used to write, which put every record in twice and, through the
+    daemon's stale write offset, tore the tail of 5 of 8 real runs. A hand-run
+    `mp run-all` has no flag and keeps the FileHandler, its only file sink.
     """
     fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
@@ -122,14 +137,17 @@ def _configure_logging() -> None:
         return  # already configured by caller (e.g. tests)
     root.setLevel(logging.INFO)
 
+    stream = logging.StreamHandler(stream=sys.stderr)
+    stream.setFormatter(logging.Formatter(fmt))
+    root.addHandler(stream)
+
+    if os.environ.get(PIPELINE_LOG_OWNER_ENV) == "daemon":
+        return
+
     logs_dir = Path(os.path.expanduser("~/Library/Logs/MeetingPipe"))
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_file = logs_dir / "pipeline.log"
     log_file.touch(exist_ok=True)
-
-    stream = logging.StreamHandler(stream=sys.stderr)
-    stream.setFormatter(logging.Formatter(fmt))
-    root.addHandler(stream)
 
     events.rotate_if_needed(log_file)  # PERF7: rotate before opening the run's handle
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
