@@ -1,0 +1,43 @@
+# Dependabot version updates (security updates are switched on in the repo settings).
+# Weekly, minor and patch bumps grouped into one PR per ecosystem to keep the noise down.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: "uv"
+    directory: "/pipeline"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      python-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # Deliberate caps: anthropic 1.x and huggingface-hub 2.x move onto httpx2,
+      # which egress_guard does not patch (SEC19); httpx 1.x is the same break.
+      - dependency-name: "anthropic"
+        versions: [">=1"]
+      - dependency-name: "httpx"
+        versions: [">=1"]
+      - dependency-name: "huggingface-hub"
+        versions: [">=2"]
+
+  - package-ecosystem: "swift"
+    directory: "/daemon"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(deps)"
