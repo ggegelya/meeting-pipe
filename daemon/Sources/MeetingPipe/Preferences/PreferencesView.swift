@@ -62,6 +62,9 @@ struct PreferencesView: View {
     /// model's download inline, since the clamp it now names lands on a model this
     /// Mac may not have. Nil headless, which suppresses the row.
     var localModelPreflight: LocalModelPreflight? = nil
+    /// PERF24: forwarded to the General and Storage panes for the status menu. Nil headless.
+    var onLaunchAtLoginStatus: ((LaunchAtLoginStatus) -> Void)? = nil
+    var onLibraryRestored: (() -> Void)? = nil
     @StateObject private var doctor = DoctorRunner()
 
     @State private var doctorSheetOpen: Bool = false
@@ -138,7 +141,7 @@ struct PreferencesView: View {
     private var paneContent: some View {
         switch selectionState.current {
         case .general:
-            GeneralSectionView(store: store)
+            GeneralSectionView(store: store, onLaunchAtLoginStatus: onLaunchAtLoginStatus)
         case .recording:
             RecordingSectionView(store: store)
         case .prompt:
@@ -152,7 +155,7 @@ struct PreferencesView: View {
                 pendingVocabularyScope: $selectionState.pendingVocabularyScope
             )
         case .storage:
-            StorageSectionView(store: store, workflowStore: workflows)
+            StorageSectionView(store: store, workflowStore: workflows, onRestored: onLibraryRestored)
         case .integrations:
             IntegrationsSectionView(
                 store: store,

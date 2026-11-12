@@ -13,7 +13,7 @@ final class ModelDownloadSupervisor {
         case failed(modelId: String, error: String)
     }
 
-    /// Called on the main queue on every state change; Coordinator uses this to rebuild the menu-bar title and menu.
+    /// Called on the main queue on every state change; Coordinator uses this to update the menu-bar title and the state the next menu open shows.
     var onStateChange: ((State) -> Void)?
 
     /// LOCAL20: what a terminating prefetch is allowed to do, decided with explicit inputs so the

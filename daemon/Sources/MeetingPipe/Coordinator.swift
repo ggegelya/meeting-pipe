@@ -391,6 +391,11 @@ final class Coordinator: NSObject {
             },
             onFailure: { [weak self] stem, error in
                 self?.notifier.notifyFailure(FailurePresentation(error: error, operation: .summary), stem: stem)
+            },
+            // PERF24: the menu's failed row is a cached count recounted off main, and a job
+            // landing is what usually moves it.
+            onJobSettled: { [weak self] in
+                self?.statusBar.refreshFailedMeetingCount()
             }
         )
         // MicGate consumes the recorder's per-buffer mic RMS on the
@@ -578,6 +583,14 @@ final class Coordinator: NSObject {
         preferencesWindow?.localModelPreflightProvider = { [weak self] in
             self?.localModelPreflight
         }
+        // PERF24: the status menu caches the launch-agent state and the failed count rather
+        // than reading either on main, so the two Preferences surfaces that move them tell it.
+        preferencesWindow?.onLaunchAtLoginStatus = { [weak self] status in
+            self?.statusBar.noteLaunchAtLoginStatus(status)
+        }
+        preferencesWindow?.onLibraryRestored = { [weak self] in
+            self?.statusBar.refreshFailedMeetingCount()
+        }
 
         // Re-evaluate detection the moment Mic/Accessibility flip on, so a
         // daemon restarted mid-meeting (the typical AX-grant flow) doesn't
@@ -600,6 +613,9 @@ final class Coordinator: NSObject {
         // async merges create any new final WAVs (else a just-recovered WAV would
         // look stranded and re-enqueue).
         reconcileStrandedJobs()
+        // PERF24: the menu's two cached reads, after the reconcile above so a stranded job
+        // marked just now is in the first count. Both run off main.
+        statusBar.primeCachedReads()
         // Re-enqueue recordings orphaned by a mid-recording termination (REC6 runs
         // the orphan sweep from here now, launch + after every job), reclaim kept
         // full recordings past their retention window (ADR 0016 / MIC13), and apply
@@ -822,8 +838,8 @@ final class Coordinator: NSObject {
 
     /// Post-recording meeting operations (TECH-H1-FINISH). Handed to
     /// `libraryModel` in `init` so the Library window calls it directly (ARCH4);
-    /// the Coordinator keeps only `recentCorrectableMeetings` / `failedMeetingCount`
-    /// for the status-bar menu. `enqueue` reads `jobDispatcher` inside the closure,
+    /// the Coordinator keeps only `recentCorrectableMeetings` for the status-bar menu
+    /// (the failed count is the menu's own off-main read since PERF24). `enqueue` reads `jobDispatcher` inside the closure,
     /// not at construction, so forcing this lazy var in `init` is safe while that
     /// IUO is still nil.
     lazy var library = MeetingLibraryService(
@@ -859,7 +875,9 @@ final class Coordinator: NSObject {
         // the closure for the same reason as `enqueue`: `jobDispatcher` is still
         // nil while this lazy var is being forced in `init`.
         libraryRunLane: { [weak self] in self?.jobDispatcher },
-        notifyFailure: { [weak self] stem, failure in self?.notifier.notifyFailure(failure, stem: stem) }
+        notifyFailure: { [weak self] stem, failure in self?.notifier.notifyFailure(failure, stem: stem) },
+        // PERF24: retry and delete move the failed set; recount off main before the next open.
+        failedSetMayHaveChanged: { [weak self] in self?.statusBar.refreshFailedMeetingCount() }
     )
 
     /// Config-change responses: eager local-model prefetch, model-download

@@ -1114,6 +1114,25 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertEqual(service.failedMeetingCount(), 0)
     }
 
+    /// PERF24: retry and delete each tell the status menu the failed set may have moved, on every
+    /// exit. Both calls here are refused (no recording, no files), so nothing is enqueued or
+    /// trashed, and the hook still fires: a recount costs one listing off main.
+    func test_retry_and_delete_report_that_the_failed_set_may_have_moved() {
+        var moved = 0
+        let service = MeetingLibraryService(
+            outputDir: { [unowned self] in self.dir },
+            launcher: driver,
+            notifyError: { _ in },
+            enqueue: { _, _ in },
+            originalsDir: { [unowned self] in self.originalsDir },
+            failedSetMayHaveChanged: { moved += 1 }
+        )
+        XCTAssertThrowsError(try service.retryMeeting(stem: "absent").get())
+        XCTAssertEqual(moved, 1)
+        XCTAssertThrowsError(try service.softDeleteMeeting(stem: "absent").get())
+        XCTAssertEqual(moved, 2)
+    }
+
     // MARK: - ask (AI3)
 
     private func decodeAnswer(_ json: String) -> AskAnswer {

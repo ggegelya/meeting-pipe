@@ -150,7 +150,7 @@ The `lazy var` form (`private lazy var icon = …`) avoids the error too but def
 
 ### Status bar / menu rebuilds
 
-Build the menu once per state transition, not per property change. Filter Combine streams to actual value changes (`removeDuplicates`) before triggering `rebuildMenu`. The 2 s permission poll was previously rebuilding the menu twice a second; see the snapshot dedupe in `StatusBarController.init`.
+Build the status menu when it opens, and at no other time. `StatusBarController` assigns one `NSMenu` at init and `menuNeedsUpdate` repopulates it in place; state, queue, permission and download setters update the title and icon and record the state the next open builds for (`rebuildMenu(state:)`, a name UX79's fence keeps), and build nothing. Anything the menu shows that costs a disk listing or a subprocess is a cached value refreshed off main: the open shows the cache, starts the read, and repopulates the open menu only if the value moved (PERF24: the failed count and the launch-agent state). Before PERF24 every setter built a whole menu, listing `raw/` each time, including every 2 s download tick, and the open threw it away; before that the 2 s permission poll rebuilt it twice a second.
 
 ### Tests need full Xcode
 

@@ -294,6 +294,30 @@ final class RestoreFlowTests: XCTestCase {
         XCTAssertEqual(flow.pendingPlan, try fixturePlan())
     }
 
+    /// PERF24: a landed restore tells the status menu to recount its failed row; a failed one
+    /// rewrote nothing it can rely on, and says nothing.
+    func testOnlyALandedRestoreReportsBack() async throws {
+        var restored = 0
+        let driver = FakeDriver()
+        let flow = RestoreFlow(launcher: driver, onRestored: { restored += 1 })
+        flow.preview(archive: URL(fileURLWithPath: "/Users/x/Backups/b.tar.gz"))
+        driver.landPreview(try fixturePlan())
+        await settle()
+        flow.confirm()
+        driver.failRestore("disk full")
+        await settle()
+        XCTAssertEqual(restored, 0)
+
+        flow.dismiss()
+        flow.preview(archive: URL(fileURLWithPath: "/Users/x/Backups/b.tar.gz"))
+        driver.landPreview(try fixturePlan())
+        await settle()
+        flow.confirm()
+        driver.landRestore()
+        await settle()
+        XCTAssertEqual(restored, 1)
+    }
+
     func testTheRealRunIsUnreachableWithoutAConfirmedPlan() async throws {
         let driver = FakeDriver()
         let flow = RestoreFlow(launcher: driver)

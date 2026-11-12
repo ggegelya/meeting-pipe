@@ -158,4 +158,22 @@ final class PipelineJobDispatcherTests: XCTestCase {
         XCTAssertEqual(dispatcher.queueDepth, 1)
         XCTAssertEqual(activities.first?.depth, 1)
     }
+
+    /// PERF24: the status menu recounts its failed row from `onJobSettled`, so it has to fire for
+    /// every way a job lands, including a cancel, which `route` deliberately reports nothing for.
+    func test_every_landing_settles_including_the_silent_ones() {
+        var settled = 0
+        let dispatcher = PipelineJobDispatcher(
+            sinkDispatcher: sink,
+            onDone: { _, _, _ in },
+            onError: { _ in },
+            onQueueActivity: { _ in },
+            onJobSettled: { settled += 1 }
+        )
+        sink.onJobCompleted?(job("/tmp/recordings/a.wav"), .success(nil))
+        sink.onJobCompleted?(job("/tmp/recordings/b.wav"), .failure(NSError(domain: "t", code: 1)))
+        sink.onJobCompleted?(job("/tmp/recordings/c.wav"), .failure(PipelineLauncher.LaunchError.cancelled))
+        XCTAssertEqual(settled, 3, "a cancel reports nothing, and still settles")
+        _ = dispatcher
+    }
 }

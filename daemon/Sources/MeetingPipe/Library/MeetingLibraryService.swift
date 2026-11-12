@@ -110,6 +110,11 @@ final class MeetingLibraryService {
     /// is the pre-PIPE11 behaviour and is only reachable headless or from a test
     /// that does not care about serialization; the Coordinator always wires it.
     private let libraryRunLane: () -> LibraryRunLane?
+    /// PERF24: tells the status menu that the failed set may have moved, so it recounts off
+    /// main before the next open rather than during it. Retry and delete call it; a job's end
+    /// reaches the menu through the dispatcher instead. A no-op by default, like
+    /// `refreshLibrary`, so a headless test need not wire a menu.
+    private let failedSetMayHaveChanged: () -> Void
 
     init(
         outputDir: @escaping () -> URL,
@@ -123,7 +128,8 @@ final class MeetingLibraryService {
             = { _, done in done(.failure(LibraryError.transcriptionUnavailable)) },
         refreshLibrary: @escaping () -> Void = {},
         libraryRunLane: @escaping () -> LibraryRunLane? = { nil },
-        notifyFailure: ((String?, FailurePresentation) -> Void)? = nil
+        notifyFailure: ((String?, FailurePresentation) -> Void)? = nil,
+        failedSetMayHaveChanged: @escaping () -> Void = {}
     ) {
         self.outputDir = outputDir
         self.originalsDir = originalsDir
@@ -135,6 +141,7 @@ final class MeetingLibraryService {
         self.recordCorrection = recordCorrection
         self.enqueueRetranscribe = enqueueRetranscribe
         self.refreshLibrary = refreshLibrary
+        self.failedSetMayHaveChanged = failedSetMayHaveChanged
         self.libraryRunLane = libraryRunLane
     }
 
@@ -183,6 +190,9 @@ final class MeetingLibraryService {
     ///
     /// Fails immediately when the work the chosen path needs is missing (no recording for a full retry, no summary for a publish retry); all other errors surface via the existing pipeline notifier.
     func retryMeeting(stem: String) -> Result<Void, Error> {
+        // Every exit, refused ones included: a recount that finds nothing moved costs one listing
+        // off main, and a missed one leaves the menu's failed row stale until the next open.
+        defer { failedSetMayHaveChanged() }
         let dir = outputDir()
         // SEC25: a stop whose `<stem>.meta.json` write failed kept the recovery manifest, the only
         // other copy of the meeting's routing, and an NDA or on-device meeting was held rather than
@@ -1074,6 +1084,7 @@ final class MeetingLibraryService {
 
     /// Move all sidecars for a stem (audio, transcript, summary, run, meta, notion, obsidian, READY_FOR_MANUAL) to the Trash. The directory watcher picks up the deletes and refreshes the list.
     func softDeleteMeeting(stem: String) -> Result<Void, Error> {
+        defer { failedSetMayHaveChanged() }
         let dir = outputDir()
         let fm = FileManager.default
         let entries: [URL]
@@ -1334,9 +1345,17 @@ final class MeetingLibraryService {
         }
     }
 
-    /// Count of unrecovered pipeline failures. Filename-only scan so it works while the Library window is closed and is cheap enough to run on every menu open.
+    /// Count of unrecovered pipeline failures. Filename-only scan so it works while the Library window is closed.
     func failedMeetingCount() -> Int {
-        let dir = outputDir()
+        Self.failedMeetingCount(in: outputDir())
+    }
+
+    /// The same count for an already-resolved directory, which is what the status menu runs
+    /// off main (PERF24). It lists the whole of `raw/`, about seven entries per meeting, so a
+    /// year of meetings is thousands of entries in a folder that may sync to iCloud: never on
+    /// the main thread, and not per menu rebuild. The directory is resolved by the caller on
+    /// main because `outputDir()` reads `ConfigStore`.
+    static func failedMeetingCount(in dir: URL) -> Int {
         guard let names = try? FileManager.default.contentsOfDirectory(
             atPath: dir.path
         ) else {

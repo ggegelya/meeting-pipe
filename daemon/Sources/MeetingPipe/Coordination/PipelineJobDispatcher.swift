@@ -51,6 +51,11 @@ final class PipelineJobDispatcher: LibraryRunLane {
     private let onStalled: (_ stem: String) -> Void
     private let onPending: ([QueuedJob]) -> Void
     private let onLibraryRun: (LibraryRun?) -> Void
+    /// PERF24: a job has landed, however it landed. Fired after `route` rather than beside
+    /// `onProgressEnded`, because `SinkDispatcher` clears progress first and only then runs the
+    /// job's own completions, so this is the first point at which every sidecar a completion
+    /// might write is on disk. The status menu recounts its failed row from here.
+    private let onJobSettled: () -> Void
 
     init(
         sinkDispatcher: SinkDispatcher,
@@ -62,9 +67,11 @@ final class PipelineJobDispatcher: LibraryRunLane {
         onStalled: @escaping (_ stem: String) -> Void = { _ in },
         onPending: @escaping ([QueuedJob]) -> Void = { _ in },
         onLibraryRun: @escaping (LibraryRun?) -> Void = { _ in },
-        onFailure: ((String, Error) -> Void)? = nil
+        onFailure: ((String, Error) -> Void)? = nil,
+        onJobSettled: @escaping () -> Void = {}
     ) {
         self.sinkDispatcher = sinkDispatcher
+        self.onJobSettled = onJobSettled
         self.onDone = onDone
         self.onError = onError
         self.onFailure = onFailure
@@ -85,6 +92,7 @@ final class PipelineJobDispatcher: LibraryRunLane {
         }
         sinkDispatcher.onJobCompleted = { [weak self] job, result in
             self?.route(job: job, result: result)
+            self?.onJobSettled()
         }
         sinkDispatcher.onActiveProgress = { [weak self] stem, progress in
             self?.onProgress(stem, progress)

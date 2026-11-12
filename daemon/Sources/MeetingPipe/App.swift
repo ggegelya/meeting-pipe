@@ -161,7 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusBar = StatusBarController(item: statusItem)
 
-        // Wire coordinator into the status bar BEFORE setIdle(): NSMenu auto-disables items with a nil target (Cocoa menu validation), which would leave Start Recording / Open greyed out until the next state change.
+        // Wire coordinator into the status bar BEFORE setIdle(): NSMenu auto-disables items with a nil target (Cocoa menu validation), which would leave Start Recording / Open greyed out in a menu populated without one (since PERF24 the menu is populated on open, and the status bar also resolves the recordings directory through this reference).
         coordinator = Coordinator(
             config: config,
             statusBar: statusBar,

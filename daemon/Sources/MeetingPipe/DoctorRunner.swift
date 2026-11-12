@@ -16,31 +16,84 @@ final class DoctorRunner: ObservableObject {
 
     private var process: Process?
 
-    /// Run the daemon self-check probes in-process, then spawn `mp doctor`. The two
+    /// PERF24: the self-check probes, run on `probeQueue` rather than on main. Injected so a
+    /// test can hand in a probe that blocks.
+    private let probes: [DoctorCommand.Probe]
+    private let probeQueue: DispatchQueue
+    /// Where `mp` is. `PipelineLauncher.findMP` in the app; a test passes `{ nil }` so the suite
+    /// never spawns a real `mp doctor`. CONC7 names this same parameter for its spawn drain, so
+    /// the two compose.
+    private let invocation: () -> PipelineLauncher.MPInvocation?
+    /// Bumped by every `run()` and `cancel()`, so a probe result from a run that was cancelled
+    /// (the sheet closed mid-check) or superseded lands nowhere and spawns nothing.
+    private var runToken = 0
+    /// The current run's failed probes, for the self-check's verdict line.
+    private var hardFails = 0
+
+    init(
+        probes: [DoctorCommand.Probe] = DoctorCommand.daemonSelfCheckProbes(),
+        probeQueue: DispatchQueue = DispatchQueue.global(qos: .utility),
+        invocation: @escaping () -> PipelineLauncher.MPInvocation? = { PipelineLauncher.findMP() }
+    ) {
+        self.probes = probes
+        self.probeQueue = probeQueue
+        self.invocation = invocation
+    }
+
+    /// Run the daemon self-check probes, then spawn `mp doctor`. The two
     /// halves are complementary: the Swift probes cover AX trust, TCC permissions,
     /// per-app reachability, events writability, and the orphan scan (things
     /// `mp doctor` cannot see); `mp doctor` covers credentials, network, and the
     /// pipeline (UX20). No-op if already running.
+    ///
+    /// PERF24: the probes run on `probeQueue`, never on main. They used to run inline under a
+    /// "fast, in-process" comment, which holds on a healthy Mac and not with a hung meeting app,
+    /// where each AX read waits out the process-wide 2 s messaging timeout, and a doctor run is
+    /// what the owner reaches for when something is already wrong. Each result comes back to
+    /// main in probe order (one serial loop, each hop a FIFO `DispatchQueue.main.async`), where
+    /// its line is appended and its event emitted, so the sheet fills in as the probes finish in
+    /// the order it always had. `mp doctor` spawns after the last one.
     func run() {
         guard state != .running else { return }
         state = .running
+        runToken &+= 1
+        hardFails = 0
+        let token = runToken
 
-        // Daemon self-check first (fast, in-process). Its FAIL/WARN lines are
-        // visible in the sheet; the exit badge tracks `mp doctor`.
-        var lines = ["== Daemon self-check =="]
-        DoctorCommand.execute(
-            probes: DoctorCommand.daemonSelfCheckProbes(),
-            writer: { lines.append($0) }
-        )
+        // The self-check's FAIL/WARN lines are visible in the sheet; the exit badge tracks
+        // `mp doctor`.
+        output = "== Daemon self-check ==\n"
+        let probes = self.probes
+        probeQueue.async {
+            for probe in probes {
+                let result = probe.run()
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated { self?.appendProbeResult(result, token: token) }
+                }
+            }
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.finishSelfCheck(token: token) }
+            }
+        }
+    }
+
+    private func appendProbeResult(_ result: DoctorCommand.ProbeResult, token: Int) {
+        guard token == runToken else { return }
+        output.append(DoctorCommand.record(result) + "\n")
+        if result.status == .fail { hardFails += 1 }
+    }
+
+    private func finishSelfCheck(token: Int) {
+        guard token == runToken else { return }
+        var lines = DoctorCommand.summaryLines(hardFails: hardFails)
         lines.append("")
         lines.append("== mp doctor ==")
-        output = lines.joined(separator: "\n") + "\n"
-
+        output.append(lines.joined(separator: "\n") + "\n")
         spawnMPDoctor()
     }
 
     private func spawnMPDoctor() {
-        guard let mp = PipelineLauncher.findMP() else {
+        guard let mp = invocation() else {
             output.append("mp launcher not found. Did you run scripts/install.sh?\n")
             state = .finished(exitCode: -1)
             return
@@ -91,7 +144,10 @@ final class DoctorRunner: ObservableObject {
     }
 
     /// Cancel an in-flight run (called when the user closes the sheet before the doctor finishes).
+    /// Also stands down a self-check still on `probeQueue`: its results land nowhere and it
+    /// spawns no `mp doctor`.
     func cancel() {
+        runToken &+= 1
         process?.terminate()
         process = nil
         if state == .running {

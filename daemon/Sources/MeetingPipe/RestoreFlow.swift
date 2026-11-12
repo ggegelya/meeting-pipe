@@ -208,9 +208,13 @@ final class RestoreFlow: ObservableObject {
     @Published private(set) var phase: Phase = .idle
 
     private let launcher: PipelineDriver
+    /// PERF24: a restore rewrote the library, so the status menu recounts its failed row off
+    /// main. Called on main, after the phase moves to `.finished`.
+    private let onRestored: () -> Void
 
-    init(launcher: PipelineDriver) {
+    init(launcher: PipelineDriver, onRestored: @escaping () -> Void = {}) {
         self.launcher = launcher
+        self.onRestored = onRestored
     }
 
     /// True while either invocation is out, which is what blocks a backup.
@@ -272,6 +276,7 @@ final class RestoreFlow: ObservableObject {
                 switch result {
                 case .success:
                     self.phase = .finished(RestorePreview.summary(for: plan))
+                    self.onRestored()
                 case .failure(let error):
                     self.phase = .failed("Restore failed: \(PipelineLauncher.diagnostics(for: error))")
                 }

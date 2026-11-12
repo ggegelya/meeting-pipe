@@ -22,9 +22,10 @@ enum DoctorCommand {
     }
 
     /// Named probe closure. Explicit type (vs a tuple) keeps the `defaultProbes()` list literal readable.
+    /// `@Sendable` because the in-app doctor runs the list off main (PERF24).
     struct Probe {
         let name: String
-        let run: () -> ProbeResult
+        let run: @Sendable () -> ProbeResult
     }
 
     // MARK: - Public entry points
@@ -43,21 +44,29 @@ enum DoctorCommand {
         var hardFails = 0
         for probe in probes {
             let result = probe.run()
-            writer(formatLine(result))
-            Log.event(category: "doctor", action: "probe", attributes: [
-                "name": result.name,
-                "status": result.status.rawValue,
-                "message": result.message,
-            ])
+            writer(record(result))
             if result.status == .fail { hardFails += 1 }
         }
-        writer("")
-        if hardFails == 0 {
-            writer("doctor: all probes passed.")
-            return 0
-        }
-        writer("doctor: \(hardFails) probe\(hardFails == 1 ? "" : "s") failed.")
-        return 1
+        for line in summaryLines(hardFails: hardFails) { writer(line) }
+        return hardFails == 0 ? 0 : 1
+    }
+
+    /// The per-result step, shared with `DoctorRunner`, which runs the probes off main and
+    /// hands each result back to main for this (PERF24): emits the probe event and returns the
+    /// marker line.
+    static func record(_ result: ProbeResult) -> String {
+        Log.event(category: "doctor", action: "probe", attributes: [
+            "name": result.name,
+            "status": result.status.rawValue,
+            "message": result.message,
+        ])
+        return formatLine(result)
+    }
+
+    /// The blank line and the verdict that close a run.
+    static func summaryLines(hardFails: Int) -> [String] {
+        if hardFails == 0 { return ["", "doctor: all probes passed."] }
+        return ["", "doctor: \(hardFails) probe\(hardFails == 1 ? "" : "s") failed."]
     }
 
     static func formatLine(_ r: ProbeResult) -> String {
@@ -75,18 +84,18 @@ enum DoctorCommand {
     /// Built-in probe list. Permission probes run first - a missing TCC grant masks all downstream probes.
     static func defaultProbes() -> [Probe] {
         var out: [Probe] = [
-            Probe(name: "accessibility.trusted", run: probeAXTrust),
-            Probe(name: "permission.screen_recording", run: probeScreenRecording),
-            Probe(name: "permission.microphone", run: probeMicrophone),
+            Probe(name: "accessibility.trusted", run: { probeAXTrust() }),
+            Probe(name: "permission.screen_recording", run: { probeScreenRecording() }),
+            Probe(name: "permission.microphone", run: { probeMicrophone() }),
         ]
         for bundleID in knownMeetingBundleIDs {
             out.append(Probe(name: "ax.app.\(bundleID)") { probeAppReachable(bundleID: bundleID) })
         }
         out.append(Probe(name: "app.resources", run: { probeResources() }))
-        out.append(Probe(name: "pipeline.binary", run: probePipelineBinary))
-        out.append(Probe(name: "pipeline.roundtrip", run: probePipelineRoundtrip))
-        out.append(Probe(name: "events.writable", run: probeEventsWritable))
-        out.append(Probe(name: "library.orphans", run: probeOrphans))
+        out.append(Probe(name: "pipeline.binary", run: { probePipelineBinary() }))
+        out.append(Probe(name: "pipeline.roundtrip", run: { probePipelineRoundtrip() }))
+        out.append(Probe(name: "events.writable", run: { probeEventsWritable() }))
+        out.append(Probe(name: "library.orphans", run: { probeOrphans() }))
         out.append(Probe(name: "search.index", run: { probeSearchIndex() }))
         return out
     }
@@ -94,20 +103,23 @@ enum DoctorCommand {
     /// The probes unique to the daemon (AX trust, TCC permissions, resource bundles, per-app AX
     /// reachability, events writability, orphan scan) - the ones `mp doctor`
     /// cannot run. Excludes the `pipeline.*` probes, which the Preferences doctor
-    /// already exercises by spawning `mp doctor` alongside this (UX20 fold). Fast
-    /// enough to run inline on the main thread (no `pipeline.roundtrip` spawn).
+    /// already exercises by spawning `mp doctor` alongside this (UX20 fold). No
+    /// `pipeline.roundtrip` spawn, but not cheap enough for the main thread either:
+    /// each running meeting app costs an AX round-trip (up to the process-wide 2 s
+    /// messaging timeout when the app is hung), plus a `raw/` scan and a second
+    /// SQLite connection, so `DoctorRunner` runs the list on a utility queue (PERF24).
     static func daemonSelfCheckProbes() -> [Probe] {
         var out: [Probe] = [
-            Probe(name: "accessibility.trusted", run: probeAXTrust),
-            Probe(name: "permission.screen_recording", run: probeScreenRecording),
-            Probe(name: "permission.microphone", run: probeMicrophone),
+            Probe(name: "accessibility.trusted", run: { probeAXTrust() }),
+            Probe(name: "permission.screen_recording", run: { probeScreenRecording() }),
+            Probe(name: "permission.microphone", run: { probeMicrophone() }),
         ]
         for bundleID in knownMeetingBundleIDs {
             out.append(Probe(name: "ax.app.\(bundleID)") { probeAppReachable(bundleID: bundleID) })
         }
         out.append(Probe(name: "app.resources", run: { probeResources() }))
-        out.append(Probe(name: "events.writable", run: probeEventsWritable))
-        out.append(Probe(name: "library.orphans", run: probeOrphans))
+        out.append(Probe(name: "events.writable", run: { probeEventsWritable() }))
+        out.append(Probe(name: "library.orphans", run: { probeOrphans() }))
         out.append(Probe(name: "search.index", run: { probeSearchIndex() }))
         return out
     }

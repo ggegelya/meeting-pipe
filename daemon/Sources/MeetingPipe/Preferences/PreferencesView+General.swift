@@ -37,14 +37,25 @@ final class LaunchAtLoginModel: ObservableObject {
     @Published private(set) var isBusy = false
 
     private let service: LaunchAtLoginService
+    /// PERF24: every reading this model takes, initial, refreshed or written, goes to the
+    /// status menu too, which caches the state rather than spawning `launchctl` on main per
+    /// open. The toggle here is the common way it changes, so the menu learns a write with no
+    /// read of its own.
+    private let onStatus: (LaunchAtLoginStatus) -> Void
 
     /// The initial read is still synchronous, and stays that way on purpose: the
     /// alternative is a placeholder state rendered before the machine has been
     /// asked, which is the control-lies-about-launchd defect UX42 removed. It is
     /// one bounded `print-disabled` at view construction, not a write.
-    init(service: LaunchAtLoginService = LaunchAtLoginService()) {
+    init(
+        service: LaunchAtLoginService = LaunchAtLoginService(),
+        onStatus: @escaping (LaunchAtLoginStatus) -> Void = { _ in }
+    ) {
         self.service = service
-        self.status = service.status()
+        self.onStatus = onStatus
+        let initial = service.status()
+        self.status = initial
+        onStatus(initial)
     }
 
     /// Re-take the reading. Called when the pane appears; a no-op while a call is
@@ -76,6 +87,7 @@ final class LaunchAtLoginModel: ObservableObject {
             }.value
             self.status = result
             self.isBusy = false
+            self.onStatus(result)
             guard let requested,
                   let refusal = LaunchAtLoginRefusal.decide(requested: requested, status: result)
             else { return }
@@ -96,7 +108,14 @@ final class LaunchAtLoginModel: ObservableObject {
 struct GeneralSectionView: View {
     @ObservedObject var store: ConfigStore
     @ObservedObject private var ui = UISettings.shared
-    @StateObject private var launchAtLogin = LaunchAtLoginModel()
+    @StateObject private var launchAtLogin: LaunchAtLoginModel
+
+    init(store: ConfigStore, onLaunchAtLoginStatus: ((LaunchAtLoginStatus) -> Void)? = nil) {
+        self.store = store
+        _launchAtLogin = StateObject(wrappedValue: LaunchAtLoginModel(
+            onStatus: onLaunchAtLoginStatus ?? { _ in }
+        ))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

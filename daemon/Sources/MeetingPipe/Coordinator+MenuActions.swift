@@ -126,9 +126,10 @@ extension Coordinator {
     // middle man, not a boundary. What survives below is what is genuinely the
     // Coordinator's: the job dispatcher and the config store.
     //
-    // `recentCorrectableMeetings` / `failedMeetingCount` further down stay, because
-    // `StatusBarController` (not the Library window) is their caller and it holds a
-    // Coordinator, not a service.
+    // `recentCorrectableMeetings` further down stays, because `StatusBarController`
+    // (not the Library window) is its caller and it holds a Coordinator, not a service.
+    // The failed count left in PERF24: the menu counts off main itself, through
+    // `MeetingLibraryService.failedMeetingCount(in:)`.
 
     /// Cancel the active pipeline subprocess (TECH-UX5). Offered for any running
     /// job since UX28, not only a stalled one.
@@ -253,14 +254,11 @@ extension Coordinator {
         library.recentCorrectableMeetings(limit: limit)
     }
 
-    func failedMeetingCount() -> Int {
-        library.failedMeetingCount()
-    }
-
     /// Assemble the "Finish setup" checklist snapshot (UX22) from the same
     /// signals `mp doctor` reads: config, workflows, secrets, permissions, and
     /// the local-model cache. Called by `StatusBarController` on each menu
-    /// rebuild; all in-memory except `isModelMissing()` (a bounded cache scan).
+    /// open (PERF24: no longer per rebuild); all in-memory except `isModelMissing()`
+    /// (a bounded cache scan).
     /// Nil stores (headless/test) read as "configured", so no phantom items.
     func setupChecklistInputs() -> SetupChecklist.Inputs {
         let center = PermissionsCenter.shared

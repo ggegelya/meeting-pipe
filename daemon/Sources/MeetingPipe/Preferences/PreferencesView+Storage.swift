@@ -28,12 +28,14 @@ struct StorageSectionView: View {
     // the two never run together (see `busy`), and a spawner is stateless.
     @StateObject private var restore: RestoreFlow
 
-    init(store: ConfigStore, workflowStore: WorkflowStore) {
+    init(store: ConfigStore, workflowStore: WorkflowStore, onRestored: (() -> Void)? = nil) {
         self.store = store
         _stats = StateObject(wrappedValue: StorageStatsStore(
             configStore: store, workflowStore: workflowStore
         ))
-        _restore = StateObject(wrappedValue: RestoreFlow(launcher: PipelineLauncher()))
+        _restore = StateObject(wrappedValue: RestoreFlow(
+            launcher: PipelineLauncher(), onRestored: onRestored ?? {}
+        ))
     }
 
     /// STOR5: one gate over both long jobs, so neither can start while the other

@@ -1,4 +1,4 @@
-// MenuBarDropdown - recreates StatusBarController.swift's rebuildMenu()
+// MenuBarDropdown - recreates StatusBarController.swift's populateMenu()
 // for the four primary states: idle, recording, prompting, suppressed.
 //
 // DSN21 "Instrument" touches the recording/idle rows only: the coral recording

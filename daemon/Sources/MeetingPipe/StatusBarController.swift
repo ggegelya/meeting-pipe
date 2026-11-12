@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 
 /// Owns the NSStatusItem and its menu, and mirrors state to the menu bar.
 final class StatusBarController {
@@ -20,8 +19,8 @@ final class StatusBarController {
     /// ARCH6 removed the property, so this is the whole condition now.
     private var regulatedMode: Bool = false
 
-    /// Last state a menu was built for, so a permission-driven rebuild
-    /// doesn't need the caller to re-supply it.
+    /// The state the next open builds the menu for. Every state setter writes it through
+    /// `rebuildMenu(state:)`; only `refreshMenuBeforeDisplay` reads it (PERF24).
     private var lastMenuState: AppState = .idle
 
     /// The state the title and the icon are showing.
@@ -30,8 +29,8 @@ final class StatusBarController {
     /// as `.idle` while the title read "Stopping…". UX79 removed that split: every setter now
     /// writes this field and hands `rebuildMenu` the same value, so the two agree in every path.
     /// The fields are still separate because collapsing them touches every `rebuildMenu` caller,
-    /// including the three that pass `lastMenuState` for a permission-driven rebuild, and that is
-    /// a refactor with its own blast radius rather than part of this fix.
+    /// including the ones that pass `lastMenuState` back to itself, and that is a refactor with
+    /// its own blast radius rather than part of this fix.
     private var titleState: AppState = .idle
 
     /// The workflow whose clause the recording title carries (TECH-B5). Only read while
@@ -59,64 +58,84 @@ final class StatusBarController {
     private var suppressedIsActive: (() -> Bool)?
     private static let suppressedRecheckInterval: TimeInterval = 5
 
-    /// Delegate for the "Recent meetings" submenu; populates on
-    /// `menuNeedsUpdate` so a rebuild doesn't pay a dir scan for a submenu
-    /// the user rarely opens.
+    /// Delegate for the "Recent meetings" submenu; populates on its own
+    /// `menuNeedsUpdate` so opening the top menu doesn't pay a dir scan for a
+    /// submenu the user rarely opens.
     private var recentMeetingsDelegate: RecentMeetingsMenuDelegate?
 
     /// Top-level menu delegate; re-probes permissions just before showing so
     /// the warning row reflects a just-granted permission.
     private let menuDelegate = StatusMenuDelegate()
 
-    /// Rebuild the menu when any permission flips, so the warning row
-    /// appears/disappears without waiting for a state change.
-    private var permissionsCancellable: AnyCancellable?
+    /// The one menu, assigned to the item once and repopulated in place by every open
+    /// (PERF24). It used to be replaced by a freshly built `NSMenu` on every state, queue,
+    /// permission and download change, each built and then discarded unseen, since the open
+    /// repopulated whatever it found anyway.
+    private let menu = NSMenu()
+
+    /// Between `menuNeedsUpdate` and `menuDidClose`. Only a read landing off main looks at it:
+    /// a changed value repopulates the menu while it is on screen, and nothing else does.
+    private var menuIsOpen = false
 
     /// UX55: whether the `com.meetingpipe.daemon` agent is enabled, which is what
-    /// decides whether a plain Quit can be undone by a relaunch at all. Cached
-    /// rather than read where it is used, because reading it shells out to
-    /// `launchctl`: `populateMenu` also runs on every model-download progress tick
-    /// and every processing-count change, so an inline read would be a subprocess
-    /// per tick on the main queue. `refreshMenuBeforeDisplay` re-reads it, and
-    /// AppKit calls that before every display of this menu, so what the user is
-    /// looking at is never stale. Optimistic until that first read, which is the
-    /// pre-UX55 behaviour and only ever visible in a menu nobody has opened.
-    private var launchAgentEnabled: Bool = true
-    private let launchAtLogin = LaunchAtLoginService()
+    /// decides whether a plain Quit can be undone by a relaunch at all.
+    ///
+    /// PERF24: cached, and never read on main. Reading it spawns `launchctl`, which a busy
+    /// launchd (a `rebuild.sh` mid-flight, 2026-08-04) holds for up to UX67's 5 s ceiling, and
+    /// the open used to pay that inline with the hotkeys frozen behind it. Now the open shows
+    /// this value and starts an off-main read that repopulates the open menu if launchd says
+    /// otherwise, so a change made in a terminal or by `install.sh` still lands within the same
+    /// open. Preferences pushes what it has just written through `noteLaunchAtLoginStatus`.
+    /// Optimistic until the launch read lands, which is the pre-UX55 behaviour.
+    private(set) var launchAgentEnabled: Bool = true
+    private let launchAtLogin: LaunchAtLoginService
+    private var launchAgentReadInFlight = false
+    /// Bumped by every push, so a read that started before the push cannot land over it.
+    private var launchAgentPushes = 0
+    private let launchAgentQueue: DispatchQueue
 
-    /// Permission snapshot for `removeDuplicates`, so the menu rebuilds on
-    /// real value changes rather than every `objectWillChange` (per-property,
-    /// 2 s poll).
-    private struct PermissionsSnapshot: Equatable {
-        let microphone: PermissionsCenter.Status
-        let screenRecording: PermissionsCenter.Status
-        let accessibility: PermissionsCenter.Status
-        let notifications: PermissionsCenter.Status
-    }
+    /// PERF24: the failed-meetings row's count, recounted off main at launch, when a job
+    /// settles, on retry, delete and restore, and on each open (which shows this value and
+    /// repopulates in place if the recount differs). It used to list all of `raw/` on main on
+    /// every open and every rebuild, including every 2 s download tick.
+    private var failedMeetingCount = 0
+    private let countFailedMeetings: @Sendable (URL) -> Int
+    /// Serial, so recounts land in the order they were asked for and the last one wins.
+    private let countQueue: DispatchQueue
+    /// Where to count. Resolved on main, since the live output directory reads `ConfigStore`;
+    /// the Coordinator's by default, replaced by tests.
+    var recordingsDir: () -> URL? = { nil }
 
-    init(item: NSStatusItem) {
+    /// - Parameters:
+    ///   - launchAtLogin: the launch-agent reader; a fake runner in tests.
+    ///   - countFailedMeetings: the `raw/` listing, run on `countQueue`.
+    init(
+        item: NSStatusItem,
+        launchAtLogin: LaunchAtLoginService = LaunchAtLoginService(),
+        countFailedMeetings: @escaping @Sendable (URL) -> Int = { MeetingLibraryService.failedMeetingCount(in: $0) },
+        countQueue: DispatchQueue = DispatchQueue(label: "MeetingPipe.StatusMenu.failedCount", qos: .utility),
+        launchAgentQueue: DispatchQueue = DispatchQueue(label: "MeetingPipe.StatusMenu.launchAgent", qos: .utility)
+    ) {
         self.item = item
+        self.launchAtLogin = launchAtLogin
+        self.countFailedMeetings = countFailedMeetings
+        self.countQueue = countQueue
+        self.launchAgentQueue = launchAgentQueue
         if let button = item.button {
             button.image = idleIcon
             button.imagePosition = .imageLeft
         }
-        let center = PermissionsCenter.shared
-        // Dedupe permission snapshots so the menu rebuilds only on a real
-        // change; subscribing to `objectWillChange` rebuilt it ~twice a
-        // second (4+ commits per 2 s poll tick).
-        permissionsCancellable = Publishers.CombineLatest4(
-            center.$microphone,
-            center.$screenRecording,
-            center.$accessibility,
-            center.$notifications
-        )
-        .map(PermissionsSnapshot.init(microphone:screenRecording:accessibility:notifications:))
-        .removeDuplicates()
-        .dropFirst()   // menu is built lazily on the first state setter
-        .receive(on: DispatchQueue.main)
-        .sink { [weak self] _ in self?.refreshMenuForPermissionChange() }
-
+        // No permission subscription any more: it existed to rebuild the menu on a flip, and
+        // the open re-probes permissions and repopulates, which is all the rebuild bought.
         menuDelegate.controller = self
+        menu.delegate = menuDelegate
+        // A row so the menu is never empty before its first `menuNeedsUpdate`; the first open
+        // replaces it.
+        let placeholder = NSMenuItem(title: "MeetingPipe", action: nil, keyEquivalent: "")
+        placeholder.isEnabled = false
+        menu.addItem(placeholder)
+        item.menu = menu
+        recordingsDir = { [weak self] in self?.coordinator?.liveOutputDir }
     }
 
     /// Reflect a `regulatedMode` change; the glyph renders in `applyTitle()`.
@@ -382,8 +401,9 @@ final class StatusBarController {
         return img
     }
 
-    /// Rebuild the menu against the last-rendered state, so a permission flip
-    /// shows/hides the warning row without a state transition.
+    /// A permission flipped. There is nothing to build: the next open re-probes permissions
+    /// and repopulates, which is when the warning row is looked at (PERF24). Kept because it
+    /// is `SessionHost`'s seam and the Coordinator's permission paths call it.
     func refreshMenuForPermissionChange() {
         rebuildMenu(state: lastMenuState)
     }
@@ -408,7 +428,7 @@ final class StatusBarController {
             screenRecording: center.screenRecording,
             accessibility: center.accessibility,
             screenRecordingCaptureDenied: SystemAudioCapture.permissionState == .denied,
-            failedMeetingCount: coordinator?.failedMeetingCount() ?? 0,
+            failedMeetingCount: failedMeetingCount,
             finishSetupTitle: finishSetupTitle,
             disableAutoRestart: UISettings.shared.disableAutoRestart,
             launchAgentEnabled: launchAgentEnabled,
@@ -416,24 +436,101 @@ final class StatusBarController {
         )
     }
 
+    /// Record the state the next open builds the menu for. It builds nothing (PERF24).
+    ///
+    /// The name is what it did until PERF24: build a fresh `NSMenu`, populate it and hand it to
+    /// the item, on every state, queue, permission and download change, for a menu the open
+    /// then repopulated anyway, so nobody ever saw one. It keeps the name because UX79's fence
+    /// pins `setStopping`'s call to it, and that call still has to hand over the state the title
+    /// shows, which now reaches the next open. A menu that is open when a setter runs keeps what
+    /// it showed, as it did when the setter replaced it with a menu not on screen.
     private func rebuildMenu(state: AppState) {
         lastMenuState = state
-        let menu = NSMenu()
-        menu.delegate = menuDelegate
-        populateMenu(menu, state: state)
-        item.menu = menu
     }
 
-    /// Re-probe permissions then repopulate in place (via
-    /// `menuNeedsUpdate`), so opening the menu reflects a just-made grant.
+    /// Re-probe permissions then repopulate in place (via `menuNeedsUpdate`), so opening the
+    /// menu reflects a just-made grant.
     ///
-    /// UX55 re-reads the launch agent here for the same reason: Preferences ▸ General
-    /// ▸ Launch at login can flip between two opens, and so can a `launchctl` in a
-    /// terminal or an `install.sh` run, so the quit rows are decided against launchd
-    /// as the user looks at them rather than against a value cached at launch.
+    /// UX55 decides the quit rows against launchd as the user looks at them, since Preferences
+    /// ▸ General ▸ Launch at login, a `launchctl` in a terminal or an `install.sh` run can each
+    /// change the agent between two opens. PERF24 keeps that without the subprocess on main: the
+    /// open shows the cached value, and the read it starts here repopulates this menu in place
+    /// if launchd disagrees. The failed count works the same way. Nothing here touches disk or
+    /// spawns anything on main bar `finishSetupItems`' config, secrets and model-cache reads.
     fileprivate func refreshMenuBeforeDisplay(_ menu: NSMenu) {
+        menuIsOpen = true
         PermissionsCenter.shared.refreshMenuRelevantSync()
-        launchAgentEnabled = launchAtLogin.status().isOn
+        populateMenu(menu, state: lastMenuState)
+        refreshLaunchAgentState()
+        refreshFailedMeetingCount()
+    }
+
+    fileprivate func menuDidClose() {
+        menuIsOpen = false
+    }
+
+    // MARK: - Reads that stay off main (PERF24)
+
+    /// The launch-time reads, so the first open shows launchd's answer and a real count rather
+    /// than the optimistic defaults. Called from `Coordinator.start()`.
+    func primeCachedReads() {
+        refreshLaunchAgentState()
+        refreshFailedMeetingCount()
+    }
+
+    /// Recount the failed meetings on `countQueue`. The count lands on main, and a changed one
+    /// repopulates the menu if it is open; a closed menu picks it up on its next open.
+    func refreshFailedMeetingCount() {
+        guard let dir = recordingsDir() else { return }
+        let count = countFailedMeetings
+        countQueue.async {
+            let n = count(dir)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, n != self.failedMeetingCount else { return }
+                self.failedMeetingCount = n
+                self.repopulateIfOpen()
+            }
+        }
+    }
+
+    /// Read the launch agent on `launchAgentQueue`. One read at a time: a wedged `launchctl`
+    /// holds its read for up to `ProcessLaunchctl.ceilingSeconds`, and stacking another behind it
+    /// on every open would only queue subprocesses.
+    private func refreshLaunchAgentState() {
+        guard !launchAgentReadInFlight else { return }
+        launchAgentReadInFlight = true
+        let pushesAtStart = launchAgentPushes
+        let launchAtLogin = self.launchAtLogin
+        launchAgentQueue.async {
+            let isOn = launchAtLogin.status().isOn
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.launchAgentReadInFlight = false
+                // A Preferences write landed while this read was out, and it is the newer fact.
+                guard pushesAtStart == self.launchAgentPushes else { return }
+                self.applyLaunchAgentEnabled(isOn)
+            }
+        }
+    }
+
+    /// What Preferences ▸ General has just read or written, pushed so the menu learns it without
+    /// a `launchctl` read of its own (PERF24). Main only.
+    func noteLaunchAtLoginStatus(_ status: LaunchAtLoginStatus) {
+        launchAgentPushes &+= 1
+        applyLaunchAgentEnabled(status.isOn)
+    }
+
+    private func applyLaunchAgentEnabled(_ isOn: Bool) {
+        guard isOn != launchAgentEnabled else { return }
+        launchAgentEnabled = isOn
+        repopulateIfOpen()
+    }
+
+    /// A value read off main changed while the menu may be on screen. Repopulates the whole menu
+    /// rather than patching one row, because the failed row and the quit row each appear and
+    /// disappear with their group's divider; it happens only when a value actually moved.
+    private func repopulateIfOpen() {
+        guard menuIsOpen else { return }
         populateMenu(menu, state: lastMenuState)
     }
 
@@ -449,8 +546,9 @@ final class StatusBarController {
         menu.removeAllItems()
 
         // Decided once and passed down: `setupChecklistInputs()` reads config, secrets
-        // and the model cache, and this runs on every download tick and processing-count
-        // change, so the title and the submenu share one evaluation.
+        // and the model cache, so the title and the submenu share one evaluation. Since
+        // PERF24 this runs on an open (and on a value read off main changing while open),
+        // never on a download tick or a processing-count change.
         let setupItems = finishSetupItems()
         let inputs = menuInputs(
             state: state,
@@ -641,9 +739,10 @@ final class StatusBarController {
         // TECH-END4 (c): Accessibility is what lets the app read a meeting app's
         // windows and controls at all, so denying it costs the whole detection path,
         // start included (DET11), and the user otherwise has no signal. Called out
-        // specifically beyond the generic permission rows above. The PermissionsSnapshot
-        // sink rebuilds this menu when AX flips, so the row appears/clears on its own
-        // (the audit showed AX is usually a transient launch race that recovers, so
+        // specifically beyond the generic permission rows above. Every open re-probes
+        // permissions before populating, so the row appears/clears on its own (PERF24
+        // retired the permission sink that used to rebuild for this; the audit showed
+        // AX is usually a transient launch race that recovers, so
         // there is deliberately no title glyph).
         case .accessibilityDegraded:
             menu.addItem(actionRow(
@@ -791,6 +890,10 @@ private final class StatusMenuDelegate: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         controller?.refreshMenuBeforeDisplay(menu)
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        controller?.menuDidClose()
     }
 }
 

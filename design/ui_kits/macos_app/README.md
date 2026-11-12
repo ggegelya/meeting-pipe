@@ -6,7 +6,7 @@ The kit covers the surfaces that ship today, plus one anticipated near-future su
 
 | Component | Maps to | Source of truth |
 |---|---|---|
-| `MenuBarDropdown.jsx` | `StatusBarController.swift` | the `rebuildMenu()` function |
+| `MenuBarDropdown.jsx` | `StatusBarController.swift` | the `populateMenu()` function |
 | `MeetingPrompt.jsx` | `MeetingPromptWindow.swift` | the 600×64 horizontal `NSPanel` pill + the `⌄` chevron menu |
 | `Notification.jsx` | `Notifier.swift` | `notifyDone` / `notifyRecordingStarted` / `notifyFailure` copy and routes |
 | `PreferencesWindow.jsx` | `Preferences/PreferencesView.swift` + the per-section files | the 820×660 `NavigationSplitView` (General / Recording / Prompt / Pipeline / Integrations / Permissions / Advanced), floor 780×660 |

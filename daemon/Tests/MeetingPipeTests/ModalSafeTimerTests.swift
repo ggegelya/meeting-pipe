@@ -114,7 +114,7 @@ final class ModalSafeTimerTests: XCTestCase {
         "MeetingPipe/ConfigStore.swift": (1, "debounced save; firing after the alert closes is harmless (CONC8 is reshaping it)"),
         "MeetingPipe/SecretsStore.swift": (1, "debounced save; firing after the alert closes is harmless (CONC8 is reshaping it)"),
         "MeetingPipe/GlossaryStore.swift": (1, "debounced save; firing after the alert closes is harmless (CONC8 is reshaping it)"),
-        "MeetingPipe/StatusBarController.swift": (2, "the Suppressed and Downloaded labels; a late collapse is cosmetic, and rebuilding the menu while it is open is what default mode avoids"),
+        "MeetingPipe/StatusBarController.swift": (2, "the Suppressed and Downloaded labels; a late collapse is cosmetic, and touching the title while the menu is open is what default mode avoids"),
         "MeetingPipe/Coordination/SinkDispatcher.swift": (1, "startStallTracking is an elapsed-time check, so a late fire still reports the stall correctly"),
         "MeetingPipe/AudioPlaybackController.swift": (1, "already re-added with RunLoop.main.add(_, forMode: .common) on the next line"),
         "MeetingPipe/PermissionsCenter.swift": (1, "already re-added with RunLoop.main.add(_, forMode: .common) on the next line"),

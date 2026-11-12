@@ -237,8 +237,11 @@ struct LaunchAtLoginService: Sendable {
 /// pane is open, which is exactly when `bootstrap` and `print` on that domain
 /// block. The watchdog kills the child at the ceiling, which unblocks the read and
 /// the wait together and leaves a non-zero status the callers already know how to
-/// report. `LaunchAtLoginModel` also keeps these calls off the main thread; this
-/// bound is the second half, so a caller that forgets still cannot hang forever.
+/// report. Both callers also keep these calls off the main thread: `LaunchAtLoginModel`
+/// on a detached task, and the status menu on its own utility queue since PERF24 (it
+/// used to read inline on main at every open, which this bound alone left able to freeze
+/// the hotkeys for the full ceiling). This bound is the second half, so a caller that
+/// forgets still cannot hang forever.
 struct ProcessLaunchctl: LaunchctlRunning {
     /// Generous against a slow `print-disabled` on a machine with many agents,
     /// and short enough that a wedged call is over before a person gives up on

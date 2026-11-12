@@ -19,6 +19,11 @@ final class PreferencesWindow {
     /// window is built, which is enough: `LocalModelPreflight` is a struct of
     /// closures that read live state on each call.
     var localModelPreflightProvider: (() -> LocalModelPreflight?)?
+    /// PERF24: what the General pane's launch-at-login model has just read or written, for the
+    /// status menu, which caches that state instead of spawning `launchctl` on main per open.
+    var onLaunchAtLoginStatus: ((LaunchAtLoginStatus) -> Void)?
+    /// PERF24: a restore landed, so the status menu recounts its failed row off main.
+    var onLibraryRestored: (() -> Void)?
 
     init(store: ConfigStore, secrets: SecretsStore, workflows: WorkflowStore) {
         self.store = store
@@ -56,7 +61,9 @@ final class PreferencesWindow {
             secrets: secrets,
             workflows: workflows,
             selectionState: selectionState,
-            localModelPreflight: localModelPreflightProvider?()
+            localModelPreflight: localModelPreflightProvider?(),
+            onLaunchAtLoginStatus: onLaunchAtLoginStatus,
+            onLibraryRestored: onLibraryRestored
         )
         let host = NSHostingController(rootView: MPControlAccent(view))
         let w = NSWindow(contentViewController: host)

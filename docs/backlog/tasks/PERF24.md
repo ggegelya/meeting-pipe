@@ -2,9 +2,10 @@
 id: PERF24
 title: The status menu spawns launchctl and lists the whole recordings folder on the main thread at every open, rebuilds and discards the whole menu on every queue, state and download tick, and the in-app doctor runs its self-check on main
 category: Performance
-status: new
+status: done
+closed: 2026-11-12
 priority: P2
-comment: Filed 2026-10-25 from the performance review. menuNeedsUpdate runs launchctl print-disabled on main (bounded only by UX67's 5 s kill, which a busy launchd during rebuild.sh reached on 2026-08-04) and failedMeetingCount lists all of raw/ on main; rebuildMenu repeats the listing and the model-cache scan on every state change, queue change and 2 s download tick for a menu nobody opens. raw/ holds about 7 files per meeting (61 for 9 stems on 2026-10-25), so 5k to 20k entries after a year. The in-app doctor's self-check (AX reads of running meeting apps, a raw/ scan, a second SQLite connection) also runs on the main actor. Scope: populate only on open, a cached off-main failed count, an off-main launch-agent read updated in place, doctor probes off main. [Spec](./PERF24.md)
+comment: Shipped 2026-11-12. The status menu is one persistent NSMenu populated only from menuNeedsUpdate (setters record state, build nothing); the failed count and the launch-agent state are cached and read off main on their own serial queues at launch, per open (updating the open menu in place), on job settle, retry, delete and restore, with Preferences pushing its launch-at-login reads and writes; the in-app doctor runs its probes on a utility queue and appends lines on main in order. 18 new tests (StatusMenuReadsTests incl. a Coordinator wiring fence, DoctorRunnerTests, plus trigger tests in PipelineJobDispatcherTests, RestoreFlowTests and MeetingLibraryServiceTests); ci-local green. The owner-run sample during rebuild.sh (confirms, does not gate) was not run; the open-menu refresh under real AppKit tracking is a known untested gap (see the spec), closed on tests by the owner 2026-11-12. Covers PERF13 item 7. [Spec](./PERF24.md)
 ---
 
 # PERF24: The status menu spawns launchctl and lists the whole recordings folder on the main thread at every open, rebuilds and discards the whole menu on every queue, state and download tick, and the in-app doctor runs its self-check on main
@@ -50,3 +51,11 @@ Re-verified against HEAD `01e904a` on 2026-10-25 by code reading. Review finding
 - `DoctorRunnerTests` with an injected probe that blocks on a semaphore: `run()` returns before the probe finishes, the probe runs off main, and `output` keeps probe order with the `== mp doctor ==` header after the last probe line.
 - `cd daemon && swift build` and `swift test` green, N new tests in the commit body; `bash scripts/ci-local.sh` green.
 - Evidence (confirms, does not gate): `sample` the daemon while opening the menu 20 times during `./scripts/rebuild.sh`; no `contentsOfDirectory` or `ProcessLaunchctl.run` frames on the main thread.
+
+## Known gap (no gate)
+
+Closed on tests by the owner's decision (2026-11-12); recorded so the next session that touches the status menu knows what the suite does not cover.
+
+The tests drive `StatusBarController` through its menu delegate directly (`menuNeedsUpdate`, `menuDidClose`). They prove both reads run off main, that a closed menu is never populated, and that a landed read with a changed value repopulates the menu. They do not show what AppKit does while it is really tracking an open status menu: that the main-queue hop carrying a read lands during tracking, and what repopulating the open menu does to a submenu (Recent meetings, Finish setup) that is open at that moment. This app's menu cannot be screenshotted or driven by computer use, and XCTest cannot start real menu tracking.
+
+If it is ever worth checking by hand, it takes about two minutes, with Preferences ▸ General ▸ Relaunch after quitting on: run `launchctl disable gui/$(id -u)/com.meetingpipe.daemon`, open the menu and keep it open (Quit (do not relaunch) should disappear within about a second), hover Recent meetings for a few seconds, close the menu, run `launchctl enable gui/$(id -u)/com.meetingpipe.daemon` (not optional: `scripts/lib/login-agent.sh` respects a disabled agent), and reopen (the row returns within the same open). A symptom to recognise if it ever shows up: a quit row that only changes on the second open, or a submenu that closes or sticks while the menu is up.
