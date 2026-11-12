@@ -76,6 +76,8 @@ def test_serve_local_execs_server_for_configured_model(monkeypatch):
         "--host", DEFAULT_HOST,   # clamped from 0.0.0.0
         "--port", "9999",
     ]
+    # LOCAL22: the warm server bounds its retained KV caches too.
+    assert args[args.index("--prompt-cache-size") + 1] == "2"
     # SEC13: exec must go through execvpe with an explicit env (child_env()).
     assert isinstance(captured["env"], dict)
 

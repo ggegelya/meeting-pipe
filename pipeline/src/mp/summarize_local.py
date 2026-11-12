@@ -253,6 +253,18 @@ def repair_messages(prior_text: str, error_detail: str) -> list[dict[str, str]]:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+# LOCAL22: how many finished requests' KV caches `mlx_lm.server` keeps. Its
+# default is 10 with no byte cap, and every completion inserts a full prompt-plus-
+# generation copy, so one map-reduce held 3 to 5 GB on the 7B (10 to 18 GB on the
+# 14B) beyond the weights, for the daemon's lifetime on the warm server. One entry
+# is what lets each map window reuse the shared system-prompt prefix of the call
+# before it; the second absorbs an overlapping lane (an `mp ask` against the same
+# warm server, or a schema retry). Not `--prompt-cache-bytes`: mlx-lm 0.31.3
+# enforces that only on its batch path, so the count is the bound that holds on
+# every path. Not 0 either: every window would re-prefill the ~16K-char prompt.
+SERVER_PROMPT_CACHE_SIZE = 2
+
+
 def build_server_command(
     model: str, host: str, port: int, adapter_path: str | None = None
 ) -> list[str]:
@@ -266,11 +278,15 @@ def build_server_command(
 
     ``adapter_path`` (LOCAL9), when set, serves a locally-trained LoRA adapter on
     top of the base model; empty/None serves the base model unchanged.
+
+    ``--prompt-cache-size`` (LOCAL22) bounds the server's retained KV caches; see
+    ``SERVER_PROMPT_CACHE_SIZE``.
     """
     if shutil.which("mlx_lm.server") is not None:
         cmd = ["mlx_lm.server"]
     else:
         cmd = [sys.executable, "-m", "mlx_lm.server"]
+    cmd = cmd + ["--prompt-cache-size", str(SERVER_PROMPT_CACHE_SIZE)]
     cmd = cmd + ["--model", model, "--host", host, "--port", str(port)]
     if adapter_path:
         cmd += ["--adapter-path", adapter_path]

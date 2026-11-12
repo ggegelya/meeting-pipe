@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from mp import local_server
+from mp.summarize_local import build_server_command
 
 _SERVER_CMD = "/opt/homebrew/bin/mlx_lm.server --model mlx-community/Qwen2.5-7B-Instruct-4bit"
 _MP_CMD = "/usr/bin/python3 -m mp run-all /tmp/x.wav"
@@ -193,6 +194,21 @@ def test_parse_identity_keeps_a_spaced_adapter_path_whole() -> None:
     )
     assert local_server.parse_identity(cmd)[1] == (
         "/Users/me/Library/Application Support/MeetingPipe/lora"
+    )
+
+
+def test_parse_identity_reads_through_the_prompt_cache_flag() -> None:
+    # LOCAL22: build_server_command now emits --prompt-cache-size ahead of
+    # --model; the identity parse must not be thrown by the extra flag.
+    base = " ".join(build_server_command("some/model", "127.0.0.1", 8765))
+    assert "--prompt-cache-size 2" in base
+    assert local_server.parse_identity(base) == ("some/model", None)
+    adapted = " ".join(build_server_command(
+        "some/model", "127.0.0.1", 8765,
+        "/Users/me/Library/Application Support/MeetingPipe/lora",
+    ))
+    assert local_server.parse_identity(adapted) == (
+        "some/model", "/Users/me/Library/Application Support/MeetingPipe/lora",
     )
 
 

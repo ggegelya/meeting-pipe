@@ -26,6 +26,7 @@ from mp.summarize_local import (
     DEFAULT_REQUEST_TIMEOUT_SEC,
     LocalSummaryClient,
     LocalSummaryError,
+    SERVER_PROMPT_CACHE_SIZE,
     _largest_balanced_json_object,
     build_server_command,
     repair_messages,
@@ -451,6 +452,21 @@ def test_build_server_command_appends_adapter_path_only_when_set() -> None:
     # ...and the LoRA adapter is served on top when local_adapter_path is set.
     adapted = build_server_command("m", "127.0.0.1", 8765, "/adapters/mine")
     assert adapted[adapted.index("--adapter-path") + 1] == "/adapters/mine"
+
+
+def test_build_server_command_bounds_the_prompt_cache_with_and_without_adapter() -> None:
+    # LOCAL22: mlx-lm's default keeps ten full KV caches with no byte cap, so a
+    # warm server held gigabytes of finished requests for the daemon's lifetime.
+    assert SERVER_PROMPT_CACHE_SIZE == 2
+    for cmd in (
+        build_server_command("m", "127.0.0.1", 8765),
+        build_server_command("m", "127.0.0.1", 8765, "/adapters/mine"),
+    ):
+        assert cmd.count("--prompt-cache-size") == 1
+        assert cmd[cmd.index("--prompt-cache-size") + 1] == "2"
+        # Before --model, so the model/host/port tail and a trailing
+        # (possibly spaced) adapter path keep their positions.
+        assert cmd.index("--prompt-cache-size") < cmd.index("--model")
 
 
 # ----- Pure helper: balanced JSON scanner -----

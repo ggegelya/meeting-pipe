@@ -2,9 +2,10 @@
 id: LOCAL22
 title: mlx_lm.server runs with its default prompt cache of ten full KV caches and no byte cap, so a warm server keeps gigabytes of finished requests resident for the daemon's lifetime
 category: Local models
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. `build_server_command` passes only model, host, port and adapter, so the locked mlx-lm 0.31.3 keeps its defaults: up to 10 distinct KV caches (`--prompt-cache-size` 10) with no byte limit, a full prompt-plus-generation copy inserted after every completion, under a wired-memory limit raised to the GPU's working set at launch. At Qwen2.5-7B's ~56 KB per token (14B ~192 KB) one long map-reduce holds about 3 to 5 GB on the 7B and 10 to 18 GB on the 14B beyond the weights, and the opt-in warm `mp serve-local` keeps that plateau for as long as the daemon runs (up 7 days 8 hours on 2026-10-25). Pass `--prompt-cache-size 2` from the one argv builder, pinned by a test. [Spec](./LOCAL22.md)
+closed: 2026-11-12
+comment: Shipped 2026-11-12. `build_server_command` passes `--prompt-cache-size 2` (`SERVER_PROMPT_CACHE_SIZE`, reason in its comment) ahead of `--model`, so the per-run spawn and the warm `mp serve-local` both bound mlx-lm 0.31.3's retained KV caches at two instead of ten; an older warm server keeps its argv until the install/rebuild relaunch restarts it. 2 new tests plus a flag assertion on the serve-local exec; `parse_identity` reads through the new flag. Evidence on the cached 3B (offline, spare port, five distinct prompts since the stats line logs before each insert): last line `2 sequences` with the flag, `4 sequences` without. `ci-local.sh`: fences, ruff, pyright and pytest (1470) green; daemon suite red on one live-window test, `FailureLayoutTests` "Missing More actions", in a daemon tree this task did not touch. [Spec](./LOCAL22.md)
 ---
 
 # LOCAL22: mlx_lm.server runs with its default prompt cache of ten full KV caches and no byte cap, so a warm server keeps gigabytes of finished requests resident for the daemon's lifetime
