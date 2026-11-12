@@ -37,7 +37,18 @@ final class TutorialSession: ObservableObject {
     /// window rather than by surface because a stage is a hosted root: the two
     /// Preferences panes share one, and which of them is selected shows up here
     /// as which anchors reported at all.
+    ///
+    /// Written only while a tour runs (PERF27). Every stage observes this
+    /// session, so publishing here on each Preferences scroll or Library resize
+    /// re-evaluated both stages for a tour nobody had opened. Outside a run the
+    /// reports land in `latestFrames`, and `start(steps:)` seeds from there.
     @Published private(set) var frames: [TutorialWindow: [TutorialAnchor: CGRect]] = [:]
+
+    /// The newest report from each window, run or no run, and unpublished. It is
+    /// what lets a tour open on a control that is already laid out: without it
+    /// the first step would show its control as missing until the next layout
+    /// pass happened to report.
+    private(set) var latestFrames: [TutorialWindow: [TutorialAnchor: CGRect]] = [:]
 
     /// Set by the app once its windows exist. Weak: the presenter owns the
     /// windows and outlives nothing here.
@@ -69,6 +80,7 @@ final class TutorialSession: ObservableObject {
     // MARK: - Running
 
     func start(steps: [TutorialStep] = TutorialScript.steps) {
+        frames = latestFrames
         run = TutorialRun(steps: steps)
         currentFocusIsMissing = false
         applyEntry()
@@ -127,14 +139,18 @@ final class TutorialSession: ObservableObject {
     // MARK: - Surfaces reporting in
 
     func report(_ reported: [TutorialAnchor: CGRect], on window: TutorialWindow) {
-        guard frames[window] != reported else { return }
+        latestFrames[window] = reported
+        guard run != nil, frames[window] != reported else { return }
         frames[window] = reported
     }
 
     /// A staged window went away. The tour does not end (the reader may be
-    /// re-opening it), but the next step must not assume it is still up.
+    /// re-opening it), but the next step must not assume it is still up. The
+    /// cache forgets it too, or a later `start` would seed a closed window's
+    /// frames.
     func windowDisappeared(_ window: TutorialWindow) {
-        frames[window] = nil
+        latestFrames[window] = nil
+        if run != nil, frames[window] != nil { frames[window] = nil }
         if presented?.window == window { presented = nil }
     }
 }

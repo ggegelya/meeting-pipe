@@ -1,3 +1,4 @@
+import Combine
 import CoreGraphics
 import XCTest
 @testable import MeetingPipe
@@ -226,5 +227,62 @@ final class TutorialTests: XCTestCase {
                 XCTAssertLessThanOrEqual(frame.maxY, viewport.height)
             }
         }
+    }
+
+    // MARK: - Anchor reports (PERF27)
+
+    /// A fresh session per test, never `.shared`: the fences count who starts the
+    /// shared tour, and a run left on it would leak into the next test.
+    private func publishCount(of session: TutorialSession, during body: () -> Void) -> Int {
+        var count = 0
+        let sink = session.objectWillChange.sink { _ in count += 1 }
+        body()
+        sink.cancel()
+        return count
+    }
+
+    private let libraryFrames: [TutorialAnchor: CGRect] = [.record: CGRect(x: 40, y: 40, width: 120, height: 32)]
+
+    /// Every stage observes the session, so a publish with no tour running
+    /// re-evaluated both of them on each Preferences scroll and Library resize.
+    func test_a_report_with_no_tour_running_publishes_nothing_and_is_kept() {
+        let session = TutorialSession()
+        let moved = CGRect(x: 40, y: 80, width: 120, height: 32)
+        let published = publishCount(of: session) {
+            session.report(libraryFrames, on: .library)
+            session.report([.record: moved], on: .library)
+        }
+        XCTAssertEqual(published, 0, "no tour is running; nothing should be told to redraw")
+        XCTAssertEqual(session.latestFrames[.library]?[.record], moved)
+        XCTAssertNil(session.frames[.library])
+    }
+
+    /// The verifier's caution on the cache: a tour that opened on nothing would
+    /// show its first control as missing until the next layout pass reported.
+    func test_starting_after_a_report_exposes_the_first_anchor_at_once() {
+        let session = TutorialSession()
+        session.report(libraryFrames, on: .library)
+        session.start(steps: [TutorialStep(anchor: .record, headline: "h", body: "b")])
+        XCTAssertEqual(session.frames[.library]?[.record], libraryFrames[.record])
+    }
+
+    func test_during_a_tour_a_changed_frame_publishes_once() {
+        let session = TutorialSession()
+        session.start(steps: [TutorialStep(anchor: .record, headline: "h", body: "b")])
+        let moved: [TutorialAnchor: CGRect] = [.record: CGRect(x: 40, y: 120, width: 120, height: 32)]
+        let published = publishCount(of: session) {
+            session.report(moved, on: .library)
+            session.report(moved, on: .library)
+        }
+        XCTAssertEqual(published, 1, "a changed frame publishes once; the same frame again is not a change")
+        XCTAssertEqual(session.frames[.library], moved)
+    }
+
+    func test_a_window_that_went_away_is_not_seeded_into_the_next_tour() {
+        let session = TutorialSession()
+        session.report(libraryFrames, on: .library)
+        session.windowDisappeared(.library)
+        session.start(steps: [TutorialStep(anchor: .record, headline: "h", body: "b")])
+        XCTAssertNil(session.frames[.library])
     }
 }

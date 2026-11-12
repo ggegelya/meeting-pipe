@@ -187,6 +187,25 @@ final class FailureLayoutTests: XCTestCase {
         }
     }
 
+    /// PERF27: the close closure captured its own window strongly, so window, hosting controller, root
+    /// view and closure formed a cycle and every Details click leaked the window and its stderr tail.
+    @MainActor
+    func test_details_window_is_released_once_closed_and_dropped() throws {
+        _ = NSApplication.shared
+        weak var weakWindow: NSWindow?
+        weak var weakHost: NSViewController?
+        try autoreleasepool {
+            let window = FailureDialog.detailsWindow(for: FailurePresentation(diagnostics: Self.longDiagnostic, operation: .ask))
+            let host = try XCTUnwrap(window.contentViewController as? NSHostingController<FailureDetailsView>)
+            weakWindow = window
+            weakHost = host
+            host.rootView.close()
+        }
+        spin { weakWindow == nil && weakHost == nil }
+        XCTAssertNil(weakWindow, "the Details window outlived its last strong reference")
+        XCTAssertNil(weakHost, "the Details hosting controller outlived its window")
+    }
+
     @MainActor
     func test_details_copies_the_exact_visible_report_to_an_isolated_clipboard() throws {
         // A UUID name, not `withUniqueName()`: that one can hand two test

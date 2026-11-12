@@ -2,9 +2,10 @@
 id: PERF27
 title: A failure's Details window leaks on every click, and tutorial anchors republish on every scroll and resize while no tour runs
 category: Performance
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. UI-11: `FailureDialog.showDetails`' close closure captures its own window strongly (window, hosting controller, root view, closure), so the window and its diagnostics text leak once per Details click, the one window in the app not released on close. UI-14: `TutorialSession.report` publishes anchor frames with no `run != nil` gate, so every Preferences scroll and Library resize re-evaluates both `TutorialStage` modifiers while no tour runs. Both low and cheap per event. `[weak window]` plus `contentViewController = nil` after `runModal`; an unpublished frame cache, published only during a run and seeded when one starts. [Spec](./PERF27.md)
+closed: 2026-11-12
+comment: Shipped 2026-11-12. `FailureDialog.detailsWindow(for:)` builds the Details window with a `[weak window]` close closure (ordered out, never closed), and `showDetails` clears `contentViewController` after `runModal`. `TutorialSession.report` always updates an unpublished `latestFrames` cache and writes the published `frames` only while `run != nil`; `start(steps:)` seeds `frames` from the cache, and `windowDisappeared` clears the cache entry and publishes only during a run. 5 new tests (the weak-reference one measured red on the strong capture); `TutorialFenceTests` unchanged and green. `ci-local.sh` all green: fences, ruff, pyright, pytest (1505), swift build, swift test (2968, 1 listed skip), CI8 pool, DIST4. [Spec](./PERF27.md)
 ---
 
 # PERF27: A failure's Details window leaks on every click, and tutorial anchors republish on every scroll and resize while no tour runs

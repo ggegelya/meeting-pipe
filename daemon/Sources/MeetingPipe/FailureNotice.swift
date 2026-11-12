@@ -151,17 +151,35 @@ enum FailureDialog {
 
     @MainActor
     static func showDetails(_ failure: FailurePresentation) {
+        let window = detailsWindow(for: failure)
+        NSApp.runModal(for: window)
+        // The window is ordered out, never closed, so nothing else lets go of the
+        // hosting controller and the diagnostics text it holds (PERF27).
+        window.contentViewController = nil
+    }
+
+    /// The Details window, built but not run. Its own function so a test can hold
+    /// it weakly without entering a modal session (PERF27).
+    ///
+    /// The close closure captures the window weakly: the window owns the hosting
+    /// controller, which owns the root view, which owns the closure, so a strong
+    /// capture kept every Details window and its stderr tail alive for the life of
+    /// the process. It orders out rather than calling `close()`, because a window
+    /// built with this initializer is released on close, an extra release ARC does
+    /// not expect.
+    @MainActor
+    static func detailsWindow(for failure: FailurePresentation) -> NSWindow {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 580, height: 460),
                               styleMask: [.titled], backing: .buffered, defer: false)
-        let host = NSHostingController(rootView: FailureDetailsView(failure: failure) {
+        let host = NSHostingController(rootView: FailureDetailsView(failure: failure) { [weak window] in
             NSApp.stopModal()
-            window.orderOut(nil)
+            window?.orderOut(nil)
         })
         host.sizingOptions = []
         window.contentViewController = host
         window.setContentSize(NSSize(width: 580, height: 460))
         window.title = "Failure details"
         window.center()
-        NSApp.runModal(for: window)
+        return window
     }
 }
