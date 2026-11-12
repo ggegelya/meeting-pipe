@@ -4,7 +4,7 @@ title: Supply-chain pins have four gaps outside uv.lock: the hatchling build bac
 category: Distribution
 status: new
 priority: P3
-comment: Filed 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md), informational): each needs an upstream compromise first, so none is a concrete exploit, and local builds stay pinned and fingerprint-checked. Pin hatchling with a hashed build constraint, hash-check FluidAudio models, commit Package.resolved and use exact: for TOMLKit, SHA-pin actions and add permissions: contents: read. Parked as hardening. [Spec](./DIST7.md)
+comment: Filed 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md), informational): each needs an upstream compromise first, so none is a concrete exploit, and local builds stay pinned and fingerprint-checked. Pin hatchling with a hashed build constraint, hash-check FluidAudio models, commit Package.resolved and use exact: for TOMLKit, SHA-pin actions and add permissions: contents: read. Parked as hardening. [Spec](./DIST7.md) Amended 2026-11-12 (upgrade review): the three actions are also majors behind (checkout v4 to v7.0.1, setup-python v5 to v7.1.0, setup-uv v3 to v10.3.3) and CI warns they are forced from Node 20 to Node 24; bump the majors in the same pass as the SHA pins, and FluidAudio 0.15.8 already pins diarizer artifacts (ASR6).
 ---
 
 # DIST7: supply-chain pins have four gaps outside uv.lock: the hatchling build backend, the speech models' `resolve/main` fetch, the git-ignored Package.resolved, and CI actions pinned by tag with no permissions block
@@ -37,3 +37,19 @@ Verified 2026-11-12; each gap needs a third party compromised first, so this is 
 - `bash scripts/ci-local.sh` and CI green after each item; `git check-ignore daemon/Package.resolved` returns nothing.
 - A daemon test that the model hash check rejects a file whose sha256 differs from the table, with an injected file reader.
 - A `truth_fences.py` or shell check that `ci.yml` uses no `uses: <action>@v<N>` form and declares `permissions:`.
+
+## Amendment 2026-11-12 (upgrade review)
+
+**Actions are majors behind, not just tag-pinned.** Latest releases on 2026-11-12:
+- `actions/checkout` v7.0.1 (we use `@v4`);
+- `actions/setup-python` v7.1.0 (`@v5`);
+- `astral-sh/setup-uv` v10.3.3 (`@v3`).
+
+CI run 43189769485 (2026-11-12) annotates: "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, astral-sh/setup-uv@v3". It also annotates that `ubuntu-latest` migrates to Ubuntu 26 from 2026-10-19.
+
+Added scope:
+- Item 4 pins the **current** majors' commit SHAs, not v4/v5/v3.
+- Name the runner image explicitly (`ubuntu-26.04` or the chosen one) rather than `ubuntu-latest`.
+- CI11 adds setup-uv's `version:` input on the same line.
+
+**Speech-model artifacts.** FluidAudio v0.15.8 (2026-09-20) pins diarization artifacts to an immutable revision (upstream #927). So the diarizer half of item 2 arrives with ASR6's bump; the ASR model fetch and the embedder snapshot remain this task's.

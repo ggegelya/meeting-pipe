@@ -4,7 +4,7 @@ title: CI builds only the debug configuration on macOS 15, so the release build 
 category: CI
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, go-live QG-6, QG-7, QG-10): CI builds debug on macos-15 only, so the shipped release config, the declared macOS 14 floor and new warnings go unchecked; two Swift-6-mode diagnostics are back in production code. Scope: release build plus relocation smoke, a warning gate with an allowlist, a macos-14 floor job, runner names in docs. [Spec](./CI9.md)
+comment: Filed 2026-10-24 (audit band, go-live QG-6, QG-7, QG-10): CI builds debug on macos-15 only, so the shipped release config, the declared macOS 14 floor and new warnings go unchecked; two Swift-6-mode diagnostics are back in production code. Scope: release build plus relocation smoke, a warning gate with an allowlist, a macos-14 floor job, runner names in docs. [Spec](./CI9.md) Amended 2026-11-12 (upgrade review): the owner now builds on Xcode 27.2 / Swift 6.4.2 / SDK 27.2 while CI's macos-15 runs an older SDK, so SDK-27-only breaks never reach CI; the hosted macos-14 runner is deprecated (runner-images #15226), so the floor job needs a fallback.
 ---
 
 # CI9: CI builds only the debug configuration on macOS 15, so the release build that ships, the declared macOS 14 floor, and new compiler warnings are never checked
@@ -39,3 +39,22 @@ After CI8 (2026-10-24) every `ci.yml` job calls `scripts/ci-local.sh <job>`. The
 - A scratch unused variable in `daemon/Sources` fails the warning gate on a clean build (tried and reverted, said in the commit body); the two current diagnostics are gone; every allowlist entry has a reason.
 - The floor job is green on `macos-14`, or its failure is quoted and the owner's decision recorded beside it.
 - `bash scripts/ci-local.sh all` and `python3 scripts/truth_fences.py` green after the doc edits. The first CI run with these jobs needs the owner's push (the CI8 precedent); report its result when it happens.
+
+## Amendment 2026-11-12 (upgrade review)
+
+**Toolchain skew.** On 2026-11-12 the owner's machine reports:
+- `swift --version`: Apple Swift 6.4.2;
+- `xcodebuild -version`: Xcode 27.2;
+- `xcrun --show-sdk-version`: 27.2.
+
+CI's daemon job runs on `macos-15` with that image's default Xcode. Breaks that only the 27 SDK produces are invisible to CI:
+- the `@State` macro (UX95);
+- ContentBuilder ambiguities;
+- the macOS 27 AVAudio deprecations (REC29);
+- the `AVAudioFormat` `Sendable` warnings (CONC11).
+
+**Runner availability.** The runner-images README (read 2026-11-12) marks `macos-14` deprecated (issue #15226), and `macos-latest` is now macOS 26 arm64.
+
+Added scope:
+- Move the main daemon job to the newest available macOS image and Xcode, naming the Xcode version in the job and in `ci-local.sh`'s toolchain print.
+- For the floor job, record what replaces `macos-14` once the hosted image is gone. Either build against the 14 deployment target on a newer image (compile-only floor check), or the owner decides to raise the floor (DOC16 moves with it).

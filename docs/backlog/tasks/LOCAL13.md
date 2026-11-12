@@ -5,7 +5,7 @@ category: Local models
 status: owner-verify
 priority: P2
 verification: complex
-comment: Harness + doc skeleton shipped 2026-07-24, no repo code changed, as the spec scoped it: [`docs/spikes/local13-local-model-refresh-bench.md`](../../spikes/local13-local-model-refresh-bench.md) carries six pre-registered ship bars written before any score exists (both capture means +0.05 over the incumbent, no per-stem collapse worse than -0.10, hallucination <= incumbent +0.02 and <= 0.05, peak RSS <= 12 GB with zero watchdog aborts, an owner-chosen latency ceiling defaulting to 2.0x the incumbent p50), the fixed 6-stem set (5-stem core + 1 stress leg, 3 EN / 3 UK, 6.9 to 16.0 min, incl. the anchor `20260723-103118`), the caffeinate + free-RAM watchdog protocol with its arithmetic verified on this Mac, and the exact `mp prefetch-model` / `mp dogfood` / `local12_bench.py` invocations (per-model `--runs-dir` and `--report-out`, since both default paths clobber across models). **Candidate list corrected against the live HF API at pickup**: no `Qwen3-8B/14B-Instruct-2507` build exists (so the dense Qwen3 candidates are the hybrid-thinking originals, which promotes the template probe to a prerequisite), and `mlx-community/Qwen3.5-9B-4bit` (2026-03-02) is now the headline candidate; Qwen3.6 excluded because installed mlx-lm 0.31.3 has no `qwen3_6` module (a dep bump, owner gate), MoE excluded on the memory guard. **Probe legs 1 and 2 answered statically**: every remaining candidate's arch module ships in mlx-lm 0.31.3, and that server parses **no** `response_format` at all (so every candidate decodes unconstrained and the 3-layer extractor is load-bearing; `chat_template_kwargs` IS parsed and is the unused `enable_thinking:false` lever). Measured for LOCAL14: fixed prompt+schema overhead is 3,520 tokens (larger than the transcript on a typical stand-up), nothing in the 215-transcript corpus reaches the 80,000-char map-reduce threshold (longest 72,890), Cyrillic costs ~2x tokens/char. **Owner-owed remainder:** ~33 GB of `mp prefetch-model` fetches, the 36 runs, the hand-scoring, the latency/RSS legs, the named verdict, and the `summarization.local_model` flip-or-keep decision.
+comment: Harness + doc skeleton shipped 2026-07-24, no repo code changed, as the spec scoped it: [`docs/spikes/local13-local-model-refresh-bench.md`](../../spikes/local13-local-model-refresh-bench.md) carries six pre-registered ship bars written before any score exists (both capture means +0.05 over the incumbent, no per-stem collapse worse than -0.10, hallucination <= incumbent +0.02 and <= 0.05, peak RSS <= 12 GB with zero watchdog aborts, an owner-chosen latency ceiling defaulting to 2.0x the incumbent p50), the fixed 6-stem set (5-stem core + 1 stress leg, 3 EN / 3 UK, 6.9 to 16.0 min, incl. the anchor `20260723-103118`), the caffeinate + free-RAM watchdog protocol with its arithmetic verified on this Mac, and the exact `mp prefetch-model` / `mp dogfood` / `local12_bench.py` invocations (per-model `--runs-dir` and `--report-out`, since both default paths clobber across models). **Candidate list corrected against the live HF API at pickup**: no `Qwen3-8B/14B-Instruct-2507` build exists (so the dense Qwen3 candidates are the hybrid-thinking originals, which promotes the template probe to a prerequisite), and `mlx-community/Qwen3.5-9B-4bit` (2026-03-02) is now the headline candidate; Qwen3.6 excluded because installed mlx-lm 0.31.3 has no `qwen3_6` module (a dep bump, owner gate), MoE excluded on the memory guard. **Probe legs 1 and 2 answered statically**: every remaining candidate's arch module ships in mlx-lm 0.31.3, and that server parses **no** `response_format` at all (so every candidate decodes unconstrained and the 3-layer extractor is load-bearing; `chat_template_kwargs` IS parsed and is the unused `enable_thinking:false` lever). Measured for LOCAL14: fixed prompt+schema overhead is 3,520 tokens (larger than the transcript on a typical stand-up), nothing in the 215-transcript corpus reaches the 80,000-char map-reduce threshold (longest 72,890), Cyrillic costs ~2x tokens/char. **Owner-owed remainder:** ~33 GB of `mp prefetch-model` fetches, the 36 runs, the hand-scoring, the latency/RSS legs, the named verdict, and the `summarization.local_model` flip-or-keep decision. Amended 2026-11-12 (upgrade review): this Mac is 48 GB not 32 GB; the 3B the owner actually runs looped to the 4,000-token cap in 2 of 4 real-prompt runs on Ukrainian meetings; add Ministral-3-8B and gemma-4-26B-A4B, Qwen3.6's exclusion is size not arch, gemma-4-12B cannot load, run each stem twice.
 ---
 
 # LOCAL13: Local model refresh bench
@@ -39,3 +39,40 @@ Added 2026-07-30 at the owner's request: every task gated on an owner action car
 3. [owner] The 36 runs (6 stems x 6 models including the incumbent): [session] composes every `mp dogfood` invocation with per-model `--runs-dir` and `--report-out` (both default paths clobber across models); run them under `caffeinate` with the free-RAM watchdog per the doc's protocol; results write incrementally, so an aborted run loses only itself. 14B-class candidates stay at 8K context (the OOM guard for this 32 GB Mac).
 4. [owner] Hand-score capture and hallucination per the doc's scorecards against the fixed cloud reference; [session] fills the tables as scores arrive.
 5. [session] Name the verdict against the six pre-registered bars, written beneath them in the doc without adjusting them. On a win: flip `summarization.local_model` in the owner's config, then verify `mp doctor` and `mp prefetch-model` against the new repo id. Otherwise: keep the incumbent with the reason recorded. Either way the probe-leg answers roll into LOCAL14's pickup.
+
+## Amendment 2026-11-12 (upgrade review)
+
+Facts measured or checked on 2026-11-12 that change this bench's premises.
+
+**The machine.** `sysctl hw.memsize` returns 51539607552: this Mac is an M4 Max with **48 GB**, not 32 GB. So `resource_guard.tier_for` puts it in the 48 GB tier (`max_model_gb=20.0`, `context_token_ceiling=16_000`), not the 32 GB tier (9 GB, 8K) this spec's guards assume. Before the runs, the owner should say which machine the verdict is for. The 14B "8K only" guard was measured at 32 GB (AI2).
+
+**The incumbent the owner actually runs is the 3B.** `~/.config/meeting-pipe/config.toml` sets `local_model = "mlx-community/Qwen2.5-3B-Instruct-4bit"`, and the 7B default is not in the HF cache.
+
+Setup of the measurement:
+- offline (`HF_HUB_OFFLINE=1`), on port 18765, `mlx_lm.server` 0.31.3 with `--prompt-cache-size 2`;
+- the real system prompt plus schema, built by `summarize._load_system_prompt`, `augment_with_schema` and `compose_user_message`;
+- `max_tokens` 4000, streamed;
+- two runs each on `20260911-124913` (Ukrainian, 10.2K chars, 8,533 prompt tokens) and `20261016-095827` (Ukrainian, 23.0K chars, 14,642 prompt tokens).
+
+What it showed:
+- **Speed:** prefill 6.3 to 13.9 s, decode 54 to 77 tok/s.
+- **Memory:** peak physical footprint (top MEM) 3.6 GB and 4.9 GB. ps RSS read 1.9 GB and undercounts Metal memory.
+- **Stability:** in 2 of 4 runs the output ran to the 4,000-token cap, one of them a single repeated Ukrainian sentence, and was unparseable.
+- **Quality:** one run titled a Ukrainian interview "Meeting Summary" and summarized it in English.
+- **Variance:** the same input gave 243 output tokens in one run and 4,000 in the next.
+
+This scratch bench skips the pipeline's language retry and 3-layer extractor, so it is speed and stability evidence, not a quality verdict.
+
+**Candidate list corrections** (HF API and each repo's config.json, 2026-11-12):
+
+| Candidate | Size | Arch | Licence | Change |
+|---|---|---|---|---|
+| `mlx-community/Ministral-3-8B-Instruct-2512-4bit` | 5.6 GB | `ministral3`, in 0.31.3 | Apache-2.0 | **Add.** |
+| `mlx-community/gemma-4-26B-A4B-it-qat-4bit` | 15.6 GB | `gemma4`, in 0.31.3 | Apache-2.0 | **Add.** MoE with about 4B active. The 48 GB tier admits it; the 32 GB tier's 9 GB cap refuses it. |
+| `mlx-community/Qwen3.6-35B-A3B-4bit` | 20.4 GB | `qwen3_5_moe`, in 0.31.3 | Apache-2.0 | **Reason corrected.** The pickup note said "no `qwen3_6` module", but the arch already ships. Its exclusion is size: it fits only at 48 GB. |
+| `mlx-community/gemma-4-12B-it-qat-4bit` | 11.0 GB | `gemma4_unified`, **absent** in 0.31.3 and 0.32.2 | | **Exclude.** It cannot load in `mlx_lm.server`. |
+| `mlx-community/gemma-4-E4B-it-qat-4bit` | 6.8 GB | | | Small-preset candidate. `resource_guard.estimate_model_gb` parses "E4B" as 4B and estimates 2.5 GB, so the tier guard would misjudge it. |
+
+Also checked: mlx-lm 0.32.2's `server.py` has zero occurrences of `response_format`, `json_schema`, `guided`, `outlines` or `grammar`. So no mlx-lm bump buys constrained decoding for any shortlisted model.
+
+Added protocol: run each model at least twice per stem and report both runs. The variance above makes one run per cell unreliable.

@@ -4,7 +4,7 @@ title: Transcription and diarization depend on one vendor package pinned exact, 
 category: Transcription
 status: new
 priority: P3
-comment: Filed 2026-10-24 (audit band, go-live DI-15): FluidAudio is the only TranscriptionRunner, pinned exact at 0.14.8, and upstream #738 (macOS 27 ANE access) lives only in a Package.swift comment with no doctor check. Watch task: on promotion re-check upstream, qualify any bump on ASR4's golden set plus voiceprint compatibility, add a doctor check, and only then spike a second runner. [Spec](./ASR6.md)
+comment: Filed 2026-10-24 (audit band, go-live DI-15): FluidAudio is the only TranscriptionRunner, pinned exact at 0.14.8, and upstream #738 (macOS 27 ANE access) lives only in a Package.swift comment with no doctor check. Watch task: on promotion re-check upstream, qualify any bump on ASR4's golden set plus voiceprint compatibility, add a doctor check, and only then spike a second runner. [Spec](./ASR6.md) Amended 2026-11-12 (upgrade review): #738 closed 2026-08-19; FluidAudio is 0.18.3, whose 0.15.8 pins diarizer artifacts to an immutable revision, 0.18.1 fixes all-blank CTC on M4 under macOS 27, and 0.17.3 adds Parakeet Ultra; a bump is now ready to qualify, with ModelHub (0.15.5) the one breaking API.
 ---
 
 # ASR6: transcription and diarization depend on one vendor package pinned exact, with a known macOS 27 Neural Engine issue tracked only in a manifest comment and no fallback runner
@@ -41,3 +41,29 @@ Verified on 2026-10-24:
 - If a bump lands: ASR4 golden-set WER and DER before and after in the commit body, and a test or probe result showing enrolled voiceprints still resolve the same people; `cd daemon && swift build` and `swift test` green.
 - If the doctor check lands: a test that it reports the unsupported state from an injected capability probe; `swift test` green with the new test count in the commit body.
 - `python3 scripts/truth_fences.py both` green.
+
+## Amendment 2026-11-12 (upgrade review)
+
+Upstream re-check (GitHub releases and issues, read 2026-11-12):
+
+**Watch reasons**
+- **#738**, "MacOS 27 Beta 2 Release Notes mentions ios 27 locking down ANE", was **closed 2026-08-19**. Upstream treated it as an Apple-side change and filed Feedback FB23457001. The manifest comment's "Track before bumping" reason is now stale.
+- **#726** (Sortformer BNNS Graph Error) closed 2026-07-06.
+
+**FluidAudio releases since our 0.14.8**, latest v0.18.3 (2026-11-07). The ones that matter here:
+- **v0.15.5:** the download stack becomes `ModelHub`, replacing `DownloadUtils`. **Breaking for us:** we use `DownloadUtils.DownloadProgress` at one site.
+- **v0.15.7:** the offline diarizer warns about BNNS-crash-prone builds on macOS 14 (upstream #878).
+- **v0.15.8:** "Pin diarization artifacts to immutable revision" (upstream #927). This closes the diarizer half of DIST7's `resolve/main` gap.
+- **v0.17.3:** `AsrModelVersion.ultra` (Parakeet Ultra), "a post-trained v3 that is more accurate everywhere at the same speed", with the same 25 languages and API. `.v3` stays the default. `.redux` is a 2-bit variant of about 220 MB.
+- **v0.18.1:** "The CTC mel spectrogram runs on the CPU, fixing all-blank CTC on M1/M4 with macOS 27.0.1". The owner's Mac is an M4 Max on macOS 27.2, which bears on ASR5's vocabulary-boosting spike.
+- **v0.18.2:**
+  - the offline diarizer keeps overlapping speech by default (`exclusiveSegments: false`), a behaviour change;
+  - CAM++ `_v2` speaker embeddings (AMI EER 4.67% to 2.85%), which would move voiceprints.
+
+Added scope:
+- On promotion, bump to the latest 0.18.x and port the one `DownloadUtils.DownloadProgress` use to `ModelHub`.
+- Keep `.v3`, the current diarizer and the current embedding model for the bump itself.
+- Offer Parakeet Ultra as a separate measured switch on ASR4's golden set.
+- CAM++ v2 or Nemotron 3 diarization are spikes with a re-enrolment plan, per DIAR4's voiceprint reasoning.
+
+Added acceptance: the bump's commit records ASR4 WER and DER before and after on `.v3`, and Ultra's numbers if it is tried.
