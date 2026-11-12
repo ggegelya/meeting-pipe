@@ -144,7 +144,7 @@ final class WorkflowDeletionTests: XCTestCase {
         let copy = WorkflowDeletion.confirmMessage
         // The old copy said only that recorded meetings "keep their workflow metadata",
         // which is true and misleading: they also silently vanish from the WORKFLOWS rail,
-        // because `LibraryScope.resolveWorkflow` resolves by name and `.untagged` tests for
+        // because `LibraryScope.Context.workflow(for:)` resolves by name and `.untagged` tests for
         // an absent name, so they land in neither.
         XCTAssertTrue(copy.contains("WORKFLOWS rail"), "copy must name where those meetings go missing")
         XCTAssertTrue(copy.contains("Untagged"), "copy must say they do not fall into Untagged either")

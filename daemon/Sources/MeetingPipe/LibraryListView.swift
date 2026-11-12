@@ -165,7 +165,8 @@ struct LibraryListView: View {
             workflowsCount: workflows.count,
             filter: effective,
             searchGeneration: settled.generation,
-            savedSearch: savedSearch
+            savedSearch: savedSearch,
+            day: Calendar.current.startOfDay(for: Date())
         )
         if key == lastDerivedKey { return }
         lastDerivedKey = key
@@ -190,7 +191,8 @@ struct LibraryListView: View {
                 )
             } ?? []
         } else {
-            scoped = store.meetings.filter { scope.includes($0, workflows: workflows) }
+            let context = LibraryScope.Context(workflows: workflows)
+            scoped = store.meetings.filter { scope.includes($0, in: context) }
         }
         // UX16: the free-text field runs through the FTS index (transcript + summary depth); the
         // chips stay in-memory equality filters inside `apply`. nil = no index / empty or
@@ -230,13 +232,18 @@ struct LibraryListView: View {
         /// UX24: the resolved folder, so "Update to current view" (which keeps the same
         /// scope id) still re-derives.
         let savedSearch: SavedSearch?
+        /// PERF22: the Today / Yesterday / This week headings and the date scopes are relative to
+        /// the clock, and a rescan that found nothing new no longer bumps the store revision, so a
+        /// re-open on a new day regroups on the day rather than waiting for a file to change.
+        let day: Date
         static let empty = DerivedKey(
             storeRevision: -1,
             scope: .allMeetings,
             workflowsCount: 0,
             filter: MeetingFilter(),
             searchGeneration: -1,
-            savedSearch: nil
+            savedSearch: nil,
+            day: .distantPast
         )
     }
 
@@ -427,8 +434,7 @@ struct MeetingGroup {
     let order: Int
 
     /// Partition a newest-first meeting list into chronological buckets, dropping empty ones.
-    static func group(_ meetings: [Meeting], now: Date) -> [MeetingGroup] {
-        let cal = Calendar.current
+    static func group(_ meetings: [Meeting], now: Date, calendar cal: Calendar = .current) -> [MeetingGroup] {
         // Compute anchors once; per-meeting comparisons are cheap integer comparisons.
         let todayStart = cal.startOfDay(for: now)
         let yesterdayStart = cal.date(byAdding: .day, value: -1, to: todayStart) ?? todayStart
@@ -441,6 +447,9 @@ struct MeetingGroup {
         ) ?? todayStart
 
         var buckets: [Int: (title: String, meetings: [Meeting])] = [:]
+        // PERF22: an older month's ordinal and title, once per (year, month) rather than two
+        // `dateComponents`, a `date(from:)` and a formatter call per meeting.
+        var months: [Int: (ord: Int, title: String)] = [:]
         for meeting in meetings {
             let ts = meeting.startedAt
             let key: (Int, String)
@@ -456,15 +465,21 @@ struct MeetingGroup {
                 key = (4, "Earlier this month")
             } else {
                 // Group by month label for browsable history. ord = 5 + monthsAgo places older months after the fixed 0..4 buckets, newest month first.
-                let monthAnchor = cal.date(
-                    from: cal.dateComponents([.year, .month], from: ts)
-                ) ?? ts
-                let monthsAgo = max(
-                    1,
-                    cal.dateComponents([.month], from: monthAnchor, to: thisMonthStart).month ?? 1
-                )
-                let ord = 5 + monthsAgo
-                key = (ord, MeetingFormatters.monthYear.string(from: ts))
+                let comps = cal.dateComponents([.year, .month], from: ts)
+                let monthKey = (comps.year ?? 0) * 100 + (comps.month ?? 0)
+                if let cached = months[monthKey] {
+                    key = (cached.ord, cached.title)
+                } else {
+                    let monthAnchor = cal.date(from: comps) ?? ts
+                    let monthsAgo = max(
+                        1,
+                        cal.dateComponents([.month], from: monthAnchor, to: thisMonthStart).month ?? 1
+                    )
+                    let ord = 5 + monthsAgo
+                    let title = MeetingFormatters.monthYear.string(from: ts)
+                    months[monthKey] = (ord, title)
+                    key = (ord, title)
+                }
             }
             buckets[key.0, default: (title: key.1, meetings: [])].meetings.append(meeting)
         }

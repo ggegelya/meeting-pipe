@@ -133,20 +133,48 @@ enum LibraryScope: Hashable {
         return nil
     }
 
-    /// True when `meeting` passes this scope. `workflows` must be the current snapshot (needed for NDA resolution). `now` is injected so tests can pin the clock.
+    /// What `includes` needs besides the meeting, computed once per pass rather than once per
+    /// meeting per scope (PERF22): the three date cutoffs and the workflows by name. A walk over the
+    /// library used to compute a `startOfDay` or a `date(byAdding:)` inside the loop for every row
+    /// and every date scope, plus a linear `workflows.first(where:)` per row.
+    struct Context {
+        let todayStart: Date
+        /// Nil when the calendar cannot step back, which counts every meeting in, as before.
+        let last7Cutoff: Date?
+        let last30Cutoff: Date?
+        private let workflowsByName: [String: Workflow]
+
+        init(workflows: [Workflow], now: Date = Date(), calendar: Calendar = .current) {
+            todayStart = calendar.startOfDay(for: now)
+            last7Cutoff = calendar.date(byAdding: .day, value: -7, to: now)
+            last30Cutoff = calendar.date(byAdding: .day, value: -30, to: now)
+            // First wins, matching the `first(where:)` this replaces when two workflows share a name.
+            workflowsByName = Dictionary(workflows.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        }
+
+        /// Lookup by name because the meta sidecar persists the name, not the id (cross-machine portability - TECH-B4). The rail's scope uses id, so a rename can't orphan it; this lookup bridges the two.
+        func workflow(for meeting: Meeting) -> Workflow? {
+            guard let name = meeting.workflowName, !name.isEmpty else { return nil }
+            return workflowsByName[name]
+        }
+    }
+
+    /// True when `meeting` passes this scope. `workflows` must be the current snapshot (needed for NDA resolution). `now` is injected so tests can pin the clock. A caller walking many meetings builds one `Context` and calls `includes(_:in:)` instead.
     func includes(_ meeting: Meeting, workflows: [Workflow], now: Date = Date()) -> Bool {
+        includes(meeting, in: Context(workflows: workflows, now: now))
+    }
+
+    func includes(_ meeting: Meeting, in context: Context) -> Bool {
         switch self {
         case .allMeetings:
             return true
         case .today:
-            return meeting.startedAt >= Calendar.current.startOfDay(for: now)
+            return meeting.startedAt >= context.todayStart
         case .last7Days:
-            guard let cutoff = Calendar.current.date(byAdding: .day, value: -7, to: now)
-            else { return true }
+            guard let cutoff = context.last7Cutoff else { return true }
             return meeting.startedAt >= cutoff
         case .last30Days:
-            guard let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: now)
-            else { return true }
+            guard let cutoff = context.last30Cutoff else { return true }
             return meeting.startedAt >= cutoff
         case .needsYou:
             // Anything that wants the owner to act: a failed run, a long-meeting
@@ -166,7 +194,7 @@ enum LibraryScope: Hashable {
                 return false
             }
         case .ndaOnly:
-            return Self.resolveWorkflow(for: meeting, in: workflows)?.flags.ndaMode == true
+            return context.workflow(for: meeting)?.flags.ndaMode == true
         case .untagged:
             return (meeting.workflowName?.isEmpty ?? true)
         case .facts, .ask, .digests, .people, .stats:
@@ -183,13 +211,7 @@ enum LibraryScope: Hashable {
             // site rather than here.
             return false
         case .workflow(let id):
-            return Self.resolveWorkflow(for: meeting, in: workflows)?.id == id
+            return context.workflow(for: meeting)?.id == id
         }
-    }
-
-    /// Lookup by name because the meta sidecar persists the name, not the id (cross-machine portability - TECH-B4). The rail's scope uses id, so a rename can't orphan it; this lookup bridges the two.
-    private static func resolveWorkflow(for meeting: Meeting, in workflows: [Workflow]) -> Workflow? {
-        guard let name = meeting.workflowName, !name.isEmpty else { return nil }
-        return workflows.first { $0.name == name }
     }
 }

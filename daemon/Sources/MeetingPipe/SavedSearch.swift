@@ -83,9 +83,12 @@ struct SavedSearch: Identifiable, Codable, Equatable {
         to meetings: [Meeting],
         workflows: [Workflow],
         ftsMatches: Set<String>? = nil,
-        now: Date = Date()
+        now: Date = Date(),
+        scopeContext: LibraryScope.Context? = nil
     ) -> [Meeting] {
-        let scoped = meetings.filter { base.scope.includes($0, workflows: workflows, now: now) }
+        // PERF22: one context for the whole walk; `ScopeCounts.build` passes the one it built.
+        let context = scopeContext ?? LibraryScope.Context(workflows: workflows, now: now)
+        let scoped = meetings.filter { base.scope.includes($0, in: context) }
         return MeetingFilterEngine.apply(filter, to: scoped, ftsMatches: ftsMatches, now: now)
     }
 

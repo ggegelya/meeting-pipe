@@ -321,14 +321,17 @@ struct ScopeCounts: Equatable {
         workflows: [Workflow],
         savedSearches: [SavedSearch] = [],
         now: Date = Date(),
+        calendar: Calendar = .current,
         ftsMatches: (String) -> Set<String>? = { _ in nil }
     ) -> ScopeCounts {
         var today = 0, last7 = 0, last30 = 0, needsYou = 0, nda = 0, untagged = 0
         var perWf: [Workflow.ID: Int] = [:]
         let scopes: [LibraryScope] = [.today, .last7Days, .last30Days, .needsYou, .ndaOnly, .untagged]
+        // PERF22: the cutoffs and the workflow lookup once per build, not per meeting per scope.
+        let context = LibraryScope.Context(workflows: workflows, now: now, calendar: calendar)
         for m in meetings {
             for s in scopes {
-                guard s.includes(m, workflows: workflows, now: now) else { continue }
+                guard s.includes(m, in: context) else { continue }
                 switch s {
                 case .today:      today += 1
                 case .last7Days:  last7 += 1
@@ -340,8 +343,7 @@ struct ScopeCounts: Equatable {
                 }
             }
             // Workflow bucketing is independent of date/NDA scopes; an NDA meeting still counts toward its workflow.
-            if let name = m.workflowName, !name.isEmpty,
-               let wf = workflows.first(where: { $0.name == name }) {
+            if let wf = context.workflow(for: m) {
                 perWf[wf.id, default: 0] += 1
             }
         }
@@ -351,7 +353,8 @@ struct ScopeCounts: Equatable {
                 to: meetings,
                 workflows: workflows,
                 ftsMatches: ftsMatches(s.filter.query),
-                now: now
+                now: now,
+                scopeContext: context
             ).count
         }
         return ScopeCounts(

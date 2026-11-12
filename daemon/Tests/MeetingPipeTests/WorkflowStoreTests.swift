@@ -389,7 +389,7 @@ final class WorkflowStoreTests: XCTestCase {
             Workflow(name: "Personal", order: 4),
         ]
         // Sorted, and the case-different row is its own name: the two resolvers this
-        // cue speaks for (`LibraryScope.resolveWorkflow`, `ScopeCounts.build`) compare
+        // cue speaks for (`LibraryScope.Context.workflow(for:)`, `ScopeCounts.build`) compare
         // with ==, so claiming a case-different name collides would be a lie.
         XCTAssertEqual(
             WorkflowNameCollision.duplicateNames(in: workflows),

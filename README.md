@@ -409,7 +409,7 @@ A policy only ever acts on a **settled** meeting: one that finished and publishe
 
 The sweep runs when the daemon launches and after each meeting finishes. Compression needs `ffmpeg` on your `PATH`; without it the sweep logs a warning and skips. A compress writes the FLAC, reopens it, and compares durations before it deletes the WAV, so an interrupted transcode leaves the original in place.
 
-**Caches.** Waveform peaks live in `~/Library/Caches/MeetingPipe/waveforms/` and are recomputed the next time you open a meeting's Audio tab. Downloaded local models live in `~/.cache/huggingface/hub/`; **Evict unused** deletes every one except the model Preferences ▸ Pipeline is configured to use, and they re-download on demand.
+**Caches.** Waveform peaks live in `~/Library/Caches/MeetingPipe/waveforms/` and are recomputed the next time you open a meeting's Audio tab. Each meeting's length is kept in `~/Library/Caches/MeetingPipe/durations.json` so a relaunch does not re-read every transcript to list the Library; it is safe to delete, and the next launch measures again. Downloaded local models live in `~/.cache/huggingface/hub/`; **Evict unused** deletes every one except the model Preferences ▸ Pipeline is configured to use, and they re-download on demand.
 
 ### Your library may be uploading to iCloud
 

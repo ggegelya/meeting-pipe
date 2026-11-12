@@ -207,10 +207,11 @@ final class LibraryWindowModel: ObservableObject {
     init(
         coordinator: Coordinator? = nil,
         recordingsDir: URL,
-        savedSearchesURL: URL = SavedSearchStore.defaultURL
+        savedSearchesURL: URL = SavedSearchStore.defaultURL,
+        durationCacheURL: URL? = nil
     ) {
         self.coordinator = coordinator
-        self.meetingStore = MeetingStore(recordingsDir: recordingsDir)
+        self.meetingStore = MeetingStore(recordingsDir: recordingsDir, durationCacheURL: durationCacheURL)
         self.savedSearches = SavedSearchStore(url: savedSearchesURL)
     }
 
@@ -975,7 +976,8 @@ struct LibraryRootView: View {
             storeRevision: meetingStore.revision,
             workflowIDs: workflows.map(\.id),
             savedSearches: savedSearches.searches,
-            searchRevision: model.searchIndexRevision
+            searchRevision: model.searchIndexRevision,
+            day: Calendar.current.startOfDay(for: Date())
         )
         if key == lastCountsKey { return }
         lastCountsKey = key
@@ -1003,7 +1005,13 @@ struct LibraryRootView: View {
         /// PERF20: a folder's count rides the index, so a rebuild finishing recounts it too (the
         /// list re-derives on the same signal).
         let searchRevision: Int
-        static let empty = CountsKey(storeRevision: -1, workflowIDs: [], savedSearches: [], searchRevision: -1)
+        /// PERF22: the Today / 7 / 30-day counts are relative to the clock, and a rescan that found
+        /// nothing new no longer bumps the store revision, so a re-open on a new day recounts on the
+        /// day rather than waiting for a file to change.
+        let day: Date
+        static let empty = CountsKey(
+            storeRevision: -1, workflowIDs: [], savedSearches: [], searchRevision: -1, day: .distantPast
+        )
     }
 
     // MARK: - Facts aggregate (DV1 + AI7)

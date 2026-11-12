@@ -153,7 +153,11 @@ final class Coordinator: NSObject {
             return config.recording.outputDir
         }()
         self.prepCards = PrepCardStore(recordingsDir: recordingsDir)
-        let libraryModel = LibraryWindowModel(recordingsDir: recordingsDir)
+        // PERF22: the real duration cache is passed here, never defaulted in the model or the store,
+        // so a headless test store keeps its durations in memory and never touches the real cache.
+        let libraryModel = LibraryWindowModel(
+            recordingsDir: recordingsDir, durationCacheURL: MeetingDurationCache.defaultURL()
+        )
         // UX16: the FTS5 search index, built over the same store. Attached here (not in the model's
         // init) so headless tests never touch the real cache and fall back to in-memory search.
         libraryModel.attachSearchIndexer(SearchIndexer(store: libraryModel.meetingStore))

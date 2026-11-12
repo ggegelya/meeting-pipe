@@ -22,7 +22,7 @@ enum WorkflowDeletion {
     /// What a delete actually costs, including the half the old copy left out.
     ///
     /// The sidecar claim was always true (a recorded meeting keeps its workflow block),
-    /// but the rail claim was not: `LibraryScope.resolveWorkflow` resolves a meeting to a
+    /// but the rail claim was not: `LibraryScope.Context.workflow(for:)` resolves a meeting to a
     /// workflow by **name** (TECH-B4's portability call), while a rail scope is keyed by
     /// id. Delete a workflow and every past meeting naming it resolves to nil, so it
     /// matches no workflow scope; it is not swept into `Untagged` either, because that

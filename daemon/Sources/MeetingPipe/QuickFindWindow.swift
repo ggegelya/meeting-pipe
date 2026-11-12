@@ -55,6 +55,13 @@ final class QuickFindWindow {
         p.setContentSize(NSSize(width: 520, height: 360))
         p.center()
         self.panel = p
+        // PERF22: `hidesOnDeactivate` hides and re-shows the panel without `hide()` or `show()`, so
+        // the model learns its visibility from the window itself. Delivered on the next main turn,
+        // after `show()` / `hide()` have already said the same thing.
+        occlusion = NotificationCenter.default
+            .publisher(for: NSWindow.didChangeOcclusionStateNotification, object: p)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.panelVisibilityChanged() }
         p.makeKeyAndOrderFront(nil)
         NSApp.activate()
         model.refresh()
@@ -62,6 +69,14 @@ final class QuickFindWindow {
 
     func hide() {
         panel?.orderOut(nil)
+        model.dismissed()
+    }
+
+    private var occlusion: AnyCancellable?
+
+    private func panelVisibilityChanged() {
+        guard let panel else { return }
+        model.setPresented(panel.isVisible && panel.occlusionState.contains(.visible))
     }
 }
 
@@ -124,34 +139,78 @@ final class QuickFindModel: ObservableObject {
         self.onAsk = onAsk
         self.onDismiss = onDismiss
         // A rescan can change what the index holds (the reconcile follows it), so re-ask the index
-        // too, as the per-keystroke query used to.
-        meetingStore.objectWillChange
+        // too, as the per-keystroke query used to. PERF22: one event per scan (`$revision`, not
+        // `objectWillChange`, which fired once for `meetings` and again for `revision`), dropping
+        // the value replayed on subscribe, and delivered on main so `meetings` and `revision` are
+        // both the new ones by the time it runs (`@Published` emits in `willSet`).
+        meetingStore.$revision
+            .dropFirst()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] in
-                self?.recomputeMatches()
-                self?.resolveTranscriptMatches(debounced: false)
-            }
+            .sink { [weak self] _ in self?.libraryChanged() }
             .store(in: &cancellables)
         // PERF20: the health and the index revision change without a keystroke now that a
         // rebuild is real, so the hint and the transcript rows follow them rather than waiting
         // for the next key.
         indexChanges
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] in
-                self?.recomputeMatches()
-                self?.resolveTranscriptMatches(debounced: false)
-            }
+            .sink { [weak self] in self?.libraryChanged() }
             .store(in: &cancellables)
     }
 
-    /// Forces a store scan, then recomputes. Called on open so a stale list from yesterday doesn't appear.
-    /// The highlight resets to the top row too (UX25): the panel outlives its window, and a selection
-    /// left three rows down last time would silently steer the first Return of the next open.
+    /// PERF22: whether the panel is on screen. A change behind a hidden panel is noted rather than
+    /// ranked, since nobody can see the result, and the next appearance catches up. Starts false: the
+    /// panel does not exist until the first Cmd+K.
+    private(set) var isPresented = false
+    /// A store or index change arrived while hidden.
+    private var missedChange = false
+    /// How many times the matches were ranked. Test seam.
+    private(set) var recomputeCount = 0
+
+    private func libraryChanged() {
+        guard isPresented else {
+            missedChange = true
+            return
+        }
+        recomputeMatches()
+        resolveTranscriptMatches(debounced: false)
+    }
+
+    /// Called by the window when the panel's visibility changes without `show()` or `hide()`:
+    /// `hidesOnDeactivate` hides it when the app resigns active and brings it back on reactivation.
+    /// A reappearance after a missed change catches up.
+    func setPresented(_ presented: Bool) {
+        let reappeared = presented && !isPresented
+        isPresented = presented
+        if reappeared && missedChange {
+            missedChange = false
+            recomputeMatches()
+            resolveTranscriptMatches(debounced: false)
+        }
+    }
+
+    /// Recomputes against the list as it stands and asks the store for a one-shot scan, so a stale
+    /// list from yesterday doesn't survive the open: a scan that finds something publishes a
+    /// revision, and the sink re-ranks. Called on open. The highlight resets to the top row too
+    /// (UX25): the panel outlives its window, and a selection left three rows down last time would
+    /// silently steer the first Return of the next open.
+    ///
+    /// `refresh()`, never `start()` (PERF22): `start()` attaches the directory watcher, and only
+    /// the Library's `onDisappear` stops it, so one Cmd+K with the Library closed kept the watcher
+    /// rescanning, reindexing and re-ranking this hidden panel on every pipeline write for the life
+    /// of the process.
     func refresh() {
-        meetingStore.start()
+        isPresented = true
+        missedChange = false
+        meetingStore.refresh()
         selectedIndex = 0
         recomputeMatches()
         resolveTranscriptMatches(debounced: false)
+    }
+
+    /// The panel left the screen through `hide()`. The query stays: clearing it would be a
+    /// behaviour change nobody asked for.
+    func dismissed() {
+        isPresented = false
     }
 
     /// PERF20: ask the index for the field's query off main; re-rank when it answers, if the
@@ -160,7 +219,12 @@ final class QuickFindModel: ObservableObject {
         let asked = query
         lookup.resolve([asked], debounced: debounced) { [weak self] matches in
             guard let self, self.query == asked else { return }
-            self.transcriptMatches = (asked, matches[asked] ?? [])
+            let stems = matches[asked] ?? []
+            // PERF22: an answer the ranking already uses changes nothing, so it does not re-rank.
+            // An empty or one-letter query answers synchronously with nothing, which would
+            // otherwise rank every library change twice.
+            guard self.transcriptMatches.query != asked || self.transcriptMatches.stems != stems else { return }
+            self.transcriptMatches = (asked, stems)
             self.recomputeMatches()
         }
     }
@@ -212,6 +276,7 @@ final class QuickFindModel: ObservableObject {
     }
 
     private func recomputeMatches() {
+        recomputeCount += 1
         indexHealth = searchHealth()
         let m = QuickFindRanker.rank(
             query: query,

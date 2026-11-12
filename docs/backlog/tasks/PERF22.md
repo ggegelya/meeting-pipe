@@ -2,9 +2,10 @@
 id: PERF22
 title: Quick Find leaves the library watcher attached for the life of the process, every launch's first scan parses every transcript for its length, and every rescan republishes even when nothing changed
 category: Performance
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. `QuickFindModel.refresh()` calls `meetingStore.start()` and only the Library's `onDisappear` ever stops it, so one Cmd+K with the Library closed keeps the directory watcher rescanning, reconciling the search index and re-ranking the hidden panel twice per scan for the life of the process; the watcher's cancel handler closes `self.watcherFD` rather than its own fd, so a stop then start within one scan kills the new watcher and leaks the old fd. The first scan of every launch parses every `<stem>.json` for `audio_seconds` (mean 260 KB on this Mac; about 110 MB at the work library's 434 meetings), a cost UX74's source order added on 2026-08-18, aged failed rows re-parse on every scan, and every rescan republishes and bumps `revision` even when nothing changed. Scope: Quick Find scans one-shot, the handler closes its own fd, a persisted duration cache, aged failed rows cached, a signature-aware no-op skip, scope cutoffs hoisted. [Spec](./PERF22.md)
+closed: 2026-11-12
+comment: Shipped 2026-11-12. Quick Find takes a one-shot refresh() (never start()), observes $revision once per scan and ranks nothing while hidden; each watcher's cancel handler closes its own fd (watcherFD deleted); MeetingDurationCache at ~/Library/Caches/MeetingPipe/durations.json keeps UX74's measurements across launches; aged failed rows on a final recording are cached; refresh() skips the publish when its ScanSnapshot (listing, per-stem signatures, corrections mtime, rows) is unchanged, with the Library's count and group keys carrying the day; scope cutoffs and month titles hoisted. 23 new tests; bash scripts/ci-local.sh green. [Spec](./PERF22.md)
 ---
 
 # PERF22: Quick Find leaves the library watcher attached for the life of the process, every launch's first scan parses every transcript for its length, and every rescan republishes even when nothing changed
@@ -54,3 +55,5 @@ The seam is `MeetingStore` (`attachWatcher()`, `refresh()`, `performScan(directo
 - `MeetingStoreTests`: `refresh()` over an unchanged directory does not bump `revision`; touching one sidecar's mtime with no `Meeting` field change does (the UX52 guard); a `.processing` row ageing into `.failed` with no file change does.
 - `ScopeCounts` and `MeetingGroup` results are identical to today's over a fixture spanning several months and a DST change (calendar and time zone pinned).
 - `cd daemon && swift build` and `swift test` green, with the number of new tests in the commit body; `bash scripts/ci-local.sh` green; `ARCHITECTURE.md`'s `MeetingStore` bullet names the duration cache in the same commit.
+
+**Closed on tests (2026-11-12):** the real-window hide/reshow wiring (`QuickFindWindow`'s occlusion observer into `setPresented`, and `hide()` into `dismissed()`) is unverified, since the tests drive `QuickFindModel` only; the owner accepted closing on tests on 2026-11-12.

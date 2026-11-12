@@ -7,8 +7,8 @@ import TOMLKit
 ///
 /// Collisions matter because a meeting remembers its workflow by **name**, not by id
 /// (the meta sidecar persists the name for cross-machine portability, TECH-B4), so
-/// `LibraryScope.resolveWorkflow` and `ScopeCounts.build` both resolve with
-/// `first(where: { $0.name == name })`. Four workflows called "Client work" therefore
+/// `LibraryScope.Context.workflow(for:)`, which `ScopeCounts.build` uses too, resolves
+/// by exact name with the first workflow winning. Four workflows called "Client work" therefore
 /// collapse into one rail scope: one of them collects every meeting and the other
 /// three read zero however many they recorded, which no UI can explain.
 ///

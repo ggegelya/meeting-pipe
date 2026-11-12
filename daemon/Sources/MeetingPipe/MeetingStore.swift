@@ -214,7 +214,7 @@ final class MeetingStore: ObservableObject {
     /// True only for the initial scan; subsequent rescans don't flip it so the list doesn't flash to "loading" on each file change.
     @Published private(set) var hasLoadedOnce: Bool = false
 
-    /// Monotonically-increasing fingerprint bumped on every successful rescan. Views cache derived values (counts, facets, groups) by this value instead of comparing full arrays; two 200-Meeting array comparisons per render would defeat memoization. Increments even when only a middle row flips status, since the whole array is replaced wholesale.
+    /// Monotonically-increasing fingerprint bumped on every rescan that changed something. Views cache derived values (counts, facets, groups) by this value instead of comparing full arrays; two 200-Meeting array comparisons per render would defeat memoization. Increments even when only a middle row flips status, since the whole array is replaced wholesale. It is also the "a file changed" signal (UX52): a scan whose rows are identical still bumps it when any stem's file signature moved, so a re-transcribe that changes no `Meeting` field still reloads the open pane. Only a scan that found nothing at all is skipped (PERF22, `ScanSnapshot`).
     @Published private(set) var revision: Int = 0
 
     /// Whether the scan behind the current `meetings` listed the recordings directory (PERF20). False
@@ -233,7 +233,6 @@ final class MeetingStore: ObservableObject {
         qos: .userInitiated
     )
     private var watcher: DispatchSourceFileSystemObject?
-    private var watcherFD: CInt = -1
 
     /// At most one rescan in flight; further calls fold into a single follow-up so a burst of pipeline writes doesn't fan out into N+1 scans.
     private var scanRunning = false
@@ -243,7 +242,7 @@ final class MeetingStore: ObservableObject {
     private static let debounceSec: TimeInterval = 0.5
     private var debounceWork: DispatchWorkItem?
 
-    /// Per-stem parse cache (TECH-A12). A `.done` row re-parsed every 500 ms scan during recording was the audit perf finding: with 500+ meetings each rescan re-read summary.json + run.json + meta.json for every row. We keep the built `Meeting` keyed by a signature of the stem's on-disk file mtimes; an unchanged signature skips the JSON parse entirely. Only terminal rows are cached (a `.processing` row's status is age-derived, so it must re-evaluate each scan even when no file changed). Touched only on `scanQueue` (serial), so no extra locking.
+    /// Per-stem parse cache (TECH-A12). A `.done` row re-parsed every 500 ms scan during recording was the audit perf finding: with 500+ meetings each rescan re-read summary.json + run.json + meta.json for every row. We keep the built `Meeting` keyed by a signature of the stem's on-disk file mtimes; an unchanged signature skips the JSON parse entirely. Only rows whose status cannot move without a file change are cached (a `.processing` row's status is age-derived, so it must re-evaluate each scan even when no file changed). Touched only on `scanQueue` (serial), so no extra locking.
     private struct CacheEntry {
         let signature: [String: Date]
         let meeting: Meeting
@@ -257,21 +256,90 @@ final class MeetingStore: ObservableObject {
     /// (serial), like `scanCache`, so no extra locking.
     private var editedStemsCache: (mtime: Date, stems: Set<String>)?
 
-    init(recordingsDir: URL) {
+    /// Everything a scan saw that a consumer of `revision` can react to (PERF22): whether the listing
+    /// worked, every stem's file signature, the corrections directory's mtime, and the rows. Two
+    /// equal snapshots mean a publish would wake every revision consumer for nothing.
+    struct ScanSnapshot: Equatable {
+        let listedDirectory: Bool
+        let signatures: [String: [String: Date]]
+        let correctionsModified: Date?
+        let meetings: [Meeting]
+
+        /// Publish unless the scan is identical to the last one published. Comparing the
+        /// signatures as well as the rows is the UX52 guard: a re-transcribe rewrites `<stem>.json`
+        /// and `<stem>.md` and may change no `Meeting` field, and the transcript pane reloads on the
+        /// bump. Nil (nothing published yet) always publishes, so the first scan of an empty library
+        /// still lands a revision beside `hasLoadedOnce`, which the search indexer waits on.
+        static func publishes(_ next: ScanSnapshot, after last: ScanSnapshot?) -> Bool {
+            next != last
+        }
+    }
+    /// `scanQueue` only: what the last published scan saw. Its rows share `meetings`' COW buffer, so
+    /// keeping them costs no copy.
+    private var lastPublishedScan: ScanSnapshot?
+    /// `scanQueue` only: the per-stem signatures and the corrections mtime the latest `performScan`
+    /// saw, carried into the snapshot by `refresh`.
+    private var lastScanSignatures: [String: [String: Date]] = [:]
+    private var lastScanCorrectionsModified: Date?
+
+    /// Durations kept across launches (PERF22, `MeetingDurationCache`). `scanQueue` only. Loaded on
+    /// the scan queue at init, so the first scan sees it and main never reads the file.
+    private var durationCache = MeetingDurationCache()
+    /// What is on disk, so a scan that changed nothing writes nothing.
+    private var persistedDurationCache = MeetingDurationCache()
+    /// Nil keeps durations in memory only, which is what every test store gets: only the app's own
+    /// store (`LibraryWindowModel`) passes the real cache file.
+    private let durationCacheURL: URL?
+
+    // MARK: Test seams (PERF22)
+
+    /// The clock the age-inferred status reads. Tests move it; set it before scanning.
+    var now: () -> Date = { Date() }
+    /// How many times a scan opened a transcript to measure a duration. `scanQueue` only (or the
+    /// test thread driving `performScan` directly).
+    private(set) var transcriptDurationReads = 0
+    /// How many rows a scan rebuilt rather than served from the row cache.
+    private(set) var rowBuilds = 0
+    /// Called with each watcher descriptor its cancel handler closes. Captured when a watcher is
+    /// attached, so set it before `start()`.
+    var watcherDescriptorClosed: ((CInt) -> Void)?
+    /// Whether the directory watcher is attached. Quick Find must never leave it so.
+    var isWatching: Bool { watcher != nil }
+    /// The descriptor the live watcher holds, if any.
+    var watchedDescriptor: CInt? { watcher.map { CInt($0.handle) } }
+    /// Run `work` on the scan queue, behind whatever is queued there, so a test can hold a scan in
+    /// flight or drain the queue.
+    func enqueueOnScanQueue(_ work: @escaping () -> Void) {
+        scanQueue.async(execute: work)
+    }
+
+    init(recordingsDir: URL, durationCacheURL: URL? = nil) {
         self.recordingsDir = recordingsDir
+        self.durationCacheURL = durationCacheURL
+        if let durationCacheURL {
+            scanQueue.async { [weak self] in
+                let loaded = MeetingDurationCache.load(from: durationCacheURL)
+                self?.durationCache = loaded
+                self?.persistedDurationCache = loaded
+            }
+        }
     }
 
     deinit {
         detachWatcher()
     }
 
-    /// Begin watching the recordings directory and trigger an initial scan. Idempotent.
+    /// Begin watching the recordings directory and trigger an initial scan. Idempotent. The Library
+    /// is the only caller: it owns the watcher and stops it on disappear. A surface that wants a
+    /// fresh list once (Quick Find) calls `refresh()`, or nothing would ever stop the watcher.
     func start() {
         attachWatcher()
         refresh()
     }
 
-    /// Force a rescan. Also called internally by the debounced filesystem watcher.
+    /// Force a rescan. Also called internally by the debounced filesystem watcher. A scan that saw
+    /// exactly what the last published one saw publishes nothing (PERF22); `hasLoadedOnce` and the
+    /// follow-up rescan run either way.
     func refresh() {
         if scanRunning {
             pendingRescan = true
@@ -282,11 +350,20 @@ final class MeetingStore: ObservableObject {
         scanQueue.async { [weak self] in
             guard let self = self else { return }
             let result = self.performScan(directory: dir)
-            let listed = self.scanListingSucceeded
+            let snapshot = ScanSnapshot(
+                listedDirectory: self.scanListingSucceeded,
+                signatures: self.lastScanSignatures,
+                correctionsModified: self.lastScanCorrectionsModified,
+                meetings: result
+            )
+            let publishes = ScanSnapshot.publishes(snapshot, after: self.lastPublishedScan)
+            if publishes { self.lastPublishedScan = snapshot }
             DispatchQueue.main.async {
-                self.lastScanListedDirectory = listed
-                self.meetings = result
-                self.revision &+= 1
+                if publishes {
+                    self.lastScanListedDirectory = snapshot.listedDirectory
+                    self.meetings = result
+                    self.revision &+= 1
+                }
                 if !self.hasLoadedOnce { self.hasLoadedOnce = true }
                 self.scanRunning = false
                 if self.pendingRescan {
@@ -314,7 +391,6 @@ final class MeetingStore: ObservableObject {
         )
         let fd = open(recordingsDir.path, O_EVTONLY)
         guard fd >= 0 else { return }
-        watcherFD = fd
         let src = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd,
             eventMask: [.write, .delete, .rename, .extend],
@@ -323,15 +399,14 @@ final class MeetingStore: ObservableObject {
         src.setEventHandler { [weak self] in
             DispatchQueue.main.async { self?.scheduleDebouncedRefresh() }
         }
-        src.setCancelHandler { [weak self] in
-            guard let self = self else {
-                close(fd)
-                return
-            }
-            if self.watcherFD >= 0 {
-                close(self.watcherFD)
-                self.watcherFD = -1
-            }
+        // Each source closes the descriptor it was made with and nothing else (PERF22). The handler
+        // runs later, on `scanQueue` behind any scan in flight, and it used to close whatever a
+        // shared `watcherFD` held by then: a stop and a start inside one scan had the old handler
+        // close the new watcher's descriptor, which silenced auto-refresh and leaked the old one.
+        let closed = watcherDescriptorClosed
+        src.setCancelHandler {
+            close(fd)
+            closed?(fd)
         }
         watcher = src
         src.resume()
@@ -365,9 +440,14 @@ final class MeetingStore: ObservableObject {
         ) else {
             scanCache.removeAll()
             scanListingSucceeded = false
+            lastScanSignatures = [:]
+            lastScanCorrectionsModified = nil
+            // The duration cache is deliberately left alone: an unreadable root is not an empty
+            // library, and pruning here would cost the next launch a cold scan.
             return []
         }
         scanListingSucceeded = true
+        let now = self.now()
 
         // Group files by stem (substring before the first '.'). One O(N) pass.
         var byStem: [String: [URL]] = [:]
@@ -380,15 +460,24 @@ final class MeetingStore: ObservableObject {
         var out: [Meeting] = []
         out.reserveCapacity(byStem.count)
         var nextCache: [String: CacheEntry] = [:]
+        var signatures: [String: [String: Date]] = [:]
+        signatures.reserveCapacity(byStem.count)
         for (stem, files) in byStem {
             let signature = MeetingStore.signature(of: files)
-            // The cache holds only terminal rows, so a signature match is always safe to reuse and skips the per-sidecar JSON parse (the audit's perf finding).
+            signatures[stem] = signature
+            // The cache holds only rows that no wall clock can move, so a signature match is always safe to reuse and skips the per-sidecar JSON parse (the audit's perf finding).
             if let cached = scanCache[stem], cached.signature == signature {
                 out.append(cached.meeting)
                 nextCache[stem] = cached
                 continue
             }
-            guard let built = MeetingStore.buildMeeting(stem: stem, files: files, directory: directory) else {
+            rowBuilds += 1
+            guard let built = MeetingStore.buildMeeting(
+                stem: stem, files: files, directory: directory, now: now,
+                duration: { audio, transcript, startedAt in
+                    self.duration(stem: stem, audio: audio, transcriptJSON: transcript, startedAt: startedAt)
+                }
+            ) else {
                 continue
             }
             out.append(built.meeting)
@@ -398,6 +487,9 @@ final class MeetingStore: ObservableObject {
         }
         // Replacing wholesale prunes cache entries for stems whose files were deleted.
         scanCache = nextCache
+        lastScanSignatures = signatures
+        durationCache.prune(keeping: Set(byStem.keys))
+        persistDurationCacheIfChanged()
 
         // Overlay the "Summary edited locally" flag (UX15). Corrections live
         // outside the recordings dir, so this rides on top of the file-mtime
@@ -421,10 +513,14 @@ final class MeetingStore: ObservableObject {
     /// Stems the "Summary edited locally" marker applies to (UX15), cached by the
     /// corrections-dir mtime so a scan storm during recording does not re-read the
     /// records. Runs on `scanQueue` (serial), so touching `editedStemsCache` needs
-    /// no lock.
+    /// no lock. Records the directory's mtime for the scan's publish snapshot (PERF22).
     private func editedStemsOverlay() -> Set<String> {
-        guard let dir = try? CorrectionStore.directory() else { return [] }
+        guard let dir = try? CorrectionStore.directory() else {
+            lastScanCorrectionsModified = nil
+            return []
+        }
         let mtime = MeetingStore.mtime(of: dir)
+        lastScanCorrectionsModified = mtime
         if let cached = editedStemsCache, cached.mtime == mtime {
             return cached.stems
         }
@@ -444,7 +540,7 @@ final class MeetingStore: ObservableObject {
         return sig
     }
 
-    /// Build a single `Meeting` from its on-disk file group. `cacheable` is true only for terminal rows (summary present, error sidecar present, or paste-ready). A `.processing` / age-inferred `.failed` row derives its status from the wall clock, so it is never cached: it must be rebuilt each scan to catch the staleness transition.
+    /// Build a single `Meeting` from its on-disk file group. `cacheable` is true for terminal rows (summary present, error sidecar present, or paste-ready) and, since PERF22, for an age-inferred `.failed` row past the staleness window with a final recording. A `.processing` row derives its status from the wall clock, so it is never cached: it must be rebuilt each scan to catch the staleness transition.
     /// How recently a `.mic.wav` must have been written to count as a live
     /// capture rather than a dead orphan. A recording writes the mic file every
     /// audio buffer, so a live capture's mtime is sub-second fresh; an orphan
@@ -582,12 +678,21 @@ final class MeetingStore: ObservableObject {
     /// header read and a readable header costs no stat. Called from
     /// `buildMeeting`, i.e. inside the derivation `cacheable` governs, so a
     /// terminal row pays these reads once per signature change rather than once
-    /// per scan.
+    /// per scan. PERF22 puts `MeetingDurationCache` in front of it (the instance
+    /// `duration(stem:...)` below), which keeps the first two answers across
+    /// launches and leaves this order exactly as it is.
     private static func duration(
         audio: URL?,
         transcriptJSON: URL?,
         startedAt: Date
     ) -> TimeInterval? {
+        measuredDuration(audio: audio, transcriptJSON: transcriptJSON)
+            ?? mtimeSpan(audio: audio, startedAt: startedAt)
+    }
+
+    /// UX74's first two sources, the ones that measure the audio. Their answer is
+    /// a fact about the files it read, which is what lets PERF22 keep it.
+    private static func measuredDuration(audio: URL?, transcriptJSON: URL?) -> TimeInterval? {
         if let seconds = transcriptJSON
             .flatMap({ readJSON(at: $0) })
             .flatMap({ $0["audio_seconds"] as? Double }),
@@ -606,15 +711,66 @@ final class MeetingStore: ObservableObject {
            seconds.isFinite, seconds > 0 {
             return seconds
         }
+        return nil
+    }
+
+    /// UX74's last resort: the audio's mtime minus the stem's start. Never kept
+    /// across launches, since it is not a measurement.
+    private static func mtimeSpan(audio: URL?, startedAt: Date) -> TimeInterval? {
+        guard let audio = audio else { return nil }
         let mtime = (try? audio.resourceValues(forKeys: [.contentModificationDateKey]))?
             .contentModificationDate
         return mtime.flatMap { $0 > startedAt ? $0.timeIntervalSince(startedAt) : nil }
     }
 
+    /// One stem's length through the duration cache (PERF22). A hit needs both
+    /// files to be the ones the answer was computed from, so a re-transcribe or a
+    /// re-encode misses on its own. A miss computes in UX74's order and keeps
+    /// only a measurement, and never one taken beside a capture intermediate,
+    /// whose file a live recording rewrites on every scan. `scanQueue` only.
+    private func duration(
+        stem: String,
+        audio: URL?,
+        transcriptJSON: URL?,
+        startedAt: Date
+    ) -> TimeInterval? {
+        let transcriptID = MeetingDurationCache.FileIdentity(of: transcriptJSON)
+        let audioID = MeetingDurationCache.FileIdentity(of: audio)
+        if let seconds = durationCache.seconds(stem: stem, transcript: transcriptID, audio: audioID) {
+            return seconds
+        }
+        if transcriptJSON != nil { transcriptDurationReads += 1 }
+        let keepable = audio.map { MeetingStore.isFinalRecording($0) } ?? true
+        if let measured = MeetingStore.measuredDuration(audio: audio, transcriptJSON: transcriptJSON) {
+            durationCache.set(
+                keepable ? .init(seconds: measured, transcript: transcriptID, audio: audioID) : nil,
+                for: stem
+            )
+            return measured
+        }
+        durationCache.set(nil, for: stem)
+        return MeetingStore.mtimeSpan(audio: audio, startedAt: startedAt)
+    }
+
+    /// Write the duration cache when a scan changed it and the store has a file
+    /// for it. On `scanQueue`, so off main; a failed write costs the next launch
+    /// some parses and nothing else.
+    private func persistDurationCacheIfChanged() {
+        guard let url = durationCacheURL, durationCache != persistedDurationCache else { return }
+        do {
+            try durationCache.write(to: url)
+            persistedDurationCache = durationCache
+        } catch {
+            Log.main.warning("duration cache write failed at \(url.path): \(error.localizedDescription)")
+        }
+    }
+
     private static func buildMeeting(
         stem: String,
         files: [URL],
-        directory: URL
+        directory: URL,
+        now: Date,
+        duration: (_ audio: URL?, _ transcriptJSON: URL?, _ startedAt: Date) -> TimeInterval?
     ) -> (meeting: Meeting, cacheable: Bool)? {
         // The merged recording is `<stem>.wav` (or `<stem>.flac` once STOR1's
         // `compress` policy has run). The `.mic.wav` / `.system.wav` capture
@@ -692,9 +848,7 @@ final class MeetingStore: ObservableObject {
         // unbounded and grows with age. Five such stems put 2392.7 h into the
         // owner's Meeting time rail against 75.8 h of real audio, and the reliable
         // source was being skipped precisely when a file existed to be misread.
-        let duration = MeetingStore.duration(
-            audio: audio, transcriptJSON: transcriptJSON, startedAt: startedAt
-        )
+        let duration = duration(audio, transcriptJSON, startedAt)
 
         let status: Meeting.Status
         let cacheable: Bool
@@ -714,14 +868,22 @@ final class MeetingStore: ObservableObject {
             status = .empty
             cacheable = true
         } else {
-            // No summary, no failure sidecar: in-flight, never started, or stalled. Use age as a proxy; anything older than the staleness window is `.failed`. The live-recording overlay supersedes this via `LibraryWindowModel.liveRecordingStem`. Age-derived, so not cacheable.
-            let age = Date().timeIntervalSince(startedAt)
+            // No summary, no failure sidecar: in-flight, never started, or stalled. Use age as a proxy; anything older than the staleness window is `.failed`. The live-recording overlay supersedes this via `LibraryWindowModel.liveRecordingStem`.
+            let age = now.timeIntervalSince(startedAt)
             if age > Meeting.staleProcessingThresholdSec {
                 status = .failed
+                // PERF22: past the window, age can no longer move the status, so only a file
+                // change (which changes the signature) can, and the row is cacheable. Not when its
+                // audio is a capture intermediate: that row exists only while the file is fresh
+                // (`freshCaptureIntermediate`, a second wall clock), so caching it would pin a
+                // phantom row once the capture went stale with no file change (TECH-A17).
+                // ARCH20's `MeetingStatus.decide` inherits this as one row of its table.
+                cacheable = audio.map { MeetingStore.isFinalRecording($0) } ?? false
             } else {
+                // Age-derived: must re-evaluate each scan to catch the staleness transition.
                 status = .processing
+                cacheable = false
             }
-            cacheable = false
         }
 
         // A stem with neither audio nor a terminal sidecar is a dead orphan, not a
