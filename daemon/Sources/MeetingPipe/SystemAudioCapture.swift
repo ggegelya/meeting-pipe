@@ -43,10 +43,11 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
         return body()
     }
 
-    /// True once the recorder's budget elapsed or `stop()` ran before the start returned.
-    /// Read on the SCStream delegate queue per buffer; an uncontended `NSLock` there is tens
-    /// of nanoseconds, and the sample handler queue is not a real-time thread.
-    private var isStartAbandoned: Bool { withStartLock { attempt.isAbandoned } }
+    /// Whether this attempt's buffers may reach the recorder: not abandoned (REC17) and not being
+    /// stopped (REC28). The decision is the ledger's (`SystemCaptureStartAttempt.deliversBuffers`);
+    /// this only takes the lock. Read on the SCStream delegate queue per buffer; an uncontended
+    /// `NSLock` there is tens of nanoseconds, and the sample handler queue is not a real-time thread.
+    private var deliversBuffers: Bool { withStartLock { attempt.deliversBuffers } }
 
     /// True while this capture holds a stream it adopted and has not stopped: the only state
     /// in which a `didStopWithError` is about the recorder's live channel.
@@ -284,11 +285,19 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
     }
 
     func stop() async {
+        // REC28: cut delivery first, under the lock, on both branches below and before anything
+        // is awaited. Until this, an adopted stream kept delivering until `stopCapture()` took
+        // effect, and the two callers that stop waiting for it (`haltCapture`'s 5 s, the loss
+        // path's) then let the next recording's or the retry's file take its buffers.
+        //
         // REC17: pre-empt a start that has not returned yet. `stream` is assigned only after
         // `startCapture()` returns, so the old `guard let stream` made this a no-op against an
         // in-flight start, and the stream that start eventually produced ran until process exit.
-        // Now the attempt is abandoned under the lock and its own completion stops the stream.
+        // That attempt is abandoned under the lock and its own completion stops the stream. This
+        // half only covers a start still in flight: for one already adopted, `stopped()` is a
+        // no-op, and the delivery gate set first is what silences it.
         let live: SCStream? = withStartLock {
+            attempt.stopDelivery()
             if !attempt.isCompleted {
                 attempt.stopped()
                 return nil
@@ -320,7 +329,9 @@ extension SystemAudioCapture: SCStreamOutput, SCStreamDelegate {
         // REC17: an abandoned attempt delivers nothing. Its stream may be the late one being
         // stopped, or one adopted a beat before the recorder gave up; either way a retry may
         // own the writer by now, and a second stream's buffers in it are audio at the wrong offset.
-        guard !isStartAbandoned else { return }
+        // REC28: and nothing once `stop()` began, adopted or not. `stopCapture()` has hung for
+        // minutes here, and the channel this stream fed may hold the next recording's file by then.
+        guard deliversBuffers else { return }
         guard type == .audio,
               CMSampleBufferDataIsReady(sampleBuffer),
               let pcm = Self.pcmBuffer(from: sampleBuffer) else {

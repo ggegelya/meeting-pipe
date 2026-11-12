@@ -3,6 +3,7 @@
 @preconcurrency import AVFoundation
 import Foundation
 import MeetingPipeCore
+import os
 
 /// The system-audio half of a recording (ARCH8, out of `MeetingRecorder`): the SCStream start and
 /// its REC17 bound, the retry that resumes the open WAV behind a silence pad (REC10), REC8's one
@@ -10,9 +11,14 @@ import MeetingPipeCore
 /// counters. The decisions are already pure elsewhere (`SystemCaptureRetryPlanner`,
 /// `SystemCaptureStartAttempt`, `MicTapLivenessMonitor`); this is the state and the procedure.
 ///
-/// Threading is the recorder's, unchanged: main for every entry point, the SCStream delivery queue
-/// for the buffer closure (`systemFires`, `systemFirstFrameUptime`, the level accumulator) and the
-/// writer's own queue for its outcome callback.
+/// Threading: main for every entry point and for applying a start's outcome (REC28: the start
+/// Task hops to the main-isolated `applyStartOutcome`, and only the ScreenCaptureKit awaits
+/// inside `boundedSystemCaptureStart` and REC17's abandon on a timeout, which must not wait for
+/// main, run off it); the SCStream delivery queue for the buffer closure (`systemFires`,
+/// `systemFirstFrameUptime`, the level accumulator), which first asks `generations` whether its
+/// attempt is still the live one; and the writer's own queue for its outcome callback. Until
+/// REC28 the start Task applied `.started` and `.failed` from the cooperative pool, so a late
+/// `.failed` could clear a file and writer main had just handed to a retry.
 final class SystemAudioChannel {
 
     /// Whether the recorder is recording; every guard here asks it. Set once by the recorder.
@@ -47,7 +53,16 @@ final class SystemAudioChannel {
     private(set) var systemURL: URL?
 
     private var systemFile: AVAudioFile?
+    /// Whether the system WAV is open; read by the REC28 tests, which cannot see `systemFile`.
+    var hasOpenSystemFile: Bool { systemFile != nil }
     private var systemCapture: SystemAudioCapture?
+
+    /// REC28: the live attempt's number (`SystemCaptureGenerations`). Written on main at arm and
+    /// wherever the channel lets a capture go; read on the delivery queue per buffer, so it sits
+    /// behind a lock rather than being a plain field like its neighbours. Never reset, including
+    /// by `resetForRecording`: the channel outlives every recording, and a number reused across
+    /// recordings is a zombie that matches again.
+    private let generations = OSAllocatedUnfairLock(initialState: SystemCaptureGenerations())
     private var systemStartTask: Task<Void, Never>?
     /// Readable so `MeetingRecorder.stop()` can hold on to it across `drainWriter`, which drops
     /// it: an abandoned drain keeps the stem owned until the writer finishes (REC23).
@@ -119,6 +134,17 @@ final class SystemAudioChannel {
     /// schedules REC8's automatic one.
     static let systemStartBudgetSeconds = 10.0
 
+    /// How long either path waits on `SystemAudioCapture.stop()` before it stops waiting (REC7,
+    /// REC28). ScreenCaptureKit's `stopCapture()` hung for about 7 minutes on 2026-06-05.
+    static let systemStopBudgetSeconds = 5.0
+
+    /// Which path gave up on a `stop()`: the recorder's own halt or a mid-meeting loss. The
+    /// `path` attribute of `system_capture_stop_timed_out` (REC28).
+    enum StopPath: String {
+        case stop
+        case loss
+    }
+
     var systemChannelHealth: MeetingRecorder.SystemChannelHealth {
         if systemCapture != nil, systemFires > systemFiresAtArm { return .live }
         if systemCapture == nil, SystemAudioCapture.permissionState == .denied { return .micOnly }
@@ -184,12 +210,40 @@ final class SystemAudioChannel {
         }
         systemStartTask = nil
 
+        // REC28: refuse this attempt's buffers before awaiting its stop, so a stream whose
+        // `stopCapture()` outlives the bound below cannot write into the next recording's file.
+        // After the start-await, not before it: a start outcome landing in that await is still
+        // this recording's to apply, as it always was.
+        invalidateCaptureGeneration()
         let capture = systemCapture
-        if await runWithTimeout(seconds: 5, { await capture?.stop() }) == false {
-            Log.writeLine("recorder", "WARN: system audio stop timed out - proceeding with merge")
-            Log.event(category: "recorder", action: "system_capture_stop_timed_out", attributes: [:])
-        }
+        await Self.boundedCaptureStop(path: .stop) { await capture?.stop() }
         systemCapture = nil
+    }
+
+    /// Await a capture's `stop()` for at most `seconds` (REC7), and when it does not return,
+    /// say so: `system_capture_stop_timed_out` with the path that gave up, so a zombie stream is
+    /// one grep in `events.jsonl` (REC28). Both stop sites come through here. `stop()` suspends
+    /// rather than blocks, so the Task-based bound is the right one (CI8). Returns whether the
+    /// stop finished in time.
+    @discardableResult
+    static func boundedCaptureStop(
+        path: StopPath,
+        seconds: Double = SystemAudioChannel.systemStopBudgetSeconds,
+        _ stop: @escaping @Sendable () async -> Void
+    ) async -> Bool {
+        let finished = await runWithTimeout(seconds: seconds, stop)
+        if !finished {
+            switch path {
+            case .stop:
+                Log.writeLine("recorder", "WARN: system audio stop timed out - proceeding with merge")
+            case .loss:
+                Log.writeLine("recorder", "WARN: stopping the lost system-audio stream timed out; its buffers are refused (REC28)")
+            }
+            Log.event(category: "recorder", action: "system_capture_stop_timed_out", attributes: [
+                "path": path.rawValue,
+            ])
+        }
+        return finished
     }
 
     /// Drain the writer (bounded, REC7) and drop it; see `MeetingRecorder.drainWriters`.
@@ -210,7 +264,31 @@ final class SystemAudioChannel {
     /// OS to reclaim on exit.
     func dropCaptureForTermination() {
         systemFile = nil
+        invalidateCaptureGeneration()
         systemCapture = nil
+    }
+
+    // MARK: - Capture generations (REC28)
+
+    /// Issue the next attempt's number and make it the live one. Main, at arm.
+    func armCaptureGeneration() -> UInt64 {
+        generations.withLock { $0.arm() }
+    }
+
+    /// The channel let go of its capture: nothing from it is accepted or applied from here.
+    func invalidateCaptureGeneration() {
+        generations.withLock { $0.invalidate() }
+    }
+
+    /// The buffer closure's gate, on the delivery queue: this attempt is still the live one and a
+    /// file is open. Ahead of every counter and the writer.
+    func acceptsBuffer(from generation: UInt64) -> Bool {
+        let hasOpenFile = systemFile != nil
+        return generations.withLock { $0.accepts(generation, hasOpenFile: hasOpenFile) }
+    }
+
+    private func isLiveGeneration(_ generation: UInt64) -> Bool {
+        generations.withLock { $0.isLive(generation) }
     }
 
     /// Termination flush: the synchronous bounded drain (REC11(a)), then drop the writer.
@@ -236,8 +314,46 @@ final class SystemAudioChannel {
     /// still open the retry keeps writing into it and pads the outage with silence
     /// first, so the pre-loss audio survives AND the recovered audio lands where it was
     /// captured. `SystemCaptureRetryPlanner` owns that decision; the `.openFresh` branch
-    /// below is the only one that may truncate.
+    /// in `armSystemCapture` is the only one that may truncate.
     private func startSystemCapture(systemURL: URL, isRetry: Bool) {
+        let armed = armSystemCapture(systemURL: systemURL, isRetry: isRetry)
+        let capture = armed.capture
+        // Track the Task so stop() can await it; otherwise a fast stop()
+        // races the in-flight start and orphans the SCStream.
+        //
+        // REC17: the start is awaited through `boundedSystemCaptureStart` and nowhere else.
+        // `SystemAudioCapture.start()` is two unbounded ScreenCaptureKit awaits, and on
+        // 2026-09-17 they took 64 minutes between them; this Task then held the slot for all
+        // of it, so `retrySystemAudio` no-oped, the watchdog (gated on a first buffer) never
+        // looked, and the recording ran mic-only with no banner. The timeout is abandon-on-
+        // timeout like every other bound in this file: the start keeps running inside SCK,
+        // and the capture's ledger makes its eventual completion stop the stream it produced.
+        //
+        // REC28: the outcome is applied on main, to this attempt only (`applyStartOutcome`).
+        // The abandon on a timeout stays here, off main, so a late completion cannot adopt in
+        // the gap while main is busy. `haltCapture` awaits this Task, so the outcome has been
+        // applied by the time its start-await returns, exactly as before.
+        systemStartTask = Task { [weak self] in
+            let outcome = await boundedSystemCaptureStart(seconds: SystemAudioChannel.systemStartBudgetSeconds, { try await capture.start() })
+            if outcome == .timedOut { capture.abandonStart() }
+            await self?.applyStartOutcome(outcome, to: armed, systemURL: systemURL, isRetry: isRetry)
+        }
+    }
+
+    /// What `armSystemCapture` set up for one attempt: the capture, its generation (REC28), and
+    /// whether it writes into a file that already holds captured audio, which the failure branch
+    /// must not delete (REC10).
+    struct ArmedSystemCapture {
+        let capture: SystemAudioCapture
+        let generation: UInt64
+        let resumedOpenFile: Bool
+    }
+
+    /// The synchronous half of `startSystemCapture`: open or resume the WAV, take this attempt's
+    /// baseline and generation, build the capture and hold it. Nothing here touches
+    /// ScreenCaptureKit (`SystemAudioCapture.init` does not), which is what lets the REC28 tests
+    /// arm a channel headlessly. Main.
+    func armSystemCapture(systemURL: URL, isRetry: Bool) -> ArmedSystemCapture {
         // REC16: wall clock, matching the mic channel and surviving a sleep.
         let now = Date().timeIntervalSince1970
         let plan: SystemCaptureRetryPlan = isRetry
@@ -281,9 +397,13 @@ final class SystemAudioChannel {
         // and the backstop on main; written here, on main, before the capture can deliver.
         let armBaseline = systemFires
         systemFiresAtArm = armBaseline
+        // REC28: this attempt's number. The closure below accepts a buffer only while it is the
+        // live one, so a capture the channel has let go of (halted, lost, replaced by a retry)
+        // touches no counter, no first-frame mark and no writer, whichever file is open by then.
+        let generation = armCaptureGeneration()
 
         let capture = SystemAudioCapture { [weak self] pcm in
-            guard let self = self, self.systemFile != nil else { return }
+            guard let self = self, self.acceptsBuffer(from: generation) else { return }
             self.systemFires &+= 1
             if self.systemFires == armBaseline &+ 1 {
                 Log.writeLine("recorder", "system tap first fired: frames=\(pcm.frameLength)\(isRetry ? " (retry)" : "")")
@@ -318,60 +438,65 @@ final class SystemAudioChannel {
             DispatchQueue.main.async { self?.handleSystemAudioLost(reason: reason) }
         }
         self.systemCapture = capture
-        // Track the Task so stop() can await it; otherwise a fast stop()
-        // races the in-flight start and orphans the SCStream.
-        //
-        // REC17: the start is awaited through `boundedSystemCaptureStart` and nowhere else.
-        // `SystemAudioCapture.start()` is two unbounded ScreenCaptureKit awaits, and on
-        // 2026-09-17 they took 64 minutes between them; this Task then held the slot for all
-        // of it, so `retrySystemAudio` no-oped, the watchdog (gated on a first buffer) never
-        // looked, and the recording ran mic-only with no banner. The timeout is abandon-on-
-        // timeout like every other bound in this file: the start keeps running inside SCK,
-        // and the capture's ledger makes its eventual completion stop the stream it produced.
-        systemStartTask = Task { [weak self] in
-            switch await boundedSystemCaptureStart(seconds: SystemAudioChannel.systemStartBudgetSeconds, { try await capture.start() }) {
-            case .started:
-                Log.writeLine("recorder", "SCStream started")
-                // Healthy (re)start: the system channel covers the recording from here.
-                self?.systemDegraded = false
-                if isRetry {
-                    // Hop to main and fire the recovery callback through `self`,
-                    // reached on the main actor so no non-Sendable value crosses the
-                    // @Sendable closure boundary (matches Coordinator's backstop hops).
-                    Task { @MainActor in self?.onSystemAudioRecovered?() }
-                }
-            case .discarded(let why):
-                // A stop() beat the start and the capture stopped its own stream. Not a
-                // failure: the failure branch below deletes a fresh system WAV, and this
-                // recording is already past its merge.
-                Log.writeLine("recorder", "SCStream start returned after \(why.rawValue); nothing adopted (REC17)")
-            case .failed(let reason):
-                Log.writeLine("recorder", "WARN: SCStream start failed: \(reason), recording mic-only")
-                self?.systemCapture = nil
-                self?.systemDegraded = true
-                // REC10: only tear the file down when it holds nothing. On a resume it
-                // carries every sample captured before the death, so dropping the writer
-                // (and deleting the path) here would be the same data loss this task
-                // exists to close, just moved onto the failed-retry branch. Left open,
-                // it still merges at stop and a later retry can resume it again.
-                if resumedOpenFile == false {
-                    // Drop the system file so merge knows there's nothing to mix.
-                    self?.systemFile = nil
-                    self?.systemWriter = nil
-                    try? FileManager.default.removeItem(at: systemURL)
-                }
-                Task { @MainActor in self?.onSystemAudioDegraded?(reason) }
-            case .timedOut:
-                capture.abandonStart()
-                Log.event(category: "recorder", action: "system_capture_start_timed_out", attributes: [
-                    "budget_s": SystemAudioChannel.systemStartBudgetSeconds,
-                    "is_retry": isRetry,
-                ])
-                Log.writeLine("recorder", "WARN: SCStream start did not return within \(Int(SystemAudioChannel.systemStartBudgetSeconds))s; abandoning it and treating the system channel as lost (REC17)")
-                // Main-thread only, like every other loss path, and through the capture's
-                // identity so a channel some other path already replaced is left alone.
-                Task { @MainActor in self?.handleSystemAudioStartTimedOut(capture, isRetry: isRetry) }
+        return ArmedSystemCapture(capture: capture, generation: generation, resumedOpenFile: resumedOpenFile)
+    }
+
+    /// Apply a bounded start's outcome to the attempt it belongs to (REC28). On main, like every
+    /// other write to this channel's state; `.started` and `.failed` act only while `armed` is
+    /// still the live generation, so a late outcome for a capture a retry or `stop()` already
+    /// replaced leaves the file, the writer, `systemDegraded` and the path on disk alone. Until
+    /// REC28 this switch ran on the cooperative pool with no identity check, and a late `.failed`
+    /// cleared the file and writer a retry had just padded, after which the retry's buffers had
+    /// nowhere to go and the watchdog, waiting on a first one, never fired.
+    @MainActor
+    func applyStartOutcome(_ outcome: SystemCaptureStartOutcome, to armed: ArmedSystemCapture, systemURL: URL, isRetry: Bool) {
+        let isCurrent = isLiveGeneration(armed.generation)
+        switch outcome {
+        case .started:
+            Log.writeLine("recorder", "SCStream started")
+            guard isCurrent else {
+                Log.writeLine("recorder", "SCStream start returned for a capture the channel already let go; nothing applied (REC28)")
+                return
             }
+            // Healthy (re)start: the system channel covers the recording from here.
+            systemDegraded = false
+            if isRetry { onSystemAudioRecovered?() }
+        case .discarded(let why):
+            // A stop() beat the start and the capture stopped its own stream. Not a
+            // failure: the failure branch below deletes a fresh system WAV, and this
+            // recording is already past its merge.
+            Log.writeLine("recorder", "SCStream start returned after \(why.rawValue); nothing adopted (REC17)")
+        case .failed(let reason):
+            Log.writeLine("recorder", "WARN: SCStream start failed: \(reason), recording mic-only")
+            guard isCurrent else {
+                Log.writeLine("recorder", "the failed start belongs to a capture the channel already let go; its file and writer are left alone (REC28)")
+                return
+            }
+            invalidateCaptureGeneration()
+            systemCapture = nil
+            systemDegraded = true
+            // REC10: only tear the file down when it holds nothing. On a resume it
+            // carries every sample captured before the death, so dropping the writer
+            // (and deleting the path) here would be the same data loss this task
+            // exists to close, just moved onto the failed-retry branch. Left open,
+            // it still merges at stop and a later retry can resume it again.
+            if armed.resumedOpenFile == false {
+                // Drop the system file so merge knows there's nothing to mix.
+                systemFile = nil
+                systemWriter = nil
+                try? FileManager.default.removeItem(at: systemURL)
+            }
+            onSystemAudioDegraded?(reason)
+        case .timedOut:
+            // The start Task already abandoned the capture, off main (REC17), before hopping here.
+            Log.event(category: "recorder", action: "system_capture_start_timed_out", attributes: [
+                "budget_s": SystemAudioChannel.systemStartBudgetSeconds,
+                "is_retry": isRetry,
+            ])
+            Log.writeLine("recorder", "WARN: SCStream start did not return within \(Int(SystemAudioChannel.systemStartBudgetSeconds))s; abandoning it and treating the system channel as lost (REC17)")
+            // Through the capture's identity, so a channel some other path already replaced is
+            // left alone.
+            handleSystemAudioStartTimedOut(armed.capture, isRetry: isRetry)
         }
     }
 
@@ -534,11 +659,15 @@ final class SystemAudioChannel {
             "reason": reason,
             "system_fires": Int(systemFires),
         ])
+        // REC28: refuse the dying stream's buffers first, synchronously, so a stall that resumes
+        // while its stop hangs cannot write into the still-open file ahead of the retry's pad.
+        invalidateCaptureGeneration()
         // REC7: release the dead SCStream so retrySystemAudio can re-arm it AND the
         // OS reclaims the tap. Dropping the reference alone never calls stopCapture()
         // (SystemAudioCapture has no deinit), leaking the stream until process exit.
+        // REC28: bounded and evented like `haltCapture`'s, so a zombie is visible.
         systemCapture = nil
-        Task { await dying.stop() }
+        Task { await SystemAudioChannel.boundedCaptureStop(path: .loss) { await dying.stop() } }
         systemDegraded = true
         onSystemAudioDegraded?(reason)
         // REC8: one hands-off retry before the user has to click the banner.

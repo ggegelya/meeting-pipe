@@ -2,9 +2,10 @@
 id: REC28
 title: A system capture the channel has given up on can still write into it, so a stream whose stopCapture() hung delivers into the next recording's system WAV, and the start Task applies its outcome off the main thread
 category: Recording
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. `SystemAudioCapture.stop()` sets no delivery gate for an adopted stream (only `attempt.stopped()` for one still starting), `didOutputSampleBuffer` checks only `!isStartAbandoned`, and the channel's buffer closure checks only `self.systemFile != nil`, so a stream whose `stopCapture()` outlives `haltCapture`'s 5 s (the 2026-06-05 class) or the unbounded `Task { await dying.stop() }` writes into the next recording's or the retry's system WAV, roughly doubling it (REC19's 4 GiB at about 1 h 33 min), advancing `systemFires` past REC17's liveness gate and stamping REC9's head offset from the zombie. Separately `systemStartTask` runs on the cooperative pool, and its `.failed` branch nils `systemCapture`, `systemFile` and `systemWriter` and deletes the path with no identity check. Unobserved (no `system_capture_stop_timed_out` since 2026-10-12, and delivery during a hung stop is not established); the owner may re-band to P1 if a zombie is ever seen, since it corrupts the next recording. Scope: a delivery gate set before stopCapture, a per-attempt generation in the channel closure, the start outcome applied on main behind an identity check, the in-meeting stop bounded and evented. [Spec](./REC28.md)
+closed: 2026-11-12
+comment: Shipped 2026-11-12, closed on tests. SystemAudioCapture.stop() sets the attempt's delivery gate (stopDelivery) under the start lock before awaiting stopCapture, and didOutputSampleBuffer checks it beside the abandonment; the channel accepts a buffer only under the live SystemCaptureGenerations number (invalidated by halt, loss, a failed start and termination); the start outcome is applied on main by applyStartOutcome to its own generation; both stops go through boundedCaptureStop (5 s) and system_capture_stop_timed_out carries path stop or loss. 17 new tests, ci-local all green. The rebuild-and-watch evidence line stays open as confirmation, not a gate.
 ---
 
 # REC28: a system capture the channel has given up on can still write into it, so a stream whose stopCapture() hung delivers into the next recording's system WAV, and the start Task applies its outcome off the main thread

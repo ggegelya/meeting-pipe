@@ -132,8 +132,16 @@ final class SystemCaptureStartREC17Tests: XCTestCase {
     /// first, or the late completion adopts its stream.
     func test_aTimedOutStartRoutesThroughTheLossPathAfterAbandoningTheCapture() throws {
         let text = try repoFile("daemon/Sources/MeetingPipe/SystemAudioChannel.swift")
-        guard let branch = text.range(of: "case .timedOut:\n                capture.abandonStart()") else {
-            return XCTFail("the timeout branch has to abandon the capture before anything else")
+        // REC28 moved the outcome switch onto main (`applyStartOutcome`), but the abandon stays in
+        // the start Task, off main and ahead of the hop, so a busy main thread cannot let a late
+        // completion adopt in the gap.
+        guard let abandon = text.range(of: "if outcome == .timedOut { capture.abandonStart() }"),
+              let hop = text.range(of: "await self?.applyStartOutcome(outcome, to: armed"),
+              abandon.upperBound <= hop.lowerBound else {
+            return XCTFail("the timeout has to abandon the capture before the outcome is applied")
+        }
+        guard let branch = text.range(of: "case .timedOut:\n            // The start Task already abandoned the capture") else {
+            return XCTFail("the timeout branch of applyStartOutcome")
         }
         let rest = text[branch.upperBound...]
         XCTAssertTrue(
@@ -180,10 +188,14 @@ final class SystemCaptureStartREC17Tests: XCTestCase {
     /// would tear down the retry's live capture, since `handleSystemAudioLost` checks no identity.
     func test_anAbandonedCaptureDeliversNoBuffersAndReportsNoDeath() throws {
         let text = try repoFile("daemon/Sources/MeetingPipe/SystemAudioCapture.swift")
+        // REC28 folded the abandonment and the stop gate into one ledger read,
+        // `SystemCaptureStartAttempt.deliversBuffers`, whose abandoned half
+        // `SystemCaptureStopREC28Tests.test_anAbandonedAttemptStillDeliversNothing` pins.
         XCTAssertEqual(
-            text.components(separatedBy: "guard !isStartAbandoned else { return }").count - 1, 1,
+            text.components(separatedBy: "guard deliversBuffers else { return }").count - 1, 1,
             "the buffer gate in didOutputSampleBuffer"
         )
+        XCTAssertTrue(text.contains("private var deliversBuffers: Bool { withStartLock { attempt.deliversBuffers } }"))
         XCTAssertEqual(
             text.components(separatedBy: "guard holdsAdoptedStream else { return }").count - 1, 1,
             "the death gate in didStopWithError: adopted, not abandoned, not yet stopped"

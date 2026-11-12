@@ -39,10 +39,28 @@ struct SystemCaptureStartAttempt: Equatable {
     private(set) var abandonment: Abandonment?
     private(set) var isCompleted = false
 
+    /// REC28: true once `SystemAudioCapture.stop()` began, whatever state the attempt was in.
+    /// The stop side's gate, kept apart from `abandonment` on purpose: `stopped()` is a no-op
+    /// once the attempt completed, so an adopted stream whose `stopCapture()` hung kept
+    /// delivering into whatever writer the channel held next, and folding this into
+    /// `abandonment` would change what `completed()` answers and what a discard is logged as.
+    private(set) var isDeliveryStopped = false
+
     /// True once the recorder or `stop()` gave up on this attempt. Both delegate callbacks
     /// gate on it, so an abandoned attempt's stream (late or not yet stopped) delivers no
     /// buffers and reports no death.
     var isAbandoned: Bool { abandonment != nil }
+
+    /// Whether a buffer from this attempt's stream may reach the recorder: not abandoned and
+    /// not being stopped. `didOutputSampleBuffer` consults both halves (REC17, REC28).
+    var deliversBuffers: Bool { !isAbandoned && !isDeliveryStopped }
+
+    /// `stop()` began (REC28). Set before `stopCapture()` is awaited, so the beat between the
+    /// call and the stream actually stopping, which was about 7 minutes on 2026-06-05, delivers
+    /// nothing. Changes neither `completed()`'s answer nor an existing abandonment.
+    mutating func stopDelivery() {
+        isDeliveryStopped = true
+    }
 
     /// The recorder stopped waiting: the budget elapsed. First abandonment wins, so a
     /// later `stopped()` cannot relabel a timeout.
@@ -62,6 +80,48 @@ struct SystemCaptureStartAttempt: Equatable {
         isCompleted = true
         if let why = abandonment { return .discard(why) }
         return .adopt
+    }
+}
+
+/// REC28: which system capture the channel is listening to. The channel outlives every
+/// recording (`MeetingRecorder.systemChannel`, on the recorder the `Coordinator` builds once),
+/// and a capture it has given up on can keep delivering: a stream whose `stopCapture()` hung
+/// past `haltCapture`'s bound or the loss path's, or a stalled one that resumes. Its buffer
+/// closure used to check only `systemFile != nil`, so the next recording's file, or the
+/// retry's, took them: two streams interleaved, `systemFires` advanced past REC17's per-attempt
+/// gate by the zombie, and REC9's head offset stamped from it.
+///
+/// Each arm takes a fresh number, never reused for the life of the channel, and the channel
+/// invalidates it wherever it lets go of that capture. A buffer is accepted only under the live
+/// number, and a start outcome is applied only to it. A number rather than `systemCapture ===
+/// capture` because the buffer closure is handed to the capture's `init` and cannot capture
+/// the capture. Pure; the channel owns the lock around it.
+struct SystemCaptureGenerations: Equatable {
+    /// The generation of the capture the channel currently holds; 0 means none.
+    private(set) var live: UInt64 = 0
+    private var issued: UInt64 = 0
+
+    /// A new attempt is armed: issue its number and make it the live one.
+    mutating func arm() -> UInt64 {
+        issued &+= 1
+        live = issued
+        return live
+    }
+
+    /// The channel let go of its capture (halt, loss, a failed start, termination).
+    mutating func invalidate() {
+        live = 0
+    }
+
+    /// Whether `generation` is the capture the channel still holds.
+    func isLive(_ generation: UInt64) -> Bool {
+        generation != 0 && generation == live
+    }
+
+    /// The buffer closure's predicate: the attempt is the live one AND a file is open to take it.
+    /// Consulted before `systemFires`, `systemFirstFrameUptime` or the writer are touched.
+    func accepts(_ generation: UInt64, hasOpenFile: Bool) -> Bool {
+        isLive(generation) && hasOpenFile
     }
 }
 
