@@ -2,9 +2,10 @@
 id: REC26
 title: Flagged moments are written only at stop, so a crash, a quit or a rebuild mid-meeting recovers the audio and loses every flag
 category: Recording
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. `markerSeconds` lives in memory and `MarkerFile.write` has one call site, in the stop path; a crash or kill, and also a quit, a rebuild relaunch or a reinstall during a recording (`Coordinator.shutdown` runs only `flushIntermediatesForTermination`), leave intermediates the orphan sweep recovers with no `<stem>.markers.json`, so the summary's flagged excerpts and the Transcript chips are gone while GUIDE.md says whatever was captured is picked up. Scope: write the sidecar atomically on each flag press, keep the stop-time flush, pin that recovery keeps it, fix CONVENTIONS. [Spec](./REC26.md)
+closed: 2026-11-12
+comment: Shipped 2026-11-12. `flagMoment` now writes `<stem>.markers.json` atomically on every press (the stop-time write stays as the final flush), so a crash, quit or rebuild relaunch mid-recording keeps the flags through orphan recovery; pinned by a controller test (two presses on disk before stop, same markers after), a real-merge orphan recovery test and a MeetingStore one-row test; CONVENTIONS, `MarkerFile` and `mp.markers` docs updated; `bash scripts/ci-local.sh` green.
 ---
 
 # REC26: flagged moments are written only at stop, so a crash, a quit or a rebuild mid-meeting recovers the audio and loses every flag

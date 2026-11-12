@@ -388,7 +388,7 @@ The workflow assignment is not immutable: **WF8** ("Change workflow..." in the L
 
 ## Flagged-moment markers (`<stem>.markers.json`)
 
-The moments the user flagged mid-recording, with the flag-moment hotkey or the HUD's flag control (FEAT8, surfaced on the HUD by UX46; both call `MeetingSessionController.flagMoment`, so this file has one writer). A Swift-to-Python surface like `<stem>.meta.json`, but simpler. `MarkerFile.write` (Swift) writes it at stop, and two readers consume it: the pipeline (`mp.markers`, where the transcript segments spanning each marker become user-flagged excerpts fed to the summarizer and listed in the BYO / long-meeting paste bundles) and the Library transcript tab (`MarkerFile.read`, rendering anchor chips that seek). Shape:
+The moments the user flagged mid-recording, with the flag-moment hotkey or the HUD's flag control (FEAT8, surfaced on the HUD by UX46; both call `MeetingSessionController.flagMoment`, so this file has one writer). A Swift-to-Python surface like `<stem>.meta.json`, but simpler. `MarkerFile.write` (Swift) rewrites it atomically on every flag press and once more at stop (REC26), so a recording that ends without `stop()` (a crash, a kill, a quit, a rebuild relaunch) leaves it beside the intermediates; orphan recovery never removes it, so the recovered final finds it by stem. Two readers consume it: the pipeline (`mp.markers`, where the transcript segments spanning each marker become user-flagged excerpts fed to the summarizer and listed in the BYO / long-meeting paste bundles) and the Library transcript tab (`MarkerFile.read`, rendering anchor chips that seek). Shape:
 
 ```json
 { "schema_version": 1, "markers": [ { "t_seconds": 42.5 } ] }

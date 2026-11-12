@@ -216,6 +216,41 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
         XCTAssertEqual(skips.first?["stem"] as? String, live)
     }
 
+    /// REC26: the flags written mid-recording survive recovery. A crash, quit or rebuild relaunch
+    /// leaves intermediates, a manifest and the per-press `<stem>.markers.json`; the real merge path
+    /// (a stand-in ffmpeg, not a stubbed recoverer, so the merge's own cleanup is under test) and
+    /// `cleanupStartMarkers` must leave the markers where the recovered final finds them by stem.
+    @MainActor
+    func test_recover_keeps_the_markers_written_before_the_interruption_REC26() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        let merged = dir.appendingPathComponent("merged-source.bin")
+        try makeWavData(seconds: 1.0).write(to: merged)
+        setenv("MEETINGPIPE_FFMPEG", try fakeFFmpeg(in: dir, writing: merged).path, 1)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer {
+            unsetenv("MEETINGPIPE_FFMPEG")
+            unsetenv("MEETINGPIPE_LOGS_DIR")
+        }
+
+        let stem = "20261112-090000"
+        let final = dir.appendingPathComponent("\(stem).wav")
+        try makeWavData(seconds: 1.0).write(to: dir.appendingPathComponent("\(stem).mic.wav"))
+        try makeWavData(seconds: 1.0).write(to: dir.appendingPathComponent("\(stem).system.wav"))
+        try writeMarker(.captureFirst, stem: stem, in: dir)
+        RecordingManifest.write(summaryMode: .auto, meta: [:], forStem: stem, in: dir)
+        MarkerFile.write(seconds: [12.5, 340.0], forFinal: final)
+
+        let result = await OrphanRecordingRecovery.recover(stems: [stem], in: dir, isOwned: { _ in false })
+
+        XCTAssertEqual(result.ready.map(\.url), [final], "the orphan recovers to its final")
+        XCTAssertNil(RecordingManifest.read(forStem: stem, in: dir), "the start-time manifest is cleared")
+        let markers = try XCTUnwrap(MarkerFile.read(forFinal: final), "the flags survive the recovery")
+        XCTAssertEqual(markers.markers.map(\.tSeconds), [12.5, 340.0])
+    }
+
     /// A PCM WAV of `seconds` of silence: decodable, past the 4,096-byte has-audio floor.
     private func makeWavData(seconds: Double, sampleRate: UInt32 = 16000) -> Data {
         let payloadBytes = Int(Double(sampleRate) * seconds) * 2

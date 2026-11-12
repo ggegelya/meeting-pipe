@@ -91,8 +91,8 @@ final class MeetingSessionController: @unchecked Sendable {
     private var endObservedDuringStart: EndingReason?
 
     /// Offsets (seconds from recording start) the user flagged mid-recording via
-    /// the flag hotkey (FEAT8). Reset at start, flushed to `<stem>.markers.json`
-    /// at stop. Main-queue only, like every field here.
+    /// the flag hotkey (FEAT8). Reset at start, written to `<stem>.markers.json`
+    /// on every press (REC26) and once more at stop. Main-queue only, like every field here.
     private var markerSeconds: [Double] = []
 
     /// Whether an off-the-record span is currently open (MIC14). Toggled by the hotkey; reset at
@@ -373,8 +373,11 @@ final class MeetingSessionController: @unchecked Sendable {
     /// semantics like `forceStop`: pressing it when nothing is recording is a
     /// logged no-op, so it can never start a recording. The offset is seconds
     /// from recording start (the same clock the transcript segments use), the
-    /// flag control acknowledges with the running count (UX73), and the batch
-    /// is flushed at stop.
+    /// flag control acknowledges with the running count (UX73), and the whole
+    /// batch is written to `<stem>.markers.json` on every press (REC26), so a
+    /// crash, quit or rebuild relaunch mid-recording leaves the flags beside the
+    /// intermediates the orphan sweep recovers. The stop-time write stays as the
+    /// final flush.
     func flagMoment() {
         guard case .recording(let file, _, _) = coordinator.stateMachine.current else {
             Log.event(category: "recorder", action: "marker_flag_ignored", attributes: [
@@ -385,6 +388,9 @@ final class MeetingSessionController: @unchecked Sendable {
         let startedAt = coordinator.audioRecorder.startedAt ?? Date()
         let elapsed = max(0, Date().timeIntervalSince(startedAt))
         markerSeconds.append(elapsed)
+        // REC26: persist now, not only at stop. An atomic replace of a sub-kilobyte file at human
+        // press rates, beside where the final will land, which orphan recovery leaves in place.
+        MarkerFile.write(seconds: markerSeconds, forFinal: file)
         // UX73: the acknowledgement reads its count straight off the array the sidecar is written
         // from, so the badge cannot claim a different number of moments than the artifact holds.
         coordinator.hud.acknowledgeFlag(count: markerSeconds.count)

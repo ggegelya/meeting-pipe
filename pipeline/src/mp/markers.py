@@ -1,7 +1,8 @@
 """Flagged-moment markers (FEAT8): the read side of `<stem>.markers.json`.
 
 The daemon stamps a marker each time the user presses the flag hotkey during a
-recording and flushes them to `<stem>.markers.json` at stop. Here we turn those
+recording and rewrites `<stem>.markers.json` on every press and again at stop
+(REC26), so a recording recovered after a crash keeps its flags. Here we turn those
 offsets into user-flagged excerpts: for each marker, the transcript segment
 spanning it. Capture is deterministic (no model); the summarizer just receives
 the excerpts plus a trusted instruction to reflect them, and the BYO / long-

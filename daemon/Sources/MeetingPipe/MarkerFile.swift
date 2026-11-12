@@ -2,7 +2,8 @@ import Foundation
 
 /// One user-flagged moment in a recording (FEAT8): the offset in seconds from
 /// recording start where the user pressed the flag hotkey. Pure value type; the
-/// session controller appends offsets on the main queue and flushes them at stop.
+/// session controller appends offsets on the main queue and writes the batch on
+/// every press and again at stop (REC26).
 struct Marker: Equatable, Codable {
     var tSeconds: Double
 
@@ -14,8 +15,9 @@ struct Marker: Equatable, Codable {
 /// On-disk `<stem>.markers.json`: the moments the user flagged during a
 /// recording. Read by the pipeline (the spanning transcript segments become
 /// user-flagged excerpts for the summarizer) and by the Library transcript tab
-/// (anchor chips that seek). Written by the daemon at stop, schema versioned
-/// per CI2.
+/// (anchor chips that seek). Written by the daemon on every flag press, so a
+/// recording interrupted before stop keeps its flags through orphan recovery,
+/// and once more at stop (REC26). Schema versioned per CI2.
 struct MarkerFile: Codable {
     var schemaVersion: Int = 1
     var markers: [Marker]

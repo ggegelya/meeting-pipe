@@ -853,6 +853,37 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         )
     }
 
+    /// REC26: the flags reach disk on each press, not only at stop. Every path that ends a
+    /// recording without `stop()` (a crash, a kill, a quit, a rebuild relaunch) used to keep the
+    /// audio for the orphan sweep and lose every flag, because the one write sat in the stop path.
+    /// The stop-time write is kept as the final flush and must leave the same contents.
+    func test_flagMoment_writesTheSidecarOnEachPress_andStopLeavesTheSameMarkers() async throws {
+        let (controller, host) = makeController()
+        host.recorderSpy.lastSystemFires = 1
+        let file = tempDir.appendingPathComponent("20261112-100000.wav")
+        host.recorderSpy.fileToReturn = file
+        controller.beginRecording(source: source(), summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current.isRecording }, "the meeting to record")
+        XCTAssertNil(MarkerFile.read(forFinal: file), "no sidecar before the first flag")
+
+        controller.flagMoment()
+        let afterFirst = try XCTUnwrap(MarkerFile.read(forFinal: file), "the first press is on disk at once")
+        XCTAssertEqual(afterFirst.markers.count, 1)
+
+        controller.flagMoment()
+        let beforeStop = try XCTUnwrap(MarkerFile.read(forFinal: file))
+        XCTAssertEqual(beforeStop.markers.count, 2, "both presses are on disk before any stop")
+        XCTAssertEqual(beforeStop.markers.first, afterFirst.markers.first, "a press rewrites the batch, it does not drop earlier flags")
+        XCTAssertEqual(host.recorderSpy.stopCallCount, 0)
+
+        controller.stopRecording(file: file, source: source(), summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
+
+        let afterStop = try XCTUnwrap(MarkerFile.read(forFinal: file))
+        XCTAssertEqual(afterStop.markers, beforeStop.markers, "the stop-time flush writes the same markers")
+        XCTAssertEqual(afterStop.schemaVersion, 1)
+    }
+
     /// The `:453` reset already dropped the marker batch per recording; this pins that the surface
     /// follows it, so a second meeting does not open with the first one's count still on the button.
     func test_flagCount_resetsOnTheNextRecording() async {

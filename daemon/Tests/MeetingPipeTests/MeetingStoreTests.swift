@@ -208,6 +208,24 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(rows.first?.status, .processing)
     }
 
+    func test_fresh_capture_intermediate_with_an_early_marker_sidecar_is_one_row() throws {
+        // REC26: the flags reach `<stem>.markers.json` on each press, so mid-recording the stem
+        // carries that sidecar beside the live `.mic.wav`. It must not add a second row or
+        // displace the live one.
+        let dir = try tempDir()
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-15))
+        let mic = dir.appendingPathComponent("\(stem).mic.wav")
+        try writeFile(mic)
+        try setMtime(mic, Date())   // fresh: actively recording
+        MarkerFile.write(seconds: [4.0], forFinal: dir.appendingPathComponent("\(stem).wav"))
+        let store = MeetingStore(recordingsDir: dir)
+        let rows = store.performScan(directory: dir)
+        XCTAssertEqual(rows.count, 1, "the early marker sidecar belongs to the live recording's row")
+        XCTAssertEqual(rows.first?.stem, stem)
+        XCTAssertEqual(rows.first?.audioURL?.lastPathComponent, "\(stem).mic.wav")
+        XCTAssertEqual(rows.first?.status, .processing)
+    }
+
     func test_final_wav_preferred_over_capture_intermediate() throws {
         // With both a merged `.wav` and a leftover `.mic.wav`, the row uses the
         // merged wav deterministically (not the intermediate).
