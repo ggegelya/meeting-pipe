@@ -352,6 +352,10 @@ The archive carries your recordings and everything written beside them, your set
 
 If the destination is on an external drive, a backup refuses to run while the drive is unplugged rather than quietly filling your startup disk.
 
+**How many backups the folder keeps.** Every archive is a full copy of your library, so after each successful backup the oldest ones in that folder are deleted. What stays is the newest 7, plus one from each of the 4 weeks before those, so a daily schedule holds at most 11. Every archive in that folder named like `meeting-pipe-backup-<date>-<time>.tar.gz` counts toward this, including ones you made by hand. To keep one for good, rename it (anything that no longer fits that name) or move it to another folder.
+
+**When there is no room.** Before writing anything, a backup checks that the destination has room for the whole archive. If it does not, it refuses without writing anything, and the Backup section says the backup failed. The full reason (how much is free, how much it needs, and how many backups the folder already holds) is in the pipeline log; the menu bar's **Open Logs Folder** gets you to it. When the destination is on the same disk as your library it also leaves about 4.6 GB free, enough for a two-hour recording, so a backup never takes the space your next meeting needs.
+
 ### Restoring
 
 **Preferences ▸ Storage ▸ Restore from backup…**. Pick an archive and the app reads it first without writing anything, then shows you exactly what a restore would do: how many files land, how many replace files that are already there, and what comes back. Nothing happens until you confirm.

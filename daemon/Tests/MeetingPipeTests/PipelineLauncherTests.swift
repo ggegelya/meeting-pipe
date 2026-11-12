@@ -689,4 +689,49 @@ final class PipelineLauncherTests: XCTestCase {
         // (no speech, BYO, too long, Apple hand-off) which writes neither value.
         XCTAssertNil(PublishResult.resolveState(publish: nil, runPublishState: nil))
     }
+
+    // STOR12: backup and both restore runs used to share a fixed 30-minute cap,
+    // which a restore of a large enough library walked into mid-extraction.
+    func testStorageJobTimeoutIsAboutTheFloorForASmallLibrary() {
+        let floor = PipelineLauncher.storageJobFloorTimeout
+        XCTAssertEqual(floor, 30 * 60)
+        XCTAssertEqual(PipelineLauncher.storageJobFloorBytesPerSecond, 5_000_000)
+        XCTAssertEqual(PipelineLauncher.storageJobTimeout(bytes: 0), floor)
+        // The owner's library on 2026-10-25: floor plus 64.8 s.
+        XCTAssertEqual(PipelineLauncher.storageJobTimeout(bytes: 324_000_000), floor + 64.8,
+                       accuracy: 0.001)
+        // An unreadable size (reported as 0 or nonsense) never drops below the floor.
+        XCTAssertEqual(PipelineLauncher.storageJobTimeout(bytes: -1), floor)
+    }
+
+    func testStorageJobTimeoutIsTheFloorPlusTheBytesAtTheFloorRate() {
+        // The owner's choice on 2026-11-12: floor + bytes / rate, never max(floor, ...).
+        let floor = PipelineLauncher.storageJobFloorTimeout
+        let rate = PipelineLauncher.storageJobFloorBytesPerSecond
+        for bytes in [1, 5_000_000, 9_000_000_000, 300_000_000_000] {
+            XCTAssertEqual(PipelineLauncher.storageJobTimeout(bytes: bytes),
+                           floor + Double(bytes) / rate, accuracy: 0.001, "\(bytes)")
+        }
+        // Linear from the floor: each extra 9 GB adds the same half hour.
+        let a = PipelineLauncher.storageJobTimeout(bytes: 9_000_000_000)
+        let b = PipelineLauncher.storageJobTimeout(bytes: 18_000_000_000)
+        XCTAssertEqual(b - a, a - floor, accuracy: 0.001)
+        XCTAssertEqual(a - floor, 30 * 60, accuracy: 0.001)
+    }
+
+    func testStorageCallSitesUseTheScaledCap() throws {
+        // Source fence: the three storage spawns size their cap through the helper,
+        // and none of them carries the old fixed one.
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Sources/MeetingPipe/PipelineLauncher.swift"),
+            encoding: .utf8)
+        XCTAssertEqual(source.components(separatedBy: "timeout: Self.storageJobTimeout(bytes:").count - 1, 3)
+        for args in ["[\"backup\", dir.path]", "Self.restorePreviewArgs(", "Self.restoreArgs("] {
+            let line = try XCTUnwrap(source.components(separatedBy: "\n")
+                .first { $0.contains("runMP(\(args)") })
+            XCTAssertFalse(line.contains("30 * 60"), line)
+        }
+    }
 }

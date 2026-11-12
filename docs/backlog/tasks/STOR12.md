@@ -2,9 +2,10 @@
 id: STOR12
 title: Automatic backups are never pruned, so a daily full-library archive fills its destination, and backup and restore decompress the whole archive several extra times against a fixed 30-minute cap
 category: Storage
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. Every scheduled run writes a new full-library archive, audio included (about 0.3 GB a day for the owner's 324 MB library on 2026-10-25, plus 230 MB per recorded hour), and nothing ever deletes one, so the destination fills, a startup-disk destination eats recording space, and nothing checks free space first; the summary decompresses the archive it just wrote again, an in-app restore decompresses it about six times, and all three in-app runs are killed at a fixed 30 minutes, which restore's own comment says is unsafe. Latent: no backup agent installed. Scope: owner-chosen retention after a successful run, a free-space refusal, print the in-memory manifest, a one-pass preview and two-pass restore, a size-scaled cap. Owner may re-band to P1 before turning Automatic backup on. [Spec](./STOR12.md)
+closed: 2026-11-12
+comment: Shipped 2026-11-12. Retention after a successful run to the owner's policy (chosen 2026-11-12: newest 7 plus the newest archive of each of the 4 ISO weeks before them, hand-made archives counted, by name timestamp; a daily schedule settles at 11), `pipeline` `backup_pruned`, stale `.partial` sweep; a free-space refusal before anything is created (estimate plus 256 MiB, or REC20's 4.6 GB recording reserve on the library's volume); STOR8 item 2 landed with it (`.partial` + fsync + `os.replace`, atomic 0600 marker); the summary prints the in-memory manifest; one-pass `read_manifest` and preview, two-pass real restore (measured on main first: backup 2x, preview 3x, restore 6x; now 0, 1, 2); `PipelineLauncher.storageJobTimeout(bytes:)` = 30 min plus the bytes at 5 MB/s on all three spawns (owner's pick 2026-11-12, as was keeping STOR8 item 2 here and the weekly-keeper edges), `backup` gained `libraryBytes:`. 15 new pipeline tests, 3 new Swift; `ci-local.sh all` green (pytest 1493, daemon 2866 + 415). [Spec](./STOR12.md)
 ---
 
 # STOR12: Automatic backups are never pruned, so a daily full-library archive fills its destination, and backup and restore decompress the whole archive several extra times against a fixed 30-minute cap
@@ -62,3 +63,24 @@ Needed for one decision: how many old backups the owner is willing to lose is a 
 1. [session] Before writing code, put the retention policy to the owner: how many recent archives, whether weekly keepers are wanted, and the fact that archives made by hand into the same folder are pruned by the same rule. Proposal: the newest 7 plus one per week for the 4 weeks before them.
 2. [owner] Pick a policy, or accept the proposal.
 3. [session] Record the answer with its date in this file and pin that exact policy in the retention test.
+
+**Owner's answer (2026-11-12):** "7 + 4 weekly (Recommended)": keep the newest 7 archives plus one per week for the 4 weeks before them, with hand-made archives in the same folder pruned by the same rule. Steps 1 and 2 were run by the orchestrating session; step 3 is this note plus `test_retention_keeps_the_owners_policy_and_touches_nothing_else` and the three `retained()` cases beside it in `pipeline/tests/test_backup_restore.py`.
+
+**How the policy reads in code (2026-11-12), the edges the answer did not name:** "the 4 weeks before them" is the 4 most recent ISO weeks (`isocalendar()` year and week) strictly before the week of the oldest of the 7, counting only weeks that hold an archive, and each keeps its newest archive. So the rest of the oldest kept archive's own week is pruned (it is not "before" the 7), and a week with no archive does not use up a slot: a drive left unplugged for a fortnight still leaves 4 older keepers. A daily schedule settles at 11 (pinned over 60 nights). Ordering is by the timestamp in the name, never mtime.
+
+**Owner's answers to the build's three questions (2026-11-12), relayed by the orchestrating session:**
+
+1. Timeout formula: "Floor + bytes (Recommended)". `storageJobTimeout(bytes:)` is 30 minutes plus the bytes at the floor throughput, not `max` of the two, which is what was first built.
+2. STOR8 item 2: "Keep it (Recommended)". It stays landed in STOR12, with the note in STOR8's body.
+3. Weekly keepers: "Fine as built (Recommended)". The edges in the paragraph above stand.
+
+## Progress
+
+**Shipped (2026-11-12).** All five scope items, plus STOR8 item 2, which this task depends on and STOR8 had not landed.
+
+- **Measured pass counts on `main` before the change** (byte-counting reader over a 3 MB fixture, the acceptance test run red first): `mp backup` read the archive it had just written 2x for its summary, `plan_restore` 3x, a real `mp restore` 6x, so an in-app restore was 9x, not the review's estimated 6x. `read_manifest`'s `extractfile(MANIFEST_NAME)` walks every header and then seeks back to the last member, which in gzip is a second full pass. After: 0x, at most 1x, at most 2x.
+- **Item 3 shape.** `create_backup` still returns the archive `Path`; the new `run_backup` returns a `BackupResult` (archive, manifest, prune count and bytes) that `main` prints from. Changing `create_backup`'s return type would have touched every existing backup and restore test the acceptance says must pass unchanged.
+- **Item 4.** `read_manifest` is one forward walk too, `restore_archive` takes an optional already-read `manifest` (without one it still validates first), and `plan_restore` reads the manifest as the walk reaches it and refuses an archive without one after the walk (it writes nothing, so the late refusal costs nothing). `plan_restore`'s JSON for the fixtures was diffed byte-identical before and after.
+- **Item 2 numbers.** `RECORDING_RESERVE_BYTES` is 2 h x (384,000 + 192,000 + 64,000) B/s = 4,608,000,000; `BACKUP_HEADROOM_BYTES` (another volume) is 256 MiB for tar headers and padding. Free space is read before the destination is created.
+- **Item 5.** `PipelineLauncher.storageJobTimeout(bytes:)` is `30 min + bytes / 5 MB/s` (the owner's pick, below; first built as `max(30 min, bytes / 5 MB/s)`). The acceptance's "the floor for a small library" holds approximately (324 MB adds 64.8 s), so the test pins the exact formula. Not in the spec: `PipelineDriver.backup` gained a `libraryBytes:` parameter, since the launcher has no library path and `StorageStats.libraryBytes` lives in the Storage pane's store; the pane passes its last scan (0 before the first scan lands, which is the floor). The restore runs stat the archive inside the launcher.
+- **Retention emits** `pipeline` / `backup_pruned` (`count`, `bytes`, archives only) because STOR10 has not landed; when it does, the count can ride its `backup_completed` instead. A stale `.partial` is aged by the timestamp in its name against the run's clock, not by mtime.

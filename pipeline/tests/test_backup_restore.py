@@ -6,8 +6,12 @@ manifest names every Keychain item without exporting one.
 """
 from __future__ import annotations
 
+import io
 import json
+import os
+import stat
 import tarfile
+from collections import namedtuple
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -74,6 +78,17 @@ def _populate(home: Path) -> None:
     waveforms = storage.waveform_cache_dir(home)
     waveforms.mkdir(parents=True)
     (waveforms / "20260101-120000.peaks").write_bytes(b"MPW1")
+
+
+_Usage = namedtuple("_Usage", "total used free")
+
+
+@pytest.fixture(autouse=True)
+def _plenty_of_room(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every destination here shares the library's volume, so the STOR12 check
+    would hold each one to the 4.6 GB recording reserve against the real disk.
+    The free-space tests below override this with the number they mean."""
+    monkeypatch.setattr(backup_mod.shutil, "disk_usage", lambda _p: _Usage(10**15, 0, 10**15))
 
 
 def _members(archive: Path) -> set[str]:
@@ -622,3 +637,340 @@ def test_read_manifest_round_trips_the_creation_time(tmp_path: Path) -> None:
     assert archive.name == f"meeting-pipe-backup-{when.strftime('%Y%m%d-%H%M%S')}.tar.gz"
     assert read_manifest(archive)["created_at"] == when.isoformat()
     assert MANIFEST_NAME in _members(archive)
+
+
+# ---------- how many times each run reads the archive (STOR12) ---------------
+
+
+class _CountingFile(io.FileIO):
+    """A read-only file that tallies every byte it hands out into a shared dict."""
+
+    def __init__(self, path: str | Path, tally: dict[str, int]) -> None:
+        super().__init__(path, "r")
+        self._tally = tally
+
+    def _count(self, n: int | None) -> None:
+        self._tally["bytes"] = self._tally.get("bytes", 0) + (n or 0)
+
+    def read(self, size: int = -1) -> bytes:  # type: ignore[override]
+        data = super().read(size) or b""
+        self._count(len(data))
+        return data
+
+    def readall(self) -> bytes:
+        data = super().readall()
+        self._count(len(data))
+        return data
+
+    def readinto(self, buffer) -> int:  # type: ignore[override]
+        n = super().readinto(buffer) or 0
+        self._count(n)
+        return n
+
+
+@pytest.fixture
+def archive_reads(monkeypatch: pytest.MonkeyPatch):
+    """Every `tarfile.open(path, "r...")` in the test reads through a counting
+    file, so a test can say how many archives' worth of bytes a run pulled off
+    disk. Reaching the last member of a gzip stream reads the whole file and a
+    rewind restarts from byte 0, so the tally is the pass count times the size."""
+    tally: dict[str, int] = {}
+    opened: list[_CountingFile] = []
+    real_open = tarfile.open
+
+    def counting_open(name=None, mode="r", fileobj=None, **kwargs):
+        if fileobj is None and name is not None and str(mode).startswith("r"):
+            raw = _CountingFile(name, tally)
+            opened.append(raw)
+            return real_open(name=name, mode=mode, fileobj=raw, **kwargs)
+        return real_open(name=name, mode=mode, fileobj=fileobj, **kwargs)
+
+    monkeypatch.setattr(tarfile, "open", counting_open)
+    yield tally
+    for raw in opened:
+        raw.close()
+
+
+def _sizeable_home(tmp_path: Path, name: str = "old-mac") -> Path:
+    """A fixture whose archive is well past every read buffer, so one pass shows
+    up as megabytes rather than as a single buffered read either way."""
+    home = _make_home(tmp_path, name)
+    _populate(home)
+    (home / "Meetings" / "raw" / "20260102-120000.wav").write_bytes(os.urandom(3_000_000))
+    return home
+
+
+def _backup_main(argv: list[str], home: Path, monkeypatch: pytest.MonkeyPatch) -> int:
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("mp.entry.prepare", lambda *a, **k: _cfg(home))
+    return backup_mod.main(argv)
+
+
+def test_mp_backup_reads_nothing_of_the_archive_it_just_wrote(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    archive_reads: dict[str, int],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = _sizeable_home(tmp_path)
+
+    assert _backup_main([str(tmp_path / "out")], home, monkeypatch) == 0
+
+    assert archive_reads.get("bytes", 0) == 0
+    assert "library" in capsys.readouterr().out
+
+
+def test_plan_restore_walks_the_archive_once(
+    tmp_path: Path, archive_reads: dict[str, int]
+) -> None:
+    home = _sizeable_home(tmp_path)
+    archive = create_backup(_cfg(home), tmp_path / "out", home=home)
+    fresh = _make_home(tmp_path, "new-mac")
+    archive_reads.clear()
+
+    plan_restore(archive, _cfg(fresh), home=fresh)
+
+    assert 0 < archive_reads["bytes"] <= archive.stat().st_size
+
+
+def test_a_real_restore_walks_the_archive_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, archive_reads: dict[str, int]
+) -> None:
+    """Once to validate the manifest before touching anything, once to extract."""
+    home = _sizeable_home(tmp_path)
+    archive = create_backup(_cfg(home), tmp_path / "out", home=home)
+    fresh = _make_home(tmp_path, "new-mac")
+    archive_reads.clear()
+
+    assert _restore_main([str(archive)], fresh, monkeypatch) == 0
+
+    assert (fresh / "Meetings" / "raw" / "20260102-120000.wav").exists()
+    assert archive_reads["bytes"] <= 2 * archive.stat().st_size
+
+
+# ---------- retention on the destination (STOR12) ----------------------------
+
+#: A Thursday, ISO week 46 of 2026. Injected, so the weeks cannot drift with the
+#: real calendar.
+_NOW = datetime(2026, 11, 12, 3, 0, 0, tzinfo=timezone.utc)
+
+
+def _stamp(when: datetime) -> str:
+    return when.strftime("%Y%m%d-%H%M%S")
+
+
+def _archive_name(when: datetime) -> str:
+    return f"meeting-pipe-backup-{_stamp(when)}.tar.gz"
+
+
+def _days(*dates: str) -> set[datetime]:
+    return {datetime.fromisoformat(f"{d}T03:00:00") for d in dates}
+
+
+def test_retention_keeps_the_owners_policy_and_touches_nothing_else(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner's choice on 2026-11-12: the newest 7, plus the newest archive in
+    each of the 4 ISO weeks before the oldest of those 7."""
+    home = _make_home(tmp_path)
+    _populate(home)
+    out = tmp_path / "out"
+    out.mkdir()
+    for days in range(1, 16):  # 2026-10-28 .. 2026-11-11, one a night
+        (out / _archive_name(_NOW - timedelta(days=days))).write_bytes(b"x" * 100)
+    (out / "notes.txt").write_text("mine")
+    (out / "meeting-pipe-backup-old.tar.gz").write_bytes(b"renamed to keep")
+    (out / "meeting-pipe-backup-20261399-000000.tar.gz").write_bytes(b"not a date")
+    fresh_partial = out / (_archive_name(_NOW - timedelta(hours=1)) + ".partial")
+    stale_partial = out / (_archive_name(_NOW - timedelta(days=2)) + ".partial")
+    fresh_partial.write_bytes(b"still being written")
+    stale_partial.write_bytes(b"SIGKILLed")
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        backup_mod.events, "emit", lambda c, a, **kw: emitted.append((c, a, kw))
+    )
+
+    result = backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW)
+
+    kept_archives = {
+        "meeting-pipe-backup-20261112-030000.tar.gz",  # the one just written
+        "meeting-pipe-backup-20261111-030000.tar.gz",
+        "meeting-pipe-backup-20261110-030000.tar.gz",
+        "meeting-pipe-backup-20261109-030000.tar.gz",
+        "meeting-pipe-backup-20261108-030000.tar.gz",
+        "meeting-pipe-backup-20261107-030000.tar.gz",
+        "meeting-pipe-backup-20261106-030000.tar.gz",  # oldest of the 7, ISO week 45
+        # Week 45's older nights (11-02..11-05) are not "before" the 7, so they
+        # go; week 44 is, and keeps its newest, Sunday 11-01. Weeks 43..41 hold
+        # no archive here, so they keep nothing.
+        "meeting-pipe-backup-20261101-030000.tar.gz",
+    }
+    assert {p.name for p in out.iterdir()} == kept_archives | {
+        "notes.txt",
+        "meeting-pipe-backup-old.tar.gz",
+        "meeting-pipe-backup-20261399-000000.tar.gz",
+        fresh_partial.name,
+    }
+    assert result.pruned == 8
+    assert result.pruned_bytes == 800
+    assert emitted == [("pipeline", "backup_pruned", {"count": 8, "bytes": 800})]
+
+
+def test_a_daily_schedule_settles_at_eleven_archives() -> None:
+    nights = {_NOW.replace(tzinfo=None) - timedelta(days=d) for d in range(60)}
+    assert backup_mod.retained(list(nights)) == _days(
+        "2026-11-12", "2026-11-11", "2026-11-10", "2026-11-09",
+        "2026-11-08", "2026-11-07", "2026-11-06",
+        # The newest of each of the 4 ISO weeks before week 45: Sundays.
+        "2026-11-01", "2026-10-25", "2026-10-18", "2026-10-11",
+    )
+
+
+def test_an_empty_week_does_not_use_up_a_weekly_slot() -> None:
+    """A drive left unplugged for a fortnight still leaves four older keepers."""
+    recent = {_NOW.replace(tzinfo=None) - timedelta(days=d) for d in range(7)}
+    older = _days("2026-10-28", "2026-10-27", "2026-10-07", "2026-09-30", "2026-09-23",
+                  "2026-09-16")
+    assert backup_mod.retained(list(recent | older)) == recent | _days(
+        "2026-10-28", "2026-10-07", "2026-09-30", "2026-09-23"
+    )
+
+
+def test_seven_or_fewer_archives_are_all_kept() -> None:
+    stamps = [_NOW.replace(tzinfo=None) - timedelta(days=d * 9) for d in range(7)]
+    assert backup_mod.retained(stamps) == set(stamps)
+
+
+def test_a_failed_run_deletes_nothing_and_leaves_no_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retention runs only after a success, and a run that raises mid-archive
+    leaves no `.partial` behind and the previous marker as it was (STOR8 item 2)."""
+    home = _make_home(tmp_path)
+    _populate(home)
+    out = tmp_path / "out"
+    create_backup(_cfg(home), out, home=home, now=_NOW - timedelta(days=20))
+    for days in range(1, 16):
+        (out / _archive_name(_NOW - timedelta(days=days))).write_bytes(b"x")
+    before = sorted(p.name for p in out.iterdir())
+    marker_before = storage.backup_marker(home).read_text()
+
+    real_add_root = backup_mod._add_root
+    calls = {"n": 0}
+
+    def add_root_then_die(tar, root, *, include_audio):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("disk unplugged")
+        return real_add_root(tar, root, include_audio=include_audio)
+
+    monkeypatch.setattr(backup_mod, "_add_root", add_root_then_die)
+    with pytest.raises(RuntimeError, match="disk unplugged"):
+        create_backup(_cfg(home), out, home=home, now=_NOW)
+
+    assert sorted(p.name for p in out.iterdir()) == before
+    assert storage.backup_marker(home).read_text() == marker_before
+
+
+def test_a_completed_run_leaves_no_partial_and_a_private_marker(tmp_path: Path) -> None:
+    home = _make_home(tmp_path)
+    _populate(home)
+    out = tmp_path / "out"
+    archive = create_backup(_cfg(home), out, home=home, now=_NOW)
+
+    assert [p.name for p in out.iterdir()] == [archive.name]
+    assert stat.S_IMODE(storage.backup_marker(home).stat().st_mode) == 0o600
+
+
+def test_the_summary_says_how_many_backups_were_pruned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = _make_home(tmp_path)
+    _populate(home)
+    out = tmp_path / "out"
+    out.mkdir()
+    for days in range(30, 45):  # all older than anything the real clock writes now
+        (out / _archive_name(_NOW - timedelta(days=days))).write_bytes(b"x" * 10)
+
+    assert _backup_main([str(out)], home, monkeypatch) == 0
+    assert "pruned " in capsys.readouterr().out
+
+
+# ---------- the free-space refusal (STOR12) ----------------------------------
+
+
+def _free(monkeypatch: pytest.MonkeyPatch, free: int) -> None:
+    monkeypatch.setattr(backup_mod.shutil, "disk_usage", lambda _p: _Usage(free * 2, free, free))
+
+
+def test_a_destination_without_room_is_refused_before_anything_is_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _make_home(tmp_path)
+    _populate(home)
+    estimate = backup_mod.estimate_backup_bytes(_cfg(home), home=home)
+    monkeypatch.setattr(backup_mod, "_same_volume", lambda _a, _b: False)
+    _free(monkeypatch, estimate + backup_mod.BACKUP_HEADROOM_BYTES - 1)
+    out = tmp_path / "out"
+
+    with pytest.raises(BackupError) as exc:
+        create_backup(_cfg(home), out, home=home)
+
+    message = str(exc.value)
+    assert storage.human_bytes(estimate + backup_mod.BACKUP_HEADROOM_BYTES - 1) in message
+    assert storage.human_bytes(estimate) in message
+    assert "0 backup archive(s)" in message
+    assert not out.exists()
+    assert not storage.backup_marker(home).exists()
+
+
+def test_room_for_the_archive_plus_headroom_is_enough_off_the_library_volume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _make_home(tmp_path)
+    _populate(home)
+    estimate = backup_mod.estimate_backup_bytes(_cfg(home), home=home)
+    monkeypatch.setattr(backup_mod, "_same_volume", lambda _a, _b: False)
+    _free(monkeypatch, estimate + backup_mod.BACKUP_HEADROOM_BYTES)
+
+    assert create_backup(_cfg(home), tmp_path / "out", home=home).exists()
+
+
+def test_on_the_library_volume_the_next_recording_keeps_its_reserve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same free space that is plenty on a backup drive is refused when the
+    destination shares the library's disk, because the recorder needs it next."""
+    home = _make_home(tmp_path)
+    _populate(home)
+    estimate = backup_mod.estimate_backup_bytes(_cfg(home), home=home)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / _archive_name(_NOW - timedelta(days=1))).write_bytes(b"x")
+    # Real `st_dev`: tmp_path holds both the library and the destination.
+    _free(monkeypatch, estimate + backup_mod.RECORDING_RESERVE_BYTES - 1)
+
+    with pytest.raises(BackupError, match="next recording") as exc:
+        create_backup(_cfg(home), out, home=home)
+    assert "1 backup archive(s)" in str(exc.value)
+
+    _free(monkeypatch, estimate + backup_mod.RECORDING_RESERVE_BYTES)
+    assert create_backup(_cfg(home), out, home=home).exists()
+
+
+def test_the_recording_reserve_is_two_hours_of_capture_plus_the_merge() -> None:
+    # REC20's figure: 2 h x (384,000 + 192,000 + 64,000) B/s.
+    assert backup_mod.RECORDING_RESERVE_BYTES == 4_608_000_000
+
+
+def test_the_estimate_counts_what_the_archive_holds(tmp_path: Path) -> None:
+    home = _make_home(tmp_path)
+    _populate(home)
+    archive = create_backup(_cfg(home), tmp_path / "out", home=home)
+    manifest = read_manifest(archive)
+
+    assert backup_mod.estimate_backup_bytes(_cfg(home), home=home) == sum(
+        root["bytes"] for root in manifest["roots"]
+    )
+    no_audio = backup_mod.estimate_backup_bytes(_cfg(home), home=home, include_audio=False)
+    assert no_audio < backup_mod.estimate_backup_bytes(_cfg(home), home=home)

@@ -93,14 +93,20 @@ class RestorePlan(TypedDict):
 
 
 def read_manifest(archive: Path) -> dict:
+    """The archive's manifest, in one forward pass.
+
+    It is the last member, so finding it walks the whole archive. Reading it as
+    the walk reaches it keeps that to one pass; `tar.extractfile(MANIFEST_NAME)`
+    walked every header and then seeked back to the member, which in a gzip
+    stream restarts decompression from byte 0 (STOR12).
+    """
     with tarfile.open(archive, "r:gz") as tar:
-        try:
-            member = tar.extractfile(MANIFEST_NAME)
-        except KeyError as exc:  # pragma: no cover - tarfile raises on missing member
-            raise RestoreError(f"{archive} has no {MANIFEST_NAME}; not a meeting-pipe backup") from exc
-        if member is None:
-            raise RestoreError(f"{archive} has no {MANIFEST_NAME}; not a meeting-pipe backup")
-        return json.loads(member.read())
+        for member in tar:
+            if member.name == MANIFEST_NAME and member.isfile():
+                handle = tar.extractfile(member)
+                if handle is not None:
+                    return json.loads(handle.read())
+    raise RestoreError(f"{archive} has no {MANIFEST_NAME}; not a meeting-pipe backup")
 
 
 def _is_occupied(path: Path, prefix: str) -> bool:
@@ -111,16 +117,29 @@ def _is_occupied(path: Path, prefix: str) -> bool:
 
 
 def _restorable_members(
-    tar: tarfile.TarFile, destinations: dict[str, Path]
+    tar: tarfile.TarFile, destinations: dict[str, Path], manifest: dict | None = None
 ) -> Iterator[tuple[tarfile.TarInfo, str, Path, str]]:
     """Yield `(member, prefix, destination, relative)` for every member this Mac would write.
 
     The one home of the prefix dispatch and the `config.toml` carve-out, so the
     dry-run plan and the real run cannot drift into disagreeing about what a
     restore does.
+
+    Iterates the archive lazily, so a caller extracting each member as it is
+    yielded follows the walk forward. `tar.getmembers()` here used to walk every
+    header first, and the extraction after it seeked back to the first member,
+    which in a gzip stream restarts decompression from byte 0 (STOR12). When
+    `manifest` is given, the manifest member is parsed into it as the walk passes
+    it (it is the last member), so a caller needing it pays no second pass.
     """
-    for member in tar.getmembers():
-        if not member.isfile() or member.name == MANIFEST_NAME:
+    for member in tar:
+        if member.name == MANIFEST_NAME and member.isfile():
+            if manifest is not None:
+                handle = tar.extractfile(member)
+                if handle is not None:
+                    manifest.update(json.loads(handle.read()))
+            continue
+        if not member.isfile():
             continue
         prefix, _, relative = member.name.partition("/")
         destination = destinations.get(prefix)
@@ -150,7 +169,6 @@ def plan_restore(archive: Path, cfg: Config, *, home: Path | None = None) -> Res
     archive = archive.expanduser()
     if not archive.is_file():
         raise RestoreError(f"no archive at {archive}")
-    manifest = read_manifest(archive)
 
     roots = backup_roots(cfg, home)
     destinations = {root.prefix: root.source for root in roots}
@@ -158,8 +176,15 @@ def plan_restore(archive: Path, cfg: Config, *, home: Path | None = None) -> Res
     added_sample: list[str] = []
     replaced_sample: list[str] = []
 
+    # One pass (STOR12): the manifest is read when the walk reaches it rather
+    # than by a `read_manifest` first, which was a whole extra decompression.
+    # Nothing is written either way, so validating at the end refuses the same
+    # archives and costs nothing.
+    manifest: dict = {}
     with tarfile.open(archive, "r:gz") as tar:
-        for member, prefix, destination, relative in _restorable_members(tar, destinations):
+        for member, prefix, destination, relative in _restorable_members(
+            tar, destinations, manifest
+        ):
             bucket = counts[prefix]
             bucket["files"] += 1
             if (destination / relative).exists():
@@ -170,6 +195,8 @@ def plan_restore(archive: Path, cfg: Config, *, home: Path | None = None) -> Res
                 bucket["added"] += 1
                 if len(added_sample) < PLAN_SAMPLE_LIMIT:
                     added_sample.append(member.name)
+    if not manifest:
+        raise RestoreError(f"{archive} has no {MANIFEST_NAME}; not a meeting-pipe backup")
 
     config_root = destinations["config"]
     return {
@@ -206,6 +233,7 @@ def restore_archive(
     home: Path | None = None,
     force: bool = False,
     dry_run: bool = False,
+    manifest: dict | None = None,
 ) -> dict[str, int]:
     """Extract each prefix into its configured root. Returns files-written per root.
 
@@ -214,11 +242,16 @@ def restore_archive(
     exception: a new Mac must already carry a `config.toml` (it is what names these
     destinations), so that one file does not count as occupancy, and the backup's
     copy never overwrites it. Every other config file restores.
+
+    `manifest` is the caller's already-validated `read_manifest(archive)`. Passing
+    it skips a second full decompression just to validate again (STOR12); without
+    it the archive is validated here, before anything is touched.
     """
     archive = archive.expanduser()
     if not archive.is_file():
         raise RestoreError(f"no archive at {archive}")
-    read_manifest(archive)  # validate before touching anything
+    if manifest is None:
+        read_manifest(archive)  # validate before touching anything
 
     destinations = {root.prefix: root.source for root in backup_roots(cfg, home)}
     if not force and not dry_run:
@@ -322,7 +355,7 @@ def main(argv: list[str]) -> int:
     try:
         manifest = read_manifest(args.archive.expanduser())
         written = restore_archive(
-            args.archive, cfg, force=args.force, dry_run=args.dry_run
+            args.archive, cfg, force=args.force, dry_run=args.dry_run, manifest=manifest
         )
     except RestoreError as exc:
         print(f"[FAIL] {exc}")

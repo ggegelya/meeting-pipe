@@ -116,8 +116,8 @@ protocol PipelineDriver: AnyObject {
     func rosterForget(name: String, completion: @escaping (Result<Void, Error>) -> Void)
     /// Rename a roster person while keeping their voiceprint (FEAT3-MANAGE): runs `mp roster rename`. Defaulted no-op.
     func rosterRename(old: String, new: String, completion: @escaping (Result<Void, Error>) -> Void)
-    /// Run a full library backup now (STOR3): `mp backup <dir>` writes a dated `tar.gz` into `dir` and updates `.last-backup.json`. Local-only (`entry.prepare(secrets=False)`), so no meeting anchor. Defaulted no-op.
-    func backup(dir: URL, completion: @escaping (Result<Void, Error>) -> Void)
+    /// Run a full library backup now (STOR3): `mp backup <dir>` writes a dated `tar.gz` into `dir`, updates `.last-backup.json`, and prunes older archives there (STOR12). `libraryBytes` sizes the watchdog cap (`PipelineLauncher.storageJobTimeout`). Local-only (`entry.prepare(secrets=False)`), so no meeting anchor. Defaulted no-op.
+    func backup(dir: URL, libraryBytes: Int, completion: @escaping (Result<Void, Error>) -> Void)
     /// STOR5 step one: `mp restore <archive> --dry-run --json --out <tmp>`, the mandatory preview. Writes nothing and refuses nothing, so it always answers with the plan the confirm is about. Defaulted no-op.
     func restorePreview(archive: URL, completion: @escaping (Result<RestorePlan, Error>) -> Void)
     /// STOR5 step two: `mp restore <archive> --force`, the real run, only ever after a confirmed plan. Defaulted no-op.
@@ -265,7 +265,7 @@ extension PipelineDriver {
     }
 
     /// Default no-op stub; `PipelineLauncher` overrides this.
-    func backup(dir: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+    func backup(dir: URL, libraryBytes: Int, completion: @escaping (Result<Void, Error>) -> Void) {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "backup unsupported by this driver"]
@@ -884,12 +884,39 @@ final class PipelineLauncher: PipelineDriver {
         runMP(["roster", "rename", "--old", old, "--new", new], timeout: 30, meeting: nil, completion: completion)
     }
 
+    /// STOR12: the floor of every backup and restore cap, the fixed cap all three used to share.
+    static let storageJobFloorTimeout: TimeInterval = 30 * 60
+
+    /// STOR12: the slowest throughput a storage job is assumed to sustain, in bytes of
+    /// library or archive per second of wall clock. A backup gzips the library once; a
+    /// real restore decompresses the archive twice (validate, then extract) and writes
+    /// it out. 5 MB/s for the whole job is below two passes over a USB 2 spinning disk
+    /// (roughly 25 MB/s each way), so a run that is still making progress is not killed.
+    static let storageJobFloorBytesPerSecond: Double = 5_000_000
+
+    /// STOR12: the watchdog cap for `mp backup` and both `mp restore` runs: the fixed
+    /// 30-minute floor plus the bytes involved at `storageJobFloorBytesPerSecond`, so
+    /// it grows linearly from the floor with no size below which it is flat (the
+    /// owner's choice on 2026-11-12, over `max(floor, bytes / rate)`). Pure, so a test
+    /// pins it. The cap has to scale because a restore killed halfway leaves a library
+    /// that is neither the old one nor the backup (see `restore(archive:completion:)`).
+    static func storageJobTimeout(bytes: Int) -> TimeInterval {
+        storageJobFloorTimeout + Double(max(bytes, 0)) / storageJobFloorBytesPerSecond
+    }
+
+    /// The archive's size on disk, which is what both restore runs decompress. 0 when
+    /// it cannot be read, which leaves the cap at its floor.
+    private static func fileBytes(_ url: URL) -> Int {
+        (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+    }
+
     /// STOR3: `mp backup <dir>`. Local-only (the pipeline arms `entry.prepare(secrets=False)`),
     /// so no meeting anchor. `mp backup` prints only a final report and has no clean failure
     /// exit code, so a failure surfaces here as `LaunchError.nonZeroExit(code, stderrTail)`.
-    /// A multi-gigabyte library can take minutes to tar, hence the generous cap.
-    func backup(dir: URL, completion: @escaping (Result<Void, Error>) -> Void) {
-        runMP(["backup", dir.path], timeout: 30 * 60, meeting: nil, completion: completion)
+    /// The cap scales with `libraryBytes` (STOR12), the Storage pane's last scan.
+    func backup(dir: URL, libraryBytes: Int, completion: @escaping (Result<Void, Error>) -> Void) {
+        runMP(["backup", dir.path], timeout: Self.storageJobTimeout(bytes: libraryBytes),
+              meeting: nil, completion: completion)
     }
 
     /// STOR5: the argv of the two restore invocations. Pure and static so a test
@@ -914,13 +941,14 @@ final class PipelineLauncher: PipelineDriver {
 
     /// STOR5 step one: the mandatory dry run, parsed into the plan the confirm
     /// renders. Local-only, so no meeting anchor. A multi-gigabyte archive has to
-    /// be decompressed end to end to be walked, hence the same generous cap as
-    /// `backup`.
+    /// be decompressed end to end to be walked (once, since STOR12), so the cap
+    /// scales with the archive's size.
     func restorePreview(archive: URL, completion: @escaping (Result<RestorePlan, Error>) -> Void) {
         let outURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("mp-restore-plan-\(UUID().uuidString).json")
         runMP(Self.restorePreviewArgs(archive: archive, out: outURL),
-              timeout: 30 * 60, meeting: nil) { result in
+              timeout: Self.storageJobTimeout(bytes: Self.fileBytes(archive)),
+              meeting: nil) { result in
             defer { try? FileManager.default.removeItem(at: outURL) }
             switch result {
             case .failure(let error):
@@ -939,9 +967,12 @@ final class PipelineLauncher: PipelineDriver {
     /// STOR5 step two: the real run. Deliberately not retained for cancel, unlike
     /// `runAll` / `summarize`: a restore killed halfway leaves a library that is
     /// neither the old one nor the backup, so there is no safe point to stop it
-    /// at and the pane offers no Cancel to imply there is.
+    /// at and the pane offers no Cancel to imply there is. The same reasoning is
+    /// why the watchdog cap scales with the archive (STOR12): a fixed one would
+    /// stop a large restore wherever it happened to be.
     func restore(archive: URL, completion: @escaping (Result<Void, Error>) -> Void) {
-        runMP(Self.restoreArgs(archive: archive), timeout: 30 * 60, meeting: nil,
+        runMP(Self.restoreArgs(archive: archive),
+              timeout: Self.storageJobTimeout(bytes: Self.fileBytes(archive)), meeting: nil,
               completion: completion)
     }
 

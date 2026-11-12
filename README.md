@@ -477,6 +477,10 @@ Or from **Preferences ▸ Storage ▸ Backup**: pick a destination once (it is r
 
 If the destination is on an external drive, `mp backup` refuses to run while that drive is unmounted rather than filling the startup disk under the empty mount point. Nothing is written and no backup is recorded, so the last-backup age keeps ageing and tells you.
 
+**How many archives a folder keeps.** Each archive is a full copy, so after every successful run `mp backup` prunes the destination: it keeps the newest 7 archives plus the newest one from each of the 4 ISO weeks before them (a daily schedule settles at 11), and its summary says `pruned N older backups`. Every file directly in that folder named exactly `meeting-pipe-backup-YYYYMMDD-HHMMSS.tar.gz` counts, hand-made ones included, ordered by the timestamp in the name; rename one or move it elsewhere to keep it out of the count. An archive is written as `<name>.partial` and renamed only once complete, so a killed run never leaves a truncated file under a real archive's name; a `.partial` older than a day is removed by the next successful run.
+
+**Free space.** Before writing anything, `mp backup` estimates the archive (the bytes it will include) and refuses with `[FAIL]` when the destination's volume lacks that much plus headroom, naming the free space, the estimate and how many archives the folder already holds. On the library's own volume the headroom is the space a two-hour recording needs (about 4.6 GB), so a backup never starves the next meeting.
+
 **In the archive:** the library (recordings plus every sidecar), `digests/`, `~/.config/meeting-pipe/`, and `~/Library/Application Support/MeetingPipe/corrections/`.
 
 **Deliberately not in the archive:**

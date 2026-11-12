@@ -352,7 +352,10 @@ struct StorageSectionView: View {
         guard let dest = ui.backupDestinationPath, busy.backupEnabled else { return }
         backupError = nil
         backupInFlight = true
-        launcher.backup(dir: URL(fileURLWithPath: dest)) { result in
+        // STOR12: the pane's last scan sizes the watchdog cap; before the first
+        // scan lands this is 0, which is the cap's floor.
+        launcher.backup(dir: URL(fileURLWithPath: dest),
+                        libraryBytes: stats.stats?.libraryBytes ?? 0) { result in
             Task { @MainActor in
                 backupInFlight = false
                 switch result {

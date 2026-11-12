@@ -443,7 +443,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 | `mcp_serve.py` | `mp mcp-serve` | AUTO3: read-only MCP server over the library, on **stdio only** (never a port, so it is reachable by a process the owner launched and by nothing on the network). Five tools, defined in `mcp_tools.py`: `search_meetings`, `get_meeting`, `get_transcript`, `list_meetings`, `list_actions`. Every stem comes from `visibility` (leg 0) and a withheld one returns the same not-found shape as an unknown one. Off unless `mcp.enabled`; `--status --json` is the payload Preferences ▸ Integrations renders. The `mcp` SDK is an optional extra imported inside the serving function, so `--status` answers without it |
 | `prep.py` | `mp prep <workflow>` | CAL2: recap the last meeting recorded under a workflow (opening summary points + the actions it left open). The shell twin of the prompt panel's "Last time" card |
 | `roster_cmd.py` | `mp roster {enroll,list,forget,rename}` | named-speaker voiceprint management (FEAT3-ROSTER; `rename` is FEAT3-MANAGE) |
-| `backup.py` | `mp backup <dir>` | dated tar.gz of the non-recreatable state + manifest (STOR2) |
+| `backup.py` | `mp backup <dir>` | dated tar.gz of the non-recreatable state + manifest (STOR2); refuses a destination without room, writes via `.partial`, then prunes older archives to the owner's 7 + 4-weekly policy (STOR12) |
 | `restore.py` | `mp restore <archive>` | unpack a backup into this Mac's configured roots (STOR2); `--dry-run --json [--out P]` emits the plan (per-root counts, what would be overwritten) the in-app restore previews instead of restoring (STOR5) |
 | `doctor.py` | `mp doctor` | preflight diagnostics |
 | `logs_cmd.py` | `mp logs` | `events.jsonl` pretty-printer / filter |
