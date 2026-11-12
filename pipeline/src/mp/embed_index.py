@@ -30,30 +30,43 @@ each one is load-bearing:
 1. **Per-stem freshness.** The manifest records a fingerprint *per meeting*, so a
    refresh re-embeds only the stems whose own source files moved, drops the rows
    of stems that are gone, and reuses everything else.
-2. **The checkpoint is the index.** Every `CHECKPOINT_EVERY_STEMS` batch saves a
-   complete, loadable index covering the stems finished so far. A kill therefore
-   leaves the next run a smaller diff rather than a blank slate, and no separate
-   resume file can go stale against the vectors.
+2. **The checkpoint is the index, and a save never touches a live file (AI13).**
+   Once at least `CHECKPOINT_MIN_INTERVAL_S` has passed since the last save, the
+   next batch boundary saves a complete, loadable index covering the stems
+   finished so far. A kill therefore leaves the next run a smaller diff rather
+   than a blank slate, and no separate resume file can go stale against the
+   vectors. Each save writes a fresh generation (`vectors-<gen>.npy` +
+   `chunks-<gen>.jsonl`), then atomically replaces `manifest.json` to name it,
+   then sweeps every generation the manifest no longer names, all under an
+   exclusive `flock` on `index.lock`. A kill at any point leaves the previous
+   manifest naming a complete pair, and `mp ask` and `mp mcp-serve` writing the
+   same directory cannot tear one. The cadence is time-based because AI11's
+   every-eight-meetings rewrite cost about N squared over 16 meetings' rows on a
+   fresh build of N, so the save share of a build grew with the library.
 3. **Bounded memory.** LOCAL16's `MemoryWatchdog` is checked between batches and
    MLX's buffer cache is dropped after each one, so the embed pass aborts with a
    named reason instead of swapping the machine to death.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import importlib.util
 import json
 import logging
+import os
 import re
 import time
-from collections.abc import Callable
+import uuid
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import IO, Any, Literal, Protocol
 
 import numpy as np
 
-from . import egress_guard, events, resource_guard, transcript_corrections
+from . import egress_guard, events, resource_guard, storage, transcript_corrections
 from .chunking import chunked_windows
 from .prefetch_model import model_is_cached
 from .visibility import library_stems
@@ -74,15 +87,34 @@ CHUNK_OVERLAP = 200
 
 #: Manifest schema. v1 carried one whole-library fingerprint and nothing else, so
 #: it can only be rebuilt from, not refreshed; v2 (AI11) adds the per-stem
-#: fingerprint map that makes an incremental refresh and a resume possible.
-INDEX_SCHEMA_VERSION = 2
+#: fingerprint map that makes an incremental refresh and a resume possible; v3
+#: (AI13) names a generation, and the vectors and chunks live in
+#: `vectors-<gen>.npy` / `chunks-<gen>.jsonl` instead of being overwritten in
+#: place. An older index rebuilds once rather than the loader carrying two layouts.
+INDEX_SCHEMA_VERSION = 3
 
-#: How many meetings one embed batch covers before the index is written back to
-#: disk. Small enough that a kill (the daemon SIGTERMs `mp ask` at 10 minutes)
-#: costs at most a handful of meetings' work, large enough that the rewrite is a
-#: rounding error against the embedding itself. The watchdog is checked once per
-#: batch too, which is where the sampling throttle earns its keep.
+#: How many meetings one embed batch covers. A batch boundary is where the
+#: watchdog is checked, progress is reported, and a checkpoint may be taken. The
+#: name predates AI13, when every batch was also a save; the save cadence is
+#: `CHECKPOINT_MIN_INTERVAL_S` now.
 CHECKPOINT_EVERY_STEMS = 8
+
+#: The least time between two checkpoint saves of one refresh (AI13). Read at
+#: call time. A kill (Cancel, or the daemon's 10-minute SIGTERM) loses at most
+#: about this much embedding, and the save share of a build stays bounded however
+#: big the library gets; a refresh shorter than this saves once, at the end.
+CHECKPOINT_MIN_INTERVAL_S = 30.0
+
+#: The on-disk layout (AI13). The manifest is the only file ever replaced, and it
+#: is replaced atomically; the lock file is never deleted, so every process
+#: locks the same inode.
+MANIFEST_NAME = "manifest.json"
+LOCK_NAME = "index.lock"
+#: The schema-2 layout's in-place files, swept by the first save that replaces
+#: them. Leaving them would let an older build pair a v3 manifest's stems with
+#: stale rows; without them it fails closed into a rebuild.
+LEGACY_FILES = ("vectors.npy", "chunks.jsonl")
+_GENERATION = re.compile(r"[0-9a-f]{32}")
 
 #: Stage name on the watchdog abort and its event, so a postmortem can tell an
 #: `mp ask` index build apart from a local summarize on the same floor.
@@ -369,6 +401,66 @@ def chunk_library(
     return chunks
 
 
+def _generation_files(generation: str) -> tuple[str, str]:
+    """The vectors and chunks file names of one generation (AI13)."""
+    return f"vectors-{generation}.npy", f"chunks-{generation}.jsonl"
+
+
+@contextlib.contextmanager
+def _index_lock(directory: Path, *, exclusive: bool) -> Iterator[None]:
+    """`flock` on the directory's lock file: exclusive for a save, shared for a
+    load. A fresh descriptor per call, closed (which releases it) on the way out,
+    so two holders in one process still exclude each other, and the file itself
+    is never deleted, so every process contends on the same inode."""
+    fd = os.open(directory / LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _create_private(path: Path, *, binary: bool) -> IO[Any]:
+    """A new user-private file that must not already exist. Chunk text is
+    meeting content, so 0600 like the transcripts it came from (SEC14), and
+    `O_EXCL` because a generation name that already exists is a bug, never
+    something to write over."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    return os.fdopen(fd, "wb") if binary else os.fdopen(fd, "w", encoding="utf-8")
+
+
+def _named_generation(directory: Path) -> str | None:
+    """The generation the on-disk manifest names. `""` when it provably names
+    none (no manifest yet, or a schema-2 one), None when it cannot be read, so a
+    caller can tell "names none" from "cannot tell"."""
+    try:
+        manifest = json.loads((directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ""
+    except (OSError, ValueError):
+        return None
+    generation = manifest.get("generation") if isinstance(manifest, dict) else None
+    return generation if isinstance(generation, str) else ""
+
+
+def _sweep_generations(directory: Path, *, keep: str) -> None:
+    """Delete every generation but `keep`, the schema-2 in-place files, and a
+    manifest temp file a killed replace left behind. Called under the exclusive
+    lock, so nothing it deletes can be another writer's pair in flight. Best
+    effort: a file that will not go is retried by the next save."""
+    keep_names = set(_generation_files(keep))
+    doomed = [
+        p for pattern in ("vectors-*.npy", "chunks-*.jsonl", f".{MANIFEST_NAME}.tmp-*")
+        for p in directory.glob(pattern) if p.name not in keep_names
+    ]
+    doomed += [directory / name for name in LEGACY_FILES]
+    for p in doomed:
+        try:
+            p.unlink(missing_ok=True)
+        except OSError as e:
+            log.debug("could not sweep %s: %s", p, e)
+
+
 class EmbeddingIndex:
     """A flat vector index over the library: L2-normalized rows + the chunks
     they came from. Small enough (low thousands of rows) that exact cosine via a
@@ -433,38 +525,70 @@ class EmbeddingIndex:
         return [SearchHit(self.chunks[i], float(scores[i])) for i in order]
 
     def save(self, directory: Path) -> None:
+        """Write this index as a new generation and make it the live one (AI13).
+
+        No live file is ever overwritten: the pair goes to fresh
+        generation-named files, `manifest.json` is replaced atomically to name
+        them, and only then are the generations it no longer names deleted. A
+        kill anywhere in here leaves the previous manifest naming a complete
+        pair. The whole save holds the directory's exclusive lock, not just the
+        replace: a second writer sweeping while this one is between writing its
+        pair and naming it would delete the pair it is about to publish."""
         directory = Path(directory).expanduser()
         directory.mkdir(parents=True, exist_ok=True)
-        np.save(directory / "vectors.npy", self.vectors)
-        with (directory / "chunks.jsonl").open("w", encoding="utf-8") as f:
-            for c in self.chunks:
-                f.write(json.dumps(c.to_json(), ensure_ascii=False) + "\n")
-        (directory / "manifest.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": INDEX_SCHEMA_VERSION,
-                    "model": self.model,
-                    "dim": self.dim,
-                    "count": len(self.chunks),
-                    "fingerprint": self.fingerprint,
-                    "stems": self.stems,
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        generation = uuid.uuid4().hex
+        vectors_name, chunks_name = _generation_files(generation)
+        with _index_lock(directory, exclusive=True):
+            try:
+                with _create_private(directory / vectors_name, binary=True) as f:
+                    np.save(f, self.vectors)
+                with _create_private(directory / chunks_name, binary=False) as f:
+                    for c in self.chunks:
+                        f.write(json.dumps(c.to_json(), ensure_ascii=False) + "\n")
+                storage.atomic_write_text(
+                    directory / MANIFEST_NAME,
+                    json.dumps(
+                        {
+                            "schema_version": INDEX_SCHEMA_VERSION,
+                            "generation": generation,
+                            "model": self.model,
+                            "dim": self.dim,
+                            "count": len(self.chunks),
+                            "fingerprint": self.fingerprint,
+                            "stems": self.stems,
+                        },
+                        indent=2,
+                    ),
+                )
+            except BaseException:
+                # Drop the half-written pair, but only when the manifest
+                # provably names another generation: an interrupt can land after
+                # the replace succeeded, and then this pair is the live one. When
+                # in doubt keep it; the next save's sweep takes an orphan.
+                if _named_generation(directory) not in (generation, None):
+                    for name in (vectors_name, chunks_name):
+                        (directory / name).unlink(missing_ok=True)
+                raise
+            _sweep_generations(directory, keep=generation)
 
     @classmethod
     def load(cls, directory: Path, embedder: Embedder | None = None) -> "EmbeddingIndex":
+        """Read the generation the manifest names, under the directory's shared
+        lock so a concurrent save cannot sweep it between the two reads."""
         directory = Path(directory).expanduser()
-        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-        vectors = np.load(directory / "vectors.npy")
-        chunks: list[Chunk] = []
-        with (directory / "chunks.jsonl").open(encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    chunks.append(Chunk.from_json(json.loads(line)))
+        with _index_lock(directory, exclusive=False):
+            manifest = json.loads((directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+            generation = manifest.get("generation") if isinstance(manifest, dict) else None
+            if not isinstance(generation, str) or not _GENERATION.fullmatch(generation):
+                raise ValueError(f"index manifest at {directory} names no valid generation")
+            vectors_name, chunks_name = _generation_files(generation)
+            vectors = np.load(directory / vectors_name)
+            chunks: list[Chunk] = []
+            with (directory / chunks_name).open(encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        chunks.append(Chunk.from_json(json.loads(line)))
         embedder = embedder or default_embedder(str(manifest.get("model", DEFAULT_EMBED_MODEL)))
         raw_stems = manifest.get("stems")
         stems = (
@@ -616,10 +740,10 @@ def _load_reusable(index_dir: Path, embedder: Embedder) -> "EmbeddingIndex | Non
     The vectors / chunks pairing is validated here rather than at the use site, so
     everything downstream can index one by the other without re-checking.
     """
-    if not (index_dir / "manifest.json").exists():
+    if not (index_dir / MANIFEST_NAME).exists():
         return None
     try:
-        meta = json.loads((index_dir / "manifest.json").read_text(encoding="utf-8"))
+        meta = json.loads((index_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
         if not isinstance(meta, dict):
             return None
         # A hashing-built index under an MLX embedder would have vectors of the
@@ -627,7 +751,10 @@ def _load_reusable(index_dir: Path, embedder: Embedder) -> "EmbeddingIndex | Non
         if meta.get("model") != embedder.name:
             return None
         if int(meta.get("schema_version", 1)) < INDEX_SCHEMA_VERSION:
-            log.info("cached index at %s predates per-stem freshness; rebuilding it once", index_dir)
+            log.info(
+                "cached index at %s predates schema v%d (per-stem freshness, "
+                "generation files); rebuilding it once", index_dir, INDEX_SCHEMA_VERSION,
+            )
             return None
         index = EmbeddingIndex.load(index_dir, embedder)
     except (OSError, ValueError, KeyError, TypeError) as e:
@@ -696,19 +823,25 @@ def refresh_index(
     chunk_chars: int = CHUNK_CHARS,
     overlap: int = CHUNK_OVERLAP,
     allow_stems: set[str] | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> "EmbeddingIndex":
     """Bring the persisted index up to date with the library, incrementally.
 
     Only the stems whose own source files changed are re-chunked and re-embedded;
     removed stems lose their rows; everything else keeps the vectors it already
-    had. The index is written back every `CHECKPOINT_EVERY_STEMS` meetings, so a
-    kill mid-build resumes from the last checkpoint instead of starting over
-    (the daemon SIGTERMs `mp ask` at ten minutes, which on a large library used
-    to mean an infinite rebuild loop that never once produced an answer).
+    had. The index is written back at the first batch boundary after
+    `CHECKPOINT_MIN_INTERVAL_S` has passed since the last save (AI13), and once
+    more at the end, so a kill mid-build resumes from the last checkpoint instead
+    of starting over (the daemon SIGTERMs `mp ask` at ten minutes, which on a
+    large library used to mean an infinite rebuild loop that never once produced
+    an answer). The last batch never checkpoints, since the final save follows
+    it at once; `ask_index_refresh_done` reports the mid-build saves as
+    `checkpoints` (the final save is not counted) and the time spent in every
+    save, final included, as `save_s`. `clock` is injectable for tests.
 
     `watchdog` is checked between batches and raises `resource_guard.LowMemoryError`
-    rather than letting the machine swap; the work done so far is already on disk
-    by then, so the next run picks up where the abort left it.
+    rather than letting the machine swap; the work up to the last checkpoint is
+    already on disk by then, so the next run picks up from there.
 
     `allow_stems` (AUTO3) narrows the corpus to the meetings that may leave this
     machine. It is applied to the fingerprint map, which is the reuse decision,
@@ -732,7 +865,7 @@ def refresh_index(
         )
         return prior
 
-    started = time.monotonic()
+    started = clock()
     events.emit(
         "pipeline", "ask_index_refresh_started",
         stems_total=len(current), stems_stale=len(plan.stale),
@@ -748,9 +881,21 @@ def refresh_index(
     blocks: list[np.ndarray] = [kept_vectors]
     done: dict[str, str] = {stem: current[stem] for stem in plan.unchanged}
     embedded_chunks = 0
+    interval = CHECKPOINT_MIN_INTERVAL_S
+    last_save = started
+    checkpoints = 0
+    save_s = 0.0
+
+    def _timed_persist(ix: "EmbeddingIndex") -> None:
+        nonlocal save_s, last_save
+        t0 = clock()
+        _persist(ix, index_dir)
+        last_save = clock()
+        save_s += last_save - t0
 
     for start in range(0, len(plan.stale), CHECKPOINT_EVERY_STEMS):
         batch = plan.stale[start : start + CHECKPOINT_EVERY_STEMS]
+        is_last = start + CHECKPOINT_EVERY_STEMS >= len(plan.stale)
         # LOCAL16's watchdog, sampling-throttled, so calling it per batch costs
         # nothing. It raises; the checkpoint below is what makes that survivable.
         if watchdog is not None:
@@ -768,23 +913,28 @@ def refresh_index(
             done[stem] = current[stem]
         # The checkpoint IS the index: a complete, loadable one covering the stems
         # finished so far, with an empty completeness stamp so nothing mistakes it
-        # for a finished refresh. Collapsing the blocks here also keeps the stack
-        # from re-walking every earlier batch on the next checkpoint.
-        checkpoint = _assemble(embedder, chunks, blocks, stems=done, fingerprint="")
-        _persist(checkpoint, index_dir)
-        chunks, blocks = checkpoint.chunks, [checkpoint.vectors]
+        # for a finished refresh. Taken on time rather than per batch (AI13): the
+        # stack, sort and copy plus the full rewrite is what used to grow with
+        # the square of the library. Collapsing the blocks here keeps the next
+        # stack from re-walking every earlier batch.
+        if not is_last and clock() - last_save >= interval:
+            checkpoint = _assemble(embedder, chunks, blocks, stems=done, fingerprint="")
+            _timed_persist(checkpoint)
+            checkpoints += 1
+            chunks, blocks = checkpoint.chunks, [checkpoint.vectors]
         if on_progress is not None:
             on_progress(IndexProgress(
                 stems_done=len(done), stems_total=len(current), chunks_done=len(chunks),
             ))
 
     index = _assemble(embedder, chunks, blocks, stems=done, fingerprint=library_fingerprint(root))
-    _persist(index, index_dir)
+    _timed_persist(index)
     events.emit(
         "pipeline", "ask_index_refresh_done",
         stems_embedded=len(plan.stale), stems_total=len(current),
         chunks_embedded=embedded_chunks, chunks_total=len(index.chunks),
-        duration_s=round(time.monotonic() - started, 2),
+        checkpoints=checkpoints, save_s=round(save_s, 2),
+        duration_s=round(clock() - started, 2),
     )
     return index
 

@@ -171,9 +171,10 @@ def test_index_save_load_round_trip(tmp_path: Path) -> None:
 
     out = tmp_path / "index"
     built.save(out)
-    assert (out / "vectors.npy").exists()
-    assert (out / "chunks.jsonl").exists()
     manifest = json.loads((out / "manifest.json").read_text())
+    # AI13: the pair lives under the generation the manifest names.
+    assert (out / f"vectors-{manifest['generation']}.npy").exists()
+    assert (out / f"chunks-{manifest['generation']}.jsonl").exists()
     assert manifest["count"] == len(built.chunks)
     assert manifest["schema_version"] == embed_index.INDEX_SCHEMA_VERSION
     # AI11: the per-stem freshness map is what a later refresh diffs against.
@@ -501,3 +502,265 @@ def test_mlx_embedder_does_not_refuse_a_cached_model(monkeypatch) -> None:
     embedder = embed_index.MLXEmbedder("some/model")
     embedder._ensure_loaded()
     assert loaded == ["some/model"]
+
+
+# ----- AI13: a save never overwrites a live file, and checkpoints on time -----
+
+
+@pytest.fixture(autouse=True)
+def _checkpoint_every_batch(monkeypatch) -> None:
+    """AI13 made the checkpoint cadence time-based (`CHECKPOINT_MIN_INTERVAL_S`).
+    The AI11 tests above count on a save after every batch, which a 30 s
+    interval on a real clock never gives a millisecond test, so this module runs
+    with the interval at zero. The cadence tests below set their own."""
+    monkeypatch.setattr(embed_index, "CHECKPOINT_MIN_INTERVAL_S", 0.0, raising=False)
+
+
+def _library(lib: Path, count: int, *, words: int = 3) -> None:
+    for i in range(count):
+        _meeting(lib, f"m{i:03d}", title=f"T{i}", transcript=f"topic-{i} discussion " * words)
+
+
+def _saved_pair(idx_dir: Path) -> set[str]:
+    return {p.name for p in idx_dir.iterdir() if p.suffix in {".npy", ".jsonl"}}
+
+
+def _interrupt_chunks_write(monkeypatch, *, after_lines: int, torn: bool) -> None:
+    """Make `json.dumps` (the per-chunk JSONL write) die partway through a save.
+    `after_lines` complete lines get written first; with `torn` the next line is
+    written half-way before the raise, which is what a kill mid-write leaves."""
+    real = json.dumps
+    calls = {"n": 0}
+
+    def _dumps(obj, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] <= after_lines:
+            return real(obj, *args, **kwargs)
+        if torn and calls["n"] == after_lines + 1:
+            text = real(obj, *args, **kwargs)
+            return text[: len(text) // 2]
+        raise RuntimeError("simulated kill inside save")
+
+    monkeypatch.setattr(embed_index.json, "dumps", _dumps)
+
+
+@pytest.mark.parametrize(
+    "after_lines, torn",
+    [(0, False), (2, True)],
+    ids=["after-the-vectors-write", "mid-jsonl"],
+)
+def test_an_interrupted_save_leaves_the_previous_index_loadable(
+    tmp_path: Path, monkeypatch, after_lines: int, torn: bool
+) -> None:
+    """The headline AI13 bug: a kill between the vectors write and the chunks
+    write left new vectors beside old chunks, and `_load_reusable` answered that
+    count mismatch with a rebuild from zero."""
+    lib, idx_dir = tmp_path / "lib", tmp_path / "idx"
+    _library(lib, 2)
+    before = embed_index.load_or_build(lib, idx_dir, CountingEmbedder())
+
+    _library(lib, 6, words=40)  # more meetings, more rows: a different pair
+    bigger = EmbeddingIndex.build(lib, CountingEmbedder())
+    assert len(bigger.chunks) > after_lines + 1
+    real_dumps = json.dumps
+    _interrupt_chunks_write(monkeypatch, after_lines=after_lines, torn=torn)
+    with pytest.raises(RuntimeError):
+        bigger.save(idx_dir)
+    monkeypatch.setattr(embed_index.json, "dumps", real_dumps)
+
+    survived = embed_index._load_reusable(idx_dir, CountingEmbedder())
+    assert survived is not None, "a kill inside a save must not force a rebuild"
+    assert [c.to_json() for c in survived.chunks] == [c.to_json() for c in before.chunks]
+    assert np.allclose(survived.vectors, before.vectors)
+    assert survived.stems == before.stems
+
+
+def test_an_interrupt_after_the_manifest_replace_keeps_the_new_pair(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A Ctrl-C (or PIPE22's SystemExit) landing after `os.replace` but before
+    `save` returns must not delete the pair the manifest now names: that would
+    turn a finished save into the rebuild from zero this task removes."""
+    lib, idx_dir = tmp_path / "lib", tmp_path / "idx"
+    _library(lib, 2)
+    embed_index.load_or_build(lib, idx_dir, CountingEmbedder())
+    _library(lib, 4)
+    bigger = EmbeddingIndex.build(lib, CountingEmbedder())
+
+    real_write = embed_index.storage.atomic_write_text
+
+    def _write_then_interrupt(path, text, **kwargs):
+        real_write(path, text, **kwargs)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(embed_index.storage, "atomic_write_text", _write_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        bigger.save(idx_dir)
+    monkeypatch.setattr(embed_index.storage, "atomic_write_text", real_write)
+
+    survived = embed_index._load_reusable(idx_dir, CountingEmbedder())
+    assert survived is not None
+    assert [c.to_json() for c in survived.chunks] == [c.to_json() for c in bigger.chunks]
+
+
+def test_a_save_leaves_exactly_one_generation_on_disk(tmp_path: Path) -> None:
+    lib, idx_dir = tmp_path / "lib", tmp_path / "idx"
+    _library(lib, 2)
+    embed_index.load_or_build(lib, idx_dir, CountingEmbedder())
+    # What a killed save and a pre-AI13 build leave lying around.
+    (idx_dir / "vectors-deadbeef.npy").write_bytes(b"orphan")
+    (idx_dir / "chunks-deadbeef.jsonl").write_text("orphan\n", encoding="utf-8")
+    (idx_dir / "vectors.npy").write_bytes(b"legacy")
+    (idx_dir / "chunks.jsonl").write_text("legacy\n", encoding="utf-8")
+
+    _library(lib, 3)
+    embed_index.load_or_build(lib, idx_dir, CountingEmbedder())
+
+    manifest = json.loads((idx_dir / "manifest.json").read_text(encoding="utf-8"))
+    gen = manifest["generation"]
+    assert _saved_pair(idx_dir) == {f"vectors-{gen}.npy", f"chunks-{gen}.jsonl"}
+
+
+def test_two_writers_never_publish_a_torn_pair(tmp_path: Path) -> None:
+    """`mp ask` and `mp mcp-serve` both refresh into the default index dir. Two
+    threads, each holding its own lock descriptor, save different-sized indexes
+    into one directory over and over; whoever wins, the manifest must name a
+    complete pair."""
+    import threading
+
+    small_lib, big_lib, idx_dir = tmp_path / "small", tmp_path / "big", tmp_path / "idx"
+    _library(small_lib, 1)
+    _library(big_lib, 5, words=40)
+    small = EmbeddingIndex.build(small_lib, HashingEmbedder(dim=64))
+    big = EmbeddingIndex.build(big_lib, HashingEmbedder(dim=64))
+    assert len(small.chunks) != len(big.chunks)
+
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def _writer(index: EmbeddingIndex) -> None:
+        try:
+            barrier.wait()
+            for _ in range(25):
+                index.save(idx_dir)
+        except BaseException as e:  # pragma: no cover - only on a regression
+            errors.append(e)
+
+    threads = [threading.Thread(target=_writer, args=(ix,)) for ix in (small, big)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    loaded = embed_index._load_reusable(idx_dir, HashingEmbedder(dim=64))
+    assert loaded is not None
+    winner = small if len(loaded.chunks) == len(small.chunks) else big
+    assert [c.to_json() for c in loaded.chunks] == [c.to_json() for c in winner.chunks]
+    assert np.allclose(loaded.vectors, winner.vectors)
+    assert loaded.stems == winner.stems
+    assert len(_saved_pair(idx_dir)) == 2
+
+
+class _ClockedEmbedder(CountingEmbedder):
+    """Every embed batch costs ten seconds on an injected clock."""
+
+    def __init__(self, clock: dict[str, float]) -> None:
+        super().__init__()
+        self.clock = clock
+
+    def embed(self, texts, kind="passage"):  # type: ignore[override]
+        self.clock["t"] += 10.0
+        return super().embed(texts, kind)
+
+
+def _count_saves(monkeypatch) -> list[int]:
+    """Record every save as the number of meetings it covered."""
+    saves: list[int] = []
+    real = EmbeddingIndex.save
+
+    def _spy(self, directory):
+        saves.append(len(self.stems))
+        return real(self, directory)
+
+    monkeypatch.setattr(EmbeddingIndex, "save", _spy)
+    return saves
+
+
+def _refresh_done(logs: Path) -> list[dict]:
+    rows = [
+        json.loads(line)
+        for line in (logs / "pipeline_events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    return [r for r in rows if r["action"] == "ask_index_refresh_done"]
+
+
+def test_checkpoints_are_taken_on_time_not_per_batch(tmp_path: Path, monkeypatch) -> None:
+    """64 meetings is eight batches of eight; at ten seconds a batch and a
+    thirty-second interval that is a checkpoint after batches three and six and
+    the final save, rather than a whole-index rewrite after every batch."""
+    monkeypatch.setattr(embed_index, "CHECKPOINT_MIN_INTERVAL_S", 30.0)
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(tmp_path / "logs"))
+    lib, idx_dir = tmp_path / "lib", tmp_path / "idx"
+    _library(lib, 64)
+    clock = {"t": 0.0}
+    saves = _count_saves(monkeypatch)
+
+    embedder = _ClockedEmbedder(clock)
+    embed_index.refresh_index(lib, idx_dir, embedder, clock=lambda: clock["t"])
+
+    assert embedder.batches == 8
+    assert saves == [24, 48, 64]
+    done = _refresh_done(tmp_path / "logs")[-1]
+    assert done["checkpoints"] == 2
+    assert done["save_s"] == 0.0  # the injected clock does not move inside a save
+    assert done["duration_s"] == 80.0
+
+
+def test_a_one_meeting_refresh_saves_exactly_once(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(embed_index, "CHECKPOINT_MIN_INTERVAL_S", 30.0)
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(tmp_path / "logs"))
+    lib, idx_dir = tmp_path / "lib", tmp_path / "idx"
+    _library(lib, 3)
+    embed_index.load_or_build(lib, idx_dir, CountingEmbedder())
+
+    (lib / "m001.md").write_text("topic-1 discussion, now edited", encoding="utf-8")
+    clock = {"t": 0.0}
+    saves = _count_saves(monkeypatch)
+    embed_index.refresh_index(lib, idx_dir, _ClockedEmbedder(clock), clock=lambda: clock["t"])
+
+    assert saves == [3]
+    assert _refresh_done(tmp_path / "logs")[-1]["checkpoints"] == 0
+
+
+def test_an_index_from_the_previous_schema_rebuilds_once(tmp_path: Path, caplog) -> None:
+    """A schema-2 index (in-place `vectors.npy` + `chunks.jsonl`) is rebuilt once
+    through the existing "predates" line rather than read through a second
+    layout, and the rebuild sweeps the legacy files away."""
+    lib, idx_dir = tmp_path / "lib", tmp_path / "idx"
+    _library(lib, 2)
+    old = EmbeddingIndex.build(lib, CountingEmbedder())
+    idx_dir.mkdir(parents=True)
+    np.save(idx_dir / "vectors.npy", old.vectors)
+    (idx_dir / "chunks.jsonl").write_text(
+        "".join(json.dumps(c.to_json()) + "\n" for c in old.chunks), encoding="utf-8"
+    )
+    (idx_dir / "manifest.json").write_text(json.dumps({
+        "schema_version": 2, "model": old.model, "dim": old.dim,
+        "count": len(old.chunks), "fingerprint": old.fingerprint, "stems": old.stems,
+    }), encoding="utf-8")
+
+    again = CountingEmbedder()
+    with caplog.at_level("INFO", logger="mp.embed_index"):
+        index = embed_index.load_or_build(lib, idx_dir, again)
+    assert "predates" in caplog.text
+    assert again.embedded, "a schema-2 cache must be re-embedded once"
+    assert set(index.stems) == set(old.stems)
+    assert not (idx_dir / "vectors.npy").exists()
+    assert not (idx_dir / "chunks.jsonl").exists()
+
+    caplog.clear()
+    third = CountingEmbedder()
+    with caplog.at_level("INFO", logger="mp.embed_index"):
+        embed_index.load_or_build(lib, idx_dir, third)
+    assert third.embedded == [] and "predates" not in caplog.text
