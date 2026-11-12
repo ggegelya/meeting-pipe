@@ -417,6 +417,39 @@ def test_auto_fallback_local_client_carries_the_configured_floor(
     assert floors == [42.0]
 
 
+def test_auto_fallback_carries_map_partials_to_the_next_local_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # LOCAL23: the local rung builds a fresh client per call, so a LANG1 repair
+    # (a second `summarize` on the same AutoFallbackClient) would always find an
+    # empty partials cache and re-run every map call. The ladder carries it.
+    from mp.schemas import MeetingSummary
+    from mp.summarize_local import LocalSummaryClient, MapPartials
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    seen: list[object] = []
+    stored = MapPartials("A: hi.", "en", "sys", ())
+
+    class _RecordingLocal(LocalSummaryClient):
+        def summarize(self, **_: Any) -> MeetingSummary:
+            seen.append(self.map_partials)
+            self.map_partials = stored
+            return MeetingSummary(
+                title="Local", summary=["b"], decisions=[], actions=[],
+                questions=[], attendees=[], detected_language="en",
+            )
+
+    monkeypatch.setattr("mp.summarize_local.LocalSummaryClient", _RecordingLocal)
+
+    client = AutoFallbackClient(_local_cfg(backend="auto"))
+    for _ in range(2):
+        client.summarize(
+            system_prompt="sys", transcript="A: hi.", model="claude-x", max_tokens=100,
+        )
+
+    assert seen == [None, stored]
+
+
 # ----- Slept-through-it timeout retry (PIPE10) -----
 #
 # httpx's read timeout rides the monotonic clock, which freezes while the Mac is

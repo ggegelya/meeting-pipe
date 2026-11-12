@@ -16,6 +16,9 @@ Three pieces, deliberately separable so a caller can take only what it needs:
    table-driven so it is unit-testable without a machine, and mirrored in Swift
    (`daemon/Sources/MeetingPipe/LocalModelTier.swift`) because Preferences has
    to annotate the presets before any Python runs. Change one, change both.
+   Beside it, **the token estimate** (`tokens_per_char`, `estimate_tokens`):
+   LOCAL13's measured rates, the units that ceiling is counted in, read by
+   `ask` and both local summarize shapes (LOCAL23).
 3. **A free-RAM watchdog** (`sample_memory`, `MemoryWatchdog`) - the LOCAL13
    bench protocol, which lived as a shell snippet in a spike doc and never
    became product code. Sampling is injectable so the abort is testable, and
@@ -25,12 +28,14 @@ Three pieces, deliberately separable so a caller can take only what it needs:
 The guard refuses only what it can *measure*. A model id whose parameter count
 does not parse (any Custom preset) is never refused on size, because guessing
 that a custom id is too big would break the one escape hatch a user has; the
-watchdog is the backstop for that case. `MP_RAM_GUARD=0` disables both the
-refusal and the watchdog for owner-dev bench runs.
+watchdog is the backstop for that case. `MP_RAM_GUARD=0` disables the refusal,
+the watchdog, and the tier ceiling local summarize holds a tight model's
+requests to (LOCAL23), for owner-dev bench runs.
 """
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import subprocess
@@ -185,6 +190,44 @@ def tier_for(ram_gb: float) -> Tier:
         if ram_gb >= tier.min_ram_gb:
             chosen = tier
     return chosen
+
+
+#: LOCAL13 measured tokens per character on the real corpus: 0.22 to 0.25 for
+#: English, 0.47 to 0.49 for Ukrainian. Both take the token-hungry end, so an
+#: estimate errs high and a budget sized on it is not overrun. The one copy
+#: (LOCAL23): `ask.chars_per_token` and `summarize_staged.tokens_per_char`
+#: delegate here, beside `tier_for`, whose ceilings are counted in these tokens.
+TOKENS_PER_CHAR_LATIN = 0.25
+TOKENS_PER_CHAR_CYRILLIC = 0.49
+
+
+def cyrillic_share(text: str) -> float:
+    """Fraction of `text`'s letters that are Cyrillic. Punctuation, digits, and
+    whitespace are excluded: they are the part of a transcript whose token cost
+    does not swing between the two scripts, so counting them would dilute a
+    genuinely Ukrainian text toward the English rate."""
+    letters = 0
+    cyrillic = 0
+    for ch in text:
+        if ch.isalpha():
+            letters += 1
+            if "Ѐ" <= ch <= "ԯ":  # Cyrillic + Cyrillic Supplement
+                cyrillic += 1
+    return cyrillic / letters if letters else 0.0
+
+
+def tokens_per_char(text: str) -> float:
+    """Estimated tokens per character for `text`, interpolated between LOCAL13's
+    two measured rates by its Cyrillic share. A mixed en/uk meeting is the normal
+    case here, so a blend beats picking one side. Pure, so every sizing built on
+    it is unit-testable without a model."""
+    share = cyrillic_share(text)
+    return TOKENS_PER_CHAR_LATIN + (TOKENS_PER_CHAR_CYRILLIC - TOKENS_PER_CHAR_LATIN) * share
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimated token count of `text` at its own script's rate, rounded up."""
+    return math.ceil(len(text) * tokens_per_char(text))
 
 
 def needs_ram_gb(model_gb: float) -> float | None:

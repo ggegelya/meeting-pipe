@@ -105,6 +105,21 @@ def test_tier_ceilings_rise_with_the_machine() -> None:
     assert tier_for(32.0).context_token_ceiling == 8_000
 
 
+def test_the_token_estimator_carries_local13s_two_rates_and_blends_them() -> None:
+    # LOCAL23: the one copy `ask`, the staged summarizer, and the single-pass
+    # budget all read.
+    assert resource_guard.tokens_per_char("the budget was cut in Q3") == pytest.approx(0.25)
+    assert resource_guard.tokens_per_char("бюджет скоротили у кварталі") == pytest.approx(0.49)
+    # Equal letter counts in each script land halfway between the two.
+    assert resource_guard.tokens_per_char("abcd абвг") == pytest.approx(0.37)
+    # Digits and punctuation carry no script, so they cannot dilute either rate.
+    assert resource_guard.tokens_per_char("1234!!! ...") == pytest.approx(0.25)
+    assert resource_guard.tokens_per_char("бюджет 2026, 50%!") == pytest.approx(0.49)
+    # The estimate rounds up, so a budget sized on it errs toward fitting.
+    assert resource_guard.estimate_tokens("abcde") == 2
+    assert resource_guard.estimate_tokens("") == 0
+
+
 def test_a_machine_below_the_first_tier_still_gets_a_policy() -> None:
     # There is nothing smaller to offer a 4 GB Mac; it gets the smallest tier
     # and the watchdog underneath, rather than an index error.

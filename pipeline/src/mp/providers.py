@@ -79,8 +79,8 @@ def _local_summary(cfg: Config) -> SummaryClient:
         startup_timeout_sec=s.local_startup_timeout_sec,
         request_timeout_sec=s.local_request_timeout_sec,
         summary_language=s.summary_language,
-        # PIPE4: one knob drives both the cloud paste-bundle guard and the local
-        # map-reduce routing, so a long local meeting summarizes instead of bundling.
+        # PIPE4: the cloud paste-bundle knob, here only an upper bound on one local
+        # request; the client routes on estimated tokens below it (LOCAL23).
         map_reduce_above_chars=s.skip_above_chars,
         # LOCAL9: opt-in fine-tuned adapter; empty config keeps the base model.
         adapter_path=s.local_adapter_path or None,

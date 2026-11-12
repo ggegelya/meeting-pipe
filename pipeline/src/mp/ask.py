@@ -60,16 +60,16 @@ log = logging.getLogger("mp.ask")
 # as honest as the chars-per-token rate used to convert it.
 DEFAULT_CONTEXT_TOKENS = 4000
 
-# LOCAL13 measured tokens-per-char over the real corpus: 0.22 to 0.25 for
-# English, 0.47 to 0.49 for Ukrainian. Inverted here, at the token-hungriest end
-# of each band, so the estimate errs small rather than over-packing.
+# LOCAL13's measured rates, inverted. The rates themselves live once in
+# `resource_guard` (LOCAL23), where the summarize path reads them too; these two
+# names are the chars-per-token view `answer_question` sizes its pack with.
 #
-# The flat `CHARS_PER_TOKEN = 4` this replaces was Latin-calibrated, which made a
+# The flat `CHARS_PER_TOKEN = 4` this replaced was Latin-calibrated, which made a
 # "4,000-token" Ukrainian pack ~7,800 real tokens: past the point where AI2
 # measured the 14B aborting on the memory watchdog, and one of the mechanisms
 # behind the 2026-07-29 incident (AI11).
-LATIN_CHARS_PER_TOKEN = 4.0
-CYRILLIC_CHARS_PER_TOKEN = 2.0
+LATIN_CHARS_PER_TOKEN = 1 / resource_guard.TOKENS_PER_CHAR_LATIN
+CYRILLIC_CHARS_PER_TOKEN = 1 / resource_guard.TOKENS_PER_CHAR_CYRILLIC
 
 # A meeting-recall answer is a few sentences; bound generation so the local
 # path's wall-clock stays within AI2's budget.
@@ -119,28 +119,12 @@ def _titles_by_stem(chunks: list[embed_index.Chunk]) -> dict[str, str]:
     return titles
 
 
-def cyrillic_share(text: str) -> float:
-    """Fraction of `text`'s letters that are Cyrillic. Punctuation, digits, and
-    whitespace are excluded: they are the part of a transcript whose token cost
-    does not swing between the two scripts, so counting them would dilute a
-    genuinely Ukrainian pack toward the English rate."""
-    letters = 0
-    cyrillic = 0
-    for ch in text:
-        if ch.isalpha():
-            letters += 1
-            if "Ѐ" <= ch <= "ԯ":  # Cyrillic + Cyrillic Supplement
-                cyrillic += 1
-    return cyrillic / letters if letters else 0.0
-
-
 def chars_per_token(text: str) -> float:
-    """Chars-per-token for `text`, interpolated between LOCAL13's two measured
-    rates by its Cyrillic share. A mixed en/uk library is the normal case here,
-    so a blend beats picking one side; an all-Latin text gets exactly the old
-    constant, which is why this cannot make an English ask worse."""
-    share = cyrillic_share(text)
-    return LATIN_CHARS_PER_TOKEN + (CYRILLIC_CHARS_PER_TOKEN - LATIN_CHARS_PER_TOKEN) * share
+    """Chars-per-token for `text`: the inverse of `resource_guard.tokens_per_char`,
+    which interpolates LOCAL13's two measured rates by the Cyrillic share. An
+    all-Latin text gets exactly the old 4.0, which is why this cannot make an
+    English ask worse."""
+    return 1 / resource_guard.tokens_per_char(text)
 
 
 def context_ceiling(cfg: Config) -> int | None:

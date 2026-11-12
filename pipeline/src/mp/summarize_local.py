@@ -29,8 +29,9 @@ layer (outlines / lm-format-enforcer) is added in a separate change
 
 Shapes
 ------
-The default shape is one call per meeting (windowed and reduced above
-``map_reduce_above_chars``). LOCAL14 adds a second, staged shape in
+The default shape is one call per meeting, windowed and reduced when the
+request would not fit its token budget or the transcript is over
+``map_reduce_above_chars`` (LOCAL23: see ``request_budget``). LOCAL14 adds a second, staged shape in
 ``summarize_staged``: extract fact rows, compose each section from those rows,
 verify deterministically, one critic pass. It is reached only when the
 ``MP_STAGED_LOCAL`` bake-off toggle is set, and it declines back to this module's
@@ -47,6 +48,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -55,6 +57,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -90,22 +93,31 @@ DEFAULT_IDLE_TIMEOUT_SEC = 300.0
 _SECONDS_PER_OUTPUT_TOKEN_FLOOR = 0.1
 
 # Map-reduce for long transcripts on the local backend (PIPE4), generalizing
-# AppleIntelligenceSummarizer's LOCAL3 batched reduce out of Swift. A transcript
-# over this many chars would overflow the model context in one call (AI2 measured
-# ~4K tokens safe on the owner's Mac; 16K OOM-crashed it), so summarize() windows
-# it, summarizes each window, then reduces the partials in batches. The threshold
-# is `summarization.skip_above_chars` in production (one knob drives both the cloud
-# paste-bundle guard and this local routing); the default here matches its default.
+# AppleIntelligenceSummarizer's LOCAL3 batched reduce out of Swift: summarize()
+# windows the transcript, summarizes each window, then reduces the partials in
+# batches. Since LOCAL23 it routes on estimated tokens (`request_budget`), and this
+# char threshold is only an upper bound on one request: a transcript over it is
+# always windowed, and no window is longer than it. It is
+# `summarization.skip_above_chars` in production (the cloud paste-bundle knob); the
+# default here matches its default. 0 removes the char bound, not the token one.
 DEFAULT_MAP_REDUCE_ABOVE_CHARS = 80_000
-# Per-window char budget. Cyrillic tokenizes at ~1.7 tokens/char, so ~1500 chars
-# keeps a worst-case map call near the ~4K-token safe budget once the fixed system
-# prompt, JSON schema, and output are added; an English window carries proportionally
-# more text under the same token ceiling. Overlap keeps a sentence spanning a window
-# boundary in at least one window (chunking.py snaps to whitespace).
-_MAP_WINDOW_CHARS = 1_500
+# Qwen2.5's native context window: `max_position_embeddings` in every curated
+# preset's config.json (read off the cached 3B on 2026-10-25). Used for a Custom
+# model id too, since nothing here reads an arbitrary model's config and every
+# model this product has shipped is Qwen2.5. A request's input budget is this
+# minus the `max_tokens` it asks to generate (LOCAL23).
+NATIVE_CONTEXT_TOKENS = 32_768
+# Floor on a map window, in chars. Window size is derived from the token budget
+# left after the fixed prompt (LOCAL23); this floor keeps a window carrying real
+# transcript even when that budget is nearly gone, and is also the smallest window
+# a tight tier's ceiling must leave room for before `request_budget` honours it.
+# Overlap keeps a sentence spanning a window boundary in at least one window
+# (chunking.py snaps to whitespace).
+_MIN_MAP_WINDOW_CHARS = 1_500
 _MAP_OVERLAP_CHARS = 200
-# Partial summaries merged per reduce call, so the reduce input also stays under the
-# budget. Bounded below at 2 so the reduce always makes progress toward one summary.
+# Most partial summaries merged per reduce call. Within that cap a batch also stops
+# growing at the token budget. Bounded below at 2 so the reduce always makes
+# progress toward one summary.
 _REDUCE_BATCH = 4
 # Candidate layers `_extract_summary` walks: raw, de-fenced, balanced scan, and the
 # lenient comma repair. Named so the error message and the docstring cannot drift
@@ -120,6 +132,81 @@ def scaled_request_timeout(base_sec: float, max_tokens: int) -> float:
     off mid-stream, while the daemon's 20-min watchdog remains the hard backstop
     (LOCAL2/AUD-21). Pure so it is unit-testable without a server."""
     return base_sec + max(0, max_tokens) * _SECONDS_PER_OUTPUT_TOKEN_FLOOR
+
+
+def request_tokens(messages: list[dict[str, str]]) -> int:
+    """Estimated input tokens of one chat request: each message at its own script's
+    rate (`resource_guard.estimate_tokens`). The quantity AI2's ceiling and `mp
+    ask`'s clamp both measure, so it is what every LOCAL23 budget is compared to."""
+    return sum(resource_guard.estimate_tokens(m["content"]) for m in messages)
+
+
+def request_budget(
+    model_id: str,
+    ram_gb: float | None,
+    *,
+    max_tokens: int,
+    fixed_tokens: int,
+    tokens_per_char: float,
+    guard_enabled: bool = True,
+) -> tuple[int | None, str | None]:
+    """The input-token budget for one local request, and a warning when a tier
+    ceiling could not be honoured (LOCAL23). Pure, so the policy is testable
+    without a machine.
+
+    The budget is the native context minus ``max_tokens``. A model that sits
+    ``tight`` in this Mac's tier (``resource_guard.assess``: the 7B on 16 GB, the
+    14B on 24 to 32 GB, the population that produced the OOM reports) is held to
+    the tier's ``context_token_ceiling`` instead, but only when that ceiling still
+    leaves room for one ``_MIN_MAP_WINDOW_CHARS`` window above ``fixed_tokens``
+    (the system prompt, schema, and user wrapper). Where it does not, as on the
+    4,000-token tiers whose ceiling the fixed prompt alone reaches, map calls
+    would exceed it as well, so the native budget stands and the second value
+    names the gap for the caller to log.
+
+    ``ram_gb`` None (unreadable) returns no budget at all, and the caller keeps
+    the char-only routing that predates this.
+
+    ``guard_enabled`` False (``MP_RAM_GUARD=0``, the owner's bench override,
+    decided 2026-11-12) drops the per-Mac ceiling and leaves only the model's
+    own context budget, the same way that switch drops the size refusal and the
+    watchdog.
+    """
+    if ram_gb is None:
+        return None, None
+    native = NATIVE_CONTEXT_TOKENS - max(0, max_tokens)
+    if not guard_enabled:
+        return native, None
+    assessment = resource_guard.assess(model_id, ram_gb)
+    ceiling = assessment.tier.context_token_ceiling
+    if assessment.fit != "tight" or ceiling >= native:
+        return native, None
+    smallest = fixed_tokens + math.ceil(_MIN_MAP_WINDOW_CHARS * tokens_per_char)
+    if smallest <= ceiling:
+        return ceiling, None
+    return native, (
+        f"{model_id} is a tight fit for this {ram_gb:g} GB Mac, whose tier keeps one "
+        f"request under {ceiling:,} tokens, but the fixed prompt is about "
+        f"{fixed_tokens:,} tokens before any transcript (about {smallest:,} with the "
+        f"smallest window), so no window can honour that ceiling; using the model's "
+        f"native budget of {native:,} tokens and relying on the memory watchdog"
+    )
+
+
+@dataclass(frozen=True)
+class MapPartials:
+    """The map stage of the last transcript a client windowed (LOCAL23).
+
+    Kept so a LANG1 language repair, which re-asks the same client with the same
+    transcript and an extended system prompt, re-runs only the reduce rather than
+    every map call again. Reused only when the transcript and target match and
+    the new system prompt extends ``system_prompt``; the extension is what the
+    repair's reduce adds to its own instructions.
+    """
+    transcript: str
+    target: str | None
+    system_prompt: str
+    partials: tuple[MeetingSummary, ...]
 
 
 def _batched(items: list[MeetingSummary], size: int) -> list[list[MeetingSummary]]:
@@ -352,6 +439,12 @@ class LocalSummaryClient:
         # into swapping ends with a named error instead of a beachball. Public so a
         # caller driving its own loop (a bench harness) can share the one instance.
         self.watchdog = resource_guard.MemoryWatchdog(floor_pct=memory_floor_pct)
+        # LOCAL23: the map partials of the last transcript this client windowed,
+        # so a language repair re-runs only the reduce. Public because the `auto`
+        # ladder builds a fresh client per call and carries this across them.
+        self.map_partials: MapPartials | None = None
+        # LOCAL23: the tier-ceiling gap is logged once per client, not per call.
+        self._ceiling_gap_logged = False
 
         self._proc: subprocess.Popen[bytes] | None = None
         self._lock = threading.Lock()
@@ -436,11 +529,18 @@ class LocalSummaryClient:
                 )
                 if staged is not None:
                     return staged
-            if self._map_reduce_above_chars and len(transcript) > self._map_reduce_above_chars:
-                # PIPE4: too long for one context; window -> map -> reduce.
+            budget = self._request_budget(system_prompt, transcript, target, max_tokens)
+            over_chars = bool(self._map_reduce_above_chars) and (
+                len(transcript) > self._map_reduce_above_chars
+            )
+            over_budget = budget is not None and request_tokens(
+                self._messages_for(system_prompt, transcript, target)
+            ) > budget
+            if over_chars or over_budget:
+                # PIPE4 / LOCAL23: too long for one request; window -> map -> reduce.
                 return self._summarize_map_reduce(
                     system_prompt=system_prompt, transcript=transcript,
-                    target=target, max_tokens=max_tokens,
+                    target=target, max_tokens=max_tokens, budget=budget,
                 )
             summary, last_text, messages = self._summarize_once(
                 system_prompt, transcript, target, max_tokens
@@ -458,43 +558,128 @@ class LocalSummaryClient:
         schema-violation repair loop. Shared by the single-pass path and each
         map window; the caller applies the language-mismatch retry. Returns the
         summary, the raw text it parsed from, and the messages (for that retry)."""
+        messages = self._messages_for(system_prompt, text, target)
+        summary, last_text = self._summarize_with_schema_retry(messages, max_tokens)
+        return summary, last_text, messages
+
+    def _messages_for(
+        self, system_prompt: str, text: str, target: str | None,
+    ) -> list[dict[str, str]]:
+        """The schema-forcing request for ``text``: what a single-pass call or one
+        map window sends, and what LOCAL23's budget estimates before sending it."""
         system_content = self._augment_with_schema(system_prompt)
         if target:
             # Restate the target after the schema, where the local model's token
             # attention is highest; the base directive already rode in via the
             # system prompt but was being ignored (LOCAL7).
             system_content += language_reinforcement(target)
-        messages = [
+        return [
             {"role": "system", "content": system_content},
             {"role": "user", "content": self._compose_user_message(text)},
         ]
-        summary, last_text = self._summarize_with_schema_retry(messages, max_tokens)
-        return summary, last_text, messages
+
+    def _request_budget(
+        self, system_prompt: str, transcript: str, target: str | None, max_tokens: int,
+    ) -> int | None:
+        """This run's input-token budget per request (``request_budget``), against
+        the model that is actually serving and this Mac's RAM. Logs the tier-ceiling
+        gap once per client. None when RAM cannot be read."""
+        budget, gap = request_budget(
+            self.model,
+            resource_guard.physical_ram_gb(),
+            max_tokens=max_tokens,
+            fixed_tokens=request_tokens(self._messages_for(system_prompt, "", target)),
+            tokens_per_char=resource_guard.tokens_per_char(transcript),
+            guard_enabled=resource_guard.guard_enabled(),
+        )
+        if gap and not self._ceiling_gap_logged:
+            log.warning("local summarize: %s", gap)
+            self._ceiling_gap_logged = True
+        return budget
+
+    def _map_windows(
+        self, system_prompt: str, transcript: str, target: str | None, budget: int,
+    ) -> list[str]:
+        """Window ``transcript`` so each map request fits ``budget`` (LOCAL23).
+
+        The first size is the budget left after the fixed prompt, converted at the
+        transcript's script rate, capped at the char bound and floored at
+        ``_MIN_MAP_WINDOW_CHARS``. A mixed en/uk meeting can hold a window whose
+        local script costs more than the average, so every window's real request is
+        then estimated and the size shrunk until the worst one fits (or the floor
+        is reached)."""
+        fixed = request_tokens(self._messages_for(system_prompt, "", target))
+        rate = resource_guard.tokens_per_char(transcript)
+        max_chars = int(max(0, budget - fixed) / rate)
+        if self._map_reduce_above_chars:
+            max_chars = min(max_chars, self._map_reduce_above_chars)
+        max_chars = max(_MIN_MAP_WINDOW_CHARS, max_chars)
+        while True:
+            windows = [w.text for w in chunked_windows(
+                transcript, max_chars=max_chars, overlap_chars=_MAP_OVERLAP_CHARS,
+            )]
+            worst = max(
+                (request_tokens(self._messages_for(system_prompt, w, target)) for w in windows),
+                default=0,
+            )
+            if worst <= budget or max_chars <= _MIN_MAP_WINDOW_CHARS:
+                return windows
+            max_chars = max(_MIN_MAP_WINDOW_CHARS, int(max_chars * budget / worst) - 1)
 
     def _summarize_map_reduce(
-        self, *, system_prompt: str, transcript: str, target: str | None, max_tokens: int,
+        self,
+        *,
+        system_prompt: str,
+        transcript: str,
+        target: str | None,
+        max_tokens: int,
+        budget: int | None,
     ) -> MeetingSummary:
         """Hierarchical map-reduce for a transcript too long for one call (PIPE4),
         generalizing ``AppleIntelligenceSummarizer.generate`` (LOCAL3). Windows the
-        transcript (Cyrillic-safe char budget), summarizes each window, then reduces
-        the partials in batches until one remains. Called with the lock held and the
-        server running (from ``summarize``); the final summary still passes through
-        the language-mismatch repair, so a drifted merge is caught."""
-        windows = list(chunked_windows(
-            transcript, max_chars=_MAP_WINDOW_CHARS, overlap_chars=_MAP_OVERLAP_CHARS,
-        ))
+        transcript to the token budget (LOCAL23), summarizes each window, then
+        reduces the partials in batches until one remains. Called with the lock
+        held and the server running (from ``summarize``); the final summary still
+        passes through the language-mismatch repair, so a drifted merge is caught.
+
+        A repeat call on the transcript this client last windowed, with a system
+        prompt that extends the one it was mapped under (LANG1's repair), reuses
+        those partials and runs only the reduce, with the extension added to the
+        reduce's own instructions so the repair's merge is not a byte-identical
+        replay of the one it is repairing.
+
+        Unreadable RAM (``budget`` None) keeps the char-only routing but still
+        windows at the native budget rather than at the old 1,500 chars."""
+        cached = self.map_partials
+        if (
+            cached is not None
+            and cached.transcript == transcript
+            and cached.target == target
+            and system_prompt.startswith(cached.system_prompt)
+        ):
+            log.info(
+                "map-reduce: reusing %d map partials, re-running only the reduce",
+                len(cached.partials),
+            )
+            return self._reduce_partials(
+                list(cached.partials), target, max_tokens, budget,
+                extra_instructions=system_prompt[len(cached.system_prompt):],
+            )
+        size_budget = budget if budget is not None else NATIVE_CONTEXT_TOKENS - max(0, max_tokens)
+        windows = self._map_windows(system_prompt, transcript, target, size_budget)
         log.info("map-reduce: %d chars -> %d windows", len(transcript), len(windows))
         if len(windows) <= 1:
             summary, last_text, messages = self._summarize_once(
-                system_prompt, windows[0].text if windows else transcript, target, max_tokens
+                system_prompt, windows[0] if windows else transcript, target, max_tokens
             )
             if target:
                 summary = self._retry_on_language_mismatch(
                     summary, last_text, messages, target, max_tokens
                 )
             return summary
-        partials = [self._map_window(system_prompt, w.text, target, max_tokens) for w in windows]
-        return self._reduce_partials(partials, target, max_tokens)
+        partials = [self._map_window(system_prompt, w, target, max_tokens) for w in windows]
+        self.map_partials = MapPartials(transcript, target, system_prompt, tuple(partials))
+        return self._reduce_partials(partials, target, max_tokens, budget)
 
     def _map_window(
         self, system_prompt: str, text: str, target: str | None, max_tokens: int,
@@ -508,26 +693,61 @@ class LocalSummaryClient:
         return summary
 
     def _reduce_partials(
-        self, partials: list[MeetingSummary], target: str | None, max_tokens: int,
+        self,
+        partials: list[MeetingSummary],
+        target: str | None,
+        max_tokens: int,
+        budget: int | None,
+        extra_instructions: str = "",
     ) -> MeetingSummary:
-        """Merge partials in batches of ``_REDUCE_BATCH`` until one remains, so every
-        reduce call's input also stays under the context budget."""
+        """Merge partials in batches until one remains, so every reduce call's input
+        also stays under the budget (``_reduce_batches``)."""
         while len(partials) > 1:
             nxt: list[MeetingSummary] = []
-            for group in _batched(partials, _REDUCE_BATCH):
-                nxt.append(group[0] if len(group) == 1 else self._reduce_group(group, target, max_tokens))
+            for group in self._reduce_batches(partials, target, budget, extra_instructions):
+                nxt.append(group[0] if len(group) == 1 else self._reduce_group(
+                    group, target, max_tokens, extra_instructions,
+                ))
             partials = nxt
         return partials[0]
 
-    def _reduce_group(
-        self, group: list[MeetingSummary], target: str | None, max_tokens: int,
-    ) -> MeetingSummary:
-        self._reset_idle_timer()
+    def _reduce_batches(
+        self,
+        partials: list[MeetingSummary],
+        target: str | None,
+        budget: int | None,
+        extra_instructions: str,
+    ) -> list[list[MeetingSummary]]:
+        """Group partials for one reduce round: at most ``_REDUCE_BATCH`` each, and a
+        group stops growing once the next partial would take its request over
+        ``budget`` (LOCAL23). Never fewer than two in a group bar the last, so a
+        round always shrinks the list even when two partials alone exceed it."""
+        if budget is None:
+            return _batched(partials, _REDUCE_BATCH)
+        groups: list[list[MeetingSummary]] = []
+        current: list[MeetingSummary] = []
+        for partial in partials:
+            if current and (
+                len(current) >= _REDUCE_BATCH
+                or (len(current) >= 2 and request_tokens(self._reduce_messages(
+                    [*current, partial], target, extra_instructions,
+                )) > budget)
+            ):
+                groups.append(current)
+                current = []
+            current.append(partial)
+        if current:
+            groups.append(current)
+        return groups
+
+    def _reduce_messages(
+        self, group: list[MeetingSummary], target: str | None, extra_instructions: str,
+    ) -> list[dict[str, str]]:
         combined = "\n\n---\n\n".join(_render_for_reduce(p) for p in group)
-        system_content = self._augment_with_schema(_reduce_instructions())
+        system_content = self._augment_with_schema(_reduce_instructions() + extra_instructions)
         if target:
             system_content += language_reinforcement(target)
-        messages = [
+        return [
             {"role": "system", "content": system_content},
             {"role": "user", "content": (
                 "Merge these partial meeting summaries into one summary of the whole "
@@ -535,6 +755,16 @@ class LocalSummaryClient:
                 "message.\n\n" + combined
             )},
         ]
+
+    def _reduce_group(
+        self,
+        group: list[MeetingSummary],
+        target: str | None,
+        max_tokens: int,
+        extra_instructions: str = "",
+    ) -> MeetingSummary:
+        self._reset_idle_timer()
+        messages = self._reduce_messages(group, target, extra_instructions)
         summary, last_text = self._summarize_with_schema_retry(messages, max_tokens)
         if target:
             summary = self._retry_on_language_mismatch(summary, last_text, messages, target, max_tokens)

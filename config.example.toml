@@ -201,7 +201,8 @@ local_request_timeout_sec = 120
 # instead of letting the Mac swap. 0 turns the watchdog off. Separate from the
 # model-size refusal, which compares the configured model against this Mac's RAM
 # tier before the server is spawned and stays on regardless. Owner-dev escape
-# hatch for bench runs: MP_RAM_GUARD=0 in the environment disables both.
+# hatch for bench runs: MP_RAM_GUARD=0 in the environment disables both, and
+# also the per-Mac context ceiling local summarize applies to a tight-fit model.
 local_memory_floor_pct = 10
 # LLM diarization cleanup (TECH-DIAR1). When true, run-all runs an extra
 # LLM pass after transcription that merges same-speaker labels and

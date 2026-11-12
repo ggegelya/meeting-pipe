@@ -34,6 +34,15 @@ from mp.summarize_local import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _unknown_ram(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LOCAL23: routing reads this Mac's RAM, so leaving it live would make every
+    routing assertion depend on the machine (48 GB here, something else on CI).
+    Unknown RAM is the pre-LOCAL23 char-only routing; the LOCAL23 tests below set
+    an explicit figure."""
+    monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: None)
+
+
 def test_scaled_request_timeout_grows_with_max_tokens():
     """The read timeout must scale with the requested output length so a long
     generation is not cut off, while staying under the daemon's 20-min (1200s)
@@ -1062,3 +1071,335 @@ def test_unreadable_identity_reuses_rather_than_respawning(
 
 def _fail_if_called(*_args: object, **_kwargs: object):
     raise AssertionError("a server this client did not spawn must not be killed")
+
+
+# ----- LOCAL23: token-budgeted routing, windows, and a reduce-only repair -----
+
+_7B = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+_14B = "mlx-community/Qwen2.5-14B-Instruct-4bit"
+_MAX_TOKENS = 4000
+
+
+def _production_prompt() -> str:
+    # The real system prompt, not "Summarize.": the fixed prompt is about 4,100
+    # tokens with it and about 2,300 without, and the tier rules turn on exactly
+    # that difference.
+    from mp.summarize import _load_system_prompt
+    return _load_system_prompt("")
+
+
+def _text_of(line: str, chars: int) -> str:
+    out = (line * (chars // len(line) + 1))[:chars]
+    assert len(out) == chars
+    return out
+
+
+def _cyrillic(chars: int) -> str:
+    return _text_of("Олена: обговорили бюджет і терміни релізу, є питання щодо ризиків. ", chars)
+
+
+def _english(chars: int) -> str:
+    return _text_of("Alice: we went over the budget and the release dates in detail. ", chars)
+
+
+def _uk_partial_obj() -> dict:
+    """A verbose partial (about 1,400 tokens), so four of them plus the reduce
+    prompt overrun an 8,000-token budget and the reduce has to batch on tokens
+    rather than on `_REDUCE_BATCH` alone."""
+    bullet = "Команда обговорила бюджет проєкту, терміни релізу та ризики постачання. "
+    return {
+        "title": "Планування релізу",
+        "summary": [bullet * 6 for _ in range(5)],
+        "decisions": ["Затвердили перенесення релізу на наступний тиждень."],
+        "actions": [{"task": "Підготувати оновлений план робіт", "owner": "Олена"}],
+        "questions": ["Чи встигне постачальник до нової дати?"],
+        "attendees": ["Олена", "Петро"],
+        "detected_language": "uk",
+    }
+
+
+def _recording(server: ThreadingHTTPServer, reply: Callable[[dict], dict]) -> list[dict]:
+    requests: list[dict] = []
+
+    def builder(payload: dict) -> dict:
+        requests.append(payload)
+        return {"choices": [{"message": {"content": json.dumps(reply(payload))}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    return requests
+
+
+def _is_reduce(payload: dict) -> bool:
+    return any(
+        m["role"] == "user" and m["content"].startswith("Merge these partial")
+        for m in payload["messages"]
+    )
+
+
+def _is_map(payload: dict) -> bool:
+    return any(
+        m["role"] == "user" and m["content"].startswith("Summarize this meeting")
+        for m in payload["messages"]
+    )
+
+
+def _local23_client(
+    fake_server: tuple[str, int, ThreadingHTTPServer],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    model: str,
+    ram_gb: float | None,
+    guard: bool = True,
+    **kwargs,
+) -> LocalSummaryClient:
+    host, port, _ = fake_server
+    _fake_identity(monkeypatch, None)  # so `client.model` is the configured id
+    monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: ram_gb)
+    # conftest turns the guard off suite-wide, and `MP_RAM_GUARD=0` drops the tier
+    # ceiling these tests exist to pin, so it goes back on here. The watchdog is
+    # held off separately (floor 0) so a busy host cannot abort a routing test.
+    if guard:
+        monkeypatch.delenv(resource_guard.OVERRIDE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(resource_guard.OVERRIDE_ENV, "0")
+    client = LocalSummaryClient(
+        host=host, port=port, model=model, manage_subprocess=False, **kwargs,
+    )
+    client.watchdog = resource_guard.MemoryWatchdog(floor_pct=0)
+    return client
+
+
+def test_request_budget_policy() -> None:
+    from mp.summarize_local import NATIVE_CONTEXT_TOKENS, request_budget
+
+    native = NATIVE_CONTEXT_TOKENS - _MAX_TOKENS
+    kw = {"max_tokens": _MAX_TOKENS, "fixed_tokens": 4_100, "tokens_per_char": 0.49}
+    # The 7B on 48 GB and on the 32 GB tier fits: the native budget, no warning.
+    assert request_budget(_7B, 48.0, **kw) == (native, None)
+    assert request_budget(_7B, 32.0, **kw) == (native, None)
+    # The 14B on 32 GB is tight, and 8,000 leaves room for a window: held to it.
+    assert request_budget(_14B, 32.0, **kw) == (8_000, None)
+    # The 7B on 16 GB is tight, but 4,000 is under the fixed prompt alone.
+    budget, gap = request_budget(_7B, 16.0, **kw)
+    assert budget == native and gap is not None and "4,000" in gap
+    # A Custom id cannot be sized, and unreadable RAM keeps the char-only rule.
+    assert request_budget("someone/custom-model", 16.0, **kw) == (native, None)
+    assert request_budget(_14B, None, **kw) == (None, None)
+    # `MP_RAM_GUARD=0` drops the per-Mac ceiling and its warning (owner, 2026-11-12).
+    assert request_budget(_14B, 32.0, guard_enabled=False, **kw) == (native, None)
+    assert request_budget(_7B, 16.0, guard_enabled=False, **kw) == (native, None)
+
+
+def test_ram_guard_off_leaves_only_the_models_own_context_budget(
+    fake_server: tuple[str, int, ThreadingHTTPServer],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The bench override crosses the boundary on purpose: the tight 14B on 32 GB
+    sends 40,000 Cyrillic chars (about 23,700 input tokens) as one request rather
+    than being windowed to 8,000, and the 16 GB gap is not warned about."""
+    from mp.summarize_local import request_tokens
+
+    requests = _recording(fake_server[2], lambda _p: _uk_summary_obj())
+    with _local23_client(fake_server, monkeypatch, model=_14B, ram_gb=32.0, guard=False) as c:
+        c.summarize(
+            system_prompt=_production_prompt(), transcript=_cyrillic(40_000),
+            model="ignored", max_tokens=_MAX_TOKENS,
+        )
+    assert len(requests) == 1
+    assert request_tokens(requests[0]["messages"]) > 8_000
+
+    requests = _recording(fake_server[2], lambda _p: _valid_summary_obj())
+    with caplog.at_level("WARNING", logger="mp.summarize_local"):
+        with _local23_client(fake_server, monkeypatch, model=_7B, ram_gb=16.0, guard=False) as c:
+            c.summarize(
+                system_prompt=_production_prompt(), transcript=_english(15_000),
+                model="ignored", max_tokens=_MAX_TOKENS,
+            )
+    assert len(requests) == 1
+    assert not [r for r in caplog.records if "tight fit" in r.getMessage()]
+
+
+def test_80k_cyrillic_on_the_7b_at_48gb_map_reduces(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """About 39,000 transcript tokens plus a 4,100-token prompt is past Qwen2.5's
+    32,768 native context; HEAD sent it single-pass because 80,000 is not over the
+    80,000-char knob."""
+    from mp.summarize_local import NATIVE_CONTEXT_TOKENS, request_tokens
+
+    requests = _recording(fake_server[2], lambda _p: _uk_summary_obj())
+    with _local23_client(fake_server, monkeypatch, model=_7B, ram_gb=48.0) as c:
+        c.summarize(
+            system_prompt=_production_prompt(), transcript=_cyrillic(80_000),
+            model="ignored", max_tokens=_MAX_TOKENS,
+        )
+    assert sum(_is_map(r) for r in requests) >= 2
+    assert sum(_is_reduce(r) for r in requests) >= 1
+    native = NATIVE_CONTEXT_TOKENS - _MAX_TOKENS
+    assert all(request_tokens(r["messages"]) <= native for r in requests)
+
+
+def test_40k_cyrillic_on_the_tight_14b_at_32gb_keeps_every_request_under_8000(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mp.summarize_local import request_tokens
+
+    requests = _recording(fake_server[2], lambda _p: _uk_partial_obj())
+    with _local23_client(fake_server, monkeypatch, model=_14B, ram_gb=32.0) as c:
+        c.summarize(
+            system_prompt=_production_prompt(), transcript=_cyrillic(40_000),
+            model="ignored", max_tokens=_MAX_TOKENS,
+        )
+    maps = [r for r in requests if _is_map(r)]
+    reduces = [r for r in requests if _is_reduce(r)]
+    assert len(maps) >= 2 and len(reduces) >= 1
+    sizes = [request_tokens(r["messages"]) for r in requests]
+    assert max(sizes) <= 8_000, sizes
+
+
+def test_30k_english_on_the_7b_at_32gb_stays_single_pass_byte_identical(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mp.summarize_local import augment_with_schema, compose_user_message
+    from mp.summary_language import language_reinforcement
+
+    prompt, transcript = _production_prompt(), _english(30_000)
+    requests = _recording(fake_server[2], lambda _p: _valid_summary_obj())
+    with _local23_client(fake_server, monkeypatch, model=_7B, ram_gb=32.0) as c:
+        c.summarize(
+            system_prompt=prompt, transcript=transcript, model="ignored", max_tokens=_MAX_TOKENS,
+        )
+    assert len(requests) == 1
+    # The request HEAD built: schema-augmented prompt, the target restated, the
+    # fenced transcript. Nothing about routing may change what a fitting call sends.
+    assert requests[0]["messages"] == [
+        {"role": "system", "content": augment_with_schema(prompt) + language_reinforcement("en")},
+        {"role": "user", "content": compose_user_message(transcript)},
+    ]
+    assert requests[0]["max_tokens"] == _MAX_TOKENS
+
+
+def test_15k_on_the_7b_at_16gb_stays_single_pass_and_logs_the_gap_once(
+    fake_server: tuple[str, int, ThreadingHTTPServer],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    requests = _recording(fake_server[2], lambda _p: _valid_summary_obj())
+    with caplog.at_level("WARNING", logger="mp.summarize_local"):
+        with _local23_client(fake_server, monkeypatch, model=_7B, ram_gb=16.0) as c:
+            for _ in range(2):
+                c.summarize(
+                    system_prompt=_production_prompt(), transcript=_english(15_000),
+                    model="ignored", max_tokens=_MAX_TOKENS,
+                )
+    assert len(requests) == 2  # one single-pass call per summarize
+    gaps = [r for r in caplog.records if "tight fit" in r.getMessage()]
+    assert len(gaps) == 1
+    assert "4,000" in gaps[0].getMessage()
+
+
+def test_unknown_ram_reproduces_the_char_only_routing(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At the knob a Cyrillic transcript is past the native context, and with RAM
+    unreadable it still goes single-pass, exactly as before; one char over it
+    windows."""
+    requests = _recording(fake_server[2], lambda _p: _uk_summary_obj())
+    with _local23_client(fake_server, monkeypatch, model=_7B, ram_gb=None) as c:
+        c.summarize(
+            system_prompt=_production_prompt(), transcript=_cyrillic(80_000),
+            model="ignored", max_tokens=_MAX_TOKENS,
+        )
+        assert len(requests) == 1
+        requests.clear()
+        c.summarize(
+            system_prompt=_production_prompt(), transcript=_cyrillic(80_001),
+            model="ignored", max_tokens=_MAX_TOKENS,
+        )
+    assert sum(_is_reduce(r) for r in requests) >= 1
+
+
+def test_110k_english_on_the_7b_at_48gb_makes_at_most_three_map_calls(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HEAD's 1,500-char windows made 85 map calls (and 30 reduces) here."""
+    requests = _recording(fake_server[2], lambda _p: _valid_summary_obj())
+    with _local23_client(fake_server, monkeypatch, model=_7B, ram_gb=48.0) as c:
+        c.summarize(
+            system_prompt=_production_prompt(), transcript=_english(110_000),
+            model="ignored", max_tokens=_MAX_TOKENS,
+        )
+    assert 2 <= sum(_is_map(r) for r in requests) <= 3
+
+
+def _drift_on_merge(lang1_heals: bool) -> Callable[[dict], dict]:
+    """Map calls answer in Ukrainian; a merge answers in English unless it carries
+    LANG1's added reinforcement (the directive twice in its system turn) and
+    `lang1_heals` says that is enough."""
+    from mp.summary_language import language_reinforcement
+
+    directive = language_reinforcement("uk")
+
+    def reply(payload: dict) -> dict:
+        if not _is_reduce(payload):
+            return _uk_summary_obj()
+        system = payload["messages"][0]["content"]
+        if lang1_heals and system.count(directive) >= 2:
+            return _uk_summary_obj()
+        return _valid_summary_obj()
+
+    return reply
+
+
+def _lang1_round(
+    fake_server: tuple[str, int, ThreadingHTTPServer],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    lang1_heals: bool,
+):
+    from mp.config import Config
+    from mp.summarize import _verify_and_repair_language
+
+    requests = _recording(fake_server[2], _drift_on_merge(lang1_heals))
+    cfg = Config.model_validate({"summarization": {"summary_language": "uk"}})
+    transcript = _cyrillic(6_000)
+    with _local23_client(
+        fake_server, monkeypatch, model=_7B, ram_gb=None,
+        summary_language="uk", map_reduce_above_chars=2_000,
+    ) as c:
+        first = c.summarize(
+            system_prompt="Summarize.", transcript=transcript, model="ignored", max_tokens=512,
+        )
+        assert first.detected_language == "en"  # the merge drifted, LOCAL7 included
+        first_reduce = next(r for r in requests if _is_reduce(r))
+        assert sum(_is_map(r) for r in requests) >= 2
+        requests.clear()
+        repaired = _verify_and_repair_language(c, first, "Summarize.", transcript, cfg)
+    return first, repaired, first_reduce, requests
+
+
+def test_a_lang1_repair_of_a_map_reduced_summary_reruns_only_the_reduce(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _first, repaired, first_reduce, repair_requests = _lang1_round(
+        fake_server, monkeypatch, lang1_heals=True,
+    )
+    assert repaired.detected_language == "uk"
+    assert not any(_is_map(r) for r in repair_requests)
+    reduces = [r for r in repair_requests if _is_reduce(r)]
+    assert reduces
+    # Not a byte-identical replay of the merge it repairs: mlx-lm would hand the
+    # identical reply back for that (see `repair_messages`).
+    assert reduces[0]["messages"][0] != first_reduce["messages"][0]
+
+
+def test_a_reduce_only_repair_that_still_drifts_keeps_the_original(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, repaired, _first_reduce, repair_requests = _lang1_round(
+        fake_server, monkeypatch, lang1_heals=False,
+    )
+    assert repaired is first
+    assert not any(_is_map(r) for r in repair_requests)
+    assert any(_is_reduce(r) for r in repair_requests)

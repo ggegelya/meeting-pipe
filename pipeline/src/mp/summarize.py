@@ -34,7 +34,7 @@ import sys
 import time
 from importlib import resources
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import anthropic
 import httpx
@@ -70,6 +70,9 @@ from .summary_language import (
     language_reinforcement,
 )
 from .workflow import read_meta
+
+if TYPE_CHECKING:  # summarize_local is imported lazily at its call sites
+    from .summarize_local import MapPartials
 
 log = logging.getLogger("mp.summarize")
 
@@ -777,6 +780,10 @@ class AutoFallbackClient:
         # off it before the `with` block closes it. The configured pair is only a
         # fallback: a warm server we do not own can be serving older weights.
         self._local_identity: tuple[str, str] | None = None
+        # LOCAL23: the local rung's map partials, carried from one per-call client
+        # to the next so a LANG1 repair of a map-reduced summary re-runs only the
+        # reduce. A fresh client per call would otherwise always start empty.
+        self._local_map_partials: MapPartials | None = None
 
     @property
     def backend_id(self) -> str:
@@ -810,7 +817,8 @@ class AutoFallbackClient:
                 startup_timeout_sec=self._cfg.summarization.local_startup_timeout_sec,
                 request_timeout_sec=self._cfg.summarization.local_request_timeout_sec,
                 summary_language=self._cfg.summarization.summary_language,
-                # PIPE4: the auto->local fallback map-reduces a long transcript too.
+                # PIPE4: the auto->local fallback map-reduces a long transcript too;
+                # the knob is an upper bound, routing is on tokens (LOCAL23).
                 map_reduce_above_chars=self._cfg.summarization.skip_above_chars,
                 # LOCAL9: opt-in fine-tuned adapter; empty config keeps the base model.
                 adapter_path=self._cfg.summarization.local_adapter_path or None,
@@ -821,10 +829,12 @@ class AutoFallbackClient:
                 # and `0` did not turn the watchdog off.
                 memory_floor_pct=self._cfg.summarization.local_memory_floor_pct,
             ) as fallback:
+                fallback.map_partials = self._local_map_partials
                 out = fallback.summarize(
                     system_prompt=system_prompt, transcript=transcript,
                     model=model, max_tokens=max_tokens,
                 )
+                self._local_map_partials = fallback.map_partials
                 # LOCAL11: read the served identity while the client is still
                 # open. Reporting the *configured* local model here was the same
                 # mis-attribution the local path had, one ladder rung further in.

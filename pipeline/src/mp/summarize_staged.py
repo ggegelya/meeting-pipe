@@ -59,7 +59,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from . import events
+from . import events, resource_guard
 from .chunking import chunked_windows
 from .evidence import normalize, segments_from_timestamped_markdown, verify as verify_anchors
 from .json_extract import largest_balanced_json_object, repair_missing_commas
@@ -78,18 +78,12 @@ STAGED_ENV = "MP_STAGED_LOCAL"
 
 # ----- Sizing -----
 
-# Transcript tokens per Stage 1 window. The single-pass path budgets its map
-# windows at a worst-case 1,500 chars; this is model-aware instead, a token
-# budget converted to chars using the script actually in the transcript. Sized so
+# Transcript tokens per Stage 1 window, a token budget converted to chars using
+# the script actually in the transcript (`resource_guard.tokens_per_char`). Sized so
 # a window plus the (small) extract preamble plus its output stays inside the 4K
 # end of the context guard even on Cyrillic, which is where the incumbent 7B and
 # the 14B candidates are both safe.
 _EXTRACT_WINDOW_TOKENS = 2_000
-# Tokens per character, measured on the real corpus under LOCAL13: English 0.22
-# to 0.25, Ukrainian 0.47 to 0.49. Both take the pessimistic end, so a window
-# budget is never overrun by the estimate being generous.
-_TOK_PER_CHAR_LATIN = 0.25
-_TOK_PER_CHAR_CYRILLIC = 0.49
 # Keeps a sentence spanning a window boundary whole in at least one window.
 _WINDOW_OVERLAP_CHARS = 200
 # Below this the staged shape cannot pay for itself: three-plus calls against one,
@@ -195,28 +189,18 @@ class FactRow:
 
 
 def tokens_per_char(text: str) -> float:
-    """Estimated tokens per character for `text`, interpolated between the two
-    figures LOCAL13 measured on this corpus (Latin 0.25, Cyrillic 0.49).
-
-    Cyrillic costs about twice as many tokens per character as English here, so a
-    window budget calibrated on English stems is roughly half as generous on a
-    Ukrainian meeting. Pure, so the sizing is unit-testable without a model.
-    """
-    cyr = sum(1 for ch in text if 0x0400 <= ord(ch) <= 0x04FF)
-    letters = sum(1 for ch in text if ch.isalpha())
-    if not letters:
-        return _TOK_PER_CHAR_LATIN
-    share = cyr / letters
-    return _TOK_PER_CHAR_LATIN + share * (_TOK_PER_CHAR_CYRILLIC - _TOK_PER_CHAR_LATIN)
+    """Estimated tokens per character for `text` (Latin 0.25, Cyrillic 0.49, a
+    blend between). Delegates to `resource_guard.tokens_per_char`, the one copy
+    of LOCAL13's rates (LOCAL23), so the staged and single-pass sizings agree."""
+    return resource_guard.tokens_per_char(text)
 
 
 def window_chars(transcript: str, budget_tokens: int = _EXTRACT_WINDOW_TOKENS) -> int:
     """Characters per Stage 1 window for this transcript's script.
 
-    The single-pass map path uses a flat worst-case 1,500 chars, which throws away
-    most of an English window's budget. This converts a token budget with the
-    measured ratio instead, so an English meeting gets ~8,000-char windows and a
-    Ukrainian one ~4,000, both landing on the same token cost.
+    Converts a token budget with the measured ratio, so an English meeting gets
+    ~8,000-char windows and a Ukrainian one ~4,000, both landing on the same
+    token cost.
     """
     return max(500, int(budget_tokens / tokens_per_char(transcript)))
 
