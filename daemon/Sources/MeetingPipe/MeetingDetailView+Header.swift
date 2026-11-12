@@ -470,7 +470,11 @@ extension MeetingDetailView {
                 toolbarAction("delete") { confirmDelete() }
             }
         } label: {
-            Image(systemName: "ellipsis.circle")
+            // From macOS 27 the borderless menu's AX cell takes its label from
+            // the image's description (the bare symbol's is "More") and drops
+            // the `.accessibilityLabel` below, so the description carries it.
+            // A known system symbol, so the unwrap cannot fail.
+            Image(nsImage: NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "More actions")!)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
