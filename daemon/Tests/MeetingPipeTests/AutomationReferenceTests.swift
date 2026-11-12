@@ -136,9 +136,12 @@ final class AutomationReferenceTests: XCTestCase {
     /// The row hands the pasteboard its template verbatim, so what lands on the
     /// clipboard is the string the fence above proved works. Run against a
     /// scratch pasteboard: a test has no business overwriting what the owner
-    /// last copied.
+    /// last copied. Pasteboards are machine-global, so the name carries a UUID:
+    /// under a fixed name two test processes running at once clobber each
+    /// other, and `withUniqueName()` is no better, since processes launched in
+    /// the same instant can be handed the same "unique" name.
     func test_copying_a_row_puts_its_template_on_the_pasteboard() throws {
-        let scratch = NSPasteboard(name: NSPasteboard.Name("mp.auto4.tests"))
+        let scratch = NSPasteboard(name: NSPasteboard.Name("mp.auto4.tests.\(UUID().uuidString)"))
         defer { scratch.releaseGlobally() }
         for row in AutomationReference.rows {
             row.copyTemplate(to: scratch)

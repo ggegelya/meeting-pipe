@@ -75,7 +75,9 @@ final class FailurePresentationTests: XCTestCase {
         HTTP status: 400
         Request ID: req_0123456789abcdef
         """)
-        let board = NSPasteboard.withUniqueName()
+        // A UUID name, not `withUniqueName()`: that one can hand two test
+        // processes launched in the same instant the same board.
+        let board = NSPasteboard(name: NSPasteboard.Name("mp.failure-presentation.tests.\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
         FailureReport.copy(report, to: board)
         XCTAssertEqual(board.string(forType: .string), report)

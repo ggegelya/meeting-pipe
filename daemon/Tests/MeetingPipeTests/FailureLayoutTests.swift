@@ -189,7 +189,9 @@ final class FailureLayoutTests: XCTestCase {
 
     @MainActor
     func test_details_copies_the_exact_visible_report_to_an_isolated_clipboard() throws {
-        let board = NSPasteboard.withUniqueName()
+        // A UUID name, not `withUniqueName()`: that one can hand two test
+        // processes launched in the same instant the same board.
+        let board = NSPasteboard(name: NSPasteboard.Name("mp.failure-layout.tests.\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
         let failure = FailurePresentation(diagnostics: Self.longDiagnostic, operation: .ask,
                                           timestamp: "2026-09-08T13:30:51Z")
