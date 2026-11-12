@@ -30,7 +30,7 @@ dependencies = [
     # fall back to backend="anthropic" elsewhere.
     # Capped at the next minor (CI8): mlx-lm moves its server's behaviour on minor
     # releases, so an upgrade is a deliberate lock bump, not something a resolve does.
-    "mlx-lm>=0.20,<0.32; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-lm>=0.20,<0.33; sys_platform == 'darwin' and platform_machine == 'arm64'",
     # On-device sentence embeddings for the library index (AI2 spike / AI3
     # retrieval). multilingual-e5 on MLX; en/uk. Same darwin/arm64 marker and
     # lazy-import discipline as mlx-lm (embed_index.MLXEmbedder); CI never
