@@ -61,7 +61,7 @@ enum WorkflowSink: Codable, Equatable, Hashable {
     }
 }
 
-/// What a workflow does with a settled meeting's audio once its retention window elapses (STOR1). Stereo WAV runs ~0.7 GB per recorded hour, so an unbounded `raw/` is the library's largest liability; a policy is how the owner trades archive fidelity for disk.
+/// What a workflow does with a settled meeting's audio once its retention window elapses (STOR1). The kept 16 kHz stereo WAV runs about 230 MB per recorded hour (`RecordingSpaceBudget.finalBytesPerSecond`, measured 2026-10-25), so an unbounded `raw/` is the library's largest liability; a policy is how the owner trades archive fidelity for disk.
 enum RetentionPolicy: String, Codable, Equatable, Hashable, CaseIterable {
     /// Never touch the audio. The default, and the only byte-preserving option.
     case keep

@@ -130,6 +130,23 @@ final class MeetingRecorder {
     /// only: read and written on the two 1 Hz liveness ticks, replaced at `start()`.
     private var backlogPolicy = WriterBacklogPolicy()
 
+    /// REC20: the once-a-minute free-space watch, armed at the end of a successful `start()` and
+    /// stood down with the other timers. Its `onUpdate` is the session's (`onLowSpace`), and it is
+    /// deliberately not `onWriteFailure`: a low-space stop is an ordinary stop that still has room
+    /// to merge, decided before any write fails.
+    let lowSpaceWatch = LowSpaceWatch()
+
+    /// REC20 item 1: what this recording's start found when it read the library volume's free
+    /// space before opening any file, or nil when the space covers two hours or could not be read.
+    /// Reset by every `start()`; the session reads it once the HUD is up.
+    private(set) var lowSpaceAtStart: RecordingLowSpace.StartNotice?
+
+    /// Fired on main with each low-space update for the live recording (REC20).
+    var onLowSpace: ((RecordingLowSpace.Update) -> Void)? {
+        get { lowSpaceWatch.onUpdate }
+        set { lowSpaceWatch.onUpdate = newValue }
+    }
+
     /// Per-source ~1 Hz RMS averages on the main queue. `onSystemLevel` feeds the
     /// idle backstop's `hasSystemAudio` mirror (TECH-END3); `onMicLevel` is currently
     /// unconsumed (the mic side of the backstop is verdict-driven). `nil`
@@ -382,6 +399,12 @@ final class MeetingRecorder {
     func start(outputDir: URL, captureMode: CaptureMode, voiceProcessing: Bool = false) async throws -> URL {
         if isRecording { throw RecorderError.alreadyRecording }
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        // REC20 item 1: read the volume's free space before any file of this recording exists.
+        // Never a refusal; the notice is emitted and armed only once the start has succeeded.
+        lowSpaceAtStart = nil
+        let startNotice = RecordingLowSpace.preflight(
+            freeBytes: await Self.boundedFreeBytes(at: outputDir)
+        )
         self.captureMode = captureMode
         micFramePosition = 0
         muteTimeline = MuteTimeline()
@@ -463,8 +486,44 @@ final class MeetingRecorder {
         systemChannel.startSystemLivenessWatchdog()
         acquireIdleSleepAssertion()  // REC8: keep the Mac awake for the whole recording
         registerWakeObserver()       // REC8: re-arm capture on sleep/wake
+        armLowSpaceWatch(outputDir: outputDir, startNotice: startNotice)
         started = true
         return finalURL
+    }
+
+    /// REC20: record the preflight's finding and start the live watch, at the end of a start that
+    /// succeeded. The watch budgets with both capture files' real rates; the preflight could only
+    /// use the nominal 48 kHz mic.
+    @MainActor
+    private func armLowSpaceWatch(outputDir: URL, startNotice: RecordingLowSpace.StartNotice?) {
+        lowSpaceAtStart = startNotice
+        if let notice = startNotice {
+            Log.event(category: "recorder", action: "recording_low_space_at_start", attributes: [
+                "free_bytes": notice.freeBytes,
+                "hours_covered": (notice.hoursCovered * 100).rounded() / 100,
+            ])
+            Log.writeLine("recorder", "low space at start: \(notice.freeBytes) bytes free covers about \(Int(notice.coveredSeconds / 60)) minutes of recording")
+        }
+        let micRate = micFileFormat.map { MeetingRecorder.bytesPerSecond($0) }
+            ?? RecordingSpaceBudget.nominalMicCaptureBytesPerSecond
+        lowSpaceWatch.begin(
+            directory: outputDir,
+            captureBytesPerSecond: micRate + MeetingRecorder.bytesPerSecond(SystemAudioCapture.captureFormat),
+            start: startNotice
+        )
+    }
+
+    /// The free space `RecordingWriteFailure.freeSpace` reports (REC19's reader, the smaller of the
+    /// two the volume gives), read on a GCD thread with a short bound: `start()` is main-isolated
+    /// and a volume that hangs must not hold the start. A read that times out is unreadable, which
+    /// says nothing about the space.
+    private static func boundedFreeBytes(at directory: URL) async -> Int64? {
+        let reading = OSAllocatedUnfairLock<Int64?>(initialState: nil)
+        let finished = await runBlockingWithTimeout(seconds: 2) {
+            let free = RecordingWriteFailure.freeSpace(at: directory).freeBytes
+            reading.withLock { $0 = free }
+        }
+        return finished ? reading.withLock { $0 } : nil
     }
 
     /// The part of `start()` that touches the engine: bind the mic chain, give a caught raise its
@@ -1174,6 +1233,7 @@ final class MeetingRecorder {
     private func standDownTimersAndHooks() {
         deviceRecovery.stopTapLivenessWatchdog()
         systemChannel.stopTimers()
+        lowSpaceWatch.end()  // REC20: a reading still in flight lands on a closed generation
         removeWakeObserver()
         releaseIdleSleepAssertion()
     }

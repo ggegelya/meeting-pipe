@@ -30,9 +30,13 @@ final class AudioRetentionTests: XCTestCase {
     private func decide(
         _ candidates: [AudioRetention.Candidate],
         _ policies: [UUID: WorkflowRetention],
+        defaultWorkflowID: UUID? = nil,
         liveStems: Set<String> = []
     ) -> [AudioRetention.Action] {
-        AudioRetention.decide(candidates: candidates, policies: policies, now: now, liveStems: liveStems)
+        AudioRetention.decide(
+            candidates: candidates, policies: policies, defaultWorkflowID: defaultWorkflowID,
+            now: now, liveStems: liveStems
+        )
     }
 
     // MARK: Defaults
@@ -52,8 +56,52 @@ final class AudioRetentionTests: XCTestCase {
         XCTAssertEqual(actions, [])
     }
 
-    func test_meeting_with_no_workflow_keeps_its_audio() {
+    func test_meeting_with_no_workflow_keeps_its_audio_when_there_is_no_default() {
         let actions = decide([candidate(daysAgo: 400, workflow: nil)], [workflowA: .init(policy: .drop)])
+        XCTAssertEqual(actions, [])
+    }
+
+    // MARK: REC20: a meeting with no workflow follows the default workflow
+
+    func test_meeting_with_no_workflow_takes_the_default_workflows_policy() {
+        let manual = candidate(daysAgo: 400, workflow: nil)
+        let actions = decide(
+            [manual],
+            [workflowA: .init(policy: .drop, afterDays: 30), workflowB: .init(policy: .compress)],
+            defaultWorkflowID: workflowA
+        )
+        XCTAssertEqual(actions, [.drop(manual.audioURL)])
+    }
+
+    func test_meeting_with_no_workflow_is_untouched_while_the_default_keeps() {
+        // The shipped state, and the one the owner kept on 2026-11-12.
+        let actions = decide(
+            [candidate(daysAgo: 4000, workflow: nil)],
+            [workflowA: WorkflowRetention(), workflowB: .init(policy: .drop)],
+            defaultWorkflowID: workflowA
+        )
+        XCTAssertEqual(actions, [])
+    }
+
+    func test_the_default_never_stands_in_for_a_deleted_workflow() {
+        // The fallback is for "no workflow", not "a workflow this build cannot find".
+        let actions = decide(
+            [candidate(daysAgo: 400, workflow: workflowB)],
+            [workflowA: .init(policy: .drop)],
+            defaultWorkflowID: workflowA
+        )
+        XCTAssertEqual(actions, [])
+    }
+
+    func test_the_default_fallback_still_honours_the_window_and_the_settled_gate() {
+        let actions = decide(
+            [
+                candidate(stem: "20260101-120000", daysAgo: 5, workflow: nil),
+                candidate(stem: "20260102-120000", daysAgo: 400, workflow: nil, publishState: "partial"),
+            ],
+            [workflowA: .init(policy: .drop, afterDays: 30)],
+            defaultWorkflowID: workflowA
+        )
         XCTAssertEqual(actions, [])
     }
 

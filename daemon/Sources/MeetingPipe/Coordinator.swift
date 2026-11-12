@@ -448,6 +448,11 @@ final class Coordinator: NSObject {
             self.notifier.notifyError(decision.message)
             self.session.forceStop(reason: "write_failure_\(decision.channel)")
         }
+        // REC20: the recorder's once-a-minute free-space watch. Its stop is the ordinary stop
+        // (`forceStop` -> `stopRecording`, which merges), never `onWriteFailure`'s.
+        recorder.onLowSpace = { [weak self] update in
+            self?.session.handleLowSpace(update)
+        }
         // REC27: the recorder has abandoned enough wedged audio-engine calls that it stops making
         // them. Once per process; only a restart clears it.
         recorder.onEngineCallsExhausted = { [weak self] in
@@ -721,6 +726,8 @@ final class Coordinator: NSObject {
         let policies = Dictionary(
             uniqueKeysWithValues: workflowStore.workflows.map { ($0.id, $0.retention) }
         )
+        // REC20: a meeting with no workflow follows the default's retention.
+        let defaultWorkflowID = workflowStore.defaultWorkflow?.id
         // REC23: the stems the recorder owns, asked of the recorder itself. Both callers run
         // on main (launch, and `onDone` under `SinkDispatcher`'s main-queue invariant).
         let ownedStems = MainActor.assumeIsolated { recorder.ownedStems }
@@ -737,7 +744,9 @@ final class Coordinator: NSObject {
         MainActor.assumeIsolated { orphanRecovery.request(orphanSweep) }
         Task.detached(priority: .background) {
             OriginalsReaper.sweep()
-            AudioRetentionSweep.sweep(in: dir, policies: policies, liveStems: ownedStems)
+            AudioRetentionSweep.sweep(
+                in: dir, policies: policies, defaultWorkflowID: defaultWorkflowID, liveStems: ownedStems
+            )
             LocalServerReaper.reapIfOrphaned()
         }
     }

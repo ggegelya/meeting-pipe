@@ -492,11 +492,39 @@ def _report_local_server_identity(cfg: Config | None, home: Path | None) -> None
           f"for the daemon's warm server, quit and reopen MeetingPipe (or: kill {identity.pid})")
 
 
-def check_storage(cfg: Config | None, home: Path | None = None) -> None:
+def check_library_growth(library: Path, free: int | None, now: datetime | None = None) -> None:
+    """Where the library's growth is heading (REC20 item 4).
+
+    The rate is the library's own last 30 days, not a constant: the owner's pace
+    is the only one that predicts the owner's disk. Warns when the free space
+    lasts under `storage.GROWTH_WARN_DAYS` at that rate. The Preferences ▸
+    Storage pane shows the same projection (`LibraryGrowth`).
+    """
+    growth = storage.library_growth(library, now=now)
+    if growth <= 0:
+        _info(f"no meetings in the last {storage.GROWTH_WINDOW_DAYS} days, so no growth to project")
+        return
+    days = storage.days_of_free_space(growth, free)
+    label = f"library grew {storage.human_bytes(growth)} in the last {storage.GROWTH_WINDOW_DAYS} days"
+    if days is None:
+        _info(f"{label}; free space unknown, so no projection")
+    elif days < storage.GROWTH_WARN_DAYS:
+        _warn(
+            f"{label}; at that rate the free space lasts about {int(days)} days. "
+            "Set an audio retention policy on a workflow, or free space"
+        )
+    else:
+        _ok(f"{label}; at that rate the free space lasts about {int(days)} days")
+
+
+def check_storage(cfg: Config | None, home: Path | None = None, now: datetime | None = None) -> None:
     """Report what meeting-pipe is holding on disk (STOR1).
 
-    Stereo WAV runs about 0.7 GB per recorded hour, so the library is the
-    product's largest liability and the number nobody had a way to see. The two
+    The kept 16 kHz stereo WAV runs about 230 MB per recorded hour (REC20
+    measured it; this said 0.7 GB for months), and while a meeting records its
+    two intermediates take about 2 GB an hour more until the stop merges them.
+    The library is the product's largest liability and the number nobody had a
+    way to see. The two
     caches below it are rebuildable and safe to delete; the kept originals are
     reaped on a 30-day window by the daemon.
 
@@ -539,6 +567,8 @@ def check_storage(cfg: Config | None, home: Path | None = None) -> None:
             _warn(f"free disk {storage.human_bytes(free)}; set an audio retention policy on a workflow, or free space")
         else:
             _ok(f"free disk {storage.human_bytes(free)}")
+
+    check_library_growth(library, free, now=now)
 
     check_last_backup(home=home)
     check_library_sync(cfg, home=home)

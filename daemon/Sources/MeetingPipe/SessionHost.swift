@@ -110,6 +110,9 @@ protocol SessionNotifying: AnyObject {
     func notifyMicRecordedNothing(file: URL)
     func notifyShortRecording(file: URL, audioSec: Double, wallclockSec: Double)
     func notifyInputDeviceMismatch()
+    /// REC20: the library volume's free space is short, at start or mid-recording. A warning,
+    /// not a failure: the recording keeps running.
+    func notifyLowSpace(title: String, body: String)
 }
 
 /// Audio capture (`MeetingRecorder`). `onMicLevel` / `onSystemLevel` are settable:
@@ -130,6 +133,9 @@ protocol SessionRecording: AnyObject {
     /// channel that is down is held out of the idle streak; a mic-only-by-permission one
     /// counts as silence, as the backstop was built to (TECH-C7).
     var systemChannelHealth: MeetingRecorder.SystemChannelHealth { get }
+    /// REC20 item 1: what this recording's start found about free space, or nil when it covers two
+    /// hours or could not be read. Read once the HUD is up.
+    var lowSpaceAtStart: RecordingLowSpace.StartNotice? { get }
     var onMicLevel: ((Float) -> Void)? { get set }
     var onSystemLevel: ((Float) -> Void)? { get set }
     func currentMicLevelDb() -> Float
@@ -167,6 +173,10 @@ protocol SessionHUDPresenting: AnyObject {
     /// failure. Persistent rather than a one-shot notification, because the recording keeps
     /// running with a dead mic channel and that has to stay visible for the rest of it.
     func setMicCaptureLost(_ on: Bool)
+
+    /// REC20: show or clear the low-space countdown ("Disk: 1h 25m left"). Persistent for the
+    /// same reason as REC16's: the notification is a moment, and the shortage lasts.
+    func setLowSpace(_ text: String?)
 }
 
 /// The "record this meeting?" prompt (`MeetingPromptWindow`).

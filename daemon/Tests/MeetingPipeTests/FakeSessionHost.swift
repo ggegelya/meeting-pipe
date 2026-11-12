@@ -146,6 +146,8 @@ final class SpyNotifier: SessionNotifying {
         shortRecordings.append((file: file, audioSec: audioSec, wallclockSec: wallclockSec))
     }
     func notifyInputDeviceMismatch() { inputMismatchCount += 1 }
+    private(set) var lowSpace: [(title: String, body: String)] = []
+    func notifyLowSpace(title: String, body: String) { lowSpace.append((title, body)) }
 }
 
 final class SpyRecorder: SessionRecording {
@@ -185,6 +187,8 @@ final class SpyRecorder: SessionRecording {
     /// assumed (the backstop then reads the level mirror exactly as it always did); the hold
     /// tests set `.down` explicitly.
     var systemChannelHealth: MeetingRecorder.SystemChannelHealth = .live
+    /// REC20: nil (space is fine) unless a test states a short start.
+    var lowSpaceAtStart: RecordingLowSpace.StartNotice?
     var onMicLevel: ((Float) -> Void)?
     var onSystemLevel: ((Float) -> Void)?
 
@@ -264,6 +268,10 @@ final class SpyHUD: SessionHUDPresenting {
     /// REC16: every push, so a test can tell a persistent state from a one-shot.
     private(set) var micCaptureLostStates: [Bool] = []
     func setMicCaptureLost(_ on: Bool) { micCaptureLostStates.append(on) }
+
+    /// REC20: every push, nil being a clear.
+    private(set) var lowSpaceTexts: [String?] = []
+    func setLowSpace(_ text: String?) { lowSpaceTexts.append(text) }
 }
 
 final class SpyPrompt: SessionPromptPresenting {

@@ -62,6 +62,10 @@ final class FluidAudioRunner: TranscriptionRunner {
         // Ahead of the model load, so a click that lands before the engine is up
         // does not first download or compile anything.
         try Task.checkCancellation()
+        // REC20 item 3: one `transcription_memory` row per job, whatever way it exits.
+        let memory = TranscriptionMemoryProbe()
+        var audioSec: Double?
+        defer { memory.finish(audioSec: audioSec) }
         let asr = try await ensureAsr()
         let language = Self.resolveLanguage(hint: languageHint)
 
@@ -75,6 +79,7 @@ final class FluidAudioRunner: TranscriptionRunner {
         } catch {
             throw TranscriptionError.audioReadFailed(wavURL, underlying: error)
         }
+        audioSec = Double(samples.count) / 16_000
 
         try Task.checkCancellation()
         var decoderState = TdtDecoderState.make()
@@ -271,37 +276,76 @@ final class FluidAudioRunner: TranscriptionRunner {
     /// Load a WAV as 16 kHz mono Float32, averaging all channels. Explicit (L+R)/2
     /// for stereo (mic-L, system-R) avoids AVAudioConverter's unreliable channel
     /// reduction on untagged-layout WAVs. The on-disk WAV is never modified.
-    static func readMonoFloat32(from url: URL) throws -> [Float] {
+    ///
+    /// REC20 item 3a: read in blocks of `blockFrames` through one reused buffer, mixing each
+    /// block straight into a mono array allocated once at the file's length. The whole-file
+    /// read this replaces held a deinterleaved stereo buffer of the entire meeting (1.38 GB at
+    /// 3 h) alive beside its mono copy (0.69 GB), about 2.07 GB at the peak; TECH-PERF2 had
+    /// scoped the buffer to free it after the mix, not during it. Now the peak is the mono
+    /// array plus one block. The samples are bit-identical, since each block is mixed by the
+    /// same per-channel loop `mixDownToMono` runs, in the same order, so the ASR and DIAR2's
+    /// tuned diarizer receive exactly the array they did. The default block is 30 s at 16 kHz.
+    ///
+    /// A source that is not 16 kHz (an older file, or a re-transcribe of one) still hands the
+    /// whole mono array to `resampleMono`, unchanged, so that path keeps a source-rate mono
+    /// array plus the resampler's buffers at its peak; it no longer holds the stereo one.
+    static func readMonoFloat32(from url: URL, blockFrames: AVAudioFrameCount = 480_000) throws -> [Float] {
         let file = try AVAudioFile(forReading: url)
         let format = file.processingFormat
-        let frameCount = AVAudioFrameCount(file.length)
-        guard frameCount > 0 else { return [] }
+        let totalFrames = Int(file.length)
+        guard totalFrames > 0 else { return [] }
 
-        // Scope the full-clip PCM buffer to this closure so it is released the
-        // moment the mono [Float] exists, rather than living alongside the
-        // resampler's input/output buffers (or the array the ASR and
-        // diarization stages then hold). Halves the readMonoFloat32 peak.
-        // (TECH-PERF2)
-        let mono: [Float] = try {
-            guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
-                throw TranscriptionError.audioReadFailed(
-                    url,
-                    underlying: NSError(
-                        domain: "FluidAudioRunner",
-                        code: 1,
-                        userInfo: [NSLocalizedDescriptionKey: "could not allocate input buffer"]
-                    )
+        guard let block = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: max(1, blockFrames)) else {
+            throw TranscriptionError.audioReadFailed(
+                url,
+                underlying: NSError(
+                    domain: "FluidAudioRunner",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "could not allocate input buffer"]
                 )
+            )
+        }
+        var mono = [Float](repeating: 0, count: totalFrames)
+        var written = 0
+        try mono.withUnsafeMutableBufferPointer { out in
+            while written < totalFrames {
+                try file.read(into: block, frameCount: min(block.frameCapacity, AVAudioFrameCount(totalFrames - written)))
+                let frames = Int(block.frameLength)
+                // A read that returns nothing short of the length the header promised would
+                // otherwise spin; keep what was read, the way the whole-file read kept a
+                // short buffer's frames.
+                guard frames > 0 else { break }
+                mixDownToMono(block, into: out.baseAddress! + written)
+                written += frames
             }
-            try file.read(into: inputBuffer)
-            return mixDownToMono(inputBuffer)
-        }()
+        }
+        if written < totalFrames { mono.removeLast(totalFrames - written) }
 
         // Mono-to-mono AVAudioConverter is safe (no channel layout ambiguity) for the rate step.
         if format.sampleRate == 16_000 {
             return mono
         }
         return try resampleMono(mono, from: format.sampleRate, to: 16_000, url: url)
+    }
+
+    /// The block step of `readMonoFloat32`: mix `buffer`'s frames into `destination`, which must
+    /// hold `buffer.frameLength` zeroed floats. The same loop as `mixDownToMono`, which is what
+    /// keeps the block-wise read bit-identical to it.
+    static func mixDownToMono(_ buffer: AVAudioPCMBuffer, into destination: UnsafeMutablePointer<Float>) {
+        let frameCount = Int(buffer.frameLength)
+        guard frameCount > 0, let channels = buffer.floatChannelData else { return }
+        let channelCount = Int(buffer.format.channelCount)
+        if channelCount == 1 {
+            destination.update(from: channels[0], count: frameCount)
+            return
+        }
+        let scale = 1.0 / Float(channelCount)
+        for c in 0..<channelCount {
+            let ptr = channels[c]
+            for i in 0..<frameCount {
+                destination[i] += ptr[i] * scale
+            }
+        }
     }
 
     /// Visible for tests to verify (L+R)/2 against a synthetic stereo buffer.
@@ -325,7 +369,7 @@ final class FluidAudioRunner: TranscriptionRunner {
         return result
     }
 
-    private static func resampleMono(
+    static func resampleMono(
         _ samples: [Float],
         from inputRate: Double,
         to outputRate: Double,

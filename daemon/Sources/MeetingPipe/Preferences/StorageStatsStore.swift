@@ -61,6 +61,7 @@ final class StorageStatsStore: ObservableObject {
         let retention = Dictionary(
             uniqueKeysWithValues: workflowStore.workflows.map { ($0.id, $0.retention.policy) }
         )
+        let defaultPolicy = workflowStore.defaultWorkflow?.retention.policy
 
         stats = await Task.detached(priority: .userInitiated) {
             StorageScanner.scan(
@@ -69,7 +70,8 @@ final class StorageStatsStore: ObservableObject {
                 waveformCacheDir: waveformCacheDir,
                 hubRoot: hubRoot,
                 activeModelID: activeModelID,
-                retentionByWorkflow: retention
+                retentionByWorkflow: retention,
+                defaultPolicy: defaultPolicy
             )
         }.value
     }

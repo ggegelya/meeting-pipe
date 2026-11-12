@@ -663,13 +663,19 @@ struct WorkflowEditor: View {
                 }
             }
         } footer: {
-            switch retentionPolicy {
-            case .keep:
-                Text("Nothing is ever reclaimed. An hour of meeting is about 0.7 GB.")
-            case .compress:
-                Text("Lossless: the recording still plays, still shows a waveform, and can still be reprocessed. Quiet speech roughly halves; a noisy room saves less.")
-            case .drop:
-                Text("The transcript and summary are kept, the recording is not. This cannot be undone, and a deleted recording cannot be re-transcribed.")
+            VStack(alignment: .leading, spacing: MPSpace.s1) {
+                switch retentionPolicy {
+                case .keep:
+                    Text("Nothing is ever reclaimed. An hour of meeting keeps about \(RecordingSpaceBudget.finalPerHourText).")
+                case .compress:
+                    Text("Lossless: the recording still plays, still shows a waveform, and can still be reprocessed. Quiet speech roughly halves; a noisy room saves less.")
+                case .drop:
+                    Text("The transcript and summary are kept, the recording is not. This cannot be undone, and a deleted recording cannot be re-transcribed.")
+                }
+                // REC20: manual recordings carry no workflow and follow the default's policy.
+                if workflow.isDefault {
+                    Text("This is the default workflow, so this also applies to manual recordings.")
+                }
             }
         }
     }

@@ -25,6 +25,7 @@ enum AudioRetentionSweep {
     static func sweep(
         in directory: URL,
         policies: [UUID: WorkflowRetention],
+        defaultWorkflowID: UUID?,
         now: Date = Date(),
         liveStems: Set<String> = []
     ) -> Outcome {
@@ -35,7 +36,8 @@ enum AudioRetentionSweep {
         }
         let candidates = self.candidates(in: directory)
         let actions = AudioRetention.decide(
-            candidates: candidates, policies: policies, now: now, liveStems: liveStems
+            candidates: candidates, policies: policies, defaultWorkflowID: defaultWorkflowID,
+            now: now, liveStems: liveStems
         )
         guard !actions.isEmpty else { return Outcome() }
 
@@ -117,7 +119,12 @@ enum AudioRetentionSweep {
         var out: [AudioRetention.Candidate] = []
         for (stem, audioURL) in audioByStem where summarizedStems.contains(stem) {
             guard let startedAt = MeetingStore.parseStem(stem) else { continue }
-            let meta = readJSON(at: directory.appendingPathComponent("\(stem).meta.json"))
+            // REC20: since a meeting with no workflow follows the default's policy, a sidecar
+            // that exists but cannot be read must not pass for "no workflow" (SEC25): it may name
+            // a workflow that keeps. It is no candidate at all, so it keeps its audio.
+            let metaRead = MeetingMetaRead.load(stem: stem, in: directory)
+            if metaRead.isUnreadable { continue }
+            let meta = metaRead.dictionary
             let run = readJSON(at: directory.appendingPathComponent("\(stem).run.json"))
             out.append(AudioRetention.Candidate(
                 stem: stem,

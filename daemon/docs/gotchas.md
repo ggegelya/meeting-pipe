@@ -821,6 +821,22 @@ T8, from the 2026-10-24 architecture review (D4). Eleven END commits on `Lifecyc
 
 What it still cannot see: the AX re-walk itself and the order in which run-loop timers fire against signal callbacks. A raw trace carries the re-walk's result and the replay ties the 1 Hz consult and the 0.25 s engine tick by fixed rules, so a defect that lives in that interleaving needs a host test (`CallTeardownHoldTests`), not a trace.
 
+### A disk filling during a recording has to stop while the merge still fits
+
+REC20. A recording costs more disk while it runs than it keeps: the two capture intermediates take 576,000 B/s at a 48 kHz mic (about 2.07 GB an hour), and the stop then writes the 16 kHz stereo final (64,000 B/s, about 230 MB an hour) while both still exist. So "free space" is the wrong question mid-meeting; the right one is how much more recording fits after reserving the merge of what is already recorded. REC3's write-failure force-stop answers neither: it fires after 32 failed writes, when the disk is already full, and the merge it then starts has nowhere to write. `LowSpaceWatch` stops one band earlier, through the ordinary stop (`forceStop("low_space")`), never `onWriteFailure`.
+
+Three things to keep if you touch it:
+
+- **The reserve grows with the recording.** `RecordingLowSpace.coveredSeconds` takes elapsed seconds, so a 3 h meeting reserves 691 MB of merge before it counts a single further second. A constant threshold would stop short meetings too early and long ones too late.
+- **One minute of margin is part of the stop band.** The watch reads every 60 s, so the stop is decided against the merge plus one interval of capture and final growth (about 38 MB at 48 kHz). Without it, the reading after "just enough" lands a minute of capture too late. That margin is the one threshold the spec did not state.
+- **The read is never on main, and a stale reading is dropped.** The free-space read runs on the watch's utility queue (the preflight's through `runBlockingWithTimeout`), because the volume being read is the one most likely to hang (REC19, REC25). Each tick carries the generation `begin` opened, and `end` (from `standDownTimersAndHooks`, so every stop and the termination flush) closes it, so a reading still in flight cannot stop the next recording.
+
+The rates live in `RecordingSpaceBudget` and nowhere else; the Storage caption and the workflow editor read them, which is how `Workflow.swift`'s "~0.7 GB per recorded hour" (three times the real final rate) cannot come back unnoticed.
+
+### A whole-file AVAudioFile read can come back short
+
+Found by REC20's block-read test, 2026-11-12. `AVAudioFile.read(into:)` with a buffer sized to `file.length` returned 49,152 of 50,001 frames on a 16 kHz mono Float32 WAV, without throwing, and `frameLength` was the only sign. `FluidAudioRunner.readMonoFloat32` used to make exactly that one call and keep whatever came back; on the production shape (16 kHz stereo s16) the same call read the full file in the test, so no shipped transcript is known to be short, but nothing guaranteed it. The block-wise read loops until the header's length is met and stops only on a zero-frame read. Any other whole-file read in the daemon is worth the same loop.
+
 ### Bundle.module only works beside the build tree
 
 DIST4 (the 2026-10-21 go-live assessment's DI-1, its one adversarially confirmed critical). SwiftPM generates `Bundle.module` per target, and the accessor looks in exactly two places: `Bundle.main.bundleURL` plus `<Package>_<Target>.bundle`, which for an app is the `.app` root, a place codesign does not allow files, and an **absolute path into the build tree it was compiled in**. Neither found, it calls `fatalError`. `install.sh` and `rebuild.sh` put the bundles in `Contents/MacOS`, which is neither, so from the day the bundles existed every resource lookup in the installed app was quietly served from `<repo>/daemon/.build`. Nothing noticed because the clone never moved. Move it, rename it, or clean the build, and `Coordinator` init traps in `MuteLabelsLoader.loadDefault()`, and launchd's KeepAlive restarts it into the same trap every 10 s.

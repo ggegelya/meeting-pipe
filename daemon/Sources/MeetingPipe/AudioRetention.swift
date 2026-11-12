@@ -34,7 +34,8 @@ enum AudioRetention {
         /// copy, and the owner reasons about "meetings older than N days".
         let startedAt: Date
         /// The workflow that recorded it, from `<stem>.meta.json["workflow_id"]`.
-        /// Nil for a manual, workflow-less recording.
+        /// Nil for a manual, workflow-less recording, which follows the default
+        /// workflow's retention (REC20).
         let workflowID: UUID?
         /// Derived exactly as the Library derives it, so the sweep and the list
         /// agree on what "settled" means.
@@ -66,13 +67,19 @@ enum AudioRetention {
     ///
     /// - Parameters:
     ///   - policies: retention keyed by workflow id. A candidate whose workflow is
-    ///     absent from the map, or which has no workflow at all, keeps its audio
-    ///     forever: an unknown workflow must never be read as "drop it".
+    ///     absent from the map keeps its audio forever: an unknown (deleted)
+    ///     workflow must never be read as "drop it".
+    ///   - defaultWorkflowID: the workflow flagged `isDefault`. A candidate with no
+    ///     workflow at all (a manual recording) follows its retention (REC20), so
+    ///     turning retention on for the default actually covers those meetings.
+    ///     With the default on keep (the shipped state, which the owner kept on
+    ///     2026-11-12) they keep, exactly as before.
     ///   - liveStems: the stems the recorder owns (`MeetingRecorder.ownedStems`,
     ///     REC23). Never touched even if some other signal called them settled.
     static func decide(
         candidates: [Candidate],
         policies: [UUID: WorkflowRetention],
+        defaultWorkflowID: UUID?,
         now: Date,
         liveStems: Set<String> = []
     ) -> [Action] {
@@ -82,7 +89,7 @@ enum AudioRetention {
             guard isSettled(status: candidate.status, publishState: candidate.publishState) else {
                 continue
             }
-            guard let workflowID = candidate.workflowID,
+            guard let workflowID = candidate.workflowID ?? defaultWorkflowID,
                   let retention = policies[workflowID],
                   retention.policy != .keep
             else { continue }

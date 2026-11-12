@@ -231,7 +231,7 @@ struct IntegrationsSectionView: View {
             }
             SettingsToggleRow(
                 "Copy the recording into the vault",
-                sublabel: "Attaches the audio beside the note. An hour of meeting is about 0.7 GB, so a synced vault feels this.",
+                sublabel: "Attaches the audio beside the note. An hour of meeting is about \(RecordingSpaceBudget.finalPerHourText), so a synced vault feels this.",
                 isOn: $store.obsidianAttachAudio
             )
             if store.obsidianAttachAudio {

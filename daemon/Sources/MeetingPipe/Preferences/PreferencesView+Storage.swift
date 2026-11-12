@@ -52,7 +52,7 @@ struct StorageSectionView: View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsSectionHeader(
                 "Storage",
-                caption: "An hour of recorded meeting is about 0.7 GB. Retention policies live on each workflow."
+                caption: "An hour of recorded meeting keeps about \(RecordingSpaceBudget.finalPerHourText). Retention policies live on each workflow."
             ) {
                 Button(stats.isScanning ? "Scanning…" : "Rescan") {
                     Task { await stats.rescan() }
@@ -208,8 +208,14 @@ struct StorageSectionView: View {
                 sublabel: "Pre-redaction copies, app-private and excluded from backups. Reaped after 30 days.") {
                 valueText(stats.stats?.originalsBytes)
             }
-            SettingsRow("Free on this volume", showsDivider: false) {
+            SettingsRow("Free on this volume") {
                 valueText(stats.stats?.freeBytes)
+            }
+            // REC20 item 4: where the growth is heading, from the library's own last 30 days.
+            SettingsRow("Growth, last 30 days",
+                sublabel: stats.stats.map { LibraryGrowth.sentence($0.growth) },
+                showsDivider: false) {
+                valueText(stats.stats?.growth.bytesInWindow)
             }
         }
     }
@@ -450,8 +456,8 @@ struct StorageSectionView: View {
                     valueText(stats.stats?.byPolicy[policy] ?? 0)
                 }
             }
-            SettingsRow("No workflow",
-                sublabel: "Manual recordings, and meetings whose workflow was deleted. Always kept.",
+            SettingsRow("Workflow deleted",
+                sublabel: "Meetings whose workflow no longer exists. Always kept. Manual recordings follow the default workflow's policy.",
                 showsDivider: false) {
                 valueText(stats.stats?.unassignedBytes)
             }

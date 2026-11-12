@@ -378,7 +378,7 @@ const PWIntegrationsPane = () => (
     <PWGroup label="Obsidian" footer="Notes land at <vault>/<subfolder>/<date> <title>.md with YAML front-matter. A custom template and the daily-note backlink stay in config.toml (obsidian.template_path, obsidian.daily_note_backlink).">
       <PWStackRow first label="Vault folder"><PWField placeholder="~/Documents/Obsidian/Personal" mono/><PWSmallButton>Choose…</PWSmallButton></PWStackRow>
       <PWStackRow label="Notes subfolder" sublabel="Where inside the vault a meeting note lands."><PWField placeholder="Meetings"/></PWStackRow>
-      <PWToggleRow on label="Copy the recording into the vault" sublabel="Attaches the audio beside the note. An hour of meeting is about 0.7 GB, so a synced vault feels this."/>
+      <PWToggleRow on label="Copy the recording into the vault" sublabel="Attaches the audio beside the note. An hour of meeting is about 230 MB, so a synced vault feels this."/>
       <PWStackRow label="Attachments subfolder"><PWField placeholder="_attachments"/></PWStackRow>
       <PWRow label="Status" sublabel="Set a vault folder above. Until then, a workflow with the Obsidian sink on publishes nothing there."><PWStatusPill tone="needed" icon="alert-triangle" text="Not configured"/></PWRow>
     </PWGroup>

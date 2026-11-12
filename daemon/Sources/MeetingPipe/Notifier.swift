@@ -368,6 +368,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
+    /// REC20: the library volume is short of space for this recording. A warning with no action:
+    /// the recording keeps running, and the HUD carries the countdown.
+    func notifyLowSpace(title: String, body: String) {
+        post(title: title, body: body)
+    }
+
     /// Posted when a mid-recording input device change was recovered; capture continued with a short silent gap.
     func notifyCaptureRecovered() {
         post(

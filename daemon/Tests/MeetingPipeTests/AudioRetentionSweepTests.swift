@@ -88,7 +88,7 @@ final class AudioRetentionSweepTests: XCTestCase {
 
     func test_sweep_short_circuits_when_every_workflow_keeps_forever() throws {
         try writeSettledMeeting(stem: "20260101-120000")
-        let outcome = AudioRetentionSweep.sweep(in: dir, policies: [workflow: WorkflowRetention()])
+        let outcome = AudioRetentionSweep.sweep(in: dir, policies: [workflow: WorkflowRetention()], defaultWorkflowID: workflow)
         XCTAssertEqual(outcome, AudioRetentionSweep.Outcome())
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: dir.appendingPathComponent("20260101-120000.wav").path
@@ -100,6 +100,7 @@ final class AudioRetentionSweepTests: XCTestCase {
         let outcome = AudioRetentionSweep.sweep(
             in: dir,
             policies: [workflow: WorkflowRetention(policy: .drop, afterDays: 1)],
+            defaultWorkflowID: nil,
             now: Date(timeIntervalSince1970: 2_000_000_000)
         )
         XCTAssertEqual(outcome.dropped, 1)
@@ -121,6 +122,44 @@ final class AudioRetentionSweepTests: XCTestCase {
         let outcome = AudioRetentionSweep.sweep(
             in: dir,
             policies: [workflow: WorkflowRetention(policy: .drop, afterDays: 1)],
+            defaultWorkflowID: nil,
+            now: Date(timeIntervalSince1970: 2_000_000_000)
+        )
+        XCTAssertEqual(outcome.dropped, 0)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: dir.appendingPathComponent("20260101-120000.wav").path
+        ))
+    }
+
+    /// REC20: a manual recording (no `workflow_id` in its meta) follows the default workflow, so
+    /// turning retention on for the default reaches it through the real sweep.
+    func test_sweep_reaches_a_manual_meeting_through_the_default_workflow() throws {
+        try write("20260101-120000.wav")
+        try write("20260101-120000.summary.json", "{}")
+        try write("20260101-120000.run.json", #"{"publish_state": "full"}"#)
+        let outcome = AudioRetentionSweep.sweep(
+            in: dir,
+            policies: [workflow: WorkflowRetention(policy: .drop, afterDays: 1)],
+            defaultWorkflowID: workflow,
+            now: Date(timeIntervalSince1970: 2_000_000_000)
+        )
+        XCTAssertEqual(outcome.dropped, 1)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: dir.appendingPathComponent("20260101-120000.wav").path
+        ))
+    }
+
+    /// REC20 + SEC25: a sidecar that exists but cannot be parsed may name a workflow that keeps,
+    /// so it must not read as "no workflow" and fall through to the default's drop.
+    func test_sweep_keeps_a_meeting_whose_sidecar_cannot_be_read() throws {
+        try write("20260101-120000.wav")
+        try write("20260101-120000.summary.json", "{}")
+        try write("20260101-120000.meta.json", "{not json")
+        try write("20260101-120000.run.json", #"{"publish_state": "full"}"#)
+        let outcome = AudioRetentionSweep.sweep(
+            in: dir,
+            policies: [workflow: WorkflowRetention(policy: .drop, afterDays: 1)],
+            defaultWorkflowID: workflow,
             now: Date(timeIntervalSince1970: 2_000_000_000)
         )
         XCTAssertEqual(outcome.dropped, 0)

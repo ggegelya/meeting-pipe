@@ -185,6 +185,65 @@ def test_check_storage_warns_on_a_nearly_full_disk(capsys, tmp_path, monkeypatch
     assert "audio retention policy" in out
 
 
+def _grow(library: Path, stem: str, size: int) -> None:
+    (library / f"{stem}.wav").write_bytes(b"x" * size)
+    (library / f"{stem}.summary.json").write_bytes(b"{}")
+
+
+def test_library_growth_counts_the_window_by_stem_prefix(tmp_path) -> None:
+    library = tmp_path / "raw"
+    library.mkdir()
+    _grow(library, "20261110-090000", 1_000)                  # inside: wav + 2-byte sidecar
+    (library / "20261101-090000 Export.wav").write_bytes(b"x" * 500)  # titled stem, inside
+    _grow(library, "20260901-090000", 99_000)                 # outside the window
+    (library / "notes.txt").write_bytes(b"x" * 77)            # not a stem
+    (library / "sub").mkdir()
+    (library / "sub" / "20261110-090000.wav").write_bytes(b"x" * 77)  # not top-level
+    for suffix in ("mic.wav", "system.wav", "merging.wav"):  # a recording in progress
+        (library / f"20261111-090000.{suffix}").write_bytes(b"x" * 77)
+    now = datetime(2026, 11, 12, 12, 0, 0)
+    assert storage.library_growth(library, now=now) == 1_000 + 2 + 500
+
+
+def test_doctor_warns_when_the_growth_rate_fills_the_disk_within_30_days(capsys, tmp_path, monkeypatch) -> None:
+    library = tmp_path / "raw"
+    library.mkdir()
+    _grow(library, "20261110-090000", 3_000_000)
+    # 3 MB a month is 100 KB a day; 2 MB free lasts about 20 days.
+    monkeypatch.setattr("mp.storage.free_bytes", lambda _p: 2_000_000)
+    check_storage(_storage_cfg(library), home=tmp_path, now=datetime(2026, 11, 12, 12, 0, 0))
+    out = capsys.readouterr().out
+    assert "[WARN] library grew 3.0 MB in the last 30 days; at that rate the free space lasts about 19 days" in out
+
+
+def test_doctor_does_not_warn_when_the_growth_rate_leaves_over_30_days(capsys, tmp_path, monkeypatch) -> None:
+    library = tmp_path / "raw"
+    library.mkdir()
+    _grow(library, "20261110-090000", 3_000_000)
+    monkeypatch.setattr("mp.storage.free_bytes", lambda _p: 500 * 1000 ** 3)
+    check_storage(_storage_cfg(library), home=tmp_path, now=datetime(2026, 11, 12, 12, 0, 0))
+    out = capsys.readouterr().out
+    assert "[ OK ] library grew 3.0 MB in the last 30 days; at that rate the free space lasts about" in out
+    assert "lasts about" in out and "[WARN] library grew" not in out
+
+
+def test_doctor_has_no_projection_without_recent_meetings(capsys, tmp_path, monkeypatch) -> None:
+    library = tmp_path / "raw"
+    library.mkdir()
+    _grow(library, "20250101-090000", 3_000_000)
+    monkeypatch.setattr("mp.storage.free_bytes", lambda _p: 1_000)
+    check_storage(_storage_cfg(library), home=tmp_path, now=datetime(2026, 11, 12, 12, 0, 0))
+    out = capsys.readouterr().out
+    assert "no meetings in the last 30 days" in out
+
+
+def test_days_of_free_space_has_no_answer_without_growth_or_free_space() -> None:
+    assert storage.days_of_free_space(0, 100) is None
+    assert storage.days_of_free_space(30, None) is None
+    assert storage.days_of_free_space(30, 0) is None
+    assert storage.days_of_free_space(30, 90) == 90
+
+
 def test_check_storage_tolerates_a_library_that_does_not_exist_yet(capsys, tmp_path) -> None:
     check_storage(_storage_cfg(tmp_path / "never" / "recorded"), home=tmp_path)
     out = capsys.readouterr().out

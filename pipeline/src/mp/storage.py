@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -99,6 +100,65 @@ def free_bytes(path: Path) -> int | None:
         return shutil.disk_usage(probe).free
     except OSError:
         return None
+
+
+#: REC20: the window the library's growth is measured over, and the projection
+#: under which `mp doctor` warns. Mirrors Swift's `LibraryGrowth`.
+GROWTH_WINDOW_DAYS = 30
+GROWTH_WARN_DAYS = 30
+
+
+#: A recording's working files (capture intermediates, the merge in progress):
+#: about 2 GB an hour while a meeting runs and gone minutes after it stops, so
+#: not growth. Mirrors `LibraryGrowth.transientSuffixes`.
+TRANSIENT_SUFFIXES = (".mic.wav", ".system.wav", ".merging.wav")
+
+
+def _stem_date(name: str) -> datetime | None:
+    """The recording stem a library file belongs to, from the first 15
+    characters of its name (`20260722-140312 Export.wav` dates by its prefix),
+    or None for a file that is not growth. Mirrors
+    `LibraryGrowth.stemDate(ofFileNamed:)`."""
+    if name.endswith(TRANSIENT_SUFFIXES):
+        return None
+    try:
+        return datetime.strptime(name[:15], "%Y%m%d-%H%M%S") if len(name) >= 15 else None
+    except ValueError:
+        return None
+
+
+def library_growth(library: Path, now: datetime | None = None) -> int:
+    """Bytes the library grew by over the last `GROWTH_WINDOW_DAYS` (REC20).
+
+    Every top-level file whose name starts with a recording stem dated inside
+    the window, sidecars included; subfolders and anything not named for a stem
+    are not growth. The same definition as the daemon's Storage pane, so the two
+    surfaces project the same number. Stems are local wall-clock times, so `now`
+    is naive local time too.
+    """
+    now = now or datetime.now()
+    cutoff = now - timedelta(days=GROWTH_WINDOW_DAYS)
+    if not library.is_dir():
+        return 0
+    total = 0
+    for child in library.iterdir():
+        started = _stem_date(child.name)
+        if started is None or not (cutoff < started <= now):
+            continue
+        try:
+            if child.is_file() and not child.is_symlink():
+                total += child.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def days_of_free_space(growth_bytes: int, free: int | None) -> float | None:
+    """Days until `free` is gone at the window's rate; None with no growth or no
+    free-space reading. Mirrors `LibraryGrowth.Projection.daysOfFreeSpace`."""
+    if growth_bytes <= 0 or not free or free <= 0:
+        return None
+    return free / (growth_bytes / GROWTH_WINDOW_DAYS)
 
 
 def human_bytes(n: int | None) -> str:

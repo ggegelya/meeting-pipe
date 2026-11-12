@@ -597,6 +597,13 @@ final class MeetingSessionController: @unchecked Sendable {
                     levelProvider: { [weak self] in self?.coordinator.audioRecorder.currentMicLevelDb() ?? -120 }
                 )
                 self.coordinator.notifications.notifyRecordingStarted(file: file)
+                // REC20 item 1: a start short of space still records, and says so on the HUD it
+                // just presented and in one notification. The recorder already logged the event.
+                if let notice = self.coordinator.audioRecorder.lowSpaceAtStart {
+                    self.coordinator.hud.setLowSpace(RecordingLowSpace.hudText(coveredSeconds: notice.coveredSeconds))
+                    let text = RecordingLowSpace.startMessage(notice)
+                    self.coordinator.notifications.notifyLowSpace(title: text.title, body: text.body)
+                }
                 Log.writeLine(
                     "daemon",
                     "recording started → \(file.path) source=\(source?.bundleID ?? "manual") mode=\(summaryMode == .byo ? "byo" : "auto") workflow=\(resolvedWorkflow?.name ?? "(none)")"
@@ -1343,6 +1350,25 @@ final class MeetingSessionController: @unchecked Sendable {
         Log.writeLine("daemon", "idle: surfacing 'still meeting?' banner")
         Log.event(category: "coordinator", action: "silence_notified")
         coordinator.notifications.notifyStillMeeting()
+    }
+
+    /// REC20 item 2: one low-space update from the recorder's free-space watch, on main. The label
+    /// and the warning only ever touch a live recording's HUD; the stop goes through `forceStop`,
+    /// which is `stopRecording`, the path a user's Stop takes, so the merge runs. It is never
+    /// `onWriteFailure`: nothing has failed, and the point of stopping here is that the merge
+    /// still has room.
+    func handleLowSpace(_ update: RecordingLowSpace.Update) {
+        guard case .recording = coordinator.stateMachine.current else { return }
+        switch update {
+        case .label(let text):
+            coordinator.hud.setLowSpace(text)
+        case .warn(let hudText, let title, let body):
+            coordinator.hud.setLowSpace(hudText)
+            coordinator.notifications.notifyLowSpace(title: title, body: body)
+        case .stop(let message):
+            coordinator.notifications.notifyError(message)
+            forceStop(reason: "low_space")
+        }
     }
 
     func handleIdleAutoStop() {

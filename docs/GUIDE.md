@@ -63,6 +63,10 @@ Useful for a call you do not want summarized by anything, or one you would rathe
 
 It means the microphone stopped reaching the recording and the app could not get it back, usually after a device was pulled or swapped mid-call. The recording keeps running and still captures the other side of the call, so what you have is a one-sided recording rather than nothing. The panel says so for the rest of the recording rather than only in a notification you might miss, because the file keeps growing either way and there is otherwise no way to tell the two apart. There is nothing to click: stop the recording and start a new one once the microphone is back.
 
+### If the panel says "Disk: 1h 25m left"
+
+The disk your recordings are saved to is running short, and that is how much more of this meeting fits. The app checks when a recording starts and once a minute while it runs, and shows the countdown whenever less than two hours of recording fits. A recording that starts short is never refused: it records, and a notification says how much space is free. If the countdown drops under 15 minutes you get one more notification, and if it reaches the point where there would no longer be room to save what was already recorded, the app stops the recording itself, the same way your Stop button does, so the meeting up to then is kept and processed as normal. Freeing up space while it runs is enough; the countdown follows. A recording uses about 2 GB an hour on disk while it runs and keeps about 230 MB an hour once it stops, which is why the countdown is shorter than the free space suggests.
+
 ### Off the record
 
 For a stretch where what *you* say should not reach your notes, press `⌃⌥O`, or click the **mic-with-a-slash** button on the recording panel (it is also **Go off the record** on that panel's right-click menu). The panel shows a steady **Off the record** state and the voice meter drops to zero until you turn it off again. Press it a second time to resume; an open stretch closes by itself when you stop.
@@ -366,7 +370,7 @@ Setting up a **brand new** Mac is the one case this window cannot walk you throu
 
 ### Retention: what happens to the audio
 
-An hour of meeting is about 0.7 GB. **Preferences ▸ Storage** shows what is actually on disk, split by policy, plus the two caches that are safe to throw away. Nothing is deleted without you asking.
+An hour of meeting keeps about 230 MB. **Preferences ▸ Storage** shows what is actually on disk, split by policy, plus the two caches that are safe to throw away, and how much the library grew over the last 30 days with how long the free space lasts at that rate. Nothing is deleted without you asking.
 
 The policy itself is per workflow, in the workflow editor under **Audio retention**, because a client call and a standup deserve different answers:
 
@@ -376,7 +380,7 @@ The policy itself is per workflow, in the workflow editor under **Audio retentio
 | **Compress it to FLAC** | Same audio, smaller file. Playback, the waveform, and re-transcribing all still work. |
 | **Delete the audio** | The transcript, the summary, and everything else stay. The recording is gone, and a deleted recording cannot be re-transcribed. |
 
-A policy only ever touches a meeting that finished and published cleanly. Anything that failed, is waiting for you, or is recording right now is left alone however old it gets, and so is any meeting with no workflow.
+A policy only ever touches a meeting that finished and published cleanly. Anything that failed, is waiting for you, or is recording right now is left alone however old it gets, and so is any meeting whose workflow you deleted. A meeting recorded with no workflow, such as one you started by hand, follows the default workflow's policy, so setting a policy on the default covers those too; with the default on **Keep the audio forever**, as it ships, they are kept.
 
 ### One thing worth checking once
 
@@ -515,7 +519,9 @@ The cause that used to be behind it was the app's own doing and is fixed. When o
 
 ### A notification said "Recording stopped" in the middle of a meeting
 
-The app could not keep saving the audio, so it stopped the recording rather than carry on capturing nothing. Everything up to that point was kept and is processed as normal. If the notification says the disk is full, it names the disk and how much space is left: free up space before the next meeting. If it says the folder recordings are saved to stopped responding, nothing was failing but the audio was piling up waiting to be saved, which happens when that folder is on a network drive or a cloud drive that hung: put the library back on this Mac before the next meeting (for a synced folder, **Move library…** in **Preferences ▸ Storage** does it). If it does not mention the disk or the folder, the app could not tell why, and **Preferences ▸ Integrations ▸ Run doctor…** is the place to look.
+If the notification says the disk was almost full, the app stopped on purpose while there was still room to save the recording: everything up to that point was kept and is processed as normal, and the panel's "Disk: ... left" countdown (see Recording a meeting) was the warning. Free up space before the next meeting.
+
+Otherwise, the app could not keep saving the audio, so it stopped the recording rather than carry on capturing nothing. Everything up to that point was kept and is processed as normal. If the notification says the disk is full, it names the disk and how much space is left: free up space before the next meeting. If it says the folder recordings are saved to stopped responding, nothing was failing but the audio was piling up waiting to be saved, which happens when that folder is on a network drive or a cloud drive that hung: put the library back on this Mac before the next meeting (for a synced folder, **Move library…** in **Preferences ▸ Storage** does it). If it does not mention the disk or the folder, the app could not tell why, and **Preferences ▸ Integrations ▸ Run doctor…** is the place to look.
 
 ### The recording did not stop when the call did
 

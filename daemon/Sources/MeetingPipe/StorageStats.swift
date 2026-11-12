@@ -37,8 +37,83 @@ struct StorageStats: Equatable {
     /// Per-policy library breakdown, resolved by joining each meeting's
     /// `workflow_id` to its workflow's retention.
     var byPolicy: [RetentionPolicy: Int] = [:]
-    /// Bytes belonging to meetings with no workflow, which are always keep-forever.
+    /// Bytes belonging to meetings whose workflow no longer exists, which are always
+    /// keep-forever. A meeting with no workflow at all counts under the default
+    /// workflow's policy, which governs it (REC20).
     var unassignedBytes = 0
+    /// REC20 item 4: what the library grew by over the last 30 days, and how long the
+    /// free space lasts at that rate.
+    var growth = LibraryGrowth.Projection(bytesInWindow: 0, freeBytes: 0)
+}
+
+/// REC20 item 4: where the library's growth is heading, from the library's own last 30 days rather
+/// than a constant, because the owner's pace is the only one that predicts the owner's disk.
+///
+/// Growth is every top-level file in the library whose name starts with a recording stem
+/// (`YYYYMMDD-HHMMSS`) dated inside the window: the recording and all of its sidecars. Files under
+/// subfolders, anything not named for a stem, and a recording's working files (`transientSuffixes`)
+/// are not growth. `mp doctor` computes the same
+/// thing (`mp.storage.library_growth`) and warns under `warnDays`; the two must agree.
+enum LibraryGrowth {
+
+    static let windowDays = 30
+    /// `mp doctor` warns below this many days of free space at the current rate.
+    static let warnDays = 30
+
+    struct Projection: Equatable {
+        /// Bytes added by meetings started in the window.
+        let bytesInWindow: Int
+        let freeBytes: Int
+
+        var bytesPerDay: Double { Double(bytesInWindow) / Double(LibraryGrowth.windowDays) }
+
+        /// Days until the free space is gone at this rate; nil when nothing grew in the window
+        /// (no rate, so no projection) or when the free space could not be read (zero).
+        var daysOfFreeSpace: Double? {
+            guard bytesPerDay > 0, freeBytes > 0 else { return nil }
+            return Double(freeBytes) / bytesPerDay
+        }
+    }
+
+    /// The window's growth over `(started, bytes)` pairs, one per file.
+    static func project(files: [(startedAt: Date, bytes: Int)], freeBytes: Int, now: Date) -> Projection {
+        let cutoff = now.addingTimeInterval(-Double(windowDays) * 24 * 60 * 60)
+        let inWindow = files
+            .filter { $0.startedAt > cutoff && $0.startedAt <= now }
+            .reduce(0) { $0 + $1.bytes }
+        return Projection(bytesInWindow: inWindow, freeBytes: freeBytes)
+    }
+
+    /// A live or interrupted recording's working files: the two capture intermediates and the
+    /// merge in progress. About 2 GB an hour while a meeting runs and gone minutes after it stops,
+    /// so counting them would make a projection read mid-meeting cry wolf. Mirrors
+    /// `mp.storage.TRANSIENT_SUFFIXES`.
+    static let transientSuffixes = [".mic.wav", ".system.wav", ".merging.wav"]
+
+    /// The stem date a library file belongs to, from the first 15 characters of its name, or nil
+    /// for a file that is not growth. A titled stem (`20260722-140312 Export.wav`) still dates by
+    /// its prefix.
+    static func stemDate(ofFileNamed name: String) -> Date? {
+        guard !transientSuffixes.contains(where: { name.hasSuffix($0) }) else { return nil }
+        return MeetingStore.parseStem(String(name.prefix(15)))
+    }
+
+    /// The pane's sentence for a projection, or nil when there is nothing to project.
+    static func sentence(_ projection: Projection) -> String {
+        guard projection.bytesInWindow > 0 else {
+            return "No meetings in the last 30 days, so there is no rate to project."
+        }
+        guard let days = projection.daysOfFreeSpace else {
+            return "Free space could not be read, so there is no projection."
+        }
+        if days >= 365 * 2 {
+            return "At this rate the free space lasts more than two years."
+        }
+        if days >= 60 {
+            return "At this rate the free space lasts about \(Int(days / 30)) months."
+        }
+        return "At this rate the free space lasts about \(max(0, Int(days))) days."
+    }
 }
 
 /// Blocking disk scan behind `StorageStats`. Its own type with explicit inputs so
@@ -57,7 +132,9 @@ enum StorageScanner {
         waveformCacheDir: URL,
         hubRoot: URL,
         activeModelID: String,
-        retentionByWorkflow: [UUID: RetentionPolicy]
+        retentionByWorkflow: [UUID: RetentionPolicy],
+        defaultPolicy: RetentionPolicy?,
+        now: Date = Date()
     ) -> StorageStats {
         var stats = StorageStats()
         stats.libraryBytes = bytesOnDisk(libraryDir)
@@ -67,13 +144,31 @@ enum StorageScanner {
         stats.models = models(in: hubRoot, activeModelID: activeModelID)
 
         let (byPolicy, unassigned, wav, flac) = audioBreakdown(
-            in: libraryDir, retentionByWorkflow: retentionByWorkflow
+            in: libraryDir, retentionByWorkflow: retentionByWorkflow, defaultPolicy: defaultPolicy
         )
         stats.byPolicy = byPolicy
         stats.unassignedBytes = unassigned
         stats.wavBytes = wav
         stats.flacBytes = flac
+        stats.growth = LibraryGrowth.project(
+            files: stemDatedFiles(in: libraryDir), freeBytes: stats.freeBytes, now: now
+        )
         return stats
+    }
+
+    /// Every top-level file in the library named for a recording stem, with that stem's date and
+    /// the file's size (REC20's growth input).
+    static func stemDatedFiles(in libraryDir: URL) -> [(startedAt: Date, bytes: Int)] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: libraryDir, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey], options: []
+        ) else { return [] }
+        return entries.compactMap { url in
+            guard let started = LibraryGrowth.stemDate(ofFileNamed: url.lastPathComponent),
+                  let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+                  values.isRegularFile == true
+            else { return nil }
+            return (started, values.fileSize ?? 0)
+        }
     }
 
     /// Recursive byte total, skipping symlinks so the HuggingFace snapshot links
@@ -132,11 +227,14 @@ enum StorageScanner {
     }
 
     /// Split the library's recordings across the retention policies that govern
-    /// them. A meeting whose `<stem>.meta.json` names no workflow, or one whose
-    /// workflow no longer exists, counts as unassigned and is never reaped.
+    /// them. A meeting whose `<stem>.meta.json` names no workflow follows the
+    /// default workflow's policy (`defaultPolicy`, REC20), the way the sweep treats
+    /// it; one whose workflow no longer exists counts as unassigned and is never
+    /// reaped. With no default, a workflow-less meeting is unassigned too.
     static func audioBreakdown(
         in libraryDir: URL,
-        retentionByWorkflow: [UUID: RetentionPolicy]
+        retentionByWorkflow: [UUID: RetentionPolicy],
+        defaultPolicy: RetentionPolicy? = nil
     ) -> (byPolicy: [RetentionPolicy: Int], unassigned: Int, wavBytes: Int, flacBytes: Int) {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
@@ -161,6 +259,8 @@ enum StorageScanner {
                 .flatMap { $0["workflow_id"] as? String }
                 .flatMap(UUID.init(uuidString:))
             if let workflowID = workflowID, let policy = retentionByWorkflow[workflowID] {
+                byPolicy[policy, default: 0] += bytes
+            } else if workflowID == nil, let policy = defaultPolicy {
                 byPolicy[policy, default: 0] += bytes
             } else {
                 unassigned += bytes

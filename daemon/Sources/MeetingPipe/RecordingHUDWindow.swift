@@ -77,6 +77,40 @@ enum HUDPanelGeometry {
     }
 }
 
+/// Which persistent state owns the HUD's state label, the "Recording" text beside the dot (REC20).
+///
+/// Four states can claim it, and before REC20 each setter guarded the ones it knew about, so the
+/// precedence lived in three `if`s that had to be kept in step by hand. A lost mic outranks
+/// everything (REC16: it reports something broken, and it is the one the reader has to see); a disk
+/// running out comes next for the same reason, since it ends the recording on its own; then the two
+/// chosen states, off the record (MIC14) over confirming end (END9), which only explains why the
+/// recording is still running. Hiding "Off the record" under a low-disk countdown errs the safe
+/// way: a reader who believes they are on the record says less, not more, and the off-record
+/// control keeps its active glyph throughout.
+enum HUDStateLabel {
+    enum Tone: Equatable {
+        /// `fgMuted`, the resting "Recording".
+        case muted
+        /// `pulse600`, a state the reader has to notice.
+        case alert
+        /// `fgSubtle`, a recording that is deliberately still running.
+        case subtle
+    }
+
+    static func resolve(
+        micCaptureLost: Bool,
+        lowSpace: String?,
+        offRecord: Bool,
+        confirmingEnd: Bool
+    ) -> (text: String, tone: Tone) {
+        if micCaptureLost { return ("Mic lost", .alert) }
+        if let lowSpace { return (lowSpace, .alert) }
+        if offRecord { return ("Off the record", .alert) }
+        if confirmingEnd { return ("Confirming end", .subtle) }
+        return ("Recording", .muted)
+    }
+}
+
 /// UX73: what the flag control shows once a moment has been flagged. Pure, in the same house
 /// `decide` style as `HUDPanelGeometry` above: explicit inputs, nothing read off AppKit inside, so
 /// the acknowledgement is pinned by a test rather than by re-reading an animation block.
@@ -261,6 +295,9 @@ final class RecordingHUDWindow {
         // one). Without this, a meeting that lost its mic would open the next one reading
         // "Mic lost", and the two other label owners would defer to a failure that already ended.
         micCaptureLost = false
+        // REC20 / END9: the same, for the other two persisted label owners.
+        lowSpaceText = nil
+        confirmingEnd = false
 
         guard let panel = panel else { return }
         self.panel = nil
@@ -369,32 +406,52 @@ final class RecordingHUDWindow {
     /// persistent state with no action attached. It does not resize, for MIC14's reason.
     func setMicCaptureLost(_ on: Bool) {
         micCaptureLost = on
-        if on {
-            recordingLabel?.stringValue = "Mic lost"
-            recordingLabel?.textColor = MPColors.pulse600
-            // The recorder's level is frozen at its last value once the tap is abandoned, so the
-            // meter would otherwise sit lit beside a label saying the mic is gone.
-            levelMeter?.level = 0
-        } else {
-            recordingLabel?.stringValue = isOffTheRecord ? "Off the record" : "Recording"
-            recordingLabel?.textColor = isOffTheRecord ? MPColors.pulse600 : MPColors.fgMuted
+        // The recorder's level is frozen at its last value once the tap is abandoned, so the
+        // meter would otherwise sit lit beside a label saying the mic is gone.
+        if on { levelMeter?.level = 0 }
+        applyStateLabel()
+    }
+
+    /// Whether the mic half of this recording has been given up on. Outranks every other label
+    /// owner (`HUDStateLabel`).
+    private(set) var micCaptureLost = false
+
+    /// REC20: the low-space countdown while the library volume covers under two hours more of
+    /// recording, else nil. Per recording, cleared by `dismiss`.
+    private(set) var lowSpaceText: String?
+
+    /// END9: whether a held end is being confirmed. Stored since REC20 so the label can be
+    /// resolved from all four states at once rather than by whichever setter ran last.
+    private var confirmingEnd = false
+
+    /// REC20: show or clear the low-space countdown. Idempotent, main-queue only, no resize: the
+    /// longest form fits the shared pill width (`HUDPanelGeometryTests`).
+    func setLowSpace(_ text: String?) {
+        lowSpaceText = text
+        applyStateLabel()
+    }
+
+    /// Write the state label from the four states that can own it (`HUDStateLabel`).
+    private func applyStateLabel() {
+        let label = HUDStateLabel.resolve(
+            micCaptureLost: micCaptureLost,
+            lowSpace: lowSpaceText,
+            offRecord: isOffTheRecord,
+            confirmingEnd: confirmingEnd
+        )
+        recordingLabel?.stringValue = label.text
+        switch label.tone {
+        case .muted: recordingLabel?.textColor = MPColors.fgMuted
+        case .alert: recordingLabel?.textColor = MPColors.pulse600
+        case .subtle: recordingLabel?.textColor = MPColors.fgSubtle
         }
     }
 
-    /// Whether the mic half of this recording has been given up on. Read by the two other
-    /// label owners so they cannot overwrite it.
-    private(set) var micCaptureLost = false
-
     func setOffTheRecord(_ on: Bool) {
-        // REC16: a lost mic outranks both this and "Confirming end". It is the only one of the
-        // three that reports something broken rather than something chosen, and it is the one the
-        // reader has to see, so it keeps the label until the recording ends.
-        if !micCaptureLost {
-            recordingLabel?.stringValue = on ? "Off the record" : "Recording"
-            recordingLabel?.textColor = on ? MPColors.pulse600 : MPColors.fgMuted
-        }
+        // REC16 / REC20: a lost mic and a disk running out both outrank this (`HUDStateLabel`).
         offRecordButton?.setActive(on)
         (contentView as? HUDBackgroundView)?.isOffRecord = on
+        applyStateLabel()
         // Drop the meter on the click rather than at the next 10 Hz poll, so the toggle reads as
         // instant. Also the only cover for a stalled mic tap, which leaves the recorder's level
         // frozen at its last value: without this the meter would sit lit beside the label forever.
@@ -410,12 +467,10 @@ final class RecordingHUDWindow {
     /// `fgSubtle` is the quietest token that still clears DSN3's 4.5:1 contrast floor, which
     /// `fgFaint` does not (it measures about 2.8:1).
     func setConfirmingEnd(_ on: Bool) {
-        // Off-the-record owns this label while it is on, and it is the stronger claim: it is about
-        // what is being captured, where this is only about why we are still capturing.
-        if (contentView as? HUDBackgroundView)?.isOffRecord != true, !micCaptureLost {
-            recordingLabel?.stringValue = on ? "Confirming end" : "Recording"
-            recordingLabel?.textColor = on ? MPColors.fgSubtle : MPColors.fgMuted
-        }
+        // Every other label owner outranks this one: it is only about why we are still capturing
+        // (`HUDStateLabel`).
+        confirmingEnd = on
+        applyStateLabel()
         elapsedLabel?.textColor = on ? MPColors.fgSubtle : MPColors.fgMuted
     }
 
