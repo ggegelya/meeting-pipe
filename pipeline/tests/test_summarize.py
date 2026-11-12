@@ -487,6 +487,86 @@ def test_ai6_picks_the_latest_prior_meeting(tmp_path: Path):
     assert "Old decision." not in ctx
 
 
+def _counting_read_meta(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Count the meta sidecars `_prior_meeting_context` reads, by stem."""
+    from mp.workflow import read_meta as real_read_meta
+
+    seen: list[str] = []
+
+    def counting(path: Path) -> dict:
+        seen.append(path.name.split(".", 1)[0])
+        return real_read_meta(path)
+
+    monkeypatch.setattr("mp.summarize.read_meta", counting)
+    return seen
+
+
+def _fifty_earlier_meetings(root: Path, *, matching_index: int) -> list[str]:
+    """Fifty earlier summarized meetings in another workflow, except the one at
+    `matching_index` (0 = oldest), which is in `wf-1`. Returns the stems, oldest
+    first."""
+    stems = [f"202606{day:02d}-{hour:02d}00" for day in range(1, 26) for hour in (9, 14)]
+    for i, stem in enumerate(stems):
+        summary = MeetingSummary(
+            title=f"Meeting {i}", summary=["s"], decisions=[f"Decision {i}."],
+            detected_language="en",
+        )
+        workflow = "wf-1" if i == matching_index else "wf-other"
+        _write_prior_meeting(root, stem, workflow_id=workflow, summary=summary)
+    return stems
+
+
+def test_ai6_prior_scan_stops_at_the_newest_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """PERF25: the scan used to read the meta sidecar of every earlier summarized
+    meeting (about 434 in the owner's iCloud-synced library) to find one. Newest
+    first, it stops at the first match: the current meeting's sidecar plus one."""
+    stems = _fifty_earlier_meetings(tmp_path, matching_index=49)
+    md = _current_meeting(tmp_path, "20260708-1000", workflow_id="wf-1")
+    seen = _counting_read_meta(monkeypatch)
+
+    ctx = _prior_meeting_context(md, Config(recording=Recording(output_dir=tmp_path)))
+
+    assert ctx is not None
+    assert "Decision 49." in ctx
+    assert len(seen) <= 2, seen
+    assert seen == ["20260708-1000", stems[49]]
+
+
+def test_ai6_prior_scan_still_finds_a_match_that_is_the_oldest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Stopping early must not change the answer: when the only match is the
+    oldest earlier meeting, the scan walks down to it and returns it."""
+    _fifty_earlier_meetings(tmp_path, matching_index=0)
+    md = _current_meeting(tmp_path, "20260708-1000", workflow_id="wf-1")
+    seen = _counting_read_meta(monkeypatch)
+
+    ctx = _prior_meeting_context(md, Config(recording=Recording(output_dir=tmp_path)))
+
+    assert ctx is not None
+    assert "Decision 0." in ctx
+    assert "Decision 1." not in ctx
+    assert len(seen) == 51  # the current meeting's sidecar plus every earlier one
+
+
+def test_ai6_prior_scan_ignores_later_meetings_in_the_workflow(tmp_path: Path):
+    """A later meeting in the same workflow (a re-summarize of an old recording)
+    sorts first newest-first; it is never this meeting's prior."""
+    older = MeetingSummary(title="Earlier", summary=["s"], decisions=["Earlier decision."],
+                           detected_language="en")
+    later = MeetingSummary(title="Later", summary=["s"], decisions=["Later decision."],
+                           detected_language="en")
+    _write_prior_meeting(tmp_path, "20260701-1000", workflow_id="wf-1", summary=older)
+    _write_prior_meeting(tmp_path, "20260801-1000", workflow_id="wf-1", summary=later)
+    md = _current_meeting(tmp_path, "20260708-1000", workflow_id="wf-1")
+
+    ctx = _prior_meeting_context(md, Config(recording=Recording(output_dir=tmp_path)))
+
+    assert ctx is not None
+    assert "Earlier decision." in ctx
+    assert "Later decision." not in ctx
+
+
 def test_ai6_skips_prior_in_a_different_language(tmp_path: Path):
     # LANG1: an English meeting following a Ukrainian one in the same workflow
     # must not inherit the prior's language. The continuity block is dropped so

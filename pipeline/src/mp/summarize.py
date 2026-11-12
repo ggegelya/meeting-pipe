@@ -280,24 +280,38 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
     whose language differs from this meeting's (LANG1: a foreign-language block
     would pull the summary into the wrong language) is a clean no-op.
     """
-    workflow_id = read_meta(transcript_md).get("workflow_id")
+    meta = read_meta(transcript_md)
+    workflow_id = meta.get("workflow_id")
     if not workflow_id:
         return None
     out_dir = cfg.recording.output_dir
     if not out_dir.exists():
         return None
 
+    # PERF25: newest-first, stopping at the first match. Stems sort
+    # chronologically, so the first earlier stem in this workflow is the newest
+    # one, the same answer the old full scan gave, in usually a read or two
+    # instead of one meta sidecar per earlier meeting (an evicted iCloud file
+    # blocks on a download).
     current_stem = transcript_md.name.split(".", 1)[0]
-    prior_stem: str | None = None
-    prior_path: Path | None = None
-    for summary_json in out_dir.glob("*.summary.json"):
-        stem = summary_json.name.split(".", 1)[0]
-        if stem >= current_stem:  # self or a later meeting; stems sort chronologically
-            continue
-        if read_meta(summary_json).get("workflow_id") != workflow_id:
-            continue
-        if prior_stem is None or stem > prior_stem:
-            prior_stem, prior_path = stem, summary_json
+    earlier = sorted(
+        (
+            (stem, summary_json)
+            for summary_json in out_dir.glob("*.summary.json")
+            # self or a later meeting is never a prior one
+            if (stem := summary_json.name.split(".", 1)[0]) < current_stem
+        ),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    prior_stem, prior_path = next(
+        (
+            (stem, summary_json)
+            for stem, summary_json in earlier
+            if read_meta(summary_json).get("workflow_id") == workflow_id
+        ),
+        (None, None),
+    )
     if prior_path is None:
         return None
 
@@ -332,7 +346,7 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
         )
         return None
 
-    workflow_name = read_meta(transcript_md).get("workflow_name") or "this"
+    workflow_name = meta.get("workflow_name") or "this"
     lines = [
         "## Previous meeting in this series",
         "",

@@ -10,7 +10,8 @@ The first ``summarize()`` call lazy-launches an ``mlx_lm.server``
 subprocess on the configured host:port, polls the health endpoint
 until ready, then forwards the chat completion. Subsequent calls
 reuse the running server. After ``idle_timeout_sec`` of inactivity
-the server is gracefully shut down to free RAM (default 5 min).
+(measured from the last request to finish, PERF25) the server is
+gracefully shut down to free RAM (default 5 min).
 
 JSON discipline
 ---------------
@@ -449,6 +450,11 @@ class LocalSummaryClient:
         self._proc: subprocess.Popen[bytes] | None = None
         self._lock = threading.Lock()
         self._idle_timer: threading.Timer | None = None
+        # PERF25: when the last request finished (monotonic). The idle timer is
+        # armed when a request starts, so a request longer than the timeout used
+        # to fire it mid-call and kill the server the moment the call returned;
+        # `_on_idle_timeout` now measures idleness from here instead.
+        self._last_activity = float("-inf")
         # LOCAL11: what the server on this port actually turned out to be serving,
         # read back in `_ensure_running`. None until a request has been made (or
         # when the identity could not be read), which is why `model` and
@@ -1089,11 +1095,13 @@ class LocalSummaryClient:
         except Exception as e:  # pragma: no cover
             log.warning("error terminating mlx_lm.server: %s", e)
 
-    def _reset_idle_timer(self) -> None:
+    def _reset_idle_timer(self, delay_sec: float | None = None) -> None:
         self._cancel_idle_timer()
         if self._idle_timeout_sec <= 0:
             return
-        t = threading.Timer(self._idle_timeout_sec, self._on_idle_timeout)
+        t = threading.Timer(
+            self._idle_timeout_sec if delay_sec is None else delay_sec, self._on_idle_timeout
+        )
         t.daemon = True
         t.start()
         self._idle_timer = t
@@ -1104,8 +1112,24 @@ class LocalSummaryClient:
             self._idle_timer = None
 
     def _on_idle_timeout(self) -> None:
-        log.info("mlx_lm.server idle for %.0fs, shutting down", self._idle_timeout_sec)
         with self._lock:
+            # A timer that was replaced (or cancelled by `close`) after it had
+            # already fired is waiting here on the lock; the timer that replaced
+            # it is the one that decides. Acting on a stale one would kill the
+            # server early or re-arm a closed client.
+            if threading.current_thread() is not self._idle_timer:
+                return
+            # PERF25: idle means "no request finished for the whole timeout", not
+            # "the timeout has passed since a request started". A request longer
+            # than the timeout fires the timer mid-call, and this callback then
+            # waits on the lock until the call returns; killing the server here
+            # would make the next request (a LANG1 repair, the next cleanup
+            # window) reload the model. Re-arm for the remainder instead.
+            idle_sec = time.monotonic() - self._last_activity
+            if idle_sec < self._idle_timeout_sec:
+                self._reset_idle_timer(self._idle_timeout_sec - idle_sec)
+                return
+            log.info("mlx_lm.server idle for %.0fs, shutting down", self._idle_timeout_sec)
             self._terminate_proc()
             self._idle_timer = None
 
@@ -1188,6 +1212,12 @@ class LocalSummaryClient:
             )
         except httpx.HTTPError as e:
             raise LocalSummaryError(f"local backend HTTP error: {e}") from e
+        finally:
+            # PERF25: every request passes through here (single pass, map windows,
+            # reduce batches, repairs, `complete`, the staged path), so this one
+            # stamp is what the idle timer measures from. A failed request is
+            # still activity: the server was busy until now.
+            self._last_activity = time.monotonic()
         if r.status_code != 200:
             detail = f"local backend returned {r.status_code}: {r.text[:500]}"
             if r.status_code == 404 and self._adapter_path:

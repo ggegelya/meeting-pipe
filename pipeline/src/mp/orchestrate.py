@@ -24,6 +24,7 @@ import threading
 import time
 from importlib import resources
 from pathlib import Path
+from typing import Any
 
 from . import entry, providers, storage
 from .config import Config, effective_backend, extract_backend_flag, with_backend_override
@@ -431,6 +432,27 @@ def _check_apple_handoff(wav: Path, t: dict[str, Path], md_text: str, cfg: Confi
     return _skip_result(t, "apple_pending", apple_pending=str(sentinel))
 
 
+def _shared_local_client(cfg: Config) -> Any:
+    """The one client speaker cleanup and summarize share in a run, or None (PERF25).
+
+    Only when cleanup is on and the effective backend is `local`. Built through
+    the providers row, so it carries every configured local setting and is not a
+    direct construction (`test_local_client_contract.py`). Every other backend
+    builds its clients as before: `auto`'s local rung lives inside its fallback
+    ladder, Apple Intelligence summarizes in the daemon, and a cloud client owns
+    no process to reload."""
+    if not cfg.summarization.diarize_cleanup or effective_backend(cfg) != "local":
+        return None
+    build = providers.lookup("local").build_summary
+    return build(cfg) if build is not None else None
+
+
+def _close_shared(shared: Any) -> None:
+    close = getattr(shared, "close", None)
+    if callable(close):
+        close()
+
+
 def _run_all_inner(
     wav: Path, cfg: Config, *, force_byo: bool,
     heartbeat: "_ProgressHeartbeat | None" = None, backend: str | None = None,
@@ -472,38 +494,66 @@ def _run_all_inner(
     if skip is not None:
         return skip
 
-    # Diarization cleanup (TECH-DIAR1): opt-in LLM pass that tidies the
-    # speaker labels before summarizing. Placed after every cost-guard skip
-    # short-circuit so it runs only when we are actually going to
-    # summarize, and so it inherits the same cost guards. Failure is
-    # non-fatal: a summary on the un-cleaned transcript beats no run.
-    if cfg.summarization.diarize_cleanup:
-        _stage("diarize_cleanup")
-        events.emit("pipeline", "stage_started", stage="diarize_cleanup")
-        try:
-            from .diarize_cleanup import cleanup_transcript
-            cr = cleanup_transcript(t["json"], cfg=cfg)
-            events.emit("pipeline", "stage_completed", stage="diarize_cleanup",
-                        merges=cr["merges_count"],
-                        reattributions=cr["reattributions_count"])
-            md_text = t["md"].read_text(encoding="utf-8")
-        except Exception as e:  # noqa: BLE001
-            # PIPE19: non-fatal, but never silent. This used to be the log line
-            # alone, so a cleanup that raised on every meeting left a
-            # `stage_started` with nothing after it and nothing on screen.
-            log.warning("diarize cleanup failed (non-fatal): %s", e)
-            events.emit("pipeline", "stage_failed", stage="diarize_cleanup",
-                        error=type(e).__name__, message=str(e)[:300])
+    # PERF25: on the local backend, speaker cleanup and summarize share one
+    # client, so one mlx_lm.server load serves both. Each used to build its own
+    # and close it, which killed the server cleanup had spawned seconds before
+    # summarize spawned it again and reloaded the weights. Closed once, right
+    # after summarize, so the model's memory is back before publish exactly as
+    # when summarize closed its own; a cleanup failure, an Apple hand-off, or a
+    # summarize that raises all still close it.
+    shared = _shared_local_client(cfg)
+    try:
+        # Diarization cleanup (TECH-DIAR1): opt-in LLM pass that tidies the
+        # speaker labels before summarizing. Placed after every cost-guard skip
+        # short-circuit so it runs only when we are actually going to
+        # summarize, and so it inherits the same cost guards. Failure is
+        # non-fatal: a summary on the un-cleaned transcript beats no run.
+        if cfg.summarization.diarize_cleanup:
+            _stage("diarize_cleanup")
+            events.emit("pipeline", "stage_started", stage="diarize_cleanup")
+            try:
+                from .diarize_cleanup import LocalCleanupClient, cleanup_transcript
+                if shared is None:
+                    cr = cleanup_transcript(t["json"], cfg=cfg)
+                else:
+                    cr = cleanup_transcript(
+                        t["json"], cfg=cfg,
+                        client=LocalCleanupClient(shared, max_tokens=cfg.summarization.max_tokens),
+                    )
+                events.emit("pipeline", "stage_completed", stage="diarize_cleanup",
+                            merges=cr["merges_count"],
+                            reattributions=cr["reattributions_count"])
+                md_text = t["md"].read_text(encoding="utf-8")
+            except Exception as e:  # noqa: BLE001
+                # PIPE19: non-fatal, but never silent. This used to be the log line
+                # alone, so a cleanup that raised on every meeting left a
+                # `stage_started` with nothing after it and nothing on screen.
+                log.warning("diarize cleanup failed (non-fatal): %s", e)
+                events.emit("pipeline", "stage_failed", stage="diarize_cleanup",
+                            error=type(e).__name__, message=str(e)[:300])
+                # PERF25: a failed pass may leave the shared server spawned but
+                # unhealthy (a startup timeout, a request it was too busy to
+                # finish), and `_ensure_running` would then spawn a second one on
+                # the same port over the handle to the first. Close it, as the
+                # pass's own client used to be closed, and summarize starts clean.
+                if shared is not None:
+                    _close_shared(shared)
+                    shared = _shared_local_client(cfg)
 
-    skip = _check_apple_handoff(wav, t, md_text, cfg)
-    if skip is not None:
-        return skip
+        skip = _check_apple_handoff(wav, t, md_text, cfg)
+        if skip is not None:
+            return skip
 
-    log.info("[2/3] summarize")
-    _stage("summarize")
-    events.emit("pipeline", "stage_started", stage="summarize")
-    s = summarize(t["md"], cfg=cfg, backend=backend)
-    events.emit("pipeline", "stage_completed", stage="summarize", md=str(s["md"]))
+        log.info("[2/3] summarize")
+        _stage("summarize")
+        events.emit("pipeline", "stage_started", stage="summarize")
+        if shared is None:
+            s = summarize(t["md"], cfg=cfg, backend=backend)
+        else:
+            s = summarize(t["md"], cfg=cfg, backend=backend, client=shared)
+        events.emit("pipeline", "stage_completed", stage="summarize", md=str(s["md"]))
+    finally:
+        _close_shared(shared)
 
     # Run sidecar: snapshot of which backend + model produced this
     # summary, plus enough metadata for the Phase 2 correction loop to

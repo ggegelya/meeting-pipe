@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
@@ -68,6 +69,12 @@ class _FakeHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+        # PERF25: a test that fakes the spawn/terminate seam flips `healthy`, so
+        # a terminated server stops answering and a respawn is observable.
+        if not getattr(self.server, "healthy", True):
+            self.send_response(503)
+            self.end_headers()
+            return
         if self.path == "/v1/models":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1071,6 +1078,100 @@ def test_unreadable_identity_reuses_rather_than_respawning(
 
 def _fail_if_called(*_args: object, **_kwargs: object):
     raise AssertionError("a server this client did not spawn must not be killed")
+
+
+# ----- PERF25: the idle timer measures from the last request to finish -----
+
+
+def _fake_lifecycle(
+    client: LocalSummaryClient, server: ThreadingHTTPServer, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, int]:
+    """Fake the spawn/terminate seam of a server this client owns: a spawn makes
+    the fake server healthy, a terminate takes it down, and both are counted. No
+    process is launched or signalled and no LOCAL10 marker is touched; the idle
+    timer and its callback are the real ones."""
+    counts = {"spawn": 0, "terminate": 0}
+    server.healthy = False  # type: ignore[attr-defined]
+
+    class _Proc:
+        pid = 4242
+
+        def poll(self) -> None:
+            return None
+
+    def spawn() -> None:
+        counts["spawn"] += 1
+        client._proc = _Proc()  # type: ignore[assignment]
+        server.healthy = True  # type: ignore[attr-defined]
+
+    def terminate() -> None:
+        if client._proc is None:
+            return
+        client._proc = None
+        counts["terminate"] += 1
+        server.healthy = False  # type: ignore[attr-defined]
+
+    _fake_identity(monkeypatch, None)
+    monkeypatch.setattr(client, "_spawn", spawn)
+    monkeypatch.setattr(client, "_terminate_proc", terminate)
+    return counts
+
+
+def test_a_request_longer_than_the_idle_timeout_keeps_the_server(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The timer is armed when a request starts, so one longer than the timeout
+    (a 14B single pass can run to its 520 s read timeout against the 300 s
+    default) fired it mid-call, and the callback, waiting on the lock, killed
+    the server the moment the call returned. The next request (a LANG1 repair,
+    the next cleanup window) then reloaded the model. Idleness now counts from
+    the last request to finish, and the timer still stops an idle server."""
+    host, port, server = fake_server
+    delay = {"sec": 2.0}
+
+    def slow_summary(_payload: dict) -> dict:
+        time.sleep(delay["sec"])
+        return {"choices": [{"message": {"content": json.dumps(_valid_summary_obj())}}]}
+
+    server.builder = slow_summary  # type: ignore[attr-defined]
+    client = LocalSummaryClient(host=host, port=port, idle_timeout_sec=1.0)
+    counts = _fake_lifecycle(client, server, monkeypatch)
+    try:
+        _summarize(client)  # outlasts the timeout twice over
+        time.sleep(0.2)     # room for the fired callback to take the lock
+        assert counts == {"spawn": 1, "terminate": 0}
+
+        delay["sec"] = 0.0
+        _summarize(client)
+        assert counts == {"spawn": 1, "terminate": 0}  # reused, not respawned
+
+        deadline = time.monotonic() + 5.0
+        while counts["terminate"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert counts == {"spawn": 1, "terminate": 1}  # idle, so it still stops
+    finally:
+        client.close()
+
+
+def test_a_superseded_idle_timer_does_nothing(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timer that already fired and is waiting on the lock when a newer one
+    replaces it (or `close` cancels it) must not act: the newer timer decides,
+    and a closed client must not be re-armed."""
+    host, port, server = fake_server
+    _serve_valid_summary(server)
+    client = LocalSummaryClient(host=host, port=port, idle_timeout_sec=60.0)
+    counts = _fake_lifecycle(client, server, monkeypatch)
+    try:
+        _summarize(client)
+        client._last_activity = float("-inf")  # long idle, so a live timer would stop it
+        client._on_idle_timeout()  # called off-thread: not the armed timer
+        assert counts["terminate"] == 0
+        assert client._idle_timer is not None and client._idle_timer.is_alive()
+    finally:
+        client.close()
+    assert client._idle_timer is None
 
 
 # ----- LOCAL23: token-budgeted routing, windows, and a reduce-only repair -----

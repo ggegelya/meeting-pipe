@@ -2,9 +2,10 @@
 id: PERF25
 title: Smaller pipeline costs: every summarize reads every earlier meeting's sidecar to find one, and a local run reloads the model between speaker cleanup and summarize or after any request longer than five minutes
 category: Performance
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. `summarize._prior_meeting_context` (AI6) reads the meta sidecar of every earlier summarized meeting on every summarize to find the newest one in the same workflow (PERF9 counted about 434 meetings on 2026-10-23, and the owner's library sits in iCloud-synced ~/Documents); with speaker cleanup on and a local backend, cleanup and summarize each spawn their own `mlx_lm.server`, so the model loads twice per meeting; and the idle timer, armed only when a request starts, kills the server as soon as a request longer than 300 s returns. Scan newest-first and stop at the first match, one shared local client in run_all, a last-activity check in the timer. [Spec](./PERF25.md)
+closed: 2026-11-12
+comment: Shipped 2026-11-12. `_prior_meeting_context` walks earlier stems newest-first and stops at the first workflow match (current sidecar read once); `run_all` shares one `local`-row client between speaker cleanup and summarize and closes it once after summarize (a failed cleanup closes it and summarize gets a fresh one); `_chat_completion` stamps `_last_activity` and `_on_idle_timeout` re-arms while activity is newer than the timeout and ignores a superseded timer. 8 new tests, full `ci-local.sh` green. [Spec](./PERF25.md)
 ---
 
 # PERF25: Smaller pipeline costs: every summarize reads every earlier meeting's sidecar to find one, and a local run reloads the model between speaker cleanup and summarize or after any request longer than five minutes

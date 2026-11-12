@@ -13,13 +13,15 @@ import json
 import logging
 import math
 import stat
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterable
 from unittest.mock import patch
 
 import pytest
 
-from mp import storage
+from mp import providers, storage
 from mp.config import Config
 from mp.diarize import cosine_similarity
 from mp.orchestrate import (
@@ -729,6 +731,182 @@ def test_diarize_cleanup_failure_emits_stage_failed_and_still_summarizes(
     assert [r["action"] for r in cleanup] == ["stage_started", "stage_failed"]
     assert cleanup[1]["error"] == "RuntimeError"
     assert cleanup[1]["message"] == "boom"
+
+
+# ----- PERF25: one local client for speaker cleanup and summarize -----
+
+
+class _FakeMlxHandler(BaseHTTPRequestHandler):
+    """A fake `mlx_lm.server`: healthy only while the faked spawn has it up, and
+    answering the cleanup schema with no edits and anything else with a summary."""
+
+    def log_message(self, *_: object) -> None:
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+        up = self.server.up  # type: ignore[attr-defined]
+        self.send_response(200 if up and self.path == "/v1/models" else 503)
+        self.end_headers()
+        if up:
+            self.wfile.write(b'{"data": [{"id": "fake"}]}')
+
+    def do_POST(self) -> None:  # noqa: N802
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+        schema = ((body.get("response_format") or {}).get("json_schema") or {}).get("name")
+        self.server.requests.append(schema)  # type: ignore[attr-defined]
+        content = {"edits": []} if schema == "speaker_edits" else {
+            "title": "Sync", "summary": ["Said hello."], "decisions": [], "actions": [],
+            "questions": [], "attendees": [], "detected_language": "en",
+        }
+        out = json.dumps({"choices": [{"message": {"content": json.dumps(content)}}]})
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(out.encode("utf-8"))
+
+
+@pytest.fixture
+def fake_mlx(monkeypatch):
+    """The fake server plus a faked spawn/terminate seam on every
+    `LocalSummaryClient`: nothing is launched or signalled, no LOCAL10 marker
+    is written, and spawns and closes are counted."""
+    from mp.summarize_local import LocalSummaryClient
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeMlxHandler)
+    server.up = False  # type: ignore[attr-defined]
+    server.requests = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    counts = {"spawn": 0, "close": 0, "spawn_over_live": 0}
+
+    class _Proc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    def spawn(self):
+        counts["spawn"] += 1
+        if self._proc is not None:
+            # The real `_spawn` would overwrite the handle and leak this server.
+            counts["spawn_over_live"] += 1
+        self._proc = _Proc()
+        server.up = True  # type: ignore[attr-defined]
+
+    def terminate(self):
+        if self._proc is not None:
+            self._proc = None
+            server.up = False  # type: ignore[attr-defined]
+
+    real_close = LocalSummaryClient.close
+
+    def close(self):
+        counts["close"] += 1
+        real_close(self)
+
+    monkeypatch.setattr(LocalSummaryClient, "_spawn", spawn)
+    monkeypatch.setattr(LocalSummaryClient, "_terminate_proc", terminate)
+    monkeypatch.setattr(LocalSummaryClient, "close", close)
+    monkeypatch.setattr("mp.local_server.served_identity", lambda _port, home=None: None)
+    yield server, counts
+    server.shutdown()
+    server.server_close()
+
+
+def test_local_cleanup_and_summarize_share_one_server(tmp_path: Path, monkeypatch, fake_mlx):
+    """With cleanup on and the local backend, cleanup and summarize each built a
+    client and closed it, so the server cleanup spawned was killed seconds before
+    summarize spawned it again and reloaded the weights (4.3 GB for the 7B).
+    One shared client now serves both: one spawn, one close."""
+    server, counts = fake_mlx
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)  # two speakers, so cleanup calls the model
+    cfg = Config()
+    cfg.recording.output_dir = tmp_path
+    cfg.summarization.backend = "local"
+    cfg.summarization.diarize_cleanup = True
+    cfg.summarization.local_endpoint = f"http://127.0.0.1:{server.server_address[1]}"
+
+    with patch("mp.orchestrate.publish_fanout",
+               return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+        result = run_all(wav, cfg=cfg)
+
+    assert server.requests[0] == "speaker_edits"        # cleanup ran on the model
+    assert server.requests[-1] == "meeting_summary"     # and summarize after it
+    assert counts == {"spawn": 1, "close": 1, "spawn_over_live": 0}
+    assert server.up is False                           # closed before run_all returned
+    assert Path(result["summary_json"]).exists()
+
+
+def test_failed_local_cleanup_closes_the_shared_server_before_summarize(
+    tmp_path: Path, monkeypatch, fake_mlx
+):
+    """A cleanup that fails after the spawn can leave the server alive but not
+    answering health checks (a startup timeout, a request it was too busy to
+    finish). Reusing that client, summarize would spawn a second server on the
+    same port over the handle to the first and leak it. The failed pass's server
+    is closed, as its own client's used to be, and summarize starts clean."""
+    from mp.diarize_cleanup import LocalCleanupClient
+    from mp.summarize_local import LocalSummaryError
+
+    server, counts = fake_mlx
+
+    def wedge(self, *, window_prompt, speakers):
+        self._local._ensure_running()  # spawned...
+        server.up = False              # ...but no longer answering
+        raise LocalSummaryError("mlx_lm.server did not become healthy")
+
+    monkeypatch.setattr(LocalCleanupClient, "propose_edits", wedge)
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
+    cfg = Config()
+    cfg.recording.output_dir = tmp_path
+    cfg.summarization.backend = "local"
+    cfg.summarization.diarize_cleanup = True
+    cfg.summarization.local_endpoint = f"http://127.0.0.1:{server.server_address[1]}"
+
+    with patch("mp.orchestrate.publish_fanout",
+               return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
+        result = run_all(wav, cfg=cfg)
+
+    assert counts["spawn_over_live"] == 0
+    assert counts == {"spawn": 2, "close": 2, "spawn_over_live": 0}
+    assert server.requests == ["meeting_summary"]
+    assert Path(result["summary_json"]).exists()
+
+
+def test_cloud_backend_builds_cleanup_and_summarize_clients_as_before(tmp_path: Path, monkeypatch):
+    """Only `local` shares. On `anthropic` neither callee is handed a client, so
+    each builds its own exactly as it did before PERF25."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
+    cfg = Config()
+    cfg.summarization.backend = "anthropic"
+    cfg.summarization.diarize_cleanup = True
+    summary_json = tmp_path / f"{stem}.summary.json"
+    summary_json.write_text("{}", encoding="utf-8")
+
+    with patch("mp.diarize_cleanup.cleanup_transcript",
+               return_value={"merges_count": 0, "reattributions_count": 0}) as c, \
+         patch("mp.orchestrate.summarize",
+               return_value={"json": summary_json, "md": tmp_path / "x.md"}) as s, \
+         patch("mp.orchestrate.publish_fanout",
+               return_value={"page_id": "p", "page_url": "u", "idempotent": False}), \
+         patch("mp.providers.lookup", wraps=providers.lookup) as row:
+        run_all(wav, cfg=cfg)
+
+    assert "client" not in c.call_args.kwargs
+    assert "client" not in s.call_args.kwargs
+    assert all(call.args[0] != "local" for call in row.call_args_list)
 
 
 def test_apple_intelligence_hands_off_and_writes_sentinel(tmp_path: Path, monkeypatch):
