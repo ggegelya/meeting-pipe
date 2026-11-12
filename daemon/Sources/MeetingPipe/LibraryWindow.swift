@@ -218,6 +218,8 @@ final class LibraryWindowModel: ObservableObject {
     /// mirrors its revision so the list refreshes as the index catches up.
     func attachSearchIndexer(_ indexer: SearchIndexer) {
         searchIndexer = indexer
+        listLookup = FTSLookup { [weak indexer] query in indexer?.matchingStems(query) }
+        countsLookup = FTSLookup { [weak indexer] query in indexer?.matchingStems(query) }
         searchCancellable = indexer.$indexRevision
             .receive(on: DispatchQueue.main)
             .sink { [weak self] rev in self?.searchIndexRevision = rev }
@@ -226,11 +228,13 @@ final class LibraryWindowModel: ObservableObject {
             .sink { [weak self] h in self?.searchHealth = h }
     }
 
-    /// FTS candidate stems for the free-text query, or nil to fall back to in-memory search (empty
-    /// query or no index). The list intersects these with the scoped + chip-filtered meetings.
-    func matchingStems(_ query: String) -> Set<String>? {
-        searchIndexer?.matchingStems(query)
-    }
+    /// PERF20: the off-main, latest-wins FTS lookups behind the Library list (debounced free-text
+    /// query plus a selected smart folder's query) and the rail's smart-folder counts. Owned here,
+    /// not by the views, because the navigator rebuilds those. Each captures the indexer itself
+    /// rather than reading `searchIndexer` from the lookup queue; headless they answer nil, which is
+    /// the in-memory fallback.
+    private(set) var listLookup = FTSLookup { _ in nil }
+    private(set) var countsLookup = FTSLookup { _ in nil }
 
     /// A library action fired before the Coordinator wired the service. Only
     /// reachable from a headless test or the pre-wiring initial state; the UI is
@@ -632,6 +636,7 @@ struct LibraryRootView: View {
             resolveTranscriptJump()
         }
         .onChange(of: model.workflowStore?.workflows.count ?? 0) { _, _ in recomputeCounts() }
+        .onChange(of: model.searchIndexRevision) { _, _ in recomputeCounts() }
         // UX24: adding, editing, or deleting a folder changes its rail count.
         .onChange(of: savedSearches.searches) { _, _ in
             recomputeCounts()
@@ -969,18 +974,25 @@ struct LibraryRootView: View {
         let key = CountsKey(
             storeRevision: meetingStore.revision,
             workflowIDs: workflows.map(\.id),
-            savedSearches: savedSearches.searches
+            savedSearches: savedSearches.searches,
+            searchRevision: model.searchIndexRevision
         )
         if key == lastCountsKey { return }
-        cachedCounts = ScopeCounts.build(
-            meetings: meetingStore.meetings,
-            workflows: workflows,
-            savedSearches: savedSearches.searches,
-            // UX24: a folder's free-text half counts through the FTS index, so its rail
-            // count matches what selecting it actually shows.
-            ftsMatches: { model.matchingStems($0) }
-        )
         lastCountsKey = key
+        let meetings = meetingStore.meetings
+        let searches = savedSearches.searches
+        // UX24: a folder's free-text half counts through the FTS index, so its rail count matches
+        // what selecting it actually shows. PERF20: those lookups run off main; the counts land when
+        // they answer (synchronously when no folder has a query). Latest wins, so a delivery for an
+        // older key never overwrites a newer one.
+        model.countsLookup.resolve(searches.map(\.filter.query), debounced: false) { matches in
+            cachedCounts = ScopeCounts.build(
+                meetings: meetings,
+                workflows: workflows,
+                savedSearches: searches,
+                ftsMatches: { matches[$0] }
+            )
+        }
     }
 
     private struct CountsKey: Equatable {
@@ -988,7 +1000,10 @@ struct LibraryRootView: View {
         let workflowIDs: [Workflow.ID]
         /// UX24: the whole folder, not just its id, so editing one recounts its row.
         let savedSearches: [SavedSearch]
-        static let empty = CountsKey(storeRevision: -1, workflowIDs: [], savedSearches: [])
+        /// PERF20: a folder's count rides the index, so a rebuild finishing recounts it too (the
+        /// list re-derives on the same signal).
+        let searchRevision: Int
+        static let empty = CountsKey(storeRevision: -1, workflowIDs: [], savedSearches: [], searchRevision: -1)
     }
 
     // MARK: - Facts aggregate (DV1 + AI7)

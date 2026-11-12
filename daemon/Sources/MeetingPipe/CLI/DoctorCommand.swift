@@ -87,7 +87,7 @@ enum DoctorCommand {
         out.append(Probe(name: "pipeline.roundtrip", run: probePipelineRoundtrip))
         out.append(Probe(name: "events.writable", run: probeEventsWritable))
         out.append(Probe(name: "library.orphans", run: probeOrphans))
-        out.append(Probe(name: "search.index", run: probeSearchIndex))
+        out.append(Probe(name: "search.index", run: { probeSearchIndex() }))
         return out
     }
 
@@ -108,7 +108,7 @@ enum DoctorCommand {
         out.append(Probe(name: "app.resources", run: { probeResources() }))
         out.append(Probe(name: "events.writable", run: probeEventsWritable))
         out.append(Probe(name: "library.orphans", run: probeOrphans))
-        out.append(Probe(name: "search.index", run: probeSearchIndex))
+        out.append(Probe(name: "search.index", run: { probeSearchIndex() }))
         return out
     }
 
@@ -392,20 +392,55 @@ enum DoctorCommand {
     /// Open the FTS5 search index and report whether Library search has its full-text depth (UX23).
     /// A `.fail` is the permanent degraded case (SQLite could not open the cache, or FTS5 is not
     /// compiled into the linked SQLite), where search silently falls back to titles + summaries only.
-    static func probeSearchIndex() -> ProbeResult {
-        let url = SearchIndexer.defaultIndexURL()
-        guard let index = SearchIndex(url: url) else {
+    ///
+    /// PERF20: reachable is not the same as caught up. The probe reported ok with "0 meetings
+    /// indexed" 19 times in a day beside a 9-meeting library, so it now compares the index with
+    /// the library's `<stem>.md` transcripts and warns, naming both counts, when any transcript is
+    /// not indexed.
+    static func probeSearchIndex(
+        indexURL: URL = SearchIndexer.defaultIndexURL(),
+        recordingsDir: URL? = nil
+    ) -> ProbeResult {
+        guard let index = SearchIndex(url: indexURL) else {
             return ProbeResult(
                 name: "search.index",
                 status: .fail,
-                message: "FTS index could not open at \(url.path); Library search is limited to titles and summaries."
+                message: "FTS index could not open at \(indexURL.path); Library search is limited to titles and summaries."
             )
         }
-        let count = index.indexedSignatures().count
+        let indexed = Set(index.indexedSignatures().keys)
+        let indexedText = "\(indexed.count) meeting\(indexed.count == 1 ? "" : "s") indexed"
+        let dir = recordingsDir ?? resolveRecordingsDir()
+        guard let transcripts = transcriptStems(in: dir) else {
+            // An unreadable library is STOR11's probe to report; there is nothing to compare here.
+            return ProbeResult(name: "search.index", status: .ok, message: "FTS index reachable; \(indexedText).")
+        }
+        let missing = transcripts.subtracting(indexed)
+        if missing.isEmpty {
+            return ProbeResult(name: "search.index", status: .ok, message: "FTS index reachable; \(indexedText).")
+        }
+        let sample = missing.sorted().prefix(3).joined(separator: ", ")
+        let more = missing.count > 3 ? ", …" : ""
         return ProbeResult(
             name: "search.index",
-            status: .ok,
-            message: "FTS index reachable; \(count) meeting\(count == 1 ? "" : "s") indexed."
+            status: .warn,
+            message: "FTS index has \(indexedText), but \(missing.count) of the library's \(transcripts.count) "
+                + "transcript\(transcripts.count == 1 ? "" : "s") are not indexed (\(sample)\(more)); "
+                + "opening the Library or Quick Find indexes them."
         )
+    }
+
+    /// Stems with a `<stem>.md` transcript in `dir` (exactly that name, never another `.md`
+    /// sidecar), limited to stems the Library recognises as meetings. Nil when `dir` cannot be
+    /// listed.
+    static func transcriptStems(in dir: URL) -> Set<String>? {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return nil }
+        var stems = Set<String>()
+        for name in names {
+            let stem = MeetingStore.stem(of: dir.appendingPathComponent(name))
+            guard name == "\(stem).md", MeetingStore.parseStem(stem) != nil else { continue }
+            stems.insert(stem)
+        }
+        return stems
     }
 }

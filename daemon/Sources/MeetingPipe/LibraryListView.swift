@@ -22,6 +22,15 @@ struct LibraryListView: View {
     /// Cached derived state, recomputed only when the (revision, scope, workflowsCount, filter) fingerprint changes. Without this, each body re-execution ran six O(n) walks over the meeting array.
     @State private var derived: DerivedList = .empty
     @State private var lastDerivedKey: DerivedKey = .empty
+    /// PERF20: the free-text query the list currently reflects and the FTS answers computed for it
+    /// (and for a selected folder's query). Written only by `resolveSearch`'s delivery.
+    @State private var settled = SettledSearch()
+
+    private struct SettledSearch {
+        var query: String = ""
+        var matches: FTSLookup.Results = [:]
+        var generation: Int = 0
+    }
 
     var body: some View {
         Group {
@@ -55,14 +64,41 @@ struct LibraryListView: View {
         // outside the split. In the split, the column width is set at the call
         // site in `LibraryWindow` (the single source of truth, TECH-UX11).
         .frame(minWidth: LibraryLayout.listMinWidth)
-        .onAppear { recomputeDerived() }
+        .onAppear {
+            recomputeDerived()
+            resolveSearch(debounced: false)
+        }
         .onChange(of: store.revision) { _, _ in recomputeDerived() }
         .onChange(of: scope) { _, _ in recomputeDerived() }
         .onChange(of: workflows.count) { _, _ in recomputeDerived() }
+        // The chips re-derive at once; the free-text half of `filter` is folded in through
+        // `settled`, so a keystroke alone leaves the derived key unchanged.
         .onChange(of: filter) { _, _ in recomputeDerived() }
-        .onChange(of: libraryModel.searchIndexRevision) { _, _ in recomputeDerived() }
+        .onChange(of: filter.query) { _, _ in resolveSearch(debounced: true) }
+        .onChange(of: libraryModel.searchIndexRevision) { _, _ in resolveSearch(debounced: false) }
+        .onChange(of: settled.generation) { _, _ in recomputeDerived() }
         // UX24: "Update to current view" rewrites the folder under a live selection.
-        .onChange(of: savedSearch) { _, _ in recomputeDerived() }
+        .onChange(of: savedSearch) { _, _ in
+            recomputeDerived()
+            resolveSearch(debounced: false)
+        }
+    }
+
+    /// PERF20: look up the typed query (and the selected folder's own query) in the FTS index off
+    /// main, debounced while typing, and re-derive when the answer lands. Until then the list shows
+    /// the previously settled query, so it lags the field by the debounce rather than issuing a
+    /// lookup per keystroke. An empty or one-character query needs no lookup and settles at once.
+    private func resolveSearch(debounced: Bool) {
+        let typed = filter.query
+        var queries = [typed]
+        if let folderQuery = savedSearch?.filter.query { queries.append(folderQuery) }
+        // The delivery writes `settled` only. This closure holds the view value from when the
+        // lookup was issued, so recomputing here would derive from that copy's `scope` and
+        // `workflows` and memoize a stale list after a rail click; the `settled.generation`
+        // onChange recomputes on the live view instead.
+        libraryModel.listLookup.resolve(queries, debounced: debounced) { matches in
+            settled = SettledSearch(query: typed, matches: matches, generation: settled.generation &+ 1)
+        }
     }
 
     /// Scope header: title + count. Workflow scopes resolve the title via the snapshot.
@@ -120,12 +156,15 @@ struct LibraryListView: View {
 
     /// Recompute the derived list state, guarded by the fingerprint so unrelated re-renders don't run the filter/group chain.
     private func recomputeDerived() {
+        // The chips as they are now, the free text as it last settled (PERF20).
+        var effective = filter
+        effective.query = settled.query
         let key = DerivedKey(
             storeRevision: store.revision,
             scope: scope,
             workflowsCount: workflows.count,
-            filter: filter,
-            searchRevision: libraryModel.searchIndexRevision,
+            filter: effective,
+            searchGeneration: settled.generation,
             savedSearch: savedSearch
         )
         if key == lastDerivedKey { return }
@@ -145,17 +184,18 @@ struct LibraryListView: View {
                 $0.apply(
                     to: store.meetings,
                     workflows: workflows,
-                    ftsMatches: libraryModel.matchingStems($0.filter.query)
+                    // A folder selected a moment ago has no settled answer yet: nil, so the
+                    // in-memory corpus answers until its lookup lands.
+                    ftsMatches: settled.matches[$0.filter.query]
                 )
             } ?? []
         } else {
             scoped = store.meetings.filter { scope.includes($0, workflows: workflows) }
         }
         // UX16: the free-text field runs through the FTS index (transcript + summary depth); the
-        // chips stay in-memory equality filters inside `apply`. nil = no index / empty query, so it
-        // falls back to the in-memory corpus and search never regresses.
-        let ftsMatches = libraryModel.matchingStems(filter.query)
-        let filtered = MeetingFilterEngine.apply(filter, to: scoped, ftsMatches: ftsMatches)
+        // chips stay in-memory equality filters inside `apply`. nil = no index / empty or
+        // one-character query, so it falls back to the in-memory corpus and search never regresses.
+        let filtered = MeetingFilterEngine.apply(effective, to: scoped, ftsMatches: settled.matches[settled.query])
         let facets = MeetingFacets.build(from: scoped)
         let groups = MeetingGroup.group(filtered, now: Date())
         derived = DerivedList(
@@ -183,9 +223,10 @@ struct LibraryListView: View {
         let scope: LibraryScope
         let workflowsCount: Int
         let filter: MeetingFilter
-        /// UX16: bumps when a background index build completes, so a held query re-derives against
-        /// the now-complete transcript matches.
-        let searchRevision: Int
+        /// UX16 / PERF20: bumps each time an FTS lookup settles, including the re-lookup a finished
+        /// index build triggers, so a held query re-derives against the now-complete transcript
+        /// matches.
+        let searchGeneration: Int
         /// UX24: the resolved folder, so "Update to current view" (which keeps the same
         /// scope id) still re-derives.
         let savedSearch: SavedSearch?
@@ -194,7 +235,7 @@ struct LibraryListView: View {
             scope: .allMeetings,
             workflowsCount: 0,
             filter: MeetingFilter(),
-            searchRevision: -1,
+            searchGeneration: -1,
             savedSearch: nil
         )
     }

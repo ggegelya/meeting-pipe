@@ -23,4 +23,19 @@ enum SearchQuery {
         guard !terms.isEmpty else { return nil }
         return terms.joined(separator: " ")
     }
+
+    /// The shortest token worth sending to the index (PERF20). A one-letter prefix term merges the
+    /// doclist of every word starting with that letter, and the `prefix='2 3'` index does not cover
+    /// it; the in-memory title/summary corpus answers a one-letter query on its own.
+    static let minimumIndexedTokenLength = 2
+
+    /// The MATCH expression the index should actually run for `text`, or nil when the query is empty
+    /// or no token reaches `minimumIndexedTokenLength` (the caller then searches the in-memory corpus
+    /// only). The one rule every FTS caller goes through, so "a one-character query issues no
+    /// lookup" holds at `SearchIndexer.matchingStems` and at `FTSLookup` alike.
+    static func indexMatch(_ text: String) -> String? {
+        let longest = tokens(text).map(\.count).max() ?? 0
+        guard longest >= minimumIndexedTokenLength else { return nil }
+        return ftsMatch(text)
+    }
 }

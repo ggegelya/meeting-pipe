@@ -254,7 +254,7 @@ The transcript and the People rail resolve names every time you open them. The s
 
 ### The filter bar
 
-Above the meetings list: a search field plus chips for workflow, app, status, and date range. The search field covers **full transcripts**, not just titles and summaries, so a phrase somebody said finds the meeting. Several words are combined, partial words match (`bud` finds `budget`), and case and Cyrillic are handled. The chips narrow within the results; **Clear** wipes everything.
+Above the meetings list: a search field plus chips for workflow, app, status, and date range. The search field covers **full transcripts**, not just titles and summaries, so a phrase somebody said finds the meeting. Several words are combined, partial words match (`bud` finds `budget`), and case and Cyrillic are handled. The list follows a moment after you stop typing rather than on every key, and a single letter searches titles and summaries only; transcripts join from the second letter. Right after an update the search box may say **Indexing transcripts…** the first time you open the Library, while it re-reads them once. The chips narrow within the results; **Clear** wipes everything.
 
 ### Quick Find
 

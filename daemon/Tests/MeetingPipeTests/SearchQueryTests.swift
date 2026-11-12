@@ -31,4 +31,15 @@ final class SearchQueryTests: XCTestCase {
         XCTAssertNil(SearchQuery.ftsMatch("   "))
         XCTAssertNil(SearchQuery.ftsMatch("!@#"))
     }
+
+    /// PERF20: a query no token of which reaches two characters is not sent to the index.
+    func test_indexMatch_skips_one_character_queries() {
+        XCTAssertNil(SearchQuery.indexMatch("b"))
+        XCTAssertNil(SearchQuery.indexMatch(" b "))
+        XCTAssertNil(SearchQuery.indexMatch("a b"), "two one-letter terms are as broad as one")
+        XCTAssertNil(SearchQuery.indexMatch(""))
+        XCTAssertEqual(SearchQuery.indexMatch("bu"), "bu*")
+        XCTAssertEqual(SearchQuery.indexMatch("q budget"), "q* budget*", "a longer token narrows it, so it goes")
+        XCTAssertEqual(SearchQuery.indexMatch("бю"), "бю*")
+    }
 }

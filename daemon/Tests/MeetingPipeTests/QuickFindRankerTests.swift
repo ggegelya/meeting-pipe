@@ -178,4 +178,32 @@ final class QuickFindRankerTests: XCTestCase {
         let a = make(stem: "a", startedAt: daysAgo(0), summaryTitle: "Unrelated")
         XCTAssertTrue(QuickFindRanker.rank(query: "budget", in: [a], now: now).isEmpty)
     }
+
+    // MARK: - PERF20: the word-boundary tier is reachable
+
+    func test_scoreField_has_three_tiers_prefix_word_boundary_substring() {
+        XCTAssertEqual(QuickFindRanker.scoreField(query: "plat", haystack: "platform review", weight: 100), 150)
+        XCTAssertEqual(QuickFindRanker.scoreField(query: "plat", haystack: "quarterly platform review", weight: 100), 120)
+        XCTAssertEqual(QuickFindRanker.scoreField(query: "plat", haystack: "acme (platform)", weight: 100), 120)
+        XCTAssertEqual(QuickFindRanker.scoreField(query: "plat", haystack: "multi-platform", weight: 100), 120)
+        XCTAssertEqual(QuickFindRanker.scoreField(query: "form", haystack: "quarterly platform review", weight: 100), 100)
+        XCTAssertNil(QuickFindRanker.scoreField(query: "budget", haystack: "quarterly platform review", weight: 100))
+    }
+
+    func test_a_word_start_match_outranks_a_mid_word_match() {
+        let wordStart = make(stem: "a", startedAt: daysAgo(0), summaryTitle: "Quarterly formal review")
+        let midWord = make(stem: "b", startedAt: daysAgo(0), summaryTitle: "Quarterly platform review")
+        let out = QuickFindRanker.rank(query: "form", in: [midWord, wordStart], now: now)
+        XCTAssertEqual(out.map { $0.meeting.stem }, ["a", "b"])
+    }
+
+    func test_a_cached_title_map_is_used_in_place_of_lowercasing() {
+        let m = make(stem: "a", startedAt: daysAgo(0), summaryTitle: "Budget review")
+        XCTAssertEqual(QuickFindRanker.titleHaystack(of: m), "budget review")
+        // The caller's per-scan cache is what the ranker reads; a stem missing from it falls back.
+        let cached = QuickFindRanker.rank(query: "zebra", in: [m], now: now, titles: ["a": "zebra crossing"])
+        XCTAssertEqual(cached.first?.hitField, "title")
+        let fallback = QuickFindRanker.rank(query: "budget", in: [m], now: now, titles: [:])
+        XCTAssertEqual(fallback.first?.hitField, "title")
+    }
 }

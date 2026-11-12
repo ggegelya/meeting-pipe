@@ -791,8 +791,15 @@ final class Coordinator: NSObject {
 
     lazy var quickFindWindow: QuickFindWindow = QuickFindWindow(
         meetingStore: libraryModel.meetingStore,
-        ftsMatches: { [weak self] query in self?.libraryModel.matchingStems(query) },
+        // PERF20: Quick Find calls this off main, through its own `FTSLookup`, so it captures
+        // the indexer rather than reading through `self` from the lookup queue.
+        ftsMatches: { [weak indexer = libraryModel.searchIndexer] query in indexer?.matchingStems(query) },
         searchHealth: { [weak self] in self?.libraryModel.searchHealth ?? .ready },
+        // Value changes only: every reconcile reassigns `.ready`, which would otherwise re-rank
+        // and re-query an open panel on each pass.
+        indexChanges: libraryModel.$searchHealth.removeDuplicates().map { _ in () }
+            .merge(with: libraryModel.$searchIndexRevision.removeDuplicates().map { _ in () })
+            .eraseToAnyPublisher(),
         onSelect: { [weak self] meeting in
             self?.openMeeting(stem: meeting.stem)
         },

@@ -89,4 +89,20 @@ final class SearchIndexReconcilerTests: XCTestCase {
             [.upsert(stem: "a", sig: after)]
         )
     }
+
+    // MARK: - PERF20: an empty live set is believed only from a listed folder
+
+    func test_an_empty_live_set_from_a_failed_listing_may_not_wipe_the_index() {
+        XCTAssertFalse(SearchIndexReconciler.mayApply(liveCount: 0, indexedCount: 9, scanListedDirectory: false))
+    }
+
+    func test_an_empty_live_set_from_a_readable_empty_folder_may_wipe_the_index() {
+        XCTAssertTrue(SearchIndexReconciler.mayApply(liveCount: 0, indexedCount: 9, scanListedDirectory: true))
+    }
+
+    func test_anything_else_applies() {
+        XCTAssertTrue(SearchIndexReconciler.mayApply(liveCount: 0, indexedCount: 0, scanListedDirectory: false))
+        XCTAssertTrue(SearchIndexReconciler.mayApply(liveCount: 3, indexedCount: 9, scanListedDirectory: true))
+        XCTAssertTrue(SearchIndexReconciler.mayApply(liveCount: 3, indexedCount: 0, scanListedDirectory: false))
+    }
 }

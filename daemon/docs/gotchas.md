@@ -36,6 +36,8 @@ One case was deliberately **not** collapsed and is still live: `setStopping` reb
 
 **Combine subscriptions filter to value changes.** `removeDuplicates()` + `dropFirst()` before triggering rebuilds. The permissions poll runs at 2 s; subscribing to `objectWillChange` rebuilt the status-bar menu twice a second until the snapshot dedupe landed (`StatusBarController.PermissionsSnapshot`).
 
+The replayed first value is a correctness problem as well as a cost one when the subscriber acts on what it reads. A `@Published` projection delivers its current value on subscribe, and `SearchIndexer` subscribed to `MeetingStore.$revision` at launch, when `meetings` is still its initial `[]` and nothing has scanned (the store scans only when the Library or Quick Find opens). It reconciled that empty set and deleted every indexed row, on every launch, from UX16 until PERF20; the index then sat empty for days while the doctor reported it reachable. `dropFirst()` would not have been enough, because a scan whose directory listing fails also publishes `[]`. Gate on the state that makes the value meaningful (`hasLoadedOnce`, and `lastScanListedDirectory` before believing an empty list), not on the delivery count. (PERF20)
+
 ### ObservableObject and @Published debounce writes
 
 **`ObservableObject` + `@Published` debounce writes.** `ConfigStore.scheduleSave` is the template: 500 ms `Timer.scheduledTimer`, gated on an `isInitialized` flag so the init's `didSet` storm doesn't trigger a spurious save.

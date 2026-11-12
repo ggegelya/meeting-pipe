@@ -12,6 +12,7 @@ final class QuickFindWindow {
         meetingStore: MeetingStore,
         ftsMatches: @escaping (String) -> Set<String>? = { _ in nil },
         searchHealth: @escaping () -> SearchIndexer.Health = { .ready },
+        indexChanges: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher(),
         onSelect: @escaping (Meeting) -> Void,
         onAsk: @escaping (String) -> Void = { _ in }
     ) {
@@ -21,7 +22,8 @@ final class QuickFindWindow {
             searchHealth: searchHealth,
             onSelect: onSelect,
             onAsk: onAsk,
-            onDismiss: {}
+            onDismiss: {},
+            indexChanges: indexChanges
         )
         self.model = placeholder
         // Wire dismiss after init so the closure can capture self without an init-order crash; the placeholder dismiss is never invoked.
@@ -66,8 +68,15 @@ final class QuickFindWindow {
 /// Backing model for the quick-find panel. Bound to `MeetingStore` so the list re-ranks on library changes. Lives across open/close cycles; mutations land on the main queue via `MeetingStore`'s publish path.
 final class QuickFindModel: ObservableObject {
 
+    /// PERF20: a keystroke re-ranks the in-memory fields at once, so Return always acts on the
+    /// text in the field; the FTS (transcript-depth) half is debounced and looked up off main,
+    /// and transcript-only rows join when it lands.
     @Published var query: String = "" {
-        didSet { recomputeMatches() }
+        didSet {
+            guard query != oldValue else { return }
+            recomputeMatches()
+            resolveTranscriptMatches(debounced: true)
+        }
     }
     /// UX25: the ranked meetings plus the Ask handoff row, in display order. The panel drives
     /// selection over this list rather than over the matches, so the Ask row is a first-class
@@ -84,9 +93,13 @@ final class QuickFindModel: ObservableObject {
     @Published private(set) var indexHealth: SearchIndexer.Health = .ready
 
     private let meetingStore: MeetingStore
-    /// UX16: FTS candidate stems for the query, so Quick Find searches full transcripts too. Nil
-    /// (empty query / no index) means field-only ranking, unchanged.
-    private let ftsMatches: (String) -> Set<String>?
+    /// UX16: FTS candidate stems for the query, so Quick Find searches full transcripts too, reached
+    /// only through `lookup` (off main, debounced, PERF20). Nil (empty or one-character query / no
+    /// index) means field-only ranking, unchanged.
+    private let lookup: FTSLookup
+    /// The transcript matches the ranking currently uses, and the query they were computed for.
+    /// Applied only while that query is still the one in the field.
+    private var transcriptMatches: (query: String, stems: Set<String>) = ("", [])
     private let searchHealth: () -> SearchIndexer.Health
     private let onSelect: (Meeting) -> Void
     /// UX25: hand the query to the Library's Ask rail, prefilled and running.
@@ -100,17 +113,34 @@ final class QuickFindModel: ObservableObject {
         searchHealth: @escaping () -> SearchIndexer.Health = { .ready },
         onSelect: @escaping (Meeting) -> Void,
         onAsk: @escaping (String) -> Void = { _ in },
-        onDismiss: @escaping () -> Void
+        onDismiss: @escaping () -> Void,
+        indexChanges: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher(),
+        lookup: FTSLookup? = nil
     ) {
         self.meetingStore = meetingStore
-        self.ftsMatches = ftsMatches
+        self.lookup = lookup ?? FTSLookup(lookup: ftsMatches)
         self.searchHealth = searchHealth
         self.onSelect = onSelect
         self.onAsk = onAsk
         self.onDismiss = onDismiss
+        // A rescan can change what the index holds (the reconcile follows it), so re-ask the index
+        // too, as the per-keystroke query used to.
         meetingStore.objectWillChange
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.recomputeMatches() }
+            .sink { [weak self] in
+                self?.recomputeMatches()
+                self?.resolveTranscriptMatches(debounced: false)
+            }
+            .store(in: &cancellables)
+        // PERF20: the health and the index revision change without a keystroke now that a
+        // rebuild is real, so the hint and the transcript rows follow them rather than waiting
+        // for the next key.
+        indexChanges
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.recomputeMatches()
+                self?.resolveTranscriptMatches(debounced: false)
+            }
             .store(in: &cancellables)
     }
 
@@ -121,6 +151,18 @@ final class QuickFindModel: ObservableObject {
         meetingStore.start()
         selectedIndex = 0
         recomputeMatches()
+        resolveTranscriptMatches(debounced: false)
+    }
+
+    /// PERF20: ask the index for the field's query off main; re-rank when it answers, if the
+    /// field still holds that query.
+    private func resolveTranscriptMatches(debounced: Bool) {
+        let asked = query
+        lookup.resolve([asked], debounced: debounced) { [weak self] matches in
+            guard let self, self.query == asked else { return }
+            self.transcriptMatches = (asked, matches[asked] ?? [])
+            self.recomputeMatches()
+        }
     }
 
     func moveSelection(by delta: Int) {
@@ -153,13 +195,30 @@ final class QuickFindModel: ObservableObject {
         onDismiss()
     }
 
+    /// PERF20: each meeting's lowercased title, built once per store revision rather than once per
+    /// meeting per keystroke.
+    private var titleCache: (revision: Int, titles: [String: String]) = (-1, [:])
+
+    private func titleHaystacks() -> [String: String] {
+        let revision = meetingStore.revision
+        if titleCache.revision != revision {
+            var titles: [String: String] = [:]
+            for m in meetingStore.meetings {
+                if let t = QuickFindRanker.titleHaystack(of: m) { titles[m.stem] = t }
+            }
+            titleCache = (revision, titles)
+        }
+        return titleCache.titles
+    }
+
     private func recomputeMatches() {
         indexHealth = searchHealth()
         let m = QuickFindRanker.rank(
             query: query,
             in: meetingStore.meetings,
-            ftsMatches: ftsMatches(query) ?? [],
-            limit: 50
+            ftsMatches: transcriptMatches.query == query ? transcriptMatches.stems : [],
+            limit: 50,
+            titles: titleHaystacks()
         )
         let rows = QuickFindList.items(query: query, matches: m)
         self.hasMeetingMatches = !m.isEmpty

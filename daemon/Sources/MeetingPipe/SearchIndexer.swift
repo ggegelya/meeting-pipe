@@ -56,29 +56,48 @@ final class SearchIndexer: ObservableObject {
         return base.appendingPathComponent("MeetingPipe/search/index.sqlite")
     }
 
-    init(store: MeetingStore, indexURL: URL = SearchIndexer.defaultIndexURL()) {
+    /// How many index writes share one transaction during a reconcile (PERF20). Not one per stem:
+    /// a rebuild of a 434-meeting library was 434 separately committed transactions. Not one for the
+    /// whole library either: `search` waits on the same `SearchIndex` queue, so a single rebuild
+    /// transaction would stall every lookup behind all of it. 50 keeps a commit's worth of writes
+    /// small (each is an FTS insert of one transcript) while cutting the commits by that factor.
+    static let writeBatchSize = 50
+
+    convenience init(store: MeetingStore, indexURL: URL = SearchIndexer.defaultIndexURL()) {
         let opened = SearchIndex(url: indexURL)
-        index = opened
-        // `.degraded` is terminal (SQLite/FTS5 unavailable); otherwise start `.building` and flip to
-        // `.ready` once the first reconcile finishes.
-        health = (opened == nil) ? .degraded : .building
         if opened == nil {
             Log.main.warning("Search index could not open at \(indexURL.path); search falls back to titles/summaries only.")
         }
+        self.init(store: store, index: opened)
+    }
+
+    /// The seam the tests use to hold the `SearchIndex` and read its counters.
+    init(store: MeetingStore, index opened: SearchIndex?) {
+        index = opened
+        // `.degraded` is terminal (SQLite/FTS5 unavailable); otherwise start `.building` and flip to
+        // `.ready` once the first reconcile against a scanned store finishes.
+        health = (opened == nil) ? .degraded : .building
         // Rebuild off every rescan (already 500 ms-debounced by the store); snapshot the published
-        // array on main, reconcile off-main. `revision` bumps on the first scan too, so the initial
-        // build rides the same path.
+        // array on main, reconcile off-main.
+        //
+        // PERF20: a `@Published` projection replays its current value on subscribe, so this sink
+        // runs once at launch with `revision == 0` while `meetings` is still its initial `[]`, and
+        // nothing scans until the Library or Quick Find opens. Reconciling that empty set deleted
+        // every indexed row on every launch. `hasLoadedOnce` is set in the same main-queue block as
+        // the first real `revision` bump, so the `.receive(on:)` delivery after it sees it true.
         cancellable = store.$revision
             .receive(on: DispatchQueue.main)
             .sink { [weak self, weak store] _ in
-                guard let self, let store else { return }
+                guard let self, let store, store.hasLoadedOnce else { return }
                 let snapshot = store.meetings
-                self.indexQueue.async { self.reconcile(snapshot) }
+                let listed = store.lastScanListedDirectory
+                self.indexQueue.async { self.reconcile(snapshot, scanListedDirectory: listed) }
             }
     }
 
     /// Stems whose indexed document matches `query`, or nil when there is nothing to constrain on
-    /// (empty query) or the index is unavailable. Called from main; a plain FTS lookup, no I/O.
+    /// (empty or one-character query, see `SearchQuery.indexMatch`) or the index is unavailable.
+    /// Thread-safe; the search surfaces call it off main through `FTSLookup` (PERF20).
     ///
     /// Deletion needs no explicit hook: a soft-deleted meeting drops out of the store's scan, so the
     /// next reconcile removes it, and in the meantime the caller intersects these matches with the
@@ -86,30 +105,60 @@ final class SearchIndexer: ObservableObject {
     /// meta + summary and stays correctly searchable, which is why de-indexing is NOT wired to the
     /// waveform-cache purge.
     func matchingStems(_ query: String) -> Set<String>? {
-        guard let index, let match = SearchQuery.ftsMatch(query) else { return nil }
-        return Set(index.search(match))
+        guard let index, let match = SearchQuery.indexMatch(query) else { return nil }
+        return index.search(match)
+    }
+
+    /// Test seam: run a reconcile synchronously on the indexer's queue, as the `$revision` sink
+    /// would, so a test can drive it with synthetic meetings.
+    func reconcileNow(_ meetings: [Meeting], scanListedDirectory: Bool) {
+        indexQueue.sync { reconcile(meetings, scanListedDirectory: scanListedDirectory) }
+    }
+
+    /// Test seam: wait for any reconcile already queued to finish.
+    func waitForQueuedReconciles() {
+        indexQueue.sync {}
     }
 
     // MARK: - Reconcile (indexQueue only)
 
-    private func reconcile(_ meetings: [Meeting]) {
+    private func reconcile(_ meetings: [Meeting], scanListedDirectory: Bool) {
         guard let index else { return }
-        let byStem = Dictionary(meetings.map { ($0.stem, $0) }, uniquingKeysWith: { a, _ in a })
-        let actions = SearchIndexReconciler.decide(
-            indexed: index.indexedSignatures(),
-            live: meetings.map { .init(stem: $0.stem, sig: signature(for: $0)) }
-        )
-        for action in actions {
-            switch action {
-            case .upsert(let stem, let sig):
-                guard let meeting = byStem[stem] else { continue }
-                index.upsert(stem: stem, sig: sig, body: documentBody(for: meeting))
-            case .delete(let stem):
-                index.delete(stem: stem)
+        let indexed = index.indexedSignatures()
+        var changed = false
+        if SearchIndexReconciler.mayApply(
+            liveCount: meetings.count, indexedCount: indexed.count, scanListedDirectory: scanListedDirectory
+        ) {
+            let byStem = Dictionary(meetings.map { ($0.stem, $0) }, uniquingKeysWith: { a, _ in a })
+            let actions = SearchIndexReconciler.decide(
+                indexed: indexed,
+                live: meetings.map { .init(stem: $0.stem, sig: signature(for: $0)) }
+            )
+            // Bounded batches: each batch's transcript reads happen here, on `indexQueue`, before its
+            // one `apply`, so the `SearchIndex` queue is held only for the writes themselves.
+            var start = 0
+            while start < actions.count {
+                let end = min(start + Self.writeBatchSize, actions.count)
+                let writes: [SearchIndex.Write] = actions[start..<end].compactMap { action in
+                    switch action {
+                    case .upsert(let stem, let sig):
+                        guard let meeting = byStem[stem] else { return nil }
+                        return .upsert(stem: stem, sig: sig, body: documentBody(for: meeting))
+                    case .delete(let stem):
+                        return .delete(stem: stem)
+                    }
+                }
+                index.apply(writes)
+                start = end
             }
+            changed = !actions.isEmpty
+        } else {
+            Log.main.warning(
+                "Search index reconcile skipped: the library scan listed nothing and could not read the recordings folder; keeping \(indexed.count) indexed meetings."
+            )
         }
-        // First (and every) reconcile completing means the index is caught up: leave `.building`.
-        let changed = !actions.isEmpty
+        // A completed pass against a scanned store, including a skipped one (nothing is being built,
+        // so "Indexing transcripts…" would be untrue), leaves `.building`.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if self.health != .degraded { self.health = .ready }

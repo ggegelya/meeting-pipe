@@ -60,4 +60,14 @@ enum SearchIndexReconciler {
 
         return actions
     }
+
+    /// Whether a reconcile may apply its diff at all (PERF20 item 2). An empty live set beside a
+    /// non-empty index wipes every row, so it is only believed when the scan that produced it listed
+    /// a readable directory. `MeetingStore.performScan` answers `[]` for a listing that failed too,
+    /// and before PERF20 that emptied the index exactly as a real empty library would. Stale rows
+    /// are harmless meanwhile: both search surfaces intersect FTS hits with the in-memory meetings.
+    static func mayApply(liveCount: Int, indexedCount: Int, scanListedDirectory: Bool) -> Bool {
+        if liveCount == 0 && indexedCount > 0 && !scanListedDirectory { return false }
+        return true
+    }
 }

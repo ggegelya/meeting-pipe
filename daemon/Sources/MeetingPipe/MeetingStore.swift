@@ -217,6 +217,16 @@ final class MeetingStore: ObservableObject {
     /// Monotonically-increasing fingerprint bumped on every successful rescan. Views cache derived values (counts, facets, groups) by this value instead of comparing full arrays; two 200-Meeting array comparisons per render would defeat memoization. Increments even when only a middle row flips status, since the whole array is replaced wholesale.
     @Published private(set) var revision: Int = 0
 
+    /// Whether the scan behind the current `meetings` listed the recordings directory (PERF20). False
+    /// before the first scan and after a scan whose listing failed, which `performScan` reports as
+    /// `[]`, the same answer a readable empty library gives. `SearchIndexer` reads it so a failed
+    /// listing never wipes the search index. Main-confined, set in the same block as `meetings` and
+    /// `revision`. STOR11's root state supersedes it when that lands.
+    private(set) var lastScanListedDirectory: Bool = false
+    /// `performScan`'s own record of whether its listing succeeded. `scanQueue` only; `refresh`
+    /// carries it to main beside the result.
+    private var scanListingSucceeded: Bool = false
+
     private let recordingsDir: URL
     private let scanQueue = DispatchQueue(
         label: "com.meetingpipe.MeetingStore.scan",
@@ -272,7 +282,9 @@ final class MeetingStore: ObservableObject {
         scanQueue.async { [weak self] in
             guard let self = self else { return }
             let result = self.performScan(directory: dir)
+            let listed = self.scanListingSucceeded
             DispatchQueue.main.async {
+                self.lastScanListedDirectory = listed
                 self.meetings = result
                 self.revision &+= 1
                 if !self.hasLoadedOnce { self.hasLoadedOnce = true }
@@ -352,8 +364,10 @@ final class MeetingStore: ObservableObject {
             options: [.skipsHiddenFiles]
         ) else {
             scanCache.removeAll()
+            scanListingSucceeded = false
             return []
         }
+        scanListingSucceeded = true
 
         // Group files by stem (substring before the first '.'). One O(N) pass.
         var byStem: [String: [URL]] = [:]

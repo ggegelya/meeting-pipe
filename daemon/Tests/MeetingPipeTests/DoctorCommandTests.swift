@@ -157,4 +157,42 @@ final class DoctorCommandTests: XCTestCase {
         XCTAssertEqual(result.status, .warn)
         XCTAssertEqual(result.name, "ax.app.com.test.does-not-exist-anywhere-12345")
     }
+
+    // MARK: - PERF20: search.index compares the index with the library
+
+    private func searchProbeFixture() throws -> (dir: URL, library: URL, indexURL: URL) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("probeSearch-\(UUID().uuidString)")
+        let library = dir.appendingPathComponent("library", isDirectory: true)
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        for stem in ["20260301-100000", "20260302-100000"] {
+            try Data().write(to: library.appendingPathComponent("\(stem).wav"))
+            try Data("transcript".utf8).write(to: library.appendingPathComponent("\(stem).md"))
+        }
+        // Neither of these is a `<stem>.md` transcript, so neither is counted.
+        try Data().write(to: library.appendingPathComponent("20260301-100000.READY_FOR_MANUAL.md"))
+        try Data().write(to: library.appendingPathComponent("notes.md"))
+        return (dir, library, dir.appendingPathComponent("index.sqlite"))
+    }
+
+    func test_probeSearchIndex_warns_for_an_empty_index_beside_a_library_with_transcripts() throws {
+        let f = try searchProbeFixture()
+        defer { try? FileManager.default.removeItem(at: f.dir) }
+        let result = DoctorCommand.probeSearchIndex(indexURL: f.indexURL, recordingsDir: f.library)
+        XCTAssertEqual(result.status, .warn)
+        XCTAssertTrue(result.message.contains("0 meetings indexed"), result.message)
+        XCTAssertTrue(result.message.contains("2 of the library's 2 transcripts"), result.message)
+    }
+
+    func test_probeSearchIndex_is_ok_when_every_transcript_is_indexed() throws {
+        let f = try searchProbeFixture()
+        defer { try? FileManager.default.removeItem(at: f.dir) }
+        do {
+            let index = try XCTUnwrap(SearchIndex(url: f.indexURL))
+            index.upsert(stem: "20260301-100000", sig: "s", body: "a")
+            index.upsert(stem: "20260302-100000", sig: "s", body: "b")
+        }
+        let result = DoctorCommand.probeSearchIndex(indexURL: f.indexURL, recordingsDir: f.library)
+        XCTAssertEqual(result.status, .ok, result.message)
+        XCTAssertEqual(result.message, "FTS index reachable; 2 meetings indexed.")
+    }
 }

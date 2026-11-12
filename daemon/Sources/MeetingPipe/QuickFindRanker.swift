@@ -46,7 +46,8 @@ enum QuickFindRanker {
         in meetings: [Meeting],
         ftsMatches: Set<String> = [],
         limit: Int = 50,
-        now: Date = Date()
+        now: Date = Date(),
+        titles: [String: String]? = nil
     ) -> [Match] {
         guard let q = normalizeQuery(rawQuery) else {
             return meetings
@@ -56,7 +57,7 @@ enum QuickFindRanker {
         var out: [Match] = []
         out.reserveCapacity(min(limit, meetings.count))
         for m in meetings {
-            if let match = score(query: q, against: m, now: now) {
+            if let match = score(query: q, against: m, now: now, titles: titles) {
                 out.append(match)
             } else if ftsMatches.contains(m.stem) {
                 let ageDays = max(now.timeIntervalSince(m.startedAt) / 86_400, 0)
@@ -77,11 +78,14 @@ enum QuickFindRanker {
     }
 
     /// Scores one meeting against a normalized query. Returns nil when no field matches (row is dropped).
-    static func score(query q: String, against m: Meeting, now: Date) -> Match? {
+    /// `titles` (PERF20) is a stem-to-lowercased-title map the caller built once per scan; a stem
+    /// missing from it, or a nil map, lowercases the title here.
+    static func score(query q: String, against m: Meeting, now: Date, titles: [String: String]? = nil) -> Match? {
         var best: (score: Double, field: String)? = nil
 
         for (field, weight) in fieldWeights {
-            guard let hay = haystack(for: field, of: m) else { continue }
+            let cached = field == "title" ? titles?[m.stem] : nil
+            guard let hay = cached ?? haystack(for: field, of: m) else { continue }
             if let s = scoreField(query: q, haystack: hay, weight: weight) {
                 if best == nil || s > best!.score {
                     best = (s, field)
@@ -98,11 +102,7 @@ enum QuickFindRanker {
     private static func haystack(for field: String, of m: Meeting) -> String? {
         switch field {
         case "title":
-            // Search raw title fields (summary > meta) without paying formatter cost per keystroke.
-            var parts: [String] = []
-            if let s = m.summaryTitle, !s.isEmpty { parts.append(s) }
-            if let s = m.meetingTitle, !s.isEmpty { parts.append(s) }
-            return parts.isEmpty ? nil : parts.joined(separator: " ").lowercased()
+            return titleHaystack(of: m)
         case "source":
             return m.sourceDisplayName?.lowercased()
         case "workflow":
@@ -114,18 +114,31 @@ enum QuickFindRanker {
         }
     }
 
-    /// Scores `query` against `haystack` (both pre-normalized), or nil for no match.
-    private static func scoreField(query q: String, haystack hay: String, weight: Double) -> Double? {
+    /// The lowercased title haystack (summary title, then meta title), or nil when the meeting has
+    /// neither. Raw fields, so no formatter cost. `QuickFindModel` caches it per store revision.
+    static func titleHaystack(of m: Meeting) -> String? {
+        var parts: [String] = []
+        if let s = m.summaryTitle, !s.isEmpty { parts.append(s) }
+        if let s = m.meetingTitle, !s.isEmpty { parts.append(s) }
+        return parts.isEmpty ? nil : parts.joined(separator: " ").lowercased()
+    }
+
+    /// Scores `query` against `haystack` (both pre-normalized), or nil for no match. Three tiers:
+    /// a prefix of the whole field (1.5x), a match at a word boundary (1.2x), anywhere (1x).
+    ///
+    /// PERF20: the word-boundary check used to run only after `contains(q)` had failed, where it
+    /// cannot succeed, so the 1.2x tier was unreachable and a non-matching field paid five extra
+    /// passes over its haystack. It now runs inside the `contains` branch, which is the boost the
+    /// comment always described.
+    static func scoreField(query q: String, haystack hay: String, weight: Double) -> Double? {
         if hay.hasPrefix(q) {
             return weight * 1.5  // prefix beats substring
         }
-        if hay.contains(q) {
-            return weight
+        guard hay.contains(q) else { return nil }
+        // Word-boundary boost: a match that starts a word, though not the whole field.
+        for sep: Character in [" ", "\n", "(", "[", "-"] where hay.contains(String(sep) + q) {
+            return weight * 1.2
         }
-        // Word-boundary boost: catches matches that aren't a prefix of the whole field.
-        for sep: Character in [" ", "\n", "(", "[", "-"] {
-            if hay.contains(String(sep) + q) { return weight * 1.2 }
-        }
-        return nil
+        return weight
     }
 }
