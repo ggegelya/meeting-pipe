@@ -26,14 +26,34 @@ public enum Schedulers {
         commonModeTimer(interval: delay, repeats: false, action: action)
     }
 
+    /// A repeating common-mode timer whose first fire is `firstFire` rather than one interval from
+    /// now, with a `tolerance` the system may use to coalesce it with other wakeups (PERF26). The
+    /// HUD's clock uses the first to land its ticks on whole seconds of the recording, and both HUD
+    /// tickers the second, since a timer with no tolerance is one the system can never batch.
+    public static func mainRunLoopRepeating(
+        every interval: TimeInterval,
+        firstFire: Date,
+        tolerance: TimeInterval,
+        _ action: @escaping () -> Void
+    ) -> () -> Void {
+        commonModeTimer(interval: interval, repeats: true, firstFire: firstFire, tolerance: tolerance, action: action)
+    }
+
     private static func commonModeTimer(
         interval: TimeInterval,
         repeats: Bool,
+        firstFire: Date? = nil,
+        tolerance: TimeInterval = 0,
         action: @escaping () -> Void
     ) -> () -> Void {
-        let timer = Timer(timeInterval: interval, repeats: repeats) { _ in
+        let timer = Timer(
+            fire: firstFire ?? Date(timeIntervalSinceNow: interval),
+            interval: interval,
+            repeats: repeats
+        ) { _ in
             action()
         }
+        timer.tolerance = tolerance
         RunLoop.main.add(timer, forMode: .common)
         return { timer.invalidate() }
     }

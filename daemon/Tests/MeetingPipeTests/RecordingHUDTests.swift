@@ -33,6 +33,64 @@ final class RecordingHUDTests: XCTestCase {
         XCTAssertFalse(RecordingHUDWindow.shouldMeterTick(occlusionVisible: true, hasProvider: false))
         XCTAssertFalse(RecordingHUDWindow.shouldMeterTick(occlusionVisible: false, hasProvider: false))
     }
+
+    // MARK: - PERF26: the pulse and the tickers
+
+    /// The panel joins all Spaces over a behind-window blur, so an uncapped infinite loop had the
+    /// render server recomposite it at the display rate for the whole recording.
+    func test_pulse_animation_is_a_capped_infinite_opacity_loop() {
+        let anim = RecordingHUDWindow.pulseAnimation()
+        XCTAssertEqual(anim.keyPath, "opacity")
+        XCTAssertEqual(anim.repeatCount, .infinity)
+        XCTAssertTrue(anim.autoreverses)
+        XCTAssertEqual(anim.duration, 0.8, accuracy: 0.0001, "1.6 s loop, 0.8 s each way")
+        XCTAssertLessThanOrEqual(anim.preferredFrameRateRange.maximum, 15)
+        XCTAssertGreaterThan(anim.preferredFrameRateRange.minimum, 0, "a zero floor lets it run uncapped again")
+    }
+
+    func test_first_elapsed_tick_lands_on_the_next_whole_second_after_start() {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000.37)
+        func tick(_ elapsed: TimeInterval) -> TimeInterval {
+            RecordingHUDWindow.firstElapsedTick(startedAt: start, now: start.addingTimeInterval(elapsed))
+                .timeIntervalSince(start)
+        }
+        XCTAssertEqual(tick(0), 1, accuracy: 1e-6, "presented at the start: first tick at 0:01")
+        XCTAssertEqual(tick(0.25), 1, accuracy: 1e-6)
+        XCTAssertEqual(tick(0.999), 1, accuracy: 1e-6)
+        XCTAssertEqual(tick(42.6), 43, accuracy: 1e-6, "presented late: still on the recording's seconds")
+        XCTAssertEqual(tick(-0.3), 0, accuracy: 1e-6, "a start just ahead of the clock ticks at 0:00")
+    }
+
+    func test_elapsed_text_reads_the_second_a_tick_lands_on() {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000.37)
+        func text(_ elapsed: TimeInterval) -> String {
+            RecordingHUDWindow.elapsedText(startedAt: start, now: start.addingTimeInterval(elapsed))
+        }
+        XCTAssertEqual(text(0), "0:00")
+        XCTAssertEqual(text(59.9), "0:59")
+        XCTAssertEqual(text(61), "1:01")
+        XCTAssertEqual(text(3600), "60:00")
+        XCTAssertEqual(text(43 - 1e-6), "0:43", "float error at the boundary must not read a second behind")
+        XCTAssertEqual(text(-2), "0:00", "a clock behind the start clamps rather than reading negative")
+
+        let tick = RecordingHUDWindow.firstElapsedTick(startedAt: start, now: start.addingTimeInterval(42.6))
+        XCTAssertEqual(RecordingHUDWindow.elapsedText(startedAt: start, now: tick), "0:43")
+    }
+
+    func test_an_unchanged_readout_is_not_rewritten() {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        XCTAssertNil(RecordingHUDWindow.elapsedLabelWrite(current: "0:07", startedAt: start, now: start.addingTimeInterval(7.4)))
+        XCTAssertEqual(RecordingHUDWindow.elapsedLabelWrite(current: "0:07", startedAt: start, now: start.addingTimeInterval(8)), "0:08")
+        XCTAssertNil(RecordingHUDWindow.elapsedLabelWrite(current: "0:00", startedAt: start, now: start), "present's first refresh over the built label")
+    }
+
+    func test_tickers_carry_a_tolerance_the_system_can_coalesce_on() {
+        XCTAssertEqual(RecordingHUDWindow.meterTickInterval, 0.1, accuracy: 1e-9, "the meter stays a 10 Hz poll")
+        XCTAssertGreaterThan(RecordingHUDWindow.meterTickTolerance, 0)
+        XCTAssertLessThan(RecordingHUDWindow.meterTickTolerance, RecordingHUDWindow.meterTickInterval / 2)
+        XCTAssertGreaterThan(RecordingHUDWindow.elapsedTickTolerance, 0)
+        XCTAssertLessThan(RecordingHUDWindow.elapsedTickTolerance, 0.5, "a late clock tick must not reach the next second")
+    }
 }
 
 /// UX35: the pill is one width for both the recording and the off-the-record state, so toggling

@@ -65,6 +65,34 @@ struct MPStatusPill: View {
         case nda
         case neutral
         case warning   // partial / failed publish (TECH-I6)
+        case pastePending   // BYO bundle waiting on the owner (PERF26): warning tone, static glyph
+
+        /// What the pill draws beside its label. Only the two live states move; Paste pending is
+        /// terminal and can sit for weeks, so it takes the kit's static alert glyph rather than the
+        /// processing ring (PERF26, the owner's option (a) on 2026-11-12). The view renders from
+        /// this, so a test of it is a test of what is drawn.
+        var indicator: Indicator {
+            switch self {
+            case .recording:    return .pulse
+            case .processing:   return .ring
+            // "Kept local" reads as intent, not failure (DSN22 #8): a lock glyph,
+            // not a status dot, so it never scans as a coloured problem state.
+            case .nda:          return .symbol("lock.fill")
+            // The kit's `alert` glyph (SummaryLibrary.jsx SL_STATUS.paste), the same outline
+            // symbol the detail header uses for this status.
+            case .pastePending: return .symbol("exclamationmark.circle")
+            case .ready, .failed, .neutral, .warning: return .dot
+            }
+        }
+
+        var isAnimated: Bool { indicator == .pulse || indicator == .ring }
+    }
+
+    enum Indicator: Equatable {
+        case pulse            // MPSteadyPulseDot
+        case ring             // MPRingSpinner
+        case symbol(String)   // static SF Symbol in the dot colour
+        case dot              // static 5 pt dot
     }
 
     var body: some View {
@@ -97,19 +125,17 @@ struct MPStatusPill: View {
 
     @ViewBuilder
     private var indicator: some View {
-        switch kind {
-        case .recording:
+        switch kind.indicator {
+        case .pulse:
             // Same TimelineView clock as the toolbar's dot, so both pulses stay phase-locked.
             MPSteadyPulseDot(color: dotColor, size: 5)
-        case .processing:
+        case .ring:
             MPRingSpinner(color: dotColor, size: 7)
-        case .nda:
-            // "Kept local" reads as intent, not failure (DSN22 #8): a lock glyph,
-            // not a status dot, so it never scans as a coloured problem state.
-            Image(systemName: "lock.fill")
+        case .symbol(let name):
+            Image(systemName: name)
                 .font(.mpTextXS.weight(.semibold))
                 .foregroundStyle(dotColor)
-        default:
+        case .dot:
             Circle().fill(dotColor).frame(width: 5, height: 5)
         }
     }
@@ -122,7 +148,7 @@ struct MPStatusPill: View {
         case .failed:     return Color(MPColors.pulse500)
         case .nda:        return Color(MPColors.fgMuted)
         case .neutral:    return Color(MPColors.fgSubtle)
-        case .warning:    return Color(MPColors.warning600)
+        case .warning, .pastePending: return Color(MPColors.warning600)
         }
     }
 
@@ -140,7 +166,7 @@ struct MPStatusPill: View {
         case .failed:     return Color(MPColors.pulseAccent)
         case .nda:        return Color(MPColors.fgMuted)
         case .neutral:    return Color(MPColors.fgMuted)
-        case .warning:    return Color(MPColors.warningAccent)
+        case .warning, .pastePending: return Color(MPColors.warningAccent)
         }
     }
 
@@ -169,8 +195,13 @@ struct MPSteadyPulseDot: View {
 
     private static let periodSec: Double = 1.6
 
+    /// 12 fps cap (PERF26): a 1.6 s opacity envelope needs no more, and an uncapped
+    /// `.animation` schedule redraws at the display rate (120 Hz on ProMotion). Keep it equal
+    /// to the toolbar `PulseDot`'s, so the two dots step together as well as phase-lock.
+    static let frameInterval: TimeInterval = 1.0 / 12
+
     var body: some View {
-        TimelineView(.animation) { ctx in
+        TimelineView(.animation(minimumInterval: Self.frameInterval)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             let phase = (t.truncatingRemainder(dividingBy: Self.periodSec)) / Self.periodSec
             // 1..0.35..1 envelope - "steady, not urgent" per design system.
@@ -189,8 +220,12 @@ struct MPRingSpinner: View {
     let color: Color
     var size: CGFloat = 7
 
+    /// 20 fps cap (PERF26): 18 degrees a frame on a 7 pt ring on a 1 s period still reads as
+    /// a smooth turn, where the uncapped schedule drew up to 120 frames a second.
+    static let frameInterval: TimeInterval = 1.0 / 20
+
     var body: some View {
-        TimelineView(.animation) { ctx in
+        TimelineView(.animation(minimumInterval: Self.frameInterval)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             let phase = (t.truncatingRemainder(dividingBy: 1.0)) / 1.0
             Circle()

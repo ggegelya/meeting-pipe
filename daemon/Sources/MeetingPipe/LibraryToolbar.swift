@@ -215,8 +215,13 @@ private struct PulseDot: View {
     /// One full opacity cycle, matching the legacy `easeInOut(duration: 1.6).autoreverses` envelope.
     private static let periodSec: Double = 1.6
 
+    /// 12 fps cap (PERF26), equal to `MPSteadyPulseDot.frameInterval` so the toolbar dot and the
+    /// row pill's dot step together. Uncapped, this redrew at the display rate for the whole of
+    /// every recording while the Library was open.
+    private static let frameInterval: TimeInterval = 1.0 / 12
+
     var body: some View {
-        TimelineView(.animation) { context in
+        TimelineView(.animation(minimumInterval: Self.frameInterval)) { context in
             // Cosine maps phase [0,1) to a 0..1..0 envelope without `withAnimation`.
             let t = context.date.timeIntervalSinceReferenceDate
             let phase = (t.truncatingRemainder(dividingBy: Self.periodSec)) / Self.periodSec

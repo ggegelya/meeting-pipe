@@ -50,6 +50,24 @@ final class ModalSafeTimerTests: XCTestCase {
         XCTAssertEqual(box.helper, seen, "a cancelled repeat must not fire again")
     }
 
+    /// PERF26's entry point (first-fire date and tolerance, the HUD's two tickers) is still a
+    /// common-mode timer: it fires while an alert holds the run loop, and not before `firstFire`.
+    func test_theFirstFireHelperIsCommonModeAndWaitsForItsDate() {
+        registerAppKitCommonModes()
+        let box = FireCount()
+        let firstFire = Date(timeIntervalSinceNow: 0.1)
+        var firedAt: Date?
+        let cancel = Schedulers.mainRunLoopRepeating(every: 0.02, firstFire: firstFire, tolerance: 0.005) {
+            if firedAt == nil { firedAt = Date() }
+            box.helper += 1
+        }
+        defer { cancel() }
+
+        spin(.modalPanel, for: 2) { box.helper >= 2 }
+        XCTAssertGreaterThanOrEqual(box.helper, 2, "the first-fire helper stalled under a modal session")
+        XCTAssertGreaterThanOrEqual(firedAt?.timeIntervalSince(firstFire) ?? -1, 0, "it fired before its first-fire date")
+    }
+
     private func assertRepeatingHelperFires(in mode: RunLoop.Mode, file: StaticString = #filePath, line: UInt = #line) {
         registerAppKitCommonModes()
         let box = FireCount()

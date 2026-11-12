@@ -2,9 +2,10 @@
 id: PERF26
 title: The Library's status spinners and pulses and the recording HUD's pulse redraw at the display's full refresh rate while visible, and a Paste pending row spins until someone pastes
 category: Performance
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. UI-6, UI-10: `MPRingSpinner`, `MPSteadyPulseDot` and the toolbar `PulseDot` use `TimelineView(.animation)` with no `minimumInterval`, so they redraw at the display rate (up to 120 Hz on the owner's ProMotion panel) while visible; Paste pending reuses the processing spinner and is a terminal status, so a BYO row spins until pasted (the design kit and README draw it static; 0 such rows on the owner's library on 2026-10-25); the HUD's infinite opacity CABasicAnimation has no frame-rate range and its 10 Hz meter and 2 Hz elapsed timers carry no tolerance for the whole recording. Cap the three schedules, a static Paste pending (owner picks the look), `preferredFrameRateRange` on the HUD pulse, meter tolerance and a 1 Hz second-aligned elapsed tick. [Spec](./PERF26.md)
+closed: 2026-11-12
+comment: Shipped 2026-11-12, closed on the tests by the owner's decision. The three TimelineView schedules capped (ring 1/20 s, both pulses 1/12 s) with an IndicatorCadenceTests source fence; Paste pending static per the owner's option (a) (MPStatusPill.Kind.pastePending, warning tint, exclamationmark.circle) through the lifted MeetingStatusPill.decide; HUD pulse preferredFrameRateRange 8...15; meter tolerance 30 ms; 1 Hz second-aligned clock with 100 ms tolerance and write-on-change, via a new Schedulers.mainRunLoopRepeating(every:firstFire:tolerance:); 13 new tests, swift test and ci-local green. The eyeball walkthrough and the top before/after readings are optional, non-gating checks. [Spec](./PERF26.md)
 ---
 
 # PERF26: The Library's status spinners and pulses and the recording HUD's pulse redraw at the display's full refresh rate while visible, and a Paste pending row spins until someone pastes
@@ -38,6 +39,7 @@ Neither timer sets `tolerance`, so the system cannot coalesce them. The verifier
 ## Scope
 
 0. **Owner decision on the Paste pending look, before code**, because it changes what a row looks like: (a) the kit's look, warning tint and a static alert glyph with no motion (recommended: the kit and README already describe it, so no doc changes); (b) keep the processing tint with a static ring. Either way it stops animating.
+   **Owner decision (2026-11-12): (a).** Paste pending takes the kit's look: warning tint and a static alert glyph, no motion.
 1. **Cap the three SwiftUI schedules.** `MPRingSpinner`, `MPSteadyPulseDot` and `PulseDot` use `TimelineView(.animation(minimumInterval: ...))`, each interval a named constant beside its view (start at 1/20 s for the spinner and 1/12 s for the two pulses; the pickup states the values it ships). The two pulses keep reading the same clock so they stay phase-locked, as `MPSteadyPulseDot`'s doc comment requires. Passing `paused:` from the hosting window's occlusion state is optional.
 2. **Paste pending** per step 0: `MeetingRow.statusPill` stops mapping `.manualPasteReady` to `.processing`. Lift the `(effectiveStatus, isNDA)` to `(kind, label)` mapping into a small pure function so it is testable.
 3. **The HUD pulse.** Lift the animation `PulseDotView.startPulsing()` builds into an internal `static func` and set `preferredFrameRateRange = CAFrameRateRange(minimum: 8, maximum: 15, preferred: 12)` on it (macOS 12 API, inside the macOS 14 floor).
@@ -68,3 +70,5 @@ Needed because the Paste pending look is the owner's call, and the daemon's wind
 2. [session] After `./scripts/rebuild.sh`, run the `top` evidence above and put the numbers in the commit body.
 3. [owner] Open the Library while a meeting is processing, and start a short recording with the Library open: the ring and both pulse dots still read as smooth, and the HUD dot still breathes.
 4. [owner] Record a short BYO meeting (Record (BYO), then Stop) and wait for it to finish: its row shows Paste pending with no motion.
+
+**Closed on the tests (owner's decision, 2026-11-12).** Step 1 was done (option (a), recorded under Scope step 0). Steps 2 to 4 are optional, non-gating checks: the task does not wait on them and does not take `owner-verify`. Step 2 was not run in the implementing session, because it needs `./scripts/rebuild.sh` over the live install plus a Processing row and a live recording. If the owner wants the `top` numbers, take the "before" reading on the currently installed build first, since a rebuild loses it: `top -l 11 -s 1 -stats pid,cpu,idlew -pid $(pgrep -x MeetingPipe)`, once with the Library open on a Processing row and once during a recording with the HUD up; then rebuild and repeat. The Acceptance "Evidence" bullet is likewise optional.

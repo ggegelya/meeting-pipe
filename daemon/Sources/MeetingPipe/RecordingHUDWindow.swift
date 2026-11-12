@@ -180,8 +180,14 @@ final class RecordingHUDWindow {
             panel.animator().alphaValue = 1
         }
 
-        // Half-second cadence is smooth and cheap.
-        cancelTicker = Schedulers.mainRunLoopRepeating(0.5) { [weak self] in
+        // PERF26: 1 Hz, landing on whole seconds of the recording so the readout never skips one,
+        // with a tolerance so the system can fold the tick into other wakeups. It was 2 Hz with no
+        // tolerance, and every other tick wrote the same `m:ss`.
+        cancelTicker = Schedulers.mainRunLoopRepeating(
+            every: 1,
+            firstFire: Self.firstElapsedTick(startedAt: startedAt, now: Date()),
+            tolerance: Self.elapsedTickTolerance
+        ) { [weak self] in
             self?.refreshElapsedLabel()
         }
         refreshElapsedLabel()
@@ -212,7 +218,11 @@ final class RecordingHUDWindow {
     /// running. Idempotent, so the occlusion observer can call it freely.
     private func startMeterTickerIfNeeded() {
         guard levelProvider != nil, cancelMeterTicker == nil else { return }
-        cancelMeterTicker = Schedulers.mainRunLoopRepeating(0.1) { [weak self] in
+        cancelMeterTicker = Schedulers.mainRunLoopRepeating(
+            every: Self.meterTickInterval,
+            firstFire: Date(timeIntervalSinceNow: Self.meterTickInterval),
+            tolerance: Self.meterTickTolerance
+        ) { [weak self] in
             guard let self = self, let provider = self.levelProvider else { return }
             self.levelMeter?.level = RecordingHUDWindow.normalizedLevel(db: provider())
         }
@@ -615,10 +625,60 @@ final class RecordingHUDWindow {
 
     private func refreshElapsedLabel() {
         guard let started = startedAt, let label = elapsedLabel else { return }
-        let s = Int(Date().timeIntervalSince(started))
-        let mins = s / 60
-        let secs = s % 60
-        label.stringValue = String(format: "%d:%02d", mins, secs)
+        if let text = Self.elapsedLabelWrite(current: label.stringValue, startedAt: started, now: Date()) {
+            label.stringValue = text
+        }
+    }
+
+    // MARK: - Ticker cadence (PERF26)
+
+    /// The meter's 10 Hz poll. A level meter reads the same at 30 ms late, and a timer with no
+    /// tolerance is one the system can never coalesce with other wakeups.
+    static let meterTickInterval: TimeInterval = 0.1
+    static let meterTickTolerance: TimeInterval = 0.03
+
+    /// The 1 Hz clock may fire up to 100 ms late, and never early, so a tick aimed at a whole
+    /// second still shows that second.
+    static let elapsedTickTolerance: TimeInterval = 0.1
+
+    /// Absorbs the sub-microsecond float error in `startedAt + n` so a tick that lands exactly on
+    /// second n reads n, not n - 1. Far below anything a reader could see.
+    private static let elapsedBoundarySlack: TimeInterval = 0.005
+
+    /// The next whole second of the recording after `now`: where the 1 Hz clock's first tick goes,
+    /// so every later tick (one interval apart) lands on a second boundary too.
+    static func firstElapsedTick(startedAt: Date, now: Date) -> Date {
+        let elapsed = now.timeIntervalSince(startedAt)
+        return startedAt.addingTimeInterval(floor(elapsed) + 1)
+    }
+
+    /// The `m:ss` readout for `now`, clamped at 0:00 for a clock that reads before `startedAt`.
+    static func elapsedText(startedAt: Date, now: Date) -> String {
+        let s = max(0, Int(floor(now.timeIntervalSince(startedAt) + elapsedBoundarySlack)))
+        return String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    /// The text to write into the label, or nil when it already reads that (no redundant write).
+    static func elapsedLabelWrite(current: String, startedAt: Date, now: Date) -> String? {
+        let next = elapsedText(startedAt: startedAt, now: now)
+        return next == current ? nil : next
+    }
+
+    /// The HUD dot's opacity loop. Opacity-axis (not scale): scale growth reads as a UI toggle;
+    /// opacity fade at fixed size feels like a heartbeat. 1.6 s loop (autoreverse, 0.8 s each way).
+    /// PERF26: capped at 15 fps, preferring 12, since the panel joins all Spaces over a
+    /// behind-window blur and is rarely occluded, so an uncapped loop had the render server
+    /// recomposite it at the display rate (up to 120 Hz) for the whole recording.
+    static func pulseAnimation() -> CABasicAnimation {
+        let anim = CABasicAnimation(keyPath: "opacity")
+        anim.fromValue = 1.0
+        anim.toValue = 0.35
+        anim.duration = 0.8
+        anim.autoreverses = true
+        anim.repeatCount = .infinity
+        anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        anim.preferredFrameRateRange = CAFrameRateRange(minimum: 8, maximum: 15, preferred: 12)
+        return anim
     }
 
     fileprivate func handleStop() {
@@ -777,15 +837,7 @@ private final class PulseDotView: NSView {
     }
 
     func startPulsing() {
-        // Opacity-axis (not scale): scale growth reads as a UI toggle; opacity fade at fixed size feels like a heartbeat. 1.6 s loop (autoreverse, 0.8 s each way).
-        let anim = CABasicAnimation(keyPath: "opacity")
-        anim.fromValue = 1.0
-        anim.toValue = 0.35
-        anim.duration = 0.8
-        anim.autoreverses = true
-        anim.repeatCount = .infinity
-        anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        dot.add(anim, forKey: "pulse")
+        dot.add(RecordingHUDWindow.pulseAnimation(), forKey: "pulse")
     }
 
     func stopPulsing() {

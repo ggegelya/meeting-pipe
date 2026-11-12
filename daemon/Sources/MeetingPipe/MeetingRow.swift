@@ -177,35 +177,17 @@ struct MeetingRow: View, Equatable {
         }
     }
 
-    /// The publish/lifecycle status pill. NDA rows read "Kept local" (DSN22 #8): intent, not
-    /// failure, so it never scans as a sibling of Failed/Unpublished. NDA is a privacy mode.
+    /// The publish/lifecycle status pill, decided by `MeetingStatusPill.decide`.
     @ViewBuilder
     private var statusPill: some View {
-        switch (effectiveStatus, isNDA) {
-        case (_, true):
-            MPStatusPill(kind: .nda, label: "Kept local")
-                .help("On this Mac by design (NDA workflow).")
-        case (.recording, _):
-            MPStatusPill(kind: .recording, label: "Recording")
-        case (.processing, _):
-            MPStatusPill(kind: .processing, label: "Processing")
-        case (.manualPasteReady, _):
-            MPStatusPill(kind: .processing, label: "Paste pending")
-        case (.failed, _):
-            MPStatusPill(kind: .failed, label: "Failed")
-                .help(failureHelpText)
-        case (.done, _):
-            let badge = DonePublishBadge.decide(publishState: meeting.publishState)
-            if let help = badge.help {
-                MPStatusPill(kind: badge.kind, label: badge.label).help(help)
-            } else {
-                MPStatusPill(kind: badge.kind, label: badge.label)
-            }
-        case (.empty, _):
-            MPStatusPill(kind: .neutral, label: (meeting.emptyReason ?? .noSpeech).pillLabel)
-                .help((meeting.emptyReason ?? .noSpeech).detail)
-        case (.unknown, _):
-            MPStatusPill(kind: .neutral, label: "-")
+        let pill = MeetingStatusPill.decide(
+            status: effectiveStatus, isNDA: isNDA, publishState: meeting.publishState,
+            emptyReason: meeting.emptyReason, failureReason: meeting.failureReason
+        )
+        if let help = pill.help {
+            MPStatusPill(kind: pill.kind, label: pill.label).help(help)
+        } else {
+            MPStatusPill(kind: pill.kind, label: pill.label)
         }
     }
 
@@ -405,14 +387,6 @@ struct MeetingRow: View, Equatable {
         }
     }
 
-    /// Hover text for the failed pill: persisted reason when available, generic fallback for staleness-age-inferred failures.
-    private var failureHelpText: String {
-        if let reason = meeting.failureReason, !reason.isEmpty {
-            return reason
-        }
-        return "The pipeline did not finish for this meeting."
-    }
-
     /// Leading glyph; swaps to a lock for NDA meetings (privacy mode trumps source identity).
     @ViewBuilder
     private var leadingGlyph: some View {
@@ -576,6 +550,50 @@ struct MeetingRow: View, Equatable {
             return String(format: "%d:%02d:%02d", h, m, sec)
         }
         return String(format: "%d:%02d", m, sec)
+    }
+}
+
+// MARK: - Row status pill
+
+/// The row's status pill: `(effectiveStatus, isNDA)` plus the few sidecar facts the label and
+/// hover text need, to a pill kind, label and help (PERF26 lifted it out of the view so it is
+/// testable). NDA rows read "Kept local" whatever the status (DSN22 #8): intent, not failure, so
+/// it never scans as a sibling of Failed/Unpublished. Paste pending is terminal, so it takes the
+/// static `.pastePending` kind, never the processing spinner (owner's option (a), 2026-11-12).
+struct MeetingStatusPill: Equatable {
+    let kind: MPStatusPill.Kind
+    let label: String
+    let help: String?
+
+    static func decide(
+        status: Meeting.Status,
+        isNDA: Bool,
+        publishState: String?,
+        emptyReason: EmptyReason?,
+        failureReason: String?
+    ) -> MeetingStatusPill {
+        switch (status, isNDA) {
+        case (_, true):
+            return MeetingStatusPill(kind: .nda, label: "Kept local", help: "On this Mac by design (NDA workflow).")
+        case (.recording, _):
+            return MeetingStatusPill(kind: .recording, label: "Recording", help: nil)
+        case (.processing, _):
+            return MeetingStatusPill(kind: .processing, label: "Processing", help: nil)
+        case (.manualPasteReady, _):
+            return MeetingStatusPill(kind: .pastePending, label: "Paste pending", help: nil)
+        case (.failed, _):
+            // Persisted reason when available, generic fallback for staleness-age-inferred failures.
+            let help = (failureReason?.isEmpty == false) ? failureReason : "The pipeline did not finish for this meeting."
+            return MeetingStatusPill(kind: .failed, label: "Failed", help: help)
+        case (.done, _):
+            let badge = DonePublishBadge.decide(publishState: publishState)
+            return MeetingStatusPill(kind: badge.kind, label: badge.label, help: badge.help)
+        case (.empty, _):
+            let reason = emptyReason ?? .noSpeech
+            return MeetingStatusPill(kind: .neutral, label: reason.pillLabel, help: reason.detail)
+        case (.unknown, _):
+            return MeetingStatusPill(kind: .neutral, label: "-", help: nil)
+        }
     }
 }
 
