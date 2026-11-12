@@ -4,7 +4,7 @@ title: Every Preferences token edit rewrites all three API tokens through `secur
 category: Security
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch S9, go-live DI-17 and PP-11): SecretsStore.persist writes all three tokens on each debounce via security add-generic-password -w, visible in ps, and the daemon setenvs them so doctor and MCP status spawns inherit them. Write only changed accounts, feed security -i on stdin, stop setenv and build tokens into runMP's env only, read the Notion token from SecretsStore, fix stale comments. [Spec](./SEC23.md) Amended 2026-10-25 (observability band): SW-6, PY-9 Keychain half. Both trees read every `security` failure as absent (so the user is told a key is not set), remove's status is ignored, and both secrets.env migrations delete the file after a failed set; install.sh omits OPENAI_API_KEY. Typed reads, checked remove, delete only after every set.
+comment: Filed 2026-10-24 (audit band, arch S9, go-live DI-17 and PP-11): SecretsStore.persist writes all three tokens on each debounce via security add-generic-password -w, visible in ps, and the daemon setenvs them so doctor and MCP status spawns inherit them. Write only changed accounts, feed security -i on stdin, stop setenv and build tokens into runMP's env only, read the Notion token from SecretsStore, fix stale comments. [Spec](./SEC23.md) Amended 2026-10-25 (observability band): SW-6, PY-9 Keychain half. Both trees read every `security` failure as absent (so the user is told a key is not set), remove's status is ignored, and both secrets.env migrations delete the file after a failed set; install.sh omits OPENAI_API_KEY. Typed reads, checked remove, delete only after every set. Amended 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md)): install.sh's kc_set also passes tokens as -w argv; same security -i stdin treatment.
 ---
 
 # SEC23: every Preferences token edit rewrites all three API tokens through `security ... -w <value>`, putting them in `ps` output, and the daemon `setenv`s them into its own environment for every child to inherit
@@ -67,3 +67,9 @@ Two findings from the [observability audit](../../audits/2026-10-25-observabilit
 - A shell test (or a `test-*.sh` beside the others in `scripts/`) that the install migration keeps `secrets.env` when `kc_set` fails and migrates `OPENAI_API_KEY`.
 - `python3 scripts/truth_fences.py events` green for `keychain_read_failed`; `swift test` and `pytest -q` green with new test counts in the commit body.
 - The run-all exit code on a missing secret (1 against the documented 2) is OBS3's, not this task's.
+
+## Amended 2026-11-12 (security review)
+
+From the [security review](../../audits/2026-11-12-security-review.md) (verified, informational). `scripts/install.sh`'s `kc_set` is `security add-generic-password -U -s "$KEYCHAIN_SERVICE" -a "$1" -w "$2"`, used for the interactive token prompt and the `secrets.env` migration, so the token is in `ps` for the call's duration. The 2026-10-25 amendment covers `kc_set`'s delete-after-failed-write and the missing `OPENAI_API_KEY`, not the argv exposure.
+
+Added to scope item 2: `kc_set` feeds `security -i` on stdin the same way `KeychainBackend.set` will. Added acceptance: the item-7 shell test also asserts the token never appears in the spawned argv (an injected `security` stub that records its arguments).

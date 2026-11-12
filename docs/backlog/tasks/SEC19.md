@@ -4,7 +4,7 @@ title: The pipeline's egress guard is a monkeypatch on httpx's transport classes
 category: Security
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch S3, go-live PP-1 structural half): egress_guard patches only httpx transports, kept valid by the anthropic<1 and httpx<1 caps CI8 added; a urllib, requests or httpx2 path would egress under regulated mode silently. Add a socket.connect loopback-only layer in arm(), keep the httpx patch for the error message, fix the docstring; caps lifted later in a separate lock bump. [Spec](./SEC19.md)
+comment: Filed 2026-10-24 (audit band, arch S3, go-live PP-1 structural half): egress_guard patches only httpx transports, kept valid by the anthropic<1 and httpx<1 caps CI8 added; a urllib, requests or httpx2 path would egress under regulated mode silently. Add a socket.connect loopback-only layer in arm(), keep the httpx patch for the error message, fix the docstring; caps lifted later in a separate lock bump. Amended 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md)): the loopback client honours HTTP_PROXY and macOS web proxies and the guard checks only the URL host; trust_env=False on loopback clients, refuse proxied transports. [Spec](./SEC19.md)
 ---
 
 # SEC19: the pipeline's egress guard is a monkeypatch on httpx's transport classes, so any network path that is not httpx bypasses regulated and NDA mode
@@ -44,3 +44,15 @@ So CI8 closed the immediate hole (the go-live PP-1 caps half) by pinning, and th
   - after `disarm()`, the raw connect to a public address is attempted (stubbed downstream), proving the patch is inert.
 - The existing httpx tests stay green unchanged, and the existing fence that fails when a resolve crosses the caps stays in place until the separate bump.
 - `cd pipeline && uv run --extra dev ruff check src tests`, `uv run --extra dev --extra mcp pyright`, `uv run --extra dev pytest -q` green, new test count in the commit body; `bash scripts/ci-local.sh pipeline` green.
+
+## Amended 2026-11-12 (security review)
+
+From the [security review](../../audits/2026-11-12-security-review.md) finding 8 (verified, Low; confidence 7 for the mechanism, 4 for a real leak). A bypass inside httpx itself, which this task's text treats as covered:
+
+- `summarize_local`'s `httpx.Client(...)` sets no `trust_env=False`, and nothing under `pipeline/src/mp/` mentions `trust_env` or proxies. httpx 0.28.1's `get_environment_proxies` reads `urllib.request.getproxies()` (env vars, else the macOS system web proxy via `_scproxy`) and never excludes 127.0.0.1 or localhost unless `NO_PROXY` names them; the macOS bypass list is dropped.
+- With the guard armed, a simulated proxy received the request, because `egress_guard` checks `request.url.host`, not where the transport connects.
+- The transcript POST happens only after `GET /v1/models` through the same proxy returns 200; a normal forward proxy answers 502/403 for loopback, so in practice the local backend breaks and only a content-free GET reaches the proxy. PAC/WPAD setups never trigger the routing. The owner's Mac had no proxy on 2026-11-12.
+
+Added scope: `trust_env=False` on every loopback client (`LocalSummaryClient`, the embedder client if any), and the armed guard refuses a request whose transport has a proxy configured. The socket-layer item above would catch the armed case but not the normal-mode routing, so both are needed.
+
+Added acceptance: a test with `HTTP_PROXY` set that the loopback client's transport for `http://127.0.0.1:<port>` is not a proxy transport, and that the armed guard raises when handed a proxied transport.

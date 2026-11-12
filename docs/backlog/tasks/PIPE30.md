@@ -4,7 +4,7 @@ title: The atomic-write helper is re-implemented ten times, nine of them without
 category: Pipeline
 status: new
 priority: P2
-comment: Filed 2026-10-25 (code-quality audit PY3, CV4): 10 hand-rolled temp-and-replace writers, 9 without the chmod; non-atomic rewrites include publish_from_paste's summary.json and .md (which summarize writes atomically), the manual bundle, digest and the file sinks, and AppleIntelligenceSummarizer is the daemon's one non-atomic summary writer. All through atomic_write_text, `.atomic` plus 0600 in Swift, one fence shared with SEC22. Amended 2026-10-25 (performance review): the Apple Intelligence writer writes the .md before the .json, and the helper gains F_FULLFSYNC, a temp created at its final mode, and a stale-temp sweep (PYTHON-11). [Spec](./PIPE30.md)
+comment: Filed 2026-10-25 (code-quality audit PY3, CV4): 10 hand-rolled temp-and-replace writers, 9 without the chmod; non-atomic rewrites include publish_from_paste's summary.json and .md (which summarize writes atomically), the manual bundle, digest and the file sinks, and AppleIntelligenceSummarizer is the daemon's one non-atomic summary writer. All through atomic_write_text, `.atomic` plus 0600 in Swift, one fence shared with SEC22. Amended 2026-10-25 (performance review): the Apple Intelligence writer writes the .md before the .json, and the helper gains F_FULLFSYNC, a temp created at its final mode, and a stale-temp sweep (PYTHON-11). Amended 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md)): publish_lan._atomic_write follows symlinks a share peer plants (pid-named temp, plain write_text); create the temp with O_EXCL|O_NOFOLLOW. [Spec](./PIPE30.md)
 ---
 
 # PIPE30: The atomic-write helper is re-implemented ten times, nine of them without its 0600 chmod, and several writers rewrite the only copy of a file in place
@@ -67,3 +67,11 @@ The 2026-10-25 performance review (eight subsystem finders over HEAD 01e904a, ev
 
 - pytest in `test_storage.py`: `atomic_write_text` issues the sync (`fcntl.fcntl` with `F_FULLFSYNC` on darwin, recorded by a monkeypatch) before `os.replace`, and the temp's mode never exceeds `mode`; `sweep_stale_temps` removes a two-hour-old `.x.json.tmp-999`, keeps a fresh one, and touches no other file.
 - Swift, in the suite that covers `AppleIntelligenceSummarizer.write`: under umask 022 both files are 0600; with `<stem>.summary.md` made a directory so the markdown write throws, an existing `summary.json` is byte-identical afterwards. Fails on `main`, which writes the JSON first.
+
+## Amended 2026-11-12 (security review)
+
+From the [security review](../../audits/2026-11-12-security-review.md) finding 9 (verified as plausible, Low). Scope item 2 keeps `publish_lan._atomic_write` as its own helper, which stays right, but the helper writes `tmp = path.parent / f".{path.name}.tmp-{os.getpid()}"` with `tmp.write_text(...)`, which follows symlinks, and `_check_reachable` checks only that the folder exists and is writable. A scratchpad test on 2026-11-12 showed a planted link redirects the write to a file outside the share and leaves the final name as a symlink after `os.replace`.
+
+Attack: a peer with write access to the share plants links named `.<stem>.summary.md.tmp-<pid>` across the pid range for a stem already visible there, pointing at an absolute path on the owner's Mac; the next re-publish of that stem overwrites the target with summary text. Solid over NFS (client-side symlinks); on SMB it depends on the macOS client resolving symlink files, not verified.
+
+Added to scope item 2: create the temp with `tempfile.mkstemp(dir=...)` (or `O_CREAT|O_EXCL|O_NOFOLLOW`) and `lstat` the target directory, refusing a symlinked one. Added acceptance: a test that a pre-existing symlink at the temp path is not followed and a symlinked target directory is refused.

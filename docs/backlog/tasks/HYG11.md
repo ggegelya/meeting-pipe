@@ -4,7 +4,7 @@ title: The harness still carries defects CI8 did not touch: a wrong byte budget,
 category: Hygiene
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, architecture review H2, harness defects list, A4, A6, B1): after CI8, still open: tech-task cites a 12 KB budget (caps are 800 B and 24,000 B), docs-sync omits GUIDE and SETUP, six docs say CI blocks em-dashes though the owner dropped that job 2026-08-18, two mandatory test scripts skip ci-local.sh, step 0 is copied 4 times, allowlist gaps. One commit; em-dash hook is an owner call. [Spec](./HYG11.md)
+comment: Filed 2026-10-24 (audit band, architecture review H2, harness defects list, A4, A6, B1): after CI8, still open: tech-task cites a 12 KB budget (caps are 800 B and 24,000 B), docs-sync omits GUIDE and SETUP, six docs say CI blocks em-dashes though the owner dropped that job 2026-08-18, two mandatory test scripts skip ci-local.sh, step 0 is copied 4 times, allowlist gaps. One commit; em-dash hook is an owner call. Amended 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md)): the allowlist also auto-approves rg --pre and git diff/log --output, which run a command or write any file. [Spec](./HYG11.md)
 ---
 
 # HYG11: the harness still carries defects CI8 did not touch: a wrong byte budget, a docs-sync list missing two contract docs, six claims that CI blocks em-dashes, two mandatory scripts CI never runs, and 9 KB of duplicated landing text
@@ -55,3 +55,9 @@ One commit, all harness text and config:
 - The four commands each reference `.claude/shared/landing.md`, and no step-0 paragraph remains duplicated (md5 check as above returns one file's worth, not four).
 - If the owner says yes to the hook: a script under `scripts/` plus a canned-JSON test (a write containing U+2014 exits non-zero with a message; one without passes), registered in `.claude/settings.json`.
 - `bash scripts/ci-local.sh fences` green; a `/file-task` dry read of the edited commands finds every step it references.
+
+## Amended 2026-11-12 (security review)
+
+From the [security review](../../audits/2026-11-12-security-review.md) (verified, Low). Beyond the `find -exec` / `-delete` this task names, `.claude/settings.json`'s `Bash(rg:*)` allows `rg --pre <cmd>` (runs a command per file) and `Bash(git diff:*)` / `Bash(git log:*)` allow `--output=<path>` (writes a file anywhere). `pytest -p`, `swift build` and `git show` textconv run only code already in the repo. Whether Claude Code's own dangerous-flag lists override an explicit allow rule was not determinable from the minified binary.
+
+Added to scope item 6: deny rules (or narrowed allow patterns) for `rg --pre`, `rg --pre-glob`, `git diff --output`, `git log --output`. The SessionStart hook running `scripts/prune-worktrees.sh` is expected behaviour once the folder is trusted and stays.

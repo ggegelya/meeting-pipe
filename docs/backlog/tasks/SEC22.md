@@ -4,7 +4,7 @@ title: Voiceprints are written world-readable because four writers bypass `stora
 category: Security
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch S8, go-live PP-4 file-mode half): voiceprint.json is -rw-r--r-- in a drwxr-xr-x config dir because Voiceprint, Roster, the per-meeting embeddings writer and roster_cmd hand-roll writes without the 0600 helper, and forget never touches embeddings. Route all through atomic_write_text, make the config dir 0700, cascade forget into embeddings.json, fence hand-rolled atomic writes. [Spec](./SEC22.md)
+comment: Filed 2026-10-24 (audit band, arch S8, go-live PP-4 file-mode half): voiceprint.json is -rw-r--r-- in a drwxr-xr-x config dir because Voiceprint, Roster, the per-meeting embeddings writer and roster_cmd hand-roll writes without the 0600 helper, and forget never touches embeddings. Route all through atomic_write_text, make the config dir 0700, cascade forget into embeddings.json, fence hand-rolled atomic writes. Amended 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md)): recordings and capture intermediates are also created 0644 and the launch sweep skips audio; chmod 0600 at creation, extend the sweep, library dirs 0700. [Spec](./SEC22.md)
 ---
 
 # SEC22: voiceprints are written world-readable because four writers bypass `storage.atomic_write_text`, and `roster forget` leaves the person's embeddings in every meeting
@@ -54,3 +54,9 @@ Why the per-meeting files read 0600 anyway: `MeetingStore.tightenArtifactPermiss
 - pytest: the hand-rolled-atomic-write fence passes on the fixed tree and fails on a planted example.
 - `cd pipeline && uv run --extra dev pytest -q`, ruff, pyright green, new test count in the commit body; the new event action uses the existing `pipeline` category, so `python3 scripts/truth_fences.py` (CI5) stays clean.
 - Owner check (confirms): after `./scripts/rebuild.sh` and one recording, `ls -l ~/.config/meeting-pipe/voiceprint.json` shows `-rw-------` and the directory `drwx------`.
+
+## Amended 2026-11-12 (security review)
+
+From the [security review](../../audits/2026-11-12-security-review.md) (verified, informational; no other principal can read them on the owner's single-account Mac today). On 2026-11-12 every audio file in `~/Documents/Meetings/raw` was `-rw-r--r--` and `Meetings/` and `raw/` were `drwxr-xr-x`; only `~/Documents` being 0700 keeps them private. `MeetingRecorder` creates the `AVAudioFile` at the umask mode, the ffmpeg merge and FLAC outputs inherit it, and `MeetingStore.tightenArtifactPermissions` touches only `.json` and `.md` (SEC14 pinned `m.wav` at 0644 in `MeetingStoreTests` on purpose). The Recording pane's folder picker can point the library anywhere, including `/Users/Shared`.
+
+Added scope: chmod 0600 at recorder and transcoder creation, add `wav` and `flac` to the launch sweep (flipping SEC14's pinned test), and create the library directories 0700. Exposure on exFAT or external volumes is not fixed by modes and stays out of scope.

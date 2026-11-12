@@ -4,7 +4,7 @@ title: The `claude_cli` summarization backend runs a full Claude Code agent sess
 category: Security
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch S4, go-live PP-2): --allowed-tools "" only pre-approves, so built-in tools stay on; the spawn also loads the owner's MCP servers, hooks and memory, runs from cwd /, saves every summary as a session, and passes the API key. Spawn with --tools "", an empty strict MCP config, no session persistence, narrowed setting sources, an empty temp cwd and tokens stripped; fix both false comments. [Spec](./SEC20.md)
+comment: Filed 2026-10-24 (audit band, arch S4, go-live PP-2): --allowed-tools "" only pre-approves, so built-in tools stay on; the spawn also loads the owner's MCP servers, hooks and memory, runs from cwd /, saves every summary as a session, and passes the API key. Spawn with --tools "", an empty strict MCP config, no session persistence, narrowed setting sources, an empty temp cwd and tokens stripped; fix both false comments. Amended 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md)): rationale stale: Ask, digest (incl. --publish) and diarization cleanup also reach ClaudeCLIClient; the fix already covers them, only the reasoning and the cleanup line change. [Spec](./SEC20.md)
 ---
 
 # SEC20: the `claude_cli` summarization backend runs a full Claude Code agent session (built-in tools, the owner's MCP servers, hooks and memory, cwd `/`, saved sessions, the API key in its environment) for a pure text turn
@@ -55,3 +55,13 @@ Rejected: `--bare`. Its help text says "Anthropic auth is strictly ANTHROPIC_API
 - A test that the existing armed-guard refusal still fires before any spawn.
 - ruff, pyright, `pytest -q` green, new test count in the commit body.
 - Owner check (confirms, does not gate): one summary on `claude_cli` succeeds, and `~/.claude/projects/` gains no new session for it.
+
+## Amended 2026-11-12 (security review)
+
+From the [security review](../../audits/2026-11-12-security-review.md) (verified). The fix is unchanged, since everything goes through `ClaudeCLIClient._run`, but the severity reasoning ("the output only becomes the summary") is stale twice over:
+
+- Ask (`ask.py`) and digest (`digest.py`) reach `ClaudeCLIClient.complete` through `engine.complete_text` and the providers table's `claude_cli` row; that routing predates this task. Digest can `--publish` to the configured sinks, and an Ask can be started from a `meetingpipe://` URL ([AUTO7](./AUTO7.md)), so the tool-enabled agent runs over excerpts from many meetings.
+- Diarization cleanup reaches it through the providers cleanup row (`_claude_cli_cleanup`, wrapped in `TextCleanupClient`): PIPE19 added that 16 minutes after this task was filed, so the "Explicitly not" line about cleanup is now false.
+- `claude_cli` still refuses armed (NDA, regulated) runs, which holds.
+
+Added scope: rewrite the rationale and the cleanup line; extend the acceptance's spawn-argv test to one call through each of summarize, Ask, digest and cleanup.

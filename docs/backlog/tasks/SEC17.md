@@ -4,7 +4,7 @@ title: The app holds microphone, Screen Recording and Accessibility grants but i
 category: Security
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch M2, go-live DI-6): codesign shows flags=0x0(none) and no entitlements, so same-user DYLD injection inherits the TCC grants, and dev-cert.sh imports the key with -A. Sign with --options runtime plus an audio-input entitlements file in sign_app_with_resources, import new keys with -T /usr/bin/codesign, fix the existing key's ACL without recreating the cert. [Spec](./SEC17.md)
+comment: Filed 2026-10-24 (audit band, arch M2, go-live DI-6): codesign shows flags=0x0(none) and no entitlements, so same-user DYLD injection inherits the TCC grants, and dev-cert.sh imports the key with -A. Sign with --options runtime plus an audio-input entitlements file in sign_app_with_resources, import new keys with -T /usr/bin/codesign, fix the existing key's ACL without recreating the cert. Amended 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md)): helpers resolved from user-writable PATH, venv and uv inherit TCC attribution; disclaim responsibility on spawn or run only sealed helpers. [Spec](./SEC17.md)
 ---
 
 # SEC17: the app holds microphone, Screen Recording and Accessibility grants but is signed without hardened runtime, and its signing key is imported for use by any app
@@ -57,3 +57,15 @@ Premise corrections against the audits, checked 2026-10-24:
 - Owner walkthrough on the rebuilt app: a recording captures both mic and system audio, the Accessibility-based detection still fires on a Teams call, and no TCC prompt reappears (or exactly one, documented).
 - A newly generated dev key's ACL (`security dump-keychain -a` for that item) lists codesign as the trusted application rather than "any".
 - `bash scripts/test-app-relocation.sh` green (mandatory after a `sign-app.sh` edit), `bash scripts/ci-local.sh` green.
+
+## Amended 2026-11-12 (security review)
+
+From the [security review](../../audits/2026-11-12-security-review.md) (verified, Low while this task is open, a Medium residual once it ships). This task's "Explicitly not" names user-writable PATH helpers as observed and points at CONC5 and DEP2, but neither closes the class: CONC5 is about draining and timeouts, and DEP2 removes only ffmpeg.
+
+- `ExecutableResolver.resolve` checks the env override, then every `$PATH` entry, then the fallbacks, so `findFFmpeg` resolves `MEETINGPIPE_FFMPEG`, then PATH, then the bundled copy. The installed app has no `Contents/Resources/pipeline-runtime/` and the LaunchAgent puts `/opt/homebrew/bin` first, so `/opt/homebrew/bin/ffmpeg` (user-owned, `drwxrwxr-x`) runs on every recording stop.
+- `PipelineLauncher.findMP` resolves the embedded runtime, then `~/.local/share/meeting-pipe/venv/bin/python3`, then `~/.local/bin/uv`, then `mp` on PATH, all user-writable. `summarize_local` finds `mlx_lm.server` via `shutil.which` on the same PATH.
+- Foundation `Process` does not disclaim responsibility, so TCC attributes these children to MeetingPipe (the repo already relies on this: DET8 measured from a disclaimed harness shell). None of the legitimate children need a grant, so the attribution is pure attack surface.
+
+Added scope: spawn every helper with responsibility disclaimed (`responsibility_spawnattrs_setdisclaim` through a small spawn wrapper, shared with CONC5's helper if it lands first), and drop `MEETINGPIPE_FFMPEG` and the PATH walk in release builds. Reordering lookups alone does not close it, since the venv is user-writable by design.
+
+Added acceptance: a test with an injected spawner that every helper spawn sets the disclaim attribute; owner check that a recording stop and a summary still work after `./scripts/rebuild.sh`.

@@ -4,7 +4,7 @@ title: Features are implemented in both trees, and the Swift copies drift; write
 category: Architecture
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch A5, go-live DI-14): the Swift Apple summarizer has its own prompt, schema, chunking and renderer and has drifted (no WF7 extra_sections, prior context, evidence or language repair); prep, doctor and egress rules are doubled; DIST2's hybrid dismissal is stale. Owner-approved ADR on the boundary first, then Apple as a provider only and Swift asking Python for policy. [Spec](./ARCH11.md)
+comment: Filed 2026-10-24 (audit band, arch A5, go-live DI-14): the Swift Apple summarizer has its own prompt, schema, chunking and renderer and has drifted (no WF7 extra_sections, prior context, evidence or language repair); prep, doctor and egress rules are doubled; DIST2's hybrid dismissal is stale. Owner-approved ADR on the boundary first, then Apple as a provider only and Swift asking Python for policy. Amended 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md)): the Swift Apple summarizer also has no untrusted-content fence or guidance; becoming a provider closes it. [Spec](./ARCH11.md)
 ---
 
 # ARCH11: features are implemented in both trees, and the Swift copies drift; write the ADR that fixes the Swift/Python boundary, then make Apple Intelligence a provider only
@@ -48,3 +48,9 @@ Re-verified against `main` at `45b8c6a` on 2026-10-24.
 - The ADR names every doubled feature found at pickup (re-grep, do not copy this list) with a keep or retire verdict.
 - For the provider leg, when it is picked up: an Apple Intelligence summary has the same prompt, `extra_sections`, prior context, evidence verification and language repair as the local backend (a Python test with a fake `fm-complete` pins each), `cd daemon && swift test` and `cd pipeline && uv run --extra dev pytest -q` green with new test counts in the commit body, the CI3 renderer golden fixture retired or regenerated with its retirement noted in `CONVENTIONS.md`.
 - `python3 scripts/truth_fences.py links` green on the filing and on the ADR commit.
+
+## Amended 2026-11-12 (security review)
+
+From the [security review](../../audits/2026-11-12-security-review.md) finding 11 (verified, Low). `AppleIntelligenceSummarizer` builds its prompt as header + schema + raw body (`let prompt = header + ... + body`); neither `instructions()` nor `reduceInstructions` carries `UNTRUSTED_GUIDANCE`, and the body is not fenced, so this backend lacks TECH-SEC6's soft defence. The on-device model has no tools, so the consequence is steered summary content only, more likely on a weaker model.
+
+Added acceptance: once Apple is a completion provider, a test that its prompt is the Python-composed one, with the transcript between the untrusted markers. If this task stays unstarted for long, the interim fix (wrap the body and append the guidance in Swift) is small enough to land on its own.
