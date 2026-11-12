@@ -246,8 +246,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static var terminationCeilingExits = true
 
     /// Single synchronous teardown path for SIGTERM and a normal quit: stop the
-    /// preloader, flush the recorder (so no in-flight recording is stranded,
-    /// REC2 / AUD-6), then exit with the exit code the LaunchAgent keys off
+    /// preloader, SIGTERM the supervised `mp` runs (PIPE37, inside
+    /// `Coordinator.shutdown`), flush the recorder (so no in-flight recording is
+    /// stranded, REC2 / AUD-6), then exit with the exit code the LaunchAgent keys off
     /// (TECH-UX7): non-zero asks launchd to relaunch, zero quits fully.
     ///
     /// REC13: a hard ceiling is armed first, because on 2026-08-14 this path did not

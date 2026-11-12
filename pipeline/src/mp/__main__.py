@@ -5,8 +5,10 @@ runnable in isolation (debugging, retries, manual fixes).
 """
 from __future__ import annotations
 
+import os
 import signal
 import sys
+import threading
 from types import FrameType
 from typing import NoReturn
 
@@ -168,6 +170,54 @@ def _install_sigterm_handler() -> None:
         pass
 
 
+# Set by the daemon on the spawns it supervises (PIPE37): their stdin is a pipe
+# whose only write end the daemon holds, so EOF on it means the daemon is gone.
+SUPERVISED_ENV = "MP_SUPERVISED"
+
+
+def _watch_supervisor_stdin() -> None:
+    """Block on stdin until EOF, then SIGTERM the main thread (PIPE37).
+
+    The kernel closes the daemon's write end however the daemon ends: an orderly
+    Quit, a crash, a SIGKILL, the termination ceiling's `exit`. So EOF here is the
+    one signal that covers every way the daemon can disappear, where its own
+    shutdown SIGTERM covers only the orderly one. `os.getppid()` cannot stand in
+    for it, because the dev tier runs `mp` under `uv run`, whose pid is the parent.
+
+    Raw `os.read` on fd 0, not `sys.stdin`: a daemon thread parked inside the
+    buffered reader holds its lock, which can abort the interpreter at shutdown.
+    The SIGTERM goes to the main thread specifically, so its blocking call is
+    interrupted and PIPE22's handler unwinds through every `finally` at once,
+    rather than whenever the main thread next returns to the eval loop. Anything
+    the daemon writes is discarded; it writes nothing.
+
+    Fails open: an unreadable stdin (`OSError`) means this run cannot be
+    supervised, which is no reason to stop it.
+    """
+    try:
+        while os.read(0, 4096):
+            pass
+    except OSError:
+        return
+    main_ident = threading.main_thread().ident
+    if main_ident is not None:
+        signal.pthread_kill(main_ident, signal.SIGTERM)
+
+
+def _start_supervision() -> None:
+    """Start the stdin watch when the daemon asked for it, and only then.
+
+    The variable is consumed here, so nothing this run spawns inherits it: the
+    contract is between the daemon and its direct `mp` child, and a descendant
+    started with a `/dev/null` stdin would otherwise read EOF and stop itself.
+    """
+    if os.environ.pop(SUPERVISED_ENV, None) != "1":
+        return
+    threading.Thread(
+        target=_watch_supervisor_stdin, name="mp-supervisor-stdin", daemon=True
+    ).start()
+
+
 def _dispatch(cmd: str, rest: list[str]) -> int:
     """Route one subcommand to its module's `main(argv)`.
 
@@ -270,6 +320,8 @@ def main() -> int:
     cmd, rest = argv[0], argv[1:]
 
     _install_sigterm_handler()
+    # After the handler, so the watcher's SIGTERM lands on it (PIPE37).
+    _start_supervision()
     try:
         return _dispatch(cmd, rest)
     except MissingSecretError as e:
@@ -307,7 +359,12 @@ def main() -> int:
         # `finally` below the router has already run (PIPE22).
         if e.code != EXIT_TERMINATED:
             raise
-        print(f"mp {cmd}: terminated", file=sys.stderr)
+        try:
+            print(f"mp {cmd}: terminated", file=sys.stderr)
+        except OSError:
+            # PIPE37: when the daemon died, it took the read end of this pipe
+            # with it, so the line has nowhere to go. The exit code still does.
+            pass
         return EXIT_TERMINATED
 
 

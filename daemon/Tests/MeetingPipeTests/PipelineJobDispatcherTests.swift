@@ -176,4 +176,29 @@ final class PipelineJobDispatcherTests: XCTestCase {
         XCTAssertEqual(settled, 3, "a cancel reports nothing, and still settles")
         _ = dispatcher
     }
+
+    // MARK: - PIPE37: quitting stops the supervised spawns
+
+    private final class CountingDriver: PipelineDriver {
+        var terminated = 0
+        var cancelled = 0
+        func runAll(wav: URL, summaryMode: SummaryMode, completion: @escaping (Result<URL?, Error>) -> Void) {}
+        func terminateSupervised() { terminated += 1 }
+        func cancelActiveRun() { cancelled += 1 }
+    }
+
+    /// `Coordinator.shutdown` reaches the launcher through this chain
+    /// (`CoordinatorWiringFenceTests` pins that it calls it). A quit is not a
+    /// Cancel: it must not mark the lane's run cancelled, so the relaunch labels
+    /// the meeting interrupted rather than cancelled.
+    func test_terminateSupervised_reaches_the_launcher_and_cancels_nothing() {
+        let driver = CountingDriver()
+        let sink = SinkDispatcher(launcher: driver, transcriptionRunner: PassRunner())
+        let dispatcher = PipelineJobDispatcher(
+            sinkDispatcher: sink, onDone: { _, _, _ in }, onError: { _ in }, onQueueActivity: { _ in }
+        )
+        dispatcher.terminateSupervised()
+        XCTAssertEqual(driver.terminated, 1)
+        XCTAssertEqual(driver.cancelled, 0)
+    }
 }

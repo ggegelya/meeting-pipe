@@ -370,3 +370,115 @@ def test_the_handler_leaves_other_system_exits_alone(monkeypatch: pytest.MonkeyP
     with pytest.raises(SystemExit) as exc:
         _run(["digest"], monkeypatch)
     assert exc.value.code == 2
+
+
+# --- stdin-EOF supervision (PIPE37) ------------------------------------------
+#
+# The daemon's SIGTERM on Quit only covers an orderly exit. For a crash, a
+# SIGKILL or the termination ceiling's `exit`, a supervised `mp` gets a stdin
+# pipe whose only write end the daemon holds, plus `MP_SUPERVISED=1`; EOF on it
+# means the daemon is gone, and `mp` SIGTERMs itself into PIPE22's unwind.
+
+SUPERVISED = {"MP_SUPERVISED": "1"}
+
+
+def _close_stdin(proc: subprocess.Popen[str]) -> None:
+    """Close our write end the way the kernel does when the daemon dies.
+    `communicate()` would try to flush a closed handle, so forget it too."""
+    assert proc.stdin is not None
+    proc.stdin.close()
+    proc.stdin = None
+
+
+def test_a_supervised_run_unwinds_when_its_stdin_closes(tmp_path: Path) -> None:
+    sentinel = tmp_path / "finally.txt"
+    proc = _start_child(SIGTERM_CHILD, {"MP_TEST_SENTINEL": str(sentinel), **SUPERVISED})
+    try:
+        _close_stdin(proc)
+        _out, err = proc.communicate(timeout=10)
+    except BaseException:
+        proc.kill()
+        raise
+
+    assert sentinel.read_text(encoding="utf-8") == "finally ran"
+    assert proc.returncode == 143
+    assert err.splitlines() == ["mp logs: terminated"]
+
+
+def test_an_unsupervised_run_ignores_its_stdin_closing(tmp_path: Path) -> None:
+    """Without the variable nothing watches stdin: a manual `mp` run, or a spawn
+    the daemon deliberately leaves to finish (a backup, a restore)."""
+    sentinel = tmp_path / "finally.txt"
+    proc = _start_child(SIGTERM_CHILD, {"MP_TEST_SENTINEL": str(sentinel), "MP_SUPERVISED": ""})
+    try:
+        _close_stdin(proc)
+        with pytest.raises(subprocess.TimeoutExpired):
+            proc.wait(timeout=1.5)
+        assert not sentinel.exists()
+    finally:
+        proc.kill()
+        proc.communicate()
+
+
+def test_a_supervised_run_survives_the_loss_of_all_three_pipes(tmp_path: Path) -> None:
+    """A dead daemon takes stdout and stderr with stdin, so the unwind's own
+    stderr line has no reader. The cleanup must still run, and promptly."""
+    sentinel = tmp_path / "finally.txt"
+    proc = _start_child(SIGTERM_CHILD, {"MP_TEST_SENTINEL": str(sentinel), **SUPERVISED})
+    try:
+        assert proc.stdout is not None and proc.stderr is not None
+        proc.stdout.close()
+        proc.stderr.close()
+        _close_stdin(proc)
+        proc.wait(timeout=10)
+    except BaseException:
+        proc.kill()
+        raise
+
+    assert sentinel.read_text(encoding="utf-8") == "finally ran"
+    # 120 is CPython failing to flush stderr at interpreter exit, which is what a
+    # reader-less pipe does; nobody is left to read the code either way. What
+    # matters is that it unwound rather than being killed (a negative code).
+    assert proc.returncode in (143, 120)
+
+
+SUPERVISED_RETURNS_CHILD = """
+import os, sys
+import mp.logs_cmd
+
+def quick_main(argv):
+    print("READY", flush=True)
+    with open(os.environ["MP_TEST_SENTINEL"], "w") as f:
+        f.write(repr(os.environ.get("MP_SUPERVISED")))
+    return 0
+
+mp.logs_cmd.main = quick_main
+sys.argv = ["mp", "logs"]
+from mp.__main__ import main
+sys.exit(main())
+"""
+
+
+def test_a_supervised_run_that_finishes_exits_cleanly(tmp_path: Path) -> None:
+    """Every normal supervised run: stdin stays open, the command returns, and
+    the parked watcher thread neither delays the exit nor says anything. The
+    variable is consumed, so nothing the run spawns inherits it (a descendant
+    on a `/dev/null` stdin would read EOF and stop itself)."""
+    sentinel = tmp_path / "env.txt"
+    proc = _start_child(
+        SUPERVISED_RETURNS_CHILD, {"MP_TEST_SENTINEL": str(sentinel), **SUPERVISED}
+    )
+    try:
+        # Not `communicate()`: it closes stdin first, which is the EOF under test.
+        proc.wait(timeout=10)
+        assert proc.stderr is not None
+        err = proc.stderr.read()
+    except BaseException:
+        proc.kill()
+        raise
+    finally:
+        _close_stdin(proc)
+
+    assert proc.returncode == 0
+    assert err == ""
+    assert sentinel.read_text(encoding="utf-8") == "None"

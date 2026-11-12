@@ -2,9 +2,10 @@
 id: PIPE37
 title: Quitting or restarting the daemon leaves its in-flight mp jobs running with no watchdog, and the relaunch marks their meetings interrupted while they still write, so a Retry runs a second pipeline on the same stem
 category: Pipeline
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. flushAndExit stops the preloader and the recorder but never the launcher, the runMP watchdog is a DispatchSource that dies with the process, and an NSTask child sits in its own process group, so a run-all, ask or Library re-run outlives a Quit (which relaunches by default, UX82), rebuild.sh or a crash with no 90 min cap (the May 2026 incident pinned 4 cores for 13 h); the relaunch's reconcileStrandedJobs then marks that stem interrupted while the orphan still writes it, and a Retry starts a second run-all on it, the overlap PIPE11 exists to stop. Scope: SIGTERM every meeting-bound and ask spawn in shutdown, and a stdin-EOF parent watch in mp (after PIPE22) so a crash or SIGKILL ends them too. [Spec](./PIPE37.md)
+closed: 2026-11-12
+comment: Shipped 2026-11-12. Coordinator.shutdown SIGTERMs every live supervised mp spawn (the ask and every meeting-bound spawn bar roster enroll) through jobDispatcher.terminateSupervised() and returns at once; each supervised spawn gets a stdin pipe plus MP_SUPERVISED=1, and mp SIGTERMs its main thread into the PIPE22 unwind on EOF, so a crash, SIGKILL or the ceiling's exit ends it too; Process was measured not to leak the write end to a sibling, so no FD_CLOEXEC. uv 0.11.8 forwards SIGTERM and stdin EOF. Full ci-local.sh green. [Spec](./PIPE37.md)
 ---
 
 # PIPE37: Quitting or restarting the daemon leaves its in-flight mp jobs running with no watchdog, and the relaunch marks their meetings interrupted while they still write, so a Retry runs a second pipeline on the same stem

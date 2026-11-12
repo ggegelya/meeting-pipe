@@ -124,6 +124,8 @@ protocol PipelineDriver: AnyObject {
     func restore(archive: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// Merge fragmented recordings into the primary (FEAT9): `mp merge-meetings <primary.wav> <fragment.wav>...` concatenates the audio + transcripts, re-summarizes, and republishes under the primary stem (upsert). Returns the primary's page URL. The primary anchors `cloudSecretPolicy`, matching the pipeline arming its egress guard on the primary's workflow. Defaulted no-op.
     func mergeMeetings(primary: URL, fragments: [URL], completion: @escaping (Result<URL?, Error>) -> Void)
+    /// SIGTERM every live supervised spawn and return at once (PIPE37): the meeting-bound ones and the ask. Called from `Coordinator.shutdown`, under the 9 s termination ceiling, so it never waits and sends no SIGKILL. Defaulted no-op.
+    func terminateSupervised()
 }
 
 extension PipelineDriver {
@@ -140,6 +142,8 @@ extension PipelineDriver {
 
     /// Default no-op; `PipelineLauncher` overrides.
     func cancelActiveRun() {}
+
+    func terminateSupervised() {}
 
     /// Default no-op; `PipelineLauncher` overrides.
     func cancelAsk() {}
@@ -392,9 +396,15 @@ final class PipelineRunSlots: @unchecked Sendable {
     /// which is what keeps the flag per run.
     final class RunHandle: @unchecked Sendable {
         let process: Process
+        /// The write end of a supervised spawn's stdin (PIPE37), held for the
+        /// child's lifetime and closed on release. Nil for an unsupervised spawn.
+        let supervisor: FileHandle?
         private let cancelledFlag = OneWayFlag()
 
-        init(_ process: Process) { self.process = process }
+        init(_ process: Process, supervisor: FileHandle? = nil) {
+            self.process = process
+            self.supervisor = supervisor
+        }
 
         func markCancelled() { cancelledFlag.set() }
 
@@ -414,21 +424,34 @@ final class PipelineRunSlots: @unchecked Sendable {
 
     private var run: RunHandle?
     private var ask: RunHandle?
+    /// Every live supervised spawn, whatever its slot (PIPE37). Keyed by handle
+    /// identity, so two concurrent spawns never collide.
+    private var supervised: [ObjectIdentifier: RunHandle] = [:]
     private let lock = NSLock()
 
     /// Retain `process` in `slot` and hand back its handle. `.none` retains
     /// nothing but still gets a handle, so a spawn's termination handler has one
-    /// code path whether or not anything can cancel it.
-    func retain(_ process: Process, in slot: Slot) -> RunHandle {
-        let handle = RunHandle(process)
+    /// code path whether or not anything can cancel it. A `supervisor` (PIPE37)
+    /// also enters the spawn in the supervised set, whatever its slot.
+    func retain(_ process: Process, in slot: Slot, supervisor: FileHandle? = nil) -> RunHandle {
+        let handle = RunHandle(process, supervisor: supervisor)
         lock.lock()
         switch slot {
         case .none: break
         case .run: run = handle
         case .ask: ask = handle
         }
+        if supervisor != nil { supervised[ObjectIdentifier(handle)] = handle }
         lock.unlock()
         return handle
+    }
+
+    /// The processes of every live supervised spawn, snapshotted under the lock
+    /// so the caller signals them outside it.
+    func supervisedProcesses() -> [Process] {
+        lock.lock()
+        defer { lock.unlock() }
+        return supervised.values.map(\.process)
     }
 
     /// Clear the slot when this run finished or was killed. Identity-checked, so
@@ -441,7 +464,10 @@ final class PipelineRunSlots: @unchecked Sendable {
         case .run: if run === handle { run = nil }
         case .ask: if ask === handle { ask = nil }
         }
+        supervised.removeValue(forKey: ObjectIdentifier(handle))
         lock.unlock()
+        // PIPE37: the child is gone, so its EOF watch has nothing left to watch.
+        try? handle.supervisor?.close()
     }
 
     /// Mark whatever `slot` holds as cancelled and hand it back, or nil when the
@@ -655,6 +681,66 @@ final class PipelineLauncher: PipelineDriver {
     /// ahead of, so the pane says "stopped" and nothing logs a failed ask.
     func cancelAsk() {
         terminate(slots.markCancelled(.ask)?.process, what: "ask")
+    }
+
+    /// Stop every supervised spawn because the app is quitting (PIPE37).
+    ///
+    /// `Coordinator.shutdown` is the one caller, on the way to `exit`. The
+    /// `runMP` watchdog is a timer in this process, so it dies with it, and an
+    /// `NSTask` child sits in its own process group, out of reach of launchd's
+    /// group kill: without this a run-all outlived a Quit with no 90-minute cap,
+    /// and the relaunch marked its meeting interrupted while it still wrote, so
+    /// a Retry ran a second pipeline on the same stem (the overlap PIPE11
+    /// serialized the lane against).
+    ///
+    /// SIGTERM only, and it returns at once: `terminate(_:what:)`'s 10 s SIGKILL
+    /// grace does not fit under the 9 s termination ceiling, and `mp`'s PIPE22
+    /// handler unwinds on the SIGTERM alone. The run is not marked cancelled,
+    /// because nothing is left to report it: every completion hops to main,
+    /// which goes straight on to `exit`, so the relaunch's stranded-job sweep
+    /// labels the meeting interrupted and its Retry resumes it.
+    ///
+    /// A crash, a SIGKILL or the ceiling's own `exit` never reach here; the
+    /// stdin pipe `attachSupervisor` gives each of these spawns covers those.
+    func terminateSupervised() {
+        let live = slots.supervisedProcesses().filter(\.isRunning)
+        guard !live.isEmpty else { return }
+        Log.main.warning("quitting: stopping \(live.count) pipeline run(s)")
+        // `isRunning` guards against an unlaunched task, whose `terminate()`
+        // raises; a task that exited since is a harmless no-op.
+        for process in live { process.terminate() }
+    }
+
+    /// Which spawns the app stops when it goes (PIPE37): the ask, and every
+    /// spawn anchored on a meeting, since those are what the relaunch's
+    /// stranded-job sweep reconciles and a Retry would re-run. Backup, restore,
+    /// digest, actions and roster are left to finish on their own as before:
+    /// nothing reconciles them, and a restore stopped half way is worse than one
+    /// that completes. `roster enroll` names a meeting only to find its
+    /// embeddings, so it is excluded by name.
+    static func isSupervised(args: [String], meeting: URL?, retain: PipelineRunSlots.Slot) -> Bool {
+        if retain == .ask { return true }
+        return meeting != nil && args.first != "roster"
+    }
+
+    /// The environment variable that tells `mp` to watch its stdin (PIPE37).
+    static let supervisedEnvKey = "MP_SUPERVISED"
+
+    /// Give `process` a stdin whose only write end this app holds, and tell
+    /// `mp` to watch it (PIPE37). Returns that write end; keep it open for the
+    /// child's lifetime. However this app ends (Quit, crash, SIGKILL, the
+    /// termination ceiling's `exit`), the kernel closes it, `mp` reads EOF and
+    /// SIGTERMs itself into its PIPE22 unwind. Stdin rather than the parent pid,
+    /// because the dev tier runs `mp` under `uv run`, so Python's parent is `uv`.
+    ///
+    /// Siblings must not hold each other's write end, or neither would see EOF
+    /// while the other lives; `PipelineLauncherTests` pins that `Process` does
+    /// not pass it on.
+    static func attachSupervisor(to process: Process, environment: inout [String: String]) -> FileHandle {
+        let pipe = Pipe()
+        process.standardInput = pipe
+        environment[supervisedEnvKey] = "1"
+        return pipe.fileHandleForWriting
     }
 
     /// SIGTERM now, SIGKILL if it is still alive after the grace period.
@@ -1270,11 +1356,15 @@ final class PipelineLauncher: PipelineDriver {
         // that file's one writer. The flag tells `_configure_logging` to skip its own
         // FileHandler, which used to put every run-all record into the file twice.
         env[Self.pipelineLogOwnerKey] = Self.pipelineLogOwnerDaemon
+        // PIPE37: a supervised spawn ends with this app however it ends.
+        let supervisor = Self.isSupervised(args: args, meeting: meeting, retain: retain)
+            ? Self.attachSupervisor(to: p, environment: &env) : nil
         p.environment = env
         // TECH-UX5 / UX37: retained so Cancel can terminate it. UX50: the handle
         // carries the cancel flag with it, so the termination handler below reads
-        // this run's intent and not a later run's.
-        let handle = slots.retain(p, in: retain)
+        // this run's intent and not a later run's. PIPE37: and the supervisor's
+        // write end, which `release` closes.
+        let handle = slots.retain(p, in: retain, supervisor: supervisor)
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -1367,6 +1457,7 @@ final class PipelineLauncher: PipelineDriver {
             try p.run()
         } catch {
             watchdog.cancel()
+            slots.release(handle, from: retain)
             completion(.failure(error))
         }
     }

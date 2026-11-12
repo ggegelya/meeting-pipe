@@ -118,6 +118,34 @@ final class CoordinatorWiringFenceTests: XCTestCase {
         )
     }
 
+    /// PIPE37: a Quit, a restart or `rebuild.sh` used to leave every in-flight `mp` running with
+    /// no watchdog (the watchdog is a timer in this process), and the relaunch then marked its
+    /// meeting interrupted while it still wrote, so a Retry ran a second pipeline on the same stem.
+    /// `PipelineLauncher.terminateSupervised` is what stops them, and it only works if
+    /// `shutdown()` calls it; it has to come before the recorder flush, which can run into the
+    /// termination ceiling and never return.
+    func testShutdownStopsTheSupervisedPipelineRunsFirst() throws {
+        let body = try coordinatorBlock(
+            opening: "\n    func shutdown() {",
+            missing: "Coordinator.shutdown() was renamed or moved; this fence needs updating with it"
+        )
+        guard let call = body.range(of: "jobDispatcher.terminateSupervised()") else {
+            return XCTFail(
+                "Coordinator.shutdown() no longer stops the supervised mp runs, so a Quit leaves a "
+                    + "run-all writing with no watchdog and the relaunch invites a second one on the "
+                    + "same meeting (PIPE37)"
+            )
+        }
+        let flush = try XCTUnwrap(
+            body.range(of: "flushIntermediatesForTermination"),
+            "the recorder flush moved out of shutdown(); re-point this fence"
+        )
+        XCTAssertLessThan(
+            call.lowerBound, flush.lowerBound,
+            "terminateSupervised() must run before the recorder flush, which can block until the ceiling"
+        )
+    }
+
     /// END9's doc comment asserted a start that did not exist for the whole life of the feature.
     /// A comment is not a fence, so the one that replaced it must sit next to a real call.
     func testTheWatcherIsRunnableAndReportsIt() {

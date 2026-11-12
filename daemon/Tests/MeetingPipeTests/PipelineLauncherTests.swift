@@ -481,6 +481,137 @@ final class PipelineLauncherTests: XCTestCase {
         wait(for: [reaped], timeout: 1)
     }
 
+    // MARK: - PIPE37: quitting stops the supervised spawns, however the app goes
+
+    /// Which spawns the app stops when it goes: the ask and every meeting-bound
+    /// spawn, but not the library-wide ones nothing reconciles, and not roster
+    /// enroll, which names a meeting only to find its embeddings.
+    func test_isSupervised_covers_the_meeting_bound_spawns_and_the_ask() {
+        let wav = URL(fileURLWithPath: "/tmp/m.wav")
+        func supervised(_ args: [String], _ meeting: URL?, _ slot: PipelineRunSlots.Slot = .none) -> Bool {
+            PipelineLauncher.isSupervised(args: args, meeting: meeting, retain: slot)
+        }
+        XCTAssertTrue(supervised(["run-all", wav.path], wav, .run))
+        XCTAssertTrue(supervised(["summarize", "/tmp/m.md"], wav, .run))
+        XCTAssertTrue(supervised(["publish", "/tmp/m.summary.json"], wav))
+        XCTAssertTrue(supervised(["finalize", wav.path], wav))
+        XCTAssertTrue(supervised(["merge-meetings", wav.path], wav))
+        XCTAssertTrue(supervised(["publish-from-paste", "/tmp/m.md"], wav))
+        XCTAssertTrue(supervised(["ask", "q"], nil, .ask))
+        XCTAssertFalse(supervised(["backup", "/tmp"], nil))
+        XCTAssertFalse(supervised(["restore", "/tmp/a.tar.gz", "--force"], nil))
+        XCTAssertFalse(supervised(["digest"], nil))
+        XCTAssertFalse(supervised(["actions", "--open", "--cluster"], nil))
+        XCTAssertFalse(supervised(["roster", "enroll", "--name", "A"], wav))
+        XCTAssertFalse(supervised(["roster", "forget", "--name", "A"], nil))
+    }
+
+    func test_attachSupervisor_gives_a_stdin_pipe_and_exports_the_flag() {
+        let p = Process()
+        var env: [String: String] = ["PATH": "/usr/bin:/bin"]
+        let writeEnd = PipelineLauncher.attachSupervisor(to: p, environment: &env)
+        XCTAssertEqual(env["MP_SUPERVISED"], "1")
+        let pipe = p.standardInput as? Pipe
+        XCTAssertNotNil(pipe)
+        XCTAssertTrue(pipe?.fileHandleForWriting === writeEnd)
+    }
+
+    func test_the_slots_track_supervised_spawns_until_release() {
+        let slots = PipelineRunSlots()
+        let plain = slots.retain(unstartedProcess(), in: .none)
+        let watched = slots.retain(unstartedProcess(), in: .run, supervisor: Pipe().fileHandleForWriting)
+        XCTAssertEqual(slots.supervisedProcesses().map(ObjectIdentifier.init),
+                       [ObjectIdentifier(watched.process)])
+        slots.release(plain, from: .none)
+        XCTAssertEqual(slots.supervisedProcesses().count, 1)
+        slots.release(watched, from: .run)
+        XCTAssertTrue(slots.supervisedProcesses().isEmpty)
+    }
+
+    /// The spec's shape: a child that exits on SIGTERM, a meeting-bound spawn
+    /// (finalize) and a library-wide one (backup) running side by side. The
+    /// background `sleep` is killed by the trap so nothing outlives the test,
+    /// and the backup's is short so it finishes on its own.
+    func test_terminateSupervised_stops_meeting_runs_at_once_and_leaves_a_backup_running() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let wav = dir.appendingPathComponent("m.wav")
+        try Data().write(to: wav)
+
+        // `$0` is the mp subcommand. A backup sleeps 4 s and a finalize 60 s;
+        // both leave cleanly on SIGTERM.
+        let script = """
+            case "$0" in backup) d=4 ;; *) d=60 ;; esac
+            sleep "$d" & child=$!
+            trap 'kill "$child"; exit 0' TERM
+            wait "$child"
+            """
+        let launcher = PipelineLauncher(
+            invocation: { .init(shell: "/bin/sh", args: ["-c", script]) },
+            environment: ["PATH": "/usr/bin:/bin"],
+            reapOrphanedServer: {}
+        )
+
+        let lock = NSLock()
+        var finalizedAt: Date?
+        var backedUpAt: Date?
+        let finalized = expectation(description: "finalize ended")
+        let backedUp = expectation(description: "backup ended")
+        launcher.finalize(wav: wav) { _ in
+            lock.lock(); finalizedAt = Date(); lock.unlock()
+            finalized.fulfill()
+        }
+        launcher.backup(dir: dir, libraryBytes: 0) { result in
+            if case .failure(let error) = result { XCTFail("the backup was stopped: \(error)") }
+            lock.lock(); backedUpAt = Date(); lock.unlock()
+            backedUp.fulfill()
+        }
+        // Let both shells install their traps before the signal lands.
+        Thread.sleep(forTimeInterval: 0.5)
+
+        let before = Date()
+        launcher.terminateSupervised()
+        XCTAssertLessThan(Date().timeIntervalSince(before), 0.5, "terminateSupervised must not wait")
+
+        wait(for: [finalized], timeout: 5)
+        lock.lock(); let stoppedAt = finalizedAt; lock.unlock()
+        XCTAssertLessThan(try XCTUnwrap(stoppedAt).timeIntervalSince(before), 1.5)
+        lock.lock(); let backupDoneEarly = backedUpAt != nil; lock.unlock()
+        XCTAssertFalse(backupDoneEarly, "the backup must still be running when the meeting run has stopped")
+
+        wait(for: [backedUp], timeout: 15)
+    }
+
+    /// The other half of item 2: `mp` exits when its stdin reaches EOF, which
+    /// happens when every write end is closed. If `Process` passed one spawn's
+    /// write end on to a sibling, neither would see EOF while the other lived.
+    func test_a_sibling_spawn_does_not_hold_the_first_ones_supervisor_open() throws {
+        func spawn() throws -> (Process, FileHandle, XCTestExpectation) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/sh")
+            p.arguments = ["-c", "cat >/dev/null"]
+            var env = ["PATH": "/usr/bin:/bin"]
+            let writeEnd = PipelineLauncher.attachSupervisor(to: p, environment: &env)
+            p.environment = env
+            let ended = expectation(description: "child ended")
+            p.terminationHandler = { _ in ended.fulfill() }
+            try p.run()
+            return (p, writeEnd, ended)
+        }
+        let (first, firstWrite, firstEnded) = try spawn()
+        let (second, secondWrite, secondEnded) = try spawn()
+        defer { if second.isRunning { second.terminate() } }
+
+        try firstWrite.close()
+        wait(for: [firstEnded], timeout: 5)
+        XCTAssertFalse(first.isRunning)
+        XCTAssertTrue(second.isRunning, "closing a sibling's write end ended this one")
+
+        try secondWrite.close()
+        wait(for: [secondEnded], timeout: 5)
+    }
+
     // MARK: - UX50: the cancel flag is per run, not per launcher
 
     private func unstartedProcess() -> Process {

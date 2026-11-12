@@ -502,6 +502,10 @@ Ask also writes diagnostic text in its result JSON. Retain that complete error w
 
 The local report is built from an allowlist, never by redacting a traceback: numeric app version, ISO timestamp, operation/cause, recognized provider, valid status, and a validated request identifier. The displayed preview is the exact copied string. No request bodies, diagnostics, titles, paths, meeting content, or other log fields enter it. Opening Details and preparing/copying the report start no processing, network request, or event-log category.
 
+### Supervised spawns (PIPE37)
+
+`PipelineLauncher` exports `MP_SUPERVISED=1`, beside `MP_FAILURE_PATH`, on the spawns it stops when the app goes: the ask and every spawn anchored on a meeting (run-all, the Library re-runs, merge, finalize, paste publish, the Apple-phase publish; `PipelineLauncher.isSupervised` is the rule, and `roster enroll` is excluded by name). Those spawns get a stdin pipe whose only write end the daemon holds. `mp`'s `__main__` consumes the variable (pops it, so no descendant inherits it), starts a daemon thread that reads fd 0 to EOF, and then SIGTERMs its own main thread into PIPE22's unwind. The kernel closes the write end however the daemon ends, so this covers a crash, a SIGKILL and the termination ceiling's `exit`; an orderly Quit also SIGTERMs them first, from `Coordinator.shutdown` through `PipelineLauncher.terminateSupervised()`, which returns at once and sends no SIGKILL. The daemon writes nothing on the pipe. Stdin rather than the parent pid because the dev tier runs `mp` under `uv run`, so Python's parent is `uv` (`uv` 0.11 forwards both SIGTERM and the EOF). Backup, restore, digest, actions and roster spawns carry neither and finish on their own. No variable means no watch: a manual `mp` run is unaffected. A watch that cannot read its stdin fails open.
+
 ---
 
 ## Model prefetch progress stream (`mp prefetch-model` stdout)

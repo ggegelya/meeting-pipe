@@ -141,6 +141,11 @@ final class PipelineJobDispatcher: LibraryRunLane {
         sinkDispatcher.cancelActiveJob()
     }
 
+    /// PIPE37: stop every supervised pipeline subprocess on the way out.
+    func terminateSupervised() {
+        sinkDispatcher.terminateSupervised()
+    }
+
     /// UX28: drop a job that has not started yet.
     @discardableResult
     func removePending(id: UUID) -> Bool {

@@ -722,6 +722,14 @@ final class SinkDispatcher: @unchecked Sendable {
         launcher.cancelActiveRun()
     }
 
+    /// The app is quitting: SIGTERM every supervised `mp` spawn and return at
+    /// once (PIPE37). Not `cancelActiveJob`: that marks a run cancelled and
+    /// reaches only the lane's one slot, while this also stops an ask, and
+    /// leaves the meeting for the relaunch to label interrupted.
+    func terminateSupervised() {
+        launcher.terminateSupervised()
+    }
+
     /// A job whose redaction failed (SEC16). Its message is what the error banner
     /// and notification show.
     struct RedactionHeldBack: LocalizedError, Equatable {

@@ -683,6 +683,11 @@ final class Coordinator: NSObject {
 
     func shutdown() {
         Log.main.info("shutting down")
+        // PIPE37: first, before anything here that can block, so the children
+        // are signalled even if the recorder flush below runs into the ceiling.
+        // Returns at once; a crash or the ceiling's `exit` is covered instead by
+        // each supervised spawn's stdin pipe closing.
+        jobDispatcher.terminateSupervised()
         discoveryWatcher.stop()
         hotkey.unregister()
         session.shutdownConsumers()

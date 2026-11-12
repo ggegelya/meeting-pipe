@@ -480,7 +480,7 @@ A confidential meeting, or one whose workflow keeps the summary on your Mac, can
 
 Ask uses a separate search model. If that model is missing during a confidential run, **Details…** retains the specific download command to run before asking again; downloading the summary model does not install the search model.
 
-A meeting you stopped yourself lands here too, and says **Processing cancelled**. A run stranded by an app restart says **Processing interrupted**. Cancel sends no error notification; the row remains available to resume when you choose.
+A meeting you stopped yourself lands here too, and says **Processing cancelled**. Quitting or restarting the app stops a run in progress rather than leaving it working out of sight, and that meeting says **Processing interrupted** when the app comes back; **Retry** resumes it. Cancel sends no error notification; the row remains available to resume when you choose.
 
 ### When a re-transcribe is the answer
 
