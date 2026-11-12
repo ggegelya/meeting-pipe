@@ -240,22 +240,51 @@ enum MeetingAXHandleBuilder {
         guard let app = appNameByBundle[bundleID] else { return [] }
         var entries: [(value: AXUIElement, isCallPanel: Bool, hasLeave: Bool)] = []
         for window in listWindows(axApp: axApp) {
-            guard let mute = findButton(in: window, depth: 0, predicate: { el in
-                matchesMute(app: app, catalogue: catalogue, element: el)
-            }) else { continue }
-            let hasLeave = findButton(in: window, depth: 0, predicate: { el in
-                matchesLeave(bundleID: bundleID, element: el)
-            }) != nil
-            entries.append((mute, isCallPanel(window), hasLeave))
+            guard let control = meetingWindowControl(
+                in: window, app: app, bundleID: bundleID, catalogue: catalogue
+            ) else { continue }
+            entries.append((control.mute, isCallPanel(window), control.hasLeave))
         }
         return scopeToLiveControl(entries)
+    }
+
+    /// One window's share of `findMeetingWindowMuteButtons`: its first mute button, and whether
+    /// it also exposes a Leave control (walked only when a mute button was found). Nil when the
+    /// window has no mute button, which for a Calendar or chat window means the DFS ran to the end
+    /// of its tree or its `maxNodes` budget. Split out so `MuteControlCache` (PERF18) can walk the
+    /// windows it already listed, and remember the ones with nothing in them, instead of listing
+    /// and walking every window again each second.
+    static func meetingWindowControl(
+        in window: AXUIElement,
+        app: String,
+        bundleID: String,
+        catalogue: MuteLabels
+    ) -> (mute: AXUIElement, hasLeave: Bool)? {
+        guard let mute = findButton(in: window, depth: 0, predicate: { el in
+            matchesMute(app: app, catalogue: catalogue, element: el)
+        }) else { return nil }
+        let hasLeave = findButton(in: window, depth: 0, predicate: { el in
+            matchesLeave(bundleID: bundleID, element: el)
+        }) != nil
+        return (mute, hasLeave)
+    }
+
+    /// A window's `AXSubrole`, one cross-process read. `MuteControlCache` (PERF18) reads it for
+    /// every window each poll, because a subrole flip is how the compact call panel shows up.
+    static func subrole(of window: AXUIElement) -> String? {
+        copyString(window, kAXSubroleAttribute)
     }
 
     /// True when a window is the floating call panel (Teams' "Meeting compact view"), which the
     /// live AX dump proves is the only mute control that tracks the real mic. `AXSystemDialog` is
     /// a standard AX subrole constant, so this survives a locale change and a re-labelled button.
     private static func isCallPanel(_ window: AXUIElement) -> Bool {
-        copyString(window, kAXSubroleAttribute) == (kAXSystemDialogSubrole as String)
+        isCallPanel(subrole: subrole(of: window))
+    }
+
+    /// The call-panel test on a subrole already read, so a caller holding it does not read again.
+    static func isCallPanel(subrole: String?) -> Bool {
+        subrole == (kAXSystemDialogSubrole as String)
     }
 
     /// Pick the live mute control out of the candidate windows. Pure, so the scoping rule is

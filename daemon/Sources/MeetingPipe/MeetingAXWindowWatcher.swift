@@ -17,11 +17,15 @@ import MeetingPipeCore
 /// backgrounded/compact-view window, an unmute went undetected for minutes and the user's
 /// voice was zeroed while they spoke.
 ///
-/// This rebuild reads instead of subscribes. Every `pollInterval` it re-resolves the live
-/// mute button(s) via `MeetingAXHandleBuilder.findMeetingWindowMuteButtons` (a fresh
-/// AX-tree walk, scoped to the in-call window) and reads each one's state with a plain
-/// `AXUIElementCopyAttributeValue` - which returns the current value and needs no observer,
-/// so it survives window/compact-view swaps and dropped notifications. The fused state is
+/// This rebuild reads instead of subscribes. Every `pollInterval` it resolves the live
+/// mute button(s), scoped to the in-call window by `MeetingAXHandleBuilder.scopeToLiveControl`,
+/// and reads each one's state with a plain attribute read - which returns the current value and
+/// needs no observer, so it survives window/compact-view swaps and dropped notifications. The
+/// resolve is not a fresh AX-tree walk every second any more (PERF18): `MuteControlCache` lists
+/// the windows and their subroles each poll and re-walks every window only when that set changes,
+/// a cached button starts reading `.unknown`, or its 10 s backstop passes. Before that, the
+/// Calendar or chat window that never has a mute button was walked to its node budget once a
+/// second for the whole call. The fused state is
 /// injected into `MicGate.injectAxMuteEvent`. The primary notification probe stays as the
 /// low-latency foreground fast-path; this is the robust backstop that catches every
 /// mute/unmute transition within `pollInterval`.
@@ -89,8 +93,13 @@ final class MeetingAXWindowWatcher {
     /// Returns a cancel closure. Default uses `Timer.scheduledTimer`; tests inject a manual driver to step the poll without sleeping.
     typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
 
-    /// Re-resolve + read the current mute-button states from the live AX tree. Injected so tests can feed canned readings without a real app. Default walks the tree.
+    /// Re-resolve + read the current mute-button states from the live AX tree. Injected so tests can feed canned readings without a real app. Default is `MuteControlCache`.
     typealias StateResolver = () -> [MuteLabels.State]
+
+    /// A resolver that also says whether this poll walked every window, so the watcher can count
+    /// full walks on main for `mute_poller_stopped` without reading the cache across queues
+    /// (PERF18). The default wraps `MuteControlCache.resolve`; tests inject one to drive a fake cache.
+    typealias CachedResolver = () -> (states: [MuteLabels.State], fullWalk: Bool)
 
     static let defaultPollInterval: TimeInterval = 1.0
 
@@ -118,7 +127,7 @@ final class MeetingAXWindowWatcher {
     /// `MeetingSessionController.axWalkQueue`; nil (tests) runs the walk synchronously
     /// on the caller so the manual scheduler can step the poll deterministically.
     private let walkQueue: DispatchQueue?
-    private let stateResolver: StateResolver
+    private let resolver: CachedResolver
     private let pollInterval: TimeInterval
     private let localeResolver: AXMuteButtonProbe.LocaleResolver
     private let blindClearThreshold: Int
@@ -128,6 +137,10 @@ final class MeetingAXWindowWatcher {
     /// Last fused state we injected; suppresses duplicate events so MicGate only sees real transitions.
     private var lastEmitted: MuteLabels.State?
     private var pollCount: Int = 0
+    /// Polls this recording that walked every window (PERF18), reported by `mute_poller_stopped`.
+    private var fullWalks: Int = 0
+    /// True between `start()` and `stop()`, so the `stop()` inside `start()` logs no stopped row.
+    private var running: Bool = false
     /// Consecutive polls with no confident reading (walk found nothing / all unknown).
     private var consecutiveBlindPolls: Int = 0
     /// True once we've cleared a latched `.muted` for the current blind streak; reset on the next confident reading.
@@ -159,6 +172,7 @@ final class MeetingAXWindowWatcher {
         scheduler: @escaping Scheduler = MeetingAXWindowWatcher.defaultScheduler,
         walkQueue: DispatchQueue? = nil,
         stateResolver: StateResolver? = nil,
+        cachedResolver: CachedResolver? = nil,
         localeResolver: @escaping AXMuteButtonProbe.LocaleResolver = AXMuteButtonProbe.defaultLocaleResolver,
         pollInterval: TimeInterval = MeetingAXWindowWatcher.defaultPollInterval,
         blindClearThreshold: Int = 3,
@@ -178,17 +192,25 @@ final class MeetingAXWindowWatcher {
         self.pollInterval = pollInterval
         self.blindClearThreshold = blindClearThreshold
         self.contradiction = VADContradictionTracker(dwellSeconds: contradictionDwellSeconds, clock: clock)
-        // Capture values (not self) so the default resolver has no retain cycle.
-        let axApp = AXUIElementCreateApplication(pid)
-        self.stateResolver = stateResolver ?? {
-            MeetingAXWindowWatcher.readMuteStates(
-                axApp: axApp, bundleID: bundleID, catalogue: catalogue
-            )
+        // Capture values (not self) so the default resolver has no retain cycle. The cache is
+        // per watcher, so per recording, and confined to `walkQueue`, the only place the default
+        // resolver runs in production (PERF18).
+        if let stateResolver = stateResolver {
+            self.resolver = { (stateResolver(), false) }
+        } else if let cachedResolver = cachedResolver {
+            self.resolver = cachedResolver
+        } else if let cache = MuteControlCache<AXUIElement, AXUIElement>.live(
+            axApp: AXUIElementCreateApplication(pid), bundleID: bundleID, catalogue: catalogue
+        ) {
+            self.resolver = { cache.resolve() }
+        } else {
+            self.resolver = { ([], false) }
         }
     }
 
     func start() {
         stop()
+        running = true
         eventLog.emit(category: "coordinator", action: "mute_poller_started", attributes: [
             "bundle_id": bundleID,
             "poll_interval_s": pollInterval,
@@ -202,8 +224,18 @@ final class MeetingAXWindowWatcher {
         generation &+= 1
         cancelPoll?()
         cancelPoll = nil
+        if running {
+            // PERF18's field check: `full_walks` against `polls` is the cache's hit rate.
+            eventLog.emit(category: "micgate", action: "mute_poller_stopped", attributes: [
+                "bundle_id": bundleID,
+                "polls": pollCount,
+                "full_walks": fullWalks,
+            ])
+        }
+        running = false
         lastEmitted = nil
         pollCount = 0
+        fullWalks = 0
         consecutiveBlindPolls = 0
         clearedWhileBlind = false
         suppressingStaleMute = false
@@ -220,16 +252,17 @@ final class MeetingAXWindowWatcher {
         // synchronously on the caller, so the manual scheduler steps the poll without a
         // run loop and the existing assertions stay immediate (MIC16).
         guard let walkQueue = walkQueue else {
-            consume(stateResolver())
+            let resolved = resolver()
+            consume(resolved.states, fullWalk: resolved.fullWalk)
             return
         }
         let gen = generation
-        let resolver = stateResolver
+        let resolver = resolver
         walkQueue.async { [weak self] in
-            let states = resolver()
+            let resolved = resolver()
             DispatchQueue.main.async {
                 guard let self = self, gen == self.generation else { return }
-                self.consume(states)
+                self.consume(resolved.states, fullWalk: resolved.fullWalk)
             }
         }
     }
@@ -237,8 +270,9 @@ final class MeetingAXWindowWatcher {
     /// Main-thread continuation of one poll: fuse the readings, drive the mute state
     /// machine (contradiction / emit / blind-clear), and re-arm the next tick. Runs on
     /// main in production (hopped from `walkQueue`), synchronously on the caller in tests.
-    private func consume(_ states: [MuteLabels.State]) {
+    private func consume(_ states: [MuteLabels.State], fullWalk: Bool) {
         pollCount += 1
+        if fullWalk { fullWalks += 1 }
 
         // MIC10 part 1: two windows claiming different things is not a confident read. In
         // capture-first the disagreement reads blind (the stale window can no longer out-vote the
@@ -373,27 +407,6 @@ final class MeetingAXWindowWatcher {
         let known = states.filter { $0 != .unknown }
         guard known.count > 1 else { return false }
         return !(known.allSatisfy { $0 == .muted } || known.allSatisfy { $0 == .unmuted })
-    }
-
-    /// Real resolver: fresh AX-tree walk for the live mute button(s), each read
-    /// (not subscribed) via the standard probe blob + locale recogniser.
-    static func readMuteStates(
-        axApp: AXUIElement,
-        bundleID: String,
-        catalogue: MuteLabels
-    ) -> [MuteLabels.State] {
-        guard let app = MeetingAXHandleBuilder.appNameByBundle[bundleID] else { return [] }
-        let locale = AXMuteButtonProbe.defaultLocaleResolver()
-        let buttons = MeetingAXHandleBuilder.findMeetingWindowMuteButtons(
-            in: axApp, bundleID: bundleID, catalogue: catalogue
-        )
-        return buttons.map { button in
-            let blob = AXMuteButtonProbe.defaultProbe(button)
-            return catalogue.recognize(
-                app: app, locale: locale,
-                title: blob.title, help: blob.help, description: blob.description
-            )
-        }
     }
 
     private static func label(for state: MuteLabels.State) -> String {

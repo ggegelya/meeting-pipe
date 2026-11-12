@@ -2,9 +2,10 @@
 id: PERF18
 title: The mute backstop re-walks every Teams window once a second for the whole recording, including the Calendar or chat window that never has a mute button
 category: Performance
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. `MeetingAXWindowWatcher` polls at `defaultPollInterval = 1.0`, and every poll's `readMuteStates` calls `MeetingAXHandleBuilder.findMeetingWindowMuteButtons`: a fresh Mute DFS of every Teams window plus a Leave DFS of each window that has a mute button. The Calendar or chat window open during calls has none, so it is walked to the end of its tree or the 4000-node budget every second, about 7,200 to 10,800 walks over a 2 to 3 h meeting, all serviced on Teams' main thread during the call and queued on the same serial `axWalkQueue` the end-rescue walk uses (DETECTION-6, verified high). MIC16 moved it off our main thread; nothing bounded its cost. Scope: cache the live buttons per window behind the existing `stateResolver` and read only those at 1 Hz, re-walking on a window-set or subrole change, an unknown read, or a 10 to 15 s backstop. [Spec](./PERF18.md)
+closed: 2026-11-12
+comment: Shipped 2026-11-12. `MeetingAXWindowWatcher`'s default resolver is a per-recording `MuteControlCache` confined to `axWalkQueue`: each poll lists the windows and reads their subroles, reads only the cached scoped buttons, and walks every window again only on the first poll, a window-set (compared as a set) or subrole change, the first unknown read of a streak (throttled to one per backstop), or the 10 s backstop. `scopeToLiveControl` stays the single picking rule; `MeetingAXHandleBuilder.meetingWindowControl` is the per-window walk `findMeetingWindowMuteButtons` now shares. `stop()` logs `micgate`/`mute_poller_stopped` with `polls` and `full_walks` (documented in CONVENTIONS.md beside the until-now undocumented `mute_poller_started`). PERF10's optional item 5 (scope the probe's rearm resolver) not taken. 13 new tests; `MeetingAXWindowWatcherTests` and `MeetingAXHandleBuilderTests` unchanged and green; `bash scripts/ci-local.sh` green except `FailureLayoutTests.test_real_detail_keeps_tabs_and_actions_visible_with_long_diagnostics`, which fails identically on the unmodified base. Post-install `full_walks` and `sample` evidence not taken yet (no Teams call). [Spec](./PERF18.md)
 ---
 
 # PERF18: the mute backstop re-walks every Teams window once a second for the whole recording, including the Calendar or chat window that never has a mute button
