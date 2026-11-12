@@ -21,7 +21,7 @@ let package = Package(
         // move without a deliberate bump. 0.14.8 already carries the streaming +
         // enrollment/embedding API FEAT3 needs, so the 0.15.x bump is deferred.
         // Track before bumping: upstream #738 (macOS 27 ANE access) and #726.
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.14.8")
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.18.3")
     ],
     targets: [
         // Shared lifecycle + gate infrastructure (TECH-C13, TECH-G-MIC).
