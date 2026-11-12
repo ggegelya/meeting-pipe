@@ -2,9 +2,10 @@
 id: PERF21
 title: Library playback leaves the audio output running after pause, end of file and window close, and calls its engine unbounded on the main thread
 category: Performance
-status: new
+status: owner-verify
 priority: P2
-comment: Filed 2026-10-25 from the performance review. `AudioPlaybackController.pause()` and the end-of-file branch only touch the player node, `engine.stop()` runs only in `teardown()` (a different file's `load`) and `deinit`, and the Library window is kept alive (`isReleasedWhenClosed = false`), so one play then pause leaves the output IO running until another meeting's audio loads or the app quits, and audio playing at window close keeps playing with no control on screen. Its `engine.start()` and `stop()` run synchronously on main, against the rule `boundedEngineStart` exists for (a 42 s main-thread start hang on the recorder engine on 2026-06-12); during a recording that would freeze Stop and the hotkeys, but no playback freeze is recorded, so P2 and the owner may re-band. Every row selection also decodes the whole recording for Skip silence when it is off. Scope: stop the engine on pause, end of file and disappear, bound and sequence every engine call behind an injected seam, silent spans only on demand and cancellable. [Spec](./PERF21.md)
+verification: simple
+comment: Code shipped 2026-11-12 (engine stops after a 3 s grace on pause and end of file, detail view pauses on disappear, every engine call bounded and chained over the PlaybackEngine seam with retire-on-timeout, silent spans only on demand and cancellable; 15 new tests, ci-local green). Owner verification approved as simple on 2026-11-12: the before reading must be taken on the installed app before the next ./scripts/rebuild.sh. [Spec](./PERF21.md)
 ---
 
 # PERF21: Library playback leaves the audio output running after pause, end of file and window close, and calls its engine unbounded on the main thread
@@ -49,11 +50,20 @@ The seam is `AudioPlaybackController` (`load(url:)`, `play()`, `pause()`, `resta
 - `cd daemon && swift build` and `swift test` green, with the number of new tests in the commit body; `bash scripts/ci-local.sh` green.
 - `docs/GUIDE.md`'s playback recipe updated in the same commit, since closing the Library now stops audio.
 
+**Progress (2026-11-12):** implementation, tests, the source fences and the GUIDE.md and README rows landed in one commit. Only the owner walkthrough below remains.
+
+## Approved verification (owner, 2026-11-12: "Yes, owner-verify simple")
+
+1. **What the owner does.** First, on the installed app and **before the next `./scripts/rebuild.sh`** (so the reading is of the pre-PERF21 build): play a meeting for five seconds in the Transcript tab, pause, then close the Library; a session then runs `pmset -g assertions` and `sample MeetingPipe 5`. Then `./scripts/rebuild.sh`, repeat the same actions, and the session takes the same two reads. Finally play and pause a few times quickly, and play a short meeting to the end and press Play again.
+2. **What a pass looks like.** After the rebuild, a few seconds after the pause there is no idle-sleep assertion held for MeetingPipe's output and no active audio IO thread in the sample. Each resume starts where it paused, and the replay starts from the beginning. If the before reading shows no assertion either, that is still a pass: the close note drops the idle-sleep claim and keeps the IO claim.
+3. **What it costs.** About ten minutes and one rebuild. No live call, no real meeting, no special hardware, no dwell time.
+4. **Why a harness cannot do it.** Playback runs only through the menu-bar app's Library window, which a harness can neither drive nor screenshot, and the claim is about what coreaudiod and the real output route do. `AudioPlaybackControllerTests` prove the controller's logic over a fake engine, not what the OS sees.
+
 ## Owner walkthrough (for the session that picks this up)
 
 Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who acts. A harness cannot do the UI half: playback is driven only through the menu-bar app's Library window, which this harness can neither operate nor screenshot, and the claim depends on the real output route.
 
-1. [owner] Before the fix lands, on the installed build: play a meeting for five seconds in the Transcript tab, pause, then close the Library. [session] Run `pmset -g assertions` and `sample MeetingPipe 5` and record whether coreaudiod holds a `PreventUserIdleSystemSleep` assertion for MeetingPipe's output and whether an audio IO thread is active. This pins the premise the review could not measure; if no assertion appears, the ship note drops the idle-sleep claim and keeps the IO claim.
+1. [owner] Before the next `./scripts/rebuild.sh` after this lands, on the installed build: play a meeting for five seconds in the Transcript tab, pause, then close the Library. [session] Run `pmset -g assertions` and `sample MeetingPipe 5` and record whether coreaudiod holds a `PreventUserIdleSystemSleep` assertion for MeetingPipe's output and whether an audio IO thread is active. This pins the premise the review could not measure; if no assertion appears, the ship note drops the idle-sleep claim and keeps the IO claim.
 2. [owner] `./scripts/rebuild.sh` after the change lands, then repeat step 1's actions. [session] The same two reads show no assertion and no IO thread.
 3. [owner] Play and pause a few times quickly, and play to the end of a short meeting then press Play again. Pass: each resume starts where it paused, and the replay starts from the beginning.
-4. [owner] Say "PERF21 good to close" (or what is wrong); [session] moves the row and this spec into `q6-final.md` and deletes this file.
+4. [owner] Say "PERF21 good to close" (or what is wrong); [session] closes it in place per `owner-verification.md` (`status: done`, drop `verification:`, add `closed:` and a one-line close note), or on a fail sets it back to `partial`.

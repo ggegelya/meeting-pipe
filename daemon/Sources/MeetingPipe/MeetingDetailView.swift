@@ -104,6 +104,10 @@ struct MeetingDetailView: View {
             // the meeting you just left kept playing under the new title.
             playback.pause()
         }
+        // PERF21: the Library window is kept (`isReleasedWhenClosed = false`), so closing it, or
+        // leaving the meeting for Facts or a multi-select, does not release the player. Pausing
+        // here stops the sound, and the controller's idle stop then takes the output down.
+        .onDisappear { playback.pause() }
         .onChange(of: libraryModel.pendingTranscriptJump) { _, _ in consumeTranscriptJump() }
         .onChange(of: meeting.displayTitle) { _, _ in syncEditingTitle(force: false) }
         .task(id: PublishURLsReloadKey(stem: meeting.stem, revision: store.revision)) {

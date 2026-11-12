@@ -427,7 +427,7 @@ Open a window and MeetingPipe puts a menu bar across the top of the screen, the 
 | `⌘K` | Quick Find, the search box over every meeting. Works here as well as from the menu-bar dropdown |
 | `⌘M` | Minimise the window to the Dock. Click it there to bring it back |
 | `⌘W` | Hides the Library. The app keeps running and the window comes back the way you left it |
-| `Space` | Play or pause, on the Transcript and Audio tabs. Once audio is playing, a play/pause control and the position also appear in the meeting's header, so you can stop it from the Summary tab without going back |
+| `Space` | Play or pause, on the Transcript and Audio tabs. Once audio is playing, a play/pause control and the position also appear in the meeting's header, so you can stop it from the Summary tab without going back. Closing the Library window, or leaving the meeting for another view, pauses it |
 | `Return` | Commit a title you are editing in the detail header |
 | `Esc` | Close a sheet without saving |
 | `⌘` or `⇧` click | Select several meetings in the list, or several lines in a transcript |

@@ -140,6 +140,11 @@ enum WaveformPeaksLoader {
         var carryUsed: Int = 0
 
         while file.framePosition < Int64(frameCount) {
+            // PERF21: a cancelled caller (the playback controller's skip-silence load, on the
+            // next row) stops the decode here. It throws rather than breaking out, because
+            // `load` would otherwise cache the truncated peaks under the file's real size
+            // and mtime and the Audio tab would draw them from then on.
+            try Task.checkCancellation()
             do {
                 try file.read(into: buf)
             } catch {
