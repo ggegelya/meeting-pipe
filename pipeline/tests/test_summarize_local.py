@@ -13,6 +13,9 @@ The 3-layer extraction fallback is unit-tested directly via
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -1504,3 +1507,251 @@ def test_a_reduce_only_repair_that_still_drifts_keeps_the_original(
     assert repaired is first
     assert not any(_is_map(r) for r in repair_requests)
     assert any(_is_reduce(r) for r in repair_requests)
+
+
+# ----- PIPE22: a SIGTERM unwinds through close(), and a marker is cleared only
+# once its server is confirmed gone -----
+
+
+class _StubbornProc:
+    """A spawned server that ignores SIGTERM and, unless `dies_on_kill`, SIGKILL
+    too. `wait` raising `TimeoutExpired` is how the ladder sees that."""
+
+    pid = 4242
+
+    def __init__(self, *, dies_on_kill: bool) -> None:
+        self.dies_on_kill = dies_on_kill
+        self.killed = False
+
+    def poll(self) -> int | None:
+        return -9 if self.killed else None
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self.killed:
+            return -9
+        raise subprocess.TimeoutExpired("mlx_lm.server", timeout or 0)
+
+
+def _owned_marker(monkeypatch: pytest.MonkeyPatch, proc: _StubbornProc) -> list[int]:
+    """Write this client's marker for `proc` and fake the group signals, so no
+    real process group is ever signalled for the made-up pid."""
+    from mp import local_server
+
+    local_server.write_marker(pid=proc.pid, port=8765, model="some/model")
+    sent: list[int] = []
+
+    def _killpg(_pgid: int, sig: int) -> None:
+        sent.append(sig)
+        if sig == signal.SIGKILL and proc.dies_on_kill:
+            proc.killed = True
+
+    monkeypatch.setattr("mp.summarize_local.os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("mp.summarize_local.os.killpg", _killpg)
+    return sent
+
+
+def test_a_server_that_survives_close_keeps_its_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PY-12: the marker was cleared before the first signal, so a server that
+    outlived its kill had nothing left naming it."""
+    from mp import local_server
+
+    proc = _StubbornProc(dies_on_kill=False)
+    sent = _owned_marker(monkeypatch, proc)
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        local_server.events, "emit",
+        lambda _category, action, **attrs: emitted.append((action, attrs)),
+    )
+    client = LocalSummaryClient(host="127.0.0.1", port=8765)
+    client._proc = proc  # type: ignore[assignment]
+
+    assert client._terminate_proc() is False
+    assert sent == [signal.SIGTERM, signal.SIGKILL]
+    assert local_server.read_marker() is not None
+    assert emitted == [("local_server_survived_kill", {"pid": 4242, "signal": "SIGKILL"})]
+
+
+def test_a_server_that_dies_on_close_takes_its_marker_with_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mp import local_server
+
+    proc = _StubbornProc(dies_on_kill=True)
+    _owned_marker(monkeypatch, proc)
+    client = LocalSummaryClient(host="127.0.0.1", port=8765)
+    client._proc = proc  # type: ignore[assignment]
+
+    assert client._terminate_proc() is True
+    assert local_server.read_marker() is None
+
+
+def test_a_server_that_already_exited_clears_its_marker_without_a_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mp import local_server
+
+    proc = _StubbornProc(dies_on_kill=True)
+    proc.killed = True  # exited on its own before close
+    sent = _owned_marker(monkeypatch, proc)
+    client = LocalSummaryClient(host="127.0.0.1", port=8765)
+    client._proc = proc  # type: ignore[assignment]
+
+    assert client._terminate_proc() is True
+    assert sent == []
+    assert local_server.read_marker() is None
+
+
+def test_a_mismatched_server_that_survives_is_not_respawned_over(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spawning onto a port the survivor still holds fails as an opaque startup
+    error; refusing names the pid instead."""
+    host, port, server = fake_server
+    _fake_identity(monkeypatch, _identity("stale/model", pid=4242))
+    monkeypatch.setattr("mp.local_server.read_marker", lambda home=None: {"pid": 4242})
+    monkeypatch.setattr("mp.local_server.terminate_server", lambda pid, home=None: False)
+    monkeypatch.setattr("mp.local_server.is_server_pid", lambda pid: True)
+    c = LocalSummaryClient(host=host, port=port, model="fresh/model")
+    monkeypatch.setattr(c, "_spawn", lambda: pytest.fail("spawned onto a survivor's port"))
+
+    with pytest.raises(LocalSummaryError, match="pid 4242"):
+        c._ensure_running()
+
+
+def test_a_reused_server_is_restamped_to_this_client_and_handed_back(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Performance-review leg 1: a run-all spawns the server, an ask reuses it,
+    the run-all is cancelled, and the reap that follows found the marker's owner
+    dead and killed the server mid-answer. The reusing client now owns the
+    marker while it uses the server, keeping pid, port and model, and hands it
+    back on close so the run-all is not exposed the other way round."""
+    from mp import local_server
+
+    host, port, server = fake_server
+    _serve_valid_summary(server)
+    _fake_identity(monkeypatch, _identity("some/model", pid=4242))
+    path = local_server.marker_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    spawned_by_other = {
+        "schema_version": 1, "pid": 4242, "owner_pid": 1111, "port": port,
+        "model": "some/model", "adapter_path": "", "spawned_at": 1770000000.0,
+    }
+    path.write_text(json.dumps(spawned_by_other), encoding="utf-8")
+    monkeypatch.setattr(
+        "mp.local_server.pid_command",
+        lambda pid: "/usr/bin/python3 -m mp run-all /tmp/x.wav" if pid == 1111 else None,
+    )
+
+    with LocalSummaryClient(host=host, port=port, model="some/model") as c:
+        _summarize(c)
+        during = local_server.read_marker()
+        assert during == {**spawned_by_other, "owner_pid": os.getpid()}
+
+    assert local_server.read_marker() == spawned_by_other
+
+
+SIGTERM_FAKE_SERVER = """
+import os, sys, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"data": []}')
+
+    def do_POST(self):
+        with open(os.environ["MP_TEST_POSTED"], "w") as f:
+            f.write("posted")
+        time.sleep(120)
+
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), Handler).serve_forever()
+"""
+
+SIGTERM_SUMMARIZE_CHILD = """
+import os, socket, sys
+import mp.logs_cmd
+import mp.summarize_local as sl
+
+FAKE = os.environ["MP_TEST_FAKE_SERVER"]
+# `mlx_lm.server` rides in argv so `ps` identifies it the way it would the real one.
+sl.build_server_command = lambda model, host, port, adapter=None: [
+    sys.executable, "-c", FAKE, "mlx_lm.server", str(port),
+]
+sl.model_is_cached = lambda repo: True
+
+def summarize_main(argv):
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    print("READY", flush=True)
+    with sl.LocalSummaryClient(host="127.0.0.1", port=port, model="fake/model") as c:
+        c.complete(system_prompt="s", user_message="u", max_tokens=8, response_format=None)
+    return 0
+
+mp.logs_cmd.main = summarize_main
+sys.argv = ["mp", "logs"]
+from mp.__main__ import main
+sys.exit(main())
+"""
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_sigterm_during_a_local_summarize_leaves_no_server_and_no_marker(tmp_path) -> None:
+    """The defect end to end: the daemon's Cancel SIGTERMs `mp` mid-request. With
+    no handler the interpreter died on the spot, `close()` never ran, and the
+    setsid'd server (multi-GB for real) stayed resident. A real child, a real
+    fake server in its own session, a real signal; `HOME` and the log dir point
+    at `tmp_path`, so the developer's own marker is never read or written."""
+    posted = tmp_path / "posted"
+    marker = tmp_path / "Library" / "Logs" / "MeetingPipe" / "mlx-server.json"
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "MEETINGPIPE_LOGS_DIR": str(tmp_path),
+        "MP_TEST_POSTED": str(posted),
+        "MP_TEST_FAKE_SERVER": SIGTERM_FAKE_SERVER,
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-c", SIGTERM_SUMMARIZE_CHILD],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+    )
+    server_pid: int | None = None
+    try:
+        assert proc.stdout is not None
+        assert proc.stdout.readline().strip() == "READY", proc.communicate(timeout=5)[1]
+        deadline = time.monotonic() + 30
+        while not posted.exists():
+            assert proc.poll() is None, proc.communicate()[1]
+            assert time.monotonic() < deadline, "the request never reached the fake server"
+            time.sleep(0.05)
+        server_pid = json.loads(marker.read_text(encoding="utf-8"))["pid"]
+        assert _alive(server_pid)
+
+        proc.send_signal(signal.SIGTERM)
+        _out, err = proc.communicate(timeout=30)
+
+        assert proc.returncode == 143, err
+        assert not marker.exists()
+        gone_by = time.monotonic() + 5
+        while _alive(server_pid) and time.monotonic() < gone_by:
+            time.sleep(0.05)
+        assert not _alive(server_pid)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        if server_pid is not None and _alive(server_pid):
+            os.killpg(server_pid, signal.SIGKILL)

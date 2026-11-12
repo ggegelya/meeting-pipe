@@ -2,9 +2,10 @@
 id: PIPE22
 title: Mp has no SIGTERM handler, so a user Cancel skips every finally and orphans a multi-GB mlx_lm.server, and the daemon only reaps on timeout
 category: Pipeline
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch M3): Cancel SIGTERMs mp with no handler, so no finally runs and the setsid'd mlx_lm.server stays resident; the reaper runs only on watchdog timeout or the next successful job, since route() returns early on cancel. Map SIGTERM to SystemExit(143), reap on cancel too, fix the reaper and reapStorage comments. [Spec](./PIPE22.md) Amended 2026-10-25 (observability band): terminate_server and LocalSummaryClient._terminate_proc both clear the mlx-server.json marker without confirming the server died (PY-12), so a survivor is invisible to doctor and the reaper. Clear only on a confirmed exit, emit local_server_survived_kill, no respawn onto a survivor's port. Amended 2026-10-25 (performance review): a client that reuses a warm server must re-stamp the marker's owner_pid, or the reap on cancel kills a server a live mp ask is using, and the owner-liveness rule on both sides matches any command containing "mp" and must be tightened together.
+closed: 2026-11-12
+comment: Shipped 2026-11-12. mp turns SIGTERM into a one-shot SystemExit(143) so every finally runs and a local summary's close() kills its model server; the daemon reaps on Cancel as well as timeout (injectable reaper closure); both kill paths clear mlx-server.json only on a confirmed exit and emit local_server_survived_kill, and the mismatch respawn refuses a survivor's port; a reusing client re-stamps owner_pid and hands it back on close; the owner rule is a Python argv with -m mp or a /mp token on both sides. Full ci-local.sh green. [Spec](./PIPE22.md)
 ---
 
 # PIPE22: `mp` has no SIGTERM handler, so a user Cancel skips every `finally` and orphans a multi-GB `mlx_lm.server`, and the daemon only reaps on timeout

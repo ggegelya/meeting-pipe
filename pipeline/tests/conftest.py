@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import signal
 
 import pytest
 
@@ -43,3 +44,29 @@ def _reset_egress_guard():
             os.environ.pop(key, None)
         else:
             os.environ[key] = value
+
+
+@pytest.fixture(autouse=True)
+def _restore_sigterm_disposition():
+    """`mp.__main__.main` installs a process-wide SIGTERM handler (PIPE22), and
+    in-process tests call `main()`. Put back whatever pytest had, so a test that
+    drove the router cannot leave the whole suite turning SIGTERM into a
+    `SystemExit` in whichever test happens to be running when one arrives."""
+    before = signal.getsignal(signal.SIGTERM)
+    yield
+    signal.signal(signal.SIGTERM, before)
+
+
+@pytest.fixture(autouse=True)
+def _private_server_marker(monkeypatch, tmp_path_factory):
+    """`local_server.marker_path()` defaults to the real `~/Library/Logs/
+    MeetingPipe/mlx-server.json`, and `LocalSummaryClient` calls it with no
+    `home`, so any test that spawns, closes, or reuses a server through the
+    client wrote, rewrote or deleted the developer's live marker, the one the
+    daemon's reaper acts on. Default it to a per-test directory; a test that
+    passes `home` explicitly still gets exactly the path it asked for (PIPE22)."""
+    from mp import local_server
+
+    home = tmp_path_factory.mktemp("marker-home")
+    real = local_server.marker_path
+    monkeypatch.setattr(local_server, "marker_path", lambda h=None: real(h or home))

@@ -75,14 +75,40 @@ final class LocalServerReaperTests: XCTestCase {
 
     // MARK: - Owner identity (whether the server is still someone's)
 
+    // PIPE22: the same two lists `test_local_server.py` pins (`OWNER_COMMANDS`,
+    // `NOT_OWNER_COMMANDS`). The rule used to be "contains `mp` or `python`", which
+    // every rejected line below satisfied, so a recycled owner pid could shield an
+    // orphan forever. A console script shows up in `ps` as its interpreter followed
+    // by the script path, which is why the accepted forms all start with a Python.
+    static let ownerCommands = [
+        "python3 -m mp run-all x.wav",
+        "/path/.venv/bin/python /path/.venv/bin/mp ask q",
+        "/usr/bin/python3 -m mp run-all /tmp/x.wav",
+        "/Applications/MeetingPipe.app/Contents/Resources/python/bin/python3 -m mp ask q",
+        "/Users/x/My Documents/meeting-pipe/pipeline/.venv/bin/python3 "
+            + "/Users/x/My Documents/meeting-pipe/pipeline/.venv/bin/mp run-all /tmp/x.wav",
+    ]
+    static let notOwnerCommands = [
+        "/usr/bin/sample 123",
+        "/bin/sh /tmp/x.sh",
+        "/usr/sbin/cupsd -l",
+        "/usr/bin/python3 /tmp/unrelated.py",
+        "/usr/bin/python3 -m pytest tests",
+        "/bin/sh /path/bin/mp run-all x.wav",
+        "",
+    ]
+
     func testALiveMpProcessCountsAsTheOwner() {
-        XCTAssertTrue(LocalServerReaper.isOwnerCommand("/usr/bin/python3 -m mp run-all /tmp/x.wav"))
-        XCTAssertTrue(LocalServerReaper.isOwnerCommand("/Users/x/.local/bin/mp summarize /tmp/x.md"))
+        for command in Self.ownerCommands {
+            XCTAssertTrue(LocalServerReaper.isOwnerCommand(command), command)
+        }
     }
 
     func testADeadOrRecycledOwnerDoesNotShieldTheServer() {
         XCTAssertFalse(LocalServerReaper.isOwnerCommand(nil))     // owner pid is gone
-        XCTAssertFalse(LocalServerReaper.isOwnerCommand("/usr/sbin/cupsd -l"))  // pid reused
+        for command in Self.notOwnerCommands {
+            XCTAssertFalse(LocalServerReaper.isOwnerCommand(command), command)  // pid reused
+        }
     }
 
     // MARK: - The daemon's own server is never a marker

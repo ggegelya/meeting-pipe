@@ -5,7 +5,10 @@ runnable in isolation (debugging, retries, manual fixes).
 """
 from __future__ import annotations
 
+import signal
 import sys
+from types import FrameType
+from typing import NoReturn
 
 USAGE = """\
 mp — meeting-pipe pipeline
@@ -103,6 +106,12 @@ Globals:
 # that landed nowhere.
 EXIT_INTERRUPTED = 130
 
+# SIGTERM, the shell's 128 + 15 (PIPE22). What the daemon sends on a Cancel and
+# on a watchdog overrun. Outside the daemon's exit vocabulary for the same reason
+# 130 is: `SinkDispatcher.stage(for:)` branches on 3 alone, and the daemon reads a
+# Cancel off its own per-run flag (`PipelineLauncher.outcome`), never this code.
+EXIT_TERMINATED = 143
+
 # A managed secret was missing and no stage could work around it (PIPE16).
 # Deliberately 2, the same code `require_env`'s old `sys.exit(2)` returned, so
 # the fail-fast contract at the CLI boundary is byte-identical to what it was;
@@ -124,6 +133,39 @@ def _interrupt_line(cmd: str) -> str:
     """The single stderr line a Ctrl-C prints, naming what was interrupted."""
     note = _INTERRUPT_NOTES.get(cmd)
     return f"mp {cmd}: interrupted" + (f"; {note}" if note else "")
+
+
+def _ignore_repeat_sigterm(_signum: int, _frame: FrameType | None) -> None:
+    """Every SIGTERM after the first, while the first one is still unwinding."""
+
+
+def _on_sigterm(_signum: int, _frame: FrameType | None) -> NoReturn:
+    """Turn a SIGTERM into an unwind (PIPE22).
+
+    Python's default disposition kills the interpreter on the spot, so no
+    `finally` and no `__exit__` ran, and a Cancel during a local summary left the
+    setsid'd `mlx_lm.server` resident with only its marker to name it. Raising
+    `SystemExit` instead walks every frame: it is a `BaseException`, so no
+    `except Exception` in a run swallows it, and `LocalSummaryClient.close()` gets
+    to kill the server and clear its marker.
+
+    One-shot. A second SIGTERM must not abort the cleanup the first one started,
+    which a re-raising handler would do the moment it landed inside `close()`'s
+    wait on the server. Swapped for a Python no-op rather than `SIG_IGN`, because
+    an ignored disposition is inherited across `exec` by every `ps`/`lsof` child
+    the unwind spawns. The daemon's SIGKILL after its grace stays the backstop.
+    """
+    signal.signal(signal.SIGTERM, _ignore_repeat_sigterm)
+    raise SystemExit(EXIT_TERMINATED)
+
+
+def _install_sigterm_handler() -> None:
+    """Route SIGTERM through `_on_sigterm`. Python only lets the main thread set
+    a handler, and `main()` runs there; anywhere else this is a no-op."""
+    try:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except ValueError:
+        pass
 
 
 def _dispatch(cmd: str, rest: list[str]) -> int:
@@ -227,6 +269,7 @@ def main() -> int:
 
     cmd, rest = argv[0], argv[1:]
 
+    _install_sigterm_handler()
     try:
         return _dispatch(cmd, rest)
     except MissingSecretError as e:
@@ -258,6 +301,14 @@ def main() -> int:
         # is a supported way to stop a long run, so it says one line and leaves.
         print(_interrupt_line(cmd), file=sys.stderr)
         return EXIT_INTERRUPTED
+    except SystemExit as e:
+        # Only the SIGTERM unwind is ours to name; argparse's own exits and
+        # anything else pass through untouched. By the time this runs, every
+        # `finally` below the router has already run (PIPE22).
+        if e.code != EXIT_TERMINATED:
+            raise
+        print(f"mp {cmd}: terminated", file=sys.stderr)
+        return EXIT_TERMINATED
 
 
 if __name__ == "__main__":  # pragma: no cover

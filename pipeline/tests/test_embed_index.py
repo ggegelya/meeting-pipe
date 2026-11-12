@@ -6,6 +6,9 @@ MLX path is never imported (it is integration-tested by the real spike run).
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -342,6 +345,66 @@ def test_a_killed_build_resumes_from_its_checkpoint(tmp_path: Path, monkeypatch)
     clean = EmbeddingIndex.build(lib, CountingEmbedder())
     assert [c.to_json() for c in index.chunks] == [c.to_json() for c in clean.chunks]
     assert np.allclose(index.vectors, clean.vectors)
+
+
+SIGTERM_ASK_CHILD = """
+import os, signal, sys, time
+import mp.ask
+from mp import embed_index
+from mp.embed_index import HashingEmbedder
+
+class SigtermEmbedder(HashingEmbedder):
+    def __init__(self):
+        super().__init__(dim=64)
+        self.batches = 0
+
+    def embed(self, texts, kind="passage"):
+        if self.batches == 2:
+            # The daemon's ten-minute cap, delivered the way it really arrives.
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(30)  # interrupted: the SystemExit lands inside this batch
+        self.batches += 1
+        return super().embed(texts, kind)
+
+def ask_main(argv):
+    embed_index.CHECKPOINT_EVERY_STEMS = 1
+    embed_index.CHECKPOINT_MIN_INTERVAL_S = 0.0
+    embed_index.load_or_build(argv[0], argv[1], SigtermEmbedder())
+    return 0
+
+mp.ask.main = ask_main
+sys.argv = ["mp", "ask", sys.argv[1], sys.argv[2]]
+from mp.__main__ import main
+sys.exit(main())
+"""
+
+
+def test_a_sigtermed_ask_keeps_its_checkpoint(tmp_path: Path, monkeypatch) -> None:
+    """PIPE22 against AI11: the daemon SIGTERMs `mp ask` at ten minutes, and the
+    SIGTERM now unwinds through every `finally` and `except BaseException`
+    instead of killing the interpreter. None of them may roll back the partial
+    index: the next ask has to resume from the checkpoint, exactly as after a
+    Ctrl-C. A real process and a real signal, through the real router."""
+    lib, idx_dir = tmp_path / "lib", tmp_path / "idx"
+    for i in range(4):
+        _meeting(lib, f"m{i}", title=f"T{i}", transcript=f"topic-{i} discussion " * 30)
+
+    child = subprocess.run(
+        [sys.executable, "-c", SIGTERM_ASK_CHILD, str(lib), str(idx_dir)],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "MEETINGPIPE_LOGS_DIR": str(tmp_path)},
+    )
+    assert child.returncode == 143, child.stderr
+    assert child.stderr.splitlines() == ["mp ask: terminated"]
+
+    monkeypatch.setattr(embed_index, "CHECKPOINT_EVERY_STEMS", 1)
+    resumed = CountingEmbedder()
+    index = embed_index.load_or_build(lib, idx_dir, resumed)
+
+    # The two meetings embedded before the signal were checkpointed and kept.
+    assert resumed.batches == 2
+    assert not any("topic-0" in t or "topic-1" in t for t in resumed.embedded)
+    assert {c.stem for c in index.chunks} == {"m0", "m1", "m2", "m3"}
 
 
 def test_a_checkpoint_is_not_mistaken_for_a_finished_index(tmp_path: Path, monkeypatch) -> None:

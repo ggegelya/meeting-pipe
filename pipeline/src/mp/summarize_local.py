@@ -460,6 +460,9 @@ class LocalSummaryClient:
         # when the identity could not be read), which is why `model` and
         # `adapter_path` below fall back to the configured values.
         self._served: local_server.ServedIdentity | None = None
+        # PIPE22: `(server_pid, previous_owner)` when this client re-stamped the
+        # LOCAL10 marker of a warm server it reused, so `close` can hand it back.
+        self._adopted: tuple[int, int] | None = None
         # Base client timeout; the chat-completion POST overrides the read leg
         # per call, scaled to max_tokens (LOCAL2). Health checks override to 2s.
         self._http = httpx.Client(timeout=httpx.Timeout(request_timeout_sec, connect=5.0))
@@ -874,6 +877,7 @@ class LocalSummaryClient:
         with self._lock:
             self._cancel_idle_timer()
             self._terminate_proc()
+            self._hand_back()
         self._http.close()
 
     # Context-manager sugar so callers can scope the server lifetime
@@ -892,6 +896,7 @@ class LocalSummaryClient:
 
     def _ensure_running(self) -> None:
         if self._is_healthy() and self._reuse_is_safe():
+            self._adopt()
             return
         if not self._manage_subprocess:
             raise LocalSummaryError(
@@ -950,11 +955,48 @@ class LocalSummaryClient:
             self.base_url, identity.describe(), want,
         )
         if self._proc is not None:
-            self._terminate_proc()
+            gone = self._terminate_proc()
         else:
-            local_server.terminate_server(identity.pid)
+            gone = local_server.terminate_server(identity.pid) or not local_server.is_server_pid(
+                identity.pid
+            )
         self._served = None
+        if not gone:
+            # PIPE22: the old server is still alive and still holds the port, so a
+            # spawn would collide with it and fail as an opaque startup error. Say
+            # which process it is; its marker was kept, so `mp doctor` names it too.
+            raise LocalSummaryError(
+                f"mlx_lm.server pid {identity.pid} on {self.base_url} serves "
+                f"{identity.describe()} and survived being stopped, so the configured "
+                f"model {want} cannot start on that port. Stop that process, or run "
+                f"`mp doctor` for details."
+            )
         return False
+
+    def _adopt(self) -> None:
+        """PIPE22: own the warm server this client is about to use.
+
+        The LOCAL10 marker names the `mp` that spawned the server, and owner
+        liveness is all the daemon reaper checks. So when that spawner was
+        cancelled while this client (an `mp ask`, say) was mid-request, the reap
+        that follows a Cancel killed the server under it. Re-stamping makes this
+        process the owner while it uses the server; `_hand_back` undoes it.
+        A server this client spawned already names us, and one with no marker
+        (the daemon's warm `mp serve-local`) is never given one."""
+        if self._proc is not None or self._served is None or self._adopted is not None:
+            return
+        previous = local_server.restamp_owner(self._served.pid)
+        if previous is not None:
+            self._adopted = (self._served.pid, previous)
+
+    def _hand_back(self) -> None:
+        """Return an adopted server's marker to its previous owner, if that owner
+        is still alive (`local_server.hand_back_owner`). Without this an `mp ask`
+        that reused a live run-all's server would leave it looking orphaned when
+        the ask exits, and the reap after a Cancel of the ask would kill it."""
+        adopted, self._adopted = self._adopted, None
+        if adopted is not None:
+            local_server.hand_back_owner(*adopted)
 
     def _owns(self, identity: local_server.ServedIdentity) -> bool:
         """May this client kill `identity`'s server? True when we spawned it in
@@ -1064,7 +1106,9 @@ class LocalSummaryClient:
         except Exception:
             return False
 
-    def _terminate_proc(self) -> None:
+    def _terminate_proc(self) -> bool:
+        """Stop the server this client spawned. True when none of ours is left
+        running, False when it survived the whole ladder (PIPE22)."""
         proc = self._proc
         self._proc = None
         # The identity we read belonged to the server we are about to stop; a
@@ -1073,27 +1117,36 @@ class LocalSummaryClient:
         if proc is None:
             # A server we health-checked into rather than spawned (the warm
             # `mp serve-local` path). Not ours to kill, and it has no marker.
-            return
-        # LOCAL10: we own this one, so drop its marker whether or not the kill
-        # below finds it already dead. A marker outliving its server would make
-        # the next `doctor` run lie.
-        local_server.clear_marker()
-        if proc.poll() is not None:
-            return
-        try:
-            if hasattr(os, "killpg"):
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            else:
-                proc.terminate()
+            return True
+        if proc.poll() is None:
+            last_signal = "SIGTERM"
             try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
                 if hasattr(os, "killpg"):
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                 else:
-                    proc.kill()
-        except Exception as e:  # pragma: no cover
-            log.warning("error terminating mlx_lm.server: %s", e)
+                    proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    last_signal = "SIGKILL"
+                    if hasattr(os, "killpg"):
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    else:
+                        proc.kill()
+                    proc.wait(timeout=local_server.KILL_CONFIRM_SEC)
+            except Exception as e:
+                log.warning("error terminating mlx_lm.server: %s", e)
+            if proc.poll() is None:
+                # PIPE22: keep the marker. It used to be cleared before the first
+                # signal, so a server that outlived its kill had nothing left
+                # naming it and neither `mp doctor` nor the daemon reaper, both
+                # marker-based, could ever see it again.
+                local_server.note_survived_kill(proc.pid, last_signal)
+                return False
+        # LOCAL10: gone, whether we killed it or it had already exited, so its
+        # marker goes too. One outliving its server would make `doctor` lie.
+        local_server.clear_marker()
+        return True
 
     def _reset_idle_timer(self, delay_sec: float | None = None) -> None:
         self._cancel_idle_timer()

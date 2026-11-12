@@ -4,15 +4,20 @@ import Foundation
 ///
 /// The pipeline's `LocalSummaryClient` starts the model server with `setsid`, so it
 /// sits in its own session and a signal aimed at `mp`'s process group cannot reach
-/// it. Every clean exit path in `mp` kills it. The one path that does not is
-/// `PipelineLauncher`'s watchdog SIGKILLing a wedged `run-all` (the LOCAL2/AUD-21
-/// scenario the watchdog exists for): the parent's idle-timeout timer dies with the
-/// parent, and a multi-GB server is left resident with nothing that knows it exists.
+/// it. Every clean exit path in `mp` kills it, and since PIPE22 so does a SIGTERM,
+/// which `mp` turns into an unwind through `close()`. What still leaves one behind
+/// is the SIGKILL `PipelineLauncher` follows up with when that unwind outruns the
+/// grace (the LOCAL2/AUD-21 wedged-`run-all` scenario), and a server that survives
+/// its own kill ladder (Python then keeps the marker rather than clearing it). The
+/// parent's idle-timeout timer dies with the parent, and a multi-GB server is left
+/// resident with nothing but the marker that knows it exists.
 ///
 /// Python leaves us a marker naming it (`mp.local_server`, schema in CONVENTIONS.md).
-/// We reap on two triggers: at launch, in `Coordinator.reapStorage()`'s sweep, and
-/// immediately after the watchdog kills a job, which is the case that creates the
-/// orphan in the first place.
+/// We reap on three triggers: `Coordinator.reapStorage()`'s sweep, at launch and after
+/// every finished job; the watchdog killing a job; and the owner cancelling one
+/// (`PipelineLauncher`'s termination handler, for the last two). A cancelled job
+/// never reaches the finished-job sweep, since the dispatcher returns early on a
+/// cancellation, which is why it needs its own.
 ///
 /// `mp serve-local` writes no marker. The daemon spawns it directly and owns its
 /// lifetime through a child handle, so it can never be orphaned this way.
@@ -109,9 +114,26 @@ enum LocalServerReaper {
 
     /// A pid whose command is not a Python `mp` invocation reads as a dead owner,
     /// so pid reuse cannot hide an orphan behind a live-looking owner.
+    ///
+    /// A Python interpreter whose argv carries `-m mp` or an `mp` entrypoint path
+    /// segment (`.venv/bin/mp`; macOS lists a shebang script as its interpreter
+    /// followed by the script path). Split on whitespace, so a path with a space in
+    /// it still ends in a `/mp` token. Token for token what Python's
+    /// `local_server.is_owner_command` does, and both suites pin the same cases. It
+    /// used to accept anything containing the letters `mp` (a `/tmp` path, `sample`),
+    /// which let a recycled owner pid shield an orphan forever (PIPE22).
     static func isOwnerCommand(_ command: String?) -> Bool {
         guard let command else { return false }
-        return command.contains("mp") || command.lowercased().contains("python")
+        let tokens = command.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard let pythonAt = tokens.firstIndex(where: { $0.lowercased().contains("python") }) else {
+            return false
+        }
+        let rest = Array(tokens[(pythonAt + 1)...])
+        for (i, token) in rest.enumerated() {
+            if token == "mp", i > 0, rest[i - 1] == "-m" { return true }
+            if token.hasSuffix("/mp") { return true }
+        }
+        return false
     }
 
     static func isServerAlive(_ pid: pid_t) -> Bool {

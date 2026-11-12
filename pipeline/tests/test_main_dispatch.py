@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import os
 import signal
 import subprocess
 import sys
@@ -251,3 +252,121 @@ def test_real_sigint_prints_no_traceback() -> None:
     assert proc.returncode == 130
     assert "Traceback" not in err
     assert err.splitlines() == ["mp logs: interrupted"]
+
+
+# --- SIGTERM (PIPE22) --------------------------------------------------------
+#
+# The daemon's Cancel and its watchdog both SIGTERM `mp`. Python's default
+# disposition kills the interpreter without unwinding, so no `finally` ran and a
+# local summary's setsid'd `mlx_lm.server` was orphaned. The router now turns it
+# into `SystemExit(143)`, which runs every `finally` on the way out.
+
+SIGTERM_CHILD = """
+import os, sys, time
+import mp.logs_cmd
+
+def blocking_main(argv):
+    try:
+        print("READY", flush=True)
+        time.sleep(60)
+    finally:
+        with open(os.environ["MP_TEST_SENTINEL"], "w") as f:
+            f.write("finally ran")
+    return 0
+
+mp.logs_cmd.main = blocking_main
+sys.argv = ["mp", "logs"]
+from mp.__main__ import main
+sys.exit(main())
+"""
+
+
+def _start_child(script: str, env: dict[str, str] | None = None) -> subprocess.Popen[str]:
+    """Run `script` as a real `mp`-shaped interpreter and wait for its READY.
+
+    Real processes, because the defect only exists at the interpreter's top
+    level: in-process, a signal handler is just a function. `env` is overlaid on
+    this process's environment (PIPE37's `MP_SUPERVISED` rides in here), and
+    stdin is a pipe the caller may close."""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env={**os.environ, **(env or {})},
+    )
+    assert proc.stdout is not None
+    ready = proc.stdout.readline()
+    if ready.strip() != "READY":
+        proc.kill()
+        raise AssertionError(f"child never started: {proc.communicate()[1]}")
+    return proc
+
+
+def test_sigterm_runs_every_finally_and_exits_143(tmp_path: Path) -> None:
+    sentinel = tmp_path / "finally.txt"
+    proc = _start_child(SIGTERM_CHILD, {"MP_TEST_SENTINEL": str(sentinel)})
+    try:
+        proc.send_signal(signal.SIGTERM)
+        _out, err = proc.communicate(timeout=30)
+    except BaseException:
+        proc.kill()
+        raise
+
+    assert sentinel.read_text(encoding="utf-8") == "finally ran"
+    assert proc.returncode == 143  # not -15: the interpreter unwound, it was not killed
+    assert err.splitlines() == ["mp logs: terminated"]
+
+
+SIGTERM_TWICE_CHILD = """
+import os, sys, time
+import mp.logs_cmd
+
+def blocking_main(argv):
+    try:
+        print("READY", flush=True)
+        time.sleep(60)
+    finally:
+        # A cleanup that takes a while, like `close()` waiting on a model
+        # server. The second SIGTERM lands in here.
+        print("CLEANING", flush=True)
+        time.sleep(1.0)
+        with open(os.environ["MP_TEST_SENTINEL"], "w") as f:
+            f.write("cleanup finished")
+    return 0
+
+mp.logs_cmd.main = blocking_main
+sys.argv = ["mp", "logs"]
+from mp.__main__ import main
+sys.exit(main())
+"""
+
+
+def test_a_second_sigterm_does_not_abort_the_cleanup(tmp_path: Path) -> None:
+    """One-shot: the daemon's Cancel and PIPE37's stdin-EOF self-signal can both
+    arrive, and a second `SystemExit` raised inside a `finally` would abandon the
+    cleanup the first one started (a model server half-way through its kill)."""
+    sentinel = tmp_path / "finally.txt"
+    proc = _start_child(SIGTERM_TWICE_CHILD, {"MP_TEST_SENTINEL": str(sentinel)})
+    try:
+        assert proc.stdout is not None
+        proc.send_signal(signal.SIGTERM)
+        assert proc.stdout.readline().strip() == "CLEANING"
+        proc.send_signal(signal.SIGTERM)
+        _out, err = proc.communicate(timeout=30)
+    except BaseException:
+        proc.kill()
+        raise
+
+    assert sentinel.read_text(encoding="utf-8") == "cleanup finished"
+    assert proc.returncode == 143
+    assert "Traceback" not in err
+
+
+def test_the_handler_leaves_other_system_exits_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """argparse exits through `SystemExit(2)`; only 143 is the router's to name."""
+    def _usage_error(_argv: list[str]) -> int:
+        raise SystemExit(2)
+
+    monkeypatch.setattr("mp.digest.main", _usage_error)
+    with pytest.raises(SystemExit) as exc:
+        _run(["digest"], monkeypatch)
+    assert exc.value.code == 2

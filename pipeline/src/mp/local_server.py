@@ -2,21 +2,29 @@
 
 `LocalSummaryClient._spawn` starts the model server with `preexec_fn=os.setsid`,
 putting it in its own session so a signal aimed at `mp`'s process group cannot
-reach it. Every clean exit path calls `close()`, which kills it. The one path
-that does not is a `SIGKILL` of `mp` itself, which is exactly what the daemon's
-pipeline watchdog does to a wedged `run-all` (the LOCAL2/AUD-21 scenario). Then
-the parent's idle-timeout `threading.Timer` dies with the parent, the child's
-own session shields it from the group kill, and a multi-GB server survives with
-nothing left on the machine that knows it exists.
+reach it. Every clean exit path calls `close()`, which kills it, and since PIPE22
+so does a SIGTERM (the daemon's Cancel and its watchdog), which `__main__` turns
+into an unwind. The paths that do not are a `SIGKILL` of `mp` itself (the
+daemon's follow-up when the SIGTERM grace runs out, the LOCAL2/AUD-21 scenario)
+and a server that survives its own kill ladder. Then the parent's idle-timeout
+`threading.Timer` dies with the parent, the child's own session shields it from
+the group kill, and a multi-GB server survives with nothing left on the machine
+that knows it exists.
 
 This module is that missing knowledge. `_spawn` writes a marker naming the
-server pid, the port, the model, and the `mp` process that owns it; a clean
-termination removes it. Anything that finds a marker whose server is alive and
-whose owner is gone has found an orphan:
+server pid, the port, the model, and the `mp` process that owns it; a confirmed
+exit removes it, and nothing else does (PIPE22: a marker cleared ahead of a kill
+that then failed left a live server nobody could see). Anything that finds a
+marker whose server is alive and whose owner is gone has found an orphan:
 
   - `mp doctor` reports it (`check_local_server`).
-  - The daemon reaps it, in Swift, from `LocalServerReaper` (at launch, and
-    right after its watchdog kills a pipeline job).
+  - The daemon reaps it, in Swift, from `LocalServerReaper` (at launch and after
+    every finished job, right after its watchdog kills a job, and after a user
+    Cancel).
+
+A client that reuses a server the marker names takes ownership while it uses it
+(`restamp_owner`) and hands it back on close (`hand_back_owner`), so a reap
+triggered by the spawner's death cannot kill a server a live `mp ask` is using.
 
 The marker is a Swift-to-Python contract, so its schema lives in CONVENTIONS.md
 beside the sidecars. `mp serve-local` writes no marker: the daemon spawns it
@@ -139,7 +147,6 @@ def write_marker(
     so the identity check has an answer when `lsof` cannot name the listening pid.
     Empty string and None both mean "base model", and both serialize as `""`.
     """
-    path = marker_path(home)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "pid": pid,
@@ -150,17 +157,86 @@ def write_marker(
         "spawned_at": time.time(),
     }
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.chmod(tmp, 0o600)
-        tmp.replace(path)
+        _write_marker_payload(payload, home)
     except OSError as e:
-        log.warning("could not write local-server marker %s: %s", path, e)
+        log.warning("could not write local-server marker %s: %s", marker_path(home), e)
+
+
+def _write_marker_payload(payload: dict[str, Any], home: Path | None) -> None:
+    """Atomic `0600` write of a marker payload. Raises `OSError`; callers decide
+    whether a failed write matters."""
+    path = marker_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
+def restamp_owner(server_pid: int, home: Path | None = None) -> int | None:
+    """Make this process the owner of the marker that names `server_pid`
+    (PIPE22), keeping every other field. Returns the owner it replaced, so the
+    caller can hand ownership back when it is done, or None when nothing changed.
+
+    A client reusing a warm server used to leave the marker naming the `mp` that
+    spawned it. Owner liveness is the only thing both reapers check, so once that
+    spawner died (a Cancel, a watchdog kill) the server read as an orphan and was
+    killed under the live `mp ask` still using it.
+
+    Never creates a marker: a server with none (the daemon's warm `mp
+    serve-local`) is owned through the daemon's child handle, and giving it a
+    marker would make it reapable. Best-effort, like `write_marker`."""
+    marker = read_marker(home)
+    if marker is None or marker.get("pid") != server_pid:
+        return None
+    previous = marker.get("owner_pid")
+    if previous == os.getpid():
+        return None
+    try:
+        _write_marker_payload({**marker, "owner_pid": os.getpid()}, home)
+    except OSError as e:
+        log.warning("could not re-stamp local-server marker: %s", e)
+        return None
+    return previous if isinstance(previous, int) else None
+
+
+def hand_back_owner(server_pid: int, owner_pid: int, home: Path | None = None) -> None:
+    """Undo `restamp_owner` when this process stops using `server_pid`.
+
+    Only while the marker still names that server and this process, and only to
+    an owner that is still alive. A dead previous owner is left alone: the
+    server then reads as an orphan once we exit, which is right, since nobody is
+    using it any more, and is what keeping our own soon-dead pid amounts to."""
+    marker = read_marker(home)
+    if (
+        marker is None
+        or marker.get("pid") != server_pid
+        or marker.get("owner_pid") != os.getpid()
+        or not is_owner_alive(owner_pid)
+    ):
+        return
+    try:
+        _write_marker_payload({**marker, "owner_pid": owner_pid}, home)
+    except OSError as e:
+        log.warning("could not hand the local-server marker back: %s", e)
+
+
+def note_survived_kill(pid: int, last_signal: str) -> None:
+    """A server outlived its kill ladder: say so (PIPE22). The caller keeps the
+    marker.
+
+    Both kill paths used to clear the marker regardless, so a survivor became
+    invisible to `mp doctor` and the daemon reaper, which are both marker-based.
+    This is the record that the marker had to stay."""
+    log.warning(
+        "mlx_lm.server %s survived %s; keeping its marker for mp doctor and the reaper",
+        pid, last_signal,
+    )
+    events.emit("pipeline", "local_server_survived_kill", pid=pid, signal=last_signal)
 
 
 def clear_marker(home: Path | None = None) -> None:
-    """Remove the marker on a clean self-termination. Idempotent."""
+    """Remove the marker once its server is confirmed gone. Idempotent."""
     try:
         marker_path(home).unlink(missing_ok=True)
     except OSError as e:
@@ -200,16 +276,43 @@ def is_server_pid(pid: int) -> bool:
     return cmd is not None and _SERVER_COMMAND_MARK in cmd
 
 
+def is_owner_command(command: str | None) -> bool:
+    """Does this `ps` command line belong to a Python `mp` invocation?
+
+    A Python interpreter whose argv carries `-m mp` (both daemon tiers, DIST1) or
+    an `mp` entrypoint path segment (`.venv/bin/mp`, which is how `uv run mp` and
+    a console script show up: macOS lists a shebang script as its interpreter
+    followed by the script path). Pure, and mirrored token for token by Swift's
+    `LocalServerReaper.isOwnerCommand`; both suites pin the same cases.
+
+    It used to be `"mp" in cmd or "python" in cmd.lower()`, which any command
+    containing the letters `mp` satisfied (a path under `/tmp`, `sample`, a
+    compiler), so after pid reuse a dead owner could read as alive and shield an
+    orphan forever (PIPE22, CONC5 item d). Tokens are split on whitespace, so a
+    path with a space in it (`~/My Documents/...`) still ends in a `/mp` token.
+    """
+    if not command:
+        return False
+    tokens = command.split()
+    python_at = next((i for i, t in enumerate(tokens) if "python" in t.lower()), None)
+    if python_at is None:
+        return False
+    rest = tokens[python_at + 1:]
+    for i, token in enumerate(rest):
+        if token == "mp" and i > 0 and rest[i - 1] == "-m":
+            return True
+        if token.endswith("/mp"):
+            return True
+    return False
+
+
 def is_owner_alive(pid: int) -> bool:
-    """True when the `mp` process that spawned the server is still running.
+    """True when the `mp` process that owns the server is still running.
 
     A recycled pid belonging to something that is not a Python `mp` invocation
     reads as dead, so a long-lived orphan is not hidden by pid reuse.
     """
-    cmd = pid_command(pid)
-    if cmd is None:
-        return False
-    return "mp" in cmd or "python" in cmd.lower()
+    return is_owner_command(pid_command(pid))
 
 
 def listening_pid(port: int) -> int | None:
@@ -327,18 +430,32 @@ def served_identity(port: int, home: Path | None = None) -> ServedIdentity | Non
     )
 
 
+# PIPE22: how long a SIGKILLed server gets to leave the process table before it
+# counts as a survivor. SIGKILL cannot be caught, so this only covers the kernel
+# tearing a multi-GB process down; it is not a second grace.
+KILL_CONFIRM_SEC = 2.0
+
+
 def terminate_server(pid: int, home: Path | None = None) -> bool:
-    """SIGTERM (then SIGKILL) an `mlx_lm.server` we own, and clear its marker.
+    """SIGTERM (then SIGKILL) an `mlx_lm.server` we own, and clear its marker
+    once it is confirmed gone.
 
     Signals the process *group*: the server setsid'd into its own session, so the
     group id equals the pid and any worker it forked dies with it. Returns False
     without signalling anything when `pid` is not actually a server, so a recycled
     pid is never killed. Blocks up to ~10 s for a graceful exit, which is what
     lets a caller rebind the same port immediately afterwards.
+
+    Also returns False, keeping the marker, when the server is still alive after
+    the whole ladder (PIPE22): a signal that raised, or a SIGKILL that did not
+    land. The marker is the only record `mp doctor` and the daemon reaper have,
+    so clearing it for a survivor hid a multi-GB process from both. A caller
+    tells the two Falses apart with `is_server_pid`.
     """
     if not is_server_pid(pid):
         clear_marker(home)
         return False
+    last_signal = "SIGTERM"
     try:
         os.killpg(os.getpgid(pid), signal.SIGTERM)
     except (OSError, ProcessLookupError) as e:
@@ -349,10 +466,18 @@ def terminate_server(pid: int, home: Path | None = None) -> bool:
             if not is_server_pid(pid):
                 break
         else:
+            last_signal = "SIGKILL"
             try:
                 os.killpg(os.getpgid(pid), signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                pass
+            except (OSError, ProcessLookupError) as e:
+                log.warning("SIGKILL to local model server %s failed: %s", pid, e)
+            for _ in range(int(KILL_CONFIRM_SEC / 0.5)):
+                if not is_server_pid(pid):
+                    break
+                time.sleep(0.5)
+    if is_server_pid(pid):
+        note_survived_kill(pid, last_signal)
+        return False
     clear_marker(home)
     return True
 

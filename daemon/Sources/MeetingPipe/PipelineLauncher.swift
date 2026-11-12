@@ -473,13 +473,18 @@ final class PipelineLauncher: PipelineDriver {
     private let maxRuntime: TimeInterval
     private let invocation: (() -> MPInvocation?)
     private let environment: [String: String]?
+    /// Runs after a spawn this app stopped (watchdog or Cancel), off the termination
+    /// queue. `LocalServerReaper.reapIfOrphaned` in production; a test counts calls.
+    private let reapOrphanedServer: @Sendable () -> Void
 
     init(maxRuntime: TimeInterval = PipelineLauncher.defaultMaxRuntime,
          invocation: @escaping () -> MPInvocation? = PipelineLauncher.findMP,
-         environment: [String: String]? = nil) {
+         environment: [String: String]? = nil,
+         reapOrphanedServer: @escaping @Sendable () -> Void = { LocalServerReaper.reapIfOrphaned() }) {
         self.maxRuntime = maxRuntime
         self.invocation = invocation
         self.environment = environment
+        self.reapOrphanedServer = reapOrphanedServer
     }
 
     enum LaunchError: Error, LocalizedError {
@@ -1326,15 +1331,18 @@ final class PipelineLauncher: PipelineDriver {
             errPipe.fileHandleForReading.readabilityHandler = nil
             try? logHandle?.close()
             self.slots.release(handle, from: retain)   // TECH-UX5 / UX37: run finished/killed
+            if timedOut.isSet || handle.isCancelled {
+                // LOCAL10 / PIPE22: we just stopped an `mp` that may have been
+                // mid-summarize on the local backend, on the watchdog or on the owner's
+                // Cancel. Its SIGTERM handler unwinds through `close()`, which kills the
+                // detached `mlx_lm.server`, so this is usually a no-op; it is the
+                // backstop for the SIGKILL that follows when that unwind outruns the
+                // grace, which no `finally` survives. Off this queue: the reap waits on
+                // a graceful exit and must not stall the termination handler.
+                let reap = self.reapOrphanedServer
+                DispatchQueue.global(qos: .utility).async { reap() }
+            }
             if timedOut.isSet {
-                // LOCAL10: we just killed an `mp` that may have been mid-summarize on
-                // the local backend. Neither SIGTERM nor SIGKILL runs its `finally`, so
-                // the multi-GB `mlx_lm.server` it detached is now an orphan that only
-                // its marker can identify. Reap it off this queue: the reap waits on a
-                // graceful exit and must not stall the termination handler.
-                DispatchQueue.global(qos: .utility).async {
-                    LocalServerReaper.reapIfOrphaned()
-                }
                 completion(.failure(LaunchError.timeout(timeout)))
                 return
             }

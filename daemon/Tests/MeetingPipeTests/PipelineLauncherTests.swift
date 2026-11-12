@@ -417,6 +417,70 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertTrue(PipelineLauncher.isCancellation(PipelineLauncher.LaunchError.cancelled))
     }
 
+    // MARK: - PIPE22: a cancelled run is reaped too, not only a timed-out one
+
+    /// A real spawn (`/bin/sh` standing in for `mp`) and a counting reaper. The
+    /// dispatcher returns early on a cancellation, so a cancelled job never reached
+    /// the after-job sweep, and the reaper used to run only on a watchdog timeout:
+    /// an `mlx_lm.server` a Cancel orphaned stayed resident until the next job.
+    private func launcher(script: String, reaped: XCTestExpectation) -> PipelineLauncher {
+        PipelineLauncher(
+            invocation: { .init(shell: "/bin/sh", args: ["-c", script]) },
+            environment: ["PATH": "/usr/bin:/bin"],
+            reapOrphanedServer: { reaped.fulfill() }
+        )
+    }
+
+    func test_a_cancelled_ask_triggers_the_reaper() {
+        let reaped = expectation(description: "reaped")
+        let done = expectation(description: "completed")
+        let launcher = launcher(script: "exec sleep 30", reaped: reaped)
+        launcher.ask(question: "q") { result in
+            if case .failure(let error) = result {
+                XCTAssertTrue(PipelineLauncher.isCancellation(error))
+            } else {
+                XCTFail("a cancelled ask cannot succeed")
+            }
+            done.fulfill()
+        }
+        launcher.cancelAsk()
+        wait(for: [reaped, done], timeout: 15)
+    }
+
+    func test_a_cancelled_run_triggers_the_reaper() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let wav = dir.appendingPathComponent("m.wav")
+        try Data().write(to: wav)
+
+        let reaped = expectation(description: "reaped")
+        let done = expectation(description: "completed")
+        let launcher = launcher(script: "exec sleep 30", reaped: reaped)
+        launcher.runAll(wav: wav) { result in
+            if case .failure(let error) = result {
+                XCTAssertTrue(PipelineLauncher.isCancellation(error))
+            } else {
+                XCTFail("a cancelled run cannot succeed")
+            }
+            done.fulfill()
+        }
+        launcher.cancelActiveRun()
+        wait(for: [reaped, done], timeout: 15)
+    }
+
+    func test_a_run_that_ends_on_its_own_does_not_trigger_the_reaper() {
+        let reaped = expectation(description: "reaped")
+        reaped.isInverted = true
+        let done = expectation(description: "completed")
+        let launcher = launcher(script: "exit 1", reaped: reaped)
+        launcher.ask(question: "q") { _ in done.fulfill() }
+        wait(for: [done], timeout: 15)
+        // The reap is dispatched asynchronously when it happens, so give a stray
+        // one the chance to land before calling it absent.
+        wait(for: [reaped], timeout: 1)
+    }
+
     // MARK: - UX50: the cancel flag is per run, not per launcher
 
     private func unstartedProcess() -> Process {

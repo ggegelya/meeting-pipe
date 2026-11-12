@@ -144,15 +144,182 @@ def test_terminate_server_escalates_to_sigkill_when_sigterm_is_ignored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write(tmp_path)
-    _fake_process_table(monkeypatch, {4242: _SERVER_CMD})  # never exits
+    table = {4242: _SERVER_CMD}
+    _fake_process_table(monkeypatch, table)
     monkeypatch.setattr(local_server.os, "getpgid", lambda pid: pid)
     signalled: list[int] = []
-    monkeypatch.setattr(local_server.os, "killpg", lambda pgid, sig: signalled.append(sig))
+
+    def _killpg(pgid: int, sig: int) -> None:
+        signalled.append(sig)
+        if sig == local_server.signal.SIGKILL:
+            table.pop(4242, None)  # ignores SIGTERM, cannot ignore SIGKILL
+
+    monkeypatch.setattr(local_server.os, "killpg", _killpg)
     monkeypatch.setattr(local_server.time, "sleep", lambda _s: None)
 
-    local_server.terminate_server(4242, tmp_path)
+    assert local_server.terminate_server(4242, tmp_path) is True
     assert signalled == [local_server.signal.SIGTERM, local_server.signal.SIGKILL]
     assert not local_server.marker_path(tmp_path).exists()
+
+
+def _capture_events(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, dict]]:
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        local_server.events, "emit",
+        lambda category, action, **attrs: emitted.append((category, action, attrs)),
+    )
+    return emitted
+
+
+def test_a_server_that_survives_its_kill_keeps_its_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PIPE22 (PY-12): the marker used to be cleared whether or not the kill
+    landed, so a survivor vanished from `mp doctor` and the daemon reaper, which
+    both find servers through it. Now it stays, and the caller hears False, so
+    the respawn path does not bind a port the survivor still holds."""
+    _write(tmp_path)
+    _fake_process_table(monkeypatch, {4242: _SERVER_CMD})  # stuck alive
+    monkeypatch.setattr(local_server.os, "getpgid", lambda pid: pid)
+
+    def _refused(_pgid: int, _sig: int) -> None:
+        raise PermissionError("operation not permitted")
+
+    monkeypatch.setattr(local_server.os, "killpg", _refused)
+    monkeypatch.setattr(local_server.time, "sleep", lambda _s: None)
+    emitted = _capture_events(monkeypatch)
+
+    assert local_server.terminate_server(4242, tmp_path) is False
+    assert local_server.marker_path(tmp_path).exists()
+    assert emitted == [
+        ("pipeline", "local_server_survived_kill", {"pid": 4242, "signal": "SIGTERM"}),
+    ]
+
+
+def test_a_server_that_survives_sigkill_names_sigkill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write(tmp_path)
+    _fake_process_table(monkeypatch, {4242: _SERVER_CMD})  # ignores everything
+    monkeypatch.setattr(local_server.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(local_server.os, "killpg", lambda _pgid, _sig: None)
+    monkeypatch.setattr(local_server.time, "sleep", lambda _s: None)
+    emitted = _capture_events(monkeypatch)
+
+    assert local_server.terminate_server(4242, tmp_path) is False
+    assert local_server.marker_path(tmp_path).exists()
+    assert [e[2]["signal"] for e in emitted] == ["SIGKILL"]
+
+
+# ---------------------------------------------------------------------------
+# PIPE22: who counts as a live owner, and taking ownership of a reused server
+# ---------------------------------------------------------------------------
+
+# The same list is pinned in Swift's `LocalServerReaperTests`; the two rules have
+# to agree or the daemon and `mp doctor` disagree about the same marker.
+OWNER_COMMANDS = [
+    "python3 -m mp run-all x.wav",
+    "/path/.venv/bin/python /path/.venv/bin/mp ask q",
+    "/usr/bin/python3 -m mp run-all /tmp/x.wav",
+    "/Applications/MeetingPipe.app/Contents/Resources/python/bin/python3 -m mp ask q",
+    "/Users/x/My Documents/meeting-pipe/pipeline/.venv/bin/python3 "
+    "/Users/x/My Documents/meeting-pipe/pipeline/.venv/bin/mp run-all /tmp/x.wav",
+]
+NOT_OWNER_COMMANDS = [
+    "/usr/bin/sample 123",
+    "/bin/sh /tmp/x.sh",
+    "/usr/sbin/cupsd -l",
+    "/usr/bin/python3 /tmp/unrelated.py",
+    "/usr/bin/python3 -m pytest tests",
+    "/bin/sh /path/bin/mp run-all x.wav",
+    "",
+]
+
+
+@pytest.mark.parametrize("command", OWNER_COMMANDS)
+def test_a_python_mp_invocation_is_a_live_owner(command: str) -> None:
+    assert local_server.is_owner_command(command)
+
+
+@pytest.mark.parametrize("command", NOT_OWNER_COMMANDS)
+def test_anything_else_is_not_an_owner(command: str) -> None:
+    """The old rule (`"mp" in cmd or "python" in cmd`) took every one of these
+    for a live `mp`, so a recycled owner pid could shield an orphan forever."""
+    assert not local_server.is_owner_command(command)
+
+
+def test_a_missing_process_is_not_an_owner() -> None:
+    assert not local_server.is_owner_command(None)
+
+
+def _me() -> int:
+    return local_server.os.getpid()
+
+
+def test_restamp_takes_ownership_and_keeps_every_other_field(tmp_path: Path) -> None:
+    path = _write(tmp_path, adapter_path="/adapters/a", spawned_at=1770000000.0)
+    before = json.loads(path.read_text(encoding="utf-8"))
+
+    assert local_server.restamp_owner(4242, tmp_path) == 1111
+
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert after["owner_pid"] == _me()
+    assert {k: v for k, v in after.items() if k != "owner_pid"} == {
+        k: v for k, v in before.items() if k != "owner_pid"
+    }
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_restamp_never_creates_a_marker(tmp_path: Path) -> None:
+    """The daemon's warm `mp serve-local` has none, and a marker would make it
+    reapable."""
+    assert local_server.restamp_owner(4242, tmp_path) is None
+    assert not local_server.marker_path(tmp_path).exists()
+
+
+def test_restamp_leaves_a_marker_for_another_server_alone(tmp_path: Path) -> None:
+    _write(tmp_path, pid=5555)
+    assert local_server.restamp_owner(4242, tmp_path) is None
+    assert local_server.read_marker(tmp_path)["owner_pid"] == 1111  # type: ignore[index]
+
+
+def test_hand_back_returns_ownership_to_a_live_spawner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The inverse of the hazard the re-stamp fixes: an `mp ask` that re-stamped
+    and then exits must not leave a server the live run-all spawned looking
+    orphaned, or the reap after the ask's Cancel kills it mid-summary."""
+    _write(tmp_path)
+    local_server.restamp_owner(4242, tmp_path)
+    _fake_process_table(monkeypatch, {1111: _MP_CMD})
+
+    local_server.hand_back_owner(4242, 1111, tmp_path)
+    assert local_server.read_marker(tmp_path)["owner_pid"] == 1111  # type: ignore[index]
+
+
+def test_hand_back_keeps_ownership_when_the_spawner_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nobody else uses it, so once we exit the server should read as the orphan
+    it is."""
+    _write(tmp_path)
+    local_server.restamp_owner(4242, tmp_path)
+    _fake_process_table(monkeypatch, {})
+
+    local_server.hand_back_owner(4242, 1111, tmp_path)
+    assert local_server.read_marker(tmp_path)["owner_pid"] == _me()  # type: ignore[index]
+
+
+def test_hand_back_does_not_touch_a_marker_someone_else_rewrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A respawn after ours wrote a fresh marker; ours is no longer the owner."""
+    _write(tmp_path, pid=5555, owner_pid=2222)
+    _fake_process_table(monkeypatch, {1111: _MP_CMD})
+
+    local_server.hand_back_owner(4242, 1111, tmp_path)
+    marker = local_server.read_marker(tmp_path)
+    assert marker is not None and (marker["pid"], marker["owner_pid"]) == (5555, 2222)
 
 
 # ---------------------------------------------------------------------------

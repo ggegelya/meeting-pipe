@@ -702,10 +702,14 @@ final class Coordinator: NSObject {
     ///      their retention window (ADR 0016). Bounded-cache eviction.
     ///   2. `AudioRetentionSweep` applies each workflow's audio retention policy
     ///      to settled meetings in `raw/`. Per-meeting policy, not eviction.
-    ///   3. `LocalServerReaper` kills an `mlx_lm.server` left behind by an `mp`
-    ///      the pipeline watchdog SIGKILLed. Reclaims RAM, not disk, but it is
-    ///      the same "clean up what a previous run leaked" slot, and a launch is
-    ///      the moment we can be sure no `mp` of ours is mid-summarize.
+    ///   3. `LocalServerReaper` kills an `mlx_lm.server` whose owning `mp` is gone
+    ///      (SIGKILLed after its SIGTERM grace, or a server that survived its own
+    ///      kill). Reclaims RAM, not disk, but it is the same "clean up what a
+    ///      previous run leaked" slot, and a launch is the moment we can be sure no
+    ///      `mp` of ours is mid-summarize. This sweep is one of its three triggers:
+    ///      launch and every finished job here, plus `PipelineLauncher`'s
+    ///      termination handler after a watchdog timeout or a user Cancel, since a
+    ///      cancelled job never reaches `onDone` (PIPE22).
     ///
     /// Different algorithms, one scheduler and one event category. Runs off-main:
     /// a directory scan, some deletes, an ffmpeg subprocess (for `compress`), and
