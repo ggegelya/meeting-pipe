@@ -4,7 +4,7 @@ title: CI builds only the debug configuration on macOS 15, so the release build 
 category: CI
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, go-live QG-6, QG-7, QG-10): CI builds debug on macos-15 only, so the shipped release config, the declared macOS 14 floor and new warnings go unchecked; two Swift-6-mode diagnostics are back in production code. Scope: release build plus relocation smoke, a warning gate with an allowlist, a macos-14 floor job, runner names in docs. [Spec](./CI9.md) Amended 2026-11-12 (upgrade review): the owner now builds on Xcode 27.2 / Swift 6.4.2 / SDK 27.2 while CI's macos-15 runs an older SDK, so SDK-27-only breaks never reach CI; the hosted macos-14 runner is deprecated (runner-images #15226), so the floor job needs a fallback.
+comment: Filed 2026-10-24 (audit band, go-live QG-6, QG-7, QG-10): CI builds debug on macos-15 only, so the shipped release config, the declared macOS 14 floor and new warnings go unchecked; two Swift-6-mode diagnostics are back in production code. Scope: release build plus relocation smoke, a warning gate with an allowlist, a macos-14 floor job, runner names in docs. [Spec](./CI9.md) Amended 2026-11-12 (upgrade review): the owner now builds on Xcode 27.2 / Swift 6.4.2 / SDK 27.2 while CI's macos-15 runs an older SDK, so SDK-27-only breaks never reach CI; the hosted macos-14 runner is deprecated (runner-images #15226), so the floor job needs a fallback. Amended 2026-11-12 (SAST pass): on Swift 6.4.2 the clean build has six production warnings, not two: CONC11's two AVAudioFormat sites and two from OnboardingStepTest.tick lacking `import Combine`; add the import, land after CONC11 or allowlist it, record the gate's compiler version.
 ---
 
 # CI9: CI builds only the debug configuration on macOS 15, so the release build that ships, the declared macOS 14 floor, and new compiler warnings are never checked
@@ -58,3 +58,21 @@ CI's daemon job runs on `macos-15` with that image's default Xcode. Breaks that 
 Added scope:
 - Move the main daemon job to the newest available macOS image and Xcode, naming the Xcode version in the job and in `ci-local.sh`'s toolchain print.
 - For the floor job, record what replaces `macos-14` once the hosted image is gone. Either build against the 14 deployment target on a newer image (compile-only floor check), or the owner decides to raise the floor (DOC16 moves with it).
+
+## Amendment 2026-11-12 (SAST pass)
+
+From the static-analysis pass after the [security review](../../audits/2026-11-12-security-review.md); the owner approved it with "File all proposed".
+
+On 2026-11-12, `xcodebuild analyze` (default warning set, Swift 6.4.2, scratch derived-data path) emitted six warnings in `daemon/Sources`, not the two Context item 3 names:
+- the two CI9 already names, `MCPStatusStore.refresh` and `RecordingPostProcessor`'s `lengths` capture;
+- two in `MeetingRecorder`, at `engineCall(site: "start_format_read")` and in `liveInputFormat()`: "conformance of 'AVAudioFormat' to 'Sendable' is only available in macOS 26.0 or newer". [CONC11](./CONC11.md) owns these, so this amendment adds no work for them;
+- two on `OnboardingStepTest.tick` (`Timer.publish(...).autoconnect()`): "cannot use enum 'Publishers' ..." and "cannot use generic class 'Autoconnect' in a property declaration member of a type not marked '@_implementationOnly'; 'Combine' was not imported by this file". The view relies on SwiftUI re-exporting Combine. No task owns these.
+
+So scope item 2's "the allowlist starts empty" is false on the owner's compiler until all six are gone.
+
+**Added scope:**
+- add `import Combine` to `OnboardingStepTest.swift`;
+- land the gate after CONC11, or allowlist CONC11's two sites with "CONC11" as the reason and remove them when it ships;
+- record in `ci-local.sh` the compiler version the gate's zero was measured on, since a newer Swift adds diagnostics the gate will then report as regressions.
+
+**Added acceptance:** the debug and release builds on Swift 6.4.2 print no `warning:` under `daemon/Sources` apart from allowlisted CONC11 entries, if any.

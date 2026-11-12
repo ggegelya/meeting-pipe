@@ -4,7 +4,7 @@ title: The app holds microphone, Screen Recording and Accessibility grants but i
 category: Security
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch M2, go-live DI-6): codesign shows flags=0x0(none) and no entitlements, so same-user DYLD injection inherits the TCC grants, and dev-cert.sh imports the key with -A. Sign with --options runtime plus an audio-input entitlements file in sign_app_with_resources, import new keys with -T /usr/bin/codesign, fix the existing key's ACL without recreating the cert. Amended 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md)): helpers resolved from user-writable PATH, venv and uv inherit TCC attribution; disclaim responsibility on spawn or run only sealed helpers. [Spec](./SEC17.md)
+comment: Filed 2026-10-24 (audit band, arch M2, go-live DI-6): codesign shows flags=0x0(none) and no entitlements, so same-user DYLD injection inherits the TCC grants, and dev-cert.sh imports the key with -A. Sign with --options runtime plus an audio-input entitlements file in sign_app_with_resources, import new keys with -T /usr/bin/codesign, fix the existing key's ACL without recreating the cert. Amended 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md)): helpers resolved from user-writable PATH, venv and uv inherit TCC attribution; disclaim responsibility on spawn or run only sealed helpers. [Spec](./SEC17.md) Amended 2026-11-12 (SAST pass): the pipeline also resolves lsof (feeds SEC27's reuse identity), mdfind and claude from PATH; call /usr/sbin/lsof and /usr/bin/mdfind absolutely and prefer claude's fixed install dirs over PATH.
 ---
 
 # SEC17: the app holds microphone, Screen Recording and Accessibility grants but is signed without hardened runtime, and its signing key is imported for use by any app
@@ -69,3 +69,22 @@ From the [security review](../../audits/2026-11-12-security-review.md) (verified
 Added scope: spawn every helper with responsibility disclaimed (`responsibility_spawnattrs_setdisclaim` through a small spawn wrapper, shared with CONC5's helper if it lands first), and drop `MEETINGPIPE_FFMPEG` and the PATH walk in release builds. Reordering lookups alone does not close it, since the venv is user-writable by design.
 
 Added acceptance: a test with an injected spawner that every helper spawn sets the disclaim attribute; owner check that a recording stop and a summary still work after `./scripts/rebuild.sh`.
+
+## Amended 2026-11-12 (SAST pass)
+
+From the static-analysis pass after the [security review](../../audits/2026-11-12-security-review.md) (bandit B607 and ruff S607). The owner approved it with "File all proposed". The helper inventory above is daemon-side; three more resolve from `PATH`, all in the pipeline:
+
+- `local_server.listening_pid` runs `["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"]`. Its answer feeds `served_identity`, the reuse check [SEC27](./SEC27.md) item 7 hardens. A planted `lsof` that prints nothing makes identity "unknown", and reuse proceeds today. SEC27's token check is the real fix; this closes the cheap path to it.
+- `doctor._mdfind_app_bundles` runs `["mdfind", "-name", "MeetingPipe.app"]`.
+- `provider_claude_cli.find_claude` tries `shutil.which("claude")` before its `_FALLBACK_DIRS` (`~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin`). [SEC20](./SEC20.md) defers PATH resolution here.
+
+`/usr/sbin/lsof` and `/usr/bin/mdfind` are root-owned system binaries on macOS (checked 2026-11-12).
+
+Added scope:
+- Call `lsof` and `mdfind` by those absolute paths. Keep each call site's existing degrade-on-`OSError` behaviour.
+- `claude` has no system path, so an absolute path is not available. Resolve it from the fixed install directories before `PATH`, and log the resolved path once per run, so a PATH-planted binary is at least visible. Whether to drop the `PATH` step entirely is the pickup session's call against how the owner installed Claude Code.
+- Once this ships, ruff's S607 has nothing left to flag, and [CI12](./CI12.md) can drop S607 from its ignore list.
+
+Added acceptance:
+- Tests pin the argv of `listening_pid` and `_mdfind_app_bundles` to the absolute paths.
+- A `find_claude` test shows that a `claude` on a temp `PATH` loses to one in a fallback directory.
