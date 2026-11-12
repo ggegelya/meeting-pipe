@@ -251,9 +251,11 @@ extension SearchIndex {
     }
 
     /// Read `url` without writing it: `SQLITE_OPEN_READONLY`, no `CREATE`, no pragma that sets.
-    /// A WAL-mode file with no `-shm` (the daemon is not running) fails a plain read-only open
-    /// with SQLITE_CANTOPEN, since the reader cannot create the shared-memory file; only then is it
-    /// re-read as `immutable=1`, which is safe because no writer holds the file without a `-shm`.
+    /// Measured on macOS 27.2's SQLite: with a `-wal` but no `-shm`, the read-only open still
+    /// works (it creates the `-shm` and rebuilds the wal-index from the WAL, never touching the
+    /// database file); with neither, it fails with SQLITE_CANTOPEN. Only that case is re-read as
+    /// `immutable=1`, which is exact there because with no `-wal` the main file holds everything,
+    /// and safe because no writer holds a WAL database without a `-shm`.
     static func inspect(url: URL) -> Inspection {
         guard FileManager.default.fileExists(atPath: url.path) else { return .absent }
         let plain = read(url.path, flags: SQLITE_OPEN_READONLY)

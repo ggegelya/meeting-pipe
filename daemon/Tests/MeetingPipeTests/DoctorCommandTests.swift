@@ -278,4 +278,47 @@ final class DoctorCommandTests: XCTestCase {
         XCTAssertEqual(before, after, "doctor wrote the index")
         XCTAssertFalse(FileManager.default.fileExists(atPath: f.indexURL.path + "-shm"), "doctor created a -shm file")
     }
+
+    /// The in-app self-check runs this probe while the daemon holds its read-write connection.
+    func test_probeSearchIndex_reads_beside_a_live_writer() throws {
+        let f = try searchProbeFixture()
+        defer { try? FileManager.default.removeItem(at: f.dir) }
+        let index = try XCTUnwrap(SearchIndex(url: f.indexURL))
+        index.upsert(stem: "20260301-100000", sig: "s", body: "a")
+        index.upsert(stem: "20260302-100000", sig: "s", body: "b")
+        let result = DoctorCommand.probeSearchIndex(indexURL: f.indexURL, recordingsDir: f.library)
+        XCTAssertEqual(result.status, .ok, result.message)
+        XCTAssertEqual(result.message, "FTS index reachable; 2 meetings indexed.")
+        index.upsert(stem: "20260303-100000", sig: "s", body: "c")
+        XCTAssertEqual(index.indexedSignatures().count, 3, "the live writer could not write after the probe")
+    }
+
+    /// No `-shm` beside a `-wal` that holds the rows: what a crashed daemon leaves. The read-only
+    /// open recovers the WAL itself, so the probe counts what is really indexed and does not fall
+    /// back to `immutable=1`, which would read the main file alone and miss them.
+    func test_probeSearchIndex_counts_rows_still_in_the_wal_when_there_is_no_shm() throws {
+        let f = try searchProbeFixture()
+        defer { try? FileManager.default.removeItem(at: f.dir) }
+        let source = f.dir.appendingPathComponent("live.sqlite")
+        let index = try XCTUnwrap(SearchIndex(url: source))
+        index.upsert(stem: "20260301-100000", sig: "s", body: "a")
+        index.upsert(stem: "20260302-100000", sig: "s", body: "b")
+        // Copy the database and its WAL while the writer is open, so the rows are only in the WAL.
+        try FileManager.default.copyItem(atPath: source.path, toPath: f.indexURL.path)
+        try FileManager.default.copyItem(atPath: source.path + "-wal", toPath: f.indexURL.path + "-wal")
+        // The premise: the main file alone does not have them.
+        var db: OpaquePointer?
+        let uri = f.indexURL.absoluteString + "?immutable=1"
+        XCTAssertEqual(sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil), SQLITE_OK)
+        var stmt: OpaquePointer?
+        let prepared = sqlite3_prepare_v2(db, "SELECT count(*) FROM doc_meta;", -1, &stmt, nil)
+        let inMainFile = prepared == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW ? sqlite3_column_int(stmt, 0) : 0
+        sqlite3_finalize(stmt)
+        sqlite3_close(db)
+        XCTAssertEqual(inMainFile, 0, "the rows were checkpointed into the main file, so this proves nothing")
+        let result = DoctorCommand.probeSearchIndex(indexURL: f.indexURL, recordingsDir: f.library)
+        XCTAssertEqual(result.status, .ok, result.message)
+        XCTAssertEqual(result.message, "FTS index reachable; 2 meetings indexed.")
+        _ = index
+    }
 }
