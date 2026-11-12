@@ -102,6 +102,29 @@ extension MeetingRecorder {
         return buffer
     }
 
+    // MARK: - Backlog accounting (REC25)
+
+    /// Bytes one frame of `format` occupies across all its channels. `mBytesPerFrame`
+    /// describes one channel's buffer when the format is non-interleaved (the default for
+    /// `AVAudioFormat(standardFormatWithSampleRate:channels:)`), so a stereo non-interleaved
+    /// frame is twice it; reading it alone counted the system channel at half its weight.
+    static func bytesPerFrame(_ format: AVAudioFormat) -> Int {
+        let perBuffer = Int(format.streamDescription.pointee.mBytesPerFrame)
+        return format.isInterleaved ? perBuffer : perBuffer * Int(format.channelCount)
+    }
+
+    /// What `buffer` holds while it waits on a capture writer, the `SerialBufferWriter`
+    /// size both channels' writers count.
+    static func byteSize(of buffer: AVAudioPCMBuffer) -> Int {
+        Int(buffer.frameLength) * bytesPerFrame(buffer.format)
+    }
+
+    /// One second of `format`, in bytes: the rate `WriterBacklogPolicy` turns a channel's
+    /// pending bytes into seconds of its own audio with.
+    static func bytesPerSecond(_ format: AVAudioFormat) -> Double {
+        format.sampleRate * Double(bytesPerFrame(format))
+    }
+
     // MARK: - RMS level emission (TECH-C2)
 
     /// Sum of squares of every sample across all channels, via vDSP_svesq (one

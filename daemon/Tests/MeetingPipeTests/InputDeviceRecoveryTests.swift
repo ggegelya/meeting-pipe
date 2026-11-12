@@ -277,6 +277,25 @@ final class InputDeviceRecoveryTests: XCTestCase {
         XCTAssertEqual(host.readCalls, 0)
     }
 
+    /// REC25: the writer backlog check rides the tap tick ahead of the abandonment guard. An
+    /// abandoned mic still has a writer that a hung volume can stall, so giving up on the tap must
+    /// not also give up on watching the memory behind it. Not recording, it checks nothing.
+    func test_theTapTickChecksTheWriterBacklogEvenWithTheMicAbandoned() {
+        recovery.checkTapLiveness()
+        XCTAssertEqual(host.backlogChecks, 1)
+
+        for _ in 0..<InputDeviceRecovery.recoveryFailureBudget {
+            recovery.reportRecoveryFailure()
+        }
+        XCTAssertTrue(recovery.micCaptureAbandoned)
+        recovery.checkTapLiveness()
+        XCTAssertEqual(host.backlogChecks, 2)
+
+        host.isRecording = false
+        recovery.checkTapLiveness()
+        XCTAssertEqual(host.backlogChecks, 2)
+    }
+
     /// REC27: the watchdog's read is single-flight, so a wedged read costs one thread rather than
     /// one a second; and a read that times out is itself a wedge: the engine is retired once and
     /// the watchdog stops asking for this recording.
@@ -405,8 +424,13 @@ private final class FakeRecoveryHost: InputDeviceRecoveryHost {
     private(set) var padFormats: [AVAudioFormat] = []
     private(set) var converters: [Bool] = []
     private(set) var outcomes: [MeetingRecorder.CaptureRecoveryOutcome] = []
+    private(set) var backlogChecks = 0
     private var haltRelease: CheckedContinuation<Void, Never>?
     private var readRelease: CheckedContinuation<Void, Never>?
+
+    func checkMicWriterBacklog() {
+        backlogChecks += 1
+    }
 
     @MainActor
     func readEngineIsRunning() async -> Bool? {

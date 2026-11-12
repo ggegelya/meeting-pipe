@@ -19,6 +19,9 @@ enum RecordingWriteFailure {
     enum Cause: String, Equatable {
         case diskFull = "disk_full"
         case unknown
+        /// REC25: no write failed; the writer stopped finishing them, and its backlog
+        /// crossed `WriterBacklogPolicy.hardCapBytes`.
+        case writerStalled = "writer_stalled"
     }
 
     /// Below this much free space a failed write run is read as a full disk.
@@ -54,6 +57,18 @@ enum RecordingWriteFailure {
         return Decision(
             channel: channel, cause: .unknown, freeBytes: freeBytes,
             message: "Recording stopped: \(channel) audio couldn't keep being saved. The recording up to that point was kept. To look for the cause, open Preferences \u{25B8} Integrations \u{25B8} Run doctor\u{2026}"
+        )
+    }
+
+    /// REC25: the decision for a writer whose backlog crossed the memory cap. Nothing failed, so
+    /// free space says nothing about it, and it is not read: this runs on main, and the volume a
+    /// stalled writer is waiting on is the one most likely to hang a `resourceValues` call. A
+    /// write that blocks rather than throws needs a network or file-provider output directory,
+    /// which is what the text points at.
+    static func stalled(channel: String) -> Decision {
+        Decision(
+            channel: channel, cause: .writerStalled, freeBytes: nil,
+            message: "Recording stopped: the folder recordings are saved to stopped responding, so \(channel) audio couldn't keep being saved. The recording up to that point was kept. If that folder is on a network or cloud drive, move the library to this Mac."
         )
     }
 

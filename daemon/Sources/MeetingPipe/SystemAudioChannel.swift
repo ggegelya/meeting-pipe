@@ -19,10 +19,14 @@ final class SystemAudioChannel {
     var isRecordingProvider: () -> Bool = { false }
     private var isRecording: Bool { isRecordingProvider() }
 
-    /// Fold one write outcome into the recorder's failure tracker (REC3 / AUD-7), on the writer's
-    /// own queue, with the directory the system file is in so a failure can read its volume's free
-    /// space (REC19). Set once by the recorder.
-    var noteWriteOutcome: ((Bool, URL) -> Void)?
+    /// The recorder's write-failure router (REC3 / AUD-7). Each system writer gets its own outcome
+    /// handler from it, built with the writer, so the failure tracker belongs to that writer and the
+    /// escalation to the recording it was opened for (REC25). Set once by the recorder.
+    var writeFailures: WriteFailureRouter?
+
+    /// REC25: the recorder's backlog check for this channel, run first on every liveness tick.
+    /// Set once by the recorder.
+    var checkWriterBacklog: (() -> Void)?
 
     /// The ~1 Hz system RMS average on the main queue, feeding the idle backstop's
     /// `hasSystemAudio` mirror (TECH-END3). `nil` short-circuits the math when nobody listens.
@@ -409,8 +413,14 @@ final class SystemAudioChannel {
         // the offset that places it (REC10).
         self.systemFirstFrameUptime = 0
         if let systemFile {
-            let directory = systemURL.deletingLastPathComponent()
-            self.systemWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.system-writer") { [weak self] buffer in
+            // REC25: this writer's own failure tracker, inside the handler, and its byte count.
+            let noteOutcome = writeFailures?.makeOutcomeHandler(
+                channel: .system, directory: systemURL.deletingLastPathComponent()
+            )
+            self.systemWriter = SerialBufferWriter(
+                label: "com.meetingpipe.recorder.system-writer",
+                size: { MeetingRecorder.byteSize(of: $0) }
+            ) { buffer in
                 let ok: Bool
                 do {
                     try systemFile.write(from: buffer)
@@ -419,7 +429,7 @@ final class SystemAudioChannel {
                     Log.recorder.error("system write: \(error.localizedDescription)")
                     ok = false
                 }
-                self?.noteWriteOutcome?(ok, directory)
+                noteOutcome?(ok)
             }
         }
     }
@@ -432,6 +442,10 @@ final class SystemAudioChannel {
     /// One buffer is allocated and enqueued repeatedly: the writer queue is serial and
     /// only ever reads it, so a five-minute pad costs one second's worth of memory
     /// rather than five minutes' worth.
+    ///
+    /// REC25: so the writer's byte count charges the shared chunk once, and its repeats nothing.
+    /// Counted per enqueue, a clamped 900 s pad read as 345.6 MB pending the instant it was queued:
+    /// a false `writer_backlog` warning after every long recovery, and two thirds of the cap.
     private func padSystemChannel(frames: AVAudioFrameCount) {
         guard frames > 0, let writer = systemWriter else { return }
         let format = SystemAudioCapture.captureFormat
@@ -439,8 +453,10 @@ final class SystemAudioChannel {
         var remaining = frames
         if remaining >= chunkFrames {
             guard let chunk = MeetingRecorder.makeSilenceBuffer(format: format, frames: chunkFrames) else { return }
+            var chunkBytes = MeetingRecorder.byteSize(of: chunk)
             while remaining >= chunkFrames {
-                writer.enqueue(chunk)
+                writer.enqueue(chunk, bytes: chunkBytes)
+                chunkBytes = 0
                 remaining -= chunkFrames
             }
         }
@@ -552,8 +568,13 @@ final class SystemAudioChannel {
     /// and a first start that never came up never did, which is the wrong way round on both
     /// counts; the hung start is the bound's job (`systemStartBudgetSeconds`), not this one's.
     /// On main.
+    ///
+    /// REC25: the writer backlog check runs first, gated on recording alone. A down stream or one
+    /// still spinning up says nothing about whether the writer behind it is stuck.
     private func checkSystemLiveness() {
-        guard isRecording, systemCapture != nil, systemFires > systemFiresAtArm else { return }
+        guard isRecording else { return }
+        checkWriterBacklog?()
+        guard systemCapture != nil, systemFires > systemFiresAtArm else { return }
         guard systemLivenessMonitor.sample(count: systemFires) else { return }
         Log.event(category: "recorder", action: "system_capture_stall_detected", attributes: [
             "system_fires": Int(systemFires),

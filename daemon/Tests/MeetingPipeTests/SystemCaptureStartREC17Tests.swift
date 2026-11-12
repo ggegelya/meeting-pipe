@@ -249,11 +249,13 @@ final class SystemCaptureStartREC17Tests: XCTestCase {
     func test_theLivenessGateCountsFromTheAttemptNotFromZero() throws {
         let text = try repoFile("daemon/Sources/MeetingPipe/SystemAudioChannel.swift")
         XCTAssertTrue(
-            text.contains("guard isRecording, systemCapture != nil, systemFires > systemFiresAtArm else { return }"),
+            // REC25 split the guard so the writer backlog check runs between the recording gate and
+            // this one; the per-attempt gate itself is unchanged.
+            text.contains("guard systemCapture != nil, systemFires > systemFiresAtArm else { return }"),
             "the watchdog engages on the current attempt's first buffer, not on a count inherited from a previous one"
         )
         XCTAssertFalse(
-            text.contains("guard isRecording, systemCapture != nil, systemFires > 0 else { return }"),
+            text.contains("systemCapture != nil, systemFires > 0 else { return }"),
             "the old gate is the one that could not see a hung first start and false-positived on a slow retry"
         )
     }

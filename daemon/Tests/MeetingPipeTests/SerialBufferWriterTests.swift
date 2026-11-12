@@ -211,4 +211,62 @@ final class SerialBufferWriterTests: XCTestCase {
         await fulfillment(of: [ran], timeout: 5)
         XCTAssertEqual(ranAfter.withLock { $0 }, 2, "it ran behind both items the abandoned drain was still writing")
     }
+
+    // MARK: - Pending bytes (REC25)
+
+    /// A handler blocked on a semaphore is the stalled disk: nothing finishes, so every enqueued
+    /// size is still pending and the high-water mark holds it. Released and drained, the count is
+    /// back to 0 and the mark keeps the peak, which is what the `stopping:` line reports.
+    func test_pending_bytes_track_a_blocked_handler_and_the_mark_keeps_the_peak() {
+        let gate = DispatchSemaphore(value: 0)
+        let writer = SerialBufferWriter<Int>(label: "test.rec25.pending", size: { $0 }) { _ in gate.wait() }
+
+        for size in [100, 250, 4_000] { writer.enqueue(size) }
+        XCTAssertEqual(writer.pendingBytes, 4_350)
+        XCTAssertEqual(writer.highWaterBytes, 4_350)
+
+        for _ in 0..<3 { gate.signal() }
+        XCTAssertTrue(writer.finish(timeout: 5))
+        XCTAssertEqual(writer.pendingBytes, 0)
+        XCTAssertEqual(writer.highWaterBytes, 4_350)
+    }
+
+    /// The count is taken on the producer side, so two capture threads enqueueing at once must not
+    /// lose an increment.
+    func test_enqueues_from_two_threads_keep_the_count_exact() {
+        let gate = DispatchSemaphore(value: 0)
+        let writer = SerialBufferWriter<Int>(label: "test.rec25.threads", size: { $0 }) { _ in gate.wait() }
+        let perThread = 2_000
+
+        DispatchQueue.concurrentPerform(iterations: 2) { thread in
+            for _ in 0..<perThread { writer.enqueue(thread == 0 ? 3 : 7) }
+        }
+        XCTAssertEqual(writer.pendingBytes, perThread * 3 + perThread * 7)
+
+        for _ in 0..<(perThread * 2) { gate.signal() }
+        XCTAssertTrue(writer.finish(timeout: 10))
+        XCTAssertEqual(writer.pendingBytes, 0)
+    }
+
+    /// REC10's pad enqueues one shared buffer many times; the override charges it once.
+    func test_an_explicit_byte_cost_overrides_the_size() {
+        let gate = DispatchSemaphore(value: 0)
+        let writer = SerialBufferWriter<Int>(label: "test.rec25.override", size: { $0 }) { _ in gate.wait() }
+
+        writer.enqueue(1_000, bytes: 1_000)
+        for _ in 0..<9 { writer.enqueue(1_000, bytes: 0) }
+        XCTAssertEqual(writer.pendingBytes, 1_000)
+
+        for _ in 0..<10 { gate.signal() }
+        XCTAssertTrue(writer.finish(timeout: 5))
+        XCTAssertEqual(writer.pendingBytes, 0)
+    }
+
+    /// Without a size the writer counts nothing, which is what every non-audio sink wants.
+    func test_a_writer_without_a_size_counts_nothing() {
+        let writer = SerialBufferWriter<Int>(label: "test.rec25.nosize") { _ in }
+        writer.enqueue(42)
+        writer.finish()
+        XCTAssertEqual(writer.highWaterBytes, 0)
+    }
 }

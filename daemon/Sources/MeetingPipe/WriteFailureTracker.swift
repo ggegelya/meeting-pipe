@@ -14,9 +14,12 @@ import Foundation
 /// path) and tells the user, instead of recording nothing for hours.
 ///
 /// Pure with an injectable threshold so it is unit-testable without real files.
-/// Each capture channel owns one tracker, mutated only on that channel's serial
-/// writer queue, so it needs no lock (the same single-queue ownership the
-/// `micFires` / `systemFires` counters already rely on).
+/// Each capture **writer** owns one tracker, built with it inside the outcome
+/// handler `WriteFailureRouter.makeOutcomeHandler` returns, so it is mutated only
+/// on that writer's serial queue and needs no lock (REC25). It used to be one per
+/// channel, held by the recorder and replaced on main at `start()`, which was
+/// neither: a writer abandoned by the previous stop kept mutating whichever
+/// tracker was current, racing the reset and counting against the next recording.
 struct WriteFailureTracker {
     /// Consecutive failures before escalating. ~32 buffers at the 4096-frame mic
     /// tap is roughly 2.7 s of unbroken failure: long enough that a transient

@@ -118,11 +118,17 @@ final class MeetingRecorder {
     /// `Double` so the write is a single aligned store.
     private var startedAtUptime: Double = 0
 
-    /// Per-writer consecutive-failure trackers (REC3 / AUD-7). Each is touched
-    /// only on its own writer's serial queue, like `micFires` / `systemFires`, so
-    /// no lock is needed. Reset at `start()`.
-    private var micWriteFailures = WriteFailureTracker()
-    private var systemWriteFailures = WriteFailureTracker()
+    /// REC3's write-failure escalation (AUD-7), REC25's shape: each writer's failure tracker is
+    /// built with the writer and lives in its outcome closure, so only that writer's queue touches
+    /// it, and an escalation reaches `onWriteFailure` only while the recording that built the
+    /// writer is still the live one. The recorder used to keep the two trackers as fields and
+    /// replace them at `start()`, which a writer abandoned by the previous stop kept reporting
+    /// into. Main-only, apart from the handlers it hands the writers.
+    let writeFailures = WriteFailureRouter()
+
+    /// REC25: this recording's backlog verdicts (warned channels, whether it has stopped). Main
+    /// only: read and written on the two 1 Hz liveness ticks, replaced at `start()`.
+    private var backlogPolicy = WriterBacklogPolicy()
 
     /// Per-source ~1 Hz RMS averages on the main queue. `onSystemLevel` feeds the
     /// idle backstop's `hasSystemAudio` mirror (TECH-END3); `onMicLevel` is currently
@@ -231,11 +237,16 @@ final class MeetingRecorder {
     }
 
     /// Fired on main when a capture writer has failed enough consecutive writes
-    /// that the recording is silently losing audio. The decision carries the
+    /// that the recording is silently losing audio, or (REC25) when the writers'
+    /// backlog crossed `WriterBacklogPolicy.hardCapBytes`. The decision carries the
     /// channel, the cause (`disk_full` from the volume's free space, else
-    /// `unknown`, REC19) and the notification text. The Coordinator surfaces it
-    /// and force-stops to preserve the intact prefix (REC3 / AUD-7).
-    var onWriteFailure: ((RecordingWriteFailure.Decision) -> Void)?
+    /// `unknown`, REC19; `writer_stalled` for the backlog) and the notification
+    /// text. The Coordinator surfaces it and force-stops to preserve the intact
+    /// prefix (REC3 / AUD-7). Only the live recording's writers reach it (REC25).
+    var onWriteFailure: ((RecordingWriteFailure.Decision) -> Void)? {
+        get { writeFailures.onWriteFailure }
+        set { writeFailures.onWriteFailure = newValue }
+    }
 
     /// Cross-thread mic-gate state (TECH-CONC2): the latest verdict (main writes
     /// it via `setMicGateVerdict`; the render thread reads it to gate each
@@ -326,9 +337,8 @@ final class MeetingRecorder {
         self.abandonedCalls = abandonedCalls
         deviceRecovery.host = self
         systemChannel.isRecordingProvider = { [weak self] in self?.isRecording ?? false }
-        systemChannel.noteWriteOutcome = { [weak self] ok, directory in
-            self?.noteWriteOutcome(channel: .system, success: ok, directory: directory)
-        }
+        systemChannel.writeFailures = writeFailures
+        systemChannel.checkWriterBacklog = { [weak self] in self?.checkWriterBacklog(tick: .system) }
     }
 
     enum RecorderError: Error, LocalizedError {
@@ -385,8 +395,7 @@ final class MeetingRecorder {
         capturedInputDevice = nil
         micAccumSumSq = 0
         micAccumFrames = 0
-        micWriteFailures = WriteFailureTracker()
-        systemWriteFailures = WriteFailureTracker()
+        backlogPolicy = WriterBacklogPolicy()
         systemChannel.resetForRecording()
         // Reset so a prior session's fade/verdict/off-record can't bleed in; the
         // writer itself is rebuilt below once the sample rate is bound.
@@ -407,6 +416,10 @@ final class MeetingRecorder {
         stemOwnership.claim(stamp)
         var started = false
         defer { if !started { stemOwnership.release(stamp) } }
+        // REC25: this recording's generation, opened before the first writer is built so every
+        // writer captures it, and closed again on a failed start.
+        writeFailures.beginRecording()
+        defer { if !started { writeFailures.endRecording() } }
         let finalURL = outputDir.appendingPathComponent("\(stamp).wav")
         let micURL = outputDir.appendingPathComponent("\(stamp).mic.wav")
         let systemURL = outputDir.appendingPathComponent("\(stamp).system.wav")
@@ -719,9 +732,17 @@ final class MeetingRecorder {
 
         // Serial writer: the tap enqueues, the disk write runs off-thread. A
         // failed write is counted (REC3 / AUD-7): a sustained run escalates to a
-        // force-stop instead of silently dropping audio.
-        let micDirectory = micURL.deletingLastPathComponent()
-        self.micWriter = SerialBufferWriter(label: "com.meetingpipe.recorder.mic-writer") { [weak self] buffer in
+        // force-stop instead of silently dropping audio. REC25: the writer counts
+        // the bytes it holds, and its failure tracker is its own (built inside
+        // `makeOutcomeHandler`, captured here), so no other writer's queue can
+        // reach it and a later recording cannot reset it.
+        let noteOutcome = writeFailures.makeOutcomeHandler(
+            channel: .mic, directory: micURL.deletingLastPathComponent()
+        )
+        self.micWriter = SerialBufferWriter(
+            label: "com.meetingpipe.recorder.mic-writer",
+            size: { MeetingRecorder.byteSize(of: $0) }
+        ) { buffer in
             let ok: Bool
             do {
                 try micFile.write(from: buffer)
@@ -730,7 +751,7 @@ final class MeetingRecorder {
                 Log.recorder.error("mic write: \(error.localizedDescription)")
                 ok = false
             }
-            self?.noteWriteOutcome(channel: .mic, success: ok, directory: micDirectory)
+            noteOutcome(ok)
         }
 
         // The `sampleRate > 0` check above is a pre-flight on a format read a few lines earlier,
@@ -1083,11 +1104,17 @@ final class MeetingRecorder {
         await teardownEngine()
         snapshotMicCoverage()
         let writers = [micWriter, systemChannel.systemWriter].compactMap { $0 }
+        // REC25: by channel, before the drain drops both writers.
+        let backlogPeaks = (
+            mic: micWriter?.highWaterBytes ?? 0,
+            system: systemChannel.systemWriter?.highWaterBytes ?? 0
+        )
         let writerWedged = await drainWriters()
         finalizeFiles()
         let producedUsableFinal = await mergeIntermediates(
             final: final, micURL: micURL, systemURL: systemURL,
-            session: session, writerWedged: writerWedged, limitSeconds: limitSeconds
+            session: session, backlogPeaks: backlogPeaks,
+            writerWedged: writerWedged, limitSeconds: limitSeconds
         )
         persistAfterMerge(final: final, producedUsableFinal: producedUsableFinal, started: session.started)
         releaseOwnership(of: final, writerWedged: writerWedged, writers: writers)
@@ -1123,6 +1150,9 @@ final class MeetingRecorder {
         self.micURL = nil
         self.systemURL = nil
         self.startedAt = nil
+        // REC25: the recording is over, so an escalation from one of its writers (still
+        // draining, or abandoned past the drain budget) stops nothing and notifies nobody.
+        writeFailures.endRecording()
         self.lastMicFires = session.micFires
         self.lastSystemFires = session.systemFires
         self.lastDurationParity = nil
@@ -1276,13 +1306,14 @@ final class MeetingRecorder {
         micURL: URL,
         systemURL: URL,
         session: StopSnapshot,
+        backlogPeaks: (mic: Int, system: Int),
         writerWedged: Bool,
         limitSeconds: Double?
     ) async -> Bool {
         let hasSystem = FileManager.default.fileExists(atPath: systemURL.path) && RecordingPostProcessor.fileSize(systemURL) > 4096
         let hasMic = FileManager.default.fileExists(atPath: micURL.path) && RecordingPostProcessor.fileSize(micURL) > 4096
 
-        Log.writeLine("recorder", "stopping: mic_fires=\(session.micFires) system_fires=\(session.systemFires) mic_bytes=\(RecordingPostProcessor.fileSize(micURL)) system_bytes=\(RecordingPostProcessor.fileSize(systemURL))")
+        Log.writeLine("recorder", "stopping: mic_fires=\(session.micFires) system_fires=\(session.systemFires) mic_bytes=\(RecordingPostProcessor.fileSize(micURL)) system_bytes=\(RecordingPostProcessor.fileSize(systemURL)) mic_backlog_peak_bytes=\(backlogPeaks.mic) system_backlog_peak_bytes=\(backlogPeaks.system)")
 
         // Per-channel duration diagnostic for the reported end-of-call skew
         // (TECH-CAP1): log both durations + delta before the merge pads to the
@@ -1527,47 +1558,42 @@ final class MeetingRecorder {
         gateAccess.withLock { $0.manualOffRecord = on }
     }
 
-    // MARK: - Write-failure escalation (REC3 / AUD-7)
+    // MARK: - Writer backlog (REC25)
 
-    private enum WriteChannel { case mic, system }
-
-    /// Fold one write outcome into the channel's failure tracker, on that
-    /// writer's serial queue. On the buffer that first crosses the threshold,
-    /// emit `recording_error` and hand off to `onWriteFailure` on main exactly
-    /// once, so a run of swallowed write errors becomes a force-stop that
-    /// preserves the intact prefix instead of silent data loss.
-    ///
-    /// REC19: the cause is decided here, off main, from the free space on the
-    /// volume holding `directory`. It used to say "disk full or the 4 GiB WAV
-    /// cap" unconditionally; the cap never fires on macOS 27.2 (the writer goes
-    /// to BW64), so anything that is not a full disk is reported as unknown.
-    private func noteWriteOutcome(channel: WriteChannel, success: Bool, directory: URL) {
-        let shouldEscalate: Bool
-        let consecutive: Int
+    /// One backlog tick for `channel`, on main, from that channel's 1 Hz liveness tick
+    /// (`InputDeviceRecovery.checkTapLiveness`, `SystemAudioChannel.checkSystemLiveness`), ahead
+    /// of every guard those ticks have about their own capture: an abandoned mic or a down system
+    /// stream still has a writer that can be stuck. Reads both writers because the cap is across
+    /// both; warns about `channel` alone. Each channel's seconds come from the format its file is
+    /// written in: the mono mic file, SCStream's capture format.
+    func checkWriterBacklog(tick channel: CaptureWriteChannel) {
+        guard isRecording else { return }
+        let mic = micWriter?.pendingBytes ?? 0
+        let system = systemChannel.systemWriter?.pendingBytes ?? 0
+        let pending = channel == .mic ? mic : system
+        let rate: Double
         switch channel {
-        case .mic:
-            shouldEscalate = micWriteFailures.record(success: success)
-            consecutive = micWriteFailures.consecutiveFailures
-        case .system:
-            shouldEscalate = systemWriteFailures.record(success: success)
-            consecutive = systemWriteFailures.consecutiveFailures
+        case .mic: rate = micFileFormat.map { MeetingRecorder.bytesPerSecond($0) } ?? 0
+        case .system: rate = MeetingRecorder.bytesPerSecond(SystemAudioCapture.captureFormat)
         }
-        guard shouldEscalate else { return }
-
-        let label = channel == .mic ? "mic" : "system"
-        let space = RecordingWriteFailure.freeSpace(at: directory)
-        let decision = RecordingWriteFailure.decide(
-            channel: label, freeBytes: space.freeBytes, volumeName: space.volumeName
-        )
-        Log.event(category: "recorder", action: "recording_error", attributes: [
-            "channel": label,
-            "consecutive_failures": consecutive,
-            "cause": decision.cause.rawValue,
-            "free_bytes": decision.freeBytes as Any,
-        ])
-        Log.writeLine("recorder", "ERROR: \(label) writer failed \(consecutive) consecutive writes (cause=\(decision.cause.rawValue) free_bytes=\(decision.freeBytes.map(String.init) ?? "unreadable")); force-stopping to preserve the intact prefix")
-        let cb = onWriteFailure
-        DispatchQueue.main.async { cb?(decision) }
+        switch backlogPolicy.evaluate(
+            channel: channel, pendingBytes: pending, bytesPerSecond: rate, totalPendingBytes: mic + system
+        ) {
+        case .none:
+            return
+        case .warn(let pendingSec):
+            Log.event(category: "recorder", action: "writer_backlog", attributes: [
+                "channel": channel.rawValue,
+                "pending_bytes": pending,
+                "pending_sec": (pendingSec * 10).rounded() / 10,
+            ])
+            Log.writeLine("recorder", String(
+                format: "WARN: %@ writer is %.1fs behind (%d bytes waiting) - the output volume is not keeping up",
+                channel.rawValue, pendingSec, pending
+            ))
+        case .stop:
+            writeFailures.escalateBacklog(channel: mic >= system ? .mic : .system, pendingBytes: mic + system)
+        }
     }
 
     /// After stop, sanity-check the WAV's audio duration vs wallclock.
@@ -1604,6 +1630,10 @@ final class MeetingRecorder {
 /// main thread on a wedged engine queue.
 extension MeetingRecorder: InputDeviceRecoveryHost {
     var observedEngine: AnyObject { engine }
+
+    func checkMicWriterBacklog() {
+        checkWriterBacklog(tick: .mic)
+    }
 
     @MainActor
     func readEngineIsRunning() async -> Bool? {

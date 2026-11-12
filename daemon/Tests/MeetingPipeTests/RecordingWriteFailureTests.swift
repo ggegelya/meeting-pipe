@@ -72,4 +72,17 @@ final class RecordingWriteFailureTests: XCTestCase {
         let space = W.freeSpace(at: FileManager.default.temporaryDirectory)
         XCTAssertNotNil(space.freeBytes)
     }
+
+    /// REC25: a writer whose backlog hit the cap has not failed a write, so the text blames
+    /// neither a full disk nor an unknown error; it names a folder that stopped responding.
+    func test_a_stalled_writer_is_its_own_cause_and_does_not_say_full() {
+        let d = W.stalled(channel: "system")
+        XCTAssertEqual(d.cause, .writerStalled)
+        XCTAssertEqual(d.cause.rawValue, "writer_stalled")
+        XCTAssertEqual(d.channel, "system")
+        XCTAssertNil(d.freeBytes)
+        XCTAssertFalse(d.message.contains("full"), d.message)
+        XCTAssertTrue(d.message.contains("stopped responding"), d.message)
+        XCTAssertTrue(d.message.contains("was kept"), d.message)
+    }
 }

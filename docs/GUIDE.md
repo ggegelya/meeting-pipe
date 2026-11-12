@@ -515,7 +515,7 @@ The cause that used to be behind it was the app's own doing and is fixed. When o
 
 ### A notification said "Recording stopped" in the middle of a meeting
 
-The app could not keep saving the audio, so it stopped the recording rather than carry on capturing nothing. Everything up to that point was kept and is processed as normal. If the notification says the disk is full, it names the disk and how much space is left: free up space before the next meeting. If it does not mention the disk, the app could not tell why, and **Preferences ▸ Integrations ▸ Run doctor…** is the place to look.
+The app could not keep saving the audio, so it stopped the recording rather than carry on capturing nothing. Everything up to that point was kept and is processed as normal. If the notification says the disk is full, it names the disk and how much space is left: free up space before the next meeting. If it says the folder recordings are saved to stopped responding, nothing was failing but the audio was piling up waiting to be saved, which happens when that folder is on a network drive or a cloud drive that hung: put the library back on this Mac before the next meeting (for a synced folder, **Move library…** in **Preferences ▸ Storage** does it). If it does not mention the disk or the folder, the app could not tell why, and **Preferences ▸ Integrations ▸ Run doctor…** is the place to look.
 
 ### The recording did not stop when the call did
 

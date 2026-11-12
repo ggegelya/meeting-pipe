@@ -33,6 +33,9 @@ protocol InputDeviceRecoveryHost: AnyObject {
     func padMicGap(frames: AVAudioFrameCount, format: AVAudioFormat)
     /// Fire the recorder's `onConfigurationChange`.
     func reportConfigurationChange(_ outcome: MeetingRecorder.CaptureRecoveryOutcome)
+    /// REC25: evaluate the mic writer's backlog (and the cap across both writers) on this tick.
+    /// On main, before any of the tick's own guards about the tap.
+    func checkMicWriterBacklog()
     /// REC13: `engine.stop()` then `removeTap`, each bounded.
     @MainActor func haltEngineForRecovery() async -> (engineStopped: Bool, tapRemoved: Bool)
     @MainActor func restartEngine() async -> EngineStartOutcome
@@ -571,8 +574,14 @@ final class InputDeviceRecovery {
     /// outstanding starts nothing, so a wedged read costs one thread rather than one a second.
     /// And it is not made at all once the mic is abandoned, which REC15's flag always meant and
     /// the read used to ignore: it ran before `TapWatchdogPolicy.decide` looked at the flag.
+    ///
+    /// REC25: the writer backlog check rides this tick too, ahead of the abandonment guard and the
+    /// single-flight slot, because neither says anything about the writer: an abandoned mic still
+    /// has a writer that can be stuck behind a hung volume.
     func checkTapLiveness() {
-        guard let host, host.isRecording, !micCaptureAbandoned else { return }
+        guard let host, host.isRecording else { return }
+        host.checkMicWriterBacklog()
+        guard !micCaptureAbandoned else { return }
         runExclusive { recovery in
             await recovery.probeTapLiveness()
         }
