@@ -2,9 +2,10 @@
 id: REC24
 title: A failed orphan re-merge is retried after every job forever, and two job completions can merge the same orphan at once over one temp file
 category: Recording
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-25 from the performance review. reapStorage runs the orphan sweep at launch and after every successful job (a ten-meeting Library batch runs it ten times); a `.recordfail.json` exempts a stem from the 24 h cutoff and `writePostProcessFailure` keeps no attempt count, so a merge that fails deterministically re-reads about 2.07 GB of intermediates per recorded hour after every job forever, and with no in-flight guard a second completion starts a second merge of the same stem that unlinks the first's `<stem>.merging.wav`. The raw/ scan also runs on main (0.6 ms at 61 entries, tens of ms at a year's). Scope: single-flight with one coalesced rerun, `attempts` in the breadcrumb with a cap on after-job retries (launch still tries once), the scan off main. [Spec](./REC24.md)
+closed: 2026-11-12
+comment: Shipped 2026-11-12. One orphan sweep at a time: `OrphanRecoveryLatch` (pure) behind a main-confined `OrphanRecoveryRunner` that `Coordinator` holds, so requests during a run coalesce into one after-job rerun; `<stem>.recordfail.json` carries `attempts` (absent reads as 1) and `last_attempt_at`, the after-job scan skips a stem at `OrphanRecordingRecovery.maxAfterJobAttempts` (3) while the launch sweep still tries it once, and the failure that reaches the cap emits `coordinator`/`orphan_recovery_gave_up` once; the scan moved into `scanAndRecover`, off main. Verified by `bash scripts/ci-local.sh` green (swift test 2872 + 415, 9 new, the wiring fence run red first; pytest 1478).
 ---
 
 # REC24: a failed orphan re-merge is retried after every job forever, and two job completions can merge the same orphan at once over one temp file

@@ -309,7 +309,7 @@ final class Coordinator: NSObject {
                 // library bounded through a long-running session, not only at
                 // launch. Runs on every completion path below (including the
                 // empty-skip early return).
-                self.reapStorage()
+                self.reapStorage(orphanSweep: .afterJob)
                 // A no-speech / suspect-transcript skip finishes with no summary
                 // and no page. The pipeline wrote <stem>.empty.json; post an
                 // honest terminal notice and skip the completion tone, rather
@@ -603,9 +603,10 @@ final class Coordinator: NSObject {
         // Re-enqueue recordings orphaned by a mid-recording termination (REC6 runs
         // the orphan sweep from here now, launch + after every job), reclaim kept
         // full recordings past their retention window (ADR 0016 / MIC13), and apply
-        // per-workflow audio retention to raw/ (STOR1). The orphan sweep runs before
-        // the reapers, so retention never sees a recording it is about to re-enqueue.
-        reapStorage()
+        // per-workflow audio retention to raw/ (STOR1). The orphan sweep is requested
+        // before the reapers start, and since REC24 both run off main side by side;
+        // retention touches only settled meetings, so never an orphan it is merging.
+        reapStorage(orphanSweep: .launch)
         // SEC14: one-time self-heal of any pre-existing 0644 transcript/summary
         // artifacts to 0600 (new writes are already 0600). Mirrors the SEC11 log sweep.
         let artifactsDir = liveOutputDir
@@ -694,7 +695,7 @@ final class Coordinator: NSObject {
     /// a directory scan, some deletes, an ffmpeg subprocess (for `compress`), and
     /// a `ps` probe. No scope touches a live recording or a non-terminal meeting,
     /// so this is independent of the recording and pipeline state machines.
-    private func reapStorage() {
+    private func reapStorage(orphanSweep: OrphanRecordingRecovery.Sweep) {
         // Snapshot main-owned state before detaching.
         let dir = liveOutputDir
         let policies = Dictionary(
@@ -711,8 +712,9 @@ final class Coordinator: NSObject {
         // that is starting (its `.mic.wav` exists before `start()` returns, which is
         // when the Library's live-row mirror learns of it), recording, stopping, or
         // still being written by an abandoned drain (REC23). A re-merge that fails
-        // again keeps its `.recordfail.json` for the doctor.
-        recoverOrphanedRecordings(excluding: ownedStems)
+        // again keeps its `.recordfail.json` for the doctor, and after
+        // `maxAfterJobAttempts` failures only the launch sweep retries it (REC24).
+        MainActor.assumeIsolated { orphanRecovery.request(orphanSweep) }
         Task.detached(priority: .background) {
             OriginalsReaper.sweep()
             AudioRetentionSweep.sweep(in: dir, policies: policies, liveStems: ownedStems)
@@ -725,40 +727,43 @@ final class Coordinator: NSObject {
     /// `.mic.wav`/`.system.wav` intermediates. REC6 runs this from `reapStorage`
     /// (launch + after every job completion), not only at launch, so a merge that
     /// failed while the daemon keeps running recovers on the next job instead of
-    /// waiting for a relaunch. `ownedStems` excludes every stem the recorder owns so
-    /// their in-flight intermediates are never merged, and the recorder is asked again
-    /// per stem right before its merge, since the snapshot can be minutes old by then
-    /// (REC23); the ffmpeg merges run off-main so the menu bar isn't stalled.
-    private func recoverOrphanedRecordings(excluding ownedStems: Set<String>) {
+    /// waiting for a relaunch. One sweep at a time (REC24): a request while one runs is
+    /// coalesced into a single after-job rerun, so two job completions never merge the
+    /// same stem over one `<stem>.merging.wav`. Each sweep snapshots the stems the recorder
+    /// owns on main as it starts, and the recorder is asked again per stem right before
+    /// its merge, since the snapshot can be minutes old by then (REC23); the scan and the
+    /// ffmpeg merges run off-main so the menu bar isn't stalled.
+    private lazy var orphanRecovery = OrphanRecoveryRunner { [weak self] sweep in
+        await self?.recoverOrphanedRecordings(sweep: sweep)
+    }
+
+    @MainActor
+    private func recoverOrphanedRecordings(sweep: OrphanRecordingRecovery.Sweep) async {
         let dir = liveOutputDir
-        let stems = OrphanRecordingRecovery.scanOrphanStems(in: dir, excludingStems: ownedStems)
-        guard !stems.isEmpty else { return }
+        let ownedStems = recorder.ownedStems
         let ownership = recorder.stemOwnership
-        Task { @MainActor [weak self] in
-            let result = await OrphanRecordingRecovery.recover(
-                stems: stems, in: dir, isOwned: { ownership.contains($0) }
+        let result = await OrphanRecordingRecovery.scanAndRecover(
+            in: dir, excludingStems: ownedStems, sweep: sweep, isOwned: { ownership.contains($0) }
+        )
+        for rec in result.ready {
+            let modeLabel = rec.summaryMode == .byo ? "byo" : "auto"
+            Log.writeLine("daemon", "recovered orphaned recording → \(rec.url.lastPathComponent) mode=\(modeLabel)")
+            Log.event(category: "coordinator", action: "orphan_recording_recovered", attributes: [
+                "file": rec.url.lastPathComponent,
+                "summary_mode": modeLabel,
+            ])
+            // REC2 / AUD-6: route by the recorded summary mode so a crash-
+            // interrupted BYO meeting produces a paste bundle, not an
+            // Anthropic+Notion auto-summary.
+            jobDispatcher.enqueue(file: rec.url, summaryMode: rec.summaryMode)
+        }
+        if !result.quarantined.isEmpty {
+            // Fail-closed capture-first orphans were kept aside, not published
+            // (TECH-MIC5 review). Tell the user so they can recover manually.
+            let n = result.quarantined.count
+            notifier.notifyError(
+                "\(n) interrupted recording\(n == 1 ? "" : "s") were kept for review but not auto-published: the mute timeline was lost when the app stopped unexpectedly, so muted moments could not be removed. They are in the MeetingPipe originals folder."
             )
-            guard let self = self else { return }
-            for rec in result.ready {
-                let modeLabel = rec.summaryMode == .byo ? "byo" : "auto"
-                Log.writeLine("daemon", "recovered orphaned recording → \(rec.url.lastPathComponent) mode=\(modeLabel)")
-                Log.event(category: "coordinator", action: "orphan_recording_recovered", attributes: [
-                    "file": rec.url.lastPathComponent,
-                    "summary_mode": modeLabel,
-                ])
-                // REC2 / AUD-6: route by the recorded summary mode so a crash-
-                // interrupted BYO meeting produces a paste bundle, not an
-                // Anthropic+Notion auto-summary.
-                self.jobDispatcher.enqueue(file: rec.url, summaryMode: rec.summaryMode)
-            }
-            if !result.quarantined.isEmpty {
-                // Fail-closed capture-first orphans were kept aside, not published
-                // (TECH-MIC5 review). Tell the user so they can recover manually.
-                let n = result.quarantined.count
-                self.notifier.notifyError(
-                    "\(n) interrupted recording\(n == 1 ? "" : "s") were kept for review but not auto-published: the mute timeline was lost when the app stopped unexpectedly, so muted moments could not be removed. They are in the MeetingPipe originals folder."
-                )
-            }
         }
     }
 

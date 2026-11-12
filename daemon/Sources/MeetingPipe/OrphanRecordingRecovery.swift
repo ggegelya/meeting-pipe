@@ -3,14 +3,34 @@ import Foundation
 /// Re-enqueues recordings orphaned by mid-recording termination (crash, kill,
 /// rebuild, reinstall). MeetingRecorder.stop() never ran, so .mic.wav / .system.wav
 /// intermediates were never merged into the final .wav and would be silently lost.
-/// Coordinator snapshots the orphan set synchronously at startup, merges off-main,
-/// and enqueues recovered files for pipeline processing.
+/// Coordinator requests a sweep at launch and after every job (REC6), one at a time
+/// (REC24); each scans and merges off-main and enqueues recovered files on main.
 enum OrphanRecordingRecovery {
 
     /// Max age for recovery. A crash/kill/rebuild orphan is always recent (next launch);
     /// older intermediates are stale test debris that must not be auto-published weeks
     /// later. They remain for the doctor orphan scan.
     static let maxOrphanAge: TimeInterval = 24 * 60 * 60
+
+    /// Failed post-processes after which the after-job sweep stops retrying a stem
+    /// (REC24). The count in `<stem>.recordfail.json` includes the stop-time failure, so
+    /// 3 is that one plus two after-job re-merges: enough to ride out a transient cause
+    /// (a busy disk, an ffmpeg that was briefly missing) and few enough that a merge
+    /// failing the same way every time (REC9's too-short refusal, a corrupt intermediate,
+    /// a merge that always reaches the 300 s ceiling) stops re-reading about 2 GB per
+    /// recorded hour after every job. The launch sweep ignores the cap and tries every
+    /// marked stem once per launch, because a rebuild can ship the fix that makes it work.
+    static let maxAfterJobAttempts = 3
+
+    /// Which trigger ran the sweep. Only `afterJob` honours `maxAfterJobAttempts`.
+    enum Sweep: Equatable {
+        case launch
+        case afterJob
+    }
+
+    /// Recovers one stem's intermediates into a final, or nil. `RecordingPostProcessor.recoverOrphan`
+    /// in production; a seam so a test can hold a recovery in flight.
+    typealias Recoverer = (_ stem: String, _ directory: URL) async -> URL?
 
     /// Pure scan: stems with .mic.wav or .system.wav but no finished .wav.
     /// Split from recoverAll so detection is unit-testable without real audio files.
@@ -46,10 +66,14 @@ enum OrphanRecordingRecovery {
     /// post-process-failure breadcrumb is a real interrupted recording and is exempt
     /// (REC6): a launchd daemon can run for days before the next sweep, so the old
     /// 24 h cutoff silently abandoned genuine orphans.
+    ///
+    /// An `afterJob` sweep also skips a stem whose breadcrumb has reached
+    /// `maxAfterJobAttempts` (REC24), whatever other marker it carries; `launch` does not.
     static func scanOrphanStems(
         in directory: URL,
         now: Date = Date(),
-        excludingStems: Set<String> = []
+        excludingStems: Set<String> = [],
+        sweep: Sweep = .launch
     ) -> [String] {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
@@ -62,6 +86,9 @@ enum OrphanRecordingRecovery {
         let candidates = detectOrphanStems(fileNames: entries.map { $0.lastPathComponent })
             .filter { !excludingStems.contains($0) }
         return candidates.filter { stem in
+            if sweep == .afterJob, failedAttempts(stem: stem, in: directory) >= maxAfterJobAttempts {
+                return false
+            }
             if hasRecoveryMarker(stem: stem, in: directory) {
                 return true
             }
@@ -86,6 +113,13 @@ enum OrphanRecordingRecovery {
         let fm = FileManager.default
         return fm.fileExists(atPath: directory.appendingPathComponent("\(stem).recovery.json").path)
             || fm.fileExists(atPath: directory.appendingPathComponent("\(stem).recordfail.json").path)
+    }
+
+    /// Failed post-processes recorded in the stem's `.recordfail.json`, 0 when it has none.
+    private static func failedAttempts(stem: String, in directory: URL) -> Int {
+        RecordingPostProcessor.readPostProcessFailure(
+            final: directory.appendingPathComponent("\(stem).wav")
+        )?.attempts ?? 0
     }
 
     /// Newest mtime across a stem's .mic.wav / .system.wav, or nil if neither can be stat'd.
@@ -135,10 +169,15 @@ enum OrphanRecordingRecovery {
     /// (REC23). The scan's exclusion is a snapshot, and an earlier stem's merge can run
     /// for minutes, long enough for a recording to start on a stem the snapshot listed
     /// as an orphan; merging it then deletes the live intermediates and publishes a stub.
+    ///
+    /// A failure that takes the stem's breadcrumb to `maxAfterJobAttempts` emits
+    /// `coordinator`/`orphan_recovery_gave_up` (REC24). Keyed on the persisted count crossing
+    /// the cap, so it fires once per stem for the life of the library, not once per launch.
     static func recover(
         stems: [String],
         in directory: URL,
-        isOwned: @MainActor (String) -> Bool
+        isOwned: @MainActor (String) -> Bool,
+        recoverer: Recoverer = { await RecordingPostProcessor.recoverOrphan(stem: $0, in: $1) }
     ) async -> Recovered {
         var result = Recovered()
         for stem in stems {
@@ -149,7 +188,11 @@ enum OrphanRecordingRecovery {
                 Log.writeLine("daemon", "skipping orphan \(stem): the recorder owns it now (a recording started on it after the scan)")
                 continue
             }
-            guard let url = await RecordingPostProcessor.recoverOrphan(stem: stem, in: directory) else { continue }
+            let attemptsBefore = failedAttempts(stem: stem, in: directory)
+            guard let url = await recoverer(stem, directory) else {
+                reportGaveUpIfCapReached(stem: stem, in: directory, attemptsBefore: attemptsBefore)
+                continue
+            }
             // Read the manifest + capture-mode marker BEFORE clearing the
             // start-time markers below: both feed the routing decision.
             let manifest = RecordingManifest.read(forStem: stem, in: directory)
@@ -170,6 +213,37 @@ enum OrphanRecordingRecovery {
             }
         }
         return result
+    }
+
+    /// Scan, then recover, off main (REC24): the `raw/` listing grows by about ten files a
+    /// meeting, and both callers are on main. Nonisolated and async, so awaiting it from a
+    /// main-actor Task runs the scan and the merges on the global executor; `isOwned` still
+    /// hops back to main per stem.
+    static func scanAndRecover(
+        in directory: URL,
+        excludingStems: Set<String>,
+        sweep: Sweep,
+        isOwned: @MainActor (String) -> Bool,
+        recoverer: Recoverer = { await RecordingPostProcessor.recoverOrphan(stem: $0, in: $1) }
+    ) async -> Recovered {
+        let stems = scanOrphanStems(in: directory, excludingStems: excludingStems, sweep: sweep)
+        guard !stems.isEmpty else { return Recovered() }
+        return await recover(stems: stems, in: directory, isOwned: isOwned, recoverer: recoverer)
+    }
+
+    private static func reportGaveUpIfCapReached(stem: String, in directory: URL, attemptsBefore: Int) {
+        guard let record = RecordingPostProcessor.readPostProcessFailure(
+            final: directory.appendingPathComponent("\(stem).wav")
+        ), attemptsBefore < maxAfterJobAttempts, record.attempts >= maxAfterJobAttempts else { return }
+        Log.event(category: "coordinator", action: "orphan_recovery_gave_up", attributes: [
+            "stem": stem,
+            "attempts": record.attempts,
+            "reason": record.reason as Any,
+        ])
+        Log.writeLine(
+            "daemon",
+            "orphan \(stem) failed to merge \(record.attempts) times; no more retries after jobs, the next launch tries once more. Intermediates kept."
+        )
     }
 
     /// Rebuild `<stem>.meta.json` from the manifest's captured payload so the
@@ -258,6 +332,68 @@ enum OrphanRecordingRecovery {
         } catch {
             Log.writeLine("daemon", "WARN: could not quarantine orphan \(url.lastPathComponent): \(error.localizedDescription)")
             return nil
+        }
+    }
+}
+
+/// Single flight for the orphan sweep, with at most one coalesced rerun (REC24). Pure: a
+/// request answers whether to start now, a finish whether to run once more. Before it, every
+/// job completion started its own recovery Task, so a second completion during a long merge
+/// merged the same stem again and unlinked the first merge's `<stem>.merging.wav`.
+struct OrphanRecoveryLatch: Equatable {
+    enum Request: Equatable { case start, coalesced }
+    enum Finish: Equatable { case rerun, idle }
+
+    private(set) var isRunning = false
+    private(set) var rerunPending = false
+
+    /// Any number of requests during one run collapse into one rerun, which scans afresh and
+    /// so covers every orphan those requests could have meant.
+    mutating func request() -> Request {
+        if isRunning {
+            rerunPending = true
+            return .coalesced
+        }
+        isRunning = true
+        return .start
+    }
+
+    /// On `.rerun` the latch stays running and the caller starts the rerun itself.
+    mutating func finish() -> Finish {
+        if rerunPending {
+            rerunPending = false
+            return .rerun
+        }
+        isRunning = false
+        return .idle
+    }
+}
+
+/// Holds `OrphanRecoveryLatch` on main and drives one sweep at a time (REC24). `run` does one
+/// whole sweep (snapshot on main, scan and merge off main, enqueue on main); a rerun is always
+/// an after-job sweep, since a launch sweep is the first request of a process and never coalesced.
+@MainActor
+final class OrphanRecoveryRunner {
+    private var latch = OrphanRecoveryLatch()
+    private nonisolated let run: @Sendable @MainActor (OrphanRecordingRecovery.Sweep) async -> Void
+
+    nonisolated init(run: @escaping @Sendable @MainActor (OrphanRecordingRecovery.Sweep) async -> Void) {
+        self.run = run
+    }
+
+    var isRunning: Bool { latch.isRunning }
+
+    func request(_ sweep: OrphanRecordingRecovery.Sweep) {
+        guard latch.request() == .start else { return }
+        start(sweep)
+    }
+
+    private func start(_ sweep: OrphanRecordingRecovery.Sweep) {
+        Task { @MainActor in
+            await run(sweep)
+            if latch.finish() == .rerun {
+                start(.afterJob)
+            }
         }
     }
 }

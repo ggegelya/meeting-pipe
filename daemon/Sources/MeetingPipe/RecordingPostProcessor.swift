@@ -234,12 +234,38 @@ enum RecordingPostProcessor {
 
     /// Sidecar dropped beside a recording whose merge/convert failed, so the
     /// retained `.mic.wav` / `.system.wav` read as a kept-for-recovery capture
-    /// rather than stray debris. Informational only: the orphan sweep still
-    /// retries the merge on the next launch (REC1 / AUD-5).
+    /// rather than stray debris, and the orphan sweep retries the merge (REC1 /
+    /// AUD-5). Its `attempts` count is the one thing a reader branches on: the
+    /// after-job sweep stops retrying a stem at `OrphanRecordingRecovery.maxAfterJobAttempts`
+    /// (REC24); the launch sweep still tries it once per launch.
     static func recordFailURL(forFinal final: URL) -> URL {
         let stem = final.deletingPathExtension().lastPathComponent
         return final.deletingLastPathComponent().appendingPathComponent("\(stem).recordfail.json")
     }
+
+    /// What a `<stem>.recordfail.json` says about the failures so far (REC24).
+    struct PostProcessFailureRecord: Equatable {
+        /// Failed post-processes so far, the stop-time one included. A breadcrumb written
+        /// before REC24 carries no count and reads as 1, as does one that cannot be parsed:
+        /// the file exists, so at least one attempt failed.
+        let attempts: Int
+        let reason: String?
+    }
+
+    /// The breadcrumb beside `final`, or nil when there is none.
+    static func readPostProcessFailure(final: URL) -> PostProcessFailureRecord? {
+        guard let data = try? Data(contentsOf: recordFailURL(forFinal: final)) else { return nil }
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        let attempts = (object["attempts"] as? Int).map { max($0, 1) } ?? 1
+        return PostProcessFailureRecord(attempts: attempts, reason: object["reason"] as? String)
+    }
+
+    private static let attemptTimestamp: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
 
     static func writePostProcessFailure(
         final: URL,
@@ -247,10 +273,15 @@ enum RecordingPostProcessor {
         reason: String = "ffmpeg post-process failed; capture intermediates were kept for recovery"
     ) {
         let names = retained.map { $0.lastPathComponent }
+        // REC24: carry the count forward, so a merge that fails the same way every time
+        // stops being retried after every job.
+        let attempts = (readPostProcessFailure(final: final)?.attempts ?? 0) + 1
         let payload: [String: Any] = [
             "schema_version": 1,
             "reason": reason,
             "retained": names,
+            "attempts": attempts,
+            "last_attempt_at": attemptTimestamp.string(from: Date()),
         ]
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: recordFailURL(forFinal: final), options: .atomic)
@@ -258,6 +289,7 @@ enum RecordingPostProcessor {
         Log.event(category: "recorder", action: "postprocess_failed", attributes: [
             "file": final.lastPathComponent,
             "retained": names.joined(separator: ","),
+            "attempts": attempts,
         ])
         Log.writeLine("recorder", "ERROR: post-process failed for \(final.lastPathComponent); kept \(names.joined(separator: ", ")) for recovery (REC1)")
     }
