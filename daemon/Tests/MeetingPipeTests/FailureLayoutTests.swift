@@ -47,17 +47,40 @@ final class FailureLayoutTests: XCTestCase {
         NSApp.activate(ignoringOtherApps: true)
         window.layoutIfNeeded()
         host.view.layoutSubtreeIfNeeded()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.15))
         return window
     }
+
+    /// Spins the run loop in short steps until `ready` holds or `timeout` passes. The fixed sleeps this
+    /// replaces assumed the process got its share of the machine: with several test runs sharing it, a
+    /// starved run (every test 3 to 5 times slower) found no scroll area, or an empty pasteboard, at the
+    /// 0.1 s mark. Callers still assert afterwards, so a control that is really missing goes red at the
+    /// deadline with the same message.
+    @MainActor
+    private func spin(timeout: TimeInterval = 5, until ready: () -> Bool) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !ready(), Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+    }
+
+    /// The visibility check every label assertion makes, so a poll can wait for exactly what is asserted.
+    private func fits(_ node: Element, in visible: NSRect) -> Bool {
+        let frame = node.accessibilityFrame()
+        return frame.height > 12 && visible.insetBy(dx: -1, dy: -1).contains(frame)
+    }
+
+    @MainActor
+    private func labeled(_ label: String, in nodes: [Element]) -> Element? { nodes.first { $0.accessibilityLabel() == label } }
 
     @MainActor
     private func assertVisible(_ labels: [String], in window: NSWindow, file: StaticString = #filePath, line: UInt = #line) throws {
         let view = try XCTUnwrap(window.contentView, file: file, line: line)
-        let visible = window.convertToScreen(view.bounds).insetBy(dx: -1, dy: -1)
-        let nodes = elements(window)
+        let screen = window.convertToScreen(view.bounds)
+        let visible = screen.insetBy(dx: -1, dy: -1)
+        var nodes = elements(window)
+        spin { nodes = elements(window); return labels.allSatisfy { labeled($0, in: nodes).map { fits($0, in: screen) } ?? false } }
         for label in labels {
-            let node = try XCTUnwrap(nodes.first { $0.accessibilityLabel() == label }, "Missing \(label)", file: file, line: line)
+            let node = try XCTUnwrap(labeled(label, in: nodes), "Missing \(label)", file: file, line: line)
             XCTAssertTrue(visible.contains(node.accessibilityFrame()), "\(label) escaped \(visible): \(node.accessibilityFrame())", file: file, line: line)
             XCTAssertGreaterThan(node.accessibilityFrame().height, 12, label, file: file, line: line)
         }
@@ -114,11 +137,15 @@ final class FailureLayoutTests: XCTestCase {
                 defer { window.orderOut(nil) }
                 window.layoutIfNeeded()
                 host.view.layoutSubtreeIfNeeded()
-                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-                let nodes = elements(window)
-
                 let visible = window.convertToScreen(host.view.bounds)
-                for label in ["Summary", "Transcript", "Audio", "More actions", "Open billing", "Retry summary", "Failure details"] {
+                let labels = ["Summary", "Transcript", "Audio", "More actions", "Open billing", "Retry summary", "Failure details"]
+                var nodes = elements(window)
+                spin {
+                    nodes = elements(window)
+                    return labels.allSatisfy { labeled($0, in: nodes).map { fits($0, in: visible) } ?? false }
+                        && (nodes.first { $0.accessibilityRole() == .scrollArea }?.accessibilityFrame().height ?? 0) > 100
+                }
+                for label in labels {
                     let node = try XCTUnwrap(nodes.first { $0.accessibilityLabel() == label }, "Missing \(label)")
                     let frame = node.accessibilityFrame()
                     XCTAssertGreaterThan(frame.height, 12, label)
@@ -127,7 +154,12 @@ final class FailureLayoutTests: XCTestCase {
                 XCTAssertGreaterThan(try XCTUnwrap(nodes.first { $0.accessibilityRole() == .scrollArea }).accessibilityFrame().height, 100)
                 if lines == 51 && size.width == 450 { try snapshot(window, name: "library-min") }
                 try XCTUnwrap(nodes.first { $0.accessibilityLabel() == "Failure details" }).press()
-                RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+                spin {
+                    guard let sheet = window.sheets.first, let content = sheet.contentView else { return false }
+                    let details = elements(sheet)
+                    return labeled("Close", in: details) != nil && labeled("Copy report", in: details) != nil
+                        && descendants(content).contains { ($0 as? NSTextView)?.string == diagnostic }
+                }
                 let sheet = try XCTUnwrap(window.sheets.first)
                 let details = elements(sheet)
                 XCTAssertNotNil(details.first { $0.accessibilityLabel() == "Close" })
@@ -141,11 +173,13 @@ final class FailureLayoutTests: XCTestCase {
                 let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
                     windowNumber: sheet.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
                 sheet.sendEvent(escape)
-                RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+                spin { window.sheets.isEmpty }
                 XCTAssertTrue(window.sheets.isEmpty, "Escape must close Details")
                 XCTAssertFalse(nodes.contains { ($0.accessibilityValue() as? String ?? "").contains("Synthetic traceback frame") })
                 for tab in ["Transcript", "Audio", "Summary"] {
                     try XCTUnwrap(elements(window).first { $0.accessibilityLabel() == tab }).press()
+                    // The labels exist before the press, so the poll inside assertVisible alone would not wait
+                    // for the tab switch; this floor keeps the old settle time for it.
                     RunLoop.current.run(until: Date().addingTimeInterval(0.15))
                     try assertVisible(["Summary", "Transcript", "Audio", "Failure details"], in: window)
                 }
@@ -162,10 +196,12 @@ final class FailureLayoutTests: XCTestCase {
         let window = host(FailureDetailsView(failure: failure, copyReport: { FailureReport.copy($0, to: board) }, close: {}),
                           size: NSSize(width: 620, height: 500))
         defer { window.orderOut(nil) }
-        let preview = try XCTUnwrap(descendants(window.contentView!).compactMap { $0 as? NSTextView }
-            .first { $0.string.hasPrefix("MeetingPipe failure report") })
+        let report = { self.descendants(window.contentView!).compactMap { $0 as? NSTextView }
+            .first { $0.string.hasPrefix("MeetingPipe failure report") } }
+        spin { report() != nil && self.labeled("Copy report", in: self.elements(window)) != nil }
+        let preview = try XCTUnwrap(report())
         try XCTUnwrap(elements(window).first { $0.accessibilityLabel() == "Copy report" }).press()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        spin { board.string(forType: .string) != nil }
         XCTAssertEqual(board.string(forType: .string), preview.string)
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unavailable"
         XCTAssertEqual(preview.string, """
@@ -248,9 +284,10 @@ final class FailureLayoutTests: XCTestCase {
         XCTAssertTrue(failure.explanation.contains("Details"))
         XCTAssertEqual(failure.diagnostics, diagnostic)
         XCTAssertNil(failure.settingsLabel)
+        // After the poll in assertVisible: on a tree not built yet this absence check would pass vacuously.
+        try assertVisible(["Failure details"], in: window)
         XCTAssertFalse(elements(window).contains { $0.accessibilityLabel() == "Download model" },
                        "The summary-model download cannot install Ask's search model")
-        try assertVisible(["Failure details"], in: window)
         XCTAssertEqual(downloads, 0)
     }
 
