@@ -1,15 +1,15 @@
 ---
-id: END19
+id: END28
 title: Switching quickly from one Teams call to another keeps recording into the first call's stem, because every signal that reverts a hold is about the app rather than the call
 category: Detection
 status: new
 priority: P1
-comment: Filed 2026-11-12. `20261112-172307` (15:23 to 15:45Z) holds three Teams calls (standup, a switch to "<SSO call subject>" at 15:29:11Z, back to a "<standup subject>" window at 15:39:38Z) and published as one note mixing both meetings' people and topics: each switch opened an END17 hold that a returning app-level live signal reverted in 8 s and 22 s, and Teams' teardown line was not on disk either time. Broken promise: one recording, and one note, per meeting. Scope: carry a call identity per recording (the call window's title) and split into a new stem when it changes. P1; owner may re-band. [Spec](./END19.md)
+comment: Filed 2026-11-12. `20261112-172307` (15:23 to 15:45Z) holds three Teams calls (standup, a switch to "<SSO call subject>" at 15:29:11Z, back to a "<standup subject>" window at 15:39:38Z) and published as one note mixing both meetings' people and topics: each switch opened an END17 hold that a returning app-level live signal reverted in 8 s and 22 s, and Teams' teardown line was not on disk either time. Broken promise: one recording, and one note, per meeting. Scope: carry a call identity per recording (the call window's title) and split into a new stem when it changes. P1; owner may re-band. [Spec](./END28.md)
 ---
 
-# END19: switching quickly from one Teams call to another keeps recording into the first call's stem, because every signal that reverts a hold is about the app rather than the call
+# END28: switching quickly from one Teams call to another keeps recording into the first call's stem, because every signal that reverts a hold is about the app rather than the call
 
-Band origin: filed 2026-11-12 from the owner's report "when I switch between two meetings quickly, the new one still writes as the first one", traced in-session the same day. A gap in [END17](./END17.md)'s revert rule, which is behaving as designed; [END18](./END18.md) is the same afternoon's other END17 defect. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
+Band origin: filed 2026-11-12 from the owner's report "when I switch between two meetings quickly, the new one still writes as the first one", traced in-session the same day. A gap in [END17](./END17.md)'s revert rule, which is behaving as designed; [END27](./END27.md) is the same afternoon's other END17 defect. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
 ## What happened
 
@@ -50,7 +50,7 @@ The call window's title does carry call identity, and the daemon already reads i
 - **Not one WAV with split markers resolved in the pipeline.** It would be gapless, but it touches the recorder, the merge, the transcript, and every stem-keyed surface. A stop and start costs a gap of the order the resume path already accepts.
 - **Not SlimCore call IDs.** They are the stronger identity, but the log is buffered and flushes late (`log_written_sec_ago` above), and the shell harness cannot even read it (TCC). Revisit only if the window title proves unreliable in the field.
 - **Not re-splitting `20261112-172307` or its note.** The owner splits it by hand if wanted; this task changes recordings made after it lands.
-- **Not END18's wedge**, which is the same afternoon's other END17 defect and lands independently.
+- **Not END27's wedge**, which is the same afternoon's other END17 defect and lands independently.
 - **Observed, not filed:** browser meetings have the same shape (switching Meet tabs keeps one tab-title signal's app identity), and the tab title is the analogous identity. Out of scope until a browser meeting is recorded at all (the owner's meetings are Teams-only).
 
 ## Acceptance

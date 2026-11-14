@@ -1,13 +1,13 @@
 ---
-id: END18
+id: END27
 title: A resumed recording can start with the lifecycle already in its terminal ended state, so nothing ever ends it
 category: Detection
 status: new
 priority: P1
-comment: Filed 2026-11-12. `20261112-174606` (END17 item 5's first field resume) recorded on with no end detection: Teams' initial window-gone reading reached `.starting` 2 ms before process audio's first reading, so no END14 veto applied and the engine went terminal `.ended`; the session dropped that end (start still in flight) and `engageLifecycleIfNeeded` then skipped as `already_engaged`, so the real leave at 15:50:34Z never opened a hold and the owner stopped it by hand 6 min later. Broken promise: a detected recording ends when the call ends. Scope: no window-gone end in `.starting` before process audio has reported, and re-engage a terminal engine at record start. P1; owner may re-band. [Spec](./END18.md)
+comment: Filed 2026-11-12. `20261112-174606` (END17 item 5's first field resume) recorded on with no end detection: Teams' initial window-gone reading reached `.starting` 2 ms before process audio's first reading, so no END14 veto applied and the engine went terminal `.ended`; the session dropped that end (start still in flight) and `engageLifecycleIfNeeded` then skipped as `already_engaged`, so the real leave at 15:50:34Z never opened a hold and the owner stopped it by hand 6 min later. Broken promise: a detected recording ends when the call ends. Scope: no window-gone end in `.starting` before process audio has reported, and re-engage a terminal engine at record start. P1; owner may re-band. [Spec](./END27.md)
 ---
 
-# END18: a resumed recording can start with the lifecycle already in its terminal ended state, so nothing ever ends it
+# END27: a resumed recording can start with the lifecycle already in its terminal ended state, so nothing ever ends it
 
 Band origin: filed 2026-11-12 from the owner's report that the last meeting "didnt even try to stop (no end confirmation running, currently active)", traced in-session the same day. A shipped-behaviour defect in [END17](./END17.md) item 5 (the resume path), not a regression of an earlier fix. Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
 
@@ -15,7 +15,7 @@ Band origin: filed 2026-11-12 from the owner's report that the last meeting "did
 
 All times UTC from `~/Library/Logs/MeetingPipe/events.jsonl` (the owner is UTC+2, so 15:46Z is the owner's 17:46).
 
-- 15:45:27.963 `lifecycle`/`ended` closes the previous recording, `20261112-172307` (see [END19](./END19.md) for what was wrong inside it), and `coordinator`/`stopped_candidate_retained` keeps the Teams candidate.
+- 15:45:27.963 `lifecycle`/`ended` closes the previous recording, `20261112-172307` (see [END28](./END28.md) for what was wrong inside it), and `coordinator`/`stopped_candidate_retained` keeps the Teams candidate.
 - 15:46:06.489 discovery picks Teams again (score 14, Leave, Mute and process audio all live).
 - 15:46:06.598 `lifecycle`/`starting`.
 - 15:46:06.606 `coordinator`/`recording_resumed_after_end` with `resumed_from: 20261112-172307`, `since_end_sec: 38.6`. This is END17 item 5: inside `ResumeAfterEnd.windowSec` (120 s) of an end, `MeetingSessionController.handleMeetingStarted` starts recording with no prompt.
@@ -48,7 +48,7 @@ Two changes, both needed; either alone leaves a path to the wedge.
 ## Explicitly not
 
 - **Not extending REC7's in-flight latch to the resume path.** The verdict it would act on is the false window-gone reading, so it would stop the resumed recording within milliseconds.
-- **Not revisiting END17 item 5's no-prompt resume.** [DET13](./DET13.md) recorded "any policy here returns prompt, never record"; END17 overrode that with the owner's decision on 2026-10-24. Whether that decision still stands after [END19](./END19.md) is END19's question, not this task's.
+- **Not revisiting END17 item 5's no-prompt resume.** [DET13](./DET13.md) recorded "any policy here returns prompt, never record"; END17 overrode that with the owner's decision on 2026-10-24. Whether that decision still stands after [END28](./END28.md) is END28's question, not this task's.
 - **Not the window-title match itself.** The `" | Microsoft Teams"` suffix loss that makes window-gone fire on every Teams call is END14's.
 - **Observed, not filed:** the prompted-path variant above (window-gone before process audio while the prompt is up dismisses the prompt). Change 1 closes it too if it lands in `handleStarting`, which is the reason to put it there rather than in the resume path; the pickup session should confirm that with a test and say so in the landing note.
 
