@@ -22,7 +22,7 @@ jobs:
     name: Design tokens (TECH-DSN3)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The font-size check diffs against the push's or pull request's base.
           fetch-depth: 0
@@ -39,9 +39,9 @@ jobs:
     # diff never shows. Known drift sits in the script's allowlists.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           # tomllib is stdlib from 3.11; the script needs no other dependency.
           python-version: "3.12"
@@ -58,8 +58,8 @@ jobs:
       # pyright's pythonVersion assume.
       UV_PYTHON: "3.11"
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: Lint, typecheck, test from the lock
@@ -72,7 +72,7 @@ jobs:
     # swift-tools-version 6.0).
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Show toolchain
         run: swift --version
       - name: Install ffmpeg
