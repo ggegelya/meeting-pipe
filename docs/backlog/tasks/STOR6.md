@@ -4,7 +4,7 @@ title: New installs put the library in iCloud-synced ~/Documents, the welcome sc
 category: Storage
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, architecture review M9, go-live UX-5 PD-10 DI-11): SEC12 only warns; the default is still ~/Documents/Meetings, six of the owner's library files are already iCloud-evicted, and the welcome step says notes never leave the Mac while the default engine is Anthropic. Default new installs to ~/Meetings, pin existing paths, welcome copy from PrivacyReach, download-status checks before heavy reads. [Spec](./STOR6.md)
+comment: Filed 2026-10-24 (audit band, architecture review M9, go-live UX-5 PD-10 DI-11): SEC12 only warns; the default is still ~/Documents/Meetings, six of the owner's library files are already iCloud-evicted, and the welcome step says notes never leave the Mac while the default engine is Anthropic. Default new installs to ~/Meetings, pin existing paths, welcome copy from PrivacyReach, download-status checks before heavy reads. [Spec](./STOR6.md) Amended 2026-11-13 by the audit band: install.sh's microphone prompt also says audio never leaves the Mac while the default library is iCloud-synced; rewrite it to a sentence true under any config, and the owner rules on the launch-path wizard.
 ---
 
 # STOR6: new installs put the library in iCloud-synced `~/Documents`, the welcome screen promises nothing leaves the Mac, and a library left in iCloud is read with no dataless or download handling
@@ -41,3 +41,25 @@ Band origin: filed 2026-10-24 from the 2026-10-24 audit band ([architecture revi
 - A test with an injected resource-values seam that a non-current `ubiquitousItemDownloadingStatus` starts a download and does not open the file, and a pytest that `mp backup` counts a file whose stat flags carry `SF_DATALESS`.
 - `python3 scripts/truth_fences.py config` green (the `config.example.toml` key changed); `bash scripts/ci-local.sh` green; new test counts in the commit body.
 - Evidence (confirms, does not gate): `scripts/install.sh` into a scratch HOME creates `~/Meetings/raw` on first record with no Documents-folder TCC prompt; the owner eyeballs the welcome step, which is also SEC12's outstanding eyeball.
+
+## Amendment 2026-11-13 (audit band)
+
+From the [2026-11-12 independent audit](../../audits/2026-11-12-independent-audit.md), unverified lows F175 and F185 (data lens), both re-verified in code at HEAD on 2026-11-13.
+
+Correction at filing: F175's copy defect is already this task. `OnboardingStepWelcome` still shows `Text("Meeting notes that never leave your Mac")` and "nothing is uploaded unless you configure a publish target", with `[summarization] backend = "anthropic"` in `config.example.toml`; Context and Scope item 3 above own it unchanged. F175 adds only the launch-path observation below.
+
+- **F185: a second "never leaves" promise, in the permission prompt.** `scripts/install.sh` writes the app's `NSMicrophoneUsageDescription` as "MeetingPipe records meeting audio for transcription. Audio never leaves your Mac." The shipped default records into `~/Documents/Meetings/raw` (`config.example.toml` `output_dir`), which `MuteRedactor.originalsDirectory`'s own doc comment calls "the iCloud-synced Documents folder", and which carries `com.apple.icloud.desktop` on the owner's Mac. `git grep -i "never leave"` over `daemon/`, `pipeline/`, `scripts/`, `README.md`, `PRODUCT.md`, `docs/SETUP.md` and `docs/GUIDE.md` finds only these two user-facing copies (the welcome title and this prompt); `PrivacyReach`'s "nothing is uploaded" is conditional on no workflow publishing and is honest. Unlike the welcome step, this string is static `Info.plist` text shown by macOS, so it cannot be derived from `PrivacyReach` at runtime.
+- **F175: the wizard runs from the launch path.** `App.swift` calls `coordinator.presentOnboardingIfNeeded()` whenever `OnboardingGate.isCompleted` is false, in place of the startup `SystemAudioCapture.prewarm()`. Root `CLAUDE.md` lists "in-app onboarding wizards" among the deferred items, while this flow (TECH-UX1) exists to frame the TCC prompts one at a time, which reads as setup ease. Recorded for the owner's ruling, not as scope here.
+
+**Added to scope.**
+
+5. (F185) Rewrite `NSMicrophoneUsageDescription` in `scripts/install.sh` to a sentence that stays true under every configuration, for example "MeetingPipe records your meetings so it can transcribe them on this Mac." (no claim about where audio or notes end up), and keep the welcome step's new copy (item 3) and this string from contradicting each other. Read `docs/SETUP.md` and `docs/GUIDE.md` first and update any place that quotes the prompt, in the same commit.
+
+**Added to explicitly not.** Deciding whether the first-run flow is permitted under the deferral; that is the owner's call and, if it goes against the flow, its own task.
+
+**Added to acceptance.**
+
+- (F185) A check that the plist `install.sh` generates contains no "never leave" or "never leaves" phrase: a grep in `bash scripts/ci-local.sh fences` or an assertion in `bash scripts/test-app-relocation.sh`, whichever already reads the staged plist; it fails on `main` at filing.
+- (F175) The Swift welcome-copy test in the acceptance above also asserts the string contains no "never leave".
+
+**Owner decision (F175; gates nothing in items 1 to 5).** [owner] Say whether the launch-time first-run flow (`presentOnboardingIfNeeded`) stays as setup ease or is a deferred wizard; [session] records the answer in this file.

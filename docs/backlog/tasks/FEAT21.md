@@ -4,7 +4,7 @@ title: Run-all summarizes and publishes before anyone can name the speakers, so 
 category: Feature
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, go-live UX-8): run-all publishes THEM-x labels as attendees and owners before naming is possible; UX41's Re-summarize repairs it one meeting and one engine call at a time, and DV5 counted 570 of 1126 owned actions as diarization artifacts. Opt-in per-workflow wait-for-names gate before summarize, parked in Needs you with one Summarize and publish button. [Spec](./FEAT21.md)
+comment: Filed 2026-10-24 (audit band, go-live UX-8): run-all publishes THEM-x labels as attendees and owners before naming is possible; UX41's Re-summarize repairs it one meeting and one engine call at a time, and DV5 counted 570 of 1126 owned actions as diarization artifacts. Opt-in per-workflow wait-for-names gate before summarize, parked in Needs you with one Summarize and publish button. [Spec](./FEAT21.md) Amended 2026-11-13 by the audit band: 352 of 712 field attendees are THEM-x labels and 217 spoke under 10 s, so a default-on attendee filter with a speech floor joins the opt-in gate.
 ---
 
 # FEAT21: run-all summarizes and publishes before anyone can name the speakers, so attendees and action owners go out as diarization labels and fixing them costs a manual re-summarize and republish per meeting
@@ -42,3 +42,24 @@ An opt-in, per-workflow **wait for speaker names** setting. When it is on and th
 - The tripping test fails against today's `_run_all_inner`, which reaches summarize with unnamed voices whatever the workflow says.
 - `cd pipeline && uv run --extra dev ruff check src tests`, `pyright`, `pytest -q` green; `cd daemon && swift build` and `swift test` green; `python3 scripts/truth_fences.py both` green with any new event action documented; new test counts in the commit bodies.
 - `docs/GUIDE.md` gains the recipe (turn it on for a workflow, name the voices, release) and `README.md` the setting, in the same commit (DOC11).
+
+## Amendment 2026-11-13 (audit band)
+
+Source: the field finding "Attendee lists are diarization labels: half are THEM-x and a quarter spoke under 10 seconds" (transcripts-and-summaries #8) in the [field evidence](../../audits/2026-11-13-field-evidence.md). Re-verified at HEAD 3a2da4fc on 2026-11-14.
+
+**The field numbers.** Across the work laptop's 110 summaries (2026-09-14 to 2026-11-13, all three build eras) there are 712 attendees; 352 (49.4 percent) are exact `THEM-x` labels and 15 more carry a `THEM-` prefix with a suffix; 217 attendees of any label, 179 of them `THEM-x`, hold under 10 s of speech in the transcript; 17 summaries list `speaker_unknown` as an attendee; in 61 of 110 the attendee count equals the transcript's label count. 34 action items are owned by a `THEM-x` label. Correction at filing: the finding's title says "a quarter spoke under 10 seconds"; 217 of 712 is about 30 percent.
+
+**Why every default workflow does this.** The summary schema in `pipeline/src/mp/schemas.py` describes `attendees` to the model as `"Inferred from speaker labels and content."`, and `MeetingSummary._scrub_attendees` keeps any string `clean_person` accepts, which is a safety scrub (emails, URLs, mentions, control characters), not a name check. The staged path builds its list the same way (`summarize_staged.py` appends each Stage 1 row's `who`). `publish_notion.py` turns each attendee into a Notion multi-select option and `publish_obsidian.py` writes them into the note's YAML front matter, so the labels become database options and properties, not only prose. This task's gate is opt-in per workflow and leaves every default workflow publishing these lists.
+
+**Scope addition (default on, independent of the gate).**
+
+4. Filter attendees after summarize and before publish, for every workflow: drop `THEM-x` labels (with or without a suffix), `speaker_unknown`, and the owner's raw id from `attendees`, and report them instead as a count of unnamed voices (a new optional summary field, rendered as "and N unnamed voices"). A label counts as present only with at least a minimum speech time, a named constant set from this distribution (10 s is the field's cut) and documented beside it. Named speakers below the floor stay out too. Seam: a post-validation step in `summarize.py` and the staged path's attendee builder, not the model prompt alone, since the model is not trusted to follow it. Action owners are not rewritten here; the gate (items 1 to 3) and [UX83](./UX83.md) own those.
+
+Not here: owner-cluster selection that puts the owner's own voice under `THEM-x` ([DIAR11](./DIAR11.md)), naming quality ([FEAT19](./FEAT19.md), [FEAT20](./FEAT20.md)), and [DV5](./DV5.md)'s survey.
+
+**Acceptance additions.**
+
+- `pipeline` tests: a summary whose model output lists `THEM-1`, `THEM-2_a`, `speaker_unknown` and two named speakers keeps only the named ones and reports 3 unnamed voices; a named speaker with 4 s of speech is dropped under the floor; a summary whose attendees are all unnamed yields an empty list and a count; a legacy summary without the count field still loads.
+- Publish tests: the Notion attendee multi-select and the Obsidian front matter carry no `THEM-` or `speaker_unknown` value.
+- A sidecar or schema change goes through `CONVENTIONS.md` and the golden fixtures (`gen_contract_fixtures.py`) if Swift reads the new field.
+- `ruff`, `pyright` and `pytest -q` green, new test count in the commit body.

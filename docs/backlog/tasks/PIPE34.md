@@ -4,7 +4,7 @@ title: A failed write of the run or publish sidecar leaves the previous run's fi
 category: Pipeline
 status: new
 priority: P2
-comment: Filed 2026-10-25 (observability band, O20: PY-5, FB-8): run.json and publish.json write failures only log a WARNING, so a stale sidecar keeps the old backend attribution, the UX41 staleness ts and the Unpublished badge, and blocks retention. Unlink a stale run.json on failure, write an unknown publish marker before sinks run, a failed final write exits 3, Swift reads unknown, sidecar_write_failed event. [Spec](./PIPE34.md)
+comment: Filed 2026-10-25 (observability band, O20: PY-5, FB-8): run.json and publish.json write failures only log a WARNING, so a stale sidecar keeps the old backend attribution, the UX41 staleness ts and the Unpublished badge, and blocks retention. Unlink a stale run.json on failure, write an unknown publish marker before sinks run, a failed final write exits 3, Swift reads unknown, sidecar_write_failed event. [Spec](./PIPE34.md) Amended 2026-11-13 by the audit band: a leftover `<stem>.apple_pending.json` from a hand-run or killed run-all diverts a later successful run-all to an on-device re-summarize once the backend has changed, so run_all removes a stale sentinel at start (F054).
 ---
 
 # PIPE34: a failed write of `<stem>.run.json` or `<stem>.publish.json` leaves the previous run's sidecar in place, and the daemon reads it as this run's outcome
@@ -47,3 +47,27 @@ Verified in code on 2026-10-25 against `main` at `01e904a`. Both per-run sidecar
 - pytest in `test_publish_router.py`: the pending marker is on disk while a fake sink runs; a final write patched to raise leaves the marker, not the previous run's file, and the caller exits 3; a marker write that fails with an unlink that also fails aborts before any sink is called.
 - Swift: a `PublishResult` test that `"unknown"` resolves to `unknown` even with a `run.json` `publish_state` of `full`; an `AudioRetention` test that it is not settled; the CI4 fixture decoder test passes on the regenerated fixture.
 - `sidecar_write_failed` documented in `CONVENTIONS.md`; `python3 scripts/truth_fences.py` green. `cd pipeline && uv run --extra dev pytest -q` and `cd daemon && swift test` green, ruff and pyright clean, `bash scripts/ci-local.sh` green, N new tests per tree in the commit body.
+
+## Amendment 2026-11-13 (audit band)
+
+Source: [independent audit](../../audits/2026-11-12-independent-audit.md) F054 (low, partially confirmed). Same root cause as this task, a file left by an earlier run read as this run's outcome, on a third per-stem file: `<stem>.apple_pending.json`. Re-verified in code at HEAD on 2026-11-13.
+
+**The writer never cleans up.** `orchestrate._check_apple_handoff` writes the sentinel (`sentinel.write_text(...)`) whenever `effective_backend(cfg) == "apple_intelligence"` and returns the `apple_pending` skip. Nothing in `pipeline/src` ever removes it. The only remover is the daemon: `PipelineLauncher.runAll`'s success branch checks `FileManager.default.fileExists(atPath: sentinel.path)`, removes it and diverts to `completeViaAppleIntelligence`. So a sentinel survives when no daemon run-all consumes it: a hand-run `mp run-all <wav>` on the Apple backend (the README documents that command), or a daemon run-all cancelled or killed after the write and before a clean exit 0 (a narrow window, since the function returns right after writing).
+
+**What it hijacks.** A later run-all on the same stem that succeeds through Python (summarized and published on another backend) exits 0, and Swift then finds the leftover, removes it, and runs `completeViaAppleIntelligence`: an on-device re-summarize that overwrites `<stem>.summary.json`, rewrites the run sidecar as Apple, and republishes, or fails the meeting when the system model is unavailable. `MeetingLibraryService.retryMeeting` reaches that run-all through its full path (`enqueue(audioURL, ...)`) whenever the failure was at transcribe or no reusable transcript exists; every daemon run-all goes through `SinkDispatcher`'s single `launcher.runAll` call, so any other path that re-enqueues an existing recording does the same.
+
+Correction at filing: the hijack needs the effective backend to have moved off `apple_intelligence` between the leftover write and the later run. While the backend is still Apple, Python rewrites the sentinel on the later run and the diversion is the right one. The owner's history has that move in it (86 `run_skipped` rows with reason `apple_pending` between 2026-05-28 and 2026-07-14, backend anthropic on 110 of 110 runs since, per the [field evidence](../../audits/2026-11-13-field-evidence.md) cross-check), and no leftover `*.apple_pending.json` was found in the library at filing, so this is latent here.
+
+### Scope additions
+
+8. **Python removes a stale sentinel at run start.** `orchestrate.run_all` unlinks an existing `<stem>.apple_pending.json` before any stage runs (missing-file is fine; an unlink that fails logs at WARNING and the run continues), so the only sentinel the daemon can find after exit 0 is the one this run wrote. The Swift reader stays as it is.
+
+### Explicitly not (addition)
+
+- An mtime-versus-spawn check in `PipelineLauncher.runAll`. It would work, but two guards on one file split the ownership PIPE34 puts with the writer; the writer clearing its own leftovers is the shape the rest of this task uses.
+- F022/F023 (Regenerate and Retry spawn `mp summarize`, which rejects `apple_intelligence`): a separate class, not a leftover file.
+
+### Acceptance additions
+
+- pytest in `test_orchestrate.py`: a pre-existing `<stem>.apple_pending.json` with the backend set to anthropic leaves no sentinel after a successful `run_all` (fails on `main`); with the backend set to `apple_intelligence` the run still ends with exactly one sentinel naming this run's transcript.
+- `cd pipeline && uv run --extra dev pytest -q` green, ruff and pyright clean, the number of new tests in the commit body.

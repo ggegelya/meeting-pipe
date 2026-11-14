@@ -4,7 +4,7 @@ title: Failure events carry only a caption, a signal death is read as an exit co
 category: Observability
 status: new
 priority: P2
-comment: Filed 2026-10-25 (observability band, O9: FB-7, PY-8, PY-9, PY-10, PY-11, SW-19): pipeline_failed and siblings carry only the caption, terminationReason is never read so SIGQUIT hits the exit-3 publish rule, merge, paste-publish and finalize emit nothing, run-all exits 1 on a missing secret. Structured rows via OBS1, uncaughtSignal case, one command_failed helper, emit never raises, typed transcript read. [Spec](./OBS3.md)
+comment: Filed 2026-10-25 (observability band, O9: FB-7, PY-8, PY-9, PY-10, PY-11, SW-19): pipeline_failed and siblings carry only the caption, terminationReason is never read so SIGQUIT hits the exit-3 publish rule, merge, paste-publish and finalize emit nothing, run-all exits 1 on a missing secret. Structured rows via OBS1, uncaughtSignal case, one command_failed helper, emit never raises, typed transcript read. [Spec](./OBS3.md) Amended 2026-11-13 by the audit band: pipeline_failed has named no exit code since UX80 (2026-09-14); adds error_type, exit and stage on the daemon.log line, and segment counts on held_end_excluded.
 ---
 
 # OBS3: failure events carry only a caption, a signal death is read as an exit code, and three pipeline commands fail with no event at all
@@ -60,3 +60,29 @@ A failed merge, paste-publish or Library re-summarize therefore shows the generi
 - Python: `command_failed` emitted once for a failing `merge-meetings`, `publish-from-paste`, `finalize` and `summarize`, each with a `cause`; `mp run-all` with a missing managed secret exits 2 and still emits one `run_failed`; `events.emit` with an unwritable logs dir returns without raising; a corrupt `<stem>.json` fails with an unreadable type and exactly one `run_failed`.
 - CONVENTIONS.md "Event log schema" documents `command_failed` and the new `pipeline_failed` attributes in the same commit.
 - `cd pipeline && uv run --extra dev pytest -q`, ruff and pyright green; `cd daemon && swift test` green; `bash scripts/ci-local.sh` green. N new tests in the commit body.
+
+## Amendment 2026-11-13 (audit band)
+
+Added from the [field evidence](../../audits/2026-11-13-field-evidence.md) (work laptop, 2026-09-29 to 2026-11-13), "Pipeline and publishing" section, finding "The daemon event log cannot tell a published meeting from an empty skip, and names a failure by title only" (medium, observability gap; class key pipeline-and-publishing#6). Re-verified in code at HEAD (`3a2da4fc`) on 2026-11-13.
+
+**Field evidence.** The single `pipeline_failed` row in the window (stem 20261022-103101, a 120 s Anthropic read timeout) carries a 27-character caption and no error class, stage or exit code; the class exists only in `pipeline_events.jsonl`. `daemon.log` named an exit code on 8 failure lines, all before 2026-09-14 (exit 1 seven times, exit 15 once), and on 0 since. `held_end_excluded` does not say how many segments the trim removed.
+
+**When the exit code was lost.** Commit `06f646d8` (UX80, 2026-09-14) moved `LaunchError.nonZeroExit`'s `errorDescription` to `PipelineLauncher.failureCaption(stderr:)`, which is `FailurePresentation(diagnostics: stderr).title + "."`, and `.reportedFailure` to `FailurePresentation(...).title`. `SinkDispatcher`'s completion still emits `pipeline_failed` with only `"file"` and `"error": err.localizedDescription`, and its `daemon.log` line `"pipeline FAIL -> \(err.localizedDescription)"` lost the number at the same moment. The status is still in the error (`nonZeroExit(Int32, String)`, `reportedFailure(Int32, ...)`); it is just never written. So this is a regression of 2026-09-14, not a gap since filing.
+
+**Held-end trim.** `SinkDispatcher` emits `transcription` / `held_end_excluded` with `file`, `trim_sec` and `audio_seconds` after `HeldEndTrim.apply(sidecar, at: trimAt)`; the following `engine_succeeded` carries only the post-trim `segments`, so the count removed is unrecoverable.
+
+Correction at filing: item 1 above already specifies `exit_status`, `termination_reason`, `stage` and `cause`, so what this amendment adds is `error_type`, the `daemon.log` line, the trim counts and the regression date. The class also listed SEC38 to "drop the title from the row": the `error` value is a failure caption from `FailurePresentation`, not a meeting or window title, so [SEC38](./SEC38.md) does not cover it and the caption stays, as item 1 already says.
+
+**Scope additions.**
+
+1. Item 1's `PipelineFailureEvent.attributes` also writes `error_type`: the `LaunchError` case name (`nonZeroExit`, `reportedFailure`, `uncaughtSignal`, `timeout`, `mpNotFound`), or the Swift type name for an error that is not a launch error (the daemon's own transcription pass). The Python exception class stays in `pipeline_events.jsonl`'s `run_failed`; joining the two is [OBS4](./OBS4.md)'s run id.
+2. The `daemon.log` `pipeline FAIL` line carries `exit=<status>` (or `signal=<n>`) and `stage=<stage>` again.
+3. `held_end_excluded` adds `segments_before` and `segments_after`, the segment counts either side of `HeldEndTrim.apply`.
+
+**Explicitly not (added).** An outcome on `pipeline_succeeded` (3 of 73 rows have a null `page_url` and are the no-speech and suspect-transcript skips): that is [UX90](./UX90.md)'s `publish_state`. A row at the mp spawn (`pipeline_started` precedes mp's `run_started` by a median 22.4 s and up to 408.2 s): [OBS4](./OBS4.md).
+
+**Acceptance additions.**
+
+- A `SinkDispatcher` or `PipelineFailureEvent` test: `nonZeroExit(1, ...)` yields a `pipeline_failed` row with `exit_status: 1`, `error_type: nonZeroExit` and a `stage`, and the `daemon.log` line names `exit=1`.
+- A held-end trim test: a sidecar with segments past the trim point yields `held_end_excluded` with `segments_before` greater than `segments_after`, and `segments_after` equal to the written sidecar's count.
+- CONVENTIONS.md "Event log schema" lists the new attributes in the same commit; `cd daemon && swift test` and `python3 scripts/truth_fences.py` green, new test count in the commit body.

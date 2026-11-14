@@ -4,7 +4,7 @@ title: Speakers are assigned per sentence bucket by majority overlap rather than
 category: Transcription
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, go-live FQ-7): SegmentBuilder.build gives each sentence or gap bucket to its majority-overlap span, so a speaker change inside a bucket is invisible, and FluidAudio's minSpeechDuration 1.0 drops sub-second speech. Assign per word with hysteresis and split on change, then measure a lower minSpeechDuration on --der --reviewed before keeping it. [Spec](./DIAR7.md)
+comment: Filed 2026-10-24 (audit band, go-live FQ-7): SegmentBuilder.build gives each sentence or gap bucket to its majority-overlap span, so a speaker change inside a bucket is invisible, and FluidAudio's minSpeechDuration 1.0 drops sub-second speech. Assign per word with hysteresis and split on change, then measure a lower minSpeechDuration on --der --reviewed before keeping it. [Spec](./DIAR7.md) Amended 2026-11-13 by the audit band: field before-number, 3,480 of 16,092 segments (21.6 percent, flat across builds) overlap no turn and become speaker_unknown, and the LLM cleanup relabels 3,137 of them from text alone; adds per-meeting unattributed, short-label and close-pair counts.
 ---
 
 # DIAR7: speakers are assigned per sentence bucket by majority overlap rather than per word, and the diarizer discards speech under 1 s, so interjections and handovers land on the wrong person
@@ -43,3 +43,26 @@ Both legs are judged on the owner's fully reviewed meetings with `scripts/valid1
 - Existing `SegmentBuilder` and `coalesce` tests stay green unchanged except where the old behaviour was the defect, and each such change is named in the commit body.
 - `cd daemon && swift build` and `swift test` green, new test count in the commit body.
 - The before and after `--der --reviewed` figures in the commit body; leg 2 lands only with a measured improvement and no over-split.
+
+## Amendment 2026-11-13 (audit band)
+
+Source: the field finding "Diarization never reports failure while a fifth of segments leave it unattributed and the LLM assigns them" in the [2026-11-13 field evidence](../../audits/2026-11-13-field-evidence.md), section Transcripts and summaries. Re-verified in code at HEAD on 2026-11-14.
+
+**The fallback is what produces `speaker_unknown`.** `SegmentBuilder.assignSpeaker` skips every span with `overlap <= 0` and returns `best?.id ?? fallback`, where the fallback is `unknownSpeaker: String = "speaker_unknown"`; there is no nearest-span rule. Item 1 of Scope already adds one per word; this amendment gives it a measured before number and makes the result visible per meeting.
+
+**Field (work-laptop pack, the 111 stems with a cleanup sidecar).** 3,480 of 16,092 segments (21.6 percent; 21.6 in era A, 21.5 in B, 22.8 in C, so flat across builds and present in the newest) overlapped no diarization turn and came out `speaker_unknown`. They are short (median 0.96 s, 70 percent at 1.5 s or less) and hold 3.3 percent of speech time (4,555 s, 8,917 words), which is the scale of item 2's `minSpeechDuration` 1.0 s floor. The LLM cleanup moved 3,137 of them from text alone (1,579 to a named person, 1,135 to a THEM-x label, 423 to the owner), and 349 remain `speaker_unknown` in 52 final transcripts; 3,137 of all 3,405 cleanup edits (92.1 percent) start from `speaker_unknown`. Where both labels of an applied edit have a voiceprint (262 edits), 31 percent of the pairs have cosine under 0.3. 306 of 804 labels hold under 10 s of speech (238 of 445 THEM-x labels), and 39 of 111 stems hold two labels whose vectors agree at 0.65 or more. `diarization_failed` is false on 113 of 113 and no event records any of this per meeting.
+
+### Scope additions
+
+3. **Use the field rate as item 1's before number.** Report the share of segments that took the fallback before and after item 1 on the reviewed stems, beside the `--der --reviewed` figures. Item 1's tolerance for the nearest-span fallback is measured against these gaps (median 0.96 s), not guessed.
+4. **Per-meeting counts.** On `transcription`/`engine_succeeded`, next to [DIAR8](./DIAR8.md)'s `diarization_ok` (or as its own fields if DIAR8 has not landed), emit `unattributed_segments` (segments that took the fallback) and `short_labels` (labels under 10 s of speech). Emit `close_label_pairs` (label pairs whose embeddings agree at or above DIAR5's 0.65 merge bar) from the pipeline's finalize stage, since `finalize_streamed_transcript` is what consumes the embeddings and writes `<stem>.embeddings.json`. Document both in `CONVENTIONS.md` in the same commit, so the next field pack reads them instead of re-deriving them.
+
+### Explicitly not (additions)
+
+- The cleanup pass's own guards ([DIAR9](./DIAR9.md), [DIAR5](./DIAR5.md)) and owner-cluster selection ([DIAR11](./DIAR11.md)). Attendee lists built from diarization labels are a summary-side question.
+
+### Acceptance additions
+
+- `SegmentBuilder` tests: a segment that overlaps no span but lies within the measured tolerance of one takes that span's label; one beyond the tolerance keeps `speaker_unknown`.
+- `SinkDispatcherTests`: `engine_succeeded` carries `unattributed_segments` and `short_labels` with the counts of a stub sidecar; a pipeline test asserts the finalize event carries `close_label_pairs` for a fixture with two near-identical embeddings.
+- Before and after unattributed share in the commit body; `python3 scripts/truth_fences.py events` green.

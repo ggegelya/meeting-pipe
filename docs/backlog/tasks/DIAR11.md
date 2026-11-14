@@ -1,0 +1,58 @@
+---
+id: DIAR11
+title: The owner cluster is picked by mic fraction alone with no runner-up check or minimum speech, so the owner's voice is labelled THEM-x in about 3 of 10 meetings and the owner's name lands on a small non-matching cluster in about 1 of 4
+category: Transcription
+status: new
+priority: P1
+comment: Filed 2026-11-13 (audit band 2026-11-13). Broken promise: speakers are attributed correctly; in the field pack 35 of 111 stems have a THEM-x cluster matching the owner's voice (15,838 s of speech) and 26 of 107 put the owner's name on a small cluster that does not match it, in all three build eras; owner may re-band. Pick the mic-tier owner by mic speech time with a minimum and a runner-up check, prefer the self-voiceprint or nobody on disagreement, fold a remaining owner-matching mic-side cluster into the owner, log the choice, replay the flagged stems.
+---
+
+# DIAR11: The owner cluster is picked by mic fraction alone with no runner-up check or minimum speech, so the owner's voice is labelled THEM-x in about 3 of 10 meetings and the owner's name lands on a small non-matching cluster in about 1 of 4
+
+Band origin: filed 2026-11-13 (audit band 2026-11-13, see [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md)). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
+
+## Context
+
+Sources: the field finding "The owner's own voice is labelled THEM-x in about 3 of 10 meetings, and the owner's name is on a cluster that does not match the owner's voice in about 1 of 4" in the [field evidence](../../audits/2026-11-13-field-evidence.md) (transcripts-and-summaries #0), and F096 in the [independent audit](../../audits/2026-11-12-independent-audit.md) ("Mic-channel 'me' identification has no runner-up check, so a second person on the owner's mic can take the owner's name and voiceprint"). Re-verified in code at HEAD `3a2da4fc` on 2026-11-13.
+
+**Field evidence (work-laptop pack, 113 stems, 2026-09-14 to 2026-11-13).** 35 of 111 stems have a THEM-x cluster whose stored 256-d embedding matches a centroid of owner-label vectors at cosine 0.65 or more (34 at 0.8, 26 at 0.9); in 30 that cluster holds 5 percent or more of the meeting's speech, up to 83.5 percent (`20261001-113148`). Those clusters hold 15,838 s, against 26,217 s under the owner label. 26 of 107 stems have the owner's name on a cluster under cosine 0.5, always a small one (1 to 14 segments, 0 to 53 s); 21 stems show both; 14 more split the owner into the owner label plus a THEM-x. By mic class the wrong-cluster rate is 24 of 96 on the built-in mic and 2 of 11 on AirPods. By build era, owner name on a non-matching cluster: A 15 of 60, B 9 of 42, C 2 of 5; THEM-x matching the owner: A 24 of 63, B 10 of 43, C 1 of 5. Still present in the newest stem, `20261113-093231`. Reading two flagged stems (`20261014-112933`, `20261113-093231`) agreed with the vectors. Caveats the field report states: a vector built from a few short utterances can miss the centroid when the speaker is right, so the 26 is an upper reading and the 30 to 35 the firmer one; Library speaker overlays the owner applied are not in the pack; the mechanism is inferred from code plus outcome, with no audio. The `20261110-162917` muted-span window (67.6 s from three labels unique to that stretch) bears on the shared-mic case.
+
+**The mechanism, in code.**
+
+1. **The mic tier is a fraction contest with no floor and no runner-up.** `diarize.identify_user_speaker` cross-tabulates each diarized speaker's time on the mic channel and returns `best = max(total_time, key=mic_fraction)` if `mic_fraction(best) >= min_fraction` (0.6). No minimum speech time, no margin to the runner-up, and `max` over an insertion-ordered dict breaks a tie to the first speaker heard. So a one-utterance cluster at mic fraction 1.0 beats the owner's main cluster at 0.85, which is exactly the shape of the 26 small non-matching clusters; and two local voices on one laptop mic (F096's hybrid-call scenario) both read near 1.0, so whichever spoke first is named the owner.
+2. **The mic pick outranks the voiceprint.** `diarize._resolve_me_id` returns `channel_me` if present, then `if mic_me and mic_me in present: return mic_me`, and only then `voiceprint_me`. The voiceprint has two gates since commit `fd001ef2` (2026-07-17): `match_voiceprint` requires `VOICEPRINT_MATCH_MIN` 0.5 and a `VOICEPRINT_MATCH_MARGIN` of 0.07 to the runner-up. The mic pick, which overrides it, has neither.
+3. **A second owner-matching cluster is never given the owner's name.** In `resolve_speaker_labels`, every speaker other than `me` goes through `roster.match_detail` and becomes a roster name or `them_label(...)`; the self-voiceprint is never compared with them, and a roster hit equal to the owner's label is excluded by `if name and name != label`. So when the owner is over-split, or the mic tier picked a small cluster, the owner's real speech stays under THEM-x.
+4. **The pick is enrolled.** `orchestrate._me_signals` calls `store.update(speaker_embeddings[mic_me])` for the mic pick. Correction at filing: enrolment is capped, `store.meetings() < _VOICEPRINT_ENROLL_CAP` with the cap at 12, so F096's voiceprint-poisoning half reaches only the first 12 meetings after an enrolment or a `VoiceprintStore.reset()`; the labelling half (items 1 to 3) reaches every meeting. A poisoned print then weakens item 2's fallback for every later meeting, which is why the enrolment rule changes too.
+
+**Relation to open tasks.** [DIAR6](./DIAR6.md) changes which segments inside the chosen cluster carry the name and puts "`_resolve_me_id` precedence, the 0.6 fraction" explicitly out of its scope; [UX83](./UX83.md) does the same. This task is the one that changes which cluster is the owner. Sequence: land this first, since DIAR6's per-segment veto acting on the wrong cluster fixes nothing; whichever lands second rebases onto the other and re-runs both test sets, because both edit `identify_user_speaker`'s neighbourhood. [DIAR10](./DIAR10.md) cites the same 35 of 111 as motivation for cross-meeting clustering and does not fix the per-meeting pick. [DIAR5](./DIAR5.md)'s cleanup guard (`MERGE_MIN_SIMILARITY = 0.65`) is the precedent for the same-person bar used below. [MIC17](./MIC17.md) (a too-quiet mic) feeds the built-in-mic skew above but is a separate cause.
+
+## Scope
+
+All in `pipeline/src/mp/diarize.py` and `pipeline/src/mp/orchestrate.py`; Python only.
+
+1. **Pick the mic-tier winner by mic speech time, with a floor and a runner-up check.** In `identify_user_speaker`: among speakers whose mic fraction clears `min_fraction`, pick the one with the most mic-channel speech time; require a minimum mic speech time (a named constant with its reasoning beside it; the wrong clusters in the field held 0 to 53 s, so derive the value from the replay below rather than guessing); return None when a runner-up also clears the fraction bar with mic speech time above a named share of the winner's (two local voices, F096), so the voiceprint tier decides.
+2. **Prefer the self-voiceprint, or nobody, on disagreement.** In `_resolve_me_id`: when `mic_me` and `voiceprint_me` are both present and differ, return `voiceprint_me` if its own mic fraction clears the bar, else None. Never fall back to the mic pick against a disagreeing voiceprint.
+3. **Enrol only on agreement.** In `_me_signals`: fold the sample in only when the mic pick and the voiceprint agree, or when no voiceprint exists yet and the mic pick passed item 1's checks.
+4. **Fold or flag a remaining owner-matching cluster.** After labelling in `resolve_speaker_labels`, compare every remaining cluster with the self-voiceprint: one at or above the roster's same-person bar (`roster.MATCH_MIN`, 0.65) whose mic fraction also clears the bar is relabelled to the owner; one that matches but is system-side is left as is and flagged in the event below (a remote voice that sounds like the owner must never take the owner's name).
+5. **Log the choice.** Emit `pipeline`/`owner_cluster_chosen` once per finalize with the stem, the tier that decided (`channel`, `mic`, `voiceprint` or `none`), the chosen cluster's mic fraction, mic speech seconds and voiceprint score, the runner-up's fraction and speech seconds, and the count of clusters folded and flagged by item 4. No labels, names or text. This is what lets the next field pack check the rule without embeddings.
+6. **A replay mode for the field bar.** Add an `--owner-cluster` mode to `scripts/valid1_check.py` (stdlib only, like the rest of it) that recomputes the field report's two numbers per stem from `<stem>.json`, `<stem>.embeddings.json` and `voiceprint.json`, and can re-run the new selection over the stored segments and the WAV, so the before and after are the same instrument.
+
+## Explicitly not
+
+- Which segments inside the owner cluster carry the name, and the unnormalized mixdown: [DIAR6](./DIAR6.md).
+- Asking for and defaulting the owner's display name: [UX83](./UX83.md).
+- Cross-meeting clustering of unnamed voices: [DIAR10](./DIAR10.md).
+- Rewriting existing transcripts in the library in bulk. The replay measures; re-finalizing old meetings stays an owner choice per meeting through the existing retranscribe path.
+- Raising the voiceprint's own gates (`VOICEPRINT_MATCH_MIN`, `VOICEPRINT_MATCH_MARGIN`): they are not the defect here.
+
+## Acceptance
+
+- New pytest cases in `pipeline/tests/test_diarize.py` (and `test_markdown.py` for the end-to-end WAV path), red before and green after: (a) two local voices both near 100 percent mic-side and of similar mic time: `identify_user_speaker` returns None, and with a self-voiceprint matching one of them that one is named and nothing is enrolled; (b) a 3 s cluster at mic fraction 1.0 against a 600 s cluster at 0.85: the 600 s cluster wins; (c) two clusters tied on fraction: the one with more mic speech time wins, not the first heard; (d) the mic pick disagrees with a voiceprint pick that is mic-side: the voiceprint pick is named, and `_me_signals` does not enrol; with a system-side voiceprint pick, nobody is named; (e) a THEM cluster at cosine 0.7 to the self-voiceprint and mic-side is folded into the owner; the same cluster system-side is not, and is counted as flagged; (f) `owner_cluster_chosen` is emitted with the fields in scope item 5 and no label text.
+- `cd pipeline && uv run --extra dev pytest -q` green with the added tests counted in the commit message; ruff and pyright clean; `bash scripts/ci-local.sh pipeline` and `python3 scripts/truth_fences.py` green with `owner_cluster_chosen` documented in `CONVENTIONS.md`.
+- Field replay, pre-registered here (the owner may revise these bars before the replay runs, not after): `scripts/valid1_check.py --owner-cluster` over the field pack's stems, before and after. The owner's name on a cluster under cosine 0.5 falls from 26 stems to at most 3; THEM-x clusters matching the owner centroid at 0.65 or more and holding 5 percent or more of speech fall from 30 stems to at most 5; and no stem moves the owner's name onto a cluster that was a roster-named person before.
+
+## Owner walkthrough
+
+1. [owner] Confirm or revise the replay bars above before the session runs the replay.
+2. [session] Run `scripts/valid1_check.py --owner-cluster` on the owner's Mac before and after the change and paste both tables into this file's Progress section (counts and stems only).
+3. [owner] Open two of the flagged stems after re-finalizing them (for example `20261001-113148` and `20261113-093231`) and confirm in the Transcript tab that your own lines carry your name and no colleague's do.

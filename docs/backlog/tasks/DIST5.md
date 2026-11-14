@@ -4,7 +4,7 @@ title: Install.sh reports running without checking the daemon came up and never 
 category: Distribution
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, go-live DI-8, DI-9 toolchain, DI-10, DI-16, PP-14): install.sh swallows the bootstrap and kickstart errors rebuild.sh fixed, FluidAudio 0.14.8 needs Swift tools 6.0 but only swift presence is checked, uninstall leaves com.meetingpipe.digest and .backup loaded plus a 4.3 GB model, SETUP and README describe a Gatekeeper dialog. Shared relaunch helper, Swift check, uninstall agents, true text. [Spec](./DIST5.md)
+comment: Filed 2026-10-24 (audit band, go-live DI-8, DI-9 toolchain, DI-10, DI-16, PP-14): install.sh swallows the bootstrap and kickstart errors rebuild.sh fixed, FluidAudio 0.14.8 needs Swift tools 6.0 but only swift presence is checked, uninstall leaves com.meetingpipe.digest and .backup loaded plus a 4.3 GB model, SETUP and README describe a Gatekeeper dialog. Shared relaunch helper, Swift check, uninstall agents, true text. [Spec](./DIST5.md) Amended 2026-11-13 by the audit band: the login-off branch of install.sh never stops a hand-started instance, so the old build keeps running, and --purge misses OPENAI_API_KEY (F102, F184).
 ---
 
 # DIST5: install.sh reports "running" without checking the daemon came up and never checks for Swift 6, uninstall.sh leaves the digest and backup agents and the local model behind, and the Gatekeeper guidance describes a dialog a local build never shows
@@ -47,3 +47,25 @@ Verified on 2026-10-24 against `scripts/install.sh`, `scripts/rebuild.sh` and `s
 - A toolchain-version check case: a stubbed `swift --version` printing 5.10 makes install.sh's check die before `swift build`; 6.0 and 6.3.3 pass.
 - `bash scripts/ci-local.sh fences` green after the SETUP.md and README edits.
 - Owner check on this Mac: run `./scripts/install.sh` and see it confirm the daemon is up; turn on the weekly digest in Preferences, run `./scripts/uninstall.sh`, and `launchctl print gui/$(id -u)/com.meetingpipe.digest` reports no such service.
+
+## Amendment 2026-11-13 (audit band)
+
+From the [2026-11-12 independent audit](../../audits/2026-11-12-independent-audit.md), F102 and the low F184. Re-verified against HEAD on 2026-11-14.
+
+**The login-off branch leaves the old build running (F102).** Item 1 above keeps the UX42 disabled-agent branch unchanged in both scripts, but the two branches are not alike today. In `scripts/rebuild.sh` the `login_agent_disabled` branch runs `pkill -f "$APP/Contents/MacOS/MeetingPipe"`, then `open "$APP"`, and the shared `pgrep` loop verifies the result. In `scripts/install.sh` the same branch only prints "Launch at login is off" and sets `INSTALL_DONE_LINE`. Nothing stops a copy the owner opened from Finder: the only `pkill` in install.sh sits behind `--reset-tcc`, and the `launchctl unload` under "Reload if already running" reaches only a launchd-started job. So the old process keeps running from the replaced bundle, and opening `~/Applications/MeetingPipe.app` as the closing line advises starts a newcomer that `SingleInstanceGuard.standDownIfPeerIsRunning` stands down, because "The newcomer is always the one that loses". The fix just installed never executes, and nothing says so.
+
+**--purge misses a Keychain account, and the signing identity stays (F184, low).** The digest and backup agents half of F184 is already item 3. New: `uninstall.sh --purge` clears `for key in ANTHROPIC_API_KEY NOTION_TOKEN HF_TOKEN`, while `KeychainSecrets.managedKeys` is `["ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN", "OPENAI_API_KEY"]`, so an OpenAI key survives a purge. The self-signed "MeetingPipe Dev" identity that `scripts/lib/dev-cert.sh` creates also stays in the login keychain after any uninstall; how its key is imported is [SEC17](./SEC17.md)'s.
+
+Added scope:
+
+- **Item 1 covers the login-off branch of install.sh too.** The shared relaunch helper's login-off path stops a running instance on the installed binary path, waits for it to exit, opens the new bundle, and runs the same `pgrep` verification. It never calls `bootstrap`, `load -w` or anything else that writes launchd's disabled-overrides database, so UX42's guard (`scripts/lib/login-agent.sh`) still holds. If the owner would rather install.sh not start the app while login-start is off, the helper still stops the old instance and the done line says it did; either way no old build survives an install. The commit states which.
+- **Item 3 purges every managed Keychain account.** The purge list names all four `KeychainSecrets.managedKeys`, kept in step with the Swift list by a fence rather than by hand. The uninstaller prints that the "MeetingPipe Dev" identity stays and the `security delete-identity -c "MeetingPipe Dev"` command that removes it; it does not delete it itself, since the next install would re-create it and every TCC grant would prompt again.
+
+Related: [DIST9](./DIST9.md) (rebuild.sh replaces the running binary early, same helper), [DIST8](./DIST8.md) (default uninstall deletes only copies), UX42.
+
+Added acceptance:
+
+- `scripts/test-relaunch.sh` gains: with the login agent disabled and a stubbed running process, the helper stops it, never calls `bootstrap`, and exits non-zero when the process is still there after the wait.
+- A fence (shell test or `truth_fences.py`) that the uninstall purge list equals `KeychainSecrets.managedKeys`, red against the current three-name loop.
+- `bash scripts/test-login-agent-guard.sh` stays green.
+- Owner check: with launch at login off and the app opened by hand, `./scripts/install.sh` leaves exactly one MeetingPipe process, started after the install.

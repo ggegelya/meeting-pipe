@@ -4,7 +4,7 @@ title: The debounced-save template is copied three times, and the SecretsStore c
 category: Concurrency
 status: new
 priority: P2
-comment: Filed 2026-10-25 (code-quality audit SW2, SW3): the 500 ms debounce is hand-copied into ConfigStore, GlossaryStore and SecretsStore and has diverged; SecretsStore persists inside its main-thread Timer, so each token edit runs 3 unbounded security round-trips on main. One DebouncedSaver that persists on a utility queue, each store keeps its policy; SEC23 owns what is written, CONC5 the ceiling. Amended 2026-10-25 (performance review): ConfigStore converts rawDocument on writeQueue while saveNow mutates it on main; render the TOML string on main and hand only that to the write (MAINTHREAD-13). [Spec](./CONC8.md)
+comment: Filed 2026-10-25 (code-quality audit SW2, SW3): the 500 ms debounce is hand-copied into ConfigStore, GlossaryStore and SecretsStore and has diverged; SecretsStore persists inside its main-thread Timer, so each token edit runs 3 unbounded security round-trips on main. One DebouncedSaver that persists on a utility queue, each store keeps its policy; SEC23 owns what is written, CONC5 the ceiling. Amended 2026-10-25 (performance review): ConfigStore converts rawDocument on writeQueue while saveNow mutates it on main; render the TOML string on main and hand only that to the write (MAINTHREAD-13). [Spec](./CONC8.md) Amended 2026-11-13 by the audit band: the SecretsStore save must also report Saving, then Saved or Failed, back to the key fields, and the pipeline's load_secrets re-probes absent keys on every entry.prepare (P040, F208).
 ---
 
 # CONC8: The debounced-save template is copied three times, and the SecretsStore copy runs three blocking security subprocesses on the main thread per Preferences edit
@@ -59,3 +59,24 @@ The 2026-10-25 performance review (eight subsystem finders over HEAD 01e904a, ev
 **Acceptance addition.**
 
 - `ConfigStoreTests` (with the write queue injectable): the write half writes exactly the string it is given; with the queue held by the test, a debounced save, a further mutation and `saveNow()` leave `config.toml` holding the `saveNow` state and no `.writing` file.
+
+## Amendment 2026-11-13 (audit band)
+
+Added from the [2026-11-13 responsiveness audit](../../audits/2026-11-13-responsiveness-audit.md) (P040, low, both builds and HEAD) and the [2026-11-12 independent audit](../../audits/2026-11-12-independent-audit.md) (F208, an unverified low folded in here). Re-verified in code at HEAD on 2026-11-13.
+
+**P040, re-verified.** The main-thread half is the shape this task's Context already names, unchanged at HEAD: `SecretsStore.scheduleSave` arms `Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false)` and its body calls `try self.persist()` on main, which writes `ANTHROPIC_API_KEY`, `NOTION_TOKEN` and `OPENAI_API_KEY` back to back through `KeychainBackend.run` (`process.waitUntilExit()`, no ceiling). The audit estimates 90 to 250 ms per save on the managed work laptop, unmeasured there (process-spawn cost on that machine is itself unknown); this spec's own 2026-10-25 measurement on the home Mac was about 10 ms per round-trip, about 30 ms per save. Either way the unbounded case (a locked keychain, a wedged `securityd`) freezes the whole app. **The part this task did not name:** nothing ever tells the owner whether the key was saved. The Configured pill in `PreferencesView+Integrations.swift` is `if !secrets.anthropicAPIKey.isEmpty` (likewise for OpenAI, and for Notion together with a database id), so it reflects only the text in the field, and a failed `persist` goes to `Log.main.error("SecretsStore persist failed: ...")` and nowhere else. The out-of-scope bullet above ("Surfacing a `SecretsStore` persist failure in the Preferences UI") is withdrawn by this amendment: the audit's remedy row 9 asks for exactly that, and once the save runs on the saver's queue its `Result` already arrives on main, so surfacing it is a few lines rather than a new subsystem.
+
+**F208, verified and narrower than a hot path.** `pipeline/src/mp/config.py` `load_secrets` loops `for key in MANAGED_SECRET_KEYS: if os.environ.get(key): continue; val = reader(key)`, and `_keychain_get` spawns `/usr/bin/security find-generic-password` with `timeout=10` and no negative cache. `entry.prepare` calls it whenever `secrets=True`, and `mp run-all` reaches `entry.prepare` at least twice in one process (`orchestrate.run_all`, then `summarize.summarize` with the orchestrator's config). The daemon injects the configured tokens, so the keys that get re-probed are the ones the owner never set (for example `OPENAI_API_KEY` on an Anthropic setup): one `security` spawn per absent key per `prepare` call, each bounded at 10 s. A pipeline-process cost, not a UI freeze; low.
+
+**Scope additions.**
+
+1. **Saving, then Saved or Failed, in the same place as the pill** (P040). `SecretsStore` publishes a per-save state (`idle`, `saving`, `saved`, `failed`), set to `saving` when the debounced save fires and settled from the `DebouncedSaver` result on main. The integrations section shows it beside the existing Configured pill using the existing `SettingsStatusPill` tones, no new chrome. Fail closed: a failed save never shows Configured as if it had landed, and neither the log line nor the UI carries a value, only the account name and the error kind. SEC23 still owns writing only the changed account (so one edit is one `security` call) and CONC5 the ceiling on `KeychainBackend.run`; this item only feeds back the result.
+2. **Cache absent keys for the life of the pipeline process** (F208). In `load_secrets`, remember the accounts the reader returned nothing for and skip them on later calls in the same process; a key the daemon injected still wins because the `os.environ.get(key)` check stays first. Keep `egress_guard.is_armed()` as the first guard (SEC13).
+
+**Acceptance additions.**
+
+- A `SecretsStoreTests` case with the blocking recording fake: after an edit, the published save state goes `saving` then `saved` on main; with a fake whose `set` throws it goes `saving` then `failed`, `didPersist` does not fire, and no log line or published value contains the secret.
+- A pipeline test: with a counting reader that returns nothing for one managed key, two `load_secrets()` calls in one process call the reader for that key once; a key present in `os.environ` is never read; with the egress guard armed the reader is never called.
+- `cd pipeline && uv run --extra dev pytest -q`, ruff and pyright green, plus the daemon gates already listed; new test counts in the commit body.
+
+Related and not filed separately: F053 and F076 in the independent audit cover the same Keychain-on-main ground and are folded into this task and SEC23.

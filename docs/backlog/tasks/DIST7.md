@@ -4,7 +4,7 @@ title: Supply-chain pins have four gaps outside uv.lock: the hatchling build bac
 category: Distribution
 status: new
 priority: P3
-comment: Filed 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md), informational): each needs an upstream compromise first, so none is a concrete exploit, and local builds stay pinned and fingerprint-checked. Pin hatchling with a hashed build constraint, hash-check FluidAudio models, commit Package.resolved and use exact: for TOMLKit, SHA-pin actions and add permissions: contents: read. Parked as hardening. [Spec](./DIST7.md) Amended 2026-11-12 (upgrade review): the three actions are also majors behind (checkout v4 to v7.0.1, setup-python v5 to v7.1.0, setup-uv v3 to v10.3.3) and CI warns they are forced from Node 20 to Node 24; bump the majors in the same pass as the SHA pins, and FluidAudio 0.15.8 already pins diarizer artifacts (ASR6).
+comment: Filed 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md), informational): each needs an upstream compromise first, so none is a concrete exploit, and local builds stay pinned and fingerprint-checked. Pin hatchling with a hashed build constraint, hash-check FluidAudio models, commit Package.resolved and use exact: for TOMLKit, SHA-pin actions and add permissions: contents: read. Parked as hardening. [Spec](./DIST7.md) Amended 2026-11-12 (upgrade review): the three actions are also majors behind (checkout v4 to v7.0.1, setup-python v5 to v7.1.0, setup-uv v3 to v10.3.3) and CI warns they are forced from Node 20 to Node 24; bump the majors in the same pass as the SHA pins, and FluidAudio 0.15.8 already pins diarizer artifacts (ASR6). Amended 2026-11-13 by the audit band: REGISTRY_URL or MODEL_REGISTRY_URL in the installing shell redirects FluidAudio's prefetch; unset both and record a revision and per-file sha256 per model (F104; F201's digest half is DIST1's).
 ---
 
 # DIST7: supply-chain pins have four gaps outside uv.lock: the hatchling build backend, the speech models' `resolve/main` fetch, the git-ignored Package.resolved, and CI actions pinned by tag with no permissions block
@@ -53,3 +53,21 @@ Added scope:
 - CI11 adds setup-uv's `version:` input on the same line.
 
 **Speech-model artifacts.** FluidAudio v0.15.8 (2026-09-20) pins diarization artifacts to an immutable revision (upstream #927). So the diarizer half of item 2 arrives with ASR6's bump; the ASR model fetch and the embedder snapshot remain this task's.
+
+## Amendment 2026-11-13 (audit band)
+
+From the [2026-11-12 independent audit](../../audits/2026-11-12-independent-audit.md) F104 and the low F201. Verified 2026-11-14. Stays P3 with the rest of this task unless the owner promotes it.
+
+**A registry override redirects the speech-model fetch (F104).** Item 2 already names the unhashed `resolve/main` fetch. Not in it: at the pinned FluidAudio 0.14.8 checkout, `ModelRegistry`'s base URL is resolved from a programmatic override, then `REGISTRY_URL`, then `MODEL_REGISTRY_URL`, then the default (`ProcessInfo.processInfo.environment["REGISTRY_URL"]`). `scripts/install.sh` runs `"$DAEMON_BIN" prefetch-models` with the installing shell's environment, so a `REGISTRY_URL` or `MODEL_REGISTRY_URL` exported there for some other tool redirects the prefetch, and a daemon started from such a shell reads the same variables on its lazy download. No model revision is recorded for the MLX models either: the local LLM's is [SEC27](./SEC27.md)'s, the embedder's is item 2's.
+
+**F201 (low).** Correction at filing: the digest half of F201 is already [DIST1](./DIST1.md)'s 2026-11-12 amendment (`PBS_SHA256` beside `PBS_TAG`, and an `FFMPEG_SHA256` required whenever `FFMPEG_URL` is given), as this task's Explicitly-not says. What F201 adds is that both URLs are environment-overridable in `scripts/bundle-runtime.sh` (`PBS_URL="${PBS_URL:-...}"`, `FFMPEG_URL="${FFMPEG_URL:-}"`), so the pinned digest has to be checked against whatever URL was used, not only the default. Recorded here so DIST1's item is built that way; the Python deps already install with `--require-hashes`.
+
+Added scope (item 2):
+
+- install.sh runs the prefetch with `env -u REGISTRY_URL -u MODEL_REGISTRY_URL`, and the daemon clears both variables at launch before any FluidAudio call, with one `daemon.log` line when either was set.
+- The pinned table item 2 introduces records, per model (FluidAudio ASR, diarizer, embedder), the expected revision and the sha256 of every file, and the check runs after any download whatever base URL served it.
+
+Added acceptance:
+
+- A shell check that install.sh's prefetch invocation unsets both variables.
+- A daemon test, with an injected environment, that the launch path clears both variables, or a source fence if the process environment cannot be driven from a test.

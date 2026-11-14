@@ -4,7 +4,7 @@ title: CI builds only the debug configuration on macOS 15, so the release build 
 category: CI
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, go-live QG-6, QG-7, QG-10): CI builds debug on macos-15 only, so the shipped release config, the declared macOS 14 floor and new warnings go unchecked; two Swift-6-mode diagnostics are back in production code. Scope: release build plus relocation smoke, a warning gate with an allowlist, a macos-14 floor job, runner names in docs. [Spec](./CI9.md) Amended 2026-11-12 (upgrade review): the owner now builds on Xcode 27.2 / Swift 6.4.2 / SDK 27.2 while CI's macos-15 runs an older SDK, so SDK-27-only breaks never reach CI; the hosted macos-14 runner is deprecated (runner-images #15226), so the floor job needs a fallback. Amended 2026-11-12 (SAST pass): on Swift 6.4.2 the clean build has six production warnings, not two: CONC11's two AVAudioFormat sites and two from OnboardingStepTest.tick lacking `import Combine`; add the import, land after CONC11 or allowlist it, record the gate's compiler version.
+comment: Filed 2026-10-24 (audit band, go-live QG-6, QG-7, QG-10): CI builds debug on macos-15 only, so the shipped release config, the declared macOS 14 floor and new warnings go unchecked; two Swift-6-mode diagnostics are back in production code. Scope: release build plus relocation smoke, a warning gate with an allowlist, a macos-14 floor job, runner names in docs. [Spec](./CI9.md) Amended 2026-11-12 (upgrade review): the owner now builds on Xcode 27.2 / Swift 6.4.2 / SDK 27.2 while CI's macos-15 runs an older SDK, so SDK-27-only breaks never reach CI; the hosted macos-14 runner is deprecated (runner-images #15226), so the floor job needs a fallback. Amended 2026-11-12 (SAST pass): on Swift 6.4.2 the clean build has six production warnings, not two: CONC11's two AVAudioFormat sites and two from OnboardingStepTest.tick lacking `import Combine`; add the import, land after CONC11 or allowlist it, record the gate's compiler version. Amended 2026-11-13 by the audit band: run WaveformPeaksTests in release, since its 2 s budget sits in a #if !DEBUG branch no gate compiles (F217), and record CI's SwiftPM layout and the Linux-only pipeline leg against the owner's build (F219).
 ---
 
 # CI9: CI builds only the debug configuration on macOS 15, so the release build that ships, the declared macOS 14 floor, and new compiler warnings are never checked
@@ -76,3 +76,28 @@ So scope item 2's "the allowlist starts empty" is false on the owner's compiler 
 - record in `ci-local.sh` the compiler version the gate's zero was measured on, since a newer Swift adds diagnostics the gate will then report as regressions.
 
 **Added acceptance:** the debug and release builds on Swift 6.4.2 print no `warning:` under `daemon/Sources` apart from allowlisted CONC11 entries, if any.
+
+## Amendment 2026-11-13 (audit band)
+
+From the [2026-11-12 independent audit](../../audits/2026-11-12-independent-audit.md), findings F217 and F219, both in its "Low findings, not verified" table. Both re-verified in code and on disk at HEAD on 2026-11-14.
+
+**F217: the waveform budget's release branch is never compiled.** `WaveformPeaksTests.test_compute_renders_60_minute_synth_in_under_two_seconds` chooses its bound with `#if DEBUG let budgetSec = 15.0 #else let budgetSec = 2.0 #endif`, and its comment says "the release-mode acceptance criterion still gets enforced by CI / production builds". Nothing compiles the `#else`: `ci-local.sh daemon` runs `swift build` and `swift test`, both debug, and this task's scope item 1 adds `swift build -c release`, which builds but runs no test. The effective bound is 15 s and the comment is false.
+
+**F219: CI never builds the configuration the app runs in.** Two halves, verified separately:
+
+- SwiftPM layout. On this Mac (Swift 6.4.2, 2026-11-14) `daemon/.build/debug` is a symlink to `out/Products/Debug`, which holds two test bundles, `MeetingPipeCoreTests.xctest` and `MeetingPipeTests.xctest`; the older layout, still present under `.build/arm64-apple-macosx/debug/`, built one `MeetingPipePackageTests.xctest`. `install.sh`, `rebuild.sh` and `test-app-relocation.sh` reach products through `.build/release` and `.build/debug`, which resolve on both layouts, so no script is broken today. `.build/release` here is still a plain directory last written 2026-10-21, so whether a release build on 6.4.2 moves to `out/Products/Release` is unobserved. The 2026-11-12 amendment's newest-image move narrows this gap; nothing records which layout CI built.
+- Pipeline platform. The `pipeline` job runs on `ubuntu-latest`, and `ci-local.sh` says "The darwin/arm64-only mlx stack carries platform markers, so the Linux runner skips it". So the local summarizer, the embed index and every function-local mlx import the app runs on the owner's Mac are never imported in CI.
+
+Correction at filing: the audit names the layout difference as being on the owner's deployment host; it was observed here on the development Mac, which runs the same Swift 6.4.2. The work laptop's layout is not in the evidence.
+
+### Added scope
+
+5. The release leg runs `swift test -c release --filter WaveformPeaksTests` (at least), so the 2 s branch is compiled and enforced. The test target uses `@testable import MeetingPipe`; confirm the release test build accepts it (SwiftPM's `--enable-testable-imports`) and say in the commit if a flag was needed. If the release test leg is dropped instead, the comment must say the 2 s budget is unenforced and the debug budget must be set from a measurement, not left at 15 s.
+6. `ci-local.sh`'s toolchain print records the build layout (whether `.build/debug` is a symlink into `out/Products`), so a CI log shows which layout it tested.
+7. The pipeline's macOS half: either a macOS pipeline leg (`ci-local.sh pipeline` on the macOS runner, which installs the mlx stack from the lock; measure its added wall time once), or a sentence in this spec and in `CONVENTIONS.md` stating that the mlx paths are covered only by the owner's local `pytest`. The owner chooses; record the choice here.
+
+### Added acceptance
+
+- `bash scripts/ci-local.sh daemon` runs `WaveformPeaksTests` in release, green, and a scratch `Thread.sleep(forTimeInterval: 3)` inside `WaveformPeaksLoader.compute` fails it (tried and reverted, said in the commit body).
+- The toolchain print in a CI log names the build layout.
+- The pipeline macOS decision is recorded in this file with its date.

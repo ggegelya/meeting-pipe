@@ -4,7 +4,7 @@ title: A Notion create that fails after Notion committed it duplicates the page 
 category: Pipeline
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch P1, go-live UX-12, PP-13): a Notion create that fails after commit writes no sidecar, so Retry duplicates the page; a deleted page fails every republish; updates reset Date and Status; doctor checks reachability, not schema. Scope: Meeting ID key or pending-marker adoption, GET before update, no Date or Status on update, atomic sidecar, schema check, one version per tree. [Spec](./PIPE23.md)
+comment: Filed 2026-10-24 (audit band, arch P1, go-live UX-12, PP-13): a Notion create that fails after commit writes no sidecar, so Retry duplicates the page; a deleted page fails every republish; updates reset Date and Status; doctor checks reachability, not schema. Scope: Meeting ID key or pending-marker adoption, GET before update, no Date or Status on update, atomic sidecar, schema check, one version per tree. [Spec](./PIPE23.md) Amended 2026-11-13 by the audit band: pipeline/CLAUDE.md and ARCHITECTURE.md claim a deterministic Notion slug that does not exist; correct both to the landed identity in the same commit.
 ---
 
 # PIPE23: a Notion create that fails after Notion committed it duplicates the page on retry, a page deleted in Notion breaks every republish, and each republish resets Date and Status
@@ -49,3 +49,17 @@ All in `pipeline/src/mp/publish_notion.py`, re-read on 2026-10-24.
 - Doctor and onboarding tests: a database lacking `Date` is reported by name. The Swift/Python version parity test passes and fails on a planted mismatch (tried and reverted).
 - `docs/SETUP.md` Step 6 lists the optional `Meeting ID` property in the same commit (the root `CLAUDE.md` setup contract).
 - `cd pipeline && uv run --extra dev ruff check src tests`, `uv run --extra dev --extra mcp pyright`, `uv run --extra dev pytest -q`, and `cd daemon && swift test` green, with the new test count in the commit body.
+
+## Amendment 2026-11-13 (audit band)
+
+Source: [independent audit](../../audits/2026-11-12-independent-audit.md) F091 (antipattern, partially confirmed). Re-verified at HEAD (`3a2da4fc`) on 2026-11-14.
+
+**What F091 restates.** Sidecar-only identity (the `publish_notion.py` module docstring still says the page id lives "in `<stem>.notion.json` next to the audio", and nothing in the module derives a key or a slug from the stem), a duplicate page on a create that fails after Notion committed it, the deleted-page dead end, and the non-atomic sidecar. All four are already items 1, 2 and 4. The audit narrows the duplicate's reach: the app's own library move and backup and restore carry the sidecar, so a duplicate needs a hand-removed or partially copied sidecar, or a failure between the POST and the sidecar write. It also marks the 4xx on a page deleted in Notion as inferred API behaviour, not verified from the repo; item 2's `GET` before update covers it either way.
+
+**The new leg: two always-loaded docs claim an identity that does not exist.** `pipeline/CLAUDE.md`'s "Idempotent publishers" rule ends "(Notion derives its page slug deterministically from the meeting stem)", and `ARCHITECTURE.md`'s "Sinks are idempotent and isolated" says "Notion uses a deterministic page slug derived from the meeting stem so re-publish is upsert, not duplicate." Neither is true at HEAD, and an agent reading either would conclude the duplicate path in this task's Context cannot happen. [HYG10](./HYG10.md) owns the general class of always-loaded rules that state what the code does not do, but does not name this line.
+
+**Field reach.** The batch's field note puts the owner's last Notion use in 2026-07, and the [2026-11-13 field evidence](../../audits/2026-11-13-field-evidence.md) finds no Notion path exercised after 2026-09-14 (every publish in the window went to Obsidian). Priority stays P2.
+
+**Added to scope.** 7. Correct both lines in the same commit as item 1, to the identity this task lands (the `Meeting ID` lookup or the pending-marker adoption, with `<stem>.notion.json` as the cache). [PIPE39](./PIPE39.md) (replace wipe-and-append republish with appended revisions, stop uploading the transcript, remove the LAN sink) is decided first: if it changes the republish shape, the lines describe that shape. If this task is deferred past the next docs pass, correct the lines to the sidecar-only truth then rather than leave them false.
+
+**Added to acceptance.** A grep of `pipeline/CLAUDE.md` and `ARCHITECTURE.md` for "slug" finds no Notion identity claim the code does not keep, and `python3 scripts/truth_fences.py claude` stays green (the `CLAUDE.md` byte budget).

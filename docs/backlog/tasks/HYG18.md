@@ -4,7 +4,7 @@ title: Fences and written rules are weaker than they read: the design-token fenc
 category: Hygiene
 status: new
 priority: P2
-comment: Filed 2026-10-25 (code-quality audit CV2, CV6, CV9): the design-token fence's three \b alternatives match nothing under Apple Git 2.50.1, so local fences are weaker than CI; 32 user-visible lines carry em-dashes; three written rules overstate (53 test files, loopback servers, 8 spawns). A portable regex plus a self-test, sweep the 32 strings, reword the rules, a Core island fence. [Spec](./HYG18.md)
+comment: Filed 2026-10-25 (code-quality audit CV2, CV6, CV9): the design-token fence's three \b alternatives match nothing under Apple Git 2.50.1, so local fences are weaker than CI; 32 user-visible lines carry em-dashes; three written rules overstate (53 test files, loopback servers, 8 spawns). A portable regex plus a self-test, sweep the 32 strings, reword the rules, a Core island fence. [Spec](./HYG18.md) Amended 2026-11-13 by the audit band: CONFIG_NOT_FROM_TOML keys skip the dead-knob check and have no staleness ratchet (G047).
 ---
 
 # HYG18: Fences and written rules are weaker than they read: the design-token fence's word-boundary alternatives never match under Apple Git, 32 user-visible lines carry em-dashes, and three rules are stronger as written than anything checks
@@ -55,3 +55,18 @@ Re-checked at filing: the test-naming exceptions are 53 by name match (the audit
 - `git grep -nF` for U+2014 over `pipeline/src/mp/doctor.py`, `__main__.py`'s `USAGE`, `scripts/rebuild.sh` and `scripts/tail-events.sh` returns nothing; `mp doctor` and `mp --help` output carries none.
 - The island check fails on a planted `import AppKit` in a second Core file and on a planted `import SwiftUI` (both tried and reverted), and passes on today's tree.
 - `bash scripts/ci-local.sh fences` and `python3 scripts/truth_fences.py` green; `cd pipeline && uv run --extra dev pytest -q` green with no test count change from the string edits.
+
+## Amendment 2026-11-13 (audit band)
+
+Another fence that is weaker than it reads, from the [2026-11-12 independent audit](../../audits/2026-11-12-independent-audit.md) (G047, "Low findings, not verified" table), re-checked at HEAD (`3a2da4fc`) before filing.
+
+**5. `CONFIG_NOT_FROM_TOML` is a permanent exemption with no ratchet.** `scripts/truth_fences.py`'s `check_config` builds `known = set(CONFIG_ALLOWLIST) | set(CONFIG_NOT_FROM_TOML)`, and all four config checks (documented but not read, read but not documented, in the README but not the example, and the `unconsumed_keys` dead-knob check) skip a key with `if key in known: continue`. The stale-entry loop that follows iterates only `CONFIG_ALLOWLIST.items()` ("A stale allowlist is drift of its own"). So the two `CONFIG_NOT_FROM_TOML` entries, `modes.workflow_nda_mode` and `summarization.extra_sections`, are never reported if their consumer goes, and never reported if the key stops being parsed at all. The exemption is also wider than its own comment: it says only that "neither the documented-vs-parsed diff nor the completeness check applies", yet it silences the dead-knob check too, and `unconsumed_keys`'s docstring names the very risk ("`zero_egress` reading `cfg.modes.workflow_nda_mode` is the only thing keeping that key alive"). Run at HEAD: both keys are in the parsed set and `unconsumed_keys` returns nothing, so nothing has slipped through yet.
+
+Added scope:
+
+5. In `check_config`, `CONFIG_NOT_FROM_TOML` exempts a key from the three documentation diffs only; the `unconsumed_keys` check skips `CONFIG_ALLOWLIST` alone. Add the matching ratchet: a `CONFIG_NOT_FROM_TOML` entry fails as stale when its key is no longer in the parsed set, and fails as wrong when the key turns up in `config.example.toml` or the README (it has become a TOML key and the exemption is hiding a documentation check).
+
+Added acceptance:
+
+- `python3 scripts/truth_fences.py config` green on today's tree, and fails (each tried and reverted, said in the commit body) on: a planted `CONFIG_NOT_FROM_TOML` entry for a key nothing parses; `zero_egress`'s read of `cfg.modes.workflow_nda_mode` removed, which must now fail as a dead knob; a `CONFIG_NOT_FROM_TOML` key added to `config.example.toml`.
+- `bash scripts/ci-local.sh fences` green.

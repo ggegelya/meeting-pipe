@@ -1,0 +1,53 @@
+---
+id: DET23
+title: Build the MicHolderMonitor in shadow: an always-on 1 Hz record of which process holds audio input, so a missed call becomes a row
+category: Detection
+status: new
+priority: P2
+comment: Filed 2026-11-13 (audit band 2026-11-13). A missed call leaves nothing to count: 0 mic_busy rows in 114,553 work-laptop events while process_audio_is_running_input read true 420 times on 27 days, no detector heartbeat, and no row for a listed browser whose title matches nothing. Add a log-only 1 Hz monitor over the HAL process-object list for every registry and browser family, started through SessionWatchers, with no behaviour change; the Teams ceiling, the reducer, the browser path, DET10's replacement input and the plan's GATE all read its ledger.
+---
+
+# DET23: Build the MicHolderMonitor in shadow: an always-on 1 Hz record of which process holds audio input, so a missed call becomes a row
+
+Band origin: filed 2026-11-13 (audit band 2026-11-13, see [meetingpipe-q6-backlog.md](../meetingpipe-q6-backlog.md)). Status and priority live in this file's header; [INDEX.md](../INDEX.md) lists every task.
+
+## Context
+
+Source findings: D082 (high, demonstrated in the log) and D007 (medium, demonstrated) in the [recording reliability audit](../../audits/2026-11-13-recording-reliability-audit.md), with their full evidence and verifier notes in [recording-reliability-evidence.md](../../audits/2026-11-13-recording-reliability-evidence.md); stage 5 of that audit's staged plan ("MicHolderMonitor in shadow, and the report") and the SIGNALS and HEALTH paragraphs of its "Recommended target design"; low D010 folded in below. Re-verified against HEAD `3a2da4fc` on 2026-11-13 by code reading.
+
+**The start-miss instrument is dead on the work laptop (D082).** `MeetingDiscoveryWatcher.wireMicObserver` resolves `AVCaptureDevice.default(for: .audio)` once at start and KVO-observes `isInUseByAnotherApplication`; `sampleMicBusy` also runs on every backstop poll and `MicBusySpanTracker.update` opens a span on the first busy sample with no dwell. Across all 114,553 events from 2026-09-29 to 2026-11-13 (three build eras, 74 recordings, 417 prompts) there are 0 `mic_busy_started`, 0 `mic_busy_ended`, 0 `mic_in_use_prompt` and 0 `mic_device_unavailable` rows, while `signal.process_audio_is_running_input` read true 420 times on 27 distinct days (415 `com.microsoft.teams2`, 5 `us.zoom.xos`). So the device property never read true while a meeting process held input, DET3's spans are empty and DET1's catch-all tier cannot fire. Why the property stays false (a shared input it does not report, or a non-default device) is [DET10](./DET10.md)'s open question; its 2026-11-13 amendment directs replacing the input with this monitor rather than repairing it.
+
+**Misses leave no row (D007).** `MeetingSourceScanner.enumerateCandidates` handles a listed browser whose titles give `.noMeetingSignal` with a bare `continue` ("Every browser on the machine is in this state most of the day, so it stays silent"); only `.weakTitleOnly` becomes `browser_tab_rejected`. No daemon code emits a detector heartbeat (the only "heartbeat" code in the daemon is the pipeline and Ask progress beats). On the work laptop the detector category holds only `candidate_dropped` (445), `discovery_shadow_pick` (108) and `browser_tab_rejected` (1), and 32 of 38 active days carry no browser row at all, so the app cannot tell "saw it and refused" from "never looked". The audit corrected one part: since DET10, `mp analyze-detection` labels a zero-span window `no_spans` rather than clean, so the gap is telling a quiet week from a blind auditor, not a false clean result.
+
+**What the existing read gives and does not give.** DET8's read (`ProcessAudioSignal`: `enumerateProcessObjects` over `kAudioHardwarePropertyProcessObjectList`, `match` by bundle prefix then PID ancestry, `readIsRunningInput`, `reduceIsRunningInput`) needs no TCC grant and is right where it runs, but it runs only inside an engaged lifecycle for one app, backs off to `defaultSlowPollInterval` (5 s), and DET12's `ProcessAudioScanProbe` reads it only during a scan. The audit counted 495 microphone rows in the pack, every one logged while the old detector was already engaged (421 from the initial read, 70 from the poll, 4 from the list listener, 0 from the per-object listener), so how often an app holds the mic with no call, how long same-call gaps really are (two near 23 s, sampled on a poll that adds up to 5 s) and whether a call opened the mic without being detected are all unmeasured.
+
+**Low D010 folded in (consistent but unproven).** Discovery has no trigger for a tab navigating into a meeting: the workspace observers fire on launch, terminate, activate and deactivate only, the mic KVO watches the same device property that never read true, and `DiscoveryScanCadence.discoveryDefault` backs the poll off to 12 s idle, so a first Meet sighting can lag about 12 s and a briefly shown title can be missed. Correction at filing: the class note said the observers fire "only on launch or activation" and cited 0 `mic_in_use_prompt` rows for the KVO path; the observers also cover terminate and deactivate, and the KVO path is inert because its property never reads true (0 `mic_busy_started`), which is the same dead input as D082. The monitor gives a holder edge that could trigger a scan; this task only logs the lag.
+
+## Scope
+
+1. **`MicHolderMonitor` in MeetingPipeCore**, beside `Lifecycle/Signals/ProcessAudioSignal.swift`, reusing its enumerate, match and read functions behind injected closures and scheduler the way `ProcessAudioSignal.init` takes `resolver`, `probe` and `scheduler`, with the list listener on `CoreAudioHALBus`, so tests drive it with a fake backend and no hardware. A fixed 1 Hz tick from daemon start, in every app state, with no backoff. Each tick reads the process-object list and, per object, bundle id, PID and `kAudioProcessPropertyIsRunningInput` (`IsRunningOutput` and the device list logged only on change). Objects map to a family (every native bundle in `meeting_apps.toml` and every listed browser) by dotted bundle prefix or PID ancestry, longest registry id wins, and the daemon's own PID is excluded so its recorder never reads as a holder. Per family it publishes a level with a read time: held, released or unknown (unknown: the list or every matched read failed, the sample is older than 3 s, or a holding object vanished less than 5 s ago). The transition logic is a pure `decide` per the island rules; the host owns the timer and the HAL handle.
+2. **The list listener only requests a coalesced refresh**, at most one per second, and never logs per callback; share the one listener [DET21](./DET21.md) makes lifetime-scoped rather than registering a second.
+3. **Log only, change-driven rows** (category `detector`, names final at pickup): a holder-change row (family, level, bundle, pid, object count, whether a recording is running); a `mic_gap` row with the exact gap length when a family returns to held; unknown spans with their reason; a once-a-minute heartbeat (ticks taken, families held, summed tick time) and a `sampler_silent` row after 10 s without a tick; the system-channel level for the 120 s after each release during a recording (one row, from `MeetingRecorder.onSystemLevel`); and per-second mic and system levels during a recording beside the idle backstop's nudges and stand-downs (`auto_stop_silence_skipped`, `silence_keep_recording`), packed one row per minute so the 5 MiB rotating event log keeps its retention. Plus, for D010, the lag from a family's first held sample to that family's next admitted sighting.
+4. **Start and fence it through `Coordination/SessionWatchers.swift`**: a fourth member in `SessionWatchers.production`, so `SessionWatchersTests` proves it starts (the END10 class).
+5. New actions in `CONVENTIONS.md`'s event table; an `ARCHITECTURE.md` line for the new signal.
+
+## Explicitly not
+
+- Any behaviour change: no prompt, start, end or ceiling reads the monitor here. Its consumers are separate tasks: the Teams release ceiling ([END23](./END23.md)), the reducer in shadow ([DET25](./DET25.md)), the browser path ([DET20](./DET20.md)), DET10's replacement of the AVCapture input, the holder's input device ([MIC22](./MIC22.md)), the idle backstop gate ([END25](./END25.md)) and the report ([DET19](./DET19.md), which rewrites `mp analyze-detection` over these rows).
+- A mic-edge scan trigger for D010: only once the monitor's rows are trusted, and then as its own change.
+- A per-second event-log row for levels, which would evict weeks of other evidence from the rotating log.
+- Reading Safari or WebKit responsible-process attribution: only with the owner's explicit yes, per the plan.
+- The heartbeat duplicating [OBS5](./OBS5.md)'s hourly one: if OBS5's lands first, the monitor's fields extend that row's family, with one cadence per row kind stated in `CONVENTIONS.md`.
+
+## Acceptance
+
+- `MeetingPipeCoreTests` on a fake HAL backend: a family going held, released and held again emits one change row each and a `mic_gap` with the right length; an unchanged sample emits nothing; an object vanishing then re-registering under a new id inside 5 s reads unknown, not released; a failed list read reads unknown; a stalled tick for 10 s emits `sampler_silent`; a Chrome helper is attributed by PID ancestry; the daemon's own PID never appears as a holder; a burst of list-change callbacks produces at most one refresh per second.
+- `SessionWatchersTests` covers the new member; `python3 scripts/truth_fences.py events` green with the new actions documented.
+- `cd daemon && swift build` and `swift test` green with N new tests named in the commit body; `bash scripts/ci-local.sh` green.
+- Field bars after 10 working days on the work laptop, written into this file with the numbers: a holder-true row within 15 s of at least 95 percent of recording starts; the uncensored same-call gap table; the count of holds of 20 s or more with no call behind them; under 0.5 percent of one core (from the heartbeat's summed tick time); no row on an unchanged sample; no burst above 2 rows per second; zero `sampler_silent` rows.
+
+## Owner walkthrough
+
+1. [session] Confirm the installed build on the work laptop is newer than the landing commit.
+2. [owner] Use the app normally for 10 working days. Note the date of any call you joined that was not recorded or prompted. Cost: no extra calls.
+3. [session] Read the 10 days of `events.jsonl` (counts, families, gap lengths and timestamps only, never titles) and write the field bars above into this file; a failed bar is reported as failed, not re-tuned.

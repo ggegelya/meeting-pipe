@@ -4,7 +4,7 @@ title: Capture write failures shorter than 32 consecutive buffers are never coun
 category: Recording
 status: new
 priority: P2
-comment: Filed 2026-10-25 (observability band, O19: SW-12): failed capture writes go only to redacted os.Logger and WriteFailureTracker resets on success, so failures under 32 in a row are never counted and up to 15% of a meeting can drop below the 0.85 parity floor. Total and first error per channel in the tracker, a once-per-recording WARN, totals on the stopping line and a capture_write_failures event. [Spec](./REC22.md)
+comment: Filed 2026-10-25 (observability band, O19: SW-12): failed capture writes go only to redacted os.Logger and WriteFailureTracker resets on success, so failures under 32 in a row are never counted and up to 15% of a meeting can drop below the 0.85 parity floor. Total and first error per channel in the tracker, a once-per-recording WARN, totals on the stopping line and a capture_write_failures event. [Spec](./REC22.md) Amended 2026-11-13 by the audit band: the writer backlog warn is event and log only for about 15.5 minutes before the 512 MiB force-stop, so show it on the HUD and put the backlog peak on the stopping line (F155).
 ---
 
 # REC22: Capture write failures shorter than 32 consecutive buffers are never counted, so intermittent disk errors can drop up to 15% of a meeting with no trace in any log or event
@@ -50,3 +50,23 @@ and `SystemAudioChannel`'s system writer is the same shape (`"system write: ..."
 - A pure formatter for the `stopping:` line, or for the `capture_write_failures` attributes, is unit-tested for the zero case (no event), a non-zero case, and the wedged case.
 - `cd daemon && swift build` and `swift test` green; `bash scripts/ci-local.sh daemon` green; N new tests named in the commit body.
 - `CONVENTIONS.md` documents `capture_write_failures` in the event-log section's `recorder` paragraph, together with REC3's `recording_error`, which is not documented there today either; `python3 scripts/truth_fences.py` clean.
+
+## Amendment 2026-11-13 (audit band)
+
+From the [2026-11-12 independent audit](../../audits/2026-11-12-independent-audit.md), low F155 ("Writer backlog warning is log-only until 512 MiB of audio is held in RAM"), re-read in code at HEAD on 2026-11-14. It is the sibling of this task's subject: this task counts writes that throw, and REC25 (done 2026-11-12) added the watch for writes that never finish. Both end the same way, with the owner learning nothing while the recording is live.
+
+**What the code does today.** `WriterBacklogPolicy.evaluate` runs on the two existing 1 Hz liveness ticks and answers `.warn(pendingSec:)` once per channel per recording when that channel holds more than `softThresholdSeconds = 30` of its own audio, and `.stop` once when both channels together hold more than `hardCapBytes = 512 << 20`, which its own comment puts at "about 15.5 minutes of both channels at 48 kHz" (576,000 B/s for both, so 932 s). In `MeetingRecorder`, `.warn` writes `recorder`/`writer_backlog` (`channel`, `pending_bytes`, `pending_sec`) and a `WARN: ... writer is ...s behind` line to `recorder.log`, and nothing else: no HUD state, no notification. `.stop` goes through `WriteFailureRouter.escalateBacklog` to `onWriteFailure`, REC3's force-stop that keeps the prefix that reached the disk. So between second 30 and roughly minute 15.5 of a stalled output volume the HUD shows live levels, the owner is told nothing, and the audio held in memory is what a crash or the eventual force-stop can lose. Correction at filing: the soft threshold is not silent, it already has an event and a file-log line, which is more than this task's sub-threshold write failures get today; what it lacks is an owner-facing surface. REC25's spec did not decide against one; its Explicitly not is about dropping buffers and QoS.
+
+**This amendment lifts one line of the Explicitly not above for this one case.** "A HUD state or notification for a non-escalating failure" stays out of scope for sub-threshold write failures (a few failed writes in an hour are not worth interrupting a meeting for). A writer backlog past 30 s is different: the volume has stopped finishing writes, and the only remaining outcome is a force-stop. The owner may strike this addition at pickup and keep the backlog log-only.
+
+### Added scope
+
+5. **Surface the backlog warn on the HUD (F155).** On `.warn`, besides the event and the WARN line, show a HUD state through the seam REC20's low-space countdown already uses: `RecordingHUDWindow.setLowSpace` feeding `HUDStateLabel.resolve(micCaptureLost:lowSpace:offRecord:confirmingEnd:)`. Add one input (for example `writerBehind: Bool`) with alert tone, ranked below `micCaptureLost` and `lowSpace`, cleared at `dismiss` like `lowSpaceText`, and wired from the recorder to the session controller the way `lowSpaceWatch.onUpdate` is. Short copy in the HUD's register ("Disk falling behind"); no banner, since the force-stop already posts one.
+6. **Say it at stop.** Add the per-channel backlog high-water mark REC25's `SerialBufferWriter` already keeps to item 3's `stopping:` line (`mic_backlog_peak_sec`, `system_backlog_peak_sec`), so a recording that warned and then recovered leaves a trace on the same line as its write-failure totals.
+
+### Added acceptance
+
+- The `HUDStateLabel` tests (pure; today in `RecordingLowSpaceREC20Tests`): the backlog state shows with alert tone when it is the only state, yields to `micCaptureLost` and `lowSpace`, and outranks `offRecord` and `confirmingEnd` (or the order the pickup session picks, pinned).
+- Tests at the levels `RecordingLowSpaceREC20Tests` already uses for REC20's wiring: a session-level test with the fake host that a backlog warning sets the HUD state once (the shape of `test_a_warning_sets_the_label_and_notifies`, minus the notification) and a new recording clears it, plus a fit test that the new label fits the shared pill width (the shape of `test_the_longest_countdown_fits_the_pill`).
+- Item 3's pure `stopping:` formatter test covers the peak-seconds fields.
+- [GUIDE.md](../../../docs/GUIDE.md) gains one sentence beside its other recording-panel states ("Mic lost", "Confirming end"), in the same commit.

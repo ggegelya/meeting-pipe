@@ -4,7 +4,7 @@ title: Every build is version 0.1.0 build 1 with no commit recorded, and an inst
 category: Distribution
 status: new
 priority: P2
-comment: Filed 2026-10-24 (audit band, go-live PD-4 identity half, DI-7, harness D): install.sh hard-codes 0.1.0 build 1, no tags, the failure report says 0.1.0 and rejects non-numeric versions, rebuild.sh never rewrites the plist, install rm -rf's the old app. Stamp an integer build plus commit in both scripts, show it in reports, a log event and Preferences, keep an APFS-cloned app.prev and venv.prev, rollback.sh. [Spec](./DIST6.md) Amended 2026-10-25 (observability band): findMP picks embedded, venv, uv run from the clone, or PATH mp silently on every spawn and run_started records none of it, so the plist commit can name code that did not run. Item 2 adds a tier on MPInvocation, a pipeline_invocation_resolved event on change, executable, version, build commit and tier on run_started, and a doctor WARN for a clone or PATH tier.
+comment: Filed 2026-10-24 (audit band, go-live PD-4 identity half, DI-7, harness D): install.sh hard-codes 0.1.0 build 1, no tags, the failure report says 0.1.0 and rejects non-numeric versions, rebuild.sh never rewrites the plist, install rm -rf's the old app. Stamp an integer build plus commit in both scripts, show it in reports, a log event and Preferences, keep an APFS-cloned app.prev and venv.prev, rollback.sh. [Spec](./DIST6.md) Amended 2026-10-25 (observability band): findMP picks embedded, venv, uv run from the clone, or PATH mp silently on every spawn and run_started records none of it, so the plist commit can name code that did not run. Item 2 adds a tier on MPInvocation, a pipeline_invocation_resolved event on change, executable, version, build commit and tier on run_started, and a doctor WARN for a clone or PATH tier. Amended 2026-11-13 by the audit band: the home Mac still runs a 2026-09-11 binary over an editable venv of the main checkout and nothing detects it; add a doctor FAIL on an editable or mismatched venv and a spawn-time stamp comparison (F021).
 ---
 
 # DIST6: every build is version 0.1.0 build 1 with no commit recorded, and an install deletes the previous bundle, so a bug report cannot be tied to code and a bad build cannot be rolled back
@@ -66,3 +66,36 @@ Added acceptance:
 - `resolveDirectMP` and a seam over the uv and `PATH` tiers return the right `tier` for each layout (temp dirs, no real `uv`); `pipeline_invocation_resolved` fires once for two spawns on the same tier and again on a change.
 - A pytest that `run_started` carries `executable`, `version`, `build_commit` and `tier` from the environment, and omits `build_commit` when it is unset.
 - The doctor WARN for a `path` tier against an app bundle path, and none for `venv`.
+
+## Amendment 2026-11-13 (audit band)
+
+From the [2026-11-12 independent audit](../../audits/2026-11-12-independent-audit.md) F021 and the [field evidence](../../audits/2026-11-13-field-evidence.md) cross-check finding "F021 class on the laptop: each build ran for a month or more".
+
+**The skew is live on the owner's home Mac.** Re-verified on 2026-11-14 on that Mac: `~/Applications/MeetingPipe.app/Contents/MacOS/MeetingPipe` has an mtime of 2026-09-11, the running daemon (started 2026-11-13 09:11 local) is that binary, and `~/.local/share/meeting-pipe/venv` still carries `_editable_impl_meeting_pipe.pth` pointing at the main checkout's `pipeline/src`. 96 commits have landed since 2026-09-11 (F021 counted 94 at audit time, 48 touching `daemon/Sources` and 19 touching `pipeline/src`). [DIST4](../q6-final.md) (done) made the venv a non-editable install in `scripts/lib/pipeline-venv.sh` (`--no-editable`), but this Mac was never reinstalled, so that fix has not run here.
+
+What it costs: every committed or uncommitted edit under the main checkout's `pipeline/src` processes real meetings under a daemon that predates the cross-tree contracts. The audit found no concrete contract break in the drift it examined (no removed CLI flag, SEC25's sidecar change only fails closed, the new `publish_state` "local" falls into benign default branches), so the harm is a work-in-progress Python edit running against a real meeting, and no signal that two months of daemon fixes are not running.
+
+**Nothing detects it.** `PipelineLauncher.resolveDirectMP` accepts the venv on `isExecutable(venvPython)` and `bin/mp` alone, and neither `mp doctor` nor `MeetingPipe doctor` checks for an editable install (a grep for "editable" in `daemon/Sources` and `pipeline/src` finds only UI copy). Item 1's `MPGitCommit` names the app's commit only.
+
+**Field, the work laptop.** Era A predates 2026-09-04 and ran until 2026-10-12 (at least 38 days), era B ran 31 days; whether the Python tree moved ahead of the binary in between cannot be told from the pack. The field note asks for the git revision of both trees in a launch event and the About panel.
+
+Correction at filing: F021 proposes stamping "the app and the wheel". An editable venv has no wheel and the `uv_clone` tier runs the clone directly, so the pipeline half is stamped at sync time instead; and there is no About panel, so the Preferences "Build" row of item 2 is where it shows.
+
+Added scope:
+
+- **Stamp the venv.** `scripts/lib/pipeline-venv.sh` writes the commit it synced from (the same string as `MPGitCommit`) into a stamp file inside the venv.
+- **Doctor FAIL on an editable or mismatched venv.** Both doctors FAIL when the venv's site-packages holds an `_editable_impl_*.pth` or a `direct_url.json` with `"editable": true`, or when the venv stamp differs from the app's `MPGitCommit`. The message names `./scripts/install.sh` as the fix.
+- **Compare at spawn.** Beside the `pipeline_invocation_resolved` event the 2026-10-25 amendment adds, the daemon reads both stamps and logs `daemon`/`pipeline_build_mismatch` (`app_commit`, `pipeline_commit`, `editable`) once per launch on a mismatch or an editable venv, and the Preferences "Build" row shows it. It warns and does not refuse: refusing would fail every meeting on a Mac that is merely stale.
+- Item 2's launch event carries both commits.
+
+Related: [OBS5](./OBS5.md) (the launch row), [HYG19](./HYG19.md).
+
+Added acceptance:
+
+- A pytest for the doctor probe over scratch venvs: an editable `.pth` FAILs, a matching stamp passes, a differing stamp FAILs.
+- A Swift test that the spawn-time check reports an editable venv and differing stamps from injected file reads and stays quiet when they match; `pipeline_invocation_resolved` behaviour unchanged.
+- `pipeline_build_mismatch` documented in `CONVENTIONS.md`'s event schema; `python3 scripts/truth_fences.py both` green.
+
+## Owner walkthrough (amendment)
+
+1. [owner] Run `./scripts/install.sh` once on the home Mac. Afterwards `ls ~/.local/share/meeting-pipe/venv/lib/python3*/site-packages | grep editable` prints nothing and the doctor reports no mismatch. This is the one-time cure F021 describes; the probe is what stops it recurring unseen. It confirms the probe after landing and does not gate building it.
