@@ -318,13 +318,10 @@ enum GuideDocument {
     /// `docs/GUIDE.md`, a bare `assets/x.png`) while the ones that work are a
     /// closed set: something the system can open. Rejecting shapes is how DOC11
     /// caught the anchor case and missed the four repo paths beside it.
-    private static let followableSchemes: Set<String> = ["http", "https", "mailto"]
-
     /// Whether a link target resolves to anything when the guide is read in a
     /// window rather than in a checkout.
     static func canFollow(_ target: String) -> Bool {
-        guard let colon = target.firstIndex(of: ":") else { return false }
-        return followableSchemes.contains(target[..<colon].lowercased())
+        ExternalURLPolicy.canFollow(target)  // SEC30: one allowlist for the guide and for model text
     }
 
     /// Rewrite a link the window cannot follow (`[a recipe](#anchor)`,

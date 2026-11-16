@@ -599,19 +599,19 @@ extension MeetingDetailView {
                 MPGhostIconButton(
                     systemImage: PublishSink.notion.symbolName,
                     help: PublishSink.notion.openPhrase
-                ) { NSWorkspace.shared.open(url) }
+                ) { ExternalURLPolicy.openPublishTarget(url, sink: .notion) }
             }
             if let url = cachedObsidianURL {
                 MPGhostIconButton(
                     systemImage: PublishSink.obsidian.symbolName,
                     help: PublishSink.obsidian.openPhrase
-                ) { NSWorkspace.shared.open(url) }
+                ) { ExternalURLPolicy.openPublishTarget(url, sink: .obsidian) }
             }
             if let local = cachedLocalNote {
                 MPGhostIconButton(
                     systemImage: local.sink.symbolName,
                     help: local.sink.openPhrase
-                ) { NSWorkspace.shared.open(local.url) }
+                ) { ExternalURLPolicy.openPublishTarget(local.url, sink: local.sink) }
             }
             MPGhostIconButton(
                 systemImage: "folder",

@@ -292,6 +292,8 @@ Open the Library and pick **Ask** in the left rail. Type a question and press **
 
 **What comes back.** An answer with citations, each one linking to the meeting it came from. Citations are checked before you see them, so one that is shown always resolves to a real meeting.
 
+A link inside an answer or a summary is written by the model, so the app treats it with suspicion: a web link shows you its full address and waits for your yes before it opens, and a link to anything other than a web page or an email address is shown as plain text and does nothing.
+
 **What to expect while it runs.** Only one question at a time, which the running card says out loud rather than quietly killing the first. It is safe to walk away: switch to another rail and the run keeps going, so you come back to the answer rather than a blank pane. **Cancel** stops it for real. Answers stack newest-first, so a session reads as a list; they last until you quit the app.
 
 **What it cannot do.** It is not a chat: it answers one question at a time and does not remember the previous one. It only knows what is in your meetings, so it cannot answer from anything else. And it only answers, it never acts: it will not send anything, change anything, or schedule anything.

@@ -2,9 +2,9 @@
 id: SEC30
 title: Model-written text in the app renders clickable links of any URL scheme, including the app's own unconfirmed `meetingpipe://` verbs, and publish sidecar URLs are opened with no scheme check
 category: Security
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md) finding 5 and an informational page_url note): SummaryMarkdown.inline, ActionItemRow.taskAttributed and AskView parse model text with AttributedString(markdown:), no OpenURLAction exists anywhere, so a disguised link opens meetingpipe://stop, file:, smb: or an https exfil URL on one click; RichTextShare emits href for any scheme; page_url from sidecars goes straight to NSWorkspace.open. One shared URL policy reusing GuideDocument.canFollow. [Spec](./SEC30.md)
+comment: Shipped 2026-11-16 (ci-local green): ExternalURLPolicy (model-text and publish-target rules), OpenURLAction on SummaryRenderedView / ActionItemRow / AskView with a full-address confirm for http(s), refused links stripped to their label in SummaryMarkdown.inline, RichTextShare hrefs filtered, publish open sites checked. Owed - the owner check (a hand-edited meetingpipe://stop link is inert while recording; a real https link opens after the confirm).
 ---
 
 # SEC30: model-written text in the app renders clickable links of any URL scheme, including the app's own unconfirmed `meetingpipe://` verbs, and publish sidecar URLs are opened with no scheme check
@@ -46,3 +46,5 @@ Exploit: a prompt-injected transcript gets the model to write `[Q3 deck](meeting
 - A fence test (in the `TutorialFenceTests` style) that every view rendering `SummaryMarkdown.inline` sits under the `OpenURLAction` environment, or a grep fence that `NSWorkspace.shared.open` is called only from the policy's helpers.
 - `cd daemon && swift build` and `swift test` green with the new test count in the commit body; `bash scripts/ci-local.sh` green.
 - Owner check (confirms): a summary hand-edited to contain `[x](meetingpipe://stop)` shows an inert label while recording, and a real https link still opens after the confirm.
+
+**Progress (2026-11-16):** shipped, with these choices the spec left open. The confirm is shown for every `http(s)` link rather than only when the label differs from the host, because the action does not see the label and a same-host label can still carry a query string. `SummaryMarkdown.inline` removes a refused link's attribute, so it reads as plain text and no longer depends on an `OpenURLAction` being present; the action is the backstop. `canOpenPublishTarget(_:sink:roots:)` also allows the `obsidian://open` link the app itself assembles for the Obsidian sink, since that button never opens a `file` URL; the notification's Open action knows only the URL, so it passes no sink and accepts any shape a sink produces. The roots are the library output dir and the filesystem, Obsidian and LAN settings, read at click time, so a meeting published under a root that has since changed opens nothing and logs `link_refused`. `PublishLanding.localNote` only parses; its open site is the header button.

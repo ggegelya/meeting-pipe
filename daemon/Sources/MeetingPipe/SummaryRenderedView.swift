@@ -58,7 +58,12 @@ struct SummaryRenderedView: View {
     /// no writable summary behind the rows show the glyph without a control.
     var onToggleAction: ((Int, Bool) -> Void)? = nil
 
+    /// SEC30: every link in model-written prose goes through `ExternalURLPolicy`.
     var body: some View {
+        content.environment(\.openURL, ExternalURLPolicy.modelTextAction())
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: MPSpace.s6) {
             if !summaryBullets.isEmpty {
                 section(title: "Summary", systemImage: "doc.text") {
@@ -355,7 +360,15 @@ enum SummaryMarkdown {
             interpretedSyntax: .inlineOnly,
             failurePolicy: .returnPartiallyParsedIfPossible
         )
-        return (try? AttributedString(markdown: s, options: opts)) ?? AttributedString(s)
+        var text = (try? AttributedString(markdown: s, options: opts)) ?? AttributedString(s)
+        // SEC30: a link the policy refuses (`meetingpipe://stop`, `file:`, `smb:` ...) is its label and
+        // nothing more, so it neither looks clickable nor depends on an `OpenURLAction` being in place.
+        for run in text.runs {
+            if let link = run.link, !ExternalURLPolicy.canOpenFromModelText(link) {
+                text[run.range].link = nil
+            }
+        }
+        return text
     }
 
     /// Split multi-paragraph prose into the lines to render separately.
@@ -458,6 +471,10 @@ struct ActionItemRow: View {
     var onToggle: ((Bool) -> Void)? = nil
 
     var body: some View {
+        content.environment(\.openURL, ExternalURLPolicy.modelTextAction())
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: MPSpace.s1) {
             HStack(alignment: .firstTextBaseline, spacing: MPSpace.s2) {
                 if let onToggle {
@@ -507,13 +524,7 @@ struct ActionItemRow: View {
     }
 
     private var taskAttributed: AttributedString {
-        let opts = AttributedString.MarkdownParsingOptions(
-            allowsExtendedAttributes: false,
-            interpretedSyntax: .inlineOnly,
-            failurePolicy: .returnPartiallyParsedIfPossible
-        )
-        return (try? AttributedString(markdown: action.task, options: opts))
-            ?? AttributedString(action.task)
+        SummaryMarkdown.inline(action.task)
     }
 
     struct Chip: Hashable {

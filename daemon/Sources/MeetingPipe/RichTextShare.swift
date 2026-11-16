@@ -170,8 +170,37 @@ enum RichTextShare {
         text = replace(text, #"\*([^*]+)\*"#, with: "<em>$1</em>")
         // Underscore emphasis needs word boundaries or `some_file_name` becomes italic.
         text = replace(text, #"(?<![A-Za-z0-9_])_([^_]+)_(?![A-Za-z0-9_])"#, with: "<em>$1</em>")
-        text = replace(text, #"\[([^\]]*)\]\(([^)\s]+)\)"#, with: "<a href=\"$2\">$1</a>")
+        text = linkify(text)
         return text
+    }
+
+    /// `[label](target)` to an anchor, for a target `ExternalURLPolicy` allows; any other link (SEC30:
+    /// `meetingpipe://stop`, `file:`, `javascript:`) becomes its label, so copied rich text never
+    /// carries a link the app would refuse to follow. Runs on already-escaped text, so the target is
+    /// unescaped before it is judged and stays escaped in the attribute.
+    private static func linkify(_ s: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"\[([^\]]*)\]\(([^)\s]+)\)"#) else { return s }
+        var out = ""
+        var cursor = s.startIndex
+        for match in regex.matches(in: s, range: NSRange(s.startIndex..., in: s)) {
+            guard let whole = Range(match.range, in: s),
+                  let label = Range(match.range(at: 1), in: s),
+                  let target = Range(match.range(at: 2), in: s) else { continue }
+            out += s[cursor..<whole.lowerBound]
+            let raw = String(s[target])
+                .replacingOccurrences(of: "&quot;", with: "\"")
+                .replacingOccurrences(of: "&lt;", with: "<")
+                .replacingOccurrences(of: "&gt;", with: ">")
+                .replacingOccurrences(of: "&amp;", with: "&")
+            if let url = URL(string: raw), ExternalURLPolicy.canOpenFromModelText(url) {
+                out += "<a href=\"\(s[target])\">\(s[label])</a>"
+            } else {
+                out += s[label]
+            }
+            cursor = whole.upperBound
+        }
+        out += s[cursor...]
+        return out
     }
 
     /// HTML-escape body text and attribute values in one pass. `&` first, or the

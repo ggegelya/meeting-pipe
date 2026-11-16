@@ -384,6 +384,10 @@ struct AskView: View {
     }
 
     private func answerBody(_ a: AskAnswer) -> some View {
+        answerContent(a).environment(\.openURL, ExternalURLPolicy.modelTextAction())  // SEC30
+    }
+
+    private func answerContent(_ a: AskAnswer) -> some View {
         VStack(alignment: .leading, spacing: MPSpace.s3) {
             // UX71: through the summary's own markdown rule, not a second one.
             // `Text` on a `String` renders markers literally, and the engines are
