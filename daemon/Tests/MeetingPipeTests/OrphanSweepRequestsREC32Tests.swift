@@ -72,6 +72,76 @@ final class OrphanSweepRequestsREC32Tests: XCTestCase {
         XCTAssertTrue(eventRows(action: "orphan_stale_found").isEmpty)
     }
 
+    // MARK: - The owner resolves a stale orphan from the menu
+
+    func test_stale_stems_are_the_ones_the_sweep_skips() throws {
+        let now = Date()
+        try writeIntermediates(stem: "old", modified: now.addingTimeInterval(-10 * 86_400))
+        try writeIntermediates(stem: "fresh", modified: now.addingTimeInterval(-3_600))
+        try writeIntermediates(stem: "marked", modified: now.addingTimeInterval(-10 * 86_400))
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("marked.recordfail.json"))
+        try writeIntermediates(stem: "owned", modified: now.addingTimeInterval(-10 * 86_400))
+        XCTAssertEqual(OrphanRecordingRecovery.staleStems(in: dir, now: now, excludingStems: ["owned"]), ["old"])
+    }
+
+    func test_recover_marks_a_stale_stem_so_the_next_sweep_takes_it() throws {
+        let now = Date()
+        try writeIntermediates(stem: "old", modified: now.addingTimeInterval(-10 * 86_400))
+        XCTAssertEqual(OrphanRecordingRecovery.requestRecovery(stems: ["old"], in: dir), ["old"])
+        XCTAssertEqual(
+            OrphanRecordingRecovery.scanOrphanStems(in: dir, now: now, sweep: .afterJob, staleReport: StaleOrphanReport()),
+            ["old"]
+        )
+        XCTAssertEqual(OrphanRecordingRecovery.staleStems(in: dir, now: now), [], "no longer counted as stale")
+        XCTAssertEqual(eventRows(action: "orphan_stale_recover_requested").first?["stem"] as? String, "old")
+    }
+
+    func test_a_recovered_stem_clears_its_recover_marker() async throws {
+        try writeIntermediates(stem: "old", modified: Date().addingTimeInterval(-10 * 86_400))
+        OrphanRecordingRecovery.requestRecovery(stems: ["old"], in: dir)
+        let result = await OrphanRecordingRecovery.recover(
+            stems: ["old"], in: dir, isOwned: { _ in false },
+            recoverer: { stem, dir in
+                let url = dir.appendingPathComponent("\(stem).wav")
+                try? Data("RIFF".utf8).write(to: url)
+                return url
+            }
+        )
+        XCTAssertEqual(result.ready.count, 1, "no manifest and no markers: the legacy auto route, as any old orphan")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("old.recover-requested").path))
+    }
+
+    func test_discard_moves_both_intermediates_into_held_and_deletes_nothing() throws {
+        let now = Date()
+        try writeIntermediates(stem: "old", modified: now.addingTimeInterval(-10 * 86_400))
+        let originals = dir.appendingPathComponent("originals")
+        XCTAssertEqual(OrphanRecordingRecovery.discard(stems: ["old"], in: dir, originalsDir: originals), ["old"])
+        let held = MuteRedactor.heldDirectory(in: originals)
+        for name in ["old.mic.wav", "old.system.wav"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent(name).path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: held.appendingPathComponent(name).path), name)
+        }
+        XCTAssertEqual(OrphanRecordingRecovery.scanOrphanStems(in: dir, now: now, staleReport: StaleOrphanReport()), [])
+        XCTAssertTrue(eventRows(action: "orphan_stale_found").isEmpty, "the next sweep reports nothing")
+        let row = try XCTUnwrap(eventRows(action: "orphan_stale_discarded").first)
+        XCTAssertEqual(row["moved"] as? [String], ["mic.wav", "system.wav"])
+        XCTAssertEqual(row["complete"] as? Bool, true)
+    }
+
+    func test_the_menu_row_appears_only_with_a_stale_recording() {
+        XCTAssertFalse(StatusBarModel.rows(StatusBarModel.Inputs()).contains {
+            if case .staleRecordings = $0 { return true }; return false
+        })
+        let rows = StatusBarModel.rows(StatusBarModel.Inputs(failedMeetingCount: 1, staleRecordingCount: 3))
+        let failed = rows.firstIndex { if case .failedMeetings = $0 { return true }; return false }
+        let stale = rows.firstIndex { if case .staleRecordings = $0 { return true }; return false }
+        XCTAssertNotNil(stale)
+        XCTAssertEqual(stale, failed.map { $0 + 1 }, "directly under the failed row, in its group")
+        XCTAssertEqual(StatusBarModel.staleRecordingsTitle(count: 1), "1 unfinished recording from earlier")
+        XCTAssertEqual(StatusBarModel.staleRecordingsTitle(count: 3), "3 unfinished recordings from earlier")
+        XCTAssertNil(StatusBarModel.staleRecordingsTitle(count: 0))
+    }
+
     // MARK: - The stop funnel requests a sweep when it produced no final
 
     private let zoom = AppSource(bundleID: "us.zoom.xos", displayName: "Zoom")

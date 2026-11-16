@@ -4,7 +4,7 @@ title: The orphan sweep runs only after a successful non-retranscribe job or at 
 category: Recording
 status: partial
 priority: P2
-comment: Items 1 to 3 shipped 2026-11-17 (sweep from onJobSettled and from a no-final stop, orphan_stale_found once per process). Item 4 (Recover / Discard surface) waits on the owner decision (a), (b) or (c), asked 2026-11-17.
+comment: All four items shipped 2026-11-17: sweep from onJobSettled and a no-final stop, orphan_stale_found once per process, and (owner chose b) an "N unfinished recordings from earlier" menu row with Recover and Discard (moves to originals/held, never deletes). Owner walkthrough below; owner to close.
 ---
 
 # REC32: The orphan sweep runs only after a successful non-retranscribe job or at launch, so a stop with no final file waits for an unrelated success, and stale orphans are re-reported after every job but never resolved or shown
@@ -62,4 +62,6 @@ Items 1 to 3 shipped. `Coordinator`'s `onJobSettled` (every completion: success,
 
 A stale orphan is now `coordinator`/`orphan_stale_found` once per process (`StaleOrphanReport`), and the per-sweep `skipping stale orphaned recording` line is gone.
 
-**Owner question (asked 2026-11-17 through the parent session, not yet answered):** item 4's surface, (a) a once-per-launch notification with Recover and Discard, (b) the menu's failed-meetings row, or (c) the event only, with the three June stems resolved by hand. Nothing for item 4 is built; with (c) this task closes as is.
+**Owner decision (2026-11-17): (b)**, a row in the menu bar's failed-meetings group, Discard moving to quarantine and never deleting.
+
+Item 4 shipped in a follow-up commit: the row reads **N unfinished recordings from earlier** (no warning glyph, since nothing failed today) under the failed row, counted off main in the same pass (`OrphanRecordingRecovery.staleStems`). Recover writes `<stem>.recover-requested`, which exempts the stem from the staleness cutoff like a `.recordfail.json`, and requests a sweep, so it goes through the normal recovery path including REC21's routing; recovery clears the marker. Discard moves the intermediates into `originals/held/` through `MuteRedactor.quarantine`, the folder the reaper never enters and Preferences ▸ Storage lists. Both act on every stale stem at once; with one owner and three stems a per-stem picker was not worth a submenu of its own. GUIDE ("A meeting that failed") and `MenuBarDropdown.jsx` updated.

@@ -85,6 +85,31 @@ extension Coordinator {
         libraryWindow.show()
     }
 
+    // MARK: Stale recordings (REC32)
+
+    /// Recover every stale orphan: mark it so the next sweep takes it through the normal recovery
+    /// path (merge, REC21's routing, enqueue), then ask for that sweep. Off main: a `raw/` listing.
+    @objc func menuRecoverStaleRecordings() {
+        resolveStaleRecordings { stems, dir in OrphanRecordingRecovery.requestRecovery(stems: stems, in: dir) }
+    }
+
+    /// Discard every stale orphan: its intermediates move to the held folder, never deleted.
+    @objc func menuDiscardStaleRecordings() {
+        resolveStaleRecordings { stems, dir in OrphanRecordingRecovery.discard(stems: stems, in: dir) }
+    }
+
+    private func resolveStaleRecordings(_ act: @escaping @Sendable ([String], URL) -> [String]) {
+        let dir = liveOutputDir
+        let owned = MainActor.assumeIsolated { recorder.ownedStems }
+        Task { @MainActor [weak self] in
+            await Task.detached(priority: .utility) {
+                _ = act(OrphanRecordingRecovery.staleStems(in: dir, excludingStems: owned), dir)
+            }.value
+            self?.requestOrphanSweep()
+            self?.statusBar.refreshFailedMeetingCount()
+        }
+    }
+
     // MARK: Tutorial surfaces (FEAT15)
 
     /// The one thing the tutorial asks of the app: put a surface where its

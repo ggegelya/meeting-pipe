@@ -503,6 +503,8 @@ A meeting whose processing got stuck lands here on its own, so the meetings behi
 
 A meeting you stopped yourself lands here too, and says **Processing cancelled**. Quitting or restarting the app stops a run in progress rather than leaving it working out of sight, and that meeting says **Processing interrupted** when the app comes back; **Retry** resumes it. Cancel sends no error notification; the row remains available to resume when you choose.
 
+A recording that was cut short (the app was quit hard, crashed, or could not finish writing it) is normally finished and processed on its own, usually right away and at the latest the next time the app starts. If one sat unfinished for more than a day, the app stops picking it up by itself and the menu bar shows **N unfinished recordings from earlier** under the failed row instead. Its submenu offers **Recover**, which finishes and processes them like any other recording, and **Discard**, which moves their audio out of your library into MeetingPipe's private originals folder. Discard deletes nothing; **Preferences ▸ Storage** lists what is kept there.
+
 ### When a re-transcribe is the answer
 
 Reach for **Re-transcribe…** when the problem is the **words or the voices**, not the summary:

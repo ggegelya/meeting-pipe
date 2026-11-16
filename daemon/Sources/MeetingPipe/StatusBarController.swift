@@ -102,6 +102,9 @@ final class StatusBarController {
     /// every open and every rebuild, including every 2 s download tick.
     private var failedMeetingCount = 0
     private let countFailedMeetings: @Sendable (URL) -> Int
+    /// REC32: the stale-recordings row's count, read in the same off-main pass as the failed one.
+    private var staleRecordingCount = 0
+    private let countStaleRecordings: @Sendable (URL) -> Int
     /// PERF31: the Recent meetings list, read on `countQueue` on each open and at launch like the
     /// failed count. The submenu builds its rows from this cache and touches no disk; a read that
     /// changes it refills an open submenu in place.
@@ -121,6 +124,7 @@ final class StatusBarController {
         item: NSStatusItem,
         launchAtLogin: LaunchAtLoginService = LaunchAtLoginService(),
         countFailedMeetings: @escaping @Sendable (URL) -> Int = { MeetingLibraryService.failedMeetingCount(in: $0) },
+        countStaleRecordings: @escaping @Sendable (URL) -> Int = { OrphanRecordingRecovery.staleStems(in: $0).count },
         listRecentMeetings: @escaping @Sendable (URL) -> [RecentMeeting] = {
             MeetingLibraryService.recentCorrectableMeetings(in: $0, limit: 10)
         },
@@ -130,6 +134,7 @@ final class StatusBarController {
         self.item = item
         self.launchAtLogin = launchAtLogin
         self.countFailedMeetings = countFailedMeetings
+        self.countStaleRecordings = countStaleRecordings
         self.listRecentMeetings = listRecentMeetings
         self.countQueue = countQueue
         self.launchAgentQueue = launchAgentQueue
@@ -455,6 +460,7 @@ final class StatusBarController {
             accessibility: center.accessibility,
             screenRecordingCaptureDenied: SystemAudioCapture.permissionState == .denied,
             failedMeetingCount: failedMeetingCount,
+            staleRecordingCount: staleRecordingCount,
             finishSetupTitle: finishSetupTitle,
             disableAutoRestart: UISettings.shared.disableAutoRestart,
             launchAgentEnabled: launchAgentEnabled,
@@ -528,11 +534,14 @@ final class StatusBarController {
     func refreshFailedMeetingCount() {
         guard let dir = recordingsDir() else { return }
         let count = countFailedMeetings
+        let countStale = countStaleRecordings
         countQueue.async {
             let n = count(dir)
+            let stale = countStale(dir)
             DispatchQueue.main.async { [weak self] in
-                guard let self, n != self.failedMeetingCount else { return }
+                guard let self, n != self.failedMeetingCount || stale != self.staleRecordingCount else { return }
                 self.failedMeetingCount = n
+                self.staleRecordingCount = stale
                 self.repopulateIfOpen()
             }
         }
@@ -723,7 +732,7 @@ final class StatusBarController {
         case .modelDownload:                             return .download
         case .permissionConsequence, .screenRecordingShortcut: return .permissions
         case .accessibilityDegraded:                     return .accessibility
-        case .failedMeetings:                            return .failedMeetings
+        case .failedMeetings, .staleRecordings:          return .failedMeetings
         case .finishSetup:                               return .finishSetup
         case .startRecording, .recordSuppressedMeeting, .stopRecording: return .transport
         case .quitWithoutRelaunch:                       return .quit
@@ -796,6 +805,20 @@ final class StatusBarController {
         // missed under Focus isn't the only surface. Stays until retry or delete.
         case .failedMeetings(_, let title):
             menu.addItem(actionRow(title: title, action: #selector(Coordinator.menuOpenLibrary)))
+
+        // REC32: recordings an interruption left unfinished over a day ago. The sweep stopped
+        // recovering them on its own (no marker, past `maxOrphanAge`), so the owner chooses.
+        case .staleRecordings(_, let title):
+            let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            submenu.addItem(actionRow(title: "Recover", action: #selector(Coordinator.menuRecoverStaleRecordings)))
+            submenu.addItem(actionRow(title: "Discard", action: #selector(Coordinator.menuDiscardStaleRecordings)))
+            submenu.addItem(.separator())
+            let note = NSMenuItem(title: StatusBarModel.staleRecordingsDiscardNote, action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            submenu.addItem(note)
+            parent.submenu = submenu
+            menu.addItem(parent)
 
         case .finishSetup(let title):
             menu.addItem(finishSetupMenuItem(title: title, items: setupItems))

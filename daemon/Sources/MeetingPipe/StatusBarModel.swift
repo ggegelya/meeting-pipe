@@ -45,6 +45,9 @@ enum StatusBarModel {
         case screenRecordingShortcut
         case accessibilityDegraded
         case failedMeetings(count: Int, title: String)
+        /// REC32: recordings an interruption left unfinished more than a day ago, which the orphan
+        /// sweep no longer recovers by itself. The row carries Recover and Discard.
+        case staleRecordings(count: Int, title: String)
         /// UX22: the "Finish setup" checklist parent row, present while anything is
         /// still unmet. What is in the submenu is `SetupChecklist`'s decision, not this
         /// one, so the row carries only the title the caller already computed; what
@@ -83,6 +86,8 @@ enum StatusBarModel {
         /// `screenRecording` above and drives only the deep-link row.
         var screenRecordingCaptureDenied: Bool
         var failedMeetingCount: Int
+        /// REC32: `OrphanRecordingRecovery.staleStems`, counted off main with the failed count.
+        var staleRecordingCount: Int
         /// UX22: `SetupChecklist.menuTitle` over the still-unmet items, or nil when
         /// every one of them is green and the row disappears entirely.
         var finishSetupTitle: String?
@@ -118,6 +123,7 @@ enum StatusBarModel {
             accessibility: PermissionsCenter.Status = .granted,
             screenRecordingCaptureDenied: Bool = false,
             failedMeetingCount: Int = 0,
+            staleRecordingCount: Int = 0,
             finishSetupTitle: String? = nil,
             disableAutoRestart: Bool = false,
             launchAgentEnabled: Bool = true,
@@ -136,6 +142,7 @@ enum StatusBarModel {
             self.accessibility = accessibility
             self.screenRecordingCaptureDenied = screenRecordingCaptureDenied
             self.failedMeetingCount = failedMeetingCount
+            self.staleRecordingCount = staleRecordingCount
             self.finishSetupTitle = finishSetupTitle
             self.disableAutoRestart = disableAutoRestart
             self.launchAgentEnabled = launchAgentEnabled
@@ -272,6 +279,9 @@ enum StatusBarModel {
         if let title = failedMeetingsTitle(count: i.failedMeetingCount) {
             rows.append(.failedMeetings(count: i.failedMeetingCount, title: title))
         }
+        if let title = staleRecordingsTitle(count: i.staleRecordingCount) {
+            rows.append(.staleRecordings(count: i.staleRecordingCount, title: title))
+        }
 
         // UX22: the "Finish setup" checklist, a quiet holistic "am I done?" view.
         // Present only while something is unmet; the submenu lists each gap and
@@ -370,6 +380,16 @@ enum StatusBarModel {
         let noun = count == 1 ? "meeting" : "meetings"
         return "⚠ \(count) \(noun) failed - open Library to retry"
     }
+
+    /// REC32: the stale-recordings row's title, or nil when there are none. Quieter than the failed
+    /// row on purpose: nothing failed today, and the submenu is where the choice is.
+    static func staleRecordingsTitle(count: Int) -> String? {
+        guard count > 0 else { return nil }
+        return count == 1 ? "1 unfinished recording from earlier" : "\(count) unfinished recordings from earlier"
+    }
+
+    /// Under the stale row's two actions: what Discard does, so the word does not read as a delete.
+    static let staleRecordingsDiscardNote = "Discard keeps the audio in MeetingPipe's originals folder."
 
     /// "Any required permission missing" for the warning row. Screen Recording's
     /// transient `.unknown` is excluded so it does not flash at every cold

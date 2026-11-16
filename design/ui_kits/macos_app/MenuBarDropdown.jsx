@@ -10,7 +10,12 @@
 // The transport row is the same row and the same action as Start Recording; it
 // renames itself because the start now attaches to that meeting rather than
 // recording a sourceless one, and a label that said otherwise would be lying.
-const MenuBarDropdown = ({ state = "idle", source, file }) => {
+//
+// REC32: `failed` and `stale` are the counts behind the failed-meetings group. A stale row is a
+// recording an interruption left unfinished over a day ago; its submenu carries Recover and
+// Discard (which moves the audio to the originals folder, never deletes). Quiet on purpose: no
+// warning glyph, since nothing failed today.
+const MenuBarDropdown = ({ state = "idle", source, file, failed = 0, stale = 0 }) => {
   const wrapStyle = {
     width: 240,
     background: "var(--mp-hud-bg)",
@@ -40,6 +45,9 @@ const MenuBarDropdown = ({ state = "idle", source, file }) => {
     <div style={wrapStyle}>
       <MenuItem header>{header}</MenuItem>
       <MenuSep/>
+      {failed > 0 && <MenuItem>⚠ {failed} {failed === 1 ? "meeting" : "meetings"} failed - open Library to retry</MenuItem>}
+      {stale > 0 && <MenuItem submenu>{stale} unfinished {stale === 1 ? "recording" : "recordings"} from earlier</MenuItem>}
+      {(failed > 0 || stale > 0) && <MenuSep/>}
       {state === "idle" && <MenuItem>Start Recording</MenuItem>}
       {state === "suppressed" && <MenuItem>Record this {appName} meeting</MenuItem>}
       {state === "recording" && <MenuItem><span style={{ color: "var(--mp-pulse-600)" }}>● </span>Stop Recording</MenuItem>}

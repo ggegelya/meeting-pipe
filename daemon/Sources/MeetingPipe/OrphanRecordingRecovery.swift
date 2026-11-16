@@ -136,12 +136,77 @@ enum OrphanRecordingRecovery {
     }
 
     /// Whether a stem carries a deliberate recovery marker that exempts it from the
-    /// staleness cutoff: the start-time `.recovery.json` manifest, or a
-    /// `.recordfail.json` breadcrumb written when a stop-time merge failed (REC6).
+    /// staleness cutoff: the start-time `.recovery.json` manifest, a `.recordfail.json`
+    /// breadcrumb written when a stop-time merge failed (REC6), or the owner's Recover from
+    /// the menu (REC32, `.recover-requested`).
     private static func hasRecoveryMarker(stem: String, in directory: URL) -> Bool {
         let fm = FileManager.default
         return fm.fileExists(atPath: directory.appendingPathComponent("\(stem).recovery.json").path)
             || fm.fileExists(atPath: directory.appendingPathComponent("\(stem).recordfail.json").path)
+            || fm.fileExists(atPath: directory.appendingPathComponent("\(stem)\(recoverRequestedSuffix)").path)
+    }
+
+    // MARK: - Stale orphans the owner resolves (REC32)
+
+    /// The marker the menu's Recover writes beside a stale orphan's intermediates. It exempts the
+    /// stem from the staleness cutoff exactly like a `.recordfail.json`, so the next sweep merges
+    /// it through the normal path (privacy routing included), and recovery clears it.
+    static let recoverRequestedSuffix = ".recover-requested"
+
+    /// Stems the sweep skips as stale: intermediates with no final, no recovery marker, older than
+    /// `maxOrphanAge`, and not owned by the recorder. What the menu's stale row counts and acts on.
+    static func staleStems(in directory: URL, now: Date = Date(), excludingStems: Set<String> = []) -> [String] {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return [] }
+        return detectOrphanStems(fileNames: names)
+            .filter { !excludingStems.contains($0) && !hasRecoveryMarker(stem: $0, in: directory) }
+            .filter { stem in
+                guard let modified = newestIntermediateDate(stem: stem, in: directory) else { return false }
+                return now.timeIntervalSince(modified) > maxOrphanAge
+            }
+    }
+
+    /// Recover: mark each stem so the next sweep takes it. Returns the stems marked.
+    @discardableResult
+    static func requestRecovery(stems: [String], in directory: URL) -> [String] {
+        stems.filter { stem in
+            let url = directory.appendingPathComponent("\(stem)\(recoverRequestedSuffix)")
+            do {
+                try Data().write(to: url, options: .atomic)
+                Log.event(category: "coordinator", action: "orphan_stale_recover_requested", attributes: ["stem": stem])
+                return true
+            } catch {
+                Log.writeLine("daemon", "WARN: could not mark stale orphan \(stem) for recovery: \(error.localizedDescription)")
+                return false
+            }
+        }
+    }
+
+    /// Discard: move each stem's intermediates into the held folder (`MuteRedactor.quarantine`,
+    /// the folder the originals reaper never enters), never a delete. Returns the stems whose
+    /// every intermediate moved.
+    @discardableResult
+    static func discard(stems: [String], in directory: URL, originalsDir: URL? = nil) -> [String] {
+        stems.filter { stem in
+            var moved: [String] = []
+            var failed = false
+            for suffix in [".mic.wav", ".system.wav"] {
+                let url = directory.appendingPathComponent("\(stem)\(suffix)")
+                guard FileManager.default.fileExists(atPath: url.path) else { continue }
+                do {
+                    _ = try MuteRedactor.quarantine(url, in: originalsDir)
+                    moved.append(String(suffix.dropFirst()))
+                } catch {
+                    failed = true
+                    Log.writeLine("daemon", "WARN: could not set aside \(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            Log.event(category: "coordinator", action: "orphan_stale_discarded", attributes: [
+                "stem": stem,
+                "moved": moved,
+                "complete": !failed,
+            ])
+            return !failed
+        }
     }
 
     /// Failed post-processes recorded in the stem's `.recordfail.json`, 0 when it has none.
@@ -328,6 +393,7 @@ enum OrphanRecordingRecovery {
         // breadcrumb from the failed stop-time merge is now stale - clear it so it
         // stops counting toward the doctor's orphan finding.
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(stem).recordfail.json"))
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(stem)\(recoverRequestedSuffix)"))
         RecordingManifest.remove(forStem: stem, in: directory)
     }
 
