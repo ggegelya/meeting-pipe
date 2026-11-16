@@ -345,6 +345,19 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
+    /// REC30: the far side's stream ended healthy, but the recording is missing it for a stretch:
+    /// a late start (REC17's announced head loss, recovered) or a short tail. Same family as
+    /// `notifyRemoteAudioInterrupted`, informational, its own id namespace.
+    func notifyRemoteAudioPartlyMissing(file: URL, missingSeconds: Int) {
+        let content = UNMutableNotificationContent()
+        content.title = "Part of the other side is missing"
+        let missing = RecordingDurationParity.clockPhrase(Double(missingSeconds))
+        content.body = "About \(missing) of the other side of the call was not captured, so the recording is mic-only for that stretch. See ~/Library/Logs/MeetingPipe/recorder.log for SCStream errors."
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: "sysaudio-partial-\(file.lastPathComponent)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
     /// Posted when a finished recording holds materially less audio than the meeting it
     /// spanned (REC9). The check behind it is old; until REC9 its only output was one line
     /// in `recorder.log`, so the 2026-07-15 recording that kept 5.28 s of a 41.2 s meeting

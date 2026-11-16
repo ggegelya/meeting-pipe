@@ -351,6 +351,17 @@ final class MeetingRecorder {
     /// the last stop produced no final, so a stale verdict can never be re-reported.
     private(set) var lastDurationParity: RecordingDurationParity?
 
+    /// REC30: the last stop's per-channel coverage verdict, read by the session controller for the
+    /// far-side-missing notice. Nil when the last stop measured nothing.
+    private(set) var lastChannelCoverage: ChannelCoverage.Verdict?
+
+    /// REC30: where the mic's delivered audio lies, in `systemUptime`: its first and latest buffer
+    /// and the seconds handed to the writer. Written on the tap thread, one aligned store each, the
+    /// way `SystemAudioChannel.systemFirstFrameUptime` is; read on main at `endSession`.
+    private var micFirstBufferUptime: Double = 0
+    private var micLastBufferUptime: Double = 0
+    private var micDeliveredSeconds: Double = 0
+
     /// `SystemAudioChannel.systemDegraded` as it stood at the last `stop()` (REC4 / AUD-13).
     private(set) var lastSystemDegraded = false
 
@@ -418,6 +429,10 @@ final class MeetingRecorder {
         lastMicFires = 0
         lastSystemFires = 0
         lastDurationParity = nil
+        lastChannelCoverage = nil
+        micFirstBufferUptime = 0
+        micLastBufferUptime = 0
+        micDeliveredSeconds = 0
         micTotalSeconds = 0
         micUnmutedSeconds = 0
         micPeakUnmutedDb = -120
@@ -1023,6 +1038,11 @@ final class MeetingRecorder {
         }
 
         micFires &+= 1
+        // REC30: where this buffer lies, for the stop-time coverage check.
+        let deliveredAt = ProcessInfo.processInfo.systemUptime
+        if micFirstBufferUptime == 0 { micFirstBufferUptime = deliveredAt }
+        micLastBufferUptime = deliveredAt
+        micDeliveredSeconds += Double(buffer.frameLength) / fileFormat.sampleRate
         if micFires == 1 {
             Log.writeLine("recorder", "mic tap first fired: frames=\(buffer.frameLength)")
         }
@@ -1229,7 +1249,7 @@ final class MeetingRecorder {
             session: session, writeReport: writeReport,
             writerWedged: writerWedged, limitSeconds: limitSeconds
         )
-        persistAfterMerge(final: final, producedUsableFinal: producedUsableFinal, started: session.started)
+        persistAfterMerge(final: final, producedUsableFinal: producedUsableFinal, spanSec: session.spanSec)
         releaseOwnership(of: final, writerWedged: writerWedged, writers: writers)
         Log.recorder.info("recorder stopped → \(final.path)")
         Log.writeLine("recorder", "recorder stopped → \(final.path)")
@@ -1239,6 +1259,12 @@ final class MeetingRecorder {
     /// What `stop()` read off the session before clearing it.
     private struct StopSnapshot {
         let started: Date?
+        /// REC30: recording start to capture stop, in `systemUptime`, taken here at the top of
+        /// `stop()` so neither the coverage check nor the parity wallclock counts the stop and
+        /// merge time after it.
+        let spanSec: Double
+        let micDelivery: ChannelCoverage.Delivery?
+        let systemDelivery: ChannelCoverage.Delivery?
         let micFires: UInt64
         let systemFires: UInt64
         let systemHeadOffsetSec: Double
@@ -1255,8 +1281,20 @@ final class MeetingRecorder {
         // when no system frame ever arrived (there is then nothing to place) and, in
         // the normal case, the sub-second capture skew the merge policy ignores.
         let firstFrame = systemChannel.systemFirstFrameUptime
+        let captureStop = ProcessInfo.processInfo.systemUptime
         let session = StopSnapshot(
             started: startedAt,
+            spanSec: max(0, captureStop - startedAtUptime),
+            micDelivery: micFirstBufferUptime > 0 ? ChannelCoverage.Delivery(
+                firstSec: micFirstBufferUptime - startedAtUptime,
+                lastSec: micLastBufferUptime - startedAtUptime,
+                deliveredSec: micDeliveredSeconds
+            ) : nil,
+            systemDelivery: firstFrame > 0 ? ChannelCoverage.Delivery(
+                firstSec: firstFrame - startedAtUptime,
+                lastSec: systemChannel.systemLastFrameUptime - startedAtUptime,
+                deliveredSec: systemChannel.systemDeliveredSeconds
+            ) : nil,
             micFires: micFires,
             systemFires: systemChannel.systemFires,
             systemHeadOffsetSec: firstFrame > 0 ? max(0, firstFrame - startedAtUptime) : 0,
@@ -1273,6 +1311,7 @@ final class MeetingRecorder {
         self.lastMicFires = session.micFires
         self.lastSystemFires = session.systemFires
         self.lastDurationParity = nil
+        self.lastChannelCoverage = nil
         self.lastSystemDegraded = systemChannel.systemDegraded
         self.lastInputDevice = capturedInputDevice
         // `micFires` / `systemFires` are deliberately NOT zeroed here: the captures below are
@@ -1463,7 +1502,8 @@ final class MeetingRecorder {
         // one that started late, and those need opposite handling.
         let micAudioSec = hasMic ? RecordingPostProcessor.audioDurationSec(of: micURL) : nil
         let systemAudioSec = hasSystem ? RecordingPostProcessor.audioDurationSec(of: systemURL) : nil
-        let wallclockSec = session.started.map { Date().timeIntervalSince($0) }
+        // REC30: the capture span, not `Date()` here after the halt, teardown and drain.
+        let wallclockSec = session.spanSec
         let deltaSec: Double? = {
             guard let m = micAudioSec, let s = systemAudioSec else { return nil }
             return s - m
@@ -1477,6 +1517,7 @@ final class MeetingRecorder {
             "has_mic": hasMic,
             "has_system": hasSystem,
         ])
+        noteChannelCoverage(session: session, micAudioSec: micAudioSec, systemAudioSec: systemAudioSec)
 
         if writerWedged {
             RecordingPostProcessor.writePostProcessFailure(final: final, retained: [micURL, systemURL])
@@ -1492,10 +1533,32 @@ final class MeetingRecorder {
         }
     }
 
+    /// REC30: compare each channel with the capture span and with the other, emit one
+    /// `channel_coverage_short` when either falls short, and keep the verdict for the stop notice.
+    @MainActor
+    private func noteChannelCoverage(session: StopSnapshot, micAudioSec: Double?, systemAudioSec: Double?) {
+        guard let verdict = ChannelCoverage.evaluate(ChannelCoverage.Input(
+            spanSec: session.spanSec,
+            micAudioSec: micAudioSec,
+            systemAudioSec: systemAudioSec,
+            headOffsetSec: session.systemHeadOffsetSec,
+            mic: session.micDelivery,
+            system: session.systemDelivery
+        )) else { return }
+        lastChannelCoverage = verdict
+        guard verdict.isShort else { return }
+        Log.event(category: "recorder", action: "channel_coverage_short", attributes: ChannelCoverage.eventAttributes(verdict))
+        Log.writeLine("recorder", String(
+            format: "WARN: channel coverage short: mic_shortfall=%.1fs channel_gap=%.1fs head_offset=%.1fs far_side_missing=%.1fs mic_cause=%@ system_cause=%@",
+            verdict.micShortfallSec ?? 0, verdict.channelGapSec ?? 0, verdict.headOffsetSec,
+            verdict.farSideMissingSec, verdict.micCause?.rawValue ?? "none", verdict.systemCause?.rawValue ?? "none"
+        ))
+    }
+
     /// Step 10: the sidecars that describe the final, so after the merge that produced it: the
     /// mute timeline, the capture-mode marker, the duration parity.
     @MainActor
-    private func persistAfterMerge(final: URL, producedUsableFinal: Bool, started: Date?) {
+    private func persistAfterMerge(final: URL, producedUsableFinal: Bool, spanSec: Double) {
         // Persist the muted-span timeline for the offline redactor (TECH-MIC4). Close any open
         // span first (an off-record span still active at stop auto-closes here). `.captureFirstRedact`
         // writes the whole timeline; default `.captureFirst` keeps the full mic with no redaction
@@ -1544,8 +1607,10 @@ final class MeetingRecorder {
             )
         }
 
-        if producedUsableFinal, let started = started {
-            checkDurationParity(file: final, recordedFor: Date().timeIntervalSince(started))
+        // REC30: the capture span from `endSession`, so the parity wallclock no longer includes
+        // the stop and the merge (median 2.9 s, p90 11.0 s in the field).
+        if producedUsableFinal, spanSec > 0 {
+            checkDurationParity(file: final, recordedFor: spanSec)
         }
     }
 

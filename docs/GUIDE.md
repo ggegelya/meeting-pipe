@@ -525,6 +525,7 @@ If a notification said **Restart MeetingPipe to keep recording**, that is the ca
 
 - **Only your voice.** Screen Recording is missing, or was granted after the app started. Grant it, then quit and reopen the app.
 - **Only the other people.** Your Mac's default input is not the microphone you are talking into, which usually means idle Bluetooth headphones. Set the right input in **System Settings ▸ Sound ▸ Input** before recording. There is deliberately no microphone picker in the app; it follows the system setting. The app notices this case and flags it on the meeting, and the Audio tab always names which microphone a recording used.
+- **The other people are missing for part of it.** A notification at the end, **Part of the other side is missing**, says roughly how long. The other side's audio started late or stopped early, often after a brief loss of system audio that recovered by itself, so your own voice is all there is for that stretch. Nothing needs fixing for the next meeting unless it keeps happening; if it does, **Diagnostics…** in the menu bar shows which side was short and why.
 
 ### The recording is shorter than the meeting was
 

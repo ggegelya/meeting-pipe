@@ -2,9 +2,10 @@
 id: REC30
 title: A capture channel that starts late or runs short is never checked per channel, so 14 to 16 s of one side went missing with no stall, loss or parity event
 category: Recording
-status: new
+status: done
+closed: 2026-11-16
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). Field: 20261015-170719's system channel ended 15.9 s short of the mic beyond its announced 33.21 s head loss and 20261015-144207's 14.4 s short with no event; head_offset_sec p90 4.24 s, 8 recordings differ by more than 5 s, and duration_parity_low has never fired because it compares the padded merged file. Per-channel shortfall check at stop on a capture-stop clock, first and last buffer uptimes per channel, one event, a stop notice past 10 s, parity wallclock taken at capture stop.
+comment: Shipped 2026-11-16 - first and last buffer uptimes and delivered seconds per channel, the capture span taken in `endSession` (and now the parity and `intermediate_durations` wallclock), pure `ChannelCoverage.evaluate` naming started late, stopped early, gaps mid-call or not written, one `channel_coverage_short` past 2 s, and a **Part of the other side is missing** stop notice at 10 s. 15 new tests; ci-local green. The recorder half is pinned by the pure verdict, a session test over the fake recorder and a source fence, since `stop()` cannot run headless.
 ---
 
 # REC30: A capture channel that starts late or runs short is never checked per channel, so 14 to 16 s of one side went missing with no stall, loss or parity event

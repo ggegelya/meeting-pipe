@@ -916,15 +916,22 @@ final class MeetingSessionController: @unchecked Sendable {
         /// intermediates. The distinction from `.micOnly` is real either way, but the
         /// "from the death point on" wording rests on the length policy holding.
         case interrupted
+        /// REC30: the far side is missing for this many seconds in all (a late start, a short
+        /// tail, or both), though the stream ended healthy. 10 s or more only
+        /// (`ChannelCoverage.noticeThresholdSec`).
+        case partlyMissing(seconds: Int)
     }
 
     /// Pure coverage gate over the recorder's stop-time snapshot. Lifted out so it is
     /// unit-testable without the controller (like `startFailureReason`). A never-started
     /// capture takes precedence over a mid-meeting death (frames == 0 is the stronger,
     /// whole-recording signal).
-    static func remoteAudioWarning(systemFires: UInt64, degraded: Bool) -> RemoteAudioWarning {
+    static func remoteAudioWarning(
+        systemFires: UInt64, degraded: Bool, farSideMissingSeconds: Int? = nil
+    ) -> RemoteAudioWarning {
         if systemFires == 0 { return .micOnly }
         if degraded { return .interrupted }
+        if let farSideMissingSeconds { return .partlyMissing(seconds: farSideMissingSeconds) }
         return .none
     }
 
@@ -1050,7 +1057,8 @@ final class MeetingSessionController: @unchecked Sendable {
                 // degraded) is a partial loss the old `== 0` gate never caught (REC4 / AUD-13).
                 switch committed ? MeetingSessionController.remoteAudioWarning(
                     systemFires: recorder.lastSystemFires,
-                    degraded: recorder.lastSystemDegraded
+                    degraded: recorder.lastSystemDegraded,
+                    farSideMissingSeconds: recorder.lastChannelCoverage?.noticeMissingSeconds
                 ) : .none {
                 case .micOnly:
                     let perm = SystemAudioCapture.permissionState
@@ -1060,6 +1068,8 @@ final class MeetingSessionController: @unchecked Sendable {
                     }
                 case .interrupted:
                     self.coordinator.notifications.notifyRemoteAudioInterrupted(file: file)
+                case .partlyMissing(let seconds):
+                    self.coordinator.notifications.notifyRemoteAudioPartlyMissing(file: file, missingSeconds: seconds)
                 case .none:
                     break
                 }

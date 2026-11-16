@@ -86,6 +86,10 @@ final class SystemAudioChannel {
     /// `openSystemFile` clears it because `forWriting` truncates; 0 means "no system frame has
     /// arrived". Written once per open on the delivery queue, a single aligned store.
     private(set) var systemFirstFrameUptime: Double = 0
+    /// REC30: the latest frame's arrival and the seconds delivered to the writer, for the file as
+    /// it stands on disk. Reset with `systemFirstFrameUptime`; one aligned store per buffer.
+    private(set) var systemLastFrameUptime: Double = 0
+    private(set) var systemDeliveredSeconds: Double = 0
 
     /// REC10: when the system channel's audio stopped, so a retry can pad the outage
     /// it is resuming across. Wall clock since REC16, deliberately unlike the other elapsed
@@ -415,8 +419,13 @@ final class SystemAudioChannel {
             // file's own mark rather than `systemFires`, which counts across a retry
             // and so would report the FIRST attempt's offset for a file the retry
             // reopened. One aligned store, once per open.
+            let deliveredAt = ProcessInfo.processInfo.systemUptime
             if self.systemFirstFrameUptime == 0 {
-                self.systemFirstFrameUptime = ProcessInfo.processInfo.systemUptime
+                self.systemFirstFrameUptime = deliveredAt
+            }
+            self.systemLastFrameUptime = deliveredAt
+            if pcm.format.sampleRate > 0 {
+                self.systemDeliveredSeconds += Double(pcm.frameLength) / pcm.format.sampleRate
             }
             // SystemAudioCapture hands us a fresh buffer (not reused), so
             // unlike the mic tap it needs no deep copy.
@@ -540,6 +549,8 @@ final class SystemAudioChannel {
         // Cleared HERE and not on the resume branch, which keeps both the audio and
         // the offset that places it (REC10).
         self.systemFirstFrameUptime = 0
+        self.systemLastFrameUptime = 0
+        self.systemDeliveredSeconds = 0
         if let systemFile {
             // REC25: this writer's own failure tracker, inside the handler, and its byte count.
             let noteOutcome = writeFailures?.makeOutcomeHandler(

@@ -152,6 +152,8 @@ final class SpyNotifier: SessionNotifying {
         micOnly.append(file)
     }
     func notifyRemoteAudioInterrupted(file: URL) { remoteInterrupted.append(file) }
+    private(set) var remotePartlyMissing: [(file: URL, seconds: Int)] = []
+    func notifyRemoteAudioPartlyMissing(file: URL, missingSeconds: Int) { remotePartlyMissing.append((file, missingSeconds)) }
     func notifyMicRecordedNothing(file: URL) { micRecordedNothing.append(file) }
     func notifyShortRecording(file: URL, audioSec: Double, wallclockSec: Double) {
         shortRecordings.append((file: file, audioSec: audioSec, wallclockSec: wallclockSec))
@@ -201,6 +203,7 @@ final class SpyRecorder: SessionRecording {
     var lastMicCoverage = MicCoverageSnapshot.empty
     var lastInputDevice: InputDeviceIdentity?
     var lastDurationParity: RecordingDurationParity?
+    var lastChannelCoverage: ChannelCoverage.Verdict?
     /// REC17: `.live` by default, which is the state every pre-REC17 controller test implicitly
     /// assumed (the backstop then reads the level mirror exactly as it always did); the hold
     /// tests set `.down` explicitly.
