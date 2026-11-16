@@ -198,6 +198,7 @@ enum MuteRedactor {
         redactionOwed: Bool = false,
         originalsDir: URL? = nil,
         findFFmpeg: () -> String? = RecordingPostProcessor.findFFmpeg,
+        ceilingSeconds: Double? = nil,
         move: (URL, URL) throws -> Void = { try FileManager.default.moveItem(at: $0, to: $1) }
     ) async -> Outcome {
         let timeline: MuteTimelineFile
@@ -311,9 +312,14 @@ enum MuteRedactor {
             "-c:a", "pcm_s16le",
             temp.path,
         ]
-        let ok = await runFFmpeg(ffmpeg: ffmpeg, args: args)
-        guard ok, FileManager.default.fileExists(atPath: temp.path) else {
-            try? FileManager.default.removeItem(at: temp)
+        // CONC5: this runs at the head of the serial lane, before the row has a live entry, so a wedged
+        // ffmpeg used to hold every job behind it with no Cancel. Past the ceiling it is killed, and the
+        // outcome is `.failed(.ffmpegFailed)` (SEC16 holds the meeting back), never `.notNeeded`.
+        let ceiling = ceilingSeconds ?? redactionCeilingSeconds(forDurationSec: RecordingPostProcessor.audioDurationSec(of: wav))
+        let run = await runFFmpeg(ffmpeg: ffmpeg, args: args, ceilingSeconds: ceiling)
+        guard run.ok, FileManager.default.fileExists(atPath: temp.path) else {
+            // Only after the child is reaped: one still writing would keep an unlinked file.
+            if run.reaped { try? FileManager.default.removeItem(at: temp) }
             return fail(.ffmpegFailed, wav: wav, mutedSpans: timeline.spans.count)
         }
 
@@ -500,33 +506,27 @@ enum MuteRedactor {
         String(format: "%.3f", seconds)
     }
 
-    private static func runFFmpeg(ffmpeg: String, args: [String]) async -> Bool {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: ffmpeg)
-                proc.arguments = args
-                // SEC14: ffmpeg needs none of the managed API tokens; don't leak them to the child.
-                proc.environment = Secrets.scrubbedEnvironment()
-                let errPipe = Pipe()
-                proc.standardError = errPipe
-                proc.standardOutput = FileHandle.nullDevice
-                do {
-                    try proc.run()
-                } catch {
-                    Log.writeLine("recorder", "ERROR ffmpeg redact launch: \(error.localizedDescription)")
-                    continuation.resume(returning: false)
-                    return
-                }
-                proc.waitUntilExit()
-                if proc.terminationStatus != 0 {
-                    let stderr = errPipe.fileHandleForReading.availableData
-                    let tail = String(data: stderr, encoding: .utf8)?
-                        .split(separator: "\n").suffix(5).joined(separator: " | ") ?? ""
-                    Log.writeLine("recorder", "ffmpeg redact exit=\(proc.terminationStatus) tail=\(tail)")
-                }
-                continuation.resume(returning: proc.terminationStatus == 0)
-            }
+    /// A minute plus 5% of the recording's duration. The merge ffmpeg processed 2,116 s of audio in 1.9 s
+    /// on 2026-10-16 (about 1100x realtime), so an hour-long cut has ~3 minutes to finish a job that
+    /// takes seconds: generous against a loaded Mac, and finite against a wedge.
+    static func redactionCeilingSeconds(forDurationSec duration: Double?) -> Double {
+        60 + max(0, duration ?? 0) * 0.05
+    }
+
+    private static func runFFmpeg(ffmpeg: String, args: [String], ceilingSeconds: Double) async -> (ok: Bool, reaped: Bool) {
+        // SEC14: ffmpeg needs none of the managed API tokens; don't leak them to the child.
+        let result = await ProcessRunner.runAsync(
+            executable: ffmpeg, arguments: args, environment: Secrets.scrubbedEnvironment(),
+            timeout: ceilingSeconds, qos: .userInitiated
+        )
+        if let failure = result.launchFailure {
+            Log.writeLine("recorder", "ERROR ffmpeg redact launch: \(failure)")
+            return (false, true)
         }
+        if result.timedOut || result.status != 0 {
+            let tail = result.stderrText.split(separator: "\n").suffix(5).joined(separator: " | ")
+            Log.writeLine("recorder", "ffmpeg redact exit=\(result.status) timed_out=\(result.timedOut) tail=\(tail)")
+        }
+        return (result.succeeded, result.reaped)
     }
 }

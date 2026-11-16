@@ -25,9 +25,12 @@ import Foundation
 final class StopStallWatchdog {
 
     /// How long a stop may take before it is reported. Real stops finish in well
-    /// under a second; the two waits that legitimately take time are already
-    /// bounded well below this (the writer drain at 10 s, the ffmpeg merge at its
-    /// own ceiling), so a stop still running at 90 s is stuck, not slow.
+    /// under a second (a 2116 s meeting merged in 1.9 s on 2026-10-16). The writer drain is bounded
+    /// at 10 s, but the ffmpeg merge's ceiling is `RecordingPostProcessor.mergeCeilingSeconds`, 300 s,
+    /// ABOVE this canary, and `stop()`'s own bounds add up to about 348 s. So a stop still running at 90 s
+    /// is stuck OR a bounded-but-slow merge, and a merge that slow would post the stall error for a stop
+    /// that then finishes. Since CONC5 that ceiling is a kill; phasing this canary (teardown half 90 s,
+    /// merge half above the merge ceiling) is the deferred leg recorded in CONC5.
     static let defaultCeilingSeconds: TimeInterval = 90
 
     private let ceilingSeconds: TimeInterval

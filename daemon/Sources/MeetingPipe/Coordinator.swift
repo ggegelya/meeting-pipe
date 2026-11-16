@@ -742,7 +742,8 @@ final class Coordinator: NSObject {
         }
     }
 
-    /// The launch sweep, three scopes (MIC13 + STOR1 + LOCAL10):
+    /// The launch sweep, three scopes (MIC13 + STOR1 + LOCAL10), run in this order since CONC5 on
+    /// `StorageJanitor`'s serial queue (3 first: it is cheap, and used to wait behind a compress backlog):
     ///   1. `OriginalsReaper` reclaims kept full recordings (`originals/`) past
     ///      their retention window (ADR 0016). Bounded-cache eviction.
     ///   2. `AudioRetentionSweep` applies each workflow's audio retention policy
@@ -761,16 +762,6 @@ final class Coordinator: NSObject {
     /// a `ps` probe. No scope touches a live recording or a non-terminal meeting,
     /// so this is independent of the recording and pipeline state machines.
     private func reapStorage(orphanSweep: OrphanRecordingRecovery.Sweep) {
-        // Snapshot main-owned state before detaching.
-        let dir = liveOutputDir
-        let policies = Dictionary(
-            uniqueKeysWithValues: workflowStore.workflows.map { ($0.id, $0.retention) }
-        )
-        // REC20: a meeting with no workflow follows the default's retention.
-        let defaultWorkflowID = workflowStore.defaultWorkflow?.id
-        // REC23: the stems the recorder owns, asked of the recorder itself. Both callers run
-        // on main (launch, and `onJobSettled` under `SinkDispatcher`'s main-queue invariant).
-        let ownedStems = MainActor.assumeIsolated { recorder.ownedStems }
         // REC6: recover any recording orphaned by a mid-recording termination now,
         // not only at launch. This slot runs at launch and after every settled job,
         // successful or not (REC32), and the stop funnel requests the sweep itself when
@@ -783,14 +774,22 @@ final class Coordinator: NSObject {
         // again keeps its `.recordfail.json` for the doctor, and after
         // `maxAfterJobAttempts` failures only the launch sweep retries it (REC24).
         MainActor.assumeIsolated { orphanRecovery.request(orphanSweep) }
-        Task.detached(priority: .background) {
-            OriginalsReaper.sweep()
-            AudioRetentionSweep.sweep(
-                in: dir, policies: policies, defaultWorkflowID: defaultWorkflowID, liveStems: ownedStems
-            )
-            LocalServerReaper.reapIfOrphaned()
-        }
+        // CONC5: the rest of the sweep runs on the janitor's serial queue and coalesces a burst.
+        MainActor.assumeIsolated { storageJanitor.request() }
     }
+
+    /// The sweep body's snapshot is taken on main each time a run starts (both callers of `reapStorage`
+    /// are main: launch, and `onJobSettled` under `SinkDispatcher`'s main-queue invariant).
+    private lazy var storageJanitor = StorageJanitor(snapshot: { [unowned self] in
+        StorageJanitor.Snapshot(
+            directory: liveOutputDir,
+            policies: Dictionary(uniqueKeysWithValues: workflowStore.workflows.map { ($0.id, $0.retention) }),
+            // REC20: a meeting with no workflow follows the default's retention.
+            defaultWorkflowID: workflowStore.defaultWorkflow?.id,
+            // REC23: the stems the recorder owns, asked of the recorder itself.
+            liveStems: recorder.ownedStems
+        )
+    })
 
     /// REC32 (`SessionHost`): one after-job orphan sweep, requested by the stop funnel when a stop
     /// produced no usable final. Only the sweep: the rest of `reapStorage` follows jobs.

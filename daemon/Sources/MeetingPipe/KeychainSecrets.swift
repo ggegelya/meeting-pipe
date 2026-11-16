@@ -122,41 +122,17 @@ struct KeychainBackend: SecretsBackend {
     /// `run` with the executable and ceiling injectable, so a test can drive the stdin, timeout and
     /// early-exit paths with `cat`, `sleep` and `true` instead of the real `security`.
     static func run(executable: String, args: [String], stdin: Data?, timeout: TimeInterval) -> Output? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = args
-        let out = Pipe()
-        let err = Pipe()
-        process.standardOutput = out
-        process.standardError = err
-        let input = stdin == nil ? nil : Pipe()
-        if let input { process.standardInput = input }
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-        if let input, let stdin {
-            // One short line, well under the pipe buffer, so this cannot block. EOF ends `security -i`.
-            // F_SETNOSIGPIPE: a `security` that exited before reading must fail this write with EPIPE, not
-            // deliver the daemon a SIGPIPE.
-            _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
-            try? input.fileHandleForWriting.write(contentsOf: stdin)
-            try? input.fileHandleForWriting.close()
-        }
-        // A locked Keychain with no one to answer its dialog would otherwise park the caller (the main
-        // thread, for a Preferences save) forever. Past the ceiling the run is abandoned and reads as
-        // "could not run", never as "absent".
-        if exited.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            _ = exited.wait(timeout: .now() + 1)  // reap it, so its dialog does not outlive the call
-            return nil
-        }
-        // The output is a single token, well under the pipe buffer, so drain-after-exit cannot deadlock.
-        let stdout = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let stderr = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return (process.terminationStatus, stdout, stderr)
+        // CONC5: `ProcessRunner` drains both pipes while the child runs and kills a hung one (SIGTERM, then
+        // SIGKILL after `killGrace`), where this used to abandon it after a SIGTERM that a wedged
+        // `security` can ignore. A locked Keychain with no one to answer its dialog would otherwise park the
+        // caller (main, for a Preferences save or launch) forever. Past the ceiling the run reads as
+        // "could not run", never as "absent" (SEC23's `unreadable`).
+        let result = ProcessRunner.run(executable: executable, arguments: args, stdin: stdin,
+                                       timeout: timeout, grace: killGrace)
+        guard result.launchFailure == nil, !result.timedOut, result.reaped else { return nil }
+        return (result.status, result.stdoutText, result.stderrText)
     }
+
+    /// How long a SIGTERMed `security` gets before SIGKILL. Short: this runs on main at launch and on a save.
+    static let killGrace: TimeInterval = 2
 }

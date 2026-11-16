@@ -27,8 +27,9 @@ enum RecordingPostProcessor {
 
     /// Ceiling on one ffmpeg merge/convert. ScreenCaptureKit and ffmpeg have both
     /// wedged for minutes in the field, and an unbounded wait makes `.stopping`
-    /// inescapable; on timeout the merge is abandoned with the intermediates kept.
-    private static let mergeCeilingSeconds = 300.0
+    /// inescapable. Since CONC5 it is `ProcessRunner`'s timeout, so past it ffmpeg is KILLED (SIGTERM,
+    /// then SIGKILL) and reaped, not left running and writing; the intermediates are kept either way.
+    static let mergeCeilingSeconds = 300.0
 
     /// How much shorter than its expected length a produced final may be and still
     /// be promoted (REC9). The merge is cut with an explicit `-t`, so a healthy
@@ -315,7 +316,8 @@ enum RecordingPostProcessor {
     /// rest. nil on every ordinary stop, which is almost all of them.
     static func produceFinal(
         mic: URL, system: URL, final: URL, hasMic: Bool, hasSystem: Bool,
-        systemHeadOffsetSec: Double = 0, limitSeconds: Double? = nil
+        systemHeadOffsetSec: Double = 0, limitSeconds: Double? = nil,
+        ffmpegPath: String? = nil, ceilingSeconds: Double = RecordingPostProcessor.mergeCeilingSeconds
     ) async -> Bool {
         let tmp = mergingTempURL(forFinal: final)
         // Clear a stale temp a prior abandoned (timed-out) merge may have left.
@@ -328,7 +330,7 @@ enum RecordingPostProcessor {
                 systemHeadOffsetSec: systemHeadOffsetSec
             )
             lengths = applyTrim(lengths, limitSeconds: limitSeconds)
-            if findFFmpeg() == nil {
+            guard let ffmpeg = ffmpegPath ?? findFFmpeg() else {
                 // No ffmpeg: move mic -> final (an atomic rename, no wedge risk) and
                 // keep system.wav for a later merge or manual recovery.
                 Log.writeLine("recorder", "ERROR: ffmpeg not found - moving mic.wav to final, keeping system.wav for a later merge")
@@ -347,10 +349,16 @@ enum RecordingPostProcessor {
                 writePostProcessFailure(final: final, retained: [mic, system])
                 return false
             }
-            let finished = await runWithTimeout(seconds: mergeCeilingSeconds) {
-                _ = await mergeToTempViaFFmpeg(mic: mic, system: system, tmp: tmp, lengths: lengths)
+            let attempt = await mergeToTempViaFFmpeg(
+                ffmpeg: ffmpeg, mic: mic, system: system, tmp: tmp, lengths: lengths, ceilingSeconds: ceilingSeconds
+            )
+            // CONC5: a killed ffmpeg never reaches the promote gate. SIGTERM makes it write its trailer and
+            // exit, leaving a well-formed but TRUNCATED temp that a bytes-only gate (a merge with no `-t`)
+            // would wave through.
+            if case .killed(let reaped) = attempt {
+                return abandonKilledPostProcess(final: final, tmp: tmp, retained: [mic, system], reaped: reaped)
             }
-            if finished, promoteMerged(tmp: tmp, to: final, expectedDurationSec: lengths.expectedDurationSec) {
+            if promoteMerged(tmp: tmp, to: final, expectedDurationSec: lengths.expectedDurationSec) {
                 try? FileManager.default.removeItem(at: mic)
                 try? FileManager.default.removeItem(at: system)
                 return true
@@ -358,23 +366,23 @@ enum RecordingPostProcessor {
             writePostProcessFailure(
                 final: final,
                 retained: [mic, system],
-                reason: mergeFailureReason(tmp: tmp, expectedDurationSec: lengths.expectedDurationSec, finished: finished)
+                reason: mergeFailureReason(tmp: tmp, expectedDurationSec: lengths.expectedDurationSec, finished: true)
             )
-            if finished {
-                try? FileManager.default.removeItem(at: tmp)
-            } else {
-                Log.event(category: "recorder", action: "merge_timed_out", attributes: ["file": final.lastPathComponent])
-            }
+            try? FileManager.default.removeItem(at: tmp)
             return false
         }
 
         // Single source: resample the one present side to 16 kHz mono.
         let source = hasMic ? mic : system
         let sourceDurationSec = audioDurationSec(of: source)
-        let finished = await runWithTimeout(seconds: mergeCeilingSeconds) {
-            _ = await convertToTempViaFFmpeg(input: source, tmp: tmp, expectedDurationSec: sourceDurationSec)
+        let attempt = await convertToTempViaFFmpeg(
+            ffmpegPath: ffmpegPath, input: source, tmp: tmp, expectedDurationSec: sourceDurationSec,
+            ceilingSeconds: ceilingSeconds
+        )
+        if case .killed(let reaped) = attempt {
+            return abandonKilledPostProcess(final: final, tmp: tmp, retained: [source], reaped: reaped)
         }
-        if finished, promoteMerged(tmp: tmp, to: final, expectedDurationSec: sourceDurationSec) {
+        if promoteMerged(tmp: tmp, to: final, expectedDurationSec: sourceDurationSec) {
             try? FileManager.default.removeItem(at: mic)
             try? FileManager.default.removeItem(at: system)
             return true
@@ -382,13 +390,28 @@ enum RecordingPostProcessor {
         writePostProcessFailure(
             final: final,
             retained: [source],
-            reason: mergeFailureReason(tmp: tmp, expectedDurationSec: sourceDurationSec, finished: finished)
+            reason: mergeFailureReason(tmp: tmp, expectedDurationSec: sourceDurationSec, finished: true)
         )
-        if finished {
-            try? FileManager.default.removeItem(at: tmp)
-        } else {
-            Log.event(category: "recorder", action: "merge_timed_out", attributes: ["file": final.lastPathComponent])
-        }
+        try? FileManager.default.removeItem(at: tmp)
+        return false
+    }
+
+    /// The ffmpeg process was stopped at its ceiling (CONC5). Keeps the intermediates and leaves the
+    /// breadcrumb for the orphan sweep, like every other failed post-process, and removes the temp only
+    /// when ffmpeg is known to be gone: a child still holding it open (uninterruptible I/O) could keep
+    /// writing, and the next attempt's own stale-temp removal then owns it.
+    private static func abandonKilledPostProcess(final: URL, tmp: URL, retained: [URL], reaped: Bool) -> Bool {
+        writePostProcessFailure(
+            final: final,
+            retained: retained,
+            reason: reaped
+                ? "the ffmpeg post-process timed out; capture intermediates were kept for recovery"
+                : "the ffmpeg post-process timed out and could not be stopped; capture intermediates were kept for recovery"
+        )
+        if reaped { try? FileManager.default.removeItem(at: tmp) }
+        Log.event(category: "recorder", action: "merge_timed_out", attributes: [
+            "file": final.lastPathComponent, "reaped": reaped,
+        ])
         return false
     }
 
@@ -461,8 +484,9 @@ enum RecordingPostProcessor {
     /// early, `adelay` so a late-starting system channel lands at the offset it was
     /// captured at, and `-t` at the target. Without it `amerge` ends with the
     /// shorter input, which is the truncation this whole path exists to prevent.
-    private static func mergeToTempViaFFmpeg(mic: URL, system: URL, tmp: URL, lengths: MergeLengths) async -> Bool {
-        guard let ffmpeg = findFFmpeg() else { return false }
+    private static func mergeToTempViaFFmpeg(
+        ffmpeg: String, mic: URL, system: URL, tmp: URL, lengths: MergeLengths, ceilingSeconds: Double
+    ) async -> PostProcessAttempt {
         // Resample mic and system to 16 kHz mono, then amerge into stereo
         // (input 0 -> L, input 1 -> R).
         var systemChain = "aresample=16000,pan=mono|c0=0.5*c0+0.5*c1"
@@ -503,17 +527,19 @@ enum RecordingPostProcessor {
                 lengths.targetDurationSec.map { String(format: "%.2fs", $0) } ?? "(mic length)"
             )
         )
-        let ok = await runFFmpeg(ffmpeg: ffmpeg, args: args, label: "merge")
-        return ok && producedPlausibleOutput(at: tmp, expectedDurationSec: lengths.expectedDurationSec)
+        let outcome = await runFFmpeg(ffmpeg: ffmpeg, args: args, label: "merge", ceilingSeconds: ceilingSeconds)
+        return attempt(outcome, plausible: { producedPlausibleOutput(at: tmp, expectedDurationSec: lengths.expectedDurationSec) })
     }
 
     /// Convert a single-source recording to 16 kHz mono Int16 written to `tmp`.
     /// Used when one capture side is missing. ffmpeg-absent copies the source
     /// as-is (the ASR stack resamples internally).
-    private static func convertToTempViaFFmpeg(input: URL, tmp: URL, expectedDurationSec: Double?) async -> Bool {
-        guard let ffmpeg = findFFmpeg() else {
+    private static func convertToTempViaFFmpeg(
+        ffmpegPath: String?, input: URL, tmp: URL, expectedDurationSec: Double?, ceilingSeconds: Double
+    ) async -> PostProcessAttempt {
+        guard let ffmpeg = ffmpegPath ?? findFFmpeg() else {
             try? FileManager.default.copyItem(at: input, to: tmp)
-            return producedPlausibleOutput(at: tmp, expectedDurationSec: expectedDurationSec)
+            return producedPlausibleOutput(at: tmp, expectedDurationSec: expectedDurationSec) ? .produced : .failed
         }
         let args = [
             "-y", "-hide_banner", "-loglevel", "warning",
@@ -522,39 +548,47 @@ enum RecordingPostProcessor {
             "-c:a", "pcm_s16le",
             tmp.path,
         ]
-        let ok = await runFFmpeg(ffmpeg: ffmpeg, args: args, label: "convert")
-        return ok && producedPlausibleOutput(at: tmp, expectedDurationSec: expectedDurationSec)
+        let outcome = await runFFmpeg(ffmpeg: ffmpeg, args: args, label: "convert", ceilingSeconds: ceilingSeconds)
+        return attempt(outcome, plausible: { producedPlausibleOutput(at: tmp, expectedDurationSec: expectedDurationSec) })
     }
 
-    /// Run ffmpeg and report whether it exited cleanly (status 0). A non-zero
-    /// exit or a launch failure returns false so the caller never deletes a
-    /// capture intermediate on an unverified merge (REC1 / AUD-5).
-    private static func runFFmpeg(ffmpeg: String, args: [String], label: String) async -> Bool {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: ffmpeg)
-                proc.arguments = args
-                // SEC14: ffmpeg needs none of the managed API tokens; don't leak them to the child.
-                proc.environment = Secrets.scrubbedEnvironment()
-                let errPipe = Pipe()
-                proc.standardError = errPipe
-                proc.standardOutput = FileHandle.nullDevice
-                do {
-                    try proc.run()
-                } catch {
-                    Log.writeLine("recorder", "ERROR ffmpeg \(label) launch: \(error.localizedDescription)")
-                    continuation.resume(returning: false)
-                    return
-                }
-                proc.waitUntilExit()
-                let stderr = errPipe.fileHandleForReading.availableData
-                let tail = String(data: stderr, encoding: .utf8)?
-                    .split(separator: "\n").suffix(5).joined(separator: " | ") ?? ""
-                Log.writeLine("recorder", "ffmpeg \(label) exit=\(proc.terminationStatus) tail=\(tail)")
-                continuation.resume(returning: proc.terminationStatus == 0)
-            }
+    /// What one ffmpeg post-process attempt came to (CONC5). `.killed` is its own case because it must
+    /// never reach the promote gate.
+    enum PostProcessAttempt: Equatable {
+        /// ffmpeg exited 0 and the temp is plausible; the promote gate still re-checks it.
+        case produced
+        case failed
+        /// Stopped at its ceiling. `reaped` is whether the child is known to be gone.
+        case killed(reaped: Bool)
+    }
+
+    private static func attempt(_ outcome: FFmpegOutcome, plausible: () -> Bool) -> PostProcessAttempt {
+        switch outcome {
+        case .killed(let reaped): return .killed(reaped: reaped)
+        case .failed: return .failed
+        case .ok: return plausible() ? .produced : .failed
         }
+    }
+
+    private enum FFmpegOutcome { case ok, failed, killed(reaped: Bool) }
+
+    /// Run ffmpeg to completion under `ceilingSeconds` through `ProcessRunner`: stderr drains while it
+    /// runs, and a run past the ceiling is killed. A non-zero exit or a launch failure is `.failed`, so the
+    /// caller never deletes a capture intermediate on an unverified merge (REC1 / AUD-5).
+    private static func runFFmpeg(ffmpeg: String, args: [String], label: String, ceilingSeconds: Double) async -> FFmpegOutcome {
+        // SEC14: ffmpeg needs none of the managed API tokens; don't leak them to the child.
+        let result = await ProcessRunner.runAsync(
+            executable: ffmpeg, arguments: args, environment: Secrets.scrubbedEnvironment(),
+            timeout: ceilingSeconds, qos: .userInitiated
+        )
+        if let failure = result.launchFailure {
+            Log.writeLine("recorder", "ERROR ffmpeg \(label) launch: \(failure)")
+            return .failed
+        }
+        let tail = result.stderrText.split(separator: "\n").suffix(5).joined(separator: " | ")
+        Log.writeLine("recorder", "ffmpeg \(label) exit=\(result.status) timed_out=\(result.timedOut) tail=\(tail)")
+        if result.timedOut || !result.reaped { return .killed(reaped: result.reaped) }
+        return result.status == 0 ? .ok : .failed
     }
 
     // MARK: - Utility

@@ -94,7 +94,7 @@ final class MCPStatusStore: ObservableObject {
 
         let out = Pipe()
         process.standardOutput = out
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice   // CONC5: never read, so a chatty child would fill the pipe and be killed as a failure
 
         do {
             try process.run()

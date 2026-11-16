@@ -154,20 +154,18 @@ enum LocalServerReaper {
     /// sides agree on what counts as alive.
     private static func commandLine(of pid: pid_t) -> String? {
         guard pid > 0 else { return nil }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
-        proc.arguments = ["-o", "command=", "-p", String(pid)]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
-        do {
-            try proc.run()
-        } catch {
-            return nil
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        let out = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        // CONC5: bounded. This runs first on `StorageJanitor`'s one serial queue, so a `ps` that never
+        // returned (a target stuck in exit or uninterruptible I/O) would stop every later sweep. A timeout
+        // reads as a process that is not there, the same answer a `ps` that failed to launch gives.
+        let result = ProcessRunner.run(
+            executable: "/bin/ps", arguments: ["-o", "command=", "-p", String(pid)],
+            timeout: psTimeoutSeconds, grace: 1
+        )
+        guard result.launchFailure == nil, result.reaped, !result.timedOut else { return nil }
+        let out = result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
         return out.isEmpty ? nil : out
     }
+
+    /// `ps -p` answers in milliseconds; this only has to be finite.
+    static let psTimeoutSeconds: TimeInterval = 5
 }

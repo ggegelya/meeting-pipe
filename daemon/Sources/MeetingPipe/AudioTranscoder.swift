@@ -13,6 +13,8 @@ enum AudioTranscoder {
     enum TranscodeError: Error, Equatable {
         case ffmpegMissing
         case ffmpegFailed(Int32)
+        /// ffmpeg ran past its ceiling and was killed (CONC5). The WAV is untouched.
+        case timedOut
         case outputMissing
         /// The FLAC decoded to a materially different duration than the WAV. The
         /// WAV is kept and the FLAC discarded.
@@ -34,8 +36,8 @@ enum AudioTranscoder {
     /// audio is irreplaceable and a half-transcoded meeting is worse than a large
     /// one.
     @discardableResult
-    static func compressToFLAC(wav: URL) throws -> URL {
-        guard let ffmpeg = RecordingPostProcessor.findFFmpeg() else {
+    static func compressToFLAC(wav: URL, ffmpegPath: String? = nil, ceilingSeconds: Double? = nil) throws -> URL {
+        guard let ffmpeg = ffmpegPath ?? RecordingPostProcessor.findFFmpeg() else {
             throw TranscodeError.ffmpegMissing
         }
         let fm = FileManager.default
@@ -47,7 +49,7 @@ enum AudioTranscoder {
         // `-compression_level 8` is ffmpeg's slow-but-small preset. The sweep is a
         // background chore on a settled meeting, so wall time is free and bytes
         // are the point.
-        let status = runFFmpeg(ffmpeg: ffmpeg, args: [
+        let run = runFFmpeg(ffmpeg: ffmpeg, ceilingSeconds: ceilingSeconds ?? flacCeilingSeconds(forDurationSec: sourceSeconds), args: [
             "-y", "-hide_banner", "-loglevel", "warning",
             "-i", wav.path,
             "-c:a", "flac",
@@ -55,9 +57,11 @@ enum AudioTranscoder {
             "-f", "flac",
             temp.path,
         ])
-        guard status == 0 else {
-            try? fm.removeItem(at: temp)
-            throw TranscodeError.ffmpegFailed(status)
+        guard run.status == 0, !run.timedOut else {
+            // A killed child that could not be reaped may still be writing the temp: leave it for the
+            // next encode's own stale-temp removal rather than unlink a file ffmpeg holds open.
+            if run.reaped { try? fm.removeItem(at: temp) }
+            throw run.timedOut ? TranscodeError.timedOut : TranscodeError.ffmpegFailed(run.status)
         }
         guard fm.fileExists(atPath: temp.path) else {
             throw TranscodeError.outputMissing
@@ -98,30 +102,29 @@ enum AudioTranscoder {
         return Double(file.length) / rate
     }
 
-    private static func runFFmpeg(ffmpeg: String, args: [String]) -> Int32 {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: ffmpeg)
-        proc.arguments = args
+    /// A minute plus 5% of the WAV's duration. Measured 2026-11-17: one `-compression_level 8` encode of an
+    /// hour of 16 kHz stereo took 1.8 s with other builds running (about 2000x realtime), so an hour-long
+    /// file has 240 s, over 100 times what it takes, and a wedge is still finite.
+    static func flacCeilingSeconds(forDurationSec duration: Double) -> Double {
+        60 + max(0, duration) * 0.05
+    }
+
+    private static func runFFmpeg(
+        ffmpeg: String, ceilingSeconds: Double, args: [String]
+    ) -> (status: Int32, timedOut: Bool, reaped: Bool) {
         // SEC14: ffmpeg needs none of the managed API tokens; don't leak them to the child.
-        proc.environment = Secrets.scrubbedEnvironment()
-        let errPipe = Pipe()
-        proc.standardError = errPipe
-        proc.standardOutput = FileHandle.nullDevice
-        do {
-            try proc.run()
-        } catch {
-            Log.writeLine("daemon", "ERROR ffmpeg flac launch: \(error.localizedDescription)")
-            return -1
+        // CONC5: stderr drains while ffmpeg runs, and a run past the ceiling is killed.
+        let result = ProcessRunner.run(
+            executable: ffmpeg, arguments: args, environment: Secrets.scrubbedEnvironment(), timeout: ceilingSeconds
+        )
+        if let failure = result.launchFailure {
+            Log.writeLine("daemon", "ERROR ffmpeg flac launch: \(failure)")
+            return (-1, false, true)
         }
-        // Drain stderr before waiting: ffmpeg on a long recording can fill the pipe
-        // buffer and deadlock against `waitUntilExit`.
-        let stderr = errPipe.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        if proc.terminationStatus != 0 {
-            let tail = String(data: stderr, encoding: .utf8)?
-                .split(separator: "\n").suffix(5).joined(separator: " | ") ?? ""
-            Log.writeLine("daemon", "ffmpeg flac exit=\(proc.terminationStatus) tail=\(tail)")
+        if result.status != 0 || result.timedOut {
+            let tail = result.stderrText.split(separator: "\n").suffix(5).joined(separator: " | ")
+            Log.writeLine("daemon", "ffmpeg flac exit=\(result.status) timed_out=\(result.timedOut) tail=\(tail)")
         }
-        return proc.terminationStatus
+        return (result.status, result.timedOut || !result.reaped, result.reaped)
     }
 }
