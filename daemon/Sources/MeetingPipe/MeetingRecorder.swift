@@ -155,7 +155,13 @@ final class MeetingRecorder {
     /// idle backstop's `hasSystemAudio` mirror (TECH-END3); `onMicLevel` is currently
     /// unconsumed (the mic side of the backstop is verdict-driven). `nil`
     /// short-circuits the math when nobody listens.
-    var onMicLevel: ((Float) -> Void)?
+    /// CONC6: swapped on main (`armSystemLevelMirror` / `disarm`) while the mic tap reads it once per
+    /// emit on its own thread, so it sits behind a lock. Closures are not `Sendable`, hence `unchecked`.
+    private let micLevelCallback = OSAllocatedUnfairLock<((Float) -> Void)?>(uncheckedState: nil)
+    var onMicLevel: ((Float) -> Void)? {
+        get { micLevelCallback.withLockUnchecked { $0 } }
+        set { micLevelCallback.withLockUnchecked { $0 = newValue } }
+    }
     var onSystemLevel: ((Float) -> Void)? {
         get { systemChannel.onSystemLevel }
         set { systemChannel.onSystemLevel = newValue }
@@ -1057,7 +1063,8 @@ final class MeetingRecorder {
         micLastBufferUptime = deliveredAt
         micDeliveredSeconds += Double(buffer.frameLength) / fileFormat.sampleRate
         if micFires == 1 {
-            Log.writeLine("recorder", "mic tap first fired: frames=\(buffer.frameLength)")
+            // CONC6: off the capture thread; `Log.writeLine` takes the process-wide append lock.
+            Log.writeLineAsync("recorder", "mic tap first fired: frames=\(buffer.frameLength)")
         }
 
         // TECH-PERF3: one vectorized sum-of-squares pass per buffer (vDSP),

@@ -41,7 +41,14 @@ public final class ShareableContentSignal {
 
     public typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
 
-    public var onChange: ((Bool) -> Void)?
+    /// Assigned on main by the adapters' `start` (every session) while a poll from the previous session
+    /// can still be running on the scheduler's queue and calling it, so it lives behind `lock` like
+    /// `ProcessAudioSignal.onChange` (CONC6). Read into a local under the lock and invoked outside it.
+    public var onChange: ((Bool) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _onChange }
+        set { lock.lock(); _onChange = newValue; lock.unlock() }
+    }
+    private var _onChange: ((Bool) -> Void)?
 
     /// Both 1 s since PERF19 (it was 0.5); kept as two names so adapters and tests read the same
     /// constants and a later split stays a one-line change. See the type comment for why not faster.

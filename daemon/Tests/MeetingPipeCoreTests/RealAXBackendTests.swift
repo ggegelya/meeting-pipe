@@ -130,6 +130,57 @@ final class RealAXBackendTests: XCTestCase {
 
 /// Records what `RealAXBackend` asks of AX and the run loop. Observers are plain
 /// objects; sources are tracked by observer identity.
+extension RealAXBackendTests {
+
+    /// CONC6: a teardown on a background queue must not free the handler box while a callback on main can
+    /// still be using it. The entry owns its boxes and releases them on main, once its source is off the
+    /// run loop. The handler captures a sentinel, so its `deinit` thread is the box's release thread.
+    func test_a_teardown_from_a_background_queue_releases_the_handler_box_on_main() throws {
+        final class Sentinel {
+            let onDeinit: (Bool) -> Void
+            init(_ onDeinit: @escaping (Bool) -> Void) { self.onDeinit = onDeinit }
+            deinit { onDeinit(Thread.isMainThread) }
+        }
+        let fake = FakeAXCalls()
+        let backend = RealAXBackend(calls: fake.calls)
+        let element = AXUIElementCreateSystemWide()
+        let released = expectation(description: "box released")
+        let releasedOnMain = LockedBool()
+        do {
+            let sentinel = Sentinel { onMain in releasedOnMain.set(onMain); released.fulfill() }
+            let teardown = try backend.register(pid: 7, element: element, notification: kAXValueChangedNotification as String) {
+                _ = sentinel
+            }
+            let torn = expectation(description: "teardown ran")
+            DispatchQueue.global().async { teardown(); torn.fulfill() }
+            wait(for: [torn], timeout: 5)
+        }
+        wait(for: [released], timeout: 5)
+        XCTAssertTrue(releasedOnMain.value, "the handler box was freed off main")
+        XCTAssertEqual(fake.attachedSources, 0)
+    }
+
+    /// A callback that arrives after its teardown (already queued on the observer) finds a cancelled box.
+    func test_a_handler_does_not_fire_after_its_teardown() throws {
+        let fake = FakeAXCalls()
+        let backend = RealAXBackend(calls: fake.calls)
+        let element = AXUIElementCreateSystemWide()
+        var fired = 0
+        let keepAlive = try backend.register(pid: 7, element: element, notification: kAXTitleChangedNotification as String) {}
+        let teardown = try backend.register(pid: 7, element: element, notification: kAXValueChangedNotification as String) { fired += 1 }
+        teardown()
+        XCTAssertEqual(fired, 0)
+        keepAlive()
+    }
+}
+
+final class LockedBool: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = false
+    func set(_ v: Bool) { lock.lock(); _value = v; lock.unlock() }
+    var value: Bool { lock.lock(); defer { lock.unlock() }; return _value }
+}
+
 private final class FakeAXCalls {
     final class Observer {}
 

@@ -721,4 +721,31 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         signal.stop()
         XCTAssertNil(signal.callWindow)
     }
+
+    /// CONC6 (F161): same shape as the ShareableContent test, for the AX leave signal.
+    func test_onChange_can_be_reassigned_while_a_poll_invokes_it() {
+        let scheduler = ManualScheduler()
+        let flip = NSLock()
+        var state: AXLeaveButtonSignal.State = .healthy
+        let signal = AXLeaveButtonSignal(
+            axBus: AXObserverBus(),
+            probe: { _ in flip.lock(); defer { flip.unlock() }; return state },
+            scheduler: manualScheduler(scheduler)
+        )
+        signal.start(context: teamsContext, leaveButton: stubElement())
+        let tick = scheduler.tick
+        let fired = OSAllocatedCounter()
+        let poller = DispatchQueue(label: "conc6.ax.poll")
+        let done = expectation(description: "polls done")
+        poller.async {
+            for i in 0..<2000 {
+                flip.lock(); state = i % 2 == 0 ? .invalid : .healthy; flip.unlock()
+                tick?()
+            }
+            done.fulfill()
+        }
+        for _ in 0..<2000 { signal.onChange = { _ in fired.increment() } }
+        wait(for: [done], timeout: 30)
+        XCTAssertGreaterThan(fired.value, 0, "the poll never reached a callback")
+    }
 }

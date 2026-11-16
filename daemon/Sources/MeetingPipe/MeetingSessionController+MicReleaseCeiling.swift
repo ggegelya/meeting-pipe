@@ -13,6 +13,7 @@ extension MeetingSessionController {
     /// Armed at the commit of a native Teams recording (prompt, explicit, resumed or split start all
     /// commit here). Anything else is left to the engine, the idle backstop and END11.
     func armMicReleaseCeiling(file: URL, source: AppSource?) {
+        assertMainQueue()
         disarmMicReleaseCeiling()
         guard MicReleaseCeiling.applies(toBundleID: source?.bundleID, isNative: source?.kind == .native) else { return }
         micReleaseCeiling = MicReleaseCeiling(recordingStartedAt: coordinator.micHolderFeed.currentSnapshot().at)
@@ -27,6 +28,7 @@ extension MeetingSessionController {
     }
 
     func disarmMicReleaseCeiling() {
+        assertMainQueue()
         cancelMicReleaseCeilingTimer?()
         cancelMicReleaseCeilingTimer = nil
         micReleaseCeiling = nil
@@ -36,6 +38,7 @@ extension MeetingSessionController {
     /// One read of the monitor against the running recording. Internal so tests drive it with a
     /// stated snapshot instead of the timer; `now` is the wall clock the cut is anchored on.
     func micReleaseCeilingTick(file: URL, now: Date) {
+        assertMainQueue()
         // The recording this timer was armed for, still running: a stop already in flight, a split,
         // or a newer recording all leave this tick with nothing to do.
         guard case .recording(let current, let source, let mode) = coordinator.stateMachine.current,

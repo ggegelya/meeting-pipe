@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import CoreGraphics
+import os
 import ScreenCaptureKit
 
 /// Captures system audio via ScreenCaptureKit (SCStream). Replaces the prior
@@ -79,24 +80,64 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
     ///
     /// REC5: invalidated on a display-topology change (below) and on a `start()` failure, so a stale
     /// snapshot pointing at a now-dead display (e.g. after a dock/undock) can't make every retry fail.
-    private static var cachedContent: SCShareableContent?
+    private static var cachedContent: SCShareableContent? {
+        get { shared.withLockUnchecked { $0.content } }
+        set { shared.withLockUnchecked { $0.content = newValue } }
+    }
+
+    /// CONC6: the three statics below, behind one lock. `prewarm()` (the cooperative pool),
+    /// `start()` (the pool) and the display-reconfiguration observer (main) all touch them, and the
+    /// permission state is read on main by half the app. `SCShareableContent` is not `Sendable`, so
+    /// `uncheckedState:`: it is only ever read and replaced whole, never mutated in place. The lock
+    /// is never held across an `await` or a callout.
+    private struct Shared {
+        var content: SCShareableContent?
+        var permission: PermissionState = .unknown
+        /// Claimed before registering, so two concurrent prewarms cannot both pass the check.
+        var observerClaimed = false
+        var observer: NSObjectProtocol?
+        var observerRegistrations = 0
+    }
+    private static let shared = OSAllocatedUnfairLock<Shared>(uncheckedState: Shared())
 
     /// REC5: cleared whenever the attached displays are reconfigured (dock/undock, resolution change), so
     /// the next recording re-fetches instead of building an SCStream against a display that no longer exists.
     /// Registered once from prewarm(); re-fetching SCShareableContent does not re-prompt Screen Recording TCC.
-    private static var displayReconfigObserver: NSObjectProtocol?
-
     static func observeDisplayReconfiguration() {
-        guard displayReconfigObserver == nil else { return }
-        displayReconfigObserver = NotificationCenter.default.addObserver(
+        let claimed = shared.withLockUnchecked { s -> Bool in
+            if s.observerClaimed { return false }
+            s.observerClaimed = true
+            s.observerRegistrations += 1
+            return true
+        }
+        guard claimed else { return }
+        let token = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
         ) { _ in
-            guard cachedContent != nil else { return }
-            cachedContent = nil
-            Log.writeLine("recorder", "display topology changed; cleared SCShareableContent cache (REC5)")
+            let cleared = shared.withLockUnchecked { s -> Bool in
+                guard s.content != nil else { return false }
+                s.content = nil
+                return true
+            }
+            if cleared {
+                Log.writeLine("recorder", "display topology changed; cleared SCShareableContent cache (REC5)")
+            }
         }
+        shared.withLockUnchecked { $0.observer = token }
+    }
+
+    /// How many display observers this process registered (tests: two concurrent callers register one).
+    static var displayObserverRegistrations: Int { shared.withLockUnchecked { $0.observerRegistrations } }
+
+    /// Tests only: forget the registered observer so the next `observeDisplayReconfiguration` registers again.
+    static func resetDisplayObserverForTesting() {
+        let token = shared.withLockUnchecked { s -> NSObjectProtocol? in
+            defer { s.observer = nil; s.observerClaimed = false; s.observerRegistrations = 0 }
+            return s.observer
+        }
+        if let token { NotificationCenter.default.removeObserver(token) }
     }
 
     /// Last-known TCC outcome for Screen Recording. Drives the menu-bar warning,
@@ -107,7 +148,12 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
         case granted   // last call to SCShareableContent / SCStream succeeded
         case denied    // last call threw a TCC denial; silent mic-only mode
     }
-    static private(set) var permissionState: PermissionState = .unknown
+    static var permissionState: PermissionState { shared.withLockUnchecked { $0.permission } }
+
+    /// The one writer, so a read from any thread sees a whole value (CONC6).
+    static func setPermissionState(_ state: PermissionState) {
+        shared.withLockUnchecked { $0.permission = state }
+    }
 
     /// Guards the once-per-launch Screen Recording request slot. prewarm() can
     /// run from concurrent Tasks, so the latch flip must be atomic.
@@ -150,7 +196,7 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
     /// are no-ops once TCC has an entry.
     static func prewarm() async {
         observeDisplayReconfiguration()
-        if cachedContent != nil { permissionState = .granted; return }
+        if cachedContent != nil { setPermissionState(.granted); return }
 
         // Check TCC without prompting first; skip request if already trusted.
         let alreadyTrusted = CGPreflightScreenCaptureAccess()
@@ -184,11 +230,11 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
                 false,
                 onScreenWindowsOnly: true
             )
-            permissionState = .granted
+            setPermissionState(.granted)
             Log.recorder.info("SCShareableContent prewarmed (\(cachedContent?.displays.count ?? 0) displays)")
             Log.writeLine("recorder", "SCShareableContent prewarmed")
         } catch {
-            permissionState = .denied
+            setPermissionState(.denied)
             Log.recorder.warning("SCShareableContent prewarm failed: \(error.localizedDescription)")
             Log.writeLine("recorder", "WARN: SCShareableContent prewarm failed: \(error.localizedDescription)")
         }
@@ -213,12 +259,12 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
                     onScreenWindowsOnly: true
                 )
             } catch {
-                Self.permissionState = .denied
+                Self.setPermissionState(.denied)
                 throw error
             }
             Self.cachedContent = content
         }
-        Self.permissionState = .granted
+        Self.setPermissionState(.granted)
         let stream: SCStream
         do {
             guard let display = content.displays.first else {

@@ -53,7 +53,14 @@ public final class AXLeaveButtonSignal {
     /// without adding to its cost at the fast cadence.
     public static let windowReadInterval: TimeInterval = 2
 
-    public var onChange: ((State) -> Void)?
+    /// Assigned on main by `NativeLifecycleAdapter.start` every session while a walk from the previous
+    /// one can still be running on the serial queue, so it lives behind `generationLock` (CONC6). Read
+    /// into a local under the lock and invoked outside it, like `ProcessAudioSignal.onChange`.
+    public var onChange: ((State) -> Void)? {
+        get { generationLock.lock(); defer { generationLock.unlock() }; return _onChange }
+        set { generationLock.lock(); _onChange = newValue; generationLock.unlock() }
+    }
+    private var _onChange: ((State) -> Void)?
     public private(set) var lastState: State?
 
     /// True once watching a Leave-button element. `armIfNeeded` checks this to avoid clobbering an already-armed subscription.

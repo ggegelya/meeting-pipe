@@ -36,7 +36,13 @@ final class SystemAudioChannel {
 
     /// The ~1 Hz system RMS average on the main queue, feeding the idle backstop's
     /// `hasSystemAudio` mirror (TECH-END3). `nil` short-circuits the math when nobody listens.
-    var onSystemLevel: ((Float) -> Void)?
+    /// CONC6: swapped on main while the SCStream delegate queue reads it once per emit, so it sits
+    /// behind a lock. Closures are not `Sendable`, hence `unchecked`.
+    private let systemLevelCallback = OSAllocatedUnfairLock<((Float) -> Void)?>(uncheckedState: nil)
+    var onSystemLevel: ((Float) -> Void)? {
+        get { systemLevelCallback.withLockUnchecked { $0 } }
+        set { systemLevelCallback.withLockUnchecked { $0 = newValue } }
+    }
 
     /// Fired on main when system-audio (SCStream) capture fails to start, so
     /// the HUD can surface a degraded banner mid-recording (TECH-UX4). The
@@ -418,7 +424,8 @@ final class SystemAudioChannel {
             guard let self = self, self.acceptsBuffer(from: generation) else { return }
             self.systemFires &+= 1
             if self.systemFires == armBaseline &+ 1 {
-                Log.writeLine("recorder", "system tap first fired: frames=\(pcm.frameLength)\(isRetry ? " (retry)" : "")")
+                // CONC6: off the capture thread; `Log.writeLine` takes the process-wide append lock.
+                Log.writeLineAsync("recorder", "system tap first fired: frames=\(pcm.frameLength)\(isRetry ? " (retry)" : "")")
             }
             // REC9: where this file's audio begins, relative to the mic. Keyed off the
             // file's own mark rather than `systemFires`, which counts across a retry

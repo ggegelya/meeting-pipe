@@ -26,6 +26,7 @@ extension MeetingSessionController {
     /// Armed at a native recording's commit, so a change of call can split it. A browser meeting
     /// has no Leave control to read (and is out of END28's scope); a manual recording has no app.
     func armCallIdentityWatch(file: URL, source: AppSource?) {
+        assertMainQueue()
         disarmCallIdentityWatch()
         callIdentity = CallIdentityTracker()
         guard let source, source.kind == .native else { return }
@@ -40,6 +41,7 @@ extension MeetingSessionController {
     }
 
     func disarmCallIdentityWatch() {
+        assertMainQueue()
         cancelCallIdentityTimer?()
         cancelCallIdentityTimer = nil
     }
@@ -47,6 +49,7 @@ extension MeetingSessionController {
     /// One read of the call window against the recording's identity. Internal so tests drive it on
     /// a virtual clock instead of the timer.
     func callIdentityTick(file: URL, now: Date) {
+        assertMainQueue()
         guard case .recording(let current, let source, let mode) = coordinator.stateMachine.current,
               current == file, let source else { return }
         // A split stops the recording, and resetting it would close an off-the-record span the
@@ -104,13 +107,15 @@ extension MeetingSessionController {
     /// outlived the prompt could attach to a later call of the same app), so a recording started
     /// from it is unlinked; the link is informational.
     func isSplitPrompt(for source: AppSource) -> Bool {
-        pendingSplitFrom?.source == source
+        assertMainQueue()
+        return pendingSplitFrom?.source == source
     }
 
     /// The tail of a split's stop: prompt for the new call. Called from `resetAfterStop`, so it
     /// runs once the first stem is flushed whichever stop path finished it. Only from `.idle` with
     /// no start in flight; a Stop pressed meanwhile already dropped the split.
     func raisePendingSplitPrompt() {
+        assertMainQueue()
         guard let split = pendingSplit else { return }
         pendingSplit = nil
         guard case .idle = coordinator.stateMachine.current, !startLatch.isInFlight else {

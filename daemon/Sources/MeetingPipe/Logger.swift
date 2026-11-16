@@ -66,11 +66,29 @@ enum Log {
 
     /// Append-only tail-able log file (logging conventions in CONVENTIONS.md). os.Logger goes to the unified log; this writes ~/Library/Logs/MeetingPipe/<category>.log.
     static func writeLine(_ category: String, _ message: String) {
+        writeLine(category, message, at: Date())
+    }
+
+    private static func writeLine(_ category: String, _ message: String, at date: Date) {
         let url = logsDir.appendingPathComponent("\(category).log")
-        let line = "[\(isoFormatter.string(from: Date()))] \(message)\n"
+        let line = "[\(isoFormatter.string(from: date))] \(message)\n"
         guard let data = line.data(using: .utf8) else { return }
         append(data, to: url)
     }
+
+    /// One serial queue for log lines whose caller must not wait on `append`'s process-wide lock, its
+    /// rotation check and its open/write/close (CONC6): the first-buffer lines inside the capture callbacks.
+    private static let asyncWriteQueue = DispatchQueue(label: "com.meetingpipe.log.async", qos: .utility)
+
+    /// `writeLine` handed to a utility queue, with the timestamp taken now, so the line reads as the
+    /// moment it was written and not the moment the queue got to it. For a capture thread.
+    static func writeLineAsync(_ category: String, _ message: String) {
+        let now = Date()
+        asyncWriteQueue.async { writeLine(category, message, at: now) }
+    }
+
+    /// Blocks until every `writeLineAsync` queued before this call is on disk. For tests.
+    static func drainAsyncWrites() { asyncWriteQueue.sync {} }
 
     /// Write one JSON object per line to `events.jsonl` for `jq`-based post-hoc analysis.
     ///

@@ -644,4 +644,38 @@ final class ShareableContentSignalTests: XCTestCase {
         scheduler.tick?()
         XCTAssertEqual(observed.get(), [true, false, true])
     }
+
+    /// CONC6 (F161): `onChange` is reassigned on main every session while a poll from the previous one can
+    /// still be calling it on the signal's queue. Clean under `swift test --sanitize=thread` for this test.
+    func test_onChange_can_be_reassigned_while_a_poll_invokes_it() {
+        let scheduler = ManualScheduler()
+        let flip = NSLock()
+        var present = false
+        let signal = ShareableContentSignal(
+            probe: {
+                flip.lock(); present.toggle(); let now = present; flip.unlock()
+                return now ? [Summary(bundleIdentifier: "com.microsoft.teams2", title: "Standup | Meeting")] : []
+            },
+            scheduler: manualScheduler(scheduler)
+        )
+        signal.start(context: teamsContext)
+        let tick = scheduler.tick
+        let fired = OSAllocatedCounter()
+        let poller = DispatchQueue(label: "conc6.poll")
+        let done = expectation(description: "polls done")
+        poller.async {
+            for _ in 0..<2000 { tick?() }
+            done.fulfill()
+        }
+        for _ in 0..<2000 { signal.onChange = { _ in fired.increment() } }
+        wait(for: [done], timeout: 30)
+        XCTAssertGreaterThan(fired.value, 0, "the poll never reached a callback")
+    }
+}
+
+final class OSAllocatedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = 0
+    func increment() { lock.lock(); _value += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return _value }
 }

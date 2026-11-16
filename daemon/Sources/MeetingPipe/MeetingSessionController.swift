@@ -172,6 +172,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// The tab a hold on `source` is for: its own key, else the browser's last sighted tab. Nil for
     /// a native source, whose hold covers the whole bundle.
     func holdTabKey(for source: AppSource) -> Int? {
+        assertMainQueue()
         guard source.kind == .browser, micTierPromptBundle != source.bundleID else { return nil }
         return source.tabKey ?? lastBrowserTabKey[source.bundleID]
     }
@@ -273,6 +274,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// stream, and route lifecycle verdicts into prompt/record/end. Both
     /// streams are unbounded and daemon-lifetime; cancelled in `shutdownConsumers`.
     func startConsumers() {
+        assertMainQueue()
         verdictConsumerTask = Task { [weak self] in
             guard let self = self else { return }
             for await verdict in self.coordinator.micGate.verdicts {
@@ -380,6 +382,7 @@ final class MeetingSessionController: @unchecked Sendable {
 
     /// END20: a recording is running on an engine that has already ended. Logged, never acted on.
     func noteRecordingOnTerminalEngine(bundleID: String, recordingBundleID: String?, reason: String) {
+        assertMainQueue()
         Log.event(category: "coordinator", action: "lifecycle_recording_on_terminal_engine", attributes: [
             "bundle_id": bundleID,
             "recording_bundle_id": recordingBundleID ?? "manual",
@@ -388,6 +391,7 @@ final class MeetingSessionController: @unchecked Sendable {
     }
 
     func shutdownConsumers() {
+        assertMainQueue()
         verdictConsumerTask?.cancel()
         verdictConsumerTask = nil
         lifecycleConsumerTask?.cancel()
@@ -401,6 +405,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// the one outcome without that guard, so a stale panel clicked while a recording ran called
     /// `beginRecording`, whose `alreadyRecording` catch then went idle over a running recorder.
     func chooseAlways(source: AppSource) {
+        assertMainQueue()
         guard case .prompting(let pending) = coordinator.stateMachine.current, pending == source else { return }
         coordinator.consent.setAutoConsented(bundleID: source.bundleID, value: true)
         Log.writeLine("daemon", "user always-consented (\(source.bundleID))")
@@ -414,6 +419,7 @@ final class MeetingSessionController: @unchecked Sendable {
     }
 
     func toggleManual() {
+        assertMainQueue()
         // END20: the toggle pressed while a start is coming up means stop, not a second start (which
         // `beginRecording` would ignore anyway), so it cancels the start in flight.
         if startLatch.cancel(by: "toggle") {
@@ -452,6 +458,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// It lives here rather than at each caller so both paths cannot drift; the callers
     /// keep their own state guards (automation refuses anything but `.idle`).
     func startManual(summaryMode: SummaryMode, trigger: String) {
+        assertMainQueue()
         if let candidate = coordinator.stateMachine.liveSuppressedCandidate() {
             recordAttached(to: candidate, summaryMode: summaryMode, trigger: trigger)
         } else {
@@ -470,6 +477,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// `trigger` names who asked, so the event log can tell a menu click from the hotkey,
     /// the URL scheme, or the notification; it does not change behaviour.
     func recordAttached(to source: AppSource, summaryMode: SummaryMode = .auto, trigger: String) {
+        assertMainQueue()
         guard coordinator.stateMachine.isAcceptingPrompts else {
             Log.event(category: "coordinator", action: "record_attached_ignored", attributes: [
                 "bundle_id": source.bundleID,
@@ -493,6 +501,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// a panic-press when nothing runs is a logged no-op. The detector
     /// state is preserved, so a fresh `.started` only fires after a real end.
     func forceStop(reason: String) {
+        assertMainQueue()
         // END20: a Stop during a start's bring-up cancels the start, which then stops the fresh
         // recording at commit. From `.idle` this used to do nothing at all.
         let cancelledStart = startLatch.cancel(by: reason)
@@ -529,6 +538,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// intermediates the orphan sweep recovers. The stop-time write stays as the
     /// final flush.
     func flagMoment() {
+        assertMainQueue()
         guard case .recording(let file, _, _) = coordinator.stateMachine.current else {
             Log.event(category: "recorder", action: "marker_flag_ignored", attributes: [
                 "state": DetectionStateMachine.label(coordinator.stateMachine.current),
@@ -557,6 +567,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// capture-first it records a `.manual` timeline span for the offline redactor, and we persist a
     /// start-time marker so orphan recovery quarantines the recording if a crash loses the timeline.
     func toggleOffTheRecord() {
+        assertMainQueue()
         guard case .recording(let file, _, _) = coordinator.stateMachine.current else {
             Log.event(category: "recorder", action: "off_the_record_ignored", attributes: [
                 "state": DetectionStateMachine.label(coordinator.stateMachine.current),
@@ -596,6 +607,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// Pin the prompt's meeting to a workflow (the prompt's chip, TECH-B5). SEC39: keyed to the
     /// source of the prompt that is up; ignored when none is.
     func setPendingWorkflowOverride(_ id: UUID?) {
+        assertMainQueue()
         guard case .prompting(let source) = coordinator.stateMachine.current else { return }
         pendingWorkflowOverride = id.map { (source: source, workflowID: $0) }
     }
@@ -630,6 +642,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// a prompt ends without recording, and before a new prompt resolves its chip. A pick that was
     /// never recorded is logged, so a discarded routing choice leaves a trace.
     func clearPromptRouting(exit: String) {
+        assertMainQueue()
         if let pick = pendingWorkflowOverride {
             Log.event(category: "workflow", action: "override_discarded", attributes: [
                 "bundle_id": pick.source.bundleID,
@@ -647,6 +660,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// Workflow that would apply to `source` now (for the prompt chip);
     /// falls back to the default when nothing matches.
     func workflowForPrompt(source: AppSource?) -> Workflow? {
+        assertMainQueue()
         return WorkflowMatcher.resolve(
             source: source,
             overrideID: pendingWorkflowOverride.flatMap { $0.source == source ? $0.workflowID : nil },
@@ -661,7 +675,8 @@ final class MeetingSessionController: @unchecked Sendable {
     /// reassignment), so this is a filter over a handful of structs on the main
     /// queue, not a disk hit in the detection path.
     func routingHint(source: AppSource?, matched: Workflow?) -> WorkflowRoutingHint.Suggestion? {
-        WorkflowRoutingHint.suggest(
+        assertMainQueue()
+        return WorkflowRoutingHint.suggest(
             source: source,
             matched: matched,
             corrections: coordinator.workflowCorrections.corrections,
@@ -670,6 +685,7 @@ final class MeetingSessionController: @unchecked Sendable {
     }
 
     func beginRecording(source: AppSource?, summaryMode: SummaryMode) {
+        assertMainQueue()
         coordinator.stateMachine.cancelPromptTimeout()
         // END17 item 5: consumed first, before any early return, so a resume link can only ever
         // attach to the start it was armed for and never to a later, unrelated one.
@@ -1044,6 +1060,7 @@ final class MeetingSessionController: @unchecked Sendable {
         file: URL, source: AppSource?, summaryMode: SummaryMode,
         committed: Bool = true, stopRoute: String? = nil, retainCandidate: Bool = true
     ) {
+        assertMainQueue()
         // END21 item 3: a stop inside an open hold concludes it here, under the owner's rule of
         // 2026-11-16 (`TeardownHoldPolicy.trimPoint` with `.stop`): cut at the mic release only
         // while the mic still reads released, nothing read live again since, and the Leave button
@@ -1344,6 +1361,7 @@ final class MeetingSessionController: @unchecked Sendable {
         micSilent: Bool = false,
         heldEndTrimSec: Double? = nil
     ) throws {
+        assertMainQueue()
         let dict = MeetingMetaSidecar.build(
             source: source,
             workflow: activeWorkflow,
@@ -1370,10 +1388,15 @@ final class MeetingSessionController: @unchecked Sendable {
     /// payload the clean-stop sidecar uses, so orphan recovery can route a
     /// crash-interrupted BYO / NDA / regulated meeting on-device instead of
     /// auto-egressing it. Removed on a clean stop that produced a final.
+    /// CONC6: `@MainActor`, because a plain `async` method runs on the generic executor (SE-0338) even
+    /// when awaited from a main-actor `Task`, and this body reads `coordinator.configStore` and writes
+    /// `manifestInputs`, both main-queue state. Only `RecordingManifest.writeOffMain` leaves main.
+    @MainActor
     func writeRecoveryManifest(
         file: URL, source: AppSource?, summaryMode: SummaryMode, captureMode: CaptureMode,
         workflow: Workflow?, resumedFrom: String?, splitFrom: String? = nil
     ) async {
+        assertMainQueue()
         let meta = MeetingMetaSidecar.build(
             source: source,
             workflow: workflow,
@@ -1407,6 +1430,7 @@ final class MeetingSessionController: @unchecked Sendable {
     }
 
     func startPromptTimeout(for source: AppSource) {
+        assertMainQueue()
         coordinator.stateMachine.startPromptTimeout(
             for: source,
             timeoutSec: coordinator.livePromptTimeoutSec
@@ -1477,6 +1501,7 @@ final class MeetingSessionController: @unchecked Sendable {
     }
 
     func notePromptDismissed(_ source: AppSource, reason: PromptDismissReason, extra: [String: Any] = [:]) {
+        assertMainQueue()
         var attributes: [String: Any] = [
             "bundle_id": source.bundleID,
             "reason": reason.rawValue,
@@ -1490,12 +1515,14 @@ final class MeetingSessionController: @unchecked Sendable {
     /// What keeps a hold on this prompt's call alive: the DET1 mic-in-use tier's sources are never
     /// scanner candidates, so they live on the mic-busy span; everything else on the scan.
     func holdLiveness(for source: AppSource) -> SkippedMeetingLatch.Liveness {
-        micTierPromptBundle == source.bundleID ? .micBusy : DetectionStateMachine.spanLiveness(for: source)
+        assertMainQueue()
+        return micTierPromptBundle == source.bundleID ? .micBusy : DetectionStateMachine.spanLiveness(for: source)
     }
 
     /// An explicit Skip (the panel's ×, the chevron's Skip, the banner's Skip). Holds this call's
     /// prompt off for its span, with the quiet undo surfaces DET7 gave it.
     func skipPrompt(source: AppSource) {
+        assertMainQueue()
         guard case .prompting(let pending) = coordinator.stateMachine.current, pending == source else { return }
         notePromptDismissed(source, reason: .skipped)
         clearPromptRouting(exit: "skip")
@@ -1533,6 +1560,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// is refused and returns false so the caller can say so. Returns true when it acted.
     @discardableResult
     func resolvePromptPick(_ pick: PromptPick, source: AppSource) -> Bool {
+        assertMainQueue()
         if case .prompting(let pending) = coordinator.stateMachine.current, pending == source {
             switch pick {
             case .record: beginRecording(source: source, summaryMode: .auto)
@@ -1577,6 +1605,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// DET18 item 5: the pointer over the panel, or its chevron menu open, pauses the timer that
     /// acts. Driven by `MeetingPromptWindow` through its delegate.
     func setPromptTimeoutPaused(_ paused: Bool) {
+        assertMainQueue()
         guard case .prompting = coordinator.stateMachine.current else { return }
         if paused {
             coordinator.stateMachine.pausePromptTimeout()
@@ -1588,6 +1617,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// DET18 item 2: one completed discovery scan's readings, fed before its winner is handled so a
     /// span that ended on this scan no longer holds that winner's prompt off.
     func handleScanReadings(_ readings: [String: SkippedMeetingLatch.Reading]) {
+        assertMainQueue()
         noteHoldsEnded(coordinator.stateMachine.noteScanReadings(readings))
     }
 
@@ -1618,6 +1648,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// never a popup storm). The lifecycle is deliberately NOT engaged: this tier is permission-
     /// light (no AX / Screen Recording), so a recording it starts ends via the idle-stop backstop.
     func handleMicInUseDwell(_ source: AppSource) {
+        assertMainQueue()
         Log.writeLine("daemon", "mic-in-use dwell -> prompting (\(source.bundleID))")
         // Mark the next prompt as mic-in-use-originated; handleMeetingStarted consumes this into
         // micTierPromptBundle so a recording started off it (auto-consent now or the prompt answered
@@ -1634,6 +1665,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// recordings (not tagged); the tracker debounces the release, so a brief flap keeps the bundle
     /// held and never triggers a false stop.
     func handleMicBusyBundle(_ currentBusyBundle: String?) {
+        assertMainQueue()
         // DET18: a DET1 mic-tier hold (skip or offer) lives on this span.
         noteHoldsEnded(coordinator.stateMachine.noteMicBusy(bundleID: currentBusyBundle))
         guard let recBundle = micTierRecordingBundle, currentBusyBundle != recBundle,
@@ -1645,6 +1677,7 @@ final class MeetingSessionController: @unchecked Sendable {
     }
 
     func handleMeetingStarted(source: AppSource) {
+        assertMainQueue()
         // DET1: consume the one-shot mic-in-use flag now (so it never leaks to the next call), but
         // arm the per-prompt tag only once we COMMIT to showing/recording this prompt (after the
         // suppression guards below). Arming it here, before the guards, would let a DET1
@@ -1751,6 +1784,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// guards above (the split's own stop armed the cooldown, and a split always asks, auto-consent
     /// included: the owner's decision of 2026-11-16).
     func presentPrompt(for source: AppSource) {
+        assertMainQueue()
         // SEC39: a new prompt starts with no routing state of the last one's.
         clearPromptRouting(exit: "new_prompt")
         coordinator.stateMachine.setPrompting(source: source)
@@ -1796,6 +1830,7 @@ final class MeetingSessionController: @unchecked Sendable {
     }
 
     func handleMeetingEnded(bundleID: String, reason: EndingReason) {
+        assertMainQueue()
         // DET14: drop the attachable candidate for this bundle before anything else, and outside
         // the state switch below, because it is not about what this session is doing. The
         // suppressed candidate's grace is an upper bound on ignorance, a guess at how long to
@@ -1913,6 +1948,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// (`engageLifecycleIfNeeded`, END27). A withdraw backs off for one idle poll so the very next
     /// discovery refresh does not re-raise it.
     func handleMeetingEndedDuringPrompt(bundleID: String, reason: EndingReason) {
+        assertMainQueue()
         switch coordinator.stateMachine.current {
         case .prompting(let src) where src.bundleID == bundleID:
             let definitive = PrimarySignalKind(rawValue: reason.leadingSignal)?.isDefinitive == true
@@ -1969,6 +2005,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// verdict there advances the streak with no cross-queue race. It was left
     /// unconsumed when TECH-END3 dropped the RMS SilenceDetector.
     func armSystemLevelMirror() {
+        assertMainQueue()
         coordinator.audioRecorder.onSystemLevel = { [weak self] db in
             self?.latestSystemLevelDb = db
         }
@@ -2016,12 +2053,14 @@ final class MeetingSessionController: @unchecked Sendable {
     }
 
     func disarmSystemLevelMirror() {
+        assertMainQueue()
         coordinator.audioRecorder.onSystemLevel = nil
         coordinator.audioRecorder.onMicLevel = nil
         coordinator.micHolderFeed.setRecording(false)
     }
 
     func handleIdleNotify() {
+        assertMainQueue()
         Log.writeLine("daemon", "idle: surfacing 'still meeting?' banner")
         Log.event(category: "coordinator", action: "silence_notified")
         coordinator.notifications.notifyStillMeeting()
@@ -2033,6 +2072,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// `onWriteFailure`: nothing has failed, and the point of stopping here is that the merge
     /// still has room.
     func handleLowSpace(_ update: RecordingLowSpace.Update) {
+        assertMainQueue()
         guard case .recording = coordinator.stateMachine.current else { return }
         switch update {
         case .label(let text):
@@ -2050,11 +2090,13 @@ final class MeetingSessionController: @unchecked Sendable {
     /// is not keeping up while there is still time to act, and the hard cap's force-stop posts its
     /// own banner if it comes to that.
     func handleWriterBacklog() {
+        assertMainQueue()
         guard case .recording = coordinator.stateMachine.current else { return }
         coordinator.hud.setWriterBehind(true)
     }
 
     func handleIdleAutoStop() {
+        assertMainQueue()
         guard case .recording(let file, let src, let mode) = coordinator.stateMachine.current else { return }
         // Stand the backstop down when a native meeting is still tracked live: the
         // silence is a wait for someone to join, not an end. Re-nudge and keep
@@ -2087,6 +2129,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// User tapped "Keep recording" on the idle nudge: restart the countdown so the
     /// recording is not auto-stopped. (TECH-END3)
     func keepRecordingFromNudge() {
+        assertMainQueue()
         guard case .recording = coordinator.stateMachine.current else { return }
         Log.event(category: "coordinator", action: "silence_keep_recording")
         coordinator.silenceBackstop.keepAlive()
@@ -2097,6 +2140,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// Prime the silence backstop for a fresh recording. Every recording, source or not, at the
     /// moment it starts; split from the MicGate engage by PERF15 because that now waits on a build.
     func resetMicGateBackstop() {
+        assertMainQueue()
         coordinator.silenceBackstop.reset()
         latestSystemLevelDb = -120
         latestVerdict = nil
@@ -2107,6 +2151,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// its deadline passed first (PERF15), which `micgate_attached` carries so the field log shows
     /// how often a slow client costs the AX mute read at the start of a recording.
     func engageMicGate(source: AppSource, handles: MeetingAXHandleBuilder.Handles?, via: String) {
+        assertMainQueue()
         guard coordinator.liveHonorAppMute else { return }
         guard let handles = handles else {
             Log.event(category: "coordinator", action: "micgate_engage_skipped", attributes: [
@@ -2183,6 +2228,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// Discovery found a meeting source: engage the lifecycle subsystem if
     /// idle and the bundle isn't in its post-meeting cooldown.
     func handleDiscovery(_ source: AppSource) {
+        assertMainQueue()
         guard coordinator.stateMachine.isAcceptingPrompts else { return }
         // END19: every winner is a sighting of its bundle, whichever branch below handles it.
         staleEngage.sighted(bundleID: source.bundleID, at: Date())
@@ -2264,6 +2310,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// (any live signal would have raised `.starting` and left `.idle`), and the re-engage is what
     /// re-reads a relaunched app's pid and re-runs a build that may now see the Leave button.
     func engageLifecycle(for source: AppSource) {
+        assertMainQueue()
         if let inFlight = lifecycleBuild, inFlight.bundleID == source.bundleID { return }
         lifecycleBuildGeneration += 1
         let generation = lifecycleBuildGeneration
@@ -2347,6 +2394,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// before the recording committed) and ran 380 s past the leave. A terminal engine is
     /// re-engaged on the start's own handles instead, and the guard keeps protecting every live one.
     func engageLifecycleIfNeeded(source: AppSource?, handles: MeetingAXHandleBuilder.Handles?) {
+        assertMainQueue()
         guard let source = source else { return }
         if coordinator.lifecycleCoord.isTerminal {
             Log.event(category: "coordinator", action: "lifecycle_reengaged", attributes: [
@@ -2391,6 +2439,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// It used to run a build of its own on `axWalkQueue`, mute walks included and discarded.
     /// This is end-detection only, so arming a beat later (the call just started) is harmless.
     func armLifecycleLeaveButton(source: AppSource?, handles: MeetingAXHandleBuilder.Handles?) {
+        assertMainQueue()
         guard source != nil, let leaveButton = handles?.lifecycle.leaveButton else { return }
         coordinator.lifecycleCoord.armLeaveButton(leaveButton)
     }
@@ -2487,6 +2536,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// and a revert from a held end returns to `.inMeeting`, not `.starting`), so confirm it here.
     /// Returns whether it did, which also means there is no prompt to raise.
     func confirmLateStartIfRecording(_ context: MeetingLifecycleContext) -> Bool {
+        assertMainQueue()
         guard case .recording(_, let source?, _) = coordinator.stateMachine.current,
               source.bundleID == context.bundleID else { return false }
         Log.event(category: "coordinator", action: "lifecycle_late_start_confirmed", attributes: [
@@ -2504,6 +2554,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// `.inMeeting` (END8). Until END18 this went through the late-arm, a no-op on an armed healthy
     /// button, so the revert never fired (F002). A genuine end finds none and the hold carries on.
     func rescueProvisionalEnd(context: MeetingLifecycleContext) {
+        assertMainQueue()
         guard context.kind == .native else { return }
         // The Leave-button search is a cross-process AX DFS over every window; run it OFF
         // main (TECH-CONC3) so a slow / hung AX call can't freeze the run loop while a
@@ -2553,6 +2604,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// Re-entrant by design. A second provisional for the same call keeps the first stamp, because
     /// the stamp is where the held tail starts and a flapping signal must not move it.
     func beginTeardownHold(context: MeetingLifecycleContext) {
+        assertMainQueue()
         guard holdPolicy.open(context: context, at: Date()) else {
             consultTeardownOracle()
             return
@@ -2597,6 +2649,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// `now` is a parameter so a test can drive the hold without sleeping through it; production
     /// always takes the default. An unreadable log is "no evidence" since END17, never a confirm.
     func consultTeardownOracle(now: Date = Date()) {
+        assertMainQueue()
         guard let hold = holdPolicy.hold else { return }
         let snapshot = coordinator.callTeardown.snapshot()
         let verdict = holdPolicy.consult(
@@ -2620,6 +2673,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// acts on: cut at stop under the regulated and NDA postures, suggested and kept everywhere else
     /// (END17). `TeardownHoldPolicy.trimPoint` leaves sub-second holds, the normal Teams path, alone.
     func concludeTeardownHold(now: Date = Date(), conclusion: TeardownHoldPolicy.Conclusion) {
+        assertMainQueue()
         guard holdPolicy.isOpen else { return }
         if let trimAt = holdPolicy.trimPoint(
             concludingAt: now,
@@ -2634,6 +2688,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// Drop the hold without concluding it. Called when the call comes back (the whole point) and
     /// on every path that leaves `.endingProvisional`, so a stale timer can never outlive its meeting.
     func releaseTeardownHold(rescued: Bool = false) {
+        assertMainQueue()
         guard let hold = holdPolicy.release() else { return }
         // `cancelHoldTimer != nil` is the record of whether the holding state was ever shown. Without it,
         // an end that confirmed on its first consult would still push a `setConfirmingEnd(false)` at
@@ -2669,6 +2724,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// left behind; once it has gone `StaleEngageBound.scansWithoutSighting` scans unsighted while
     /// its engine is still `.idle`, it is torn down.
     func handleScanWithoutWinner() {
+        assertMainQueue()
         guard coordinator.stateMachine.isAcceptingPrompts else { return }
         guard coordinator.lifecycleCoord.isEngaged else {
             staleEngage.clear()
@@ -2686,6 +2742,7 @@ final class MeetingSessionController: @unchecked Sendable {
     }
 
     func disengageLifecycle() {
+        assertMainQueue()
         staleEngage.clear()
         releaseTeardownHold()
         // PERF15: a discovery build still walking belongs to the session being torn down, so its

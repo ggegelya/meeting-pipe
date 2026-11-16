@@ -46,6 +46,12 @@ public final class RealAXBackend: AXObserverBus.Backend {
         var handlerCount: Int = 0
         /// False once the run-loop source is off the main run loop, so it comes off once.
         var sourceAttached = true
+        /// CONC6: the entry owns every handler box registered on its observer, so none is freed while a
+        /// callback on main (which runs from this observer's source) can still be using it. Freed, on
+        /// main, when the entry is discarded and its source is off the run loop. A torn-down handler's
+        /// box stays until then, with `cancel()` set so a late callback does nothing; the entry is
+        /// discarded the moment its last handler goes (every meeting end), which bounds the growth.
+        var boxes: [HandlerBox] = []
         init(observer: AnyObject) { self.observer = observer }
     }
 
@@ -81,11 +87,14 @@ public final class RealAXBackend: AXObserverBus.Backend {
     ) throws -> () -> Void {
         let entry = try obtainObserver(for: pid)
         let handlerBox = HandlerBox(handler: handler)
-        let userInfo = Unmanaged.passRetained(handlerBox).toOpaque()
+        lock.lock(); entry.boxes.append(handlerBox); lock.unlock()
+        // Unretained: the entry's `boxes` is the owner (CONC6), so the C callback can never be handed a
+        // box a teardown on another thread has already released.
+        let userInfo = Unmanaged.passUnretained(handlerBox).toOpaque()
 
         let addErr = calls.addNotification(entry.observer, element, notification as CFString, userInfo)
         guard addErr == .success else {
-            Unmanaged<HandlerBox>.fromOpaque(userInfo).release()
+            handlerBox.cancel()
             // PERF16: give back the slot `obtainObserver` reserved. Before this, a
             // failed first add left the observer cached and its source on the main
             // run loop until a later register/unregister cycle for the same PID.
@@ -96,7 +105,9 @@ public final class RealAXBackend: AXObserverBus.Backend {
         let calls = self.calls
         return { [weak self] in
             calls.removeNotification(entry.observer, element, notification as CFString)
-            Unmanaged<HandlerBox>.fromOpaque(userInfo).release()
+            // A notification already queued on the observer can still be delivered after the removal;
+            // it finds a cancelled box, which is alive until the entry goes.
+            handlerBox.cancel()
             self?.releaseObserver(entry, pid: pid)
         }
     }
@@ -147,10 +158,15 @@ public final class RealAXBackend: AXObserverBus.Backend {
         guard entry.sourceAttached else { return }
         entry.sourceAttached = false
         calls.removeSource(entry.observer)
+        // The source is off the run loop, so no new callback starts. One already running on main holds
+        // the main queue, so a release hopped onto it runs after that callback returns (CONC6).
+        let boxes = entry.boxes
+        entry.boxes = []
+        DispatchQueue.main.async { withExtendedLifetime(boxes) {} }
     }
 }
 
-/// AXObserver callback (C function pointer required). Per-handler closure is stored in a retained `HandlerBox` passed as `userInfo`; the callback unboxes and invokes it.
+/// AXObserver callback (C function pointer required). Per-handler closure is stored in a `HandlerBox` owned by its `ObserverEntry` (CONC6) and passed unretained as `userInfo`; the callback unboxes it and invokes it unless a teardown cancelled it.
 private func AXBackendCallback(
     _ observer: AXObserver,
     _ element: AXUIElement,
@@ -159,10 +175,23 @@ private func AXBackendCallback(
 ) {
     guard let userInfo = userInfo else { return }
     let box = Unmanaged<HandlerBox>.fromOpaque(userInfo).takeUnretainedValue()
-    box.handler()
+    box.fire()
 }
 
 private final class HandlerBox {
-    let handler: () -> Void
+    private let handler: () -> Void
+    /// Set by a teardown (any thread), read by the callback on main.
+    private let cancelled = NSLock()
+    private var isCancelled = false
+
     init(handler: @escaping () -> Void) { self.handler = handler }
+
+    func cancel() {
+        cancelled.lock(); isCancelled = true; cancelled.unlock()
+    }
+
+    func fire() {
+        cancelled.lock(); let live = !isCancelled; cancelled.unlock()
+        if live { handler() }
+    }
 }
