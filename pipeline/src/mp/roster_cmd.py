@@ -39,6 +39,18 @@ def main(argv: list[str]) -> int:
              "so the original diarization label always survives an undo.",
     )
 
+    unenroll = sub.add_parser(
+        "unenroll",
+        help="Take back the one voice sample a meeting speaker added to a person (FEAT24).",
+    )
+    unenroll.add_argument("--name", required=True, help="The person the speaker was enrolled as.")
+    unenroll.add_argument(
+        "--label", required=True, help="The speaker's transcript label when it was enrolled."
+    )
+    unenroll.add_argument(
+        "--wav", required=True, type=Path, help="Path to the meeting WAV (locates its sidecars)."
+    )
+
     sub.add_parser("list", help="List enrolled roster names.")
 
     forget = sub.add_parser("forget", help="Remove a name from the roster.")
@@ -46,8 +58,9 @@ def main(argv: list[str]) -> int:
     forget.add_argument(
         "--purge-embeddings", action="store_true",
         help="Also strip the name from every meeting's <stem>.embeddings.json in the "
-             "library (SEC22). Opt-in: the daemon's Undo naming also runs `forget`, "
-             "and it must not lose the voices a later re-name needs (FEAT24).",
+             "library (SEC22). Opt-in: a whole-person erasure of every meeting's "
+             "voice for that name. Undo naming and rename no longer run `forget` "
+             "(they run `unenroll`, FEAT24).",
     )
     forget.add_argument(
         "--library", type=Path, default=None,
@@ -67,6 +80,29 @@ def main(argv: list[str]) -> int:
     if args.action == "list":
         for name in roster.names():
             print(name)
+        return 0
+
+    if args.action == "unenroll":
+        wav = args.wav
+        # The label's vector is only needed to recognise a sample enrolled before
+        # provenance existed; a missing sidecar or label means provenance-only
+        # matching, not an error.
+        embedding = None
+        try:
+            edata = json.loads((wav.parent / f"{wav.stem}.embeddings.json").read_text(encoding="utf-8"))
+            embedding = (edata.get("embeddings") or {}).get(args.label)
+        except (OSError, ValueError, AttributeError):
+            pass
+        removed, person_removed = roster.unenroll(args.name, wav.stem, args.label, embedding)
+        from . import events
+
+        events.emit(
+            "pipeline", "roster_unenrolled",
+            name=args.name, label=args.label, stem=wav.stem,
+            removed=removed, person_removed=person_removed,
+        )
+        print(f"unenrolled {removed} sample(s) of {args.name!r} for {args.label!r}"
+              + (" (person removed)" if person_removed else ""))
         return 0
 
     if args.action == "forget":
@@ -107,7 +143,7 @@ def main(argv: list[str]) -> int:
         print(f"no embedding for label {args.label!r} in {emb_path}")
         return 2
 
-    roster.enroll(args.name, embedding)
+    roster.enroll(args.name, embedding, stem=wav.stem, label=args.label)
     if not args.no_relabel:
         _relabel_transcript(wav, args.label, args.name)
 

@@ -546,6 +546,7 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertFalse(supervised(["actions", "--open", "--cluster"], nil))
         XCTAssertFalse(supervised(["roster", "enroll", "--name", "A"], wav))
         XCTAssertFalse(supervised(["roster", "forget", "--name", "A"], nil))
+        XCTAssertFalse(supervised(["roster", "unenroll", "--name", "A", "--label", "THEM-A"], nil))
     }
 
     func test_attachSupervisor_gives_a_stdin_pipe_and_exports_the_flag() {

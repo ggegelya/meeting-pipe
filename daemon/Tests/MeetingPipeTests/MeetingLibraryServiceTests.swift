@@ -112,6 +112,15 @@ final class MeetingLibraryServiceTests: XCTestCase {
         private(set) var enrollInputs: [(name: String, label: String, noRelabel: Bool)] = []
         private var enrollCompletions: [(Result<Void, Error>) -> Void] = []
         private(set) var forgetInputs: [String] = []
+        // FEAT24: per-sample take-back. The stem is the anchor's, so a test can pin that
+        // the unenroll names THIS meeting and not another.
+        private(set) var unenrollInputs: [(name: String, label: String, stem: String)] = []
+        var unenrollResult: Result<Void, Error> = .success(())
+
+        func rosterUnenroll(name: String, label: String, wav: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+            unenrollInputs.append((name, label, wav.deletingPathExtension().lastPathComponent))
+            completion(unenrollResult)
+        }
 
         func rosterEnroll(name: String, label: String, wav: URL, noRelabel: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
             enrollInputs.append((name, label, noRelabel))
@@ -1004,20 +1013,39 @@ final class MeetingLibraryServiceTests: XCTestCase {
         driver.finishEnroll(.success(()))
         drainMain()
         XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["THEM-A"], "Rana")
+        // FEAT24: the old name loses this meeting's sample only, never the whole person.
+        XCTAssertEqual(driver.unenrollInputs.map(\.name), ["Aditya"])
+        XCTAssertEqual(driver.unenrollInputs.map(\.label), ["THEM-A"])
+        XCTAssertEqual(driver.unenrollInputs.map(\.stem), ["m"])
+        XCTAssertTrue(driver.forgetInputs.isEmpty, "rename must not forget the old person")
     }
 
-    func test_undoSpeakerNaming_of_an_overlay_only_name_does_not_forget() throws {
-        // Nothing was ever enrolled for a voiceprint-less label, so forgetting it would
-        // fail and raise a misleading "couldn't remove them from your roster".
+    func test_renameSpeaker_does_not_unenroll_the_old_name_when_the_new_enroll_fails() throws {
+        try writeEmbeddings(["THEM-A": [0.1]], stem: "m")
+        _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Aditya", stem: "m", in: dir)
+        service.renameSpeaker(stem: "m", label: "THEM-A", oldName: "Aditya", newName: "Rana") { _ in }
+        driver.finishEnroll(.failure(NSError(domain: "t", code: 1)))
+        drainMain()
+        XCTAssertTrue(driver.unenrollInputs.isEmpty && driver.forgetInputs.isEmpty,
+                      "the old person is untouched when the new name did not take")
+        XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["THEM-A"], "Aditya")
+    }
+
+    func test_undoSpeakerNaming_of_an_overlay_only_name_does_not_touch_the_roster() throws {
+        // Nothing was ever enrolled for a voiceprint-less label, so there is no sample to
+        // take back and a subprocess would only raise a misleading "couldn't remove them".
         _ = try SpeakerLabelStore.setLabel("speaker_unknown", to: "Raza", stem: "m", in: dir)
         var captured: Result<Void, Error>?
         service.undoSpeakerNaming(stem: "m", label: "speaker_unknown", name: "Raza") { captured = $0 }
         guard case .success? = captured else { return XCTFail("expected success") }
         XCTAssertTrue(SpeakerLabelStore.read(stem: "m", in: dir).labels.isEmpty, "the label still reverts")
-        XCTAssertTrue(driver.forgetInputs.isEmpty, "a name the roster never held is not forgotten")
+        XCTAssertTrue(driver.forgetInputs.isEmpty && driver.unenrollInputs.isEmpty,
+                      "a name the roster never held touches nothing")
     }
 
-    func test_undoSpeakerNaming_reverts_overlay_immediately_and_forgets() throws {
+    func test_undoSpeakerNaming_reverts_overlay_and_takes_back_only_this_meetings_sample() throws {
+        // FEAT24: undo is the inverse of naming. It must never run the whole-person
+        // `rosterForget`, which deleted the person's samples from every other meeting.
         try writeEmbeddings(["THEM-A": [0.1]], stem: "m")
         _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Alice", stem: "m", in: dir)
         var captured: Result<Void, Error>?
@@ -1027,8 +1055,38 @@ final class MeetingLibraryServiceTests: XCTestCase {
         // original diarization label is fully restored.
         XCTAssertTrue(SpeakerLabelStore.read(stem: "m", in: dir).labels.isEmpty)
         drainMain()
-        XCTAssertEqual(driver.forgetInputs, ["Alice"], "undo must un-enroll the voice from the roster")
+        XCTAssertEqual(driver.unenrollInputs.count, 1)
+        XCTAssertEqual(driver.unenrollInputs.first?.name, "Alice")
+        XCTAssertEqual(driver.unenrollInputs.first?.label, "THEM-A")
+        XCTAssertEqual(driver.unenrollInputs.first?.stem, "m", "this meeting's sample, not another's")
+        XCTAssertTrue(driver.forgetInputs.isEmpty, "undo must never erase the person from every meeting")
         guard case .success? = captured else { return XCTFail("expected success") }
+    }
+
+    func test_undoSpeakerNaming_on_a_carried_name_unenrolls_this_meeting_and_never_forgets() throws {
+        // A rename-everywhere carry writes labels[raw] = new into meetings where the owner
+        // never enrolled a sample, and the raw label (the baked name) is in the sidecar's
+        // voiceprint keys, so the guard passes. The Python no-match case leaves the roster
+        // untouched; what this pins is that the daemon asks for this meeting only.
+        try writeEmbeddings(["Dana": [0.1]], stem: "m")
+        _ = try SpeakerLabelStore.setLabel("Dana", to: "Danielle", stem: "m", in: dir)
+        service.undoSpeakerNaming(stem: "m", label: "Dana", name: "Danielle") { _ in }
+        drainMain()
+        XCTAssertTrue(SpeakerLabelStore.read(stem: "m", in: dir).labels.isEmpty)
+        XCTAssertEqual(driver.unenrollInputs.map(\.name), ["Danielle"])
+        XCTAssertEqual(driver.unenrollInputs.map(\.stem), ["m"])
+        XCTAssertTrue(driver.forgetInputs.isEmpty)
+    }
+
+    func test_undoSpeakerNaming_reports_a_failed_take_back_but_still_reverts() throws {
+        try writeEmbeddings(["THEM-A": [0.1]], stem: "m")
+        _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Alice", stem: "m", in: dir)
+        driver.unenrollResult = .failure(NSError(domain: "t", code: 1))
+        var captured: Result<Void, Error>?
+        service.undoSpeakerNaming(stem: "m", label: "THEM-A", name: "Alice") { captured = $0 }
+        drainMain()
+        XCTAssertTrue(SpeakerLabelStore.read(stem: "m", in: dir).labels.isEmpty, "the display still reverts")
+        guard case .failure? = captured else { return XCTFail("expected the failure to be surfaced") }
     }
 
     func test_reassignSegments_writes_overlay_and_reset_reverts() {

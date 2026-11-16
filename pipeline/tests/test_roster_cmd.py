@@ -97,3 +97,68 @@ def test_rename_via_cli(tmp_path, monkeypatch, capsys):
     # An absent person is a non-zero exit and leaves the roster unchanged.
     assert roster_main(["rename", "--old", "Ghost", "--new", "X"]) == 1
     assert RosterStore(tmp_path / "roster.json").names() == ["Alicia"]
+
+
+def _capture_events(monkeypatch):
+    seen: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr("mp.events.emit", lambda cat, action, **kw: seen.append((cat, action, kw)))
+    return seen
+
+
+def test_enroll_records_the_meeting_as_the_samples_source(tmp_path, monkeypatch):
+    # FEAT24: the provenance that lets Undo naming take back only this meeting's sample.
+    monkeypatch.setattr("mp.roster.ROSTER_PATH", tmp_path / "roster.json")
+    wav = _write_meeting(tmp_path)
+    assert roster_main(
+        ["enroll", "--name", "Alice", "--label", "THEM-A", "--wav", str(wav), "--no-relabel"]
+    ) == 0
+    person = json.loads((tmp_path / "roster.json").read_text())["people"][0]
+    assert [(x["stem"], x["label"]) for x in person["sources"]] == [(wav.stem, "THEM-A")]
+
+
+def test_unenroll_takes_back_one_meeting_and_keeps_the_person(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("mp.roster.ROSTER_PATH", tmp_path / "roster.json")
+    events = _capture_events(monkeypatch)
+    wav = _write_meeting(tmp_path)
+    other = _write_meeting(tmp_path, stem="20260602-0900")
+    for w in (wav, other):
+        assert roster_main(
+            ["enroll", "--name", "Alice", "--label", "THEM-A", "--wav", str(w), "--no-relabel"]
+        ) == 0
+    events.clear()
+
+    assert roster_main(["unenroll", "--name", "Alice", "--label", "THEM-A", "--wav", str(wav)]) == 0
+    person = json.loads((tmp_path / "roster.json").read_text())["people"][0]
+    assert [s["stem"] for s in person["sources"]] == [other.stem]
+    assert events == [("pipeline", "roster_unenrolled", {
+        "name": "Alice", "label": "THEM-A", "stem": wav.stem, "removed": 1, "person_removed": False,
+    })]
+
+    events.clear()
+    assert roster_main(["unenroll", "--name", "Alice", "--label", "THEM-A", "--wav", str(other)]) == 0
+    assert RosterStore(tmp_path / "roster.json").names() == []
+    assert events[0][2]["person_removed"] is True
+
+
+def test_unenroll_without_the_sidecar_matches_by_provenance_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr("mp.roster.ROSTER_PATH", tmp_path / "roster.json")
+    events = _capture_events(monkeypatch)
+    wav = _write_meeting(tmp_path)
+    roster_main(["enroll", "--name", "Alice", "--label", "THEM-A", "--wav", str(wav), "--no-relabel"])
+    (tmp_path / f"{wav.stem}.embeddings.json").unlink()
+    events.clear()
+    assert roster_main(["unenroll", "--name", "Alice", "--label", "THEM-A", "--wav", str(wav)]) == 0
+    assert events[0][2]["removed"] == 1
+
+
+def test_unenroll_with_nothing_to_take_back_is_a_clean_noop(tmp_path, monkeypatch):
+    monkeypatch.setattr("mp.roster.ROSTER_PATH", tmp_path / "roster.json")
+    events = _capture_events(monkeypatch)
+    wav = _write_meeting(tmp_path)
+    other = _write_meeting(tmp_path, stem="20260602-0900")
+    roster_main(["enroll", "--name", "Alice", "--label", "THEM-A", "--wav", str(other), "--no-relabel"])
+    before = (tmp_path / "roster.json").read_bytes()
+    events.clear()
+    assert roster_main(["unenroll", "--name", "Alice", "--label", "THEM-A", "--wav", str(wav)]) == 0
+    assert (tmp_path / "roster.json").read_bytes() == before
+    assert events[0][2]["removed"] == 0 and events[0][2]["person_removed"] is False

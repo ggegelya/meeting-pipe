@@ -112,7 +112,9 @@ protocol PipelineDriver: AnyObject {
     func rosterEnroll(name: String, label: String, wav: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// As `rosterEnroll`, but `noRelabel` passes `--no-relabel` so `<stem>.json` is not rewritten (FEAT3-UNDO: the daemon shows the name through a reversible overlay). Defaulted to forward to the plain form so fakes are unchanged.
     func rosterEnroll(name: String, label: String, wav: URL, noRelabel: Bool, completion: @escaping (Result<Void, Error>) -> Void)
-    /// Remove a name from the named-speaker roster (FEAT3-UNDO un-enroll): runs `mp roster forget`, so the voice is no longer auto-named in later meetings. Defaulted no-op.
+    /// Take back the one voice sample a meeting speaker added to a person (FEAT24): runs `mp roster unenroll`, the inverse of one `rosterEnroll`. It removes only the sample recorded for this meeting's `label` (and the person only when that was their sole sample), so the person stays recognised from every other meeting. A meeting that contributed nothing is a successful no-op. Defaulted to failure so a fake that does not implement it cannot pass a test by silently skipping it.
+    func rosterUnenroll(name: String, label: String, wav: URL, completion: @escaping (Result<Void, Error>) -> Void)
+    /// Remove a whole person from the named-speaker roster (`mp roster forget`): every sample from every meeting. Reachable only from Preferences' People pane **Remove**, which confirms; Undo naming and rename use `rosterUnenroll` (FEAT24). Defaulted no-op.
     func rosterForget(name: String, completion: @escaping (Result<Void, Error>) -> Void)
     /// Rename a roster person while keeping their voiceprint (FEAT3-MANAGE): runs `mp roster rename`. Defaulted no-op.
     func rosterRename(old: String, new: String, completion: @escaping (Result<Void, Error>) -> Void)
@@ -250,6 +252,14 @@ extension PipelineDriver {
     /// that implement only the plain form get the FEAT3-UNDO variant for free.
     func rosterEnroll(name: String, label: String, wav: URL, noRelabel: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
         rosterEnroll(name: name, label: label, wav: wav, completion: completion)
+    }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func rosterUnenroll(name: String, label: String, wav: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "rosterUnenroll unsupported by this driver"]
+        )))
     }
 
     /// Default no-op stub; `PipelineLauncher` overrides this.
@@ -1014,7 +1024,15 @@ final class PipelineLauncher: PipelineDriver {
         runMP(args, timeout: 60, meeting: wav, completion: completion)
     }
 
-    /// FEAT3-UNDO un-enroll: `mp roster forget --name`. Fully local (roster.json), no
+    /// FEAT24: `mp roster unenroll --name --label --wav`, the exact inverse of one
+    /// `rosterEnroll`. Fully local (roster.json), no egress, so no meeting anchor for the
+    /// secret policy; `wav` only locates the meeting's `<stem>.embeddings.json`.
+    func rosterUnenroll(name: String, label: String, wav: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        runMP(["roster", "unenroll", "--name", name, "--label", label, "--wav", wav.path],
+              timeout: 30, meeting: nil, completion: completion)
+    }
+
+    /// Whole-person erasure (the Preferences People pane's Remove): `mp roster forget --name`. Fully local (roster.json), no
     /// egress, so it needs no meeting anchor for the secret policy.
     func rosterForget(name: String, completion: @escaping (Result<Void, Error>) -> Void) {
         runMP(["roster", "forget", "--name", name], timeout: 30, meeting: nil, completion: completion)

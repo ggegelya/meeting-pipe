@@ -260,3 +260,186 @@ def test_match_is_the_verdict_half_of_match_detail(tmp_path):
     for c in (0.30, 0.62, 0.90):
         query = _at_cosine(c)
         assert roster.match(query) == roster.match_detail(query).name
+
+
+# FEAT24: per-sample provenance and `unenroll`, the inverse of one `enroll`.
+
+
+def _roster_json(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _person(path, name):
+    return next(p for p in _roster_json(path)["people"] if p["name"] == name)
+
+
+def test_enroll_records_provenance_aligned_with_samples(tmp_path):
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("Alice", _axis(0), stem="m1", label="THEM-A")
+    roster.enroll("Alice", _axis(1), stem="m2", label="THEM-B")
+    roster.enroll("Alice", _axis(2))  # no provenance given: stays legacy-shaped
+    p = _person(path, "Alice")
+    assert len(p["samples"]) == len(p["sources"]) == 3
+    assert [(x["stem"], x["label"]) if x else None for x in p["sources"]] == [
+        ("m1", "THEM-A"),
+        ("m2", "THEM-B"),
+        None,
+    ]
+
+
+def test_unenroll_removes_only_this_meetings_sample(tmp_path):
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    for i, stem in enumerate(("m1", "m2", "m3")):
+        roster.enroll("Alice", _axis(i), stem=stem, label="THEM-A")
+    removed, person_removed = roster.unenroll("Alice", "m2", "THEM-A")
+    assert (removed, person_removed) == (1, False)
+    p = _person(path, "Alice")
+    assert [s["stem"] for s in p["sources"]] == ["m1", "m3"]
+    assert len(p["samples"]) == 2
+    assert p["centroids"] == kmeans_centroids(p["samples"])
+    # Still recognised from the meetings that remain.
+    assert roster.match(_axis(0, tilt=0.05, tilt_axis=5)) == "Alice"
+
+
+def test_unenroll_sole_sample_removes_the_person(tmp_path):
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("Alice", _axis(0), stem="m1", label="THEM-A")
+    roster.enroll("Bob", _axis(1), stem="m1", label="THEM-B")
+    assert roster.unenroll("Alice", "m1", "THEM-A") == (1, True)
+    assert roster.names() == ["Bob"]
+
+
+def test_unenroll_other_label_or_stem_or_person_is_byte_identical(tmp_path):
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("Alice", _axis(0), stem="m1", label="THEM-A")
+    before = path.read_bytes()
+    assert roster.unenroll("Alice", "m1", "THEM-B") == (0, False)
+    assert roster.unenroll("Alice", "m9", "THEM-A") == (0, False)
+    assert roster.unenroll("Nobody", "m1", "THEM-A") == (0, False)
+    assert path.read_bytes() == before
+
+
+def test_unenroll_legacy_sample_needs_a_matching_vector(tmp_path):
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("Alice", _axis(0))  # no provenance
+    roster.enroll("Alice", _axis(1), stem="m2", label="THEM-A")
+    before = path.read_bytes()
+    # No vector given: legacy samples are never touched.
+    assert roster.unenroll("Alice", "m1", "THEM-A") == (0, False)
+    # A different voice does not match the legacy sample.
+    assert roster.unenroll("Alice", "m1", "THEM-A", _axis(7)) == (0, False)
+    assert path.read_bytes() == before
+    # The same vector (unnormalised, as a sidecar holds it) does.
+    assert roster.unenroll("Alice", "m1", "THEM-A", [3.0 * x for x in _axis(0)]) == (1, False)
+    p = _person(path, "Alice")
+    assert [s["stem"] for s in p["sources"]] == ["m2"]
+
+
+def test_a_roster_written_before_provenance_loads_matches_and_enrolls(tmp_path):
+    path = tmp_path / "roster.json"
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "people": [{
+            "name": "Alice",
+            "samples": [_axis(0), _axis(0, tilt=0.05, tilt_axis=2)],
+            "centroids": kmeans_centroids([_axis(0), _axis(0, tilt=0.05, tilt_axis=2)]),
+        }],
+    }))
+    roster = RosterStore(path)
+    assert roster.match(_axis(0)) == "Alice"
+    roster.enroll("Alice", _axis(0, tilt=0.1, tilt_axis=3), stem="m1", label="THEM-A")
+    p = _person(path, "Alice")
+    assert len(p["samples"]) == 3
+    assert p["sources"][:2] == [None, None] and p["sources"][2]["stem"] == "m1"
+
+
+def test_eviction_and_dimension_filter_keep_provenance_aligned(tmp_path):
+    from mp.roster import _MAX_SAMPLES
+
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    for i in range(_MAX_SAMPLES + 3):
+        roster.enroll("Alice", _axis(i % 200), stem=f"m{i}", label="THEM-A")
+    p = _person(path, "Alice")
+    assert len(p["samples"]) == len(p["sources"]) == _MAX_SAMPLES
+    assert p["sources"][0]["stem"] == "m3" and p["sources"][-1]["stem"] == f"m{_MAX_SAMPLES + 2}"
+
+    # A wrong-dimension sample already on disk goes with its provenance, not another's.
+    p["samples"].insert(0, [1.0, 2.0])
+    p["sources"].insert(0, {"stem": "bad", "label": "X"})
+    path.write_text(json.dumps({"schema_version": 1, "people": [p]}))
+    roster.enroll("Alice", _axis(150), stem="fresh", label="THEM-A")
+    p = _person(path, "Alice")
+    assert all(len(s) == EMBEDDING_DIM for s in p["samples"])
+    assert len(p["samples"]) == len(p["sources"])
+    assert all(src is None or src["stem"] != "bad" for src in p["sources"])
+    assert p["sources"][-1]["stem"] == "fresh"
+
+
+def test_misaligned_sources_read_as_legacy_never_shifted(tmp_path):
+    path = tmp_path / "roster.json"
+    path.write_text(json.dumps({"schema_version": 1, "people": [{
+        "name": "Alice", "samples": [_axis(0), _axis(1)],
+        "sources": [{"stem": "m1", "label": "THEM-A"}], "centroids": [],
+    }]}))
+    roster = RosterStore(path)
+    # One source for two samples cannot say which is which, so neither is attributed.
+    assert roster.unenroll("Alice", "m1", "THEM-A") == (0, False)
+
+
+def test_rename_keeps_provenance(tmp_path):
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("Alice", _axis(0), stem="m1", label="THEM-A")
+    assert roster.rename("Alice", "Alicia")
+    assert roster.unenroll("Alicia", "m1", "THEM-A") == (1, True)
+
+
+def test_an_older_writer_that_shifted_the_samples_is_never_believed(tmp_path):
+    # An install from before provenance appends a sample, trims to the cap and rewrites the
+    # person without touching `sources`: both lists stay the same length but every entry now
+    # sits beside the wrong vector. The fingerprint is what stops m6's sample being removed
+    # when m5 is undone.
+    from mp.roster import _MAX_SAMPLES
+
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    for i in range(_MAX_SAMPLES):
+        roster.enroll("A", _axis(i), stem=f"m{i}", label="L")
+    p = _person(path, "A")
+    p["samples"] = (p["samples"] + [_axis(100)])[-_MAX_SAMPLES:]  # old enroll: sources untouched
+    path.write_text(json.dumps({"schema_version": 1, "people": [p]}))
+    assert roster.unenroll("A", "m5", "L") == (0, False)
+    assert len(_person(path, "A")["samples"]) == _MAX_SAMPLES
+
+
+def test_unenroll_after_the_label_moved_falls_back_to_the_vector(tmp_path):
+    # A relabel or re-transcribe can re-key the meeting's embedding to the name, so the
+    # daemon asks with a label the sample was not recorded under. Same stem + same vector
+    # still removes it; another meeting's sample never does.
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("A", _axis(0), stem="m1", label="THEM-A")
+    roster.enroll("A", _axis(1), stem="m2", label="THEM-A")
+    assert roster.unenroll("A", "m1", "A") == (0, False)  # no vector: provenance only
+    assert roster.unenroll("A", "m2", "A", _axis(0)) == (0, False)  # vector is m1's, stem is m2
+    assert roster.unenroll("A", "m1", "A", _axis(0)) == (1, False)
+    assert [s["stem"] for s in _person(path, "A")["sources"]] == ["m2"]
+
+
+def test_a_stem_alone_is_kept_as_partial_provenance(tmp_path):
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("A", _axis(0), stem="m1")
+    assert _person(path, "A")["sources"][0]["stem"] == "m1"
+
+
+def test_unenroll_ignores_a_non_numeric_vector(tmp_path):
+    roster = RosterStore(tmp_path / "roster.json")
+    roster.enroll("A", _axis(0), stem="m1", label="L")
+    assert roster.unenroll("A", "m1", "L", ["x"] * EMBEDDING_DIM) == (1, True)

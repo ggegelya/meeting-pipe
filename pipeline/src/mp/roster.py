@@ -16,6 +16,7 @@ per-person sample count is capped, so the k-means stays trivially cheap.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import NamedTuple
@@ -29,6 +30,13 @@ ROSTER_PATH = Path("~/.config/meeting-pipe/roster.json").expanduser()
 _SCHEMA_VERSION = 1
 _MAX_CENTROIDS = 3
 _MAX_SAMPLES = 12  # per person; oldest samples drop out so the roster self-bounds
+
+# A legacy sample (no recorded provenance) is attributed to a meeting only when its
+# stored vector equals that meeting's re-normalised label vector. Enrolment stores
+# `_l2_normalize(embedding)` deterministically, so the same sidecar reproduces the
+# sample to float precision, while a different voice or a re-transcribed sidecar
+# lands far below this (FEAT24).
+UNENROLL_MATCH_MIN = 0.9999
 
 # Two-gate accept rule. Top centroid similarity must clear MATCH_MIN, and the
 # gap to the runner-up person must clear MATCH_MARGIN; otherwise leave unknown.
@@ -62,6 +70,15 @@ class MatchResult(NamedTuple):
 
 
 _NO_CANDIDATES = MatchResult(None, None, None)
+
+
+def _fingerprint(sample: list[float]) -> str:
+    """A short stable digest of one stored sample (FEAT24), kept in its `sources`
+    entry so a provenance record is trusted only beside the exact vector it was
+    written for. An older writer that appends and evicts without knowing about
+    `sources` leaves both lists the same length but shifted by one; without this
+    the shifted entries would attribute a sample to the wrong meeting."""
+    return hashlib.sha1(json.dumps(sample).encode("utf-8")).hexdigest()[:12]
 
 
 def _mean(vectors: list[list[float]]) -> list[float]:
@@ -107,8 +124,14 @@ def kmeans_centroids(samples: list[list[float]], k: int = _MAX_CENTROIDS) -> lis
 class RosterStore:
     """Named third-party voiceprints at ~/.config/meeting-pipe/roster.json.
 
-    Shape: ``{"schema_version": 1, "people": [{"name", "samples", "centroids"}]}``.
-    Absent / malformed file means an empty roster (every speaker stays unknown).
+    Shape: ``{"schema_version": 1, "people": [{"name", "samples", "sources",
+    "centroids"}]}``. `sources` (FEAT24) is index-aligned with `samples`: each entry
+    is ``{"stem", "label", "fp"}`` naming the meeting speaker the sample was taken
+    from (`fp` fingerprints the sample so a shifted list is never believed), or
+    ``null`` for a sample enrolled before provenance existed. It is additive, so
+    a roster written without it loads unchanged and every older reader still sees
+    `samples` as before. Absent / malformed file means an empty roster (every
+    speaker stays unknown).
     """
 
     def __init__(self, path: Path | None = None) -> None:
@@ -183,9 +206,43 @@ class RosterStore:
         near_miss = top_name if (clears_margin and top_sim >= suggest_min) else None
         return MatchResult(None, near_miss, top_sim)
 
-    def enroll(self, name: str, embedding: list[float]) -> None:
+    @staticmethod
+    def _aligned(person: dict) -> tuple[list[list[float]], list[dict | None]]:
+        """A person's samples and their provenance as two equal-length lists.
+
+        Wrong-dimension samples are dropped *with* their provenance. A missing or
+        wrong-length `sources` reads as all-legacy (`None`), and an entry whose
+        fingerprint does not match the sample beside it reads as legacy too, never
+        as another sample's meeting."""
+        raw = person.get("samples")
+        samples = raw if isinstance(raw, list) else []
+        recorded = person.get("sources")
+        sources: list = (
+            recorded if isinstance(recorded, list) and len(recorded) == len(samples)
+            else [None] * len(samples)
+        )
+        pairs = [
+            (smp, origin if isinstance(origin, dict) and origin.get("fp") == _fingerprint(smp) else None)
+            for smp, origin in zip(samples, sources)
+            if isinstance(smp, list) and len(smp) == EMBEDDING_DIM
+        ]
+        return [s for s, _ in pairs], [src for _, src in pairs]
+
+    def enroll(
+        self,
+        name: str,
+        embedding: list[float],
+        *,
+        stem: str | None = None,
+        label: str | None = None,
+    ) -> None:
         """Add a sample embedding to `name` (creating the person if new) and
-        recompute their centroids. A wrong-dimension embedding is ignored."""
+        recompute their centroids. A wrong-dimension embedding is ignored.
+
+        `stem` and `label` record which meeting speaker the sample came from
+        (FEAT24), so `unenroll` can take back this meeting's sample. A stem alone is
+        kept as partial provenance. At the per-person cap the oldest sample drops
+        out to make room, and `unenroll` does not bring it back."""
         name = name.strip()
         if not name or len(embedding) != EMBEDDING_DIM:
             return
@@ -195,12 +252,72 @@ class RosterStore:
         if person is None:
             person = {"name": name, "samples": []}
             people.append(person)
-        samples = [s for s in person.get("samples", []) if len(s) == EMBEDDING_DIM]
+        samples, sources = self._aligned(person)
         samples.append(sample)
+        sources.append({"stem": stem, "label": label, "fp": _fingerprint(sample)} if stem else None)
         samples = samples[-_MAX_SAMPLES:]
+        sources = sources[-_MAX_SAMPLES:]
         person["samples"] = samples
+        person["sources"] = sources
         person["centroids"] = kmeans_centroids(samples)
         self._write(people)
+
+    def unenroll(
+        self,
+        name: str,
+        stem: str,
+        label: str,
+        embedding: list[float] | None = None,
+    ) -> tuple[int, bool]:
+        """Take back what one meeting added to `name` (FEAT24): the inverse of
+        `enroll`, where `forget` is the whole person.
+
+        Removes every sample of `name` recorded as taken from `(stem, label)`.
+        A legacy sample with no provenance, or one recorded for this `stem` under a
+        different label (the label moved since: a relabel or a re-transcribe), is
+        removed only when its vector matches `embedding` (the meeting label's
+        vector) at `UNENROLL_MATCH_MIN`; with no `embedding` those are never
+        touched, and a sample recorded for another meeting never is. Centroids are recomputed
+        from what remains, and the person is removed only when no samples do.
+
+        Returns ``(removed, person_removed)``. A person with no matching sample,
+        or an unknown name, writes nothing and the file stays byte-identical:
+        "this meeting contributed nothing" is a correct no-op."""
+        people = self._people()
+        person = next((p for p in people if p.get("name") == name), None)
+        if person is None:
+            return 0, False
+        target = None
+        if embedding and len(embedding) == EMBEDDING_DIM:
+            try:
+                target = _l2_normalize([float(x) for x in embedding])
+            except (TypeError, ValueError):
+                target = None
+        samples, sources = self._aligned(person)
+        keep_s: list[list[float]] = []
+        keep_src: list[dict | None] = []
+        for sample, src in zip(samples, sources):
+            same_voice = target is not None and cosine_similarity(sample, target) >= UNENROLL_MATCH_MIN
+            if src is None:
+                hit = same_voice
+            elif src.get("stem") == stem:
+                hit = src.get("label") == label or same_voice
+            else:
+                hit = False
+            if not hit:
+                keep_s.append(sample)
+                keep_src.append(src)
+        removed = len(samples) - len(keep_s)
+        if removed == 0:
+            return 0, False
+        if not keep_s:
+            self._write([p for p in people if p is not person])
+            return removed, True
+        person["samples"] = keep_s
+        person["sources"] = keep_src
+        person["centroids"] = kmeans_centroids(keep_s)
+        self._write(people)
+        return removed, False
 
     def forget(self, name: str) -> bool:
         """Remove a person from the roster. Returns True if one was removed."""
@@ -223,10 +340,11 @@ class RosterStore:
         the name is not rewritten, so it stays byte-identical; each rewrite is
         atomic and 0600. An unreadable file is skipped, never replaced.
 
-        Deliberately separate from `forget` (and opt-in from the CLI): the
-        daemon's Undo naming and rename call `forget`, and stripping the
-        embeddings of every meeting there would also strip the voice a later
-        re-name needs (FEAT24)."""
+        Deliberately separate from `forget` (and opt-in from the CLI): stripping
+        the embeddings of every meeting is a whole-person erasure, reachable only
+        from the Preferences People pane's Remove. Undo naming and rename take back
+        one meeting's sample through `unenroll` instead (FEAT24). No in-app control
+        passes the purge yet: Preferences' People Remove runs a plain `forget`."""
         changed = 0
         for path in sorted(Path(library_dir).glob("*.embeddings.json")):
             try:

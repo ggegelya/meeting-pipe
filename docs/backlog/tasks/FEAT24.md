@@ -2,9 +2,9 @@
 id: FEAT24
 title: Undo naming and Un-name in one meeting run a whole-person roster forget, deleting that person's voice samples from every other meeting
 category: Feature
-status: new
+status: partial
 priority: P1
-comment: Filed 2026-11-13 (audit band 2026-11-13). P1, broken promise: naming is advertised as "fully reversible", but undoing one meeting's naming (or renaming it) runs `mp roster forget`, which deletes the whole person and every sample from every other meeting, with no confirm; not yet observed in the field (no undo-naming event in the window); the owner may re-band. Record per-sample provenance (stem, label) in roster.json and remove only this meeting's sample, forgetting the person only when it was their sole sample.
+comment: Shipped 2026-11-16 (ci-local green): roster.json `sources` provenance (stem, label, sample fingerprint), `RosterStore.unenroll` + `mp roster unenroll` + `roster_unenrolled`, `PipelineLauncher.rosterUnenroll`; Undo naming and rename unenroll this meeting's sample only (never `forget`), GUIDE and CONVENTIONS updated. Owed - the owner's approval to close (no owner walkthrough written).
 ---
 
 # FEAT24: Undo naming and Un-name in one meeting run a whole-person roster forget, deleting that person's voice samples from every other meeting
@@ -55,3 +55,5 @@ Source: finding G003 in the [2026-11-12 independent audit](../../audits/2026-11-
 - Events: `pipeline` `roster_unenrolled`, `coordinator` `roster_undo_done` / `roster_undo_failed` and the rename's unenroll pair emitted as scoped; `python3 scripts/truth_fences.py` clean (no new category).
 - [docs/GUIDE.md](../../GUIDE.md) naming recipes updated in the same commit.
 - `bash scripts/ci-local.sh` green; ruff and pyright clean; the commit body states how many tests each tree gained.
+
+**Progress (2026-11-16):** shipped as specced, plus three decisions from the Opus design review: (a) each `sources` entry carries a fingerprint (`fp`) of its sample, because an older writer that appends and evicts at the 12-sample cap leaves both lists the same length but shifted, which removed the wrong meeting's sample in a reproduction; (b) `unenroll` falls back to the vector for a sample recorded under the same stem but a different label (a relabel or re-transcribe moved the label), never another stem's; (c) a stem alone is kept as partial provenance (FEAT19 and STOR7 key by stem). Known limits, in `pipeline/docs/gotchas.md`: undo does not restore a sample evicted at the cap, and the daemon's `voiceprintLabels` guard skips the unenroll when a re-transcribe removed the label from `embeddings.json`.

@@ -202,7 +202,7 @@ Each chip carries two marks, and they mean different things. The coloured dot on
 
 Click **Name** on an unnamed voice to name it. Right-click a chip for the rest:
 
-- A voice you named in **this** meeting offers **Rename…** and **Un-name**.
+- A voice you named in **this** meeting offers **Rename…** and **Un-name**. **Un-name** takes back only the voice sample this meeting added; that person is still recognised from your other meetings, and disappears from your saved voices only if this was their one sample.
 - A voice matched from your saved voices offers **Rename everywhere…**, which renames that person here, in your saved voices, and in every past meeting they appear in.
 - A voice you introduced line by line has no whole-voice name to change, so its chip offers nothing; fix it on the line instead.
 
@@ -210,7 +210,7 @@ Sometimes an unnamed voice offers a second item that reads **Name as** and then 
 
 ### Naming someone so it sticks
 
-Right-click any line from a voice that has not been named and choose **Name this speaker…**. From then on that voice is recognised automatically in later meetings. It is fully reversible: right-click a named speaker for **Rename…** or **Undo naming**, which also stops later meetings using the name.
+Right-click any line from a voice that has not been named and choose **Name this speaker…**. From then on that voice is recognised automatically in later meetings. It is reversible: right-click a named speaker for **Rename…** or **Undo naming**, which removes the voice sample this meeting added and nothing else. The person stays recognised from their other meetings (they leave your saved voices only if this meeting was their one sample), and renaming here moves this meeting's sample off the old name the same way. To erase a person from every meeting, use **Remove** on their row in Preferences ▸ Pipeline ▸ People, which asks first.
 
 Your own on-disk transcript is never altered by any of this. Names are kept alongside it, so undo always restores the original.
 

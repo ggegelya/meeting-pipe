@@ -802,9 +802,13 @@ final class MeetingLibraryService {
 
     /// Undo a naming (FEAT3-UNDO): drop the overlay so the cluster reverts to its
     /// diarization label (recoverable because `<stem>.json` was never rewritten),
-    /// then un-enroll the voiceprint via `mp roster forget` so the voice is no
-    /// longer auto-named in later meetings. The revert is applied first and always,
-    /// so the display reverts even if the un-enroll subprocess fails.
+    /// then take back the one voice sample this meeting added via
+    /// `mp roster unenroll` (FEAT24), the exact inverse of the naming. The person
+    /// stays recognised from their other meetings, and is dropped only when this
+    /// was their sole sample; a meeting that contributed no sample (the name came
+    /// from the pipeline's finalize match or a rename-everywhere carry) leaves the
+    /// roster untouched. The revert is applied first and always, so the display
+    /// reverts even if the un-enroll subprocess fails.
     func undoSpeakerNaming(
         stem: String,
         label: String,
@@ -832,10 +836,19 @@ final class MeetingLibraryService {
         Log.event(category: "coordinator", action: "roster_undo_requested", attributes: [
             "stem": stem, "label": label,
         ])
-        launcher.rosterForget(name: name) { [weak self] result in
+        let anchor = MeetingStore.sidecarAnchorURL(stem: stem, in: dir)
+        launcher.rosterUnenroll(name: name, label: label, wav: anchor) { [weak self] result in
             DispatchQueue.main.async {
-                if case .failure(let err) = result {
-                    self?.notifyError("Reverted the name here, but couldn't remove \(name) from your roster: \(err.localizedDescription)")
+                switch result {
+                case .success:
+                    Log.event(category: "coordinator", action: "roster_undo_done", attributes: [
+                        "stem": stem, "label": label,
+                    ])
+                case .failure(let err):
+                    Log.event(category: "coordinator", action: "roster_undo_failed", attributes: [
+                        "stem": stem, "label": label, "error": err.localizedDescription,
+                    ])
+                    self?.notifyError("Reverted the name here, but couldn't take this meeting's voice sample back from \(name): \(err.localizedDescription)")
                 }
                 completion(result)
             }
@@ -843,7 +856,9 @@ final class MeetingLibraryService {
     }
 
     /// Rename an already-named speaker (FEAT3-UNDO): re-enroll the same voiceprint
-    /// under the new name (no relabel), update the overlay, and forget the old name.
+    /// under the new name (no relabel), update the overlay, and take this meeting's
+    /// voice sample back from the old name (FEAT24). The old person keeps every
+    /// sample from their other meetings.
     func renameSpeaker(
         stem: String,
         label: String,
@@ -893,8 +908,23 @@ final class MeetingLibraryService {
                         completion(.failure(error))
                         return
                     }
-                    // Best-effort: the rename already took; drop the old roster name.
-                    self.launcher.rosterForget(name: oldName) { _ in }
+                    // The rename already took, so a failure here is reported but is not
+                    // a failed rename: the old name keeps a sample it should have lost.
+                    self.launcher.rosterUnenroll(name: oldName, label: label, wav: anchor) { [weak self] result in
+                        DispatchQueue.main.async {
+                            switch result {
+                            case .success:
+                                Log.event(category: "coordinator", action: "roster_rename_unenroll_done", attributes: [
+                                    "stem": stem, "label": label,
+                                ])
+                            case .failure(let err):
+                                Log.event(category: "coordinator", action: "roster_rename_unenroll_failed", attributes: [
+                                    "stem": stem, "label": label, "error": err.localizedDescription,
+                                ])
+                                self?.notifyError("Renamed, but couldn't take this meeting's voice sample back from \(oldName): \(err.localizedDescription)")
+                            }
+                        }
+                    }
                     completion(.success(()))
                 case .failure(let err):
                     self.notifyError("Rename failed: \(err.localizedDescription)")
