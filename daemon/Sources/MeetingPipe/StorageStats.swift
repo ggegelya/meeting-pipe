@@ -196,9 +196,11 @@ enum StorageScanner {
         return total
     }
 
+    /// REC31 (G043): the same reader the recorder's start check, low-space watch and write-failure
+    /// notice use, so the pane cannot disagree with them about the same volume. Unreadable stays 0,
+    /// the pane's existing fallback (no growth projection).
     static func freeBytes(on url: URL) -> Int {
-        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        return Int(values?.volumeAvailableCapacityForImportantUsage ?? 0)
+        Int(RecordingWriteFailure.freeSpace(at: url).freeBytes ?? 0)
     }
 
     /// Every `models--*` entry in the hub root, sized, with the configured local

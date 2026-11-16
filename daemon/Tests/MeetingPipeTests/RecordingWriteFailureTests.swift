@@ -68,6 +68,36 @@ final class RecordingWriteFailureTests: XCTestCase {
         XCTAssertEqual(W.decide(channel: "system", freeBytes: free, volumeName: "Macintosh HD").cause, .diskFull)
     }
 
+    /// REC31: the important-usage key reads 0 with space free on ExFAT, FAT32 and nobrowse
+    /// volumes, so a zero there is unreadable, not a full disk. A volume that really is full
+    /// (both zero) still reads 0.
+    func test_a_zero_important_usage_reading_is_unreadable() {
+        XCTAssertEqual(W.effectiveFreeBytes(importantUsage: 0, available: 50_000_000_000), 50_000_000_000)
+        XCTAssertNil(W.effectiveFreeBytes(importantUsage: 0, available: nil))
+        XCTAssertEqual(W.effectiveFreeBytes(importantUsage: 0, available: 0), 0)
+        XCTAssertEqual(W.effectiveFreeBytes(importantUsage: -1, available: 7), 7)
+    }
+
+    /// The ExFAT shape no longer blames a real write failure on a full disk.
+    func test_a_write_failure_on_an_exfat_shaped_volume_is_unknown_not_disk_full() {
+        let free = W.effectiveFreeBytes(importantUsage: 0, available: 50_000_000_000)
+        XCTAssertEqual(W.decide(channel: "mic", freeBytes: free, volumeName: "USB").cause, .unknown)
+    }
+
+    /// G043: the Storage pane reads the same figure as the recorder.
+    func test_the_storage_pane_reads_free_space_through_the_recorders_reader() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let code = try String(contentsOf: root.appendingPathComponent("Sources/MeetingPipe/StorageStats.swift"), encoding: .utf8)
+        let body = try XCTUnwrap(code.components(separatedBy: "static func freeBytes(on url: URL) -> Int {").dropFirst().first?
+            .components(separatedBy: "\n    }\n").first)
+        XCTAssertTrue(body.contains("RecordingWriteFailure.freeSpace(at: url)"))
+        XCTAssertFalse(body.contains("volumeAvailableCapacityForImportantUsage"))
+        XCTAssertEqual(StorageScanner.freeBytes(on: FileManager.default.temporaryDirectory),
+                       Int(W.freeSpace(at: FileManager.default.temporaryDirectory).freeBytes ?? 0),
+                       accuracy: 50_000_000)
+    }
+
     func test_free_space_reads_for_a_real_directory() {
         let space = W.freeSpace(at: FileManager.default.temporaryDirectory)
         XCTAssertNotNil(space.freeBytes)

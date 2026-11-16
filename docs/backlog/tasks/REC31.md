@@ -2,9 +2,10 @@
 id: REC31
 title: On ExFAT, FAT32 and nobrowse volumes the free-space reader reads zero, so the low-space watch force-stops every recording at its first tick
 category: Recording
-status: new
+status: done
+closed: 2026-11-16
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). Audit G002: effectiveFreeBytes takes min of the two capacity keys and volumeAvailableCapacityForImportantUsage reads 0 with space free on ExFAT, FAT32 and nobrowse volumes, so a library there opens every recording on "Disk: 0m left", LowSpaceWatch's first 60 s tick force-stops it with a false disk-full notice, and a real write failure is blamed on the disk; the default boot-volume library is unaffected. Read a zero important-usage value as unreadable, and route the Storage pane's free space through the same reader (G043).
+comment: Shipped 2026-11-16 - `effectiveFreeBytes` reads an important-usage value of 0 or less as unreadable (so `(0, n)` is n, `(0, 0)` still 0, REC19's `min` kept), and `StorageScanner.freeBytes(on:)` reads through `RecordingWriteFailure.freeSpace(at:)`; on this Mac the pane now reads 19.895 GB against `shutil.disk_usage`'s 19.895 GB (172 KB apart; it showed 29.5 GB of important-usage before). 4 new tests; ci-local green. The optional hdiutil ExFAT image probe was not run.
 ---
 
 # REC31: On ExFAT, FAT32 and nobrowse volumes the free-space reader reads zero, so the low-space watch force-stops every recording at its first tick

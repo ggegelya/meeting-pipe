@@ -78,7 +78,15 @@ enum RecordingWriteFailure {
     /// writes are failing can still read above the threshold there; `available`
     /// (`volumeAvailableCapacity`) is what is free right now. Either one unreadable means the
     /// other is used, and both unreadable is nil, which `decide` reads as `unknown`.
+    ///
+    /// REC31: an `importantUsage` of zero or less is unreadable too, not a measurement. That key
+    /// reads 0 with space free on ExFAT and FAT32 volumes and on any volume mounted `nobrowse`,
+    /// and taking it at face value through `min` opened every recording there on "Disk: 0m left",
+    /// force-stopped it at the low-space watch's first tick, and blamed any real write failure on
+    /// a full disk. `available` decides alone then, so a volume that really is full (0 and 0)
+    /// still reads 0.
     static func effectiveFreeBytes(importantUsage: Int64?, available: Int64?) -> Int64? {
+        let importantUsage = importantUsage.flatMap { $0 > 0 ? $0 : nil }
         switch (importantUsage, available) {
         case let (a?, b?): return min(a, b)
         case let (a?, nil): return a

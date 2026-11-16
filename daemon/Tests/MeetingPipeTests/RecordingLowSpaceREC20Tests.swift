@@ -209,6 +209,22 @@ final class RecordingLowSpaceREC20Tests: XCTestCase {
         XCTAssertEqual(events.count, 1, "the stop is said once")
     }
 
+    /// REC31: a library on an ExFAT volume (important-usage 0, 50 GB actually free), read through
+    /// the real `effectiveFreeBytes`, opens on no countdown and is never stopped by the watch.
+    func test_an_exfat_shaped_volume_neither_warns_at_start_nor_stops() {
+        let exfat = RecordingWriteFailure.effectiveFreeBytes(importantUsage: 0, available: 50 * gb)
+        XCTAssertNil(RecordingLowSpace.preflight(freeBytes: exfat), "no Disk: 0m left at start")
+        let watch = makeWatch()
+        watch.begin(directory: dir, captureBytesPerSecond: rate, start: nil)
+        for _ in 0..<5 {
+            clock += RecordingLowSpace.checkIntervalSeconds
+            nextFree = exfat
+            watch.pollNow()
+        }
+        XCTAssertFalse(events.contains { $0.action == "recording_stopped_low_space" })
+        XCTAssertFalse(updates.contains { if case .stop = $0 { return true }; return false })
+    }
+
     func test_the_warning_is_logged_once_and_the_label_is_pushed_only_when_it_changes() {
         let watch = makeWatch()
         watch.begin(directory: dir, captureBytesPerSecond: rate, start: nil)
