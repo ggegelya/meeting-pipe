@@ -4,7 +4,7 @@ title: A default uninstall deletes the only copies of held-back recordings, ever
 category: Distribution
 status: partial
 priority: P1
-comment: Shipped 2026-11-16 (ci-local green): uninstall.sh keeps Application Support/MeetingPipe (originals/ incl. held/, corrections/, auto_consent.json) unless --purge; --purge lists each with count and size, asks y/N before anything is stopped or removed, refuses exit 2 without a TTY unless --yes; scripts/test-uninstall.sh (scratch HOME, stubbed launchctl/pkill/security/tccutil/killall, pty answers) wired into ci-local truth-fences; SETUP.md and README true. Owed: the owner runs walkthrough steps 1-2 (owner-verify not self-assigned).
+comment: Shipped 2026-11-16 (ci-local fences and daemon lanes green; pipeline lane 1735 passed with test_real_sigint_prints_no_traceback failing under load, passing alone and in a quiet full pytest run): uninstall.sh keeps Application Support/MeetingPipe (originals/ incl. held/, corrections/, auto_consent.json) unless --purge; --purge lists each with count and size, asks y/N before anything is stopped or removed, refuses exit 2 without a TTY unless --yes; scripts/test-uninstall.sh (scratch HOME, stubbed launchctl/pkill/security/tccutil/killall, pty answers) wired into ci-local truth-fences; SETUP.md and README true. Owed: the owner runs walkthrough steps 1-2 (owner-verify not self-assigned).
 ---
 
 # DIST8: A default uninstall deletes the only copies of held-back recordings, every kept original and the corrections corpus, against what SETUP.md promises
