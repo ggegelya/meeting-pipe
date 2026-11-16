@@ -19,15 +19,16 @@ final class ConcurrentHALBackend: CoreAudioHALBus.Backend {
     func register(
         _ address: CoreAudioHALBus.Address,
         handler: @escaping () -> Void
-    ) throws -> () -> Void {
+    ) throws -> () -> OSStatus {
         let id: Int = lock.withLock {
             nextID += 1
             live[nextID] = Registration(selector: address.selector, fire: handler)
             return nextID
         }
         return { [weak self] in
-            guard let self else { return }
+            guard let self else { return noErr }
             self.lock.withLock { self.live[id] = nil }
+            return noErr
         }
     }
 

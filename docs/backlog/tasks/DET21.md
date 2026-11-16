@@ -2,9 +2,9 @@
 id: DET21
 title: CoreAudioHALBus discards a listener removal's status and ProcessAudioSignal re-subscribes every process object on each list change, so leaked listeners multiply re-resolve storms that fill half the event log
 category: Detection
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). RealCoreAudioBackend assigns AudioObjectRemovePropertyListenerBlock's status to _ and the bus logs unsubscribed regardless, and the field shows the listeners stayed registered (27 mute-listener bursts outside any recording, sized to the default-input subscribes since launch in 26 of 27); ProcessAudioSignal drops and re-adds every per-object listener on each system-wide list change, uncoalesced, so halbus rows are 64,374 (56.2 percent of the log) and one minute on 2026-10-12 held 15,020 rows. CONC9's generation guards make stale deliveries inert, which hides the leak. Scope: check and log the removal's status, one listener per object and selector for the daemon's lifetime fanned out inside CoreAudioHALBus, coalesce list-change re-resolves and keep unchanged object ids, back off after an unresolved resolve, one summary row per re-resolve plus a rate-limited stale-delivery count. [Spec](./DET21.md)
+comment: Shipped 2026-11-16: CoreAudioHALBus keeps one backend listener per address with an epoch-tagged fan-out (system-object listeners for the daemon's lifetime, others removed with their status logged as unsubscribed / unsubscribe_failed), ProcessAudioSignal coalesces list changes (250 ms) into one diffing re-resolve with one process_audio_reresolved row and an unresolved back-off (2 s doubling to 60 s, deferred not dropped), and halbus/stale_delivery_count counts what the generation guards drop; measured that the HAL returns noErr for any removal, even of an unknown block, so the status cannot prove a removal. Remainder: the owner's one-week field check (walkthrough steps 1 to 3), not yet approved as owner-verify.
 ---
 
 # DET21: CoreAudioHALBus discards a listener removal's status and ProcessAudioSignal re-subscribes every process object on each list change, so leaked listeners multiply re-resolve storms that fill half the event log
@@ -53,3 +53,11 @@ Correction at filing: the attribution of the 2026-10-12 storm to the leak fits t
 1. [session] Land, rebuild with `./scripts/rebuild.sh`.
 2. [owner] Use the app normally for one working week, then hand over the event log.
 3. [session] From that log: zero `unsubscribe_failed` rows or, if any, the status they carry; `halbus` rows per recorded hour below era 3's 275 (eras 1 and 2: 3,391 and 1,333); `stale_delivery_count` at zero. Record the result here.
+
+**Progress (2026-11-16): what shipped and where it departs from the scope.**
+
+- Item 1 (see the removal) shipped, and its premise was measured wrong: `AudioObjectRemovePropertyListenerBlock` returns `noErr` for the registered block, for the same block twice, and for a block never registered; only a destroyed object gets `!obj`. `test_real_backend_removal_status_cannot_prove_a_removal` pins it. So the D057 block-identity question is not settled by the status; zero `unsubscribe_failed` rows in the field will not mean zero leaks. Provoking a HAL delivery headless to test whether a removed block still fires did not work (an `AudioQueue` client did not move the process-object list), so that stays unmeasured.
+- Item 2 deviates from its wording and keeps its goal. One backend listener per address with the fan-out inside the bus, as specified, but only system-object listeners are kept until `reset()`. A listener on a device or process object is removed when its last handler leaves, because a retained listener on an object the HAL destroys could go deaf if the id returned, and `HALSystemMuteProbe` has no poll behind its listener. Each registration carries an epoch so an old block the HAL still calls reaches nothing, and a removal failing with anything but `!obj` keeps the entry inert for reuse rather than registering twice.
+- Item 5: the bus writes `subscribe_attempt` / `subscribed` only for a real HAL registration, so a re-resolve that adds a never-seen object still writes those two rows for it, once per object per daemon lifetime; a re-resolve over known objects writes no `halbus` row.
+- Tests: 9 new in `CoreAudioHALBusTests`, 6 new in `ProcessAudioSignalTests`; two existing bus tests and the CONC9 race test re-pinned to the shared-listener shape.
+

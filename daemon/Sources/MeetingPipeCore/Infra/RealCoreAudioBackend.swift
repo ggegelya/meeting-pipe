@@ -1,7 +1,7 @@
 import CoreAudio
 import Foundation
 
-/// Production backend for `CoreAudioHALBus`. Wraps `AudioObjectAddPropertyListenerBlock`. Each subscription gets its own dispatch queue so two subscribers on the same property don't share a block pointer; the bus's own queue handles serialisation on top.
+/// Production backend for `CoreAudioHALBus`. Wraps `AudioObjectAddPropertyListenerBlock`; the removal closure returns `AudioObjectRemovePropertyListenerBlock`'s status, which the bus logs (DET21). Each subscription gets its own dispatch queue so two subscribers on the same property don't share a block pointer; the bus's own queue handles serialisation on top.
 public final class RealCoreAudioBackend: CoreAudioHALBus.Backend {
 
     public init() {}
@@ -9,7 +9,7 @@ public final class RealCoreAudioBackend: CoreAudioHALBus.Backend {
     public func register(
         _ address: CoreAudioHALBus.Address,
         handler: @escaping () -> Void
-    ) throws -> () -> Void {
+    ) throws -> () -> OSStatus {
         var addr = AudioObjectPropertyAddress(
             mSelector: address.selector,
             mScope: address.scope,
@@ -29,7 +29,7 @@ public final class RealCoreAudioBackend: CoreAudioHALBus.Backend {
         }
         return {
             var teardownAddr = addr
-            _ = AudioObjectRemovePropertyListenerBlock(
+            return AudioObjectRemovePropertyListenerBlock(
                 address.objectID, &teardownAddr, queue, listenerBlock
             )
         }

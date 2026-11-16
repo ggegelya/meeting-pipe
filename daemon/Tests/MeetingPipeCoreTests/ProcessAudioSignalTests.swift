@@ -282,7 +282,8 @@ final class ProcessAudioSignalTests: XCTestCase {
         eventLog: EventLog = NoopEventLog(),
         probe: @escaping ProcessAudioSignal.Probe,
         resolver: @escaping ProcessAudioSignal.ProcessObjectResolver,
-        pollInterval: TimeInterval = 3600
+        pollInterval: TimeInterval = 3600,
+        reresolveWindow: TimeInterval = 0.01
     ) -> ProcessAudioSignal {
         ProcessAudioSignal(
             halBus: bus,
@@ -290,7 +291,8 @@ final class ProcessAudioSignalTests: XCTestCase {
             probe: probe,
             resolver: resolver,
             pollInterval: pollInterval,
-            slowPollInterval: pollInterval
+            slowPollInterval: pollInterval,
+            reresolveWindow: reresolveWindow
         )
     }
 
@@ -472,7 +474,8 @@ final class ProcessAudioSignalTests: XCTestCase {
         XCTAssertGreaterThan(edges.get(), 1, "the toggling probe never produced an edge")
         XCTAssertEqual(bus.activeSubscriptionCount, 0)
         XCTAssertEqual(backend.liveCount(kAudioProcessPropertyIsRunningInput), 0)
-        XCTAssertEqual(backend.liveCount(kAudioHardwarePropertyProcessObjectList), 0)
+        // The system object's list listener is kept for the daemon's lifetime (DET21), and there is one.
+        XCTAssertEqual(backend.liveCount(kAudioHardwarePropertyProcessObjectList), 1)
     }
 
     func test_on_change_is_delivered_off_main() throws {
@@ -655,5 +658,203 @@ final class ProcessAudioSignalTests: XCTestCase {
         scheduler.tick?()
         XCTAssertEqual(scheduler.armed.last, ProcessAudioSignal.defaultPollInterval)
         signal.stop()
+    }
+
+    // MARK: - DET21: coalesced, diffing re-resolve
+
+    /// Holds one-shot work until the test runs it, and records the delays it was asked for.
+    final class ManualOneShot {
+        var pending: [() -> Void] = []
+        var delays: [TimeInterval] = []
+        func runAll() { let work = pending; pending = []; work.forEach { $0() } }
+    }
+
+    /// A started signal on the inline path with a recording bus backend, a manual one-shot and a
+    /// settable clock, so list changes can be fired and the re-resolve run by hand.
+    private func det21Signal(
+        log: RecordingEventLog,
+        backend: CoreAudioHALBusTests.RecordingBackend,
+        oneShot: ManualOneShot,
+        clock: LockedBox<TimeInterval> = LockedBox(0),
+        resolver: @escaping ProcessAudioSignal.ProcessObjectResolver
+    ) throws -> (ProcessAudioSignal, CoreAudioHALBus) {
+        let bus = CoreAudioHALBus(backend: backend, eventLog: log)
+        let signal = ProcessAudioSignal(
+            halBus: bus,
+            eventLog: log,
+            probe: { _, _ in true },
+            scheduler: manualScheduler(ManualScheduler()),
+            resolver: resolver,
+            oneShot: { delay, work in oneShot.delays.append(delay); oneShot.pending.append(work) },
+            clock: { clock.get() }
+        )
+        try signal.start(context: teamsContext)
+        return (signal, bus)
+    }
+
+    /// Fire the process-object-list listener `times` times and let the bus deliver each.
+    private func fireListChange(
+        _ backend: CoreAudioHALBusTests.RecordingBackend,
+        bus: CoreAudioHALBus,
+        times: Int = 1
+    ) {
+        let list = backend.registrations.first { $0.address.selector == kAudioHardwarePropertyProcessObjectList }
+        for _ in 0..<times { list?.fire() }
+        _ = bus.activeSubscriptionCount   // drains the bus queue
+    }
+
+    func test_a_burst_of_list_changes_causes_one_re_resolve() throws {
+        let log = RecordingEventLog()
+        let backend = CoreAudioHALBusTests.RecordingBackend()
+        let oneShot = ManualOneShot()
+        let resolves = LockedBox(0)
+        let (signal, bus) = try det21Signal(log: log, backend: backend, oneShot: oneShot) { _ in
+            resolves.mutate { $0 += 1 }
+            return .resolved([9999])
+        }
+        XCTAssertEqual(resolves.get(), 1, "the initial resolve")
+
+        fireListChange(backend, bus: bus, times: 6)
+        XCTAssertEqual(oneShot.pending.count, 1, "six deliveries schedule one re-resolve")
+        XCTAssertEqual(oneShot.delays, [ProcessAudioSignal.defaultReresolveWindow])
+        oneShot.runAll()
+        XCTAssertEqual(resolves.get(), 2)
+
+        let rows = log.entries.filter { $0.action == "process_audio_reresolved" }
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.attributes["coalesced"], "6")
+        signal.stop()
+    }
+
+    func test_a_re_resolve_finding_the_same_objects_touches_no_listener() throws {
+        let log = RecordingEventLog()
+        let backend = CoreAudioHALBusTests.RecordingBackend()
+        let oneShot = ManualOneShot()
+        let (signal, bus) = try det21Signal(log: log, backend: backend, oneShot: oneShot) { _ in
+            .resolved([101, 102])
+        }
+        let registrationsBefore = backend.registrations.count
+        let rowsBefore = log.entries.filter { $0.category == "halbus" }.count
+
+        fireListChange(backend, bus: bus)
+        oneShot.runAll()
+
+        XCTAssertEqual(backend.registrations.count, registrationsBefore, "an unchanged object re-subscribed")
+        XCTAssertEqual(backend.teardowns, 0, "an unchanged object was unsubscribed")
+        XCTAssertEqual(bus.activeSubscriptionCount, 2 + listListenerCount)
+        XCTAssertEqual(log.entries.filter { $0.category == "halbus" }.count, rowsBefore, "per-object halbus rows on a re-resolve")
+        let row = log.entries.last { $0.action == "process_audio_reresolved" }
+        XCTAssertEqual(row?.attributes["kept"], "2")
+        XCTAssertEqual(row?.attributes["added"], "0")
+        XCTAssertEqual(row?.attributes["removed"], "0")
+        signal.stop()
+    }
+
+    func test_a_re_resolve_subscribes_only_new_objects_and_drops_vanished_ones() throws {
+        let log = RecordingEventLog()
+        let backend = CoreAudioHALBusTests.RecordingBackend()
+        let oneShot = ManualOneShot()
+        let objects = LockedBox<[AudioObjectID]>([101, 102])
+        let (signal, bus) = try det21Signal(log: log, backend: backend, oneShot: oneShot) { _ in
+            .resolved(objects.get())
+        }
+
+        objects.set([102, 103])
+        fireListChange(backend, bus: bus)
+        oneShot.runAll()
+
+        let processRegistrations = backend.registrations.filter { $0.address.selector == kAudioProcessPropertyIsRunningInput }
+        XCTAssertEqual(processRegistrations.map(\.address.objectID), [101, 102, 103])
+        XCTAssertEqual(backend.teardowns, 1, "only 101 goes")
+        XCTAssertEqual(bus.activeSubscriptionCount, 2 + listListenerCount)
+        let row = log.entries.last { $0.action == "process_audio_reresolved" }
+        XCTAssertEqual(row?.attributes["kept"], "1")
+        XCTAssertEqual(row?.attributes["added"], "1")
+        XCTAssertEqual(row?.attributes["removed"], "1")
+        signal.stop()
+    }
+
+    func test_an_unresolved_resolve_backs_off_the_next_list_change() throws {
+        let log = RecordingEventLog()
+        let backend = CoreAudioHALBusTests.RecordingBackend()
+        let oneShot = ManualOneShot()
+        let clock = LockedBox<TimeInterval>(100)
+        let resolves = LockedBox(0)
+        let (signal, bus) = try det21Signal(log: log, backend: backend, oneShot: oneShot, clock: clock) { _ in
+            resolves.mutate { $0 += 1 }
+            return .unresolved(noErr)
+        }
+        // The initial resolve missed, and the streak retry inside the initial evaluate is skipped
+        // because the probe never returns nil here. The back-off is armed from that miss.
+        let afterStart = resolves.get()
+
+        clock.set(100.5)
+        fireListChange(backend, bus: bus, times: 3)
+        XCTAssertEqual(resolves.get(), afterStart, "a list change inside the back-off re-resolved at once")
+        XCTAssertEqual(oneShot.delays.count, 1)
+        XCTAssertEqual(oneShot.delays[0], ProcessAudioSignal.initialUnresolvedBackoff - 0.5, accuracy: 1e-9,
+                       "deferred to the back-off's end, not dropped")
+
+        clock.set(102)
+        oneShot.runAll()
+        XCTAssertEqual(resolves.get(), afterStart + 1)
+
+        // Missed again: the next back-off doubles.
+        fireListChange(backend, bus: bus)
+        XCTAssertEqual(oneShot.delays.last ?? 0, ProcessAudioSignal.initialUnresolvedBackoff * 2, accuracy: 1e-9)
+        let row = log.entries.last { $0.action == "process_audio_reresolved" }
+        XCTAssertEqual(row?.attributes["resolved"], "false")
+        XCTAssertEqual(row?.attributes["coalesced"], "3")
+        signal.stop()
+    }
+
+    func test_stop_then_start_still_re_resolves_on_list_changes() throws {
+        // A coalesce flag left set by a stopped session would deafen the next one for good.
+        let log = RecordingEventLog()
+        let backend = CoreAudioHALBusTests.RecordingBackend()
+        let oneShot = ManualOneShot()
+        let resolves = LockedBox(0)
+        let (signal, bus) = try det21Signal(log: log, backend: backend, oneShot: oneShot) { _ in
+            resolves.mutate { $0 += 1 }
+            return .resolved([9999])
+        }
+        fireListChange(backend, bus: bus)
+        XCTAssertEqual(oneShot.pending.count, 1)
+        signal.stop()
+        try signal.start(context: teamsContext)
+        oneShot.runAll()   // the stopped session's re-resolve: does nothing
+        let afterRestart = resolves.get()
+
+        fireListChange(backend, bus: bus)
+        XCTAssertEqual(oneShot.pending.count, 1, "the restarted session ignored a list change")
+        oneShot.runAll()
+        XCTAssertEqual(resolves.get(), afterRestart + 1)
+        signal.stop()
+    }
+
+    func test_a_stale_listener_delivery_is_counted() throws {
+        let log = RecordingEventLog()
+        let backend = ConcurrentHALBackend()
+        let bus = CoreAudioHALBus(backend: backend, eventLog: log)
+        let gate = DispatchSemaphore(value: 0)
+        let signal = productionSignal(
+            bus: bus,
+            probe: { _, _ in true },
+            resolver: { _ in .resolved([9999]) }
+        )
+        try signal.start(context: teamsContext)
+        signal.drainForTesting()
+
+        // Park the signal's queue so the delivery is queued under the old generation, then stop.
+        signal.runOnQueueForTesting { gate.wait() }
+        backend.fire(kAudioProcessPropertyIsRunningInput)
+        _ = bus.activeSubscriptionCount
+        signal.stop()
+        gate.signal()
+        signal.drainForTesting()
+
+        XCTAssertTrue(log.entries.contains {
+            $0.action == "stale_delivery_count" && $0.attributes["process_audio"] == "1"
+        })
     }
 }

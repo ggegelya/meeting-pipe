@@ -58,7 +58,11 @@ public final class HALSystemMuteProbe {
             // Delivered on the bus queue: hop with `async`, never `sync`.
             deviceToken = try halBus.subscribe(deviceAddress) { [weak self] in
                 self?.queue.async { [weak self] in
-                    guard let self, self.generation == generation else { return }
+                    guard let self else { return }
+                    guard self.generation == generation else {
+                        self.halBus.noteStaleDelivery(source: "system_mute_device")
+                        return
+                    }
                     self.rebindCurrentDevice(generation: generation)
                 }
             }
@@ -118,7 +122,11 @@ public final class HALSystemMuteProbe {
         )
         muteToken = try halBus.subscribe(muteAddress) { [weak self] in
             self?.queue.async { [weak self] in
-                guard let self, self.generation == generation else { return }
+                guard let self else { return }
+                guard self.generation == generation else {
+                    self.halBus.noteStaleDelivery(source: "system_mute")
+                    return
+                }
                 self._evaluate(reason: "listener", generation: generation)
             }
         }

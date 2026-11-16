@@ -81,6 +81,9 @@ public final class ProcessAudioSignal {
     /// Schedules a repeating tick; returns a cancellation closure.
     public typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
 
+    /// Runs `work` once after the delay, on the signal's queue in production (DET21's coalesced re-resolve).
+    public typealias OneShot = (TimeInterval, @escaping () -> Void) -> Void
+
     /// Set on main, read on the queue, so it lives under `lock`. Called outside the lock.
     public var onChange: ((Bool) -> Void)? {
         get { lock.withLock { _onChange } }
@@ -91,6 +94,14 @@ public final class ProcessAudioSignal {
     /// TECH-PERF5: the backed-off poll rate, held once polls stop bringing news (PERF19;
     /// worst case beside `AdaptivePollCadence.steadyPollsBeforeSlow`).
     public static let defaultSlowPollInterval: TimeInterval = 5.0
+    /// DET21: list-change deliveries inside this window fold into one re-resolve. The owner's
+    /// 2026-10-13 log had six inside 33 ms; each used to re-enumerate and re-subscribe every object.
+    public static let defaultReresolveWindow: TimeInterval = 0.25
+    /// DET21: after a resolve that matched nothing, the next list-driven re-resolve waits this long,
+    /// doubling per further miss up to `maxUnresolvedBackoff`, and resets on a resolve that matched.
+    /// 2026-10-12T08:20 logged 7,637 unresolved rows in 4.9 s for one pid without it.
+    public static let initialUnresolvedBackoff: TimeInterval = 2
+    public static let maxUnresolvedBackoff: TimeInterval = 60
 
     private let halBus: CoreAudioHALBus
     private let eventLog: EventLog
@@ -99,6 +110,9 @@ public final class ProcessAudioSignal {
     private let resolver: ProcessObjectResolver
     private let pollInterval: TimeInterval
     private let slowPollInterval: TimeInterval
+    private let reresolveWindow: TimeInterval
+    private let oneShot: OneShot
+    private let clock: () -> TimeInterval
     /// Confines every field below the lock-guarded pair. Nil when a scheduler is injected (tests run inline).
     private let queue: DispatchQueue?
 
@@ -112,7 +126,8 @@ public final class ProcessAudioSignal {
     // had no reader outside the tests, and the coordinator caches its own copy (END13).
     private var lastValue: Bool?
     private var context: MeetingLifecycleContext?
-    private var halTokens: [CoreAudioHALBus.Token] = []
+    /// One handler per resolved object, keyed by object so a re-resolve keeps the unchanged ones (DET21).
+    private var halTokens: [AudioObjectID: CoreAudioHALBus.Token] = [:]
     /// Separate from `halTokens` because `resolve` tears those down and this one has to outlive it: it is the listener that triggers the re-resolve.
     private var listToken: CoreAudioHALBus.Token?
     private var resolvedObjects: [AudioObjectID] = []
@@ -124,6 +139,13 @@ public final class ProcessAudioSignal {
     private var unresolvedLogged = false
     /// Bounds lazy re-resolution to once per unresolved streak, so an app that never matches does not re-enumerate the whole process list every tick.
     private var reResolvedThisStreak = false
+    /// DET21: a coalesced list-driven re-resolve is scheduled; further list changes only count.
+    private var reresolvePending = false
+    /// List-change deliveries folded into the pending re-resolve, reported as `coalesced`.
+    private var coalescedDeliveries = 0
+    /// DET21: no list-driven re-resolve before this (`clock` time); nil when the last resolve matched.
+    private var unresolvedBackoffUntil: TimeInterval?
+    private var nextUnresolvedBackoff = ProcessAudioSignal.initialUnresolvedBackoff
 
     /// `scheduler` nil is production: the private queue and a `DispatchSourceTimer` poll on it. An
     /// injected scheduler is the test path and runs everything inline on the caller.
@@ -134,7 +156,10 @@ public final class ProcessAudioSignal {
         scheduler: Scheduler? = nil,
         resolver: @escaping ProcessObjectResolver = ProcessAudioSignal.defaultResolver,
         pollInterval: TimeInterval = ProcessAudioSignal.defaultPollInterval,
-        slowPollInterval: TimeInterval = ProcessAudioSignal.defaultSlowPollInterval
+        slowPollInterval: TimeInterval = ProcessAudioSignal.defaultSlowPollInterval,
+        reresolveWindow: TimeInterval = ProcessAudioSignal.defaultReresolveWindow,
+        oneShot: OneShot? = nil,
+        clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.halBus = halBus
         self.eventLog = eventLog
@@ -143,13 +168,20 @@ public final class ProcessAudioSignal {
         self.pollInterval = pollInterval
         self.slowPollInterval = slowPollInterval
         self.cadence = AdaptivePollCadence(fast: pollInterval, slow: slowPollInterval)
+        self.reresolveWindow = reresolveWindow
+        self.clock = clock
         if let scheduler {
             self.scheduler = scheduler
             self.queue = nil
+            // Inline test path: an un-injected one-shot runs at once, so a list change re-resolves synchronously.
+            self.oneShot = oneShot ?? { _, work in work() }
         } else {
             let queue = DispatchQueue(label: "MeetingPipeCore.ProcessAudioSignal", qos: .userInitiated)
             self.queue = queue
             self.scheduler = ProcessAudioSignal.queueScheduler(on: queue)
+            self.oneShot = oneShot ?? { delay, work in
+                queue.asyncAfter(deadline: .now() + delay, execute: work)
+            }
         }
     }
 
@@ -178,6 +210,11 @@ public final class ProcessAudioSignal {
     /// Test seam: wait until every block queued so far has run. A no-op on the inline path.
     func drainForTesting() {
         queue?.sync {}
+    }
+
+    /// Test seam: queue `work` on the signal's queue (inline on the test path).
+    func runOnQueueForTesting(_ work: @escaping () -> Void) {
+        run(work)
     }
 
     // MARK: - Generation (under `lock`)
@@ -217,8 +254,8 @@ public final class ProcessAudioSignal {
 
     private func teardown() {
         if let token = listToken { halBus.unsubscribe(token); listToken = nil }
-        for token in halTokens { halBus.unsubscribe(token) }
-        halTokens = []
+        for token in halTokens.values { halBus.unsubscribe(token) }
+        halTokens = [:]
         resolvedObjects = []
         cancelPoll?(); cancelPoll = nil
         currentPollInterval = 0
@@ -226,58 +263,146 @@ public final class ProcessAudioSignal {
         lastValue = nil
         unresolvedLogged = false
         reResolvedThisStreak = false
+        reresolvePending = false
+        coalescedDeliveries = 0
+        unresolvedBackoffUntil = nil
+        nextUnresolvedBackoff = ProcessAudioSignal.initialUnresolvedBackoff
     }
 
-    /// Resolve the context to its HAL process objects and subscribe a listener per object.
+    /// Why a resolve ran after the initial one: a coalesced list change, or the once-per-streak retry.
+    private struct Reresolve {
+        let reason: String
+        let coalesced: Int
+    }
+
+    /// Resolve the context to its HAL process objects and keep one listener per object.
     ///
     /// A PID is NOT an AudioObjectID, and translating `context.pid` is exactly the mistake DET2's close
     /// rested on, so resolution goes through the enumerate-and-match seam instead. Listener failure is
     /// best-effort: it degrades to the 1 Hz poll (acceptable per TECH-C13) but must be logged.
-    private func resolve(context: MeetingLifecycleContext, generation: UInt64) {
-        for token in halTokens { halBus.unsubscribe(token) }
-        halTokens = []
-        resolvedObjects = []
-
+    ///
+    /// DET21: a re-resolve diffs against the objects already held. An unchanged object keeps its
+    /// handler, only new objects subscribe and only vanished ones unsubscribe, and the whole pass is
+    /// one `process_audio_reresolved` row. Before, every list change dropped and re-added every
+    /// handler, 3N+1 rows each time, which was 56 percent of the event log.
+    private func resolve(context: MeetingLifecycleContext, generation: UInt64, reresolve: Reresolve? = nil) {
+        let held = halTokens
         switch resolver(context) {
         case .resolved(let objects):
+            unresolvedBackoffUntil = nil
+            nextUnresolvedBackoff = ProcessAudioSignal.initialUnresolvedBackoff
             resolvedObjects = objects
-            eventLog.emit(category: "signal", action: "process_audio_object_resolved", attributes: [
-                "bundle_id": context.bundleID,
-                "pid": Int(context.pid),
-                "object_count": objects.count
-            ])
-            for object in objects {
-                let address = CoreAudioHALBus.Address(
-                    objectID: object,
-                    selector: kAudioProcessPropertyIsRunningInput,
-                    scope: kAudioObjectPropertyScopeGlobal,
-                    element: kAudioObjectPropertyElementMain
-                )
-                do {
-                    // Delivered on the bus queue: hop with `async`, never `sync`.
-                    let token = try halBus.subscribe(address) { [weak self] in
-                        self?.run { [weak self] in
-                            guard let self, self.isCurrent(generation) else { return }
-                            self.cadence.noteListener()   // TECH-PERF5: listener is delivering
-                            self.evaluate(reason: "listener", generation: generation)
-                        }
-                    }
-                    halTokens.append(token)
-                } catch {
-                    eventLog.emit(category: "signal", action: "process_audio_listener_unavailable", attributes: [
-                        "bundle_id": context.bundleID,
-                        "pid": Int(context.pid),
-                        "object_id": object,
-                        "error": "\(error)"
-                    ])
-                }
+            let wanted = Set(objects)
+            var removed = 0
+            for (object, token) in held where !wanted.contains(object) {
+                halBus.unsubscribe(token)
+                halTokens[object] = nil
+                removed += 1
+            }
+            var added = 0
+            for object in objects where held[object] == nil && halTokens[object] == nil {
+                subscribeIsRunningInput(object, context: context, generation: generation)
+                added += 1
+            }
+            if let reresolve {
+                eventLog.emit(category: "signal", action: "process_audio_reresolved", attributes: [
+                    "bundle_id": context.bundleID,
+                    "pid": Int(context.pid),
+                    "resolved": true,
+                    "kept": held.count - removed,
+                    "added": added,
+                    "removed": removed,
+                    "coalesced": reresolve.coalesced,
+                    "reason": reresolve.reason
+                ])
+            } else {
+                eventLog.emit(category: "signal", action: "process_audio_object_resolved", attributes: [
+                    "bundle_id": context.bundleID,
+                    "pid": Int(context.pid),
+                    "object_count": objects.count
+                ])
             }
         case .unresolved(let status):
-            eventLog.emit(category: "signal", action: "process_audio_object_unresolved", attributes: [
+            for token in held.values { halBus.unsubscribe(token) }
+            halTokens = [:]
+            resolvedObjects = []
+            let backoff = nextUnresolvedBackoff
+            unresolvedBackoffUntil = clock() + backoff
+            nextUnresolvedBackoff = min(backoff * 2, ProcessAudioSignal.maxUnresolvedBackoff)
+            if let reresolve {
+                eventLog.emit(category: "signal", action: "process_audio_reresolved", attributes: [
+                    "bundle_id": context.bundleID,
+                    "pid": Int(context.pid),
+                    "resolved": false,
+                    "osstatus": Int(status),
+                    "kept": 0,
+                    "added": 0,
+                    "removed": held.count,
+                    "coalesced": reresolve.coalesced,
+                    "reason": reresolve.reason,
+                    "backoff_sec": backoff
+                ])
+            } else {
+                eventLog.emit(category: "signal", action: "process_audio_object_unresolved", attributes: [
+                    "bundle_id": context.bundleID,
+                    "pid": Int(context.pid),
+                    "osstatus": Int(status),
+                    "backoff_sec": backoff
+                ])
+            }
+        }
+    }
+
+    private func subscribeIsRunningInput(_ object: AudioObjectID, context: MeetingLifecycleContext, generation: UInt64) {
+        let address = CoreAudioHALBus.Address(
+            objectID: object,
+            selector: kAudioProcessPropertyIsRunningInput,
+            scope: kAudioObjectPropertyScopeGlobal,
+            element: kAudioObjectPropertyElementMain
+        )
+        do {
+            // Delivered on the bus queue: hop with `async`, never `sync`.
+            halTokens[object] = try halBus.subscribe(address) { [weak self] in
+                self?.run { [weak self] in
+                    guard let self else { return }
+                    guard self.isCurrent(generation) else {
+                        self.halBus.noteStaleDelivery(source: "process_audio")
+                        return
+                    }
+                    self.cadence.noteListener()   // TECH-PERF5: listener is delivering
+                    self.evaluate(reason: "listener", generation: generation)
+                }
+            }
+        } catch {
+            eventLog.emit(category: "signal", action: "process_audio_listener_unavailable", attributes: [
                 "bundle_id": context.bundleID,
                 "pid": Int(context.pid),
-                "osstatus": Int(status)
+                "object_id": object,
+                "error": "\(error)"
             ])
+        }
+    }
+
+    /// DET21: fold list changes into one re-resolve, at most one pending at a time, no sooner than
+    /// `reresolveWindow` and never inside an unresolved back-off. A list change inside the back-off
+    /// is deferred to its end rather than dropped: the streak retry fires once, so a dropped change
+    /// would leave a helper that registered late unseen for the rest of the call.
+    private func scheduleReresolve(generation: UInt64) {
+        coalescedDeliveries += 1
+        guard !reresolvePending else { return }
+        reresolvePending = true
+        let backoffRemaining = unresolvedBackoffUntil.map { $0 - clock() } ?? 0
+        oneShot(max(reresolveWindow, backoffRemaining)) { [weak self] in
+            guard let self, self.isCurrent(generation), let context = self.context else { return }
+            self.reresolvePending = false
+            let coalesced = self.coalescedDeliveries
+            self.coalescedDeliveries = 0
+            self.resolve(
+                context: context,
+                generation: generation,
+                reresolve: Reresolve(reason: "list_changed", coalesced: coalesced)
+            )
+            self.evaluate(reason: "list_changed", generation: generation)
         }
     }
 
@@ -292,8 +417,10 @@ public final class ProcessAudioSignal {
     /// reads. The list itself is the earliest available notice.
     ///
     /// It is also the listener that fires most: any process starting or stopping audio (a browser tab,
-    /// a notification sound) re-resolves, six times inside 33 ms in the owner's 2026-10-13 log. That
-    /// burst is what used to race the main-thread poll over `resolvedObjects` and `halTokens` (CONC9).
+    /// a notification sound) changes the list, six times inside 33 ms in the owner's 2026-10-13 log. That
+    /// burst is what used to race the main-thread poll over `resolvedObjects` and `halTokens` (CONC9),
+    /// and, re-resolving and re-subscribing on every one, what filled half the event log (DET21). So a
+    /// delivery now only schedules one coalesced, diffing re-resolve (`scheduleReresolve`).
     private func subscribeProcessObjectList(context: MeetingLifecycleContext, generation: UInt64) {
         let address = CoreAudioHALBus.Address(
             objectID: AudioObjectID(kAudioObjectSystemObject),
@@ -305,9 +432,12 @@ public final class ProcessAudioSignal {
             // Delivered on the bus queue: hop with `async`, never `sync`.
             listToken = try halBus.subscribe(address) { [weak self] in
                 self?.run { [weak self] in
-                    guard let self, self.isCurrent(generation), let context = self.context else { return }
-                    self.resolve(context: context, generation: generation)
-                    self.evaluate(reason: "list_changed", generation: generation)
+                    guard let self else { return }
+                    guard self.isCurrent(generation), self.context != nil else {
+                        self.halBus.noteStaleDelivery(source: "process_audio_list")
+                        return
+                    }
+                    self.scheduleReresolve(generation: generation)
                 }
             }
         } catch {
@@ -351,7 +481,11 @@ public final class ProcessAudioSignal {
             // the object as process-tied and long-lived, so re-enumerating at 1 Hz would be 33 objects'
             // worth of HAL round-trips a second to learn nothing.
             reResolvedThisStreak = true
-            resolve(context: context, generation: generation)
+            resolve(
+                context: context,
+                generation: generation,
+                reresolve: Reresolve(reason: "unresolved_streak", coalesced: 0)
+            )
             reading = probe(context, resolvedObjects)
         }
 
