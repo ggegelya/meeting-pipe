@@ -2,9 +2,10 @@
 id: PERF12
 title: Playing a meeting's audio re-renders the whole detail pane 15 times a second
 category: Performance
-status: new
+status: done
+closed: 2026-11-16
 priority: P2
-comment: Filed 2026-10-23 from the slow-app audit; code-read. `AudioPlaybackController` publishes `currentTime` at 15 Hz and `MeetingDetailView` owns it as a `@StateObject`, so every tick re-evaluates the detail pane, the transcript list and the summary markdown. Scope: a separate clock observable that only time-drawing views watch. Adjacent to UX78. [Spec](./PERF12.md)
+comment: Shipped 2026-11-16 - PlaybackClock observable owned by the controller; only PlaybackBar, the header transport row, the Audio tab timecode and play head, and invisible clock observers for the transcript highlighter and waveform watch it. One test (30 moves fire the clock 30 times, the controller 0); ci-local green. Not done - the marker-map cache in the transcript list (it now runs per active-row change, not per tick). Owner check (confirms) - sample MeetingPipe 10 while audio plays on Transcript shows no MeetingDetailView.body per tick.
 ---
 
 # PERF12: playing a meeting's audio re-renders the whole detail pane 15 times a second

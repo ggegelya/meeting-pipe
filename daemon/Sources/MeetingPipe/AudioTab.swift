@@ -165,10 +165,7 @@ struct AudioTab: View {
         .buttonStyle(.borderless)
         .help("Play or pause. The Space bar also toggles.")
 
-        Text(WaveformTimecode.format(playback.currentTime))
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(Color(MPColors.fgMuted))
-            .frame(width: 56, alignment: .trailing)
+        ElapsedTimecode(clock: playback.clock)
         Text("/")
             .font(.caption.monospacedDigit())
             .foregroundStyle(Color(MPColors.fgSubtle))
@@ -299,9 +296,9 @@ private struct WaveformContainer: View {
                     .frame(width: baseWidth)
                     .id("wf")
                 }
-                .onChange(of: playback.currentTime) { _, t in
+                .background(PlaybackClockObserver(clock: playback.clock) { t in
                     autoFollow(t, width: baseWidth, viewport: geo.size.width, proxy: proxy)
-                }
+                })
             }
         }
         .padding(.horizontal, 16)
@@ -351,7 +348,7 @@ private struct WaveformBody: View {
             .equatable()
             .frame(minHeight: 220, maxHeight: .infinity)
             .overlay {
-                PlayheadOverlay(playback: playback, durationSec: peaks.durationSec)
+                PlayheadOverlay(clock: playback.clock, durationSec: peaks.durationSec)
             }
             .contentShape(Rectangle())
             .gesture(
@@ -449,17 +446,30 @@ private struct StaticWaveform: View, Equatable {
     }
 }
 
+/// The elapsed-time label (PERF12): the one text in the Audio tab's transport that moves with the
+/// clock, so it watches the clock and the rest of the tab does not.
+private struct ElapsedTimecode: View {
+    @ObservedObject var clock: PlaybackClock
+
+    var body: some View {
+        Text(WaveformTimecode.format(clock.currentTime))
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(Color(MPColors.fgMuted))
+            .frame(width: 56, alignment: .trailing)
+    }
+}
+
 /// Just the play head: a 1.5 pt signal-teal line at the current-time fraction. The only view
 /// in the waveform stack that observes `playback`, so the ~15 Hz tick redraws one line
 /// rather than the whole canvas.
 private struct PlayheadOverlay: View {
-    @ObservedObject var playback: AudioPlaybackController
+    @ObservedObject var clock: PlaybackClock
     let durationSec: Double
 
     var body: some View {
         GeometryReader { geo in
             let fraction = durationSec > 0
-                ? min(max(playback.currentTime / durationSec, 0), 1)
+                ? min(max(clock.currentTime / durationSec, 0), 1)
                 : 0
             let x = CGFloat(fraction) * geo.size.width
             Path { p in

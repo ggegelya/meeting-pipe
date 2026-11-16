@@ -365,7 +365,7 @@ struct TranscriptTab: View {
             }
             content
             Divider()
-            PlaybackBar(playback: playback)
+            PlaybackBar(playback: playback, clock: playback.clock)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
         }
@@ -1004,7 +1004,7 @@ private struct TranscriptList: View {
                 .padding(.horizontal, SummaryLayout.contentPadding)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            .onChange(of: playback.currentTime) { _, t in
+            .background(PlaybackClockObserver(clock: playback.clock) { t in
                 let newIdx = TranscriptSegmentLookup.index(at: t, in: segments)
                 if newIdx != activeIndex {
                     activeIndex = newIdx
@@ -1017,7 +1017,7 @@ private struct TranscriptList: View {
                         }
                     }
                 }
-            }
+            })
             // FEAT10: honour a citation jump both when the request arrives while
             // this tab is already up, and when the tab was only just switched to
             // (the request is set before this view exists, so `onAppear` is the
@@ -1532,6 +1532,8 @@ private struct VocabularyOfferSheet: View {
 
 private struct PlaybackBar: View {
     @ObservedObject var playback: AudioPlaybackController
+    /// PERF12: this bar draws the time, so it (and not the detail pane) watches the clock.
+    @ObservedObject var clock: PlaybackClock
     /// Scrubber value while dragging; committed on release. Without this the slider fights the timer tick and jumps.
     @State private var dragValue: Double? = nil
 
@@ -1582,6 +1584,6 @@ private struct PlaybackBar: View {
     }
 
     private var displayedTime: Double {
-        dragValue ?? playback.currentTime
+        dragValue ?? clock.currentTime
     }
 }

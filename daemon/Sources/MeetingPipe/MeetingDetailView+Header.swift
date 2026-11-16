@@ -83,30 +83,7 @@ extension MeetingDetailView {
     /// waveform, rate, channel and skip-silence controls stay in `AudioTab` where they belong.
     @ViewBuilder
     var transportRow: some View {
-        if let transport = DetailTransport.decide(
-            loadedURL: playback.loadedURL,
-            meetingAudioURL: meeting.audioURL,
-            isPlaying: playback.isPlaying,
-            currentTime: playback.currentTime,
-            duration: playback.duration
-        ) {
-            HStack(spacing: 8) {
-                Button { playback.togglePlayPause() } label: {
-                    Image(systemName: transport.systemImage)
-                }
-                .buttonStyle(.plain)
-                .controlSize(.small)
-                .fixedSize()
-                .help("\(transport.actionLabel) this meeting's audio")
-                .accessibilityLabel(transport.actionLabel)
-                Text(transport.position)
-                    .font(.mpTextXS.monospacedDigit())
-                    .foregroundStyle(Color(MPColors.fgSubtle))
-                    .lineLimit(1)
-                    .accessibilityLabel("Position \(transport.position)")
-            }
-            .accessibilityElement(children: .contain)
-        }
+        DetailTransportRow(playback: playback, clock: playback.clock, meetingAudioURL: meeting.audioURL)
     }
 
     /// What the pipeline is doing for this meeting, and the control for it
@@ -944,4 +921,40 @@ extension MeetingDetailView {
         ])
     }
 
+}
+
+/// The header transport (UX78). Its own view so the position text can watch the play head
+/// (PERF12): `MeetingDetailView` does not observe the clock, and a row declared inline in its
+/// `body` would never redraw on a tick.
+struct DetailTransportRow: View {
+    @ObservedObject var playback: AudioPlaybackController
+    @ObservedObject var clock: PlaybackClock
+    let meetingAudioURL: URL?
+
+    var body: some View {
+        if let transport = DetailTransport.decide(
+            loadedURL: playback.loadedURL,
+            meetingAudioURL: meetingAudioURL,
+            isPlaying: playback.isPlaying,
+            currentTime: clock.currentTime,
+            duration: playback.duration
+        ) {
+            HStack(spacing: 8) {
+                Button { playback.togglePlayPause() } label: {
+                    Image(systemName: transport.systemImage)
+                }
+                .buttonStyle(.plain)
+                .controlSize(.small)
+                .fixedSize()
+                .help("\(transport.actionLabel) this meeting's audio")
+                .accessibilityLabel(transport.actionLabel)
+                Text(transport.position)
+                    .font(.mpTextXS.monospacedDigit())
+                    .foregroundStyle(Color(MPColors.fgSubtle))
+                    .lineLimit(1)
+                    .accessibilityLabel("Position \(transport.position)")
+            }
+            .accessibilityElement(children: .contain)
+        }
+    }
 }

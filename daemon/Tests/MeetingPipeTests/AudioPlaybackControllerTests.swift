@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import os
+import Combine
 import XCTest
 @testable import MeetingPipe
 
@@ -45,6 +46,23 @@ final class AudioPlaybackControllerTests: XCTestCase {
         rig.scheduler.fireAll()
         await playback.engineCallsSettled()
         XCTAssertEqual(rig.engines[0].calls.suffix(2), ["stopPlayer", "stop"], "the grace elapsed, so the output stops")
+    }
+
+    /// PERF12: the play head ticks on its own observable. Thirty moves of it must fire the clock
+    /// 30 times and the controller (which every detail-pane view holds) not at all.
+    func test_clock_ticks_do_not_publish_from_the_controller() async throws {
+        let rig = Rig()
+        let playback = rig.controller()
+        playback.load(url: try wav("a", seconds: 3))
+        await playback.engineCallsSettled()
+        var controllerChanges = 0
+        var clockChanges = 0
+        let a = playback.objectWillChange.sink { controllerChanges += 1 }
+        let b = playback.clock.objectWillChange.sink { clockChanges += 1 }
+        for i in 1...30 { playback.seek(to: Double(i % 3) + 0.1 * Double(i % 7)) }
+        XCTAssertEqual(controllerChanges, 0, "a play-head move must not re-evaluate views holding the controller")
+        XCTAssertEqual(clockChanges, 30)
+        a.cancel(); b.cancel()
     }
 
     func test_a_play_inside_the_grace_keeps_the_engine_and_cancels_the_stop() async throws {

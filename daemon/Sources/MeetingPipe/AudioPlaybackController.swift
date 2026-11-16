@@ -27,7 +27,15 @@ import MeetingPipeCore
 @MainActor
 final class AudioPlaybackController: ObservableObject {
 
-    @Published private(set) var currentTime: TimeInterval = 0
+    /// PERF12: the play head lives on its own observable. It changes ~15 times a second while
+    /// audio plays, and as a `@Published` here it re-evaluated everything that holds this
+    /// controller (the whole detail pane). Only views that draw time observe the clock; this
+    /// controller publishes just the rarely-changing state (`isPlaying`, `duration`, ...).
+    let clock = PlaybackClock()
+    var currentTime: TimeInterval {
+        get { clock.currentTime }
+        set { clock.set(newValue) }
+    }
     @Published private(set) var duration: TimeInterval = 0
     /// True while the player renders, and across a seek's re-anchor so the button does not
     /// flicker. False while a start is still in flight.
