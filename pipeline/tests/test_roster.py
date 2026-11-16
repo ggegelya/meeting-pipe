@@ -10,6 +10,7 @@ from mp.roster import (
     MATCH_MIN,
     SUGGEST_MIN,
     RosterStore,
+    _fingerprint,
     kmeans_centroids,
 )
 
@@ -371,7 +372,7 @@ def test_eviction_and_dimension_filter_keep_provenance_aligned(tmp_path):
 
     # A wrong-dimension sample already on disk goes with its provenance, not another's.
     p["samples"].insert(0, [1.0, 2.0])
-    p["sources"].insert(0, {"stem": "bad", "label": "X"})
+    p["sources"].insert(0, {"stem": "bad", "label": "X", "fp": _fingerprint([1.0, 2.0])})
     path.write_text(json.dumps({"schema_version": 1, "people": [p]}))
     roster.enroll("Alice", _axis(150), stem="fresh", label="THEM-A")
     p = _person(path, "Alice")
@@ -383,13 +384,27 @@ def test_eviction_and_dimension_filter_keep_provenance_aligned(tmp_path):
 
 def test_misaligned_sources_read_as_legacy_never_shifted(tmp_path):
     path = tmp_path / "roster.json"
+    a, b = _axis(0), _axis(1)
+    # An entry carrying the fingerprint of the *other* sample is a shifted list.
     path.write_text(json.dumps({"schema_version": 1, "people": [{
-        "name": "Alice", "samples": [_axis(0), _axis(1)],
-        "sources": [{"stem": "m1", "label": "THEM-A"}], "centroids": [],
+        "name": "Alice", "samples": [a, b],
+        "sources": [{"stem": "m1", "label": "THEM-A", "fp": _fingerprint(b)}], "centroids": [],
     }]}))
     roster = RosterStore(path)
-    # One source for two samples cannot say which is which, so neither is attributed.
     assert roster.unenroll("Alice", "m1", "THEM-A") == (0, False)
+
+
+def test_a_source_list_shorter_than_the_samples_keeps_the_earlier_provenance(tmp_path):
+    # An older install enrolling below the cap appends a sample and leaves `sources` alone:
+    # the earlier entries still sit beside their own samples and stay believed.
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("Alice", _axis(0), stem="m1", label="L")
+    p = _person(path, "Alice")
+    p["samples"].append(_axis(9))  # old enroll: no matching sources entry
+    path.write_text(json.dumps({"schema_version": 1, "people": [p]}))
+    assert roster.unenroll("Alice", "m1", "L") == (1, False)
+    assert len(_person(path, "Alice")["samples"]) == 1
 
 
 def test_rename_keeps_provenance(tmp_path):
@@ -437,6 +452,12 @@ def test_a_stem_alone_is_kept_as_partial_provenance(tmp_path):
     roster = RosterStore(path)
     roster.enroll("A", _axis(0), stem="m1")
     assert _person(path, "A")["sources"][0]["stem"] == "m1"
+
+
+def test_unenroll_ignores_a_vector_that_is_not_a_list(tmp_path):
+    roster = RosterStore(tmp_path / "roster.json")
+    roster.enroll("A", _axis(0), stem="m1", label="L")
+    assert roster.unenroll("A", "m1", "L", 5) == (1, True)  # type: ignore[arg-type]
 
 
 def test_unenroll_ignores_a_non_numeric_vector(tmp_path):

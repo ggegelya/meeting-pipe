@@ -211,16 +211,18 @@ class RosterStore:
         """A person's samples and their provenance as two equal-length lists.
 
         Wrong-dimension samples are dropped *with* their provenance. A missing or
-        wrong-length `sources` reads as all-legacy (`None`), and an entry whose
-        fingerprint does not match the sample beside it reads as legacy too, never
-        as another sample's meeting."""
+        short `sources` reads the unmatched samples as legacy (`None`), and an entry
+        whose fingerprint does not match the sample beside it reads as legacy too,
+        never as another sample's meeting."""
         raw = person.get("samples")
         samples = raw if isinstance(raw, list) else []
         recorded = person.get("sources")
-        sources: list = (
-            recorded if isinstance(recorded, list) and len(recorded) == len(samples)
-            else [None] * len(samples)
-        )
+        recorded = recorded if isinstance(recorded, list) else []
+        # Paired by index with no length check: the per-entry fingerprint below is what
+        # decides whether an entry is believed. An older writer that appended below the
+        # cap leaves `sources` shorter, and the earlier entries still sit beside their
+        # own samples, so they keep their provenance instead of being discarded.
+        sources: list = (recorded + [None] * len(samples))[: len(samples)]
         pairs = [
             (smp, origin if isinstance(origin, dict) and origin.get("fp") == _fingerprint(smp) else None)
             for smp, origin in zip(samples, sources)
@@ -274,7 +276,8 @@ class RosterStore:
 
         Removes every sample of `name` recorded as taken from `(stem, label)`.
         A legacy sample with no provenance, or one recorded for this `stem` under a
-        different label (the label moved since: a relabel or a re-transcribe), is
+        different label (the label moved since, as `mp roster enroll` without
+        `--no-relabel` does by re-keying the sidecar to the name), is
         removed only when its vector matches `embedding` (the meeting label's
         vector) at `UNENROLL_MATCH_MIN`; with no `embedding` those are never
         touched, and a sample recorded for another meeting never is. Centroids are recomputed
@@ -288,7 +291,7 @@ class RosterStore:
         if person is None:
             return 0, False
         target = None
-        if embedding and len(embedding) == EMBEDDING_DIM:
+        if isinstance(embedding, list) and len(embedding) == EMBEDDING_DIM:
             try:
                 target = _l2_normalize([float(x) for x in embedding])
             except (TypeError, ValueError):

@@ -254,7 +254,7 @@ extension PipelineDriver {
         rosterEnroll(name: name, label: label, wav: wav, completion: completion)
     }
 
-    /// Default no-op stub; `PipelineLauncher` overrides this.
+    /// Default failure stub; `PipelineLauncher` overrides this.
     func rosterUnenroll(name: String, label: String, wav: URL, completion: @escaping (Result<Void, Error>) -> Void) {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,

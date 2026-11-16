@@ -1020,6 +1020,19 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertTrue(driver.forgetInputs.isEmpty, "rename must not forget the old person")
     }
 
+    func test_renameSpeaker_still_succeeds_when_taking_the_old_sample_back_fails() throws {
+        try writeEmbeddings(["THEM-A": [0.1]], stem: "m")
+        _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Aditya", stem: "m", in: dir)
+        driver.unenrollResult = .failure(NSError(domain: "t", code: 1))
+        var captured: Result<Void, Error>?
+        service.renameSpeaker(stem: "m", label: "THEM-A", oldName: "Aditya", newName: "Rana") { captured = $0 }
+        driver.finishEnroll(.success(()))
+        drainMain()
+        guard case .success? = captured else { return XCTFail("the rename already took, so it is not a failed rename") }
+        XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["THEM-A"], "Rana")
+        XCTAssertEqual(driver.unenrollInputs.count, 1, "the take-back was attempted once")
+    }
+
     func test_renameSpeaker_does_not_unenroll_the_old_name_when_the_new_enroll_fails() throws {
         try writeEmbeddings(["THEM-A": [0.1]], stem: "m")
         _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Aditya", stem: "m", in: dir)

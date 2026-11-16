@@ -4,7 +4,7 @@ title: Undo naming and Un-name in one meeting run a whole-person roster forget, 
 category: Feature
 status: partial
 priority: P1
-comment: Shipped 2026-11-16 (ci-local green): roster.json `sources` provenance (stem, label, sample fingerprint), `RosterStore.unenroll` + `mp roster unenroll` + `roster_unenrolled`, `PipelineLauncher.rosterUnenroll`; Undo naming and rename unenroll this meeting's sample only (never `forget`), GUIDE and CONVENTIONS updated. Owed - the owner's approval to close (no owner walkthrough written).
+comment: Shipped 2026-11-16 (ci-local fences and daemon lanes green; pipeline lane 1752 passed with test_real_sigint_prints_no_traceback failing under load, passing alone and in a quiet full pytest run of 1753): roster.json `sources` provenance (stem, label, sample fingerprint), `RosterStore.unenroll` + `mp roster unenroll` + `roster_unenrolled`, `PipelineLauncher.rosterUnenroll`; Undo naming and rename unenroll this meeting's sample only (never `forget`), GUIDE and CONVENTIONS updated. Owed - the owner's approval to close (no owner walkthrough written).
 ---
 
 # FEAT24: Undo naming and Un-name in one meeting run a whole-person roster forget, deleting that person's voice samples from every other meeting
@@ -57,3 +57,6 @@ Source: finding G003 in the [2026-11-12 independent audit](../../audits/2026-11-
 - `bash scripts/ci-local.sh` green; ruff and pyright clean; the commit body states how many tests each tree gained.
 
 **Progress (2026-11-16):** shipped as specced, plus three decisions from the Opus design review: (a) each `sources` entry carries a fingerprint (`fp`) of its sample, because an older writer that appends and evicts at the 12-sample cap leaves both lists the same length but shifted, which removed the wrong meeting's sample in a reproduction; (b) `unenroll` falls back to the vector for a sample recorded under the same stem but a different label (a relabel or re-transcribe moved the label), never another stem's; (c) a stem alone is kept as partial provenance (FEAT19 and STOR7 key by stem). Known limits, in `pipeline/docs/gotchas.md`: undo does not restore a sample evicted at the cap, and the daemon's `voiceprintLabels` guard skips the unenroll when a re-transcribe removed the label from `embeddings.json`.
+
+**Review follow-up (2026-11-16):** an Opus review of the landed diff found no way left to erase another meeting's samples, and led to: `sources` entries paired by index with the fingerprint alone deciding (an older writer below the cap leaves a shorter list whose earlier entries stay believed), a non-list embedding in `unenroll` no longer raises, tests that no longer pass for want of a fingerprint, a Swift test for a failed take-back on rename, and the gotcha now saying only the CLI reaches the same-stem vector fallback. Not done, noted: `roster.json` updates are an unlocked read-modify-write, so two `mp roster` spawns started within about a second can lose one update (pre-existing for `forget`; the rename's fire-and-forget unenroll can overlap a following Name).
+
