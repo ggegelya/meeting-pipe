@@ -31,23 +31,26 @@ final class SessionWatchers {
     /// DET23: the always-on 1 Hz record of which process holds audio input. Depends on none of the
     /// others, so it starts last.
     let micHolder: Startable
+    /// END22: wake, unlock and display-change notifications for the session layer.
+    let sleepWake: Startable
 
     /// In start order. Discovery and call-teardown kept the order they had inline in
     /// `Coordinator.start()`; config refresh used to start after hotkey registration, which none of
     /// the three depends on. The Teams-running observer follows the watcher it drives.
-    var members: [Startable] { [discovery, callTeardown, teamsRunning, configRefresh, micHolder] }
+    var members: [Startable] { [discovery, callTeardown, teamsRunning, configRefresh, micHolder, sleepWake] }
 
     private(set) var hasStarted = false
 
     init(
         discovery: Startable, callTeardown: Startable, teamsRunning: Startable, configRefresh: Startable,
-        micHolder: Startable
+        micHolder: Startable, sleepWake: Startable
     ) {
         self.discovery = discovery
         self.callTeardown = callTeardown
         self.teamsRunning = teamsRunning
         self.configRefresh = configRefresh
         self.micHolder = micHolder
+        self.sleepWake = sleepWake
     }
 
     static func production(
@@ -55,11 +58,13 @@ final class SessionWatchers {
         callTeardown: CallTeardownWatcher,
         teamsRunning: TeamsRunningObserver,
         configRefresh: ConfigRefreshCoordinator,
-        micHolder: MicHolderMonitor
+        micHolder: MicHolderMonitor,
+        sleepWake: SleepWakeObserver
     ) -> SessionWatchers {
         SessionWatchers(
             discovery: discovery, callTeardown: callTeardown,
-            teamsRunning: teamsRunning, configRefresh: configRefresh, micHolder: micHolder
+            teamsRunning: teamsRunning, configRefresh: configRefresh, micHolder: micHolder,
+            sleepWake: sleepWake
         )
     }
 

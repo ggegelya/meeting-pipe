@@ -97,7 +97,7 @@ final class TerminalEngineReengageTests: XCTestCase {
         // The way back inside the window: no prompt, the recording starts on the terminal engine.
         controller.resumeCandidate = ResumeAfterEnd(
             bundleID: teams.bundleID, stem: "20261112-172307",
-            endedAt: Date().addingTimeInterval(-38.6), workflowID: nil, summaryMode: .auto
+            endedAt: Date().addingTimeInterval(-38.6), endedUptime: ProcessInfo.processInfo.systemUptime + (-38.6), workflowID: nil, summaryMode: .auto
         )
         host.recorderSpy.fileToReturn = tempDir.appendingPathComponent("20261112-174606.wav")
         controller.handleMeetingStarted(source: teams)

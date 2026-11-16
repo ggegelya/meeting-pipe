@@ -232,6 +232,18 @@ public final class ProcessAudioSignal {
         run { self.teardown() }
     }
 
+    /// END22: evaluate once on the queue and deliver the current reading even when it has not
+    /// changed. `lastValue` is kept, not cleared: a live mic whose objects vanished during the sleep
+    /// must still reach END17's unknown delivery, which keys on it, or its pre-sleep veto would
+    /// hold the hold open for ever.
+    public func refresh() {
+        let generation = lock.withLock { self.generation }
+        run { [weak self] in
+            guard let self, self.isCurrent(generation), self.context != nil else { return }
+            _ = self.evaluate(reason: "wake_refresh", generation: generation, forceDeliver: true)
+        }
+    }
+
     /// Test seam: wait until every block queued so far has run. A no-op on the inline path.
     func drainForTesting() {
         queue?.sync {}
@@ -512,7 +524,9 @@ public final class ProcessAudioSignal {
     /// Re-read the probe and emit `onChange` if the value flipped. Queue-confined. Returns what
     /// the read said against `lastValue`, which the poll hands to its cadence (PERF19).
     @discardableResult
-    private func evaluate(reason: String, generation: UInt64) -> AdaptivePollCadence.PollObservation {
+    private func evaluate(
+        reason: String, generation: UInt64, forceDeliver: Bool = false
+    ) -> AdaptivePollCadence.PollObservation {
         guard let context = context, isCurrent(generation) else { return .unknown }
 
         var reading = read(context)
@@ -557,7 +571,7 @@ public final class ProcessAudioSignal {
         }
         unresolvedLogged = false
         reResolvedThisStreak = false
-        if lastValue == value { return .steady }
+        if lastValue == value && !forceDeliver { return .steady }
         // The probe is a HAL round-trip and `stop` may have run during it, so re-check: an edge read
         // for a stopped session is neither logged nor delivered.
         guard isCurrent(generation) else { return .unknown }

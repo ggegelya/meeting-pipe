@@ -59,6 +59,31 @@ public final class MeetingLifecycleCoordinator {
 
     public static let defaultTickInterval: TimeInterval = 0.25
 
+    /// END22: a sleep-excluding clock beside the wall `clock`; their divergence is a system sleep.
+    private let uptime: () -> TimeInterval
+    /// END22: wall minus uptime advancing by more than this between two samples is a sleep. Well
+    /// above clock jitter and NTP slews, well below any sleep that could matter to a 60 s dwell.
+    public static let sleepGapThreshold: TimeInterval = 2
+    /// END22: how long after a display change a window-gone is held back before it counts, so a
+    /// dock, an undock or a Space move that briefly takes the call window off screen does not open
+    /// a hold. Unmeasured: none of the four topology changes in the owner's recorder.log fell in a
+    /// call. Five of `ShareableContentSignal`'s 1 s polls, after REC5 clears its cache on the change.
+    public static let defaultDisplaySettle: TimeInterval = 5
+    private let displaySettle: TimeInterval
+    /// END22: a wake applied less than this long ago (awake time) absorbs a later report of it, so
+    /// the clock-gap detection and the host's `didWake` log and refresh once between them.
+    static let wakeDedupWindow: TimeInterval = 10
+    /// END22: inside the dedup window, a clock gap under this is a correction, not a sleep.
+    static let postWakeStepTolerance: TimeInterval = 60
+    // `engineQueue`-confined.
+    private var lastClockSample: (wall: Date, uptime: TimeInterval)?
+    private var lastWakeUptime: TimeInterval?
+    private var displaySettleUntil: Date?
+    private var deferredWindowToken = 0
+    private var deferredWindowEnd: PrimarySignalEvent?
+    /// The engaged context, for the wake row. Under `lock`; written on main by engage/disengage.
+    private var engagedContext: MeetingLifecycleContext?
+
     public init(
         halBus: CoreAudioHALBus = CoreAudioHALBus(),
         axBus: AXObserverBus = AXObserverBus(),
@@ -66,16 +91,28 @@ public final class MeetingLifecycleCoordinator {
         adapters: [LifecycleAdapter] = [],
         engine: PromotionEngine = PromotionEngine(),
         scheduler: @escaping Scheduler = MeetingLifecycleCoordinator.defaultScheduler,
-        clock: @escaping Clock = { Date() },
-        tickInterval: TimeInterval = MeetingLifecycleCoordinator.defaultTickInterval
+        clock: Clock? = nil,
+        tickInterval: TimeInterval = MeetingLifecycleCoordinator.defaultTickInterval,
+        uptime: (() -> TimeInterval)? = nil,
+        displaySettle: TimeInterval = MeetingLifecycleCoordinator.defaultDisplaySettle
     ) {
+        // END22: production pairs the wall clock with `systemUptime`, whose divergence is a sleep. A
+        // test that injects only a wall clock gets an uptime that follows it, so moving its clock
+        // is time passing, never a sleep; a test of the sleep path injects both.
+        if let clock {
+            self.clock = clock
+            self.uptime = uptime ?? { clock().timeIntervalSinceReferenceDate }
+        } else {
+            self.clock = { Date() }
+            self.uptime = uptime ?? { ProcessInfo.processInfo.systemUptime }
+        }
+        self.displaySettle = displaySettle
         self.halBus = halBus
         self.axBus = axBus
         self.eventLog = eventLog
         self.adapters = adapters
         self.engine = engine
         self.scheduler = scheduler
-        self.clock = clock
         self.tickInterval = tickInterval
         var sink: AsyncStream<MeetingLifecycleVerdict>.Continuation!
         self.verdicts = AsyncStream<MeetingLifecycleVerdict>(
@@ -99,11 +136,17 @@ public final class MeetingLifecycleCoordinator {
             return
         }
         activeAdapter = adapter
+        lock.withLock { engagedContext = context }
         // END27: tell the engine whether this adapter has a vetoer to wait for. Queued behind the
         // reset `disengage()` just queued and ahead of every ingest the adapter's start can queue,
         // so the first reading is judged with the right flag and nothing in between clears it.
         let awaitingVetoer = adapter.publishesProcessAudio
-        engineQueue.async { [weak self] in self?.engine.reset(awaitingVetoer: awaitingVetoer) }
+        engineQueue.async { [weak self] in
+            self?.engine.reset(awaitingVetoer: awaitingVetoer)
+            // END22: the clock sample restarts with the engagement. PERF5 ticks only during holds,
+            // so the last one can be hours old, and slow drift over that stretch is not a sleep.
+            self?.lastClockSample = nil
+        }
         // Tag this session's signal + tick work with the current generation (set by the
         // `disengage()` above) so a later disengage drops anything still in flight (AUD-29).
         let generation = currentGeneration()
@@ -123,7 +166,7 @@ public final class MeetingLifecycleCoordinator {
         activeAdapter = nil
         // END13: the reading belongs to the session that produced it. Cleared before the generation
         // bump so nothing can observe a previous call's veto against the next one.
-        lock.lock(); liveCallSignalState = .unknown; holdEvidenceState = nil; lock.unlock()
+        lock.lock(); liveCallSignalState = .unknown; holdEvidenceState = nil; engagedContext = nil; lock.unlock()
         // Supersede any in-flight / zombie events from the adapter just stopped: they
         // captured the prior generation, so the gen guard in `ingest` / `tick` drops them
         // instead of re-mutating the engine we are about to reset (AUD-29).
@@ -134,6 +177,9 @@ public final class MeetingLifecycleCoordinator {
         engineQueue.async { [weak self] in
             guard let self = self else { return }
             self.engine.reset()
+            // END22: a window-gone held back after a display change belongs to this engagement.
+            self.deferredWindowEnd = nil
+            self.deferredWindowToken += 1
             self.publish(.idle)
         }
     }
@@ -205,6 +251,14 @@ public final class MeetingLifecycleCoordinator {
         noteLiveCallSignal(event, generation: generation)
         engineQueue.async { [weak self] in
             guard let self = self, self.currentGeneration() == generation else { return }
+            self.checkForSleep(generation: generation)
+            if self.defersAfterDisplayChange(event, generation: generation) { return }
+            self.applyToEngine(event, generation: generation)
+        }
+    }
+
+    /// On `engineQueue`, for the current generation.
+    private func applyToEngine(_ event: PrimarySignalEvent, generation: Int) {
             self.cacheEvidenceThenPublish(self.engine.ingest(event))
             // END18: so does a declined revert.
             if let declined = self.engine.takeDeclinedRevert() {
@@ -224,12 +278,14 @@ public final class MeetingLifecycleCoordinator {
                 ])
             }
             self.reconcileTick(generation: generation)
-        }
     }
 
     func tick(generation: Int) {
         engineQueue.async { [weak self] in
             guard let self = self, self.currentGeneration() == generation else { return }
+            // END22: before the dwell arithmetic, so the first tick after a wake (which can beat
+            // the host's `didWake` to the queue) already knows about the sleep.
+            self.checkForSleep(generation: generation)
             self.cacheEvidenceThenPublish(self.engine.tick(at: self.clock()))
             self.reconcileTick(generation: generation)
         }
@@ -258,6 +314,108 @@ public final class MeetingLifecycleCoordinator {
                 self.cancelTick?()
                 self.cancelTick = nil
             }
+        }
+    }
+
+    // MARK: - END22: sleep, wake and display changes
+
+    /// The host saw the Mac wake (`system_wake`), the screens wake or the session unlock. A system
+    /// sleep is measured from the clock gap, not from the notification, so a wake the engine's own
+    /// tick already caught is not applied twice; a screen wake or unlock with no sleep behind it
+    /// only asks for a fresh reading.
+    public func noteWake(reason: String) {
+        let generation = currentGeneration()
+        engineQueue.async { [weak self] in
+            guard let self, self.currentGeneration() == generation else { return }
+            if self.checkForSleep(generation: generation, reason: reason) { return }
+            if let last = self.lastWakeUptime, self.uptime() - last < Self.wakeDedupWindow { return }
+            self.applyWake(sleptFrom: nil, asleep: 0, reason: reason, generation: generation)
+        }
+    }
+
+    /// The display configuration changed: hold back a window-gone for `displaySettle`.
+    public func noteDisplayChange() {
+        engineQueue.async { [weak self] in
+            guard let self else { return }
+            self.displaySettleUntil = self.clock().addingTimeInterval(self.displaySettle)
+        }
+    }
+
+    /// On `engineQueue`. Wall time advancing past uptime since the last sample is a sleep; apply it.
+    @discardableResult
+    private func checkForSleep(generation: Int, reason: String = "clock_gap") -> Bool {
+        let wall = clock()
+        let now = uptime()
+        defer { lastClockSample = (wall, now) }
+        guard let last = lastClockSample else { return false }
+        let asleep = wall.timeIntervalSince(last.wall) - (now - last.uptime)
+        guard asleep > Self.sleepGapThreshold else { return false }
+        // A small step just after a wake (NTP correcting the clock) is not a second sleep.
+        if let lastWake = lastWakeUptime, now - lastWake < Self.wakeDedupWindow, asleep < Self.postWakeStepTolerance {
+            return false
+        }
+        applyWake(sleptFrom: wall.addingTimeInterval(-asleep), asleep: asleep, reason: reason, generation: generation)
+        return true
+    }
+
+    /// On `engineQueue`. Tell the engine, log the reset while engaged, and ask the adapter to re-read.
+    private func applyWake(sleptFrom: Date?, asleep: TimeInterval, reason: String, generation: Int) {
+        lastWakeUptime = uptime()
+        engine.noteWake(sleptFrom: sleptFrom, until: clock())
+        guard let context = lock.withLock({ engagedContext }) else { return }
+        eventLog.emit(category: "lifecycle", action: "lifecycle_wake_reset", attributes: [
+            "bundle_id": context.bundleID,
+            "phase": Self.phaseLabel(current),
+            "reset_signals": engine.readingKinds,
+            "asleep_sec": (asleep * 10).rounded() / 10,
+            "reason": reason,
+        ])
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.currentGeneration() == generation else { return }
+            self.activeAdapter?.refreshReadings()
+        }
+        reconcileTick(generation: generation)
+    }
+
+    /// On `engineQueue`. A window-gone inside a display change's settle window is held until the
+    /// window ends and ingested then, stamped at the window's end, unless a newer window reading
+    /// supersedes it first. Deferred rather than dropped or read as unknown: a window that really
+    /// went is a browser meeting's only end class, and an unknown would be kept for ever.
+    private func defersAfterDisplayChange(_ event: PrimarySignalEvent, generation: Int) -> Bool {
+        guard event.kind == .shareableContentWindow else { return false }
+        if deferredWindowEnd != nil {
+            deferredWindowEnd = nil
+            eventLog.emit(category: "lifecycle", action: "display_change_window_deferred", attributes: [
+                "bundle_id": event.context.bundleID, "outcome": "superseded", "settle_sec": displaySettle,
+            ])
+        }
+        guard event.state == .ended, let until = displaySettleUntil, event.timestamp < until else { return false }
+        deferredWindowToken += 1
+        let token = deferredWindowToken
+        deferredWindowEnd = event
+        let delay = max(0, until.timeIntervalSince(clock()))
+        engineQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.currentGeneration() == generation, self.deferredWindowToken == token,
+                  let held = self.deferredWindowEnd else { return }
+            self.deferredWindowEnd = nil
+            self.eventLog.emit(category: "lifecycle", action: "display_change_window_deferred", attributes: [
+                "bundle_id": held.context.bundleID, "outcome": "ingested", "settle_sec": self.displaySettle,
+            ])
+            self.applyToEngine(
+                PrimarySignalEvent(kind: held.kind, state: held.state, timestamp: until, context: held.context),
+                generation: generation
+            )
+        }
+        return true
+    }
+
+    static func phaseLabel(_ verdict: MeetingLifecycleVerdict) -> String {
+        switch verdict {
+        case .idle: return "idle"
+        case .starting: return "starting"
+        case .inMeeting: return "in_meeting"
+        case .endingProvisional: return "ending_provisional"
+        case .ended: return "ended"
         }
     }
 

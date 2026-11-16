@@ -157,6 +157,7 @@ final class HeldEndSessionTests: XCTestCase {
             bundleID: teams.bundleID,
             stem: "20261024-130000",
             endedAt: Date().addingTimeInterval(-(ResumeAfterEnd.windowSec + 1)),
+            endedUptime: ProcessInfo.processInfo.systemUptime - (ResumeAfterEnd.windowSec + 1),
             workflowID: nil,
             summaryMode: .auto
         )
@@ -171,11 +172,14 @@ final class HeldEndSessionTests: XCTestCase {
     /// A different app's call inside the window is its own meeting.
     func test_another_apps_call_inside_the_window_does_not_resume() {
         let candidate = ResumeAfterEnd(
-            bundleID: teams.bundleID, stem: "s", endedAt: Date(), workflowID: nil, summaryMode: .auto
+            bundleID: teams.bundleID, stem: "s", endedAt: Date(), endedUptime: ProcessInfo.processInfo.systemUptime, workflowID: nil, summaryMode: .auto
         )
-        XCTAssertTrue(candidate.applies(to: teams.bundleID, at: Date()))
-        XCTAssertFalse(candidate.applies(to: "us.zoom.xos", at: Date()))
-        XCTAssertFalse(candidate.applies(to: teams.bundleID, at: Date().addingTimeInterval(ResumeAfterEnd.windowSec + 1)))
+        XCTAssertTrue(candidate.applies(to: teams.bundleID, at: Date(), uptime: ProcessInfo.processInfo.systemUptime))
+        XCTAssertFalse(candidate.applies(to: "us.zoom.xos", at: Date(), uptime: ProcessInfo.processInfo.systemUptime))
+        XCTAssertFalse(candidate.applies(
+            to: teams.bundleID, at: Date().addingTimeInterval(ResumeAfterEnd.windowSec + 1),
+            uptime: ProcessInfo.processInfo.systemUptime + ResumeAfterEnd.windowSec + 1
+        ))
     }
 }
 

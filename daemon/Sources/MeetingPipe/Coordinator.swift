@@ -271,7 +271,9 @@ final class Coordinator: NSObject {
         let idleAutoStopSec = configStore?.micOnlySilenceSec ?? config.detection.micOnlySilenceSec
         self.silenceBackstop = IdleStopBackstop(
             notifySeconds: IdleStopBackstop.safeNotifySeconds(forAutoStop: idleAutoStopSec),
-            autoStopSeconds: idleAutoStopSec
+            autoStopSeconds: idleAutoStopSec,
+            // END22: fed about once a second, so a gap over this is a sleep, which restarts the streak.
+            maxSampleGap: IdleStopBackstop.defaultMaxSampleGap
         )
 
         super.init()
@@ -953,7 +955,17 @@ final class Coordinator: NSObject {
         callTeardown: callTeardown,
         teamsRunning: teamsRunning,
         configRefresh: configRefresh,
-        micHolder: micHolder
+        micHolder: micHolder,
+        sleepWake: sleepWake
+    )
+
+    /// END22: a wake resets what the lifecycle engine believes until a signal re-reads; a display
+    /// change holds a window-gone back for its settle. (The idle backstop restarts its own silence
+    /// streak across a sleep, from the sample gap, so it does not race this notification.)
+    /// Started by `watchers`.
+    lazy var sleepWake = SleepWakeObserver(
+        onWake: { [weak self] wake in self?.lifecycleCoord.noteWake(reason: wake.rawValue) },
+        onDisplayChange: { [weak self] in self?.lifecycleCoord.noteDisplayChange() }
     )
 
     /// DET23: which process holds audio input, sampled at 1 Hz from launch, log only. Its families

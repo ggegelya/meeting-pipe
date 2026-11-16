@@ -2,10 +2,12 @@ import Foundation
 
 /// Per-bundle re-prompt suppression. Pure value type; tests can drive it without a full state-machine fake. Guards against Teams post-call mic re-acquisition: the chat surface briefly re-acquires the mic after a call ends and fires a spurious `.started` event within seconds (events log captured a regression at 17:25:40 right after a 17:25:37 stop). Gate is bundle-scoped and time-bounded; manual hotkey clears the entry.
 struct RepromptCooldown {
-    private var lastEnd: [String: Date] = [:]
+    /// END22: stamps on a sleep-excluding clock (`systemUptime`), so a sleep neither spends the
+    /// window nor closes it.
+    private var lastEnd: [String: TimeInterval] = [:]
 
     /// Record that a recording or prompt for `bundleID` just terminated. Called from flush completion, `user_skipped`, and prompt-timeout transitions.
-    mutating func recordEnd(bundleID: String, at: Date = Date()) {
+    mutating func recordEnd(bundleID: String, at: TimeInterval) {
         lastEnd[bundleID] = at
     }
 
@@ -19,10 +21,10 @@ struct RepromptCooldown {
     func isCoolingDown(
         bundleID: String,
         cooldownSec: Double,
-        now: Date = Date()
+        now: TimeInterval
     ) -> Bool {
         guard cooldownSec > 0 else { return false }
         guard let last = lastEnd[bundleID] else { return false }
-        return now.timeIntervalSince(last) < cooldownSec
+        return now - last < cooldownSec
     }
 }

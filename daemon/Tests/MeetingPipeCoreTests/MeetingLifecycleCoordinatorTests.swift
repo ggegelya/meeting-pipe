@@ -574,7 +574,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         XCTAssertNotNil(rows.first?.attributes["ended_classes"])
     }
 
-    private func flushEngine(_ coordinator: MeetingLifecycleCoordinator) {
+    fileprivate func flushEngine(_ coordinator: MeetingLifecycleCoordinator) {
         let expectation = expectation(description: "engine drain")
         coordinator.tick()
         DispatchQueue.main.async { expectation.fulfill() }
@@ -625,6 +625,10 @@ private final class FakeAdapter: LifecycleAdapter {
         armedLeaveButtons.append(element)
     }
 
+    /// END22: counted on main, where the coordinator calls it.
+    private(set) var refreshCount = 0
+    func refreshReadings() { refreshCount += 1 }
+
     func emit(_ event: PrimarySignalEvent) {
         sink?(event)
     }
@@ -660,5 +664,149 @@ private actor AsyncStreamIterator {
         var out: [MeetingLifecycleVerdict] = []
         for await verdict in stream { out.append(verdict) }
         return out
+    }
+}
+
+// MARK: - END22: sleep, wake and display changes
+
+extension MeetingLifecycleCoordinatorTests {
+
+    private final class Clocks {
+        var wall = Date(timeIntervalSince1970: 0)
+        var uptime: TimeInterval = 0
+        func advance(_ seconds: TimeInterval) { wall = wall.addingTimeInterval(seconds); uptime += seconds }
+        func sleep(_ seconds: TimeInterval) { wall = wall.addingTimeInterval(seconds); uptime += 0.25 }
+    }
+
+    private func wakeRig(displaySettle: TimeInterval = MeetingLifecycleCoordinator.defaultDisplaySettle)
+        throws -> (MeetingLifecycleCoordinator, FakeAdapter, Clocks, RecordingEventLog) {
+        let fake = FakeAdapter()
+        let clocks = Clocks()
+        let log = RecordingEventLog()
+        let coordinator = MeetingLifecycleCoordinator(
+            eventLog: log,
+            adapters: [fake],
+            scheduler: ManualScheduler().scheduler(),
+            clock: { clocks.wall },
+            uptime: { clocks.uptime },
+            displaySettle: displaySettle
+        )
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+        fake.emit(.init(kind: .shareableContentWindow, state: .live, timestamp: clocks.wall, context: teamsContext))
+        flushEngine(coordinator)
+        coordinator.confirmRecording()
+        flushEngine(coordinator)
+        return (coordinator, fake, clocks, log)
+    }
+
+    private func drainMain() {
+        let drained = expectation(description: "main drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 1)
+    }
+
+    /// The race the design review caught: the first tick after a wake reaches the engine before the
+    /// host's `didWake`. The coordinator measures the sleep from its own clocks, so that tick does
+    /// not confirm.
+    func test_the_first_tick_after_a_sleep_does_not_confirm_with_no_notification() throws {
+        let (coordinator, fake, clocks, log) = try wakeRig()
+        clocks.advance(1)
+        fake.emit(.init(kind: .shareableContentWindow, state: .ended, timestamp: clocks.wall, context: teamsContext))
+        flushEngine(coordinator)
+        let holdUptime = clocks.uptime
+        clocks.sleep(PromotionEngine.defaultLoneDwell + 200)
+        coordinator.tick()
+        flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .endingProvisional(
+            context: teamsContext, reason: EndingReason(leadingSignal: "shareable_content_window_gone")
+        ))
+        let row = try XCTUnwrap(log.entries.first { $0.action == "lifecycle_wake_reset" })
+        XCTAssertEqual(row.attributes["reason"], "clock_gap")
+        XCTAssertEqual(row.attributes["phase"], "ending_provisional")
+        drainMain()
+        XCTAssertEqual(fake.refreshCount, 1, "the adapter is asked to re-read")
+
+        // A fresh reading, then the lone dwell on awake time only.
+        fake.emit(.init(kind: .shareableContentWindow, state: .ended, timestamp: clocks.wall, context: teamsContext))
+        clocks.advance(PromotionEngine.defaultLoneDwell - (clocks.uptime - holdUptime) - 1)
+        flushEngine(coordinator)
+        if case .ended = coordinator.current { XCTFail("a second short of the awake lone dwell") }
+        clocks.advance(2)
+        flushEngine(coordinator)
+        guard case .ended = coordinator.current else { return XCTFail("the awake lone dwell ran") }
+    }
+
+    func test_a_host_wake_after_the_clock_caught_it_is_not_applied_twice() throws {
+        let (coordinator, _, clocks, log) = try wakeRig()
+        clocks.sleep(600)
+        coordinator.tick()
+        flushEngine(coordinator)
+        coordinator.noteWake(reason: "system_wake")
+        flushEngine(coordinator)
+        XCTAssertEqual(log.entries.filter { $0.action == "lifecycle_wake_reset" }.count, 1)
+    }
+
+    func test_an_unlock_with_no_sleep_only_asks_for_a_fresh_reading() throws {
+        let (coordinator, fake, clocks, log) = try wakeRig()
+        clocks.advance(30)
+        coordinator.noteWake(reason: "unlock")
+        flushEngine(coordinator)
+        let row = try XCTUnwrap(log.entries.first { $0.action == "lifecycle_wake_reset" })
+        XCTAssertEqual(row.attributes["reason"], "unlock")
+        XCTAssertEqual(row.attributes["asleep_sec"], "0.0")
+        drainMain()
+        XCTAssertEqual(fake.refreshCount, 1)
+    }
+
+    func test_a_window_gone_inside_the_display_settle_opens_no_hold_and_a_return_supersedes_it() throws {
+        let (coordinator, fake, clocks, log) = try wakeRig(displaySettle: 0.3)
+        coordinator.noteDisplayChange()
+        flushEngine(coordinator)
+        fake.emit(.init(kind: .shareableContentWindow, state: .ended, timestamp: clocks.wall, context: teamsContext))
+        flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .inMeeting(context: teamsContext), "held back, not ingested")
+        fake.emit(.init(kind: .shareableContentWindow, state: .live, timestamp: clocks.wall, context: teamsContext))
+        flushEngine(coordinator)
+        let settled = expectation(description: "past the settle")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+        flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .inMeeting(context: teamsContext))
+        XCTAssertEqual(log.entries.filter { $0.action == "display_change_window_deferred" }.map { $0.attributes["outcome"] }, ["superseded"])
+    }
+
+    func test_a_window_still_gone_at_the_settles_end_is_ingested_then() throws {
+        let (coordinator, fake, clocks, log) = try wakeRig(displaySettle: 0.3)
+        coordinator.noteDisplayChange()
+        flushEngine(coordinator)
+        fake.emit(.init(kind: .shareableContentWindow, state: .ended, timestamp: clocks.wall, context: teamsContext))
+        flushEngine(coordinator)
+        let settled = expectation(description: "past the settle")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+        flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .endingProvisional(
+            context: teamsContext, reason: EndingReason(leadingSignal: "shareable_content_window_gone")
+        ))
+        XCTAssertEqual(log.entries.filter { $0.action == "display_change_window_deferred" }.map { $0.attributes["outcome"] }, ["ingested"])
+    }
+
+    func test_a_deferred_window_gone_dies_with_its_engagement() throws {
+        let (coordinator, fake, clocks, log) = try wakeRig(displaySettle: 0.3)
+        coordinator.noteDisplayChange()
+        flushEngine(coordinator)
+        fake.emit(.init(kind: .shareableContentWindow, state: .ended, timestamp: clocks.wall, context: teamsContext))
+        flushEngine(coordinator)
+        coordinator.disengage()
+        let settled = expectation(description: "past the settle")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+        flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .idle)
+        // The next engagement's first window reading does not find the old one waiting.
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+        fake.emit(.init(kind: .shareableContentWindow, state: .live, timestamp: clocks.wall, context: teamsContext))
+        flushEngine(coordinator)
+        XCTAssertTrue(log.entries.filter { $0.action == "display_change_window_deferred" }.isEmpty)
     }
 }

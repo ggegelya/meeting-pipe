@@ -87,7 +87,7 @@ final class StartInFlightTests: XCTestCase {
     func test_aResumeStart_thatItsMeetingEndsDuring_isStoppedBeforeItCommits() async {
         let (controller, host) = makeController()
         controller.resumeCandidate = ResumeAfterEnd(
-            bundleID: teams.bundleID, stem: "20261116-115500", endedAt: Date(), workflowID: nil, summaryMode: .auto
+            bundleID: teams.bundleID, stem: "20261116-115500", endedAt: Date(), endedUptime: ProcessInfo.processInfo.systemUptime, workflowID: nil, summaryMode: .auto
         )
         await runParkedStart(host, start: { controller.handleMeetingStarted(source: teams) }) {
             controller.handleMeetingEnded(bundleID: teams.bundleID, reason: teamsEnd)
@@ -289,7 +289,7 @@ final class StartInFlightTests: XCTestCase {
         controller.startConsumers()
         defer { controller.shutdownConsumers() }
         controller.resumeCandidate = ResumeAfterEnd(
-            bundleID: teams.bundleID, stem: "20261112-172307", endedAt: Date(), workflowID: nil, summaryMode: .auto
+            bundleID: teams.bundleID, stem: "20261112-172307", endedAt: Date(), endedUptime: ProcessInfo.processInfo.systemUptime, workflowID: nil, summaryMode: .auto
         )
         try host.lifecycleCoord.engage(context: context, handle: LifecycleAdapterHandle())
         await runParkedStart(host, start: { controller.handleMeetingStarted(source: teams) }) {

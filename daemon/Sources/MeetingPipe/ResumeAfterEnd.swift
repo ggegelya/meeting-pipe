@@ -20,6 +20,8 @@ struct ResumeAfterEnd: Equatable {
     /// The stem of the recording the end stopped.
     let stem: String
     let endedAt: Date
+    /// END22: the end on the sleep-excluding clock (`systemUptime`), which the window is measured on.
+    let endedUptime: TimeInterval
     let workflowID: UUID?
     let summaryMode: SummaryMode
 
@@ -31,8 +33,15 @@ struct ResumeAfterEnd: Equatable {
     /// The `<stem>.meta.json` key naming the earlier recording.
     static let metaKey = "resumed_from"
 
-    func applies(to bundleID: String, at now: Date) -> Bool {
-        let sinceEnd = now.timeIntervalSince(endedAt)
-        return bundleID == self.bundleID && sinceEnd >= 0 && sinceEnd <= Self.windowSec
+    /// END22: the most wall time the window may span. The window is 120 s of awake time, so a call
+    /// the Mac slept through still resumes; this caps it so an end before an overnight lid-close
+    /// does not turn the morning's first call into a silent resume of yesterday's recording. A
+    /// default, put to the owner on 2026-11-17 (see END22).
+    static let wallCapSec: TimeInterval = 600
+
+    func applies(to bundleID: String, at now: Date, uptime: TimeInterval) -> Bool {
+        let awake = uptime - endedUptime
+        let wall = now.timeIntervalSince(endedAt)
+        return bundleID == self.bundleID && awake >= 0 && awake <= Self.windowSec && wall <= Self.wallCapSec
     }
 }

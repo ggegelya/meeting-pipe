@@ -58,6 +58,15 @@ public final class IdleStopBackstop {
 
     private let clock: Clock
     private var silenceStart: Date?
+    /// END22: the previous sample's time. A gap longer than `maxSampleGap` (a system sleep: the
+    /// level callback runs about once a second while a recording runs) restarts the streak, so a
+    /// quiet stretch running when the lid closed cannot auto-stop the recording on the first sample
+    /// after waking, measured across the sleep on the wall clock.
+    private var lastSampleAt: Date?
+    public static let defaultMaxSampleGap: TimeInterval = 30
+    /// Nil turns the gap rule off, for a feed that samples sparsely on purpose (the unit tests'
+    /// model). Production passes `defaultMaxSampleGap`, since it feeds about once a second.
+    private let maxSampleGap: TimeInterval?
     private var didNotify: Bool = false
 
     /// Granola stops after ~15 min of no new audio, Otter after ~10. 15 min default.
@@ -77,8 +86,10 @@ public final class IdleStopBackstop {
     public init(
         notifySeconds: TimeInterval = IdleStopBackstop.defaultNotifySeconds,
         autoStopSeconds: TimeInterval = IdleStopBackstop.defaultAutoStopSeconds,
-        clock: @escaping Clock = { Date() }
+        clock: @escaping Clock = { Date() },
+        maxSampleGap: TimeInterval? = nil
     ) {
+        self.maxSampleGap = maxSampleGap
         self.notifySeconds = notifySeconds
         self.autoStopSeconds = autoStopSeconds
         self.clock = clock
@@ -89,6 +100,7 @@ public final class IdleStopBackstop {
         triggered = false
         silenceStart = nil
         didNotify = false
+        lastSampleAt = nil
     }
 
     /// Restart the idle countdown without ending: the native stand-down kept the
@@ -110,6 +122,11 @@ public final class IdleStopBackstop {
     ) {
         if triggered { return }
         let timestamp = now ?? clock()
+        defer { lastSampleAt = timestamp }
+        if let maxSampleGap, let last = lastSampleAt, timestamp.timeIntervalSince(last) > maxSampleGap {
+            silenceStart = nil
+            didNotify = false
+        }
         let hasSystemAudio: Bool
         switch systemChannel {
         case .live(let hasAudio):

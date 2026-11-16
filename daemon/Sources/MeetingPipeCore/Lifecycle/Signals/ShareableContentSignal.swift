@@ -147,6 +147,22 @@ public final class ShareableContentSignal {
         }
     }
 
+    /// END22: forget the last reading and evaluate once, so the current reading is reported even
+    /// when it has not changed. Same queue as the initial evaluate.
+    public func refresh() {
+        let started: Bool = lock.withLock {
+            guard state.context != nil else { return false }
+            state.lastValue = nil
+            return true
+        }
+        guard started else { return }
+        if let initialQueue {
+            initialQueue.async { [weak self] in self?.evaluate(reason: "wake_refresh") }
+        } else {
+            evaluate(reason: "wake_refresh")
+        }
+    }
+
     public func stop() {
         let priorCancel: (() -> Void)? = lock.withLock {
             let prior = state.cancelTick

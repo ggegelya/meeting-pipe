@@ -17,6 +17,27 @@ final class IdleStopBackstopTests: XCTestCase {
 
     private func silent(_ ms: Int = 0) -> MicGateVerdict { .silentByRMS(dwellMillis: ms) }
 
+    // MARK: - END22: a sleep is not silence
+
+    /// A silent streak running when the lid closed: the first sample after waking is an hour later
+    /// on the wall clock, and must not auto-stop on the streak's pre-sleep start. The backstop sees
+    /// the gap itself, so it does not race the host's wake notification.
+    func test_a_sample_gap_longer_than_a_sleep_threshold_restarts_the_streak_END22() {
+        let b = IdleStopBackstop(notifySeconds: 600, autoStopSeconds: 900, maxSampleGap: IdleStopBackstop.defaultMaxSampleGap)
+        var stopped = false
+        b.onAutoStop = { _ in stopped = true }
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        for second in stride(from: 0.0, through: 600, by: 1) {
+            b.ingest(verdict: silent(), systemChannel: .live(hasAudio: false), at: t0.addingTimeInterval(second))
+        }
+        b.ingest(verdict: silent(), systemChannel: .live(hasAudio: false), at: t0.addingTimeInterval(4200))
+        XCTAssertFalse(stopped)
+        for second in stride(from: 4201.0, through: 4200 + 900, by: 1) {
+            b.ingest(verdict: silent(), systemChannel: .live(hasAudio: false), at: t0.addingTimeInterval(second))
+        }
+        XCTAssertTrue(stopped, "silent again, awake, for the whole horizon")
+    }
+
     // MARK: - Auto-stop horizon
 
     func test_does_not_auto_stop_below_window() {

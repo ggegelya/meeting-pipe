@@ -251,6 +251,13 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
         axLeaveButton.reassertOrArm(context: context, leaveButton: element)
     }
 
+    /// END22: the mic and the window re-read and report. The Leave button is event-driven and has
+    /// no current value to re-send; its next AX notification or rescue reports it.
+    public func refreshReadings() {
+        processAudio?.refresh()
+        shareableContent.refresh()
+    }
+
     public func stop() {
         processAudio?.stop()
         shareableContent.stop()

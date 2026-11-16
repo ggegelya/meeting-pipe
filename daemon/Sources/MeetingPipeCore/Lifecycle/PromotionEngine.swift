@@ -187,6 +187,12 @@ public final class PromotionEngine {
     /// `TeardownHoldPolicy.secondSignalLeadSec`, which says where a Stop may cut, not what confirms.
     public static let pairEdgeAllowance: TimeInterval = 2
 
+    /// END22: after a wake, no dwell confirms until a fresh reading arrives, or until this much
+    /// awake time has passed. Every adapter is asked to re-publish on wake (`refreshReadings`), so
+    /// the bound only matters for a signal that stays silent (an unresolved process object, DET8,
+    /// emits nothing at all), the way END27's `vetoerGrace` bounds the same case at a start.
+    public static let wakeFreshReadingBound: TimeInterval = 10
+
     private enum Phase {
         case idle
         case starting(context: MeetingLifecycleContext, observed: Set<PrimarySignalKind>, states: SignalStates)
@@ -277,6 +283,14 @@ public final class PromotionEngine {
         }
     }
 
+    /// END22: the engagement's system sleeps, wall-clock intervals. Every dwell is measured in
+    /// awake time (`awake(from:to:)`): the stamps stay wall-clock because they double as trim
+    /// positions (END21) and as positions on Teams' wall-clock log, so the sleep is subtracted from
+    /// the dwells instead of being taken out of the stamps.
+    private var sleeps: [(from: Date, to: Date)] = []
+    /// END22: set by `noteWake`, cleared by the first fresh reading after it (or the bound).
+    public private(set) var awaitingFreshReadingSince: Date?
+
     private var pendingVeto: EndVeto?
     private var pendingDeclinedRevert: DeclinedRevert?
     /// END21: the hold's evidence as it stood when it concluded, kept while the engine sits in
@@ -322,6 +336,56 @@ public final class PromotionEngine {
         pendingDeclinedRevert = nil
         concludedEvidence = nil
         awaitsVetoer = awaitingVetoer
+        sleeps = []
+        awaitingFreshReadingSince = nil
+    }
+
+    /// END22: the Mac woke (or the screen woke, or the session unlocked). `sleptFrom` is the system
+    /// sleep's start, nil when there was none, which leaves the dwells alone and only asks for a
+    /// fresh reading. Until one arrives (or `wakeFreshReadingBound` of awake time passes) no dwell
+    /// confirms, so nothing ends on the first tick after a wake before any signal has re-read. The
+    /// readings themselves are kept: END21's release stamp and the pair stamps are positions in the
+    /// recording, and a pre-sleep live reading keeps vetoing until it is re-read.
+    public func noteWake(sleptFrom: Date?, until: Date) {
+        if let sleptFrom, until > sleptFrom { sleeps.append((sleptFrom, until)) }
+        awaitingFreshReadingSince = until
+    }
+
+    /// END22: the signals this engagement has a reading for, for `lifecycle_wake_reset`.
+    public var readingKinds: [String] {
+        let states: SignalStates
+        switch phase {
+        case .starting(_, _, let s), .inMeeting(_, _, let s), .endingProvisional(_, _, _, _, _, let s): states = s
+        case .idle, .ended: states = [:]
+        }
+        return states.keys.map(\.rawValue).sorted()
+    }
+
+    /// END22: seconds from `start` to `end` with the engagement's sleeps taken out.
+    func awake(from start: Date, to end: Date) -> TimeInterval {
+        guard end > start else { return 0 }
+        let asleep = sleeps.reduce(0.0) { total, sleep in
+            let overlap = min(end, sleep.to).timeIntervalSince(max(start, sleep.from))
+            return total + max(0, overlap)
+        }
+        return end.timeIntervalSince(start) - asleep
+    }
+
+    /// END22: a reading clears the wake gate only if it is a real state (not `.unknown`: process
+    /// objects re-register on wake, DET8), stamped after the wake (not a pre-sleep event drained
+    /// late), and, where the engagement publishes a vetoer, the vetoer's own.
+    private func noteFreshReading(_ event: PrimarySignalEvent) {
+        guard let since = awaitingFreshReadingSince, event.state != .unknown, event.timestamp >= since else { return }
+        if awaitsVetoer && !event.kind.vetoesLoneEnd { return }
+        awaitingFreshReadingSince = nil
+    }
+
+    /// END22: whether the wake gate still holds at `now`. A bound that ran out clears it.
+    private func wakeGateHolds(at now: Date) -> Bool {
+        guard let since = awaitingFreshReadingSince else { return false }
+        if awake(from: since, to: now) < Self.wakeFreshReadingBound { return true }
+        awaitingFreshReadingSince = nil
+        return false
     }
 
     /// END14: the end most recently vetoed, cleared on read so each veto is reported once.
@@ -427,6 +491,7 @@ public final class PromotionEngine {
 
     /// Ingest a PRIMARY signal event. Returns the verdict transition it triggered, or nil if the event doesn't change the phase.
     public func ingest(_ event: PrimarySignalEvent) -> Decision? {
+        noteFreshReading(event)
         switch phase {
         case .idle:
             return handleIdle(event)
@@ -458,7 +523,8 @@ public final class PromotionEngine {
         // END27: a `.starting` that held a reliable end for a vetoer which never reported ends
         // once the grace has run, as it would have on arrival before END27.
         if case .starting(let context, _, let states) = phase {
-            guard let held = heldForVetoer(in: states), now.timeIntervalSince(held.since) >= vetoerGrace else {
+            guard let held = heldForVetoer(in: states), awake(from: held.since, to: now) >= vetoerGrace,
+                  !wakeGateHolds(at: now) else {
                 return nil
             }
             return endStarting(context: context, lead: held.kind, states: states)
@@ -467,9 +533,10 @@ public final class PromotionEngine {
             return nil
         }
         if states.contains(where: { $0.key.vetoesLoneEnd && $0.value.state == .live }) { return nil }
+        if wakeGateHolds(at: now) { return nil }
 
         let dwelled = Self.pairEdges(in: states, holdStartedAt: startedAt).values
-            .filter { now.timeIntervalSince($0) >= confirmDwell }
+            .filter { awake(from: $0, to: now) >= confirmDwell }
         let pairHeld = dwelled.count >= 2
         // END18: the lone dwell counts from the last liveness reading, not the first doubt (D029),
         // and it does not run at all while the Leave button reads live against a window-gone lead
@@ -496,7 +563,7 @@ public final class PromotionEngine {
             && leave?.state == .live
             && !(leave?.declined == true && (leave?.at ?? .distantPast) >= startedAt)
             && !Self.pairEdges(in: states, holdStartedAt: startedAt).keys.contains { $0 != leading.evidenceClass }
-        let loneHeld = !leadClassContradicted && !micLeadContradicted && now.timeIntervalSince(loneSince) >= loneDwell
+        let loneHeld = !leadClassContradicted && !micLeadContradicted && awake(from: loneSince, to: now) >= loneDwell
         guard pairHeld || loneHeld else { return nil }
 
         var confirmedBy = states

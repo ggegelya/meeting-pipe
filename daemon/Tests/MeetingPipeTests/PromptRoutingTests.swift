@@ -163,7 +163,7 @@ final class PromptRoutingTests: XCTestCase {
     private func resume(_ controller: MeetingSessionController, _ host: FakeSessionHost, previous: Workflow?) async {
         controller.resumeCandidate = ResumeAfterEnd(
             bundleID: teams.bundleID, stem: "20261116-100000",
-            endedAt: Date().addingTimeInterval(-30), workflowID: previous?.id, summaryMode: .auto
+            endedAt: Date().addingTimeInterval(-30), endedUptime: ProcessInfo.processInfo.systemUptime + (-30), workflowID: previous?.id, summaryMode: .auto
         )
         host.recorderSpy.fileToReturn = tempDir.appendingPathComponent("20261116-100100.wav")
         controller.handleMeetingStarted(source: teams)

@@ -63,6 +63,10 @@ public protocol LifecycleAdapter: AnyObject {
     /// signal on its own queue and safe to read from any thread. Nil where there is no Leave
     /// control (browser, an unarmed signal) or the last read found none.
     var callWindow: CallWindowRead? { get }
+    /// END22: re-publish every signal's current reading, changed or not. Called on main after a
+    /// wake, so the engine gets a fresh reading instead of trusting the pre-sleep ones. A repeated
+    /// reading keeps its first stamp in the engine, so re-publishing an unchanged one is harmless.
+    func refreshReadings()
 }
 
 public extension LifecycleAdapter {
@@ -77,6 +81,8 @@ public extension LifecycleAdapter {
     func rescueLeaveButton(_ element: AXUIElement) {}
 
     var callWindow: CallWindowRead? { nil }
+
+    func refreshReadings() {}
 }
 
 /// Locale-tolerant title matchers for all meeting vendors. Single source of truth; adapters compose these per platform.

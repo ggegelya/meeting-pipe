@@ -210,6 +210,11 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
         }
     }
 
+    /// END22: the tab title re-reads and reports.
+    public func refreshReadings() {
+        shareableContent.refresh()
+    }
+
     public func stop() {
         shareableContent.stop()
         workspace.stop()

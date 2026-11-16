@@ -14,13 +14,17 @@ final class DetectionStateMachine {
     /// not swallow the timeout.
     private let scheduler: Scheduler
     private let clock: () -> Date
+    /// END22: the reprompt cooldown's clock, which stops across a sleep.
+    private let uptime: () -> TimeInterval
 
     init(
         scheduler: @escaping Scheduler = Schedulers.mainRunLoopOnce,
-        clock: @escaping () -> Date = { Date() }
+        clock: @escaping () -> Date = { Date() },
+        uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.scheduler = scheduler
         self.clock = clock
+        self.uptime = uptime
     }
 
     private(set) var current: AppState = .idle {
@@ -41,7 +45,7 @@ final class DetectionStateMachine {
     private var cooldown = RepromptCooldown()
 
     func recordCooldownEnd(bundleID: String) {
-        cooldown.recordEnd(bundleID: bundleID)
+        cooldown.recordEnd(bundleID: bundleID, at: uptime())
     }
 
     func clearCooldown(bundleID: String) {
@@ -49,7 +53,7 @@ final class DetectionStateMachine {
     }
 
     func isCoolingDown(bundleID: String, cooldownSec: Double) -> Bool {
-        cooldown.isCoolingDown(bundleID: bundleID, cooldownSec: cooldownSec)
+        cooldown.isCoolingDown(bundleID: bundleID, cooldownSec: cooldownSec, now: uptime())
     }
 
     // MARK: - Skipped-meeting latch facade

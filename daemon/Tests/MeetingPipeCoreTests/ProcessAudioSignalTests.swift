@@ -136,6 +136,29 @@ final class ProcessAudioSignalTests: XCTestCase {
         XCTAssertEqual(observed, [true, true], "a reading after unknown is a fresh transition")
     }
 
+    /// END22: a wake refresh re-delivers an unchanged reading, and keeps the last value, so a live
+    /// mic whose objects vanished during the sleep still reaches the unknown delivery. Clearing it
+    /// (the first draft) left the pre-sleep live veto in the engine for ever.
+    func test_a_wake_refresh_re_delivers_and_keeps_the_unknown_path_END22() throws {
+        let scheduler = ManualScheduler()
+        let probeReturn = LockedBox<Bool?>(true)
+        var observed: [Bool] = []
+        var unknowns = 0
+        let signal = ProcessAudioSignal(
+            halBus: CoreAudioHALBus(),
+            probe: { _, _ in probeReturn.get() },
+            scheduler: manualScheduler(scheduler)
+        )
+        signal.onChange = { observed.append($0) }
+        signal.onUnknown = { unknowns += 1 }
+        try signal.start(context: teamsContext)
+        signal.refresh()
+        XCTAssertEqual(observed, [true, true], "the unchanged reading is delivered again")
+        probeReturn.set(nil)
+        signal.refresh()
+        XCTAssertEqual(unknowns, 1, "the objects vanished while asleep: unknown, so the veto lapses")
+    }
+
     /// A released mic whose objects then vanish (every quit) stays released: no unknown.
     func test_a_released_reading_gone_unreadable_emits_nothing_END17() throws {
         let scheduler = ManualScheduler()

@@ -84,6 +84,9 @@ final class MeetingSessionController: @unchecked Sendable {
     var cancelMicReleaseCeilingTimer: (() -> Void)?
     var micReleaseCutAt: Date?
 
+    /// END22: the sleep-excluding clock the resume window is measured on. A test injects one.
+    var sessionUptime: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+
     private(set) var startLatch = RecordingStartLatch()
 
     /// END19: the engage discovery's last winner left behind, and how many winnerless scans it has
@@ -1654,14 +1657,14 @@ final class MeetingSessionController: @unchecked Sendable {
         // the re-prompt cooldown below, which the end it resumes from armed: the owner asked for
         // a prompt here, not for silence.
         let browserResume = source.kind == .browser
-            && resumeCandidate?.applies(to: source.bundleID, at: Date()) == true
+            && resumeCandidate?.applies(to: source.bundleID, at: Date(), uptime: sessionUptime()) == true
         if browserResume {
             resumeCandidate = nil
             Log.event(category: "coordinator", action: "browser_resume_prompted", attributes: [
                 "bundle_id": source.bundleID,
             ])
         }
-        if source.kind != .browser, let candidate = resumeCandidate, candidate.applies(to: source.bundleID, at: Date()) {
+        if source.kind != .browser, let candidate = resumeCandidate, candidate.applies(to: source.bundleID, at: Date(), uptime: sessionUptime()) {
             resumeCandidate = nil
             micTierPromptBundle = nil
             coordinator.stateMachine.clearSuppression(bundleID: source.bundleID)
@@ -1853,6 +1856,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 bundleID: src?.bundleID ?? bundleID,
                 stem: MeetingStore.stem(of: file),
                 endedAt: Date(),
+                endedUptime: sessionUptime(),
                 workflowID: activeWorkflow?.id,
                 summaryMode: mode
             )
@@ -2190,7 +2194,7 @@ final class MeetingSessionController: @unchecked Sendable {
         // END17 item 5: inside the resume window the cooldown does not apply to the app whose
         // recording just ended. Engaging the lifecycle is what lets its `.starting` reach
         // `handleMeetingStarted`, which resumes.
-        if let candidate = resumeCandidate, candidate.applies(to: source.bundleID, at: Date()) {
+        if let candidate = resumeCandidate, candidate.applies(to: source.bundleID, at: Date(), uptime: sessionUptime()) {
             engageLifecycle(for: source)
             return
         }
