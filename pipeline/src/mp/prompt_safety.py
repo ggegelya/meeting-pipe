@@ -8,7 +8,10 @@ text that came from the transcript. Two defenses live here:
   1. `wrap_untrusted()` fences transcript text in explicit BEGIN/END markers, and
      `UNTRUSTED_GUIDANCE` (added to the system prompts) tells the model the
      fenced content is data to process, never instructions to obey.
-  2. `clean_person()` rejects control chars, newlines, '@' (emails + mentions),
+  2. `clean_text()` (SEC28) scrubs every other model-written free-text field so a
+     spoken instruction cannot plant a remote image, a live link, raw HTML or an
+     extra line of structure in a Markdown sink.
+  3. `clean_person()` rejects control chars, newlines, '@' (emails + mentions),
      and URLs from model-extracted owner / attendee fields before they reach a
      sink or the correction corpus, so a prompt-injected field cannot smuggle an
      address or link into Notion / Obsidian.
@@ -59,3 +62,66 @@ def clean_person(value: str | None) -> str | None:
     if "@" in v or _CONTROL.search(v) or _URLISH.search(v):
         return None
     return v
+
+
+# SEC28 ------------------------------------------------------------------------
+
+_WS_RUN = re.compile(r"\s+")
+# A markdown link or image: `[label](target)` / `![alt](target)`. The label stops
+# at the first `]`, the target at the first `)`; a target with its own parenthesis
+# leaves a stray `)` behind, which is inert once the opening `](` is gone.
+_MD_LINK = re.compile(r"!?\[([^\]]*)\]\(([^)]*)\)")
+# A complete HTML tag (or comment-ish `<!...>`); a lone `<` that opens one but
+# never closes is escaped below instead, so "x<y" in prose loses nothing.
+_HTML_TAG = re.compile(r"<\s*[/!]?\s*[A-Za-z][^>]*>|<!--.*?-->|<![^>]*>")
+_HTML_OPEN = re.compile(r"<(?=\s*[/!A-Za-z])")
+# A code fence opens only at the start of a line, and every sink renders these
+# fields as the start of a list item (`- {text}`), so a leading run of 3+ backticks
+# or tildes would open one. A tilde fence takes any info string, so `~~~dataviewjs`
+# survives the single-line collapse.
+_LEADING_FENCE = re.compile(r"^[`~]{3,}")
+# Dataview inline queries are code spans that begin with `=` or `$=`.
+_DATAVIEW_INLINE = re.compile(r"`(\s*\$?=)")
+
+
+def _neutralise_link(match: re.Match[str]) -> str:
+    label = match.group(1).strip()
+    target = match.group(2).replace("`", "").strip()
+    return f"{label} (`{target}`)" if target else label
+
+
+def clean_text(value: str) -> str:
+    """Make model-written free text inert in every Markdown renderer (SEC28).
+
+    One line out: control characters, including newlines, become a space, so
+    nothing here can open a fenced block, a heading, or a front-matter key.
+    A `[label](target)` or `![alt](target)` becomes `label (`target`)`, the target
+    in a code span that no viewer links or fetches; a bare `![` is defanged to
+    `!\\[`; HTML tags are removed and a stray `<` is escaped. The text is kept:
+    a URL someone read out loud stays readable, it just stops being live.
+
+    Idempotent, so re-validating a stored summary changes nothing."""
+    text = _CONTROL.sub(" ", value)
+    text = _HTML_TAG.sub("", text)
+    text = _HTML_OPEN.sub("&lt;", text)
+    text = _MD_LINK.sub(_neutralise_link, text)
+    text = text.replace("![", "!\\[")
+    # Whatever `](` is left (a target that held its own link) is no longer a link.
+    text = text.replace("](", "] (")
+    text = _DATAVIEW_INLINE.sub(r"` \1", text)
+    text = _WS_RUN.sub(" ", text).strip()
+    return _LEADING_FENCE.sub("", text).lstrip()
+
+
+_LANGUAGE_CODE = re.compile(r"^[a-z]{2,3}(-[A-Za-z]{2,4})?$")
+
+
+def clean_language(value: object, default: str = "en") -> str:
+    """A BCP 47-ish language code (`en`, `uk`, `pt-BR`), else `default`. The
+    primary subtag is lower-cased first, so `UK` is `uk`. Anything else, a newline
+    and a smuggled front-matter key included, falls back rather than passing."""
+    if not isinstance(value, str):
+        return default
+    primary, sep, rest = value.strip().partition("-")
+    candidate = primary.lower() + sep + rest
+    return candidate if _LANGUAGE_CODE.match(candidate) else default

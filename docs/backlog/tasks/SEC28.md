@@ -2,9 +2,10 @@
 id: SEC28
 title: Markdown sinks publish model-written text and the meeting title unsanitized, so a spoken instruction or a crafted meeting title plants a remote image that beacons or leaks when the note opens, NDA meetings included
 category: Security
-status: new
+status: done
+closed: 2026-11-16
 priority: P2
-comment: Filed 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md) findings 3, 3b): render_summary_md and the Obsidian template write title, bullets, decisions, tasks, questions and extra sections verbatim; clean_person covers only owner/attendees; apply_meeting_title puts the AX-scraped title in the H1; effective_sinks keeps these sinks under zero-egress; detected_language goes raw into front matter. One shared scrub for every free-text field plus a language-code check. [Spec](./SEC28.md)
+comment: Shipped 2026-11-16: `prompt_safety.clean_text` (one line, inert links/images/HTML/fences) wired as MeetingSummary validators for title, sections, action task and extra sections; apply_meeting_title scrubs the AX title; detected_language checked; Obsidian attendees always quoted. 36 new tests, pipeline suite 1702 green, pyright 0.
 ---
 
 # SEC28: Markdown sinks publish model-written text and the meeting title unsanitized, so a spoken instruction or a crafted meeting title plants a remote image that beacons or leaks when the note opens, NDA meetings included

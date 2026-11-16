@@ -44,6 +44,7 @@ from . import entry
 from .config import Config, require_env, zero_egress
 from .endpoints import NOTION_API_BASE, NOTION_API_VERSION, notion_page_url
 from .schemas import MeetingSummary
+from .prompt_safety import clean_text
 from .services import MeetingPublisher
 
 log = logging.getLogger("mp.publish_notion")
@@ -140,7 +141,11 @@ def apply_meeting_title(summary: MeetingSummary, summary_json: Path) -> MeetingS
     meta = _load_meta_sidecar(summary_json)
     if meta:
         meeting_title = (meta.get("meeting_title") or "").strip()
+        meeting_title = clean_text(meeting_title) if meeting_title else ""
         if meeting_title:
+            # SEC28: the title is an AX-scraped window title (a Zoom topic, a
+            # calendar event name) that an invitee controls, and `model_copy`
+            # skips the schema's validators, so it was scrubbed above.
             return summary.model_copy(update={"title": meeting_title[:120]})
     return summary
 

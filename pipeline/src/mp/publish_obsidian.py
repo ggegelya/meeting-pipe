@@ -234,7 +234,7 @@ class ObsidianPublisher:
             # reaches a renderer without the schema's alignment repair.
             return evidence_suffix(anchors[index], stem) if index < len(anchors) else ""
 
-        attendees_yaml = "[" + ", ".join(_yaml_str(a) for a in summary.attendees) + "]"
+        attendees_yaml = "[" + ", ".join(_yaml_quoted(a) for a in summary.attendees) + "]"
         summary_bullets = "\n".join(
             f"- {bullet}{cite('summary', i)}" for i, bullet in enumerate(summary.summary)
         ) or "_no summary_"
@@ -300,6 +300,15 @@ def _single_line(s: str) -> str:
     # Collapse all whitespace (including newlines) to single spaces and strip, so
     # an interpolated title cannot span lines or carry control chars (TECH-SEC7).
     return _WS_RUN_RE.sub(" ", s).strip()
+
+
+def _yaml_quoted(s: str) -> str:
+    """A double-quoted single-line YAML scalar, always. A flow sequence element
+    cannot be left bare when it holds `,` `[` `]` `{` `}`: `Bob, Eve` split into
+    two attendees and `a]` ended the list early (SEC28 item 4), which `_yaml_str`'s
+    quote-on-special-leading-char rule does not catch."""
+    s = _CONTROL_RE.sub(" ", s)
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def _yaml_str(s: str) -> str:

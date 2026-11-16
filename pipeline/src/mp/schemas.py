@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
-from .prompt_safety import clean_person
+from .prompt_safety import clean_language, clean_person, clean_text
 
 # Named so consumers that coerce a free-form string onto this field (digest's
 # `_clamp_confidence`) can say so in their signature rather than returning `str`.
@@ -109,6 +109,11 @@ class ActionItem(BaseModel):
 
     model_config = {"populate_by_name": True}
 
+    @field_validator("task", mode="after")
+    @classmethod
+    def _scrub_task(cls, v: str) -> str:
+        return clean_text(v)
+
     @field_validator("owner", mode="after")
     @classmethod
     def _scrub_owner(cls, v: str | None) -> str | None:
@@ -130,6 +135,16 @@ class ExtraSection(BaseModel):
     summary from a workflow that defines no extra sections."""
     name: str = Field(..., max_length=80)
     content: list[str] = Field(default_factory=list)
+
+    @field_validator("name", mode="after")
+    @classmethod
+    def _scrub_name(cls, v: str) -> str:
+        return clean_text(v)
+
+    @field_validator("content", mode="after")
+    @classmethod
+    def _scrub_content(cls, v: list[str]) -> list[str]:
+        return [clean_text(item) for item in v]
 
 
 def _decode_stringified_lists(payload: dict[str, Any]) -> dict[str, Any]:
@@ -255,6 +270,24 @@ class MeetingSummary(BaseModel):
     @classmethod
     def _normalize_sections(cls, data: Any) -> Any:
         return normalize_model_summary(data)
+
+    @field_validator("title", mode="after")
+    @classmethod
+    def _scrub_title(cls, v: str) -> str:
+        return clean_text(v)
+
+    @field_validator("summary", "decisions", "questions", mode="after")
+    @classmethod
+    def _scrub_free_text(cls, v: list[str]) -> list[str]:
+        # SEC28: the model wrote these from an untrusted transcript and every sink
+        # (Markdown, Obsidian, LAN, the MCP tools, the digest) reads them back. One
+        # validator here means every backend and every reader gets inert text.
+        return [clean_text(item) for item in v]
+
+    @field_validator("detected_language", mode="after")
+    @classmethod
+    def _check_language(cls, v: str) -> str:
+        return clean_language(v)
 
     @field_validator("attendees", mode="after")
     @classmethod
