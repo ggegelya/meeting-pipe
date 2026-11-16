@@ -696,6 +696,14 @@ public final class ProcessAudioSignal {
     /// Every live HAL process object, with the two fields matching needs. `status` reports the
     /// enumeration's own OSStatus so an unresolved read can say whether the list or the match failed.
     static func enumerateProcessObjects(status: inout OSStatus) -> [ProcessObjectDescriptor] {
+        processObjectIDs(status: &status).map { id in
+            ProcessObjectDescriptor(objectID: id, bundleID: readBundleID(id), pid: readPID(id))
+        }
+    }
+
+    /// The ids in `kAudioHardwarePropertyProcessObjectList`, with no per-object read. DET23's
+    /// monitor reads this every second and describes only the ids it has not seen before.
+    static func processObjectIDs(status: inout OSStatus) -> [AudioObjectID] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -713,13 +721,10 @@ public final class ProcessAudioSignal {
             AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &ids
         )
         guard status == noErr else { return [] }
-
-        return ids.map { id in
-            ProcessObjectDescriptor(objectID: id, bundleID: readBundleID(id), pid: readPID(id))
-        }
+        return ids
     }
 
-    private static func readBundleID(_ object: AudioObjectID) -> String? {
+    static func readBundleID(_ object: AudioObjectID) -> String? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioProcessPropertyBundleID,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -733,7 +738,7 @@ public final class ProcessAudioSignal {
         return string.isEmpty ? nil : string
     }
 
-    private static func readPID(_ object: AudioObjectID) -> pid_t {
+    static func readPID(_ object: AudioObjectID) -> pid_t {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioProcessPropertyPID,
             mScope: kAudioObjectPropertyScopeGlobal,

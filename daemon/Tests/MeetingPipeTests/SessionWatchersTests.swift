@@ -14,8 +14,10 @@ final class SessionWatchersTests: XCTestCase {
     }
 
     func testStartAllStartsEveryMemberOnce() {
-        let (discovery, teardown, refresh, teams) = (FakeWatcher(), FakeWatcher(), FakeWatcher(), FakeWatcher())
-        let watchers = SessionWatchers(discovery: discovery, callTeardown: teardown, teamsRunning: teams, configRefresh: refresh)
+        let (discovery, teardown, refresh, teams, micHolder) = (FakeWatcher(), FakeWatcher(), FakeWatcher(), FakeWatcher(), FakeWatcher())
+        let watchers = SessionWatchers(
+            discovery: discovery, callTeardown: teardown, teamsRunning: teams, configRefresh: refresh, micHolder: micHolder
+        )
         XCTAssertFalse(watchers.hasStarted)
 
         watchers.startAll()
@@ -25,18 +27,21 @@ final class SessionWatchersTests: XCTestCase {
         XCTAssertEqual(teardown.startCount, 1, "call teardown")
         XCTAssertEqual(refresh.startCount, 1, "config refresh")
         XCTAssertEqual(teams.startCount, 1, "teams running observer")
+        XCTAssertEqual(micHolder.startCount, 1, "mic-holder monitor (DET23)")
     }
 
     /// `CallTeardownWatcher.start()` ignores a second call; the other two would double-register
     /// observers and sinks. The set takes the teardown watcher's behaviour for all three.
     func testASecondStartAllIsANoOp() {
-        let (discovery, teardown, refresh, teams) = (FakeWatcher(), FakeWatcher(), FakeWatcher(), FakeWatcher())
-        let watchers = SessionWatchers(discovery: discovery, callTeardown: teardown, teamsRunning: teams, configRefresh: refresh)
+        let (discovery, teardown, refresh, teams, micHolder) = (FakeWatcher(), FakeWatcher(), FakeWatcher(), FakeWatcher(), FakeWatcher())
+        let watchers = SessionWatchers(
+            discovery: discovery, callTeardown: teardown, teamsRunning: teams, configRefresh: refresh, micHolder: micHolder
+        )
 
         watchers.startAll()
         watchers.startAll()
 
-        XCTAssertEqual([discovery, teardown, refresh, teams].map(\.startCount), [1, 1, 1, 1])
+        XCTAssertEqual([discovery, teardown, refresh, teams, micHolder].map(\.startCount), [1, 1, 1, 1, 1])
     }
 
     /// The production set holds the three watchers END10 proved can be forgotten, by identity. Built
@@ -52,15 +57,17 @@ final class SessionWatchersTests: XCTestCase {
         let refresh = ConfigRefreshCoordinator(configStore: nil, onModelDownloadState: { _ in }, onRegulatedMode: { _ in })
 
         let teams = TeamsRunningObserver(runningBundleIDs: { [] }, onChange: { _ in })
+        let micHolder = MicHolderMonitor(halBus: CoreAudioHALBus(), familyIDs: [], scheduler: { _, _ in {} })
         let watchers = SessionWatchers.production(
-            discovery: discovery, callTeardown: teardown, teamsRunning: teams, configRefresh: refresh
+            discovery: discovery, callTeardown: teardown, teamsRunning: teams, configRefresh: refresh, micHolder: micHolder
         )
 
-        XCTAssertEqual(watchers.members.count, 4)
+        XCTAssertEqual(watchers.members.count, 5)
         XCTAssertTrue(watchers.members[0] === discovery, "discovery watcher")
         XCTAssertTrue(watchers.members[1] === teardown, "call-teardown watcher")
         XCTAssertTrue(watchers.members[2] === teams, "teams running observer, after the watcher it drives")
         XCTAssertTrue(watchers.members[3] === refresh, "config refresh")
+        XCTAssertTrue(watchers.members[4] === micHolder, "mic-holder monitor (DET23)")
         XCTAssertFalse(teardown.isRunning, "building the set must not start anything")
     }
 
@@ -74,7 +81,8 @@ final class SessionWatchersTests: XCTestCase {
             readQueue: nil
         )
         let watchers = SessionWatchers(
-            discovery: FakeWatcher(), callTeardown: teardown, teamsRunning: FakeWatcher(), configRefresh: FakeWatcher()
+            discovery: FakeWatcher(), callTeardown: teardown, teamsRunning: FakeWatcher(), configRefresh: FakeWatcher(),
+            micHolder: FakeWatcher()
         )
 
         watchers.startAll()

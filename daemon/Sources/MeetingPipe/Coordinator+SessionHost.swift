@@ -24,6 +24,9 @@ extension Coordinator: SessionHost {
     /// of pushing it into the protocol; ARCH4 deliberately leaves the IUO alone.
     var jobs: any SessionJobDispatching { jobDispatcher }
 
+    /// DET23: the monitor itself is the feed.
+    var micHolderFeed: any MicHolderRecordingFeed { micHolder }
+
     /// END13: the engaged adapter's cross-class liveness reading. `.unknown` whenever no adapter
     /// is engaged or its signal has said nothing. Logged on the hold rows; the veto lives in the engine.
     var liveCallSignal: CallTeardownOracle.LiveCallSignal { lifecycleCoord.liveCallSignal }

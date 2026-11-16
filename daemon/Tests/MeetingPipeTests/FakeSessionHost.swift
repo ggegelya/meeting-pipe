@@ -50,6 +50,7 @@ final class FakeSessionHost: SessionHost {
     let hudSpy = SpyHUD()
     let promptSpy = SpyPrompt()
     let jobsSpy = SpyJobDispatcher()
+    let micHolderSpy = SpyMicHolderFeed()
 
     var statusUI: any SessionStatusPresenting { statusBarSpy }
     var notifications: any SessionNotifying { notifierSpy }
@@ -57,6 +58,7 @@ final class FakeSessionHost: SessionHost {
     var hud: any SessionHUDPresenting { hudSpy }
     var prompt: any SessionPromptPresenting { promptSpy }
     var jobs: any SessionJobDispatching { jobsSpy }
+    var micHolderFeed: any MicHolderRecordingFeed { micHolderSpy }
 
     // MARK: Ambient state the tests drive
 
@@ -161,6 +163,14 @@ final class SpyNotifier: SessionNotifying {
     func notifyInputDeviceMismatch() { inputMismatchCount += 1 }
     private(set) var lowSpace: [(title: String, body: String)] = []
     func notifyLowSpace(title: String, body: String) { lowSpace.append((title, body)) }
+}
+
+/// DET23: records what the controller tells the mic-holder monitor about a recording.
+final class SpyMicHolderFeed: MicHolderRecordingFeed {
+    private(set) var recordingCalls: [Bool] = []
+    private(set) var levels: [(mic: Float, system: Float?)] = []
+    func setRecording(_ running: Bool) { recordingCalls.append(running) }
+    func noteLevels(micDb: Float, systemDb: Float?) { levels.append((micDb, systemDb)) }
 }
 
 final class SpyRecorder: SessionRecording {

@@ -1934,8 +1934,15 @@ final class MeetingSessionController: @unchecked Sendable {
         coordinator.audioRecorder.onSystemLevel = { [weak self] db in
             self?.latestSystemLevelDb = db
         }
-        coordinator.audioRecorder.onMicLevel = { [weak self] _ in
-            guard let self = self, let verdict = self.latestVerdict else { return }
+        coordinator.micHolderFeed.setRecording(true)
+        coordinator.audioRecorder.onMicLevel = { [weak self] micDb in
+            guard let self = self else { return }
+            // DET23: the per-second levels the mic-holder monitor packs one row a minute; the
+            // system level only once that channel has delivered (`.live` latches on the first
+            // buffer, so a capture that stalls later still passes its last level).
+            let live = self.coordinator.audioRecorder.systemChannelHealth == .live
+            self.coordinator.micHolderFeed.noteLevels(micDb: micDb, systemDb: live ? self.latestSystemLevelDb : nil)
+            guard let verdict = self.latestVerdict else { return }
             self.coordinator.silenceBackstop.ingest(verdict: verdict, systemChannel: self.backstopSystemChannel())
         }
     }
@@ -1973,6 +1980,7 @@ final class MeetingSessionController: @unchecked Sendable {
     func disarmSystemLevelMirror() {
         coordinator.audioRecorder.onSystemLevel = nil
         coordinator.audioRecorder.onMicLevel = nil
+        coordinator.micHolderFeed.setRecording(false)
     }
 
     func handleIdleNotify() {

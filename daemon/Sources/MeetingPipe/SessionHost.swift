@@ -63,6 +63,8 @@ protocol SessionHost: AnyObject {
     var hud: any SessionHUDPresenting { get }
     var prompt: any SessionPromptPresenting { get }
     var jobs: any SessionJobDispatching { get }
+    /// DET23: the mic-holder monitor's recording feed (on/off and the ~1 Hz levels). Log only.
+    var micHolderFeed: any MicHolderRecordingFeed { get }
 
     // Ambient state and live-config reads.
     var dryRun: Bool { get }

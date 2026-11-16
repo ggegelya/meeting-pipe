@@ -2,9 +2,9 @@
 id: DET23
 title: Build the MicHolderMonitor in shadow: an always-on 1 Hz record of which process holds audio input, so a missed call becomes a row
 category: Detection
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). A missed call leaves nothing to count: 0 mic_busy rows in 114,553 work-laptop events while process_audio_is_running_input read true 420 times on 27 days, no detector heartbeat, and no row for a listed browser whose title matches nothing. Add a log-only 1 Hz monitor over the HAL process-object list for every registry and browser family, started through SessionWatchers, with no behaviour change; the Teams ceiling, the reducer, the browser path, DET10's replacement input and the plan's GATE all read its ledger.
+comment: Shipped 2026-11-16 (log only): MicHolderMonitor in MeetingPipeCore (pure MicHolderLedger + MicHolderLevelPacker, fake-HAL tests for every acceptance bullet), a fifth SessionWatchers member, recording feed through SessionHost, D010 sighting lag from discovery winners, mic_holder_* detector rows in CONVENTIONS.md. Remainder is owner-run only: the 10-working-day field bars on the work laptop (walkthrough steps 1-3). Nothing else owed; the owner closes it.
 ---
 
 # DET23: Build the MicHolderMonitor in shadow: an always-on 1 Hz record of which process holds audio input, so a missed call becomes a row
@@ -51,3 +51,15 @@ Source findings: D082 (high, demonstrated in the log) and D007 (medium, demonstr
 1. [session] Confirm the installed build on the work laptop is newer than the landing commit.
 2. [owner] Use the app normally for 10 working days. Note the date of any call you joined that was not recorded or prompted. Cost: no extra calls.
 3. [session] Read the 10 days of `events.jsonl` (counts, families, gap lengths and timestamps only, never titles) and write the field bars above into this file; a failed bar is reported as failed, not re-tuned.
+
+**Progress (2026-11-16): shipped log only, field bars owed.** What landed, and where it departs from the spec's wording:
+
+- `MicHolderMonitor` (host: `.utility` serial queue, 1 Hz `DispatchSourceTimer`, `systemUptime` clock) and `MicHolderLedger` (pure) in `Lifecycle/Signals/`. Identity (bundle, PID, family, including a negative attribution) is cached per process-object id and dropped when the id leaves the list, so a steady tick reads the list plus `IsRunningInput` and `IsRunningOutput` per attributed object (and the input devices of an object holding input), not bundle and PID for every object every second. That is a deliberate deviation from "per tick, per object" for the PERF budget.
+- Families are the registry's `[native]` and `[browser.bundles]` ids, keyed by registry id (so `com.microsoft.teams2` and `com.microsoft.teams` are separate families; a consumer that wants "Teams" reads both). `[mic_plausible]` is not a family here.
+- The first sample is a silent baseline for released families, and a failed list read is one global `mic_holder_list_unknown` row with the families' state untouched (`snapshot` reads them unknown meanwhile), so the 2-rows-a-second bar does not fail by construction. Staleness (older than 3 s) is computed in `snapshot`, not stored.
+- The list listener goes through the shared `CoreAudioHALBus` (DET21's lifetime-scoped system-object listener), and only requests a refresh, at most one a second.
+- `sampler_silent` comes from a watchdog on its own queue; the heartbeat carries `max_interval_sec` so App Nap throttling of the timer is visible (the daemon does not opt out of App Nap; that is a separate decision if the bar fails).
+- D010's lag is measured to the next discovery **winner** for the family (`onDiscovered`), once per hold; release rows carry `sighted` and `recorded` for the "holds of 20 s or more with no call behind them" count.
+- Opus review fixes before landing: an edge carries the output flag and devices on its own row (an `io_changed` beside it made 3 rows in one second); `io_changed` only while held; the 120 s post-release window opens on any edge out of held while recording (a holder that vanishes at the call's end goes held, unknown, released); an object whose identity could not be read is not cached, and a negative attribution is re-decided after 30 s; shutdown waits up to 0.5 s for the teardown so the partial level minute is flushed.
+- The family list is read from `MeetingAppRegistry.shared` once at launch, like the scanner's; an overlay edit needs a relaunch, as `meeting_apps.toml` already does.
+- Known blind spot for consumers: Safari reads released throughout (its capture runs in a launchd-owned WebKit process), see `daemon/docs/gotchas.md`.

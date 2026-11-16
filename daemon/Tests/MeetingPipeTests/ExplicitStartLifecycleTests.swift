@@ -131,6 +131,29 @@ final class ExplicitStartLifecycleTests: XCTestCase {
         XCTAssertNil(host.recorderSpy.onMicLevel)
     }
 
+    /// DET23: the same arm and disarm tell the mic-holder monitor a recording runs, and the mic
+    /// callback hands it each level, with the system level only while that channel delivers.
+    func test_levelMirrorFeedsTheMicHolderMonitor() {
+        let (controller, host) = makeController()
+        controller.armSystemLevelMirror()
+        host.recorderSpy.onSystemLevel?(-30)
+        host.recorderSpy.onMicLevel?(-45)
+        controller.disarmSystemLevelMirror()
+        XCTAssertEqual(host.micHolderSpy.recordingCalls, [true, false])
+        XCTAssertEqual(host.micHolderSpy.levels.map(\.mic), [-45])
+        XCTAssertEqual(host.micHolderSpy.levels.first?.system, -30)
+    }
+
+    func test_aSystemChannelThatIsNotDeliveringFeedsNoSystemLevel() {
+        let (controller, host) = makeController()
+        host.recorderSpy.systemChannelHealth = .down
+        controller.armSystemLevelMirror()
+        host.recorderSpy.onSystemLevel?(-30)
+        host.recorderSpy.onMicLevel?(-45)
+        XCTAssertEqual(host.micHolderSpy.levels.count, 1)
+        XCTAssertNil(host.micHolderSpy.levels.first?.system)
+    }
+
     /// Engaging is idempotent, and that is not an optimisation: `engage()` opens with
     /// `disengage()`, so an unguarded call on an explicit start would stop a healthy
     /// discovery-engaged adapter and reset the engine to `.idle` mid-meeting.

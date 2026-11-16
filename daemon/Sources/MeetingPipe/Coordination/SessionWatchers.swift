@@ -9,6 +9,7 @@ protocol Startable: AnyObject {
 extension MeetingDiscoveryWatcher: Startable {}
 extension CallTeardownWatcher: Startable {}
 extension ConfigRefreshCoordinator: Startable {}
+extension MicHolderMonitor: Startable {}
 
 /// The session-lifetime watchers, started together by `Coordinator.start()` (T7).
 ///
@@ -27,30 +28,38 @@ final class SessionWatchers {
     let configRefresh: Startable
     /// END16: feeds the teardown watcher's cadence, so it starts after it (its first report ticks it).
     let teamsRunning: Startable
+    /// DET23: the always-on 1 Hz record of which process holds audio input. Depends on none of the
+    /// others, so it starts last.
+    let micHolder: Startable
 
     /// In start order. Discovery and call-teardown kept the order they had inline in
     /// `Coordinator.start()`; config refresh used to start after hotkey registration, which none of
     /// the three depends on. The Teams-running observer follows the watcher it drives.
-    var members: [Startable] { [discovery, callTeardown, teamsRunning, configRefresh] }
+    var members: [Startable] { [discovery, callTeardown, teamsRunning, configRefresh, micHolder] }
 
     private(set) var hasStarted = false
 
-    init(discovery: Startable, callTeardown: Startable, teamsRunning: Startable, configRefresh: Startable) {
+    init(
+        discovery: Startable, callTeardown: Startable, teamsRunning: Startable, configRefresh: Startable,
+        micHolder: Startable
+    ) {
         self.discovery = discovery
         self.callTeardown = callTeardown
         self.teamsRunning = teamsRunning
         self.configRefresh = configRefresh
+        self.micHolder = micHolder
     }
 
     static func production(
         discovery: MeetingDiscoveryWatcher,
         callTeardown: CallTeardownWatcher,
         teamsRunning: TeamsRunningObserver,
-        configRefresh: ConfigRefreshCoordinator
+        configRefresh: ConfigRefreshCoordinator,
+        micHolder: MicHolderMonitor
     ) -> SessionWatchers {
         SessionWatchers(
             discovery: discovery, callTeardown: callTeardown,
-            teamsRunning: teamsRunning, configRefresh: configRefresh
+            teamsRunning: teamsRunning, configRefresh: configRefresh, micHolder: micHolder
         )
     }
 

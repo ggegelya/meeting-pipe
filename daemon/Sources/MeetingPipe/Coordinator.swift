@@ -515,6 +515,8 @@ final class Coordinator: NSObject {
         }
 
         discoveryWatcher.onDiscovered = { [weak self] source in
+            // DET23: a winner is the admitted sighting D010's lag row measures to.
+            self?.micHolder.noteSighting(bundleID: source.bundleID)
             self?.session.handleDiscovery(source)
         }
         // END19: the no-winner scans are what bound an engage discovery stopped sighting.
@@ -714,6 +716,7 @@ final class Coordinator: NSObject {
         // each supervised spawn's stdin pipe closing.
         jobDispatcher.terminateSupervised()
         discoveryWatcher.stop()
+        micHolder.stopAndFlush()
         hotkey.unregister()
         session.shutdownConsumers()
         micGate.shutdown()
@@ -937,8 +940,32 @@ final class Coordinator: NSObject {
         discovery: discoveryWatcher,
         callTeardown: callTeardown,
         teamsRunning: teamsRunning,
-        configRefresh: configRefresh
+        configRefresh: configRefresh,
+        micHolder: micHolder
     )
+
+    /// DET23: which process holds audio input, sampled at 1 Hz from launch, log only. Its families
+    /// are every native and browser bundle in the registry; a helper with no shared bundle prefix
+    /// is attributed through the running registry apps, read off main on the monitor's queue only
+    /// when a new process object appears. Started by `watchers`.
+    lazy var micHolder: MicHolderMonitor = {
+        let registry = MeetingAppRegistry.shared
+        let familyIDs = Array(registry.nativeBundles.union(registry.browserBundles))
+        return MicHolderMonitor(
+            halBus: halBus,
+            eventLog: LogEventAdapter(),
+            familyIDs: familyIDs,
+            runningRoots: {
+                var roots: [pid_t: String] = [:]
+                for app in NSWorkspace.shared.runningApplications {
+                    guard let bundle = app.bundleIdentifier,
+                          MicHolderMonitor.family(forBundleID: bundle, in: familyIDs) != nil else { continue }
+                    roots[app.processIdentifier] = bundle
+                }
+                return roots
+            }
+        )
+    }()
 
     /// END16: drives `callTeardown`'s cadence (1 Hz while Teams runs, slow otherwise). Started by
     /// `watchers`, after the watcher it feeds.
