@@ -749,9 +749,8 @@ def _write_embeddings_sidecar(
     if near_misses:
         payload["near_misses"] = dict(near_misses)
     path = wav.parent / f"{wav.stem}.embeddings.json"
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(payload), encoding="utf-8")
-    tmp.replace(path)
+    # SEC22: biometric, so 0600 at creation, not at the next daemon launch's sweep.
+    storage.atomic_write_text(path, json.dumps(payload))
 
 
 def finalize_streamed_transcript(

@@ -20,6 +20,7 @@ import json
 from pathlib import Path
 from typing import NamedTuple
 
+from . import storage
 from .diarize import cosine_similarity
 from .voiceprint import EMBEDDING_DIM, _l2_normalize
 
@@ -210,6 +211,49 @@ class RosterStore:
         self._write(kept)
         return True
 
+    @staticmethod
+    def forget_embeddings(name: str, library_dir: Path) -> int:
+        """Strip `name` from every `<stem>.embeddings.json` in `library_dir` and
+        return how many files changed (SEC22).
+
+        `roster forget` removes the person from `roster.json` only; their voice
+        embedding stayed in each meeting's sidecar, keyed by their name. That is
+        the key removed here, plus any `near_misses` entry that is keyed by the
+        name or points at it ("closest to <name>"). A file that does not mention
+        the name is not rewritten, so it stays byte-identical; each rewrite is
+        atomic and 0600. An unreadable file is skipped, never replaced.
+
+        Deliberately separate from `forget` (and opt-in from the CLI): the
+        daemon's Undo naming and rename call `forget`, and stripping the
+        embeddings of every meeting there would also strip the voice a later
+        re-name needs (FEAT24)."""
+        changed = 0
+        for path in sorted(Path(library_dir).glob("*.embeddings.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            touched = False
+            embeddings = data.get("embeddings")
+            if isinstance(embeddings, dict) and name in embeddings:
+                del embeddings[name]
+                touched = True
+            near = data.get("near_misses")
+            if isinstance(near, dict):
+                drop = [k for k, v in near.items() if k == name or v == name]
+                for k in drop:
+                    del near[k]
+                touched = touched or bool(drop)
+                if not near:
+                    data.pop("near_misses", None)
+            if not touched:
+                continue
+            storage.atomic_write_text(path, json.dumps(data))
+            changed += 1
+        return changed
+
     def rename(self, old: str, new: str) -> bool:
         """Rename a roster person, keeping their samples and centroids untouched
         (FEAT3-MANAGE). Returns True when `old` was found and now reads as `new`.
@@ -232,8 +276,7 @@ class RosterStore:
         return True
 
     def _write(self, people: list[dict]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        # SEC22: every named third party's voiceprint; 0600 in a 0700 directory.
+        storage.ensure_private_dir(self.path.parent)
         payload = {"schema_version": _SCHEMA_VERSION, "people": people}
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(payload), encoding="utf-8")
-        tmp.replace(self.path)
+        storage.atomic_write_text(self.path, json.dumps(payload))

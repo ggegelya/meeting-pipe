@@ -13,6 +13,21 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 
+def ensure_private_dir(path: Path, mode: int = 0o700) -> Path:
+    """Create `path` (and parents) and make sure the directory itself is `mode`,
+    tightening one that already exists looser, e.g. the 0755 `~/.config/meeting-pipe`
+    an older installer made (SEC22). Only the leaf is touched: parents keep whatever
+    the OS gave them. A directory we cannot chmod (not ours) is left as it is."""
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True, mode=mode)
+    try:
+        if (path.stat().st_mode & 0o777) != mode:
+            os.chmod(path, mode)
+    except OSError:
+        pass
+    return path
+
+
 def atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
     """Write `text` to `path` atomically: a sibling temp file, chmod, then
     `os.replace` (an atomic same-directory rename).

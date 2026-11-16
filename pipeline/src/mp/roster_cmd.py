@@ -13,6 +13,8 @@ import argparse
 import json
 from pathlib import Path
 
+from . import storage
+
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
@@ -41,6 +43,16 @@ def main(argv: list[str]) -> int:
 
     forget = sub.add_parser("forget", help="Remove a name from the roster.")
     forget.add_argument("--name", required=True)
+    forget.add_argument(
+        "--purge-embeddings", action="store_true",
+        help="Also strip the name from every meeting's <stem>.embeddings.json in the "
+             "library (SEC22). Opt-in: the daemon's Undo naming also runs `forget`, "
+             "and it must not lose the voices a later re-name needs (FEAT24).",
+    )
+    forget.add_argument(
+        "--library", type=Path, default=None,
+        help="Library directory for --purge-embeddings (default: recording.output_dir).",
+    )
 
     rename = sub.add_parser("rename", help="Rename a roster person, keeping their voiceprint.")
     rename.add_argument("--old", required=True, help="Current name.")
@@ -60,7 +72,19 @@ def main(argv: list[str]) -> int:
     if args.action == "forget":
         removed = roster.forget(args.name)
         print(f"{'removed' if removed else 'not found'}: {args.name}")
-        return 0 if removed else 1
+        purged = 0
+        if args.purge_embeddings:
+            library = args.library
+            if library is None:
+                from .config import Config
+
+                library = Config.load().recording.output_dir
+            purged = roster.forget_embeddings(args.name, library)
+            from . import events
+
+            events.emit("pipeline", "roster_embeddings_forgotten", files=purged)
+            print(f"embeddings removed from {purged} meeting(s)")
+        return 0 if (removed or purged) else 1
 
     if args.action == "rename":
         renamed = roster.rename(args.old, args.new)
@@ -116,8 +140,9 @@ def _relabel_transcript(wav: Path, old_label: str, new_label: str) -> None:
             changed = True
     if not changed:
         return
-    json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    (wav.parent / f"{wav.stem}.md").write_text(render_markdown(data), encoding="utf-8")
+    # Atomic (SEC22): a kill mid-rewrite used to truncate the only copy of a transcript.
+    storage.atomic_write_text(json_path, json.dumps(data, ensure_ascii=False, indent=2))
+    storage.atomic_write_text(wav.parent / f"{wav.stem}.md", render_markdown(data))
 
     emb_path = wav.parent / f"{wav.stem}.embeddings.json"
     try:
@@ -127,4 +152,4 @@ def _relabel_transcript(wav: Path, old_label: str, new_label: str) -> None:
     embeddings = edata.get("embeddings") or {}
     if old_label in embeddings:
         embeddings[new_label] = embeddings.pop(old_label)
-        emb_path.write_text(json.dumps(edata), encoding="utf-8")
+        storage.atomic_write_text(emb_path, json.dumps(edata))

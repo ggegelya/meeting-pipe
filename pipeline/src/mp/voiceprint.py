@@ -15,6 +15,8 @@ import json
 import math
 from pathlib import Path
 
+from . import storage
+
 # Sibling of config.toml / secrets.env so all per-user state lives in one place.
 VOICEPRINT_PATH = Path("~/.config/meeting-pipe/voiceprint.json").expanduser()
 
@@ -91,12 +93,12 @@ class VoiceprintStore:
             pass
 
     def _write(self, embedding: list[float], meetings: int) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        # SEC22: a voice embedding is biometric data, so 0600 in a 0700 directory
+        # (the hand-rolled temp-and-replace this was left it at the umask default).
+        storage.ensure_private_dir(self.path.parent)
         payload = {
             "schema_version": _SCHEMA_VERSION,
             "embedding": embedding,
             "meetings": meetings,
         }
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(payload), encoding="utf-8")
-        tmp.replace(self.path)
+        storage.atomic_write_text(self.path, json.dumps(payload))
