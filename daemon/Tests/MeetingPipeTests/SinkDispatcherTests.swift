@@ -768,7 +768,7 @@ final class SinkDispatcherTests: XCTestCase {
         _ driver: FakeDriver, _ runner: FakeRunner, originals: URL,
         redactor: @escaping @Sendable (URL) async -> MuteRedactor.Outcome
     ) -> SinkDispatcher {
-        SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner }, redactor: redactor, originalsDir: originals)
+        SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner }, redactor: { url, _ in await redactor(url) }, originalsDir: originals)
     }
 
     func test_a_failed_redaction_never_transcribes_or_publishes_and_moves_the_recording_out() throws {
@@ -863,7 +863,7 @@ final class SinkDispatcherTests: XCTestCase {
         let dir = wav.deletingLastPathComponent()
         let originals = dir.appendingPathComponent("originals", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: dir) }
-        OffRecordMarker.write(forFinal: wav)
+        try OffRecordMarker.write(forFinal: wav)
         let dispatcher = makeHeldBackDispatcher(driver, runner, originals: originals) {
             await MuteRedactor.redactIfNeeded(wav: $0, originalsDir: originals)
         }
@@ -887,7 +887,7 @@ final class SinkDispatcherTests: XCTestCase {
         let wav = try makeTempWav()
         let dir = wav.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: dir) }
-        OffRecordMarker.write(forFinal: wav)
+        try OffRecordMarker.write(forFinal: wav)
         let dispatcher = makeHeldBackDispatcher(driver, runner, originals: dir) { _ in .redacted }
 
         dispatcher.enqueue(file: wav, summaryMode: .auto)
@@ -1941,7 +1941,7 @@ final class SinkDispatcherTests: XCTestCase {
                 built += 1
                 return runner
             },
-            redactor: { url in
+            redactor: { url, _ in
                 if url == stuck { await gate.wait() }
                 return .notNeeded
             },

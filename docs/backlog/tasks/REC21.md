@@ -2,9 +2,9 @@
 id: REC21
 title: The start-time markers that make an interrupted off-the-record or redact-opt-in recording fail closed are written with `try?`, and orphan recovery reads a missing or malformed recovery manifest as an ordinary recording and auto-processes it
 category: Recording
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (observability band, O17: SW-3): `.capturemode` and `.offrecord` writes are try?, so a failed write plus a crash, or plus a failed timeline write at stop, publishes uncut audio; an unreadable manifest recovers as auto. Report marker failures, copy both facts into the manifest, carry redactionOwed on the job, quarantine on unreadable. [Spec](./REC21.md) Amended 2026-11-13 by the audit band: recovery clears the markers before a quarantine move that can fail, unknown manifest tokens and wrong-typed meta recover as auto, and the merge temp reads as a final (F026, F148, F164).
+comment: All seven items shipped 2026-11-16: checked .capturemode/.offrecord writes (start_marker_write_failed), manifest capture_mode/off_record, ProcessingJob.redactionOwed, three-outcome manifest and marker reads with quarantine reasons, quarantine-before-cleanup (orphan_quarantine_failed), merge temp not a final. Nothing owner-owed; owner to close.
 ---
 
 # REC21: the two start-time markers that make an interrupted off-the-record or redact-opt-in recording fail closed are written with `try?`, and orphan recovery reads a missing or malformed recovery manifest as an ordinary recording and processes it automatically
@@ -79,3 +79,16 @@ Three findings from the [2026-11-12 independent audit](../../audits/2026-11-12-i
 
 - The three 2026-06-12 stems the field pack shows logged `skipping stale orphaned recording` 415 times each, and a recover or discard choice for stale orphans: [REC32](./REC32.md). Adjacent, not this ordering defect.
 - What becomes of a quarantined file afterwards: still [SEC26](./SEC26.md). The mute timeline lost at quit or on a failed merge: [REC34](./REC34.md).
+
+## Progress (2026-11-16)
+
+Everything above shipped in one commit; nothing is owed by the owner, so this is left `partial` only because a session may not close a task itself.
+
+Two deviations, both stricter than the spec:
+
+- `manifest_unreadable` quarantines even when a timeline exists (item 4 says "with no timeline"). It is a routing failure, not a redaction one: a timeline does not say whether the meeting was BYO, NDA or regulated, and REC34 will write timelines on failed merges, which would otherwise recover an unreadable-manifest orphan as `.auto`.
+- `retryMeeting` carries a parsed manifest's `redactionOwed` onto the job it enqueues (the `enqueue` closure takes a third argument). Without it, an orphan whose only redaction evidence was the manifest, and whose quarantine move failed, would be retried with no marker on disk and the redactor (which never reads the manifest) would answer `.notNeeded`.
+
+The `.capturemode` write keeps PERF28's rule that a write which never returns fails the start; only a write that returns an error is reported and continues. The manifest rewrite on an off-the-record toggle is a synchronous sub-kilobyte atomic write on main, beside the `.offrecord` marker write that already ran there.
+
+An Opus review of the diff found that the job's `redactionOwed` and a Retry's copy of it are memory only, while the queue does not survive a quit: a stop, a Retry or a re-transcribe that dropped the manifest left nothing on disk once the markers had failed. Fixed in the same commit with `OffRecordMarker.persistOwed`, which writes `.offrecord` (read by the redactor as "owed" whatever the mode, removed by `SinkDispatcher` once the cut passes) before the manifest goes, and keeps the manifest when it cannot. `retranscribeMeeting` now applies the Retry rules (unreadable manifest refuses, an owed cut is put on disk or the re-transcribe refuses). A PERF28 start-time manifest write that lands late, encoded with `off_record: false`, is written back with `true` if a span opened meanwhile (`onLateFinish`). Accepted residue, as the spec says: both the marker and the manifest write failing, followed by a crash, leaves nothing on disk.

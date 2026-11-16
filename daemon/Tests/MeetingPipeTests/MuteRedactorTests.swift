@@ -183,7 +183,7 @@ final class MuteRedactorTests: XCTestCase {
         let originals = dir.appendingPathComponent("originals")
         try FileManager.default.createDirectory(at: originals, withIntermediateDirectories: true)
         try writeStereoWav(at: originals.appendingPathComponent("rec.wav"), seconds: 2.0, left: 0.9, right: 0.9)  // the full one
-        OffRecordMarker.write(forFinal: wav)
+        try OffRecordMarker.write(forFinal: wav)
 
         let outcome = await MuteRedactor.redactIfNeeded(wav: wav, originalsDir: originals)
 
@@ -461,7 +461,7 @@ final class MuteRedactorTests: XCTestCase {
         let (dir, wav) = try makeRecording()
         defer { try? FileManager.default.removeItem(at: dir) }
         // A clean finish whose timeline write failed: the MIC14 marker is still on disk.
-        OffRecordMarker.write(forFinal: wav)
+        try OffRecordMarker.write(forFinal: wav)
 
         let outcome = await MuteRedactor.redactIfNeeded(wav: wav, originalsDir: dir.appendingPathComponent("originals"))
 

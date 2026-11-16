@@ -186,7 +186,7 @@ final class MuteTimelineTests: XCTestCase {
         XCTAssertEqual(read.spans.first?.source, .mute, "an absent source is the auto mute kind")
     }
 
-    func test_off_record_marker_round_trips() {
+    func test_off_record_marker_round_trips() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("offrecord-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -194,7 +194,7 @@ final class MuteTimelineTests: XCTestCase {
         let final = dir.appendingPathComponent("rec.wav")
 
         XCTAssertFalse(OffRecordMarker.exists(forFinal: final))
-        OffRecordMarker.write(forFinal: final)
+        try OffRecordMarker.write(forFinal: final)
         XCTAssertTrue(OffRecordMarker.exists(forFinal: final))
         XCTAssertEqual(OffRecordMarker.url(forFinal: final).lastPathComponent, "rec.offrecord")
         OffRecordMarker.remove(forFinal: final)

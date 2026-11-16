@@ -223,7 +223,15 @@ extension SessionPromptPresenting {
 
 /// Hands a finished recording to the pipeline (`PipelineJobDispatcher`).
 protocol SessionJobDispatching: AnyObject {
-    func enqueue(file: URL, summaryMode: SummaryMode)
+    /// `redactionOwed` rides on the job (REC21) so a clean stop whose redaction markers failed to
+    /// land still fails closed in the redactor.
+    func enqueue(file: URL, summaryMode: SummaryMode, redactionOwed: Bool)
+}
+
+extension SessionJobDispatching {
+    func enqueue(file: URL, summaryMode: SummaryMode) {
+        enqueue(file: file, summaryMode: summaryMode, redactionOwed: false)
+    }
 }
 
 // MARK: - Conformances

@@ -158,7 +158,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
 
         XCTAssertTrue(host.jobsSpy.enqueued.isEmpty, "an NDA meeting must not run without its routing")
         XCTAssertTrue(host.notifierSpy.processing.isEmpty)
-        let manifest = try XCTUnwrap(RecordingManifest.read(forStem: stem, in: tempDir), "the manifest is kept")
+        let manifest = try XCTUnwrap(RecordingManifest.load(forStem: stem, in: tempDir).parsed, "the manifest is kept")
         XCTAssertEqual(manifest.meta["workflow_nda_mode"] as? Bool, true)
         let failure = try XCTUnwrap(PipelineFailureSidecar.read(stem: stem, in: tempDir))
         XCTAssertEqual(failure.reason, MetaWriteFailure.heldReason)
@@ -181,7 +181,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
 
         XCTAssertEqual(host.jobsSpy.enqueued.map(\.file.lastPathComponent), ["\(stem).wav"])
         XCTAssertNil(PipelineFailureSidecar.read(stem: stem, in: tempDir))
-        XCTAssertNotNil(RecordingManifest.read(forStem: stem, in: tempDir), "the manifest is kept on any failed write")
+        XCTAssertNotNil(RecordingManifest.load(forStem: stem, in: tempDir).parsed, "the manifest is kept on any failed write")
         let rows = eventRows(action: "meta_write_failed")
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(rows.first?["held"] as? Bool, false)
@@ -200,7 +200,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
 
         XCTAssertEqual(host.jobsSpy.enqueued.count, 1)
-        XCTAssertNil(RecordingManifest.read(forStem: stem, in: tempDir))
+        XCTAssertNil(RecordingManifest.load(forStem: stem, in: tempDir).parsed)
         XCTAssertTrue(FileManager.default.fileExists(atPath: metaURL(stem).path))
         XCTAssertTrue(eventRows(action: "meta_write_failed").isEmpty)
     }
@@ -217,7 +217,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
         var committed = false
         let dir = tempDir!
         host.statusBarSpy.onSetRecording = { _ in
-            manifestAtCommit = RecordingManifest.read(forStem: stem, in: dir)
+            manifestAtCommit = RecordingManifest.load(forStem: stem, in: dir).parsed
             committed = true
         }
         controller.beginRecording(source: zoom, summaryMode: .byo)
@@ -245,7 +245,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
             outputDir: { dir },
             launcher: NoopDriver(),
             notifyError: { _ in },
-            enqueue: { file, mode in
+            enqueue: { file, mode, _ in
                 sidecarAtEnqueue = MeetingMetaRead.load(stem: stem, in: dir).dictionary
                 enqueued.append((file, mode))
             }
@@ -255,7 +255,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
         XCTAssertEqual(enqueued.map(\.0.lastPathComponent), ["\(stem).wav"])
         XCTAssertEqual(sidecarAtEnqueue?["workflow_nda_mode"] as? Bool, true, "restored before the job ran")
         XCTAssertNil(PipelineFailureSidecar.read(stem: stem, in: dir))
-        XCTAssertNil(RecordingManifest.read(forStem: stem, in: dir), "the sidecar now holds the routing")
+        XCTAssertNil(RecordingManifest.load(forStem: stem, in: dir).parsed, "the sidecar now holds the routing")
     }
 
     /// A retry while the sidecar's path still cannot be written or read (the blocker is still
@@ -271,14 +271,76 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
         let dir = tempDir!
         let service = MeetingLibraryService(
             outputDir: { dir }, launcher: NoopDriver(), notifyError: { _ in },
-            enqueue: { file, _ in enqueued.append(file) }
+            enqueue: { file, _, _ in enqueued.append(file) }
         )
         guard case .failure(let error) = service.retryMeeting(stem: stem) else {
             return XCTFail("expected the retry to refuse")
         }
         XCTAssertEqual(error as? MeetingLibraryService.LibraryError, .metaWriteFailed(stem: stem))
         XCTAssertTrue(enqueued.isEmpty)
-        XCTAssertNotNil(RecordingManifest.read(forStem: stem, in: dir))
+        XCTAssertNotNil(RecordingManifest.load(forStem: stem, in: dir).parsed)
+    }
+
+    // MARK: - REC21: the session remembers a redaction was owed
+
+    func test_a_failing_offrecord_marker_write_reports_starts_the_span_and_rewrites_the_manifest() async throws {
+        let host = FakeSessionHost(tempDir: tempDir)
+        host.recorderSpy.lastSystemFires = 1
+        let controller = MeetingSessionController(coordinator: host)
+        controller.offRecordMarkerWriter = { _ in throw NSError(domain: NSPOSIXErrorDomain, code: 28) }
+        let stem = "20261116-110000"
+        let file = tempDir.appendingPathComponent("\(stem).wav")
+        host.recorderSpy.fileToReturn = file
+        controller.beginRecording(source: zoom, summaryMode: .byo)
+        await waitUntil({ host.stateMachine.current.isRecording }, "the meeting to record")
+        XCTAssertFalse(controller.redactionOwed, "a plain capture-first recording owes nothing yet")
+
+        controller.toggleOffTheRecord()
+
+        XCTAssertEqual(host.recorderSpy.offTheRecordStates, [true], "the span starts whether or not the marker landed")
+        let rows = eventRows(action: "start_marker_write_failed")
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?["category"] as? String, "recorder")
+        XCTAssertEqual(rows.first?["marker"] as? String, "offrecord")
+        XCTAssertEqual(rows.first?["stem"] as? String, stem)
+        XCTAssertEqual(rows.first?["error_domain"] as? String, NSPOSIXErrorDomain)
+        XCTAssertEqual(rows.first?["error_code"] as? Int, 28)
+        let manifest = try XCTUnwrap(RecordingManifest.load(forStem: stem, in: tempDir).parsed)
+        XCTAssertTrue(manifest.offRecord, "the manifest carries the second copy")
+        XCTAssertEqual(manifest.summaryMode, .byo, "rewritten from the session's copy, routing intact")
+        XCTAssertEqual(manifest.captureMode, .captureFirst)
+
+        controller.toggleOffTheRecord()  // closing the span still owes its cut
+        controller.stopRecording(file: file, source: zoom, summaryMode: .byo)
+        await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
+        XCTAssertEqual(host.jobsSpy.redactionOwed, [true], "the enqueued job carries redactionOwed")
+        XCTAssertTrue(
+            OffRecordMarker.exists(forFinal: file),
+            "the queue is memory only, so the debt goes on disk before the manifest is dropped"
+        )
+        XCTAssertEqual(RecordingManifest.load(forStem: stem, in: tempDir), .absent)
+        XCTAssertFalse(controller.redactionOwed, "reset at stop")
+    }
+
+    func test_a_redact_opt_in_recording_enqueues_owing_a_redaction() async throws {
+        var redacting = Workflow(name: "Muted asides out")
+        redacting.flags.redactMutedSpans = true
+        let host = FakeSessionHost(tempDir: tempDir, workflows: [redacting])
+        host.recorderSpy.lastSystemFires = 1
+        let controller = MeetingSessionController(coordinator: host)
+        controller.pendingWorkflowOverride = (source: zoom, workflowID: redacting.id)
+        let stem = "20261116-120000"
+        let file = tempDir.appendingPathComponent("\(stem).wav")
+        host.recorderSpy.fileToReturn = file
+        controller.beginRecording(source: zoom, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current.isRecording }, "the meeting to record")
+        XCTAssertEqual(
+            RecordingManifest.load(forStem: stem, in: tempDir).parsed?.captureMode, .captureFirstRedact,
+            "the manifest carries the capture mode from the start"
+        )
+        controller.stopRecording(file: file, source: zoom, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
+        XCTAssertEqual(host.jobsSpy.redactionOwed, [true])
     }
 }
 

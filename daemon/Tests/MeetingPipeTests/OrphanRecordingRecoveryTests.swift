@@ -246,7 +246,7 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
         let result = await OrphanRecordingRecovery.recover(stems: [stem], in: dir, isOwned: { _ in false })
 
         XCTAssertEqual(result.ready.map(\.url), [final], "the orphan recovers to its final")
-        XCTAssertNil(RecordingManifest.read(forStem: stem, in: dir), "the start-time manifest is cleared")
+        XCTAssertNil(RecordingManifest.load(forStem: stem, in: dir).parsed, "the start-time manifest is cleared")
         let markers = try XCTUnwrap(MarkerFile.read(forFinal: final), "the flags survive the recovery")
         XCTAssertEqual(markers.markers.map(\.tSeconds), [12.5, 340.0])
     }
@@ -346,7 +346,7 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let final = dir.appendingPathComponent("rec.wav")
         try writeMarker(.captureFirst, stem: "rec", in: dir)
-        OffRecordMarker.write(forFinal: final)
+        try OffRecordMarker.write(forFinal: final)
         XCTAssertTrue(
             OrphanRecordingRecovery.shouldQuarantine(stem: "rec", final: final, in: dir),
             "a lost manual off-record span must not auto-publish"

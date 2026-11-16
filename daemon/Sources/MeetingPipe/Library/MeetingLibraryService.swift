@@ -39,6 +39,12 @@ final class MeetingLibraryService {
         /// `<stem>.meta.json` exists but could not be read or parsed (SEC25), so a reassignment
         /// that rebuilds it would drop whatever it holds. Nothing was written.
         case metaUnreadable(stem: String)
+        /// `<stem>.recovery.json` sits beside the recording and cannot be read (REC21), so the
+        /// meeting's routing and whether a cut was owed are unknown. Nothing was run.
+        case recoveryManifestUnreadable(stem: String)
+        /// A part of the recording is owed a cut, and the marker that keeps it from being read
+        /// uncut could not be written (REC21). Nothing was run.
+        case redactionNotRecorded(stem: String)
         /// Re-transcribe (ASR3) was called before the Coordinator wired the
         /// transcription queue. Only reachable headless; the Library is not on
         /// screen until it is wired.
@@ -68,6 +74,10 @@ final class MeetingLibraryService {
                 return "Could not update the workflow for \(stem)."
             case .metaUnreadable(let stem):
                 return "Could not read the workflow settings for \(stem), so they were left as they are. Try again in a moment."
+            case .recoveryManifestUnreadable(let stem):
+                return "Could not read the settings \(stem) was recorded with, so it was not run. Its recording is kept as it is."
+            case .redactionNotRecorded(let stem):
+                return "Part of \(stem) has to be cut before it is transcribed, and MeetingPipe could not save that note, so nothing was run. Check there is free disk space and try again."
             case .transcriptionUnavailable:
                 return "Transcription is not available yet."
             }
@@ -82,7 +92,8 @@ final class MeetingLibraryService {
     private let launcher: PipelineDriver
     private let notifyError: (String) -> Void
     private let notifyFailure: ((String?, FailurePresentation) -> Void)?
-    private let enqueue: (URL, SummaryMode) -> Void
+    /// The third argument is `redactionOwed` (REC21), from a recovery manifest a failed quarantine kept.
+    private let enqueue: (URL, SummaryMode, Bool) -> Void
     /// Resolves the configured summarization backend ("local" / "apple_intelligence" / "anthropic" / "auto") so the local re-run preview (TECH-A16) dispatches correctly. Defaulted for tests.
     private let summarizationBackend: () -> String
     /// AI9: records a WF8 reassignment as a labelled correction pair. Injected as a
@@ -125,7 +136,7 @@ final class MeetingLibraryService {
         outputDir: @escaping () -> URL,
         launcher: PipelineDriver,
         notifyError: @escaping (String) -> Void,
-        enqueue: @escaping (URL, SummaryMode) -> Void,
+        enqueue: @escaping (URL, SummaryMode, Bool) -> Void,
         summarizationBackend: @escaping () -> String = { "local" },
         originalsDir: @escaping () -> URL = { MuteRedactor.originalsDirectory() },
         recordCorrection: @escaping (String, String?, Workflow) -> Bool = { _, _, _ in false },
@@ -220,12 +231,31 @@ final class MeetingLibraryService {
         // run. Rebuild the sidecar from it before any path below reads the meeting, and refuse
         // when that still cannot land, so the run never goes out without its routing. Gated on a
         // final recording: a manifest beside capture intermediates belongs to the orphan sweep.
-        let manifest = RecordingManifest.read(forStem: stem, in: dir)
-        if let manifest, MeetingStore.finalRecordingURL(stem: stem, in: dir) != nil {
-            guard OrphanRecordingRecovery.restoreMetaSidecar(manifest.meta, forStem: stem, in: dir) else {
-                return .failure(LibraryError.metaWriteFailed(stem: stem))
+        //
+        // REC21: a manifest beside a final that cannot be read is refused, never run as if absent.
+        // Orphan recovery keeps it there only when the quarantine its unreadable manifest called for
+        // could not move the file, and its routing (BYO, NDA, regulated) is unknowable. A parsed
+        // manifest that says a redaction was owed carries that onto the job, since the redactor
+        // never reads the manifest and its disk markers may be the ones that failed.
+        var manifest: RecordingManifest.Parsed?
+        if MeetingStore.finalRecordingURL(stem: stem, in: dir) != nil {
+            switch RecordingManifest.load(forStem: stem, in: dir) {
+            case .absent:
+                break
+            case .unreadable:
+                return .failure(LibraryError.recoveryManifestUnreadable(stem: stem))
+            case .parsed(let parsed):
+                guard OrphanRecordingRecovery.restoreMetaSidecar(parsed.meta, forStem: stem, in: dir) else {
+                    return .failure(LibraryError.metaWriteFailed(stem: stem))
+                }
+                manifest = parsed
+                // REC21: the job's `redactionOwed` is memory only, so an owed cut goes on disk as
+                // `.offrecord` before the manifest that says so is let go; kept when that fails.
+                if let audio = MeetingStore.finalRecordingURL(stem: stem, in: dir),
+                   !parsed.owesRedaction || OffRecordMarker.persistOwed(forFinal: audio) {
+                    RecordingManifest.remove(forStem: stem, in: dir)
+                }
             }
-            RecordingManifest.remove(forStem: stem, in: dir)
         }
         let failure = PipelineFailureSidecar.read(stem: stem, in: dir)
         let summaryURL = dir.appendingPathComponent("\(stem).summary.json")
@@ -263,8 +293,9 @@ final class MeetingLibraryService {
         ].merging(trigger.attributes) { a, _ in a })
         // Drop the failure sidecar immediately so the row leaves the failed set before the run finishes. The dispatcher writes a fresh sidecar if it fails again.
         PipelineFailureSidecar.clear(stem: stem, in: dir)
-        // A held meeting's manifest also carries the summary mode it was recorded under.
-        enqueue(audioURL, manifest?.summaryMode ?? .auto)
+        // A held meeting's manifest also carries the summary mode it was recorded under, and since
+        // REC21 whether a redaction was owed.
+        enqueue(audioURL, manifest?.summaryMode ?? .auto, manifest?.owesRedaction ?? false)
         return .success(())
     }
 
@@ -430,6 +461,21 @@ final class MeetingLibraryService {
         guard let audioURL = MeetingStore.finalRecordingURL(stem: stem, in: dir) else {
             completion(.failure(LibraryError.noAudio(stem: stem)))
             return
+        }
+        // REC21: a re-transcribe reads the same audio a Retry would, so the same manifest rules
+        // hold: an unreadable one refuses, and one saying a cut is owed must have it on disk as a
+        // marker the redactor reads, or the re-transcribe refuses.
+        switch RecordingManifest.load(forStem: stem, in: dir) {
+        case .unreadable:
+            completion(.failure(LibraryError.recoveryManifestUnreadable(stem: stem)))
+            return
+        case .parsed(let parsed) where parsed.owesRedaction:
+            guard OffRecordMarker.persistOwed(forFinal: audioURL) else {
+                completion(.failure(LibraryError.redactionNotRecorded(stem: stem)))
+                return
+            }
+        case .parsed, .absent:
+            break
         }
         let before = Self.transcriptAnchors(stem: stem, in: dir)
         let overlay = SpeakerLabelStore.read(stem: stem, in: dir)

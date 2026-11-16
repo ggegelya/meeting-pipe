@@ -517,12 +517,25 @@ final class MeetingRecorder {
     }
 
     /// PERF28: the `.capturemode` marker write, off main under `RecordStartFileWrite`'s bound. A
-    /// write error is best-effort as it always was (REC21 changes that); only a write that never
+    /// write error is reported and the start goes on (REC21); only a write that never
     /// returned fails the start, and its late return deletes the marker it wrote.
     @MainActor
     private static func writeModeMarker(_ text: String, to url: URL) async throws {
-        let outcome = await RecordStartFileWrite.run(producing: url) {
-            try? text.write(to: url, atomically: true, encoding: .utf8)
+        let outcome = await RecordStartFileWrite.run(producing: url) { () -> Error? in
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+                return nil
+            } catch {
+                return error
+            }
+        }
+        // REC21: a write that failed is reported and the start goes on; the session's
+        // `redactionOwed` and the manifest's `capture_mode` keep the recording failing closed.
+        if case .finished(let error?, _) = outcome {
+            StartMarkerWriteFailure.report(
+                .captureMode, stem: url.deletingPathExtension().lastPathComponent, error: error
+            )
+            return
         }
         guard case .timedOut = outcome else { return }
         let budget = Int(RecordStartFileWrite.budgetSeconds)

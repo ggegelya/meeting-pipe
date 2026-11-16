@@ -173,7 +173,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
             outputDir: { [unowned self] in self.dir },
             launcher: driver,
             notifyError: { [unowned self] message in self.errors.append(message) },
-            enqueue: { [unowned self] file, mode in self.enqueued.append((file, mode)) },
+            enqueue: { [unowned self] file, mode, _ in self.enqueued.append((file, mode)) },
             originalsDir: { [unowned self] in self.originalsDir },
             recordCorrection: { [unowned self] bundleID, title, workflow in
                 self.corrections.append((bundleID, title, workflow))
@@ -338,7 +338,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
             outputDir: { URL(fileURLWithPath: "/dev/null/nope") },
             launcher: driver,
             notifyError: { [unowned self] message in self.errors.append(message) },
-            enqueue: { _, _ in },
+            enqueue: { _, _, _ in },
             recordCorrection: { [unowned self] bundleID, title, workflow in
                 self.corrections.append((bundleID, title, workflow))
                 return true
@@ -716,7 +716,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
             outputDir: { [unowned self] in self.dir },
             launcher: driver,
             notifyError: { [unowned self] message in self.errors.append(message) },
-            enqueue: { [unowned self] file, mode in self.enqueued.append((file, mode)) },
+            enqueue: { [unowned self] file, mode, _ in self.enqueued.append((file, mode)) },
             originalsDir: { [unowned self] in self.originalsDir },
             enqueueRetranscribe: { _, _ in },
             libraryRunLane: { lane }
@@ -1185,7 +1185,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
             outputDir: { [unowned self] in self.dir },
             launcher: driver,
             notifyError: { _ in },
-            enqueue: { _, _ in },
+            enqueue: { _, _, _ in },
             summarizationBackend: { "apple_intelligence" }
         )
         try touch("m.md")
@@ -1271,7 +1271,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
             outputDir: { [unowned self] in self.dir },
             launcher: driver,
             notifyError: { _ in },
-            enqueue: { _, _ in },
+            enqueue: { _, _, _ in },
             originalsDir: { [unowned self] in self.originalsDir },
             failedSetMayHaveChanged: { moved += 1 }
         )

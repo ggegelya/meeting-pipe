@@ -119,8 +119,8 @@ final class PipelineJobDispatcher: LibraryRunLane {
     }
 
     /// Append a freshly-flushed recording to the pipeline queue.
-    func enqueue(file: URL, summaryMode: SummaryMode) {
-        sinkDispatcher.enqueue(file: file, summaryMode: summaryMode)
+    func enqueue(file: URL, summaryMode: SummaryMode, redactionOwed: Bool) {
+        sinkDispatcher.enqueue(file: file, summaryMode: summaryMode, redactionOwed: redactionOwed)
     }
 
     /// Queue a re-transcribe of an existing recording (ASR3). The result comes

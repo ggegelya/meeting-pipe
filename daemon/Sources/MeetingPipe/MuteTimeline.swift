@@ -166,8 +166,10 @@ enum OffRecordMarker {
         return final.deletingLastPathComponent().appendingPathComponent("\(stem).offrecord")
     }
 
-    static func write(forFinal final: URL) {
-        try? Data().write(to: url(forFinal: final), options: .atomic)
+    /// Throws since REC21: a failed write used to be silent, and with a failed timeline write
+    /// at stop (or a crash) the recording read as one with nothing to cut.
+    static func write(forFinal final: URL) throws {
+        try Data().write(to: url(forFinal: final), options: .atomic)
     }
 
     static func exists(forFinal final: URL) -> Bool {
@@ -176,5 +178,44 @@ enum OffRecordMarker {
 
     static func remove(forFinal final: URL) {
         try? FileManager.default.removeItem(at: url(forFinal: final))
+    }
+
+    /// REC21: make sure a file beside `final` records that a cut is owed, before the in-memory or
+    /// manifest copy of that fact is let go. True when `.offrecord` or a redact-owing
+    /// `.capturemode` is already there, or `.offrecord` was written now (the redactor reads it as
+    /// "owed" whatever the recording's mode, and `SinkDispatcher` removes it once the cut passes).
+    /// False only when nothing on disk says so and the write failed: the caller then keeps the
+    /// manifest, or refuses.
+    static func persistOwed(forFinal final: URL) -> Bool {
+        if exists(forFinal: final) || CaptureMode.readMarker(forFinal: final).owesRedaction { return true }
+        do {
+            try write(forFinal: final)
+            return true
+        } catch {
+            StartMarkerWriteFailure.report(.offRecord, stem: final.deletingPathExtension().lastPathComponent, error: error)
+            return false
+        }
+    }
+}
+
+/// The one report for a start-time redaction marker that did not land (REC21): `.capturemode`
+/// at record start, `.offrecord` when a span opens under lossless capture. The recording goes
+/// on either way (losing the meeting is worse); the session's `redactionOwed` and the manifest's
+/// second copy are what keep it failing closed.
+enum StartMarkerWriteFailure {
+    enum Marker: String {
+        case captureMode = "capturemode"
+        case offRecord = "offrecord"
+    }
+
+    static func report(_ marker: Marker, stem: String, error: Error) {
+        let ns = error as NSError
+        Log.writeLine("recorder", "WARN: could not write the \(marker.rawValue) marker for \(stem) (\(ns.domain) \(ns.code)); recording continues, the redaction stays owed")
+        Log.event(category: "recorder", action: "start_marker_write_failed", attributes: [
+            "marker": marker.rawValue,
+            "stem": stem,
+            "error_domain": ns.domain,
+            "error_code": ns.code,
+        ])
     }
 }

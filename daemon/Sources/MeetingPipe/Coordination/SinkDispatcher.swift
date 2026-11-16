@@ -33,8 +33,8 @@ final class SinkDispatcher: @unchecked Sendable {
     /// The offline mute redaction every recording passes before anything reads it
     /// (TECH-MIC5). Injected so `SinkDispatcherTests` can make it fail (SEC16);
     /// `originalsDir` is where a held-back recording is moved, nil meaning the
-    /// app-private default.
-    private let redactor: @Sendable (URL) async -> MuteRedactor.Outcome
+    /// app-private default. The second argument is the job's `redactionOwed` (REC21).
+    private let redactor: @Sendable (URL, Bool) async -> MuteRedactor.Outcome
     private let originalsDir: URL?
 
     /// ASR language hint handed to the runner for every job (HYG2). `"auto"` or an
@@ -151,7 +151,9 @@ final class SinkDispatcher: @unchecked Sendable {
         launcher: PipelineDriver,
         makeTranscriptionRunner: @escaping () -> TranscriptionRunner = { TranscriptionService.makeRunner() },
         languageHint: String = "auto",
-        redactor: @escaping @Sendable (URL) async -> MuteRedactor.Outcome = { await MuteRedactor.redactIfNeeded(wav: $0) },
+        redactor: @escaping @Sendable (URL, Bool) async -> MuteRedactor.Outcome = {
+            await MuteRedactor.redactIfNeeded(wav: $0, redactionOwed: $1)
+        },
         originalsDir: URL? = nil,
         transcriptionDeadline: @escaping (Double?, Bool) -> TimeInterval = { SinkDispatcher.transcriptionDeadline(audioSeconds: $0, runnerWarm: $1) },
         globalRegulatedMode: @escaping () -> Bool = { ConfigStore(configURL: Config.defaultPath).regulatedMode }
@@ -173,9 +175,10 @@ final class SinkDispatcher: @unchecked Sendable {
 
     /// Append a freshly-flushed recording to the pipeline queue and
     /// start the runner if nothing is currently being processed.
-    func enqueue(file: URL, summaryMode: SummaryMode) {
+    func enqueue(file: URL, summaryMode: SummaryMode, redactionOwed: Bool = false) {
         enqueue(job: ProcessingJob(
-            id: UUID(), file: file, summaryMode: summaryMode, startedAt: Date(), kind: .full
+            id: UUID(), file: file, summaryMode: summaryMode, startedAt: Date(), kind: .full,
+            redactionOwed: redactionOwed
         ), completion: nil)
     }
 
@@ -455,7 +458,7 @@ final class SinkDispatcher: @unchecked Sendable {
         // SEC16: the outcome used to be discarded, so every failure published the
         // uncut recording. A redaction that was owed and did not happen now holds
         // the meeting back: nothing below runs.
-        if case .failed(let reason) = await redactor(job.file) {
+        if case .failed(let reason) = await redactor(job.file, job.redactionOwed) {
             guard await MainActor.run(body: { self.claimCompletion(of: job) }) else {
                 logLateReturn(job)
                 return

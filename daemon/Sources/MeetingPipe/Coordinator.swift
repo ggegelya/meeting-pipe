@@ -890,8 +890,8 @@ final class Coordinator: NSObject {
         },
         launcher: launcher,
         notifyError: { [weak self] message in self?.notifier.notifyError(message) },
-        enqueue: { [weak self] file, mode in
-            self?.jobDispatcher.enqueue(file: file, summaryMode: mode)
+        enqueue: { [weak self] file, mode, owed in
+            self?.jobDispatcher.enqueue(file: file, summaryMode: mode, redactionOwed: owed)
         },
         summarizationBackend: { [weak self] in
             self?.configStore?.summarizationBackend ?? "anthropic"

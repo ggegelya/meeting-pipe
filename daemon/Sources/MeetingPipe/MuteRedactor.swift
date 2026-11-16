@@ -189,8 +189,13 @@ enum MuteRedactor {
     /// recording with no off-the-record span, or a pre-MIC4 file), or nothing was
     /// muted. Every other way of not redacting is `.failed` (SEC16), and the full
     /// `wav` is left intact (recoverable, never destroyed).
+    ///
+    /// `redactionOwed` is the job's own record that a cut was owed (REC21): the session sets it
+    /// for a redact-opt-in recording or once an off-the-record span opened under lossless capture,
+    /// so a clean stop whose marker writes both failed still fails closed here.
     static func redactIfNeeded(
         wav: URL,
+        redactionOwed: Bool = false,
         originalsDir: URL? = nil,
         findFFmpeg: () -> String? = RecordingPostProcessor.findFFmpeg,
         move: (URL, URL) throws -> Void = { try FileManager.default.moveItem(at: $0, to: $1) }
@@ -206,7 +211,11 @@ enum MuteRedactor {
             // markers that said otherwise were already gone. Both now survive until a timeline
             // lands (the recorder keeps `.capturemode`, the job removes `.offrecord` only after
             // this returns), so either one here means the spans were lost.
-            if OffRecordMarker.exists(forFinal: wav) || CaptureMode.recorded(forFinal: wav) == .captureFirstRedact {
+            // REC21: the job's own `redactionOwed` counts too, and a `.capturemode` that exists but
+            // cannot be read is owed, not absent.
+            if redactionOwed
+                || OffRecordMarker.exists(forFinal: wav)
+                || CaptureMode.readMarker(forFinal: wav).owesRedaction {
                 // SEC26: unless a pass that finished after its job's deadline already did the cut: the
                 // timeline is reaped and the full recording is aside, so this WAV is the redacted
                 // artifact. Holding it back would hold the redacted file and leave the real original

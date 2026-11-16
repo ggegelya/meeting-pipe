@@ -59,12 +59,38 @@ enum CaptureMode: Equatable {
         }
     }
 
-    /// The mode a recording's start-time `<stem>.capturemode` marker names, or nil
-    /// when there is none (removed at a clean stop once the timeline landed, a
-    /// regulated recording's marker aside).
-    static func recorded(forFinal final: URL) -> CaptureMode? {
-        let marker = final.deletingPathExtension().appendingPathExtension("capturemode")
-        return (try? String(contentsOf: marker, encoding: .utf8)).flatMap(CaptureMode.init(marker:))
+    /// What a recording's start-time `<stem>.capturemode` marker says (REC21). `unreadable`
+    /// (present, but the bytes cannot be read or name no mode) is kept apart from `absent`,
+    /// because both privacy readers fail closed on it: it used to read as no marker at all,
+    /// which is "nothing owed".
+    enum MarkerRead: Equatable {
+        /// No marker: removed at a clean stop once the timeline landed (a regulated
+        /// recording's marker aside), or a pre-MIC4 recording.
+        case absent
+        case unreadable
+        case recorded(CaptureMode)
+
+        /// Whether the marker obliges a redaction: it names `.captureFirstRedact`, or it
+        /// exists and cannot be read, so it might.
+        var owesRedaction: Bool {
+            switch self {
+            case .absent: return false
+            case .unreadable: return true
+            case .recorded(let mode): return mode == .captureFirstRedact
+            }
+        }
+    }
+
+    static func markerURL(forFinal final: URL) -> URL {
+        final.deletingPathExtension().appendingPathExtension("capturemode")
+    }
+
+    static func readMarker(forFinal final: URL) -> MarkerRead {
+        let marker = markerURL(forFinal: final)
+        guard FileManager.default.fileExists(atPath: marker.path) else { return .absent }
+        guard let text = try? String(contentsOf: marker, encoding: .utf8),
+              let mode = CaptureMode(marker: text) else { return .unreadable }
+        return .recorded(mode)
     }
 
     init?(marker: String) {

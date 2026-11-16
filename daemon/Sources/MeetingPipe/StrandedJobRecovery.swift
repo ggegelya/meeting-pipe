@@ -10,15 +10,20 @@ import Foundation
 /// Distinct from `OrphanRecordingRecovery`, which handles the other half: stems
 /// with unmerged `.mic.wav`/`.system.wav` intermediates and NO final `.wav`. The
 /// two sets are disjoint by construction (orphan = no final wav; stranded = has a
-/// final wav), so a stem is recovered by exactly one of them.
+/// final wav), so a stem is recovered by exactly one of them. That holds only because
+/// `<stem>.merging.wav`, the ffmpeg temp a stop-time or orphan merge writes before it
+/// promotes the final, is not a final here (REC21, F164): a kill mid-merge leaves it beside
+/// the intermediates, and counting it filed an `interrupted` error for a stem with no final.
 enum StrandedJobRecovery {
 
     /// A `<stem>.wav` (excluding the `.mic.wav`/`.system.wav` capture
-    /// intermediates, which also carry the `.wav` extension).
+    /// intermediates and the `.merging.wav` merge temp, which also carry the
+    /// `.wav` extension).
     private static func isFinalWav(_ name: String) -> Bool {
         name.hasSuffix(".wav")
             && !name.hasSuffix(".mic.wav")
             && !name.hasSuffix(".system.wav")
+            && !name.hasSuffix(".merging.wav")
     }
 
     /// The terminal pipeline sidecars: any one of these means the pipeline

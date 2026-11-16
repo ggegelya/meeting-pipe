@@ -120,6 +120,18 @@ final class MeetingSessionController: @unchecked Sendable {
     /// stop. Main-queue only. The recorder holds the render-thread copy; this drives the HUD +
     /// the marker so the toggle is idempotent per press.
     private var offTheRecordOn = false
+    /// REC21: this recording owes a redaction, so the job carries it whatever the disk markers
+    /// say. Set at start for `.captureFirstRedact` and when a span opens under lossless capture;
+    /// sticky until stop, since closing the span still owes its cut.
+    private(set) var redactionOwed = false
+    /// REC21: what the start-time recovery manifest was written from, so opening an off-the-record
+    /// span can rewrite it with `off_record` from the session's own copy rather than from disk.
+    private var manifestInputs: (summaryMode: SummaryMode, meta: [String: Any], captureMode: CaptureMode)?
+    /// REC21: the stem whose manifest says `off_record`, so a start-time manifest write that lands
+    /// late (PERF28 keeps it) and overwrites it with `false` can be written back.
+    private var offRecordManifestStem: String?
+    /// REC21: the `.offrecord` write, a seam so a test can make it fail.
+    var offRecordMarkerWriter: (URL) throws -> Void = { try OffRecordMarker.write(forFinal: $0) }
     /// END28: read by the call-split tick, which must not end an off-the-record span by splitting.
     var isOffTheRecord: Bool { offTheRecordOn }
 
@@ -546,8 +558,23 @@ final class MeetingSessionController: @unchecked Sendable {
         let on = offTheRecordOn
         if on, activeCaptureMode?.capturesLosslessly ?? false {
             // Write the marker BEFORE the recorder starts the span, so no off-record audio can
-            // exist on disk without the marker that flags it for quarantine.
-            OffRecordMarker.write(forFinal: file)
+            // exist on disk without the marker that flags it for quarantine. REC21: a failed write
+            // is reported and the span starts anyway; the job's `redactionOwed` covers a clean
+            // stop and the manifest's `off_record` a crash.
+            redactionOwed = true
+            let stem = file.deletingPathExtension().lastPathComponent
+            do {
+                try offRecordMarkerWriter(file)
+            } catch {
+                StartMarkerWriteFailure.report(.offRecord, stem: stem, error: error)
+            }
+            offRecordManifestStem = stem
+            if let inputs = manifestInputs {
+                RecordingManifest.write(
+                    summaryMode: inputs.summaryMode, meta: inputs.meta, captureMode: inputs.captureMode,
+                    offRecord: true, forStem: stem, in: file.deletingLastPathComponent()
+                )
+            }
         }
         coordinator.audioRecorder.setManualOffTheRecord(on)
         coordinator.hud.setOffTheRecord(on)
@@ -787,7 +814,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 // here, before the latch is read, so the resolve-to-`setRecording` span below
                 // keeps no suspension point; an end during this write lands in the latch.
                 await self.writeRecoveryManifest(
-                    file: file, source: source, summaryMode: summaryMode,
+                    file: file, source: source, summaryMode: summaryMode, captureMode: captureMode,
                     workflow: resolvedWorkflow, resumedFrom: resumedFrom, splitFrom: splitFrom
                 )
                 // END20: read what happened during the bring-up before anything commits. No await
@@ -795,6 +822,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 let startOutcome = self.startLatch.resolve()
                 self.activeWorkflow = resolvedWorkflow
                 self.activeCaptureMode = captureMode
+                self.redactionOwed = captureMode == .captureFirstRedact  // REC21
                 self.activeResumedFrom = resumedFrom
                 self.activeSplitFrom = splitFrom
                 self.markerSeconds = []  // FEAT8: fresh marker batch per recording
@@ -1079,6 +1107,7 @@ final class MeetingSessionController: @unchecked Sendable {
         // not exist at rest, so there the cut happens at stop, as it always did. An unknown mode
         // takes the private path.
         let keepsHeldTail = activeCaptureMode?.capturesLosslessly == true
+        let redactionOwed = self.redactionOwed  // REC21: read before the Task, like the trim
         let suggestedTrimSeconds = keepsHeldTail ? trimSeconds : nil
         if let trimSeconds = trimSeconds {
             Log.event(category: "recorder", action: "held_end_trimmed", attributes: [
@@ -1182,19 +1211,24 @@ final class MeetingSessionController: @unchecked Sendable {
                         self.coordinator.notifications.notifyError(MetaWriteFailure.heldReason)
                     } else {
                         self.coordinator.notifications.notifyProcessing(file: file)
-                        self.coordinator.jobs.enqueue(file: file, summaryMode: summaryMode)
+                        self.coordinator.jobs.enqueue(file: file, summaryMode: summaryMode, redactionOwed: redactionOwed)
                     }
                     self.resetAfterStop(source: source)
                     return
                 }
                 self.coordinator.notifications.notifyProcessing(file: file)
-                self.coordinator.jobs.enqueue(file: file, summaryMode: summaryMode)
+                self.coordinator.jobs.enqueue(file: file, summaryMode: summaryMode, redactionOwed: redactionOwed)
                 // Clean finish: the meta sidecar is now on disk and the job is
                 // enqueued, so drop the start-time recovery manifest. Kept on the
                 // else branch below, where the merge failed and the orphan sweep
                 // still needs it to route the retried recording (REC2 / AUD-6), and
-                // kept above when the sidecar write failed (SEC25).
-                RecordingManifest.remove(forStem: stem, in: file.deletingLastPathComponent())
+                // kept above when the sidecar write failed (SEC25). REC21: the job's
+                // `redactionOwed` is memory only and the queue does not survive a quit, so
+                // an owed cut is first put on disk as `.offrecord`; the manifest stays when
+                // even that cannot land.
+                if !redactionOwed || OffRecordMarker.persistOwed(forFinal: file) {
+                    RecordingManifest.remove(forStem: stem, in: file.deletingLastPathComponent())
+                }
                 // The MIC14 `.offrecord` marker is deliberately NOT dropped here (SEC16). It used
                 // to be, which left nothing on disk saying the recording had an off-record span
                 // if the timeline write had failed. The job removes it once redaction succeeds.
@@ -1232,6 +1266,9 @@ final class MeetingSessionController: @unchecked Sendable {
         markerSeconds = []
         coordinator.hud.resetFlagCount()  // UX73: paired with every markerSeconds reset
         offTheRecordOn = false
+        redactionOwed = false
+        manifestInputs = nil
+        offRecordManifestStem = nil
         // Arm the re-prompt cooldown so a post-call mic grab (Teams chat,
         // Zoom teardown toast) can't re-prompt right after the flush.
         if let bid = source?.bundleID {
@@ -1304,7 +1341,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// crash-interrupted BYO / NDA / regulated meeting on-device instead of
     /// auto-egressing it. Removed on a clean stop that produced a final.
     func writeRecoveryManifest(
-        file: URL, source: AppSource?, summaryMode: SummaryMode,
+        file: URL, source: AppSource?, summaryMode: SummaryMode, captureMode: CaptureMode,
         workflow: Workflow?, resumedFrom: String?, splitFrom: String? = nil
     ) async {
         let meta = MeetingMetaSidecar.build(
@@ -1315,11 +1352,27 @@ final class MeetingSessionController: @unchecked Sendable {
             splitFrom: splitFrom
         )
         let stem = file.deletingPathExtension().lastPathComponent
+        manifestInputs = (summaryMode, meta, captureMode)
         await RecordingManifest.writeOffMain(
             summaryMode: summaryMode,
             meta: meta,
+            captureMode: captureMode,
             forStem: stem,
-            in: file.deletingLastPathComponent()
+            in: file.deletingLastPathComponent(),
+            onLateFinish: { [weak self] in
+                Task { @MainActor in self?.reassertOffRecordManifest(file: file) }
+            }
+        )
+    }
+
+    /// REC21: a start-time manifest write that ran past its budget is kept when it lands, and it
+    /// was encoded with `off_record: false`. If a span opened in between, write it back.
+    private func reassertOffRecordManifest(file: URL) {
+        let stem = file.deletingPathExtension().lastPathComponent
+        guard offRecordManifestStem == stem, let inputs = manifestInputs else { return }
+        RecordingManifest.write(
+            summaryMode: inputs.summaryMode, meta: inputs.meta, captureMode: inputs.captureMode,
+            offRecord: true, forStem: stem, in: file.deletingLastPathComponent()
         )
     }
 

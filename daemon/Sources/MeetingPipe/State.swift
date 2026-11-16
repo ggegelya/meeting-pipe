@@ -205,4 +205,8 @@ struct ProcessingJob: Equatable {
     let summaryMode: SummaryMode
     let startedAt: Date
     var kind: ProcessingJobKind = .full
+    /// The session's record that this recording owes a redaction (REC21): a redact-opt-in
+    /// capture, or an off-the-record span opened under lossless capture. The redactor fails
+    /// closed on it when the timeline is missing, whatever the disk markers say.
+    var redactionOwed: Bool = false
 }

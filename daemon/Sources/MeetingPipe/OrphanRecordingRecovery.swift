@@ -150,9 +150,9 @@ enum OrphanRecordingRecovery {
         /// pre-MIC4 / legacy orphans with no capture-mode marker. Each carries the
         /// summary mode from its start-time manifest.
         var ready: [ReadyRecording] = []
-        /// Redaction-opt-in (`.captureFirstRedact`) finals quarantined because
-        /// their mute timeline was lost in the interruption, so they cannot be
-        /// redacted and must not be auto-published un-redacted (TECH-MIC5 review).
+        /// Finals quarantined instead (`QuarantineReason`): a redaction was owed and the mute
+        /// timeline was lost in the interruption, or the manifest or marker that would say so
+        /// cannot be read (REC21). They must not be auto-published (TECH-MIC5 review).
         var quarantined: [URL] = []
     }
 
@@ -177,6 +177,7 @@ enum OrphanRecordingRecovery {
         stems: [String],
         in directory: URL,
         isOwned: @MainActor (String) -> Bool,
+        originalsDir: URL? = nil,
         recoverer: Recoverer = { await RecordingPostProcessor.recoverOrphan(stem: $0, in: $1) }
     ) async -> Recovered {
         var result = Recovered()
@@ -195,21 +196,27 @@ enum OrphanRecordingRecovery {
             }
             // Read the manifest + capture-mode marker BEFORE clearing the
             // start-time markers below: both feed the routing decision.
-            let manifest = RecordingManifest.read(forStem: stem, in: directory)
-            let quarantineNeeded = shouldQuarantine(stem: stem, final: url, in: directory)
-            if let manifest = manifest {
-                restoreMetaSidecar(manifest.meta, forStem: stem, in: directory)
+            let manifest = RecordingManifest.load(forStem: stem, in: directory)
+            let reason = quarantineReason(stem: stem, final: url, in: directory, manifest: manifest)
+            if let parsed = manifest.parsed {
+                restoreMetaSidecar(parsed.meta, forStem: stem, in: directory)
             }
-            cleanupStartMarkers(stem: stem, in: directory)
-            if quarantineNeeded {
-                if let kept = quarantine(url) {
-                    result.quarantined.append(kept)
-                }
+            guard let reason else {
+                cleanupStartMarkers(stem: stem, in: directory)
+                result.ready.append(ReadyRecording(url: url, summaryMode: manifest.parsed?.summaryMode ?? .auto))
+                continue
+            }
+            // REC21 (F026): move first, clear the markers only once the move landed. They used to be
+            // cleared first, so a failed move left the uncut final in raw/ with nothing saying a cut
+            // was owed, and the next launch's stranded-job Retry published it. Kept, they hold that
+            // Retry: the redactor fails closed on `.offrecord` / `.capturemode`, and `retryMeeting`
+            // refuses an unreadable manifest and carries a parsed one's `redactionOwed`.
+            if let kept = quarantine(url, reason: reason, originalsDir: originalsDir) {
+                cleanupStartMarkers(stem: stem, in: directory)
+                result.quarantined.append(kept)
             } else {
-                result.ready.append(ReadyRecording(
-                    url: url,
-                    summaryMode: manifest?.summaryMode ?? .auto
-                ))
+                // The merge succeeded, so the failure breadcrumb is stale either way.
+                try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(stem).recordfail.json"))
             }
         }
         return result
@@ -295,42 +302,81 @@ enum OrphanRecordingRecovery {
         RecordingManifest.remove(forStem: stem, in: directory)
     }
 
-    /// Whether a recovered orphan must be quarantined rather than auto-processed:
-    /// a redaction-opt-in recording (`.captureFirstRedact`, per its start-time
-    /// `<stem>.capturemode` marker) whose mute timeline was lost because `stop()`
-    /// never ran. Such a recording is lossless and was meant to have muted spans
-    /// redacted, so publishing it un-redacted would leak muted audio
-    /// (TECH-MIC5 review). The default `.captureFirst` keeps the full mic with no
-    /// redaction (TECH-MIC9), so it is safe to auto-process; regulated orphans
-    /// were gated at capture; pre-MIC4 / legacy orphans carry no marker; none of
-    /// those is quarantined.
+    /// Why a recovered orphan is quarantined rather than auto-processed (REC21). The raw values
+    /// are `orphan_quarantined`'s and `orphan_quarantine_failed`'s `reason`.
+    enum QuarantineReason: String, Equatable {
+        /// A redaction-opt-in recording (`.captureFirstRedact`, from its marker or its manifest)
+        /// whose mute timeline was lost because `stop()` never ran.
+        case captureFirstNoTimeline = "capture_first_no_timeline"
+        /// A recording that had a manual off-the-record span (MIC14), from its `.offrecord`
+        /// marker or its manifest, whose timeline was lost.
+        case offRecordNoTimeline = "off_record_no_timeline"
+        /// `.capturemode` exists but cannot be read, so it may have named a redaction.
+        case markerUnreadable = "marker_unreadable"
+        /// `.recovery.json` exists but cannot be read: the routing (BYO, NDA, regulated) and the
+        /// redaction facts it carries are unknown.
+        case manifestUnreadable = "manifest_unreadable"
+    }
+
+    /// Whether, and why, a recovered orphan must be quarantined rather than auto-processed.
+    ///
+    /// An unreadable manifest quarantines whatever else is on disk, timeline included: it is a
+    /// routing failure, not a redaction one, and a recording whose BYO / NDA / regulated intent
+    /// is unknown must not take the `.auto` cloud path. The redaction reasons need the timeline
+    /// to be missing: a written timeline means the redactor can do its job. A lossless recording
+    /// that was meant to have audio cut (redact-opt-in, or a manual off-record span) and lost its
+    /// timeline would leak that audio if auto-published (TECH-MIC5 review, MIC14). A plain
+    /// capture-first recording keeps the full mic by design (TECH-MIC9), regulated orphans were
+    /// gated at capture, and pre-MIC4 / legacy orphans carry no marker: none is quarantined.
+    static func quarantineReason(
+        stem: String, final: URL, in directory: URL, manifest: RecordingManifest.LoadResult
+    ) -> QuarantineReason? {
+        if manifest == .unreadable { return .manifestUnreadable }
+        guard MuteTimelineFile.read(forFinal: final) == nil else { return nil }
+        let marker = CaptureMode.readMarker(forFinal: directory.appendingPathComponent("\(stem).wav"))
+        let parsed = manifest.parsed
+        if marker == .recorded(.captureFirstRedact) || parsed?.captureMode == .captureFirstRedact {
+            return .captureFirstNoTimeline
+        }
+        if OffRecordMarker.exists(forFinal: final) || parsed?.offRecord == true {
+            return .offRecordNoTimeline
+        }
+        if marker == .unreadable { return .markerUnreadable }
+        return nil
+    }
+
+    /// `quarantineReason` as a yes or no, reading the manifest itself.
     static func shouldQuarantine(stem: String, final: URL, in directory: URL) -> Bool {
-        // A written timeline means stop() ran and the redactor can do its job: never quarantine.
-        guard MuteTimelineFile.read(forFinal: final) == nil else { return false }
-        let mode = CaptureMode.recorded(forFinal: directory.appendingPathComponent("\(stem).wav"))
-        // Quarantine a redaction-opt-in recording (as before), OR any recording that had a manual
-        // off-record span (MIC14): both were meant to have audio redacted, and the lost timeline
-        // means auto-publishing would leak it. A plain capture-first recording with no manual span
-        // keeps the full mic by design, so it still auto-processes.
-        return mode == .captureFirstRedact || OffRecordMarker.exists(forFinal: final)
+        quarantineReason(
+            stem: stem, final: final, in: directory,
+            manifest: RecordingManifest.load(forStem: stem, in: directory)
+        ) != nil
     }
 
     /// Move a quarantined orphan to the app-private originals directory (kept for
     /// manual recovery, out of the Library scan and every pipeline glob), 0600.
-    private static func quarantine(_ url: URL) -> URL? {
+    /// `originalsDir` nil is the app-private default; a test points it somewhere the move fails.
+    private static func quarantine(_ url: URL, reason: QuarantineReason, originalsDir: URL?) -> URL? {
         do {
             // Owner-only + Time-Machine/iCloud excluded, same as the redaction
             // move-aside. Quarantined full audio used to reach Time Machine
             // because this path set 0600 but skipped the exclusion (AUD-19).
-            let dest = try MuteRedactor.quarantine(url)
+            let dest = try MuteRedactor.quarantine(url, in: originalsDir)
             Log.event(category: "coordinator", action: "orphan_quarantined", attributes: [
                 "file": url.lastPathComponent,
-                "reason": "capture_first_no_timeline",
+                "reason": reason.rawValue,
             ])
-            Log.writeLine("daemon", "quarantined capture-first orphan (mute timeline lost in the interruption); kept for manual recovery, not auto-published: \(url.lastPathComponent)")
+            Log.writeLine("daemon", "quarantined orphan (\(reason.rawValue)); kept for manual recovery, not auto-published: \(url.lastPathComponent)")
             return dest
         } catch {
-            Log.writeLine("daemon", "WARN: could not quarantine orphan \(url.lastPathComponent): \(error.localizedDescription)")
+            let ns = error as NSError
+            Log.event(category: "coordinator", action: "orphan_quarantine_failed", attributes: [
+                "stem": url.deletingPathExtension().lastPathComponent,
+                "reason": reason.rawValue,
+                "error_domain": ns.domain,
+                "error_code": ns.code,
+            ])
+            Log.writeLine("daemon", "WARN: could not quarantine orphan \(url.lastPathComponent) (\(reason.rawValue)): \(error.localizedDescription); its markers and manifest are kept so a Retry stays held")
             return nil
         }
     }

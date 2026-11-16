@@ -335,5 +335,10 @@ final class SpyPrompt: SessionPromptPresenting {
 
 final class SpyJobDispatcher: SessionJobDispatching {
     private(set) var enqueued: [(file: URL, summaryMode: SummaryMode)] = []
-    func enqueue(file: URL, summaryMode: SummaryMode) { enqueued.append((file, summaryMode)) }
+    /// REC21: each enqueue's `redactionOwed`, in order.
+    private(set) var redactionOwed: [Bool] = []
+    func enqueue(file: URL, summaryMode: SummaryMode, redactionOwed owed: Bool) {
+        enqueued.append((file, summaryMode))
+        redactionOwed.append(owed)
+    }
 }
