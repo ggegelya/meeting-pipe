@@ -849,8 +849,11 @@ final class MeetingSessionController: @unchecked Sendable {
                 // finalized and enqueued through the normal stop path; nothing is discarded.
                 if startOutcome != .commit {
                     self.cancelRecordStartBuild()
+                    var retainCandidate = true
                     switch startOutcome {
                     case .endedDuringStart(let endReason):
+                        // DET14 amendment: the same rule as a lifecycle end while recording.
+                        retainCandidate = !endReason.isDefinitive(forBundleID: source?.bundleID ?? "")
                         Log.event(category: "coordinator", action: "recording_ended_during_start", attributes: [
                             "file": file.lastPathComponent,
                             "leading_signal": endReason.leadingSignal,
@@ -865,7 +868,10 @@ final class MeetingSessionController: @unchecked Sendable {
                     case .commit:
                         break
                     }
-                    self.stopRecording(file: file, source: source, summaryMode: summaryMode, committed: false)
+                    self.stopRecording(
+                        file: file, source: source, summaryMode: summaryMode, committed: false,
+                        retainCandidate: retainCandidate
+                    )
                     return
                 }
                 // END20: a prompt raised behind this start (a `.starting` that slipped in during an
@@ -1036,7 +1042,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// `stopRoute` names who stopped it, for `held_end_trimmed` (END21); nil is a lifecycle end.
     func stopRecording(
         file: URL, source: AppSource?, summaryMode: SummaryMode,
-        committed: Bool = true, stopRoute: String? = nil
+        committed: Bool = true, stopRoute: String? = nil, retainCandidate: Bool = true
     ) {
         // END21 item 3: a stop inside an open hold concludes it here, under the owner's rule of
         // 2026-11-16 (`TeardownHoldPolicy.trimPoint` with `.stop`): cut at the mic release only
@@ -1067,7 +1073,12 @@ final class MeetingSessionController: @unchecked Sendable {
         // already derived from the one quiet discovery poll (12 s) this has to bridge. It sits
         // after `handleMeetingEnded`'s DET14 clear on the lifecycle-end path, which is the right
         // order: that clear is about the *previous* sighting going stale, this is a fresh one.
-        if let source = source {
+        if let source = source, !retainCandidate {
+            Log.event(category: "coordinator", action: "stopped_candidate_not_retained", attributes: [
+                "bundle_id": source.bundleID,
+                "reason": "definitive_end",
+            ])
+        } else if let source = source {
             coordinator.stateMachine.noteSuppressedCandidate(source, origin: .cooldown)
             Log.event(category: "coordinator", action: "stopped_candidate_retained", attributes: [
                 "bundle_id": source.bundleID,
@@ -1860,7 +1871,14 @@ final class MeetingSessionController: @unchecked Sendable {
                 workflowID: activeWorkflow?.id,
                 summaryMode: mode
             )
-            stopRecording(file: file, source: src, summaryMode: mode)
+            // DET14 amendment (D049): a definitive end leaves no call to re-attach to, so the stop
+            // does not re-add the candidate DET14's clear above just dropped. A weak-signal end keeps
+            // END13's retention: 20261022-150025 was a false end the owner rescued 22.9 s later by
+            // pressing Record, and the retained candidate is what the restart attached to.
+            stopRecording(
+                file: file, source: src, summaryMode: mode,
+                retainCandidate: !reason.isDefinitive(forBundleID: src?.bundleID ?? bundleID)
+            )
         case .prompting, .suppressed:
             // Both branches below used to be gated on `PromptEndPolicy.clearsPromptState`,
             // a second filter that dropped a bare `ax_leave_button_invalid` end carrying an

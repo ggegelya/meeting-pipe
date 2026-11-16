@@ -1360,4 +1360,28 @@ final class PromotionEngineTests: XCTestCase {
             .inMeeting(context: teamsContext)
         )
     }
+
+    // MARK: - DET14 amendment: what the engine produces reads as definitive
+
+    /// The controller tests build their `EndingReason`s by hand, so this ties the rule to what the
+    /// engine actually emits: a teardown confirm and an app quit inside a hold.
+    func test_the_engines_teardown_and_quit_ends_read_as_definitive_DET14() throws {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 10))
+        guard case .ended(_, let teardown)? = engine.confirmProvisionalEnd()?.verdict else {
+            return XCTFail("the teardown confirm ends the hold")
+        }
+        XCTAssertTrue(teardown.isDefinitive(forBundleID: teamsContext.bundleID))
+
+        let quitting = PromotionEngine()
+        _ = quitting.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = quitting.confirmRecording()
+        _ = quitting.ingest(event(.axLeaveButton, .ended, at: 10))
+        guard case .ended(_, let quit)? = quitting.ingest(event(.workspaceAppTerminated, .ended, at: 11))?.verdict else {
+            return XCTFail("an app quit ends the hold")
+        }
+        XCTAssertTrue(quit.isDefinitive(forBundleID: teamsContext.bundleID))
+    }
 }

@@ -92,4 +92,18 @@ public struct EndingReason: Equatable, Sendable {
         self.leadingSignal = leadingSignal
         self.confirmedBy = confirmedBy
     }
+
+    /// DET14 amendment: the call `bundleID` was recording is over for certain, as END17 defines
+    /// definitive. The app quit (`workspace_app_terminated`, leading or among the confirmers), or,
+    /// for a Teams recording only, Teams' own teardown line confirmed it (`call_teardown_observed`).
+    /// Scoped to Teams because the host's teardown consult checks only that the hold is native
+    /// (END16's G053, open), so a Teams call ending during a Zoom hold can confirm it; that end is
+    /// not definitive for Zoom. Every false end the field has shown was weak-signal, and neither of
+    /// these has a call left to re-attach to.
+    public func isDefinitive(forBundleID bundleID: String) -> Bool {
+        if PrimarySignalKind(rawValue: leadingSignal)?.isDefinitive == true { return true }
+        if confirmedBy.contains(PrimarySignalKind.workspaceAppTerminated.rawValue) { return true }
+        return NativeLifecycleConfig.teams.bundleIDs.contains(bundleID)
+            && confirmedBy.contains(PromotionEngine.teardownEvidence)
+    }
 }
