@@ -127,6 +127,15 @@ compgen -G "$APP/Contents/Resources/MeetingPipe_*.bundle" >/dev/null \
 say "Signing (ad-hoc) and verifying the staged app"
 MEETINGPIPE_SIGN_ID=- sign_app_with_resources "$APP"
 codesign --verify --deep --strict "$APP" || fail "the staged app's signature does not verify"
+# SEC17: the installer's signing function hardens the runtime and entitles audio input, and the
+# staged app below is launched in that state, so a library-validation or entitlement problem
+# shows up as a crash here rather than as a silent loss of the microphone in the field.
+staged_info="$(codesign -dvv "$APP" 2>&1)"
+grep -Eq 'flags=0x[0-9a-f]+\([^)]*runtime' <<<"$staged_info" \
+    || fail "the staged app is not signed with the hardened runtime (SEC17)"
+staged_ents="$(codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -convert json -o - - 2>/dev/null)"
+[[ "$staged_ents" == '{"com.apple.security.device.audio-input":true}' ]] \
+    || fail "the staged app's entitlements are not exactly audio-input: $staged_ents (SEC17)"
 
 if (( WITH_PIPELINE )); then
     say "Syncing a staged venv from a copy of pipeline/, then moving the copy away"

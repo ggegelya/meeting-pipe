@@ -263,3 +263,41 @@ def test_the_armed_refusal_still_fires_before_any_workdir_or_spawn(monkeypatch, 
     with pytest.raises(ClaudeCLIError, match="zero-egress"):
         ClaudeCLIClient().complete(system_prompt="s", user_message="q", max_tokens=10)
     assert made == []
+
+
+def test_a_claude_in_a_fixed_install_dir_beats_one_earlier_on_path(tmp_path, monkeypatch):
+    # SEC17: PATH is user-writable, so a planted `claude` ahead of the real install must lose.
+    fixed = tmp_path / "fixed"
+    planted = tmp_path / "planted"
+    for d in (fixed, planted):
+        d.mkdir()
+        (d / "claude").write_text("#!/bin/sh\n")
+        (d / "claude").chmod(0o755)
+    monkeypatch.setattr(cc, "_FALLBACK_DIRS", (str(fixed),))
+    monkeypatch.setenv("PATH", f"{planted}:/usr/bin:/bin")
+    assert cc.find_claude() == str(fixed / "claude")
+
+
+def test_claude_still_resolves_from_path_when_no_fixed_dir_has_it(tmp_path, monkeypatch):
+    planted = tmp_path / "bin"
+    planted.mkdir()
+    (planted / "claude").write_text("#!/bin/sh\n")
+    (planted / "claude").chmod(0o755)
+    monkeypatch.setattr(cc, "_FALLBACK_DIRS", (str(tmp_path / "nowhere"),))
+    monkeypatch.setenv("PATH", f"{planted}:/usr/bin:/bin")
+    assert cc.find_claude() == str(planted / "claude")
+
+
+def test_the_resolved_claude_path_is_logged_once(tmp_path, monkeypatch, caplog):
+    import logging
+
+    fixed = tmp_path / "fixed"
+    fixed.mkdir()
+    (fixed / "claude").write_text("#!/bin/sh\n")
+    (fixed / "claude").chmod(0o755)
+    monkeypatch.setattr(cc, "_FALLBACK_DIRS", (str(fixed),))
+    monkeypatch.setattr(cc, "_logged_claude", set())
+    with caplog.at_level(logging.INFO, logger="mp.provider_claude_cli"):
+        cc.find_claude()
+        cc.find_claude()
+    assert sum("claude CLI resolved to" in r.message for r in caplog.records) == 1

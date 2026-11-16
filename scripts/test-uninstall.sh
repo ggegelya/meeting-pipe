@@ -119,6 +119,7 @@ check "config dir survives" '[[ -d "$H/.config/meeting-pipe" ]]'
 check "output names the kept folder" 'grep -q "Kept .*Application Support/MeetingPipe" <<<"$OUT"'
 check "launchctl and pkill stubs were used" 'grep -q "^launchctl " "$CALLS" && grep -q "^pkill " "$CALLS"'
 check "tccutil not called without --reset-tcc" '! grep -q "^tccutil " "$CALLS"'
+check "the signing identity is kept without --reset-tcc (SEC17)" '! grep -q "delete-identity" "$CALLS"'
 
 echo "--reset-tcc"
 H="$ROOT/h2"; make_home "$H"; run "$H" devnull --reset-tcc
@@ -126,6 +127,8 @@ check "exit 0" '[[ "$RC" == 0 ]]'
 check "same survivors" 'survivors "$H"'
 check "rebuildable parts gone" 'rebuildable_gone "$H"'
 check "tccutil stub was called" 'grep -q "^tccutil " "$CALLS"'
+check "the self-signed signing identity is removed (SEC17)" 'grep -qx "security delete-identity -c MeetingPipe Dev" "$CALLS"'
+check "output says so" 'grep -q "removed the self-signed .MeetingPipe Dev. signing identity" <<<"$OUT"'
 
 echo "--purge --yes"
 H="$ROOT/h3"; make_home "$H"; run "$H" devnull --purge --yes
@@ -137,6 +140,7 @@ check "listing named held/, corrections, consent and config" \
     'grep -q "held/: 1 files" <<<"$OUT" && grep -q "corrections/ *1 files" <<<"$OUT" && grep -q "auto_consent.json *present" <<<"$OUT" && grep -q ".config/meeting-pipe *1 files" <<<"$OUT"'
 check "says originals are in no backup" 'grep -q "NO backup" <<<"$OUT"'
 check "keychain stub was used" 'grep -q "^security " "$CALLS"'
+check "--purge alone keeps the signing identity (SEC17)" '! grep -q "delete-identity" "$CALLS"'
 
 echo "--purge, no TTY, no --yes"
 H="$ROOT/h4"; make_home "$H"; run "$H" devnull --purge

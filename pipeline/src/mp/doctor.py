@@ -915,6 +915,10 @@ def check_screen_recording() -> None:
 _APP_BUNDLE = Path.home() / "Applications" / "MeetingPipe.app"
 
 
+#: Root-owned system binary (SEC17), called by absolute path rather than found on PATH.
+MDFIND = "/usr/bin/mdfind"
+
+
 def _mdfind_app_bundles() -> list[str] | None:
     """Ask Spotlight for every indexed `MeetingPipe.app`.
 
@@ -924,11 +928,11 @@ def _mdfind_app_bundles() -> list[str] | None:
     bundle, while None means nothing was measured, and reporting the second as
     the first is how a void check gets banked as a real one.
     """
-    if shutil.which("mdfind") is None:
+    if not os.access(MDFIND, os.X_OK):
         return None
     try:
         proc = subprocess.run(
-            ["mdfind", "-name", "MeetingPipe.app"],
+            [MDFIND, "-name", "MeetingPipe.app"],
             capture_output=True,
             text=True,
             timeout=10,

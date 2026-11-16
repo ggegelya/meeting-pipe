@@ -49,7 +49,8 @@ log = logging.getLogger("mp.provider_claude_cli")
 
 CLAUDE_BINARY = "claude"
 # Where the `claude` binary may live when it is not on a non-login spawn's PATH.
-# `~/.local/bin` is the standalone-installer default; the others are common.
+# `~/.local/bin` is the standalone-installer default; the others are common. Searched
+# before PATH (SEC17).
 _FALLBACK_DIRS = ("~/.local/bin", "~/.claude/local", "/opt/homebrew/bin", "/usr/local/bin")
 
 # `claude -p` starts a full agent session; a summary is one turn but the model
@@ -63,15 +64,35 @@ class ClaudeCLIError(RuntimeError):
     result. Carries a user-actionable message the CLI surfaces verbatim."""
 
 
+_logged_claude: set[str] = set()
+
+
+def _note_claude(path: str, how: str) -> str:
+    """Log the resolved binary once per process, so a planted `claude` is at least visible (SEC17)."""
+    if path not in _logged_claude:
+        _logged_claude.add(path)
+        log.info("claude CLI resolved to %s (%s)", path, how)
+    return path
+
+
 def find_claude() -> str | None:
-    """Resolve the `claude` binary: PATH first, then the common install dirs."""
-    found = shutil.which(CLAUDE_BINARY)
-    if found:
-        return found
+    """Resolve the `claude` binary: the fixed install dirs first, then PATH (SEC17).
+
+    PATH is user-writable, so a `claude` planted in an earlier entry would otherwise win over the
+    real install. The fixed dirs are not a perfect fence (`~/.local/bin` is user-writable, and
+    Homebrew owns `/opt/homebrew/bin` and usually `/usr/local/bin` as the user), but they are where
+    Claude Code's installers put it, so a planted copy needs a write to a specific, auditable place
+    rather than to anywhere on PATH. A stale copy in one of them now beats a newer one from nvm on
+    PATH. PATH stays as the last resort for an install under nvm or a
+    custom prefix; the path used is logged once per process either way.
+    """
     for d in _FALLBACK_DIRS:
         cand = Path(os.path.expanduser(d)) / CLAUDE_BINARY
         if cand.is_file() and os.access(cand, os.X_OK):
-            return str(cand)
+            return _note_claude(str(cand), "fixed install dir")
+    found = shutil.which(CLAUDE_BINARY)
+    if found:
+        return _note_claude(found, "PATH")
     return None
 
 

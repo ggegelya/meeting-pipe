@@ -18,8 +18,73 @@
 #     and it takes over; the dev cert below goes unused.
 # Remove the dev cert any time with:
 #   security delete-identity -c "MeetingPipe Dev"
+# (`./scripts/uninstall.sh --reset-tcc` does it for you, since the grants it
+# resets are the only thing the identity was keeping alive.)
+#
+# What the key is worth on this Mac (SEC17, F130): the app's designated
+# requirement is `identifier "com.meetingpipe.daemon" and certificate leaf =
+# H"..."`, and the Microphone, Screen Recording and Accessibility grants are
+# bound to it. So anything that can sign with this private key produces code
+# those grants accept. "No value off this machine" is true, and on this machine
+# is exactly where the value is. New keys are imported with
+# `-T /usr/bin/codesign` rather than `-A`, so the key's ACL names codesign
+# instead of any application. That narrows the exposure and does not close it:
+# any same-user process can run /usr/bin/codesign, and it is prompt-free, which
+# the rebuild loop depends on. Only an ACL that prompts before codesign may use
+# the key would close it (inferred, not tested), at the cost of a prompt on
+# every rebuild. Hardened runtime (sign-app.sh) closes the other route, the
+# DYLD_INSERT_LIBRARIES one; it does nothing about a binary signed with the key.
+# A key created before this change still has the `-A` ACL. `scripts/signing-key-acl.sh`
+# reports it and prints the in-place fix (Keychain Access, same key, one password
+# prompt). Recreating the certificate is not an option (a new cert is a new leaf,
+# which resets every TCC grant), and `security set-key-partition-list` was
+# measured to narrow nothing.
 
 DEV_CERT_CN="MeetingPipe Dev"
+# The keychain the identity lives in. The override exists so the ACL tests can
+# run against a scratch keychain and never touch the real login one.
+DEV_CERT_KEYCHAIN="${MEETINGPIPE_DEV_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}"
+
+# _dev_cert_present: is the identity in the keychain we manage? With the test
+# override set, only that keychain is searched, so a real login identity cannot
+# satisfy a scratch-keychain run.
+_dev_cert_present() {
+    if [[ -n "${MEETINGPIPE_DEV_KEYCHAIN:-}" ]]; then
+        security find-identity -p codesigning "$DEV_CERT_KEYCHAIN" 2>/dev/null | grep -q "$DEV_CERT_CN"
+    else
+        security find-identity -p codesigning 2>/dev/null | grep -q "$DEV_CERT_CN"
+    fi
+}
+
+# dev_key_trusts_any_app: succeeds when the private key's `sign` authorization
+# is open to any application (the `-A` import), fails when it names specific
+# applications (`-T`). A private key's label is its attribute 0x00000001 in
+# the dump (`labl` belongs to the certificate record). Reads the ACL listing only; no secret is read, so nothing
+# prompts. `security dump-keychain -a` walks the whole keychain, so this is for
+# the hardening script and the tests, not the rebuild loop.
+dev_key_trusts_any_app() {
+    security dump-keychain -a "$DEV_CERT_KEYCHAIN" 2>/dev/null | awk -v label="$DEV_CERT_CN" '
+        function flush() { if (key && lab && any_open) hit = 1; key = 0; lab = 0; any_open = 0; sign = 0 }
+        /^keychain:/ { flush() }
+        /class: 0x00000010/ { key = 1 }
+        key && /^ *entry [0-9]+:/ { sign = 0 }
+        key && /authorizations \([0-9]+\):/ { sign = ($0 ~ /[ ,]sign([ ,]|$)/) }
+        key && /applications: <null>/ { if (sign) any_open = 1 }
+        key && /0x00000001 <blob>=/ { if (index($0, "\"" label "\"")) lab = 1 }
+        END { flush(); exit !hit }
+    '
+}
+
+# delete_dev_identity: remove the self-signed identity (cert and key). Used by
+# `uninstall.sh --reset-tcc`. "Not found" is not an error. Scoped to the scratch
+# keychain when MEETINGPIPE_DEV_KEYCHAIN is set, so a test can never reach the real one.
+delete_dev_identity() {
+    if [[ -n "${MEETINGPIPE_DEV_KEYCHAIN:-}" ]]; then
+        security delete-identity -c "$DEV_CERT_CN" "$DEV_CERT_KEYCHAIN" >/dev/null 2>&1
+    else
+        security delete-identity -c "$DEV_CERT_CN" >/dev/null 2>&1
+    fi
+}
 
 # signing_identity: echo the codesign identity to use, best available first.
 #   1. $MEETINGPIPE_SIGN_ID  - explicit override (a paid Developer ID, CI, ...)
@@ -45,7 +110,7 @@ signing_identity() {
 # caller's `set -e`. No-op when an explicit MEETINGPIPE_SIGN_ID override is set.
 ensure_dev_cert() {
     [[ -n "${MEETINGPIPE_SIGN_ID:-}" ]] && return 0
-    if security find-identity -p codesigning 2>/dev/null | grep -q "$DEV_CERT_CN"; then
+    if _dev_cert_present; then
         return 0
     fi
     if ! command -v openssl >/dev/null 2>&1; then
@@ -57,10 +122,10 @@ ensure_dev_cert() {
     # verification on an empty-password p12. (Algorithm choice matters too; see
     # the -legacy note below.) The password is transient (only for the
     # export/import handshake); the imported key is then usable by codesign via
-    # the -A ACL with no password.
+    # the -T /usr/bin/codesign ACL with no password.
     local tmp keychain ok=1 p12pass="meetingpipe-dev-transient"
     tmp="$(mktemp -d)" || return 0
-    keychain="$HOME/Library/Keychains/login.keychain-db"
+    keychain="$DEV_CERT_KEYCHAIN"
 
     cat >"$tmp/req.cnf" <<'CNF'
 [ req ]
@@ -92,11 +157,16 @@ CNF
             -out "$tmp/id.p12" -passout "pass:$p12pass" >/dev/null 2>&1 || ok=0
     fi
     if (( ok )); then
-        # -A: let any tool use the key without a per-build keychain prompt. This
-        # is a local, untrusted, dev-only signing key (no value off this machine),
-        # so the broad ACL is an acceptable trade for a prompt-free rebuild loop.
-        if ! security import "$tmp/id.p12" -P "$p12pass" -A -k "$keychain" >/dev/null 2>&1; then
-            security import "$tmp/id.p12" -P "$p12pass" -A >/dev/null 2>&1 || ok=0
+        # -T /usr/bin/codesign: only codesign may use the key without a prompt,
+        # which is what keeps the rebuild loop prompt-free. It used to be -A
+        # (any application). The residual is in the header: any same-user
+        # process can still run /usr/bin/codesign.
+        if ! security import "$tmp/id.p12" -P "$p12pass" -T /usr/bin/codesign -k "$keychain" >/dev/null 2>&1; then
+            if [[ -n "${MEETINGPIPE_DEV_KEYCHAIN:-}" ]]; then
+                ok=0   # a scratch run never falls back to the default keychain
+            else
+                security import "$tmp/id.p12" -P "$p12pass" -T /usr/bin/codesign >/dev/null 2>&1 || ok=0
+            fi
         fi
     fi
 

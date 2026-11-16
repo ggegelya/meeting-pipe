@@ -19,6 +19,18 @@
 # re-toggle per rebuild; `--identifier` keeps the (bundle_id, identifier) pair
 # stable either way, so Mic / Notifications / Accessibility survive regardless.
 #
+# Hardened runtime (SEC17): the app is signed with `--options runtime` and the
+# audio-input entitlement in scripts/MeetingPipe.entitlements. Without the
+# runtime flag dyld honours DYLD_INSERT_LIBRARIES, so any same-user process
+# could start the binary with an injected library and run code under the
+# identity the Microphone, Screen Recording and Accessibility grants are bound
+# to. The runtime flag blocks the microphone unless the audio-input entitlement
+# is present; Screen Recording and Accessibility need no entitlement. The
+# designated requirement is unchanged by either (it names the identifier and
+# the certificate leaf), so existing grants are expected to carry over; macOS
+# may still ask once. Developer ID, notarization and Gatekeeper stay out of
+# scope (the root CLAUDE.md selling rule): this hardens the self-signed path.
+#
 # This lives in one place so install.sh and rebuild.sh cannot drift again. The
 # drift is exactly what once left rebuild.sh trying to codesign the plist-less
 # bundles and aborting mid-run (new binary copied, app left unsigned, daemon
@@ -32,10 +44,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/dev-cert.sh"
 #   Runs under the caller's `set -e`, so a codesign failure aborts.
 sign_app_with_resources() {
     local app="$1"
-    local sign_id
+    local sign_id entitlements
     sign_id="$(signing_identity)"
+    entitlements="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/MeetingPipe.entitlements"
 
     codesign --force --sign "$sign_id" \
+        --options runtime \
+        --entitlements "$entitlements" \
         --identifier com.meetingpipe.daemon \
         "$app"
 
@@ -49,5 +64,9 @@ sign_app_with_resources() {
     fi
     if ! grep -q "Info.plist entries=" <<<"$sign_info"; then
         printf "\033[1;33m!!\033[0m %s\n" "codesign Info.plist not bound - permissions may not survive reinstall" >&2
+    fi
+    # SEC17: the runtime flag shows as `flags=0x10000(runtime)` (alone, or with others).
+    if ! grep -Eq "flags=0x[0-9a-f]+\([^)]*runtime" <<<"$sign_info"; then
+        printf "\033[1;33m!!\033[0m %s\n" "codesign hardened runtime missing - the app can load injected libraries" >&2
     fi
 }

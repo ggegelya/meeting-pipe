@@ -567,9 +567,7 @@ def _bundle(tmp_path: Path, monkeypatch) -> Path:
 
 
 def _fake_mdfind(monkeypatch, proc: _Proc | None, *, present: bool = True) -> None:
-    monkeypatch.setattr(
-        "mp.doctor.shutil.which", lambda name: "/usr/bin/mdfind" if present else None
-    )
+    monkeypatch.setattr("mp.doctor.os.access", lambda path, mode: present and path == "/usr/bin/mdfind")
     if proc is not None:
         monkeypatch.setattr("mp.doctor.subprocess.run", lambda *a, **k: proc)
 
@@ -625,7 +623,7 @@ def test_app_index_reports_unknown_when_mdfind_exits_non_zero(
 
 def test_app_index_reports_unknown_when_mdfind_raises(tmp_path, monkeypatch, capsys) -> None:
     _bundle(tmp_path, monkeypatch)
-    monkeypatch.setattr("mp.doctor.shutil.which", lambda _n: "/usr/bin/mdfind")
+    monkeypatch.setattr("mp.doctor.os.access", lambda path, mode: True)
 
     def _boom(*_a, **_k):
         raise OSError("mdfind exploded")
@@ -835,3 +833,19 @@ def test_a_broken_workflow_file_makes_a_synced_library_a_fail(capsys, tmp_path) 
     out = capsys.readouterr().out
     assert "[FAIL] library is synced to Dropbox" in out
     assert "may be an NDA workflow" in out
+
+
+def test_mdfind_is_called_by_its_absolute_system_path(tmp_path, monkeypatch) -> None:
+    # SEC17: a `mdfind` planted on a user-writable PATH must not be the one that answers.
+    from mp.doctor import _mdfind_app_bundles
+
+    seen: list[list[str]] = []
+
+    def run(cmd, **kwargs):
+        seen.append(cmd)
+        return _Proc(stdout="")
+
+    monkeypatch.setattr("mp.doctor.os.access", lambda path, mode: True)
+    monkeypatch.setattr("mp.doctor.subprocess.run", run)
+    assert _mdfind_app_bundles() == []
+    assert seen[0][0] == "/usr/bin/mdfind"

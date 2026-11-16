@@ -432,13 +432,18 @@ def is_owner_alive(pid: int) -> bool:
     return is_owner_command(pid_command(pid))
 
 
+#: Root-owned system binary (SEC17): the answer feeds `served_identity`, so a `lsof` planted
+#: earlier on a user-writable PATH must not be the one that answers.
+LSOF = "/usr/sbin/lsof"
+
+
 def listening_pid(port: int) -> int | None:
     """Pid of whatever holds `port`, via macOS `lsof`. None when nothing listens
     or `lsof` is unavailable, so a caller degrades to "identity unknown" rather
     than to a false mismatch."""
     try:
         out = subprocess.run(
-            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            [LSOF, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
             capture_output=True, text=True, timeout=5, check=False,
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):

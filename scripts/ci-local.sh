@@ -217,6 +217,14 @@ daemon() {
         # Pinning the pool to one thread makes the starvation deterministic here.
         LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 swift test --filter 'EngineTeardownTests|BoundedEngineStartTests|RunWithTimeoutTests'
         end
+        begin "Signing key ACL and hardened runtime (SEC17)"
+        # macOS only, so here and not in the Linux fences job. A scratch keychain and a tiny ad-hoc
+        # binary: a new dev key is trusted for /usr/bin/codesign alone (a non-Apple process is refused,
+        # an -A key allows it), and DYLD_INSERT_LIBRARIES loads into a pre-change signature but not a
+        # hardened one. Never touches the login keychain, the real identity or the installed app.
+        bash ../scripts/test-dev-cert-acl.sh
+        bash ../scripts/test-hardened-runtime.sh
+        end
         begin "Daemon: installed-app relocation smoke (DIST4)"
         # Assembles a staging MeetingPipe.app from the debug build above with the
         # installer's own functions, moves daemon/.build aside, and runs the staged

@@ -13,7 +13,10 @@ from pathlib import Path
 import pytest
 
 from mp import local_server
+
 from mp.summarize_local import build_server_command
+
+_REAL_LISTENING_PID = local_server.listening_pid
 
 _SERVER_CMD = "/opt/homebrew/bin/mlx_lm.server --model mlx-community/Qwen2.5-7B-Instruct-4bit"
 _MP_CMD = "/usr/bin/python3 -m mp run-all /tmp/x.wav"
@@ -488,3 +491,21 @@ def test_terminate_server_refuses_a_recycled_pid(
 
 def _never_called(*_args: object, **_kwargs: object) -> None:
     raise AssertionError("a pid that is not an mlx_lm.server must never be signalled")
+
+
+def test_listening_pid_calls_lsof_by_its_absolute_system_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    # SEC17: the answer feeds the served-identity check, so a `lsof` planted earlier on a
+    # user-writable PATH must not be the one that answers. conftest replaces `listening_pid` with a
+    # fake for every test; `_REAL_LISTENING_PID` is the real one, captured at import time.
+    import subprocess as sp
+
+    seen: list[list[str]] = []
+
+    def run(cmd, **kwargs):
+        seen.append(cmd)
+        return sp.CompletedProcess(cmd, 0, stdout="4242\n", stderr="")
+
+    monkeypatch.setattr(local_server.subprocess, "run", run)
+    assert _REAL_LISTENING_PID(8765) == 4242
+    assert seen[0][0] == "/usr/sbin/lsof"
+    assert seen[0][1:] == ["-nP", "-iTCP:8765", "-sTCP:LISTEN", "-t"]

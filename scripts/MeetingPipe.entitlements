@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- SEC17: hardened runtime blocks microphone access without this entitlement.
+         Screen Recording (ScreenCaptureKit) and Accessibility need none. Add
+         com.apple.security.cs.disable-library-validation only if a measured launch
+         failure requires it, and record which load failed. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

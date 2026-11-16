@@ -24,6 +24,12 @@
 #                  refuses to re-prompt on the next install. Without it,
 #                  TCC keeps the old (often denied) state per bundle ID
 #                  even after the .app is gone.
+#                  Also removes the self-signed "MeetingPipe Dev" signing
+#                  identity (SEC17): the grants it was keeping alive are being
+#                  reset anyway, so nothing is left for it to preserve, and a
+#                  leftover key that can sign as the app is worth removing. A
+#                  later install mints a new one and the permissions prompt
+#                  again. The default uninstall keeps the identity.
 #                  Note: macOS Notifications are NOT under TCC and cannot
 #                  be reset from the command line; the script prints a
 #                  pointer to the System Settings pane instead.
@@ -143,6 +149,17 @@ if (( RESET_TCC )); then
         fi
     done
     tccutil reset All "$BUNDLE_ID" >/dev/null 2>&1 || true
+
+    # SEC17 (F101): the signing identity goes with the grants. `delete_dev_identity`
+    # treats "not found" as fine (an install signed ad-hoc, or with an override
+    # identity, never made one).
+    # shellcheck source=scripts/lib/dev-cert.sh
+    source "$(cd "$(dirname "$0")" && pwd)/lib/dev-cert.sh"
+    if delete_dev_identity; then
+        echo "  removed the self-signed '$DEV_CERT_CN' signing identity"
+    else
+        echo "  no '$DEV_CERT_CN' signing identity removed (none found, or the keychain refused: check Keychain Access)"
+    fi
 
     # The System Settings panel caches rows in memory and keeps showing
     # a stale toggle even after the underlying TCC.db row is gone.
