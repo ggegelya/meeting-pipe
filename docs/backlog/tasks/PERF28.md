@@ -2,9 +2,9 @@
 id: PERF28
 title: Creating the mic capture file runs synchronously on the main thread at record start, and on early recordings after a launch it freezes the whole app for 2 to 3 seconds
 category: Performance
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). `MeetingRecorder.buildMicChain` creates the mic `AVAudioFile` on main with no suspension point, and the span from `input_device_resolved` to `mic file opened` took 2,274 to 3,078 ms on 4 of 74 starts (median 10 ms), each an early recording after a launch or rebuild, the last `20261112-163040`; REC27 bounded every engine call but not this. Scope: create the file off main under its own generous bound (not the 2 s engine budget) and assign on main, delete what an abandoned create leaves, move the marker and recovery-manifest writes off main in order, log the create's duration, then test one prewarm hypothesis against an owner-run `sample`. [Spec](./PERF28.md)
+comment: Shipped 2026-11-16 (items 1-4, 6) - `RecordStartFileWrite` runs the marker, the mic file create and the recovery manifest off main under an 8 s bound, awaited; an abandoned marker or create deletes its own file (a late manifest is kept for the live recording) and an abandoned create holds its stem; a marker that never lands fails the start; every start logs `mic file created in <n> ms`; 15 new tests, ci-local green. Remainder (item 5, owner-run): the `sample` walkthrough below decides whether the prewarm ships. [Spec](./PERF28.md)
 ---
 
 # PERF28: Creating the mic capture file runs synchronously on the main thread at record start, and on early recordings after a launch it freezes the whole app for 2 to 3 seconds
@@ -56,6 +56,8 @@ All in `daemon/Sources/MeetingPipe/MeetingRecorder.swift` except the manifest wr
 - Every start writes one `recorder.log` line with the create's duration in milliseconds (for example `mic file created in <n> ms`), pinned by a test over an injected slow factory. If the pickup puts it on an event instead, the field goes in `CONVENTIONS.md`'s event table and `python3 scripts/truth_fences.py events` stays green.
 - The REC10, REC12, REC15, REC23 and REC27 recorder tests stay green.
 - `cd daemon && swift build`, `swift build -c release` and `swift test` green, N new tests named in the commit body; `bash scripts/ci-local.sh` green.
+
+**Progress (2026-11-16):** items 1 to 4 and 6 shipped. Deviations from the spec: the marker write that runs out its 8 s budget now fails the start (a write error stays best-effort for REC21), since recording without it leaves a capture-first recording nothing to fail closed on after a crash; the mic file's format is `micFile.processingFormat` and the old `?? micFormat` fallback is gone (a rate the mono constructor rejects now fails the create). The acceptance items that need a live engine ("marker removed, stem released, engine left in place" on a create past its bound, "marker before the factory") are pinned as T7 source fences in `RecordStartFileWritePERF28Tests` plus the behavioural seam tests, because `start()` cannot run headless past the format read. Item 5 (the prewarm) is not shipped: it waits on the walkthrough below.
 
 ## Owner walkthrough
 

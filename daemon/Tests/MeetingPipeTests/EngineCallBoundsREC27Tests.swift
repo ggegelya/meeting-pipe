@@ -141,7 +141,7 @@ final class EngineCallBoundsREC27Tests: XCTestCase {
                 .dropFirst().first?.components(separatedBy: "\n    }\n").first
         )
         let afterMarker = try XCTUnwrap(
-            start.components(separatedBy: "try? captureMode.marker.write(").dropFirst().first,
+            start.components(separatedBy: "try await Self.writeModeMarker(captureMode.marker, to: modeMarkerURL)").dropFirst().first,
             "the marker write moved; re-read this fence against the new start()"
         )
         XCTAssertEqual(afterMarker.components(separatedBy: "throw ").count - 1, 1, "the one throw after the marker is the catch's rethrow")

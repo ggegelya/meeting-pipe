@@ -671,9 +671,11 @@ final class MeetingSessionController: @unchecked Sendable {
         let isMicTierRecording = source?.bundleID != nil && source?.bundleID == micTierPromptBundle
         micTierPromptBundle = nil
 
-        // Committed to starting: guard re-entry until this start resolves. The
-        // recorder bounds the engine bring-up off the main thread, so the await
-        // below never blocks the UI; the post-start wiring runs back on main.
+        // Committed to starting: guard re-entry until this start resolves. The await below
+        // suspends rather than blocks: the recorder runs every engine call and the start's file
+        // writes (marker, mic file) off main under bounds, and the recovery manifest after it is
+        // written off main too (PERF28). The commit can therefore wait up to those bounds while
+        // audio is already being captured; the post-start wiring runs back on main.
         startLatch.begin(origin: startOrigin, bundleID: source?.bundleID)
         // PERF15: the start's one AX build, on `axWalkQueue` and overlapping the engine bring-up.
         // It replaces three: MicGate's (synchronous on main), the explicit-start lifecycle engage's
@@ -687,6 +689,18 @@ final class MeetingSessionController: @unchecked Sendable {
                     captureMode: captureMode,
                     voiceProcessing: self.coordinator.liveVoiceProcessing
                 )
+                // Persist the privacy + summary routing at START (REC2 / AUD-6) so a
+                // crash / kill / rebuild before stop() can still recover this meeting
+                // on-device: the manifest carries the summary mode (BYO must not become
+                // an Anthropic+Notion auto-summary) and the meta sidecar payload (NDA /
+                // regulated / workflow / title), which orphan recovery replays. Cleared
+                // on a clean stop in `stopRecording`. PERF28: written off main and awaited
+                // here, before the latch is read, so the resolve-to-`setRecording` span below
+                // keeps no suspension point; an end during this write lands in the latch.
+                await self.writeRecoveryManifest(
+                    file: file, source: source, summaryMode: summaryMode,
+                    workflow: resolvedWorkflow, resumedFrom: resumedFrom
+                )
                 // END20: read what happened during the bring-up before anything commits. No await
                 // from here to `setRecording`, so no verdict or Stop can interleave.
                 let startOutcome = self.startLatch.resolve()
@@ -695,13 +709,6 @@ final class MeetingSessionController: @unchecked Sendable {
                 self.activeResumedFrom = resumedFrom
                 self.markerSeconds = []  // FEAT8: fresh marker batch per recording
                 self.coordinator.hud.resetFlagCount()  // UX73: and a fresh count on the control
-                // Persist the privacy + summary routing at START (REC2 / AUD-6) so a
-                // crash / kill / rebuild before stop() can still recover this meeting
-                // on-device: the manifest carries the summary mode (BYO must not become
-                // an Anthropic+Notion auto-summary) and the meta sidecar payload (NDA /
-                // regulated / workflow / title), which orphan recovery replays. Cleared
-                // on a clean stop in `stopRecording`.
-                self.writeRecoveryManifest(file: file, source: source, summaryMode: summaryMode)
                 // DET1: apply the tag decision captured synchronously before the await, so
                 // `handleMicBusyBundle` stops this recording when its app releases the mic. Reading
                 // it here would race a concurrent handleMeetingStarted during the start.
@@ -1189,15 +1196,18 @@ final class MeetingSessionController: @unchecked Sendable {
     /// payload the clean-stop sidecar uses, so orphan recovery can route a
     /// crash-interrupted BYO / NDA / regulated meeting on-device instead of
     /// auto-egressing it. Removed on a clean stop that produced a final.
-    func writeRecoveryManifest(file: URL, source: AppSource?, summaryMode: SummaryMode) {
+    func writeRecoveryManifest(
+        file: URL, source: AppSource?, summaryMode: SummaryMode,
+        workflow: Workflow?, resumedFrom: String?
+    ) async {
         let meta = MeetingMetaSidecar.build(
             source: source,
-            workflow: activeWorkflow,
+            workflow: workflow,
             regulatedMode: coordinator.configStore?.regulatedMode ?? false,
-            resumedFrom: activeResumedFrom
+            resumedFrom: resumedFrom
         )
         let stem = file.deletingPathExtension().lastPathComponent
-        RecordingManifest.write(
+        await RecordingManifest.writeOffMain(
             summaryMode: summaryMode,
             meta: meta,
             forStem: stem,

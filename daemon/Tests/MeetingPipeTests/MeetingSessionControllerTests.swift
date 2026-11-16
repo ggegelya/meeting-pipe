@@ -205,6 +205,28 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
         XCTAssertTrue(eventRows(action: "meta_write_failed").isEmpty)
     }
 
+    /// PERF28: the recovery manifest is written off main now, and still awaited before the
+    /// recording is committed, so a crash right after the HUD appears can always route it.
+    func test_the_recovery_manifest_is_on_disk_before_the_recording_is_committed() async throws {
+        let host = FakeSessionHost(tempDir: tempDir)
+        let controller = MeetingSessionController(coordinator: host)
+        let stem = "20261116-090000"
+        let file = tempDir.appendingPathComponent("\(stem).wav")
+        host.recorderSpy.fileToReturn = file
+        var manifestAtCommit: RecordingManifest.Parsed?
+        var committed = false
+        let dir = tempDir!
+        host.statusBarSpy.onSetRecording = { _ in
+            manifestAtCommit = RecordingManifest.read(forStem: stem, in: dir)
+            committed = true
+        }
+        controller.beginRecording(source: zoom, summaryMode: .byo)
+        await waitUntil({ committed }, "the recording to commit")
+        XCTAssertEqual(manifestAtCommit?.summaryMode, .byo, "the manifest has to exist when setRecording runs")
+        controller.stopRecording(file: file, source: zoom, summaryMode: .byo)
+        await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
+    }
+
     /// The Library's retry of the held stem rebuilds `<stem>.meta.json` from the kept manifest
     /// before the job is enqueued, so the pipeline run that follows reads the NDA routing.
     func test_a_library_retry_of_the_held_stem_restores_the_sidecar_before_the_job_runs() async throws {

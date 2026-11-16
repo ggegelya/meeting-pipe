@@ -108,7 +108,11 @@ final class SpyStatusPresenter: SessionStatusPresenting {
 
     func setIdle() { idleCount += 1 }
     func setPrompting(_ source: AppSource) { promptedSources.append(source) }
+    /// PERF28: runs at the moment the controller commits the recording, so a test can ask what
+    /// was on disk by then.
+    var onSetRecording: ((URL) -> Void)?
     func setRecording(file: URL, source: AppSource?, summaryMode: SummaryMode, workflow: Workflow?) {
+        onSetRecording?(file)
         recordings.append((file, source, summaryMode, workflow))
     }
     func setStopping(file: URL, source: AppSource?, summaryMode: SummaryMode) { stoppingCount += 1 }

@@ -46,6 +46,28 @@ enum RecordingManifest {
     /// failure only costs the privacy-aware recovery path, so it is logged but
     /// never throws into the start path.
     static func write(summaryMode: SummaryMode, meta: [String: Any], forStem stem: String, in directory: URL) {
+        guard let data = encode(summaryMode: summaryMode, meta: meta, forStem: stem) else { return }
+        write(data, forStem: stem, in: directory)
+    }
+
+    /// PERF28: the same write off the main thread, awaited, under `RecordStartFileWrite`'s bound.
+    /// The payload is serialized on the caller (the meta dictionary is not Sendable) and only the
+    /// bytes cross. A write that runs out its budget is logged and the start goes on; its late
+    /// return keeps what it wrote, since the recording is most likely still live and needs it
+    /// (a late write after a clean stop leaves a stale manifest beside the final, which costs
+    /// nothing a crash-time routing loss would not cost more).
+    @MainActor
+    static func writeOffMain(summaryMode: SummaryMode, meta: [String: Any], forStem stem: String, in directory: URL) async {
+        guard let data = encode(summaryMode: summaryMode, meta: meta, forStem: stem) else { return }
+        let outcome = await RecordStartFileWrite.run(producing: url(forStem: stem, in: directory), keepsLateResult: true) {
+            write(data, forStem: stem, in: directory)
+        }
+        if case .timedOut = outcome {
+            Log.writeLine("recorder", "WARN: recovery manifest write for \(stem) did not finish within \(Int(RecordStartFileWrite.budgetSeconds)) s; continuing; a late write is kept")
+        }
+    }
+
+    private static func encode(summaryMode: SummaryMode, meta: [String: Any], forStem stem: String) -> Data? {
         let payload: [String: Any] = [
             "schema_version": schemaVersion,
             "summary_mode": token(for: summaryMode),
@@ -55,8 +77,12 @@ enum RecordingManifest {
             withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]
         ) else {
             Log.writeLine("recorder", "WARN: could not serialize recovery manifest for \(stem)")
-            return
+            return nil
         }
+        return data
+    }
+
+    private static func write(_ data: Data, forStem stem: String, in directory: URL) {
         do {
             try data.write(to: url(forStem: stem, in: directory), options: .atomic)
         } catch {

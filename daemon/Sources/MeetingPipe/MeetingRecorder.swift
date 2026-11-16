@@ -453,8 +453,12 @@ final class MeetingRecorder {
         // recording before stop() writes the mute timeline, orphan recovery reads
         // this marker to fail closed for capture-first (quarantine the lossless
         // recording, never auto-publish it un-redacted). Removed on a clean stop.
+        //
+        // PERF28: off main, awaited, and before any capture file. A write that runs out its budget
+        // fails the start rather than recording without the marker, since a crash would then
+        // leave a capture-first recording with nothing to fail closed on.
         let modeMarkerURL = outputDir.appendingPathComponent("\(stamp).capturemode")
-        try? captureMode.marker.write(to: modeMarkerURL, atomically: true, encoding: .utf8)
+        try await Self.writeModeMarker(captureMode.marker, to: modeMarkerURL)
 
         // REC27 item 4: one exit for every start that fails after the marker is written. Before
         // this, each throw below left `<stamp>.capturemode` behind in raw/, and the two
@@ -489,6 +493,20 @@ final class MeetingRecorder {
         armLowSpaceWatch(outputDir: outputDir, startNotice: startNotice)
         started = true
         return finalURL
+    }
+
+    /// PERF28: the `.capturemode` marker write, off main under `RecordStartFileWrite`'s bound. A
+    /// write error is best-effort as it always was (REC21 changes that); only a write that never
+    /// returned fails the start, and its late return deletes the marker it wrote.
+    @MainActor
+    private static func writeModeMarker(_ text: String, to url: URL) async throws {
+        let outcome = await RecordStartFileWrite.run(producing: url) {
+            try? text.write(to: url, atomically: true, encoding: .utf8)
+        }
+        guard case .timedOut = outcome else { return }
+        let budget = Int(RecordStartFileWrite.budgetSeconds)
+        Log.writeLine("recorder", "WARN: capture-mode marker write did not finish within \(budget) s; failing the start")
+        throw RecorderError.fileCreateFailed("capture-mode marker: writing it took longer than \(budget) s")
     }
 
     /// REC20: record the preflight's finding and start the live watch, at the end of a start that
@@ -774,13 +792,31 @@ final class MeetingRecorder {
         // that the mono merge folded back in. One channel leaves exactly one to
         // measure and one to gate. The tap still delivers the device format;
         // processMicBuffer collapses each buffer to this mono format.
-        let fileFormat = MeetingRecorder.monoCaptureFormat(from: micFormat) ?? micFormat
+        //
+        // PERF28: the create runs off main under its own bound (not `engineCall`'s 2 s, which every
+        // measured slow-but-successful create exceeded), and the writers are assigned back here on
+        // main. A create past the bound is not an engine wedge: it fails the start through
+        // `start()`'s one catch and leaves the engine alone. The stem stays owned until an
+        // abandoned create has returned and deleted what it made.
+        let stem = micURL.deletingPathExtension().deletingPathExtension().lastPathComponent
+        let ownership = stemOwnership
         let micFile: AVAudioFile
-        do {
-            micFile = try AVAudioFile(forWriting: micURL, settings: fileFormat.settings)
-        } catch {
-            throw RecorderError.fileCreateFailed("mic file: \(error.localizedDescription)")
+        switch await RecordStartFileWrite.createMicFile(
+            at: micURL,
+            sampleRate: micFormat.sampleRate,
+            onAbandon: { ownership.hold(stem) },
+            onLateFinish: { Task { @MainActor in ownership.endHold(stem) } }
+        ) {
+        case .created(let file):
+            micFile = file
+        case .failed(let message):
+            throw RecorderError.fileCreateFailed("mic file: \(message)")
+        case .timedOut:
+            throw RecorderError.fileCreateFailed(
+                "mic file: creating it took longer than \(Int(RecordStartFileWrite.budgetSeconds)) s"
+            )
         }
+        let fileFormat = micFile.processingFormat
         self.micFile = micFile
         self.micFileFormat = fileFormat
         Log.writeLine("recorder", "mic file opened format=\(fileFormat) device=\(micFormat)")

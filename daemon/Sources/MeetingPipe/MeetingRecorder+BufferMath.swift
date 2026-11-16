@@ -44,9 +44,15 @@ extension MeetingRecorder {
     /// mic WAV is written as one channel (TECH-MIC3). Nil only if the format
     /// constructor rejects the sample rate.
     static func monoCaptureFormat(from format: AVAudioFormat) -> AVAudioFormat? {
+        monoCaptureFormat(sampleRate: format.sampleRate)
+    }
+
+    /// The same format from the plain rate, for a caller off main that must not be handed an
+    /// `AVAudioFormat` across isolation (PERF28's mic create, CONC11).
+    static func monoCaptureFormat(sampleRate: Double) -> AVAudioFormat? {
         AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: format.sampleRate,
+            sampleRate: sampleRate,
             channels: 1,
             interleaved: false
         )

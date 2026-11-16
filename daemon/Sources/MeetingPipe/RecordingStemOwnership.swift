@@ -30,7 +30,34 @@ final class RecordingStemOwnership {
     }
 
     func release(_ stem: String) {
+        if holds[stem, default: 0] > 0 {
+            releaseAfterHolds.insert(stem)
+            return
+        }
         stems.remove(stem)
+    }
+
+    /// PERF28: start writes abandoned past their budget that may still create a file of `stem`.
+    /// A `release` while any is held waits for the last `endHold`, so the sweep cannot meet the
+    /// header-only `.mic.wav` an abandoned create makes in the beat before it deletes it.
+    private var holds: [String: Int] = [:]
+    private var releaseAfterHolds: Set<String> = []
+
+    func hold(_ stem: String) {
+        holds[stem, default: 0] += 1
+    }
+
+    func endHold(_ stem: String) {
+        let left = holds[stem, default: 1] - 1
+        guard left <= 0 else {
+            holds[stem] = left
+            return
+        }
+        holds[stem] = nil
+        if releaseAfterHolds.remove(stem) != nil {
+            stems.remove(stem)
+            Log.writeLine("recorder", "abandoned start write for \(stem) finished; the stem is released to the orphan sweep")
+        }
     }
 
     /// Keep `stem` owned until every writer in `writers` has worked through what was enqueued
