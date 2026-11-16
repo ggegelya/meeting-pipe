@@ -89,11 +89,12 @@ struct WorkflowInspectorPresentation: Equatable {
         meetings: [Meeting],
         sourceNames: [String: String] = [:],
         notionNames: [String: String] = [:],
+        regulated: Bool = false,
         now: Date = Date()
     ) -> WorkflowInspectorPresentation {
         var rows: [Row] = [triggerRow(workflow, sourceNames: sourceNames)]
         if let modes = modesRow(workflow) { rows.append(modes) }
-        rows.append(outputRow(workflow, notionNames: notionNames))
+        rows.append(outputRow(workflow, notionNames: notionNames, regulated: regulated))
         rows.append(Row(label: "Backend", value: backendLine(for: workflow)))
         if let audio = audioRow(workflow) { rows.append(audio) }
 
@@ -193,11 +194,12 @@ struct WorkflowInspectorPresentation: Equatable {
         return Row(label: "Modes", value: parts.joined(separator: " · "))
     }
 
-    /// Where the summary is published. Reads `effectiveSinks`, so an NDA
-    /// workflow reports the local-only destination it will actually use rather
-    /// than the sinks its editor still holds.
-    private static func outputRow(_ workflow: Workflow, notionNames: [String: String]) -> Row {
-        let sinks = workflow.effectiveSinks
+    /// Where the summary is published. Reads the effective sinks, so an NDA
+    /// workflow (or any workflow under global regulated mode, SEC18) reports the
+    /// local-only destination it will actually use rather than the sinks its
+    /// editor still holds.
+    private static func outputRow(_ workflow: Workflow, notionNames: [String: String], regulated: Bool) -> Row {
+        let sinks = workflow.effectiveSinks(regulated: regulated)
         guard !sinks.isEmpty else { return Row(label: "Output", value: WorkflowNoDestination.inspectorValue) }
         let names = sinks.map { sink -> String in
             switch sink {

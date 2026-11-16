@@ -237,6 +237,41 @@ def check_destination(destination: Path, *, volumes_root: Path | None = None) ->
         )
 
 
+def check_synced_destination(cfg: Config, destination: Path) -> None:
+    """Refuse a synced destination when the library holds a confidential meeting (SEC18).
+
+    An archive carries every recording, transcript and voiceprint, so a destination a
+    sync client owns uploads each NDA or regulated meeting in it, which is exactly what
+    those two modes promise never happens. Narrow on purpose: only a meeting the
+    visibility gate withholds as `nda` or `regulated` triggers it. `no_sidecar` meetings
+    are unknown rather than confidential, and a library with none of either backs up to a
+    synced folder as before (the Storage pane already warns about the folder, SEC35).
+    """
+    from .cloudsync import detect_sync_provider
+    from .visibility import WITHHELD_NDA, WITHHELD_REGULATED, withheld_reason
+
+    destination = destination.expanduser()
+    provider = detect_sync_provider(destination)
+    if provider is None:
+        return
+    # Every `<stem>.meta.json`, not `library_visibility`'s stem list: that one only finds stems
+    # with transcript or summary text, and a recording whose transcription has not finished (or
+    # failed) is still in the archive with its audio. The posture lives in the sidecar either way.
+    library = Path(cfg.recording.output_dir).expanduser()
+    stems = {p.name.removesuffix(".meta.json") for p in library.glob("*.meta.json")} if library.is_dir() else set()
+    confidential = sorted(
+        stem for stem in stems if withheld_reason(library, stem) in (WITHHELD_NDA, WITHHELD_REGULATED)
+    )
+    if not confidential:
+        return
+    raise BackupError(
+        f"{destination} is synced by {provider.name}, and the library holds "
+        f"{len(confidential)} NDA or regulated meeting(s) that promised nothing leaves this Mac. "
+        "Every archive includes their recordings and transcripts, so the sync client would upload them. "
+        "Pick a destination outside the synced tree."
+    )
+
+
 def estimate_backup_bytes(
     cfg: Config, *, include_audio: bool = True, home: Path | None = None
 ) -> int:
@@ -408,6 +443,7 @@ def run_backup(
     now = now or datetime.now(timezone.utc)
     destination = destination.expanduser()
     check_destination(destination)
+    check_synced_destination(cfg, destination)
     check_free_space(
         destination,
         needed=estimate_backup_bytes(cfg, include_audio=include_audio, home=home),

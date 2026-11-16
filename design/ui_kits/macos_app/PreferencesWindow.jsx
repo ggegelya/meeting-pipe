@@ -426,7 +426,7 @@ const PWPermissionsPane = () => (
         described one of the two things it does; the other is that it pins every
         summary to the on-device model whatever Preferences > Pipeline says. The
         strings come from `RegulatedMode` in the app, derived from that clamp. */}
-    <PWGroup label="Regulated mode" footer="Use for client / regulated meetings. Two things happen while it is on, and both apply to every meeting rather than the next one: no transcript or summary is uploaded to Notion, and every summary is produced on this Mac by Local MLX, whatever Preferences > Pipeline is set to.">
+    <PWGroup label="Regulated mode" footer="Use for client / regulated meetings. Two things happen while it is on, and both apply to every meeting rather than the next one: every meeting is published only to a folder on this Mac, so Notion, Obsidian and the network share are skipped, and every summary is produced on this Mac by Local MLX, whatever Preferences > Pipeline is set to.">
       <PWToggleRow first on={false} label="Skip Notion publish and summarize on-device" sublabel="Off - meetings publish to each workflow's own sinks (Notion only if that workflow enables it), and summaries run on Anthropic."/>
     </PWGroup>
     <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "12px 14px", borderRadius: "var(--mp-radius-md)", background: "color-mix(in srgb, transparent 90%, var(--mp-signal-600))", border: "1px solid color-mix(in srgb, transparent 82%, var(--mp-signal-600))" }}>

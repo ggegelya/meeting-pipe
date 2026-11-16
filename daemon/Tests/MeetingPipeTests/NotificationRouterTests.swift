@@ -136,6 +136,15 @@ final class NotificationRouterTests: XCTestCase {
         XCTAssertEqual(route(id: id, action: "MP_OTHER").routes, [])
     }
 
+    // MARK: - Synced-library warning (SEC18)
+
+    func test_move_library_on_action_or_tap_opens_storage_preferences() {
+        let id = R.librarySyncedIDPrefix + "1763300000"
+        XCTAssertEqual(route(id: id, action: R.actionMoveLibrary).routes, [.openStoragePreferences])
+        XCTAssertEqual(route(id: id, isDefault: true).routes, [.openStoragePreferences])
+        XCTAssertEqual(route(id: id, action: "MP_OTHER").routes, [])
+    }
+
     // MARK: - The property nothing enforced
 
     /// The four id namespaces must stay disjoint. Nothing in the code enforces
@@ -151,11 +160,12 @@ final class NotificationRouterTests: XCTestCase {
             R.micOnlyIDPrefix + "a.wav",
             R.stillMeetingIDPrefix + "x",
             R.skipLateIDPrefix + "us.zoom.xos",
+            R.librarySyncedIDPrefix + "1763300000",
         ]
         let actions = [
             "", R.actionOpen, R.actionLooksGood, R.actionEditSummary, R.actionOpenSettings,
             R.actionOpenAccessibilitySettings, R.actionStopRecording, R.actionKeepRecording,
-            R.actionStartLate,
+            R.actionStartLate, R.actionMoveLibrary,
         ]
         for id in ids {
             for action in actions {

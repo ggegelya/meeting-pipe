@@ -1,0 +1,255 @@
+{
+  "_comment": "SEC18: the sink rule both trees implement. Python: mp.config.effective_sinks and mp.workflow.apply_overrides (test_zero_egress_files.py). Swift: RegulatedMode.effectiveSinks (RegulatedModeTests). Under regulated mode or an NDA workflow the only sink left is filesystem; otherwise the configured list passes through in order.",
+  "cases": [
+    {
+      "configured": [
+        "notion",
+        "filesystem"
+      ],
+      "regulated": false,
+      "nda": false,
+      "expected": [
+        "notion",
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "notion",
+        "filesystem"
+      ],
+      "regulated": true,
+      "nda": false,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "notion",
+        "filesystem"
+      ],
+      "regulated": false,
+      "nda": true,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "notion",
+        "filesystem"
+      ],
+      "regulated": true,
+      "nda": true,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "obsidian"
+      ],
+      "regulated": false,
+      "nda": false,
+      "expected": [
+        "obsidian"
+      ]
+    },
+    {
+      "configured": [
+        "obsidian"
+      ],
+      "regulated": true,
+      "nda": false,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "obsidian"
+      ],
+      "regulated": false,
+      "nda": true,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "obsidian"
+      ],
+      "regulated": true,
+      "nda": true,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "lan"
+      ],
+      "regulated": false,
+      "nda": false,
+      "expected": [
+        "lan"
+      ]
+    },
+    {
+      "configured": [
+        "lan"
+      ],
+      "regulated": true,
+      "nda": false,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "lan"
+      ],
+      "regulated": false,
+      "nda": true,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "lan"
+      ],
+      "regulated": true,
+      "nda": true,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "notion",
+        "obsidian",
+        "filesystem",
+        "lan"
+      ],
+      "regulated": false,
+      "nda": false,
+      "expected": [
+        "notion",
+        "obsidian",
+        "filesystem",
+        "lan"
+      ]
+    },
+    {
+      "configured": [
+        "notion",
+        "obsidian",
+        "filesystem",
+        "lan"
+      ],
+      "regulated": true,
+      "nda": false,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "notion",
+        "obsidian",
+        "filesystem",
+        "lan"
+      ],
+      "regulated": false,
+      "nda": true,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "notion",
+        "obsidian",
+        "filesystem",
+        "lan"
+      ],
+      "regulated": true,
+      "nda": true,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "filesystem"
+      ],
+      "regulated": false,
+      "nda": false,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "filesystem"
+      ],
+      "regulated": true,
+      "nda": false,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "filesystem"
+      ],
+      "regulated": false,
+      "nda": true,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [
+        "filesystem"
+      ],
+      "regulated": true,
+      "nda": true,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [],
+      "regulated": false,
+      "nda": false,
+      "expected": []
+    },
+    {
+      "configured": [],
+      "regulated": true,
+      "nda": false,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [],
+      "regulated": false,
+      "nda": true,
+      "expected": [
+        "filesystem"
+      ]
+    },
+    {
+      "configured": [],
+      "regulated": true,
+      "nda": true,
+      "expected": [
+        "filesystem"
+      ]
+    }
+  ]
+}

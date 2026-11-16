@@ -768,6 +768,9 @@ final class MeetingSessionController: @unchecked Sendable {
             redactMuted: resolvedWorkflow?.flags.redactMutedSpans ?? false
         )
 
+        // SEC18: a zero-egress recording over a synced library gets one warning per session, never a refusal.
+        coordinator.notifications.notifyLibrarySyncedIfNeeded(captureMode: captureMode, libraryRoot: coordinator.liveOutputDir)
+
         // MIC15(c): early-catch nudge. Read the running-somewhere state BEFORE `recorder.start`
         // arms the engine (once we hold the input device it always reads running, the confound
         // that sank END6's end-side read). If the input we are about to record sits idle while

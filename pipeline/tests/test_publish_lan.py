@@ -86,14 +86,15 @@ def test_router_builds_lan_publisher(tmp_path: Path) -> None:
     assert pubs[0].name == "lan"
 
 
-def test_lan_survives_regulated_mode(tmp_path: Path) -> None:
-    # On-prem, no cloud egress: regulated mode clamps only the Notion sink, so
-    # a LAN + Notion config keeps LAN.
+def test_lan_does_not_survive_regulated_mode(tmp_path: Path) -> None:
+    # SEC18: the sidecar path always collapsed LAN to the filesystem folder, so
+    # the no-sidecar path now says the same instead of keeping the share.
     cfg = Config.model_validate({
         "lan": {"mount_path": str(tmp_path / "share")},
+        "filesystem": {"output_dir": str(tmp_path / "out")},
         "output": {"sinks": ["notion", "lan"]},
         "modes": {"regulated_mode": True},
     })
     pubs = build_publishers(cfg)
     names = [p.name for p in pubs]
-    assert names == ["lan"]
+    assert names == ["filesystem"]

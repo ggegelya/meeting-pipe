@@ -225,8 +225,9 @@ class LanCfg(BaseModel):
     `mount_path` is the target directory on the already-mounted share. The
     publisher never creates the mount root itself (that would silently fall back
     to local disk if the share were down). `host` is informational, used only in
-    the unreachable error message. On-prem, no cloud metering, so this sink is
-    allowed under regulated mode (only the cloud Notion sink is clamped)."""
+    the unreachable error message. Zero egress leaves only the filesystem sink
+    (SEC18), so this sink does not publish under regulated mode or an NDA
+    workflow."""
     mount_path: str = "/Volumes/meetings"
     host: str = ""
 
@@ -299,15 +300,16 @@ def zero_egress(cfg: Config) -> bool:
     The two ways that happens are the global `regulated_mode` and the
     per-meeting `workflow_nda_mode` the workflow overlay resolves. Every clamp
     in the codebase keys off exactly this predicate: `effective_backend` pins
-    the on-device summarizer, `effective_sinks` drops the Notion sink,
+    the on-device summarizer, `effective_sinks` leaves only the filesystem sink,
     `egress_guard.arm_for_config` blocks non-loopback HTTP and scrubs the cloud
     tokens, `workflow.apply_overrides` re-applies both fail-closed, and
     `publish_notion.publish` short-circuits before instantiating a publisher.
     They used to each carry their own copy of the `regulated or nda` boolean;
     this is the single owner (TECH-ARCH1).
 
-    Note the LAN sink is deliberately *not* clamped: it writes to a mounted
-    on-prem share by design. "Zero egress" is a no-cloud-egress promise.
+    The LAN sink is clamped with the rest (SEC18): `apply_overrides` always
+    collapsed it, so a regulated meeting never reached the share in practice, and
+    the two paths now say the same thing.
     """
     return cfg.modes.regulated_mode or cfg.modes.workflow_nda_mode
 
@@ -461,15 +463,22 @@ def extract_backend_flag(argv: list[str]) -> tuple[list[str], str | None]:
 def effective_sinks(cfg: Config) -> list[str]:
     """The output sinks after the regulated/NDA egress clamp.
 
-    Notion is the one publisher that transmits to a cloud service, so under
-    `zero_egress` it is dropped here, the single chokepoint (TECH-ARCH1) that
-    build_publishers routes through. This folds in the TECH-SEC2 clamp that
-    previously lived inline in publish_router._build_one. Local-only sinks
-    (obsidian, filesystem) and the on-prem LAN sink are preserved in their
-    configured order.
+    Under `zero_egress` the one sink left is the filesystem sink (SEC18), whatever
+    the configuration holds. This is the single owner of that rule (TECH-ARCH1):
+    `build_publishers` routes through it, and `workflow.apply_overrides` calls it
+    rather than carrying its own copy, so the no-sidecar path and the sidecar path
+    every recorded meeting takes can no longer disagree. They used to: this kept
+    Obsidian and the on-prem LAN share while the overlay collapsed both to the
+    filesystem folder. Swift mirrors the rule as `RegulatedMode.effectiveSinks`,
+    pinned against this one by `sink-rule-golden.json`.
+
+    Owner question, open (SEC18 spec items 1 and 7): should a local Obsidian vault
+    or the LAN share survive zero egress? Both are local writes, and both can be
+    synced; the gate in `publish_router.build_publishers` already refuses a synced
+    target. Until the owner says, the rule is the one the sidecar path enforced.
     """
     if zero_egress(cfg):
-        return [s for s in cfg.output.sinks if s != "notion"]
+        return ["filesystem"]
     return list(cfg.output.sinks)
 
 

@@ -24,13 +24,11 @@ enum WorkflowBackend: String, Codable, Equatable, CaseIterable {
 /// like every other sink's: a workflow chooses WHICH sinks run, global config
 /// says WHERE they land.
 ///
-/// One thing worth not repeating: `config.effective_sinks` preserves the LAN
-/// sink under zero egress on the grounds that an on-prem share is not egress,
-/// but every recorded meeting reaches the publishers through
-/// `mp.workflow.apply_overrides` first, whose belt-and-braces clamp is
-/// filesystem-only for NDA and regulated alike. So a LAN sink does not in
-/// practice survive a regulated meeting, and no copy on this surface says it
-/// does (`test_zero_egress_collapses_the_lan_sink_too` pins the behaviour).
+/// One rule for every path (SEC18): `config.effective_sinks` and
+/// `mp.workflow.apply_overrides` both leave only the filesystem sink under
+/// zero egress, so a LAN (or Obsidian) sink does not survive a regulated or NDA
+/// meeting, and no copy on this surface says it does. Swift's mirror is
+/// `RegulatedMode.effectiveSinks`, pinned by `sink-rule-golden.json`.
 enum WorkflowSink: Codable, Equatable, Hashable {
     case notion(databaseId: String)
     case obsidian
@@ -206,8 +204,15 @@ struct Workflow: Codable, Equatable, Hashable, Identifiable {
     }
 
     /// Effective sinks after NDA; NDA forces filesystem-only so the summary never leaves the Mac.
+    /// Does not know global regulated mode; `effectiveSinks(regulated:)` does.
     var effectiveSinks: [WorkflowSink] {
-        flags.ndaMode ? [.filesystem] : sinks
+        effectiveSinks(regulated: false)
+    }
+
+    /// Effective sinks after the zero-egress rule (SEC18), global regulated mode included. The rule
+    /// itself is `RegulatedMode.effectiveSinks`, the one Swift mirror of `mp.config.effective_sinks`.
+    func effectiveSinks(regulated: Bool) -> [WorkflowSink] {
+        RegulatedMode.effectiveSinks(configured: sinks, regulated: regulated, workflowNDA: flags.ndaMode)
     }
 
     /// Sink type names for the meta sidecar's `output.sinks` override.

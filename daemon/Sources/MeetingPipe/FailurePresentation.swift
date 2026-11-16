@@ -5,6 +5,7 @@ struct FailureMetadata: Codable, Equatable, Hashable {
         case credits, quota, connection, timeout, memory, publish, interrupted, cancelled, unknown
         case missingKey = "missing_key", rejectedKey = "rejected_key", expiredKey = "expired_key"
         case rateLimit = "rate_limit", serviceUnavailable = "service_unavailable", modelMissing = "model_missing"
+        case syncedTarget = "synced_target"
     }
     enum Operation: String, Codable {
         case summary, ask, digest, publish, transcribe, processing, storage, integrations, model
@@ -128,6 +129,9 @@ struct FailurePresentation: Equatable {
         case .memory:
             heading = "Not enough memory"
             explanation = "Close other apps or choose a smaller model in Preferences > Pipeline, then retry."
+        case .syncedTarget:
+            heading = "The publish folder is synced"
+            explanation = "Regulated mode or an NDA workflow keeps this meeting on your Mac, and a sync client would upload it from this folder. Choose a folder outside the synced tree in Preferences > Integrations, then retry."
         case .publish:
             heading = provider.map { "Couldn't publish to \($0)" } ?? heading
             explanation = "Check the destination in Preferences > Integrations, then retry publishing."
@@ -157,7 +161,7 @@ struct FailurePresentation: Equatable {
     var settingsLabel: String? {
         if isSearchModelMissing { return nil }
         switch metadata.cause {
-        case .missingKey, .rejectedKey, .expiredKey, .publish: return "Open Integrations"
+        case .missingKey, .rejectedKey, .expiredKey, .publish, .syncedTarget: return "Open Integrations"
         case .modelMissing, .memory: return "Model settings"
         default: return nil
         }

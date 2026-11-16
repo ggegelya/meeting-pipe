@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import events
-from .config import Config, effective_sinks
+from .config import Config, effective_sinks, zero_egress
 from .schemas import MeetingSummary
 from .services import MeetingPublisher
 
@@ -69,10 +69,66 @@ def build_publishers(cfg: Config) -> list[MeetingPublisher]:
     # Notion sink under a zero-egress mode), so _build_one no longer carries
     # its own copy of that check. (TECH-ARCH1, folding in TECH-SEC2.)
     for name in effective_sinks(cfg):
-        pub = _build_one(name, cfg)
+        pub = _build_synced_refusal(name, cfg) or _build_one(name, cfg)
         if pub is not None:
             out.append(pub)
     return out
+
+
+#: The `reason` a refused-for-sync sink carries in `<stem>.publish.json` (SEC18).
+SYNCED_TARGET_REASON = "synced_target"
+
+
+class SyncedTargetError(RuntimeError):
+    """A zero-egress run's file sink points inside a cloud-sync folder (SEC18).
+
+    The clamp keeps every *network* call off the wire, but a sink that writes into a
+    folder a sync client owns uploads the same summary and transcript from underneath
+    it, which is the promise the clamp exists to keep. Recorded as a failed sink with
+    `reason: synced_target` so the exit-3 all-sinks-failed contract and the Library
+    row's failure copy apply unchanged; the summary itself is still in the library.
+    """
+
+    reason = SYNCED_TARGET_REASON
+
+    def __init__(self, sink: str, target: Path, provider_name: str) -> None:
+        self.sink = sink
+        self.target = target
+        self.provider_name = provider_name
+        super().__init__(
+            f"{SYNCED_TARGET_REASON}: the {sink} sink writes to {target}, which {provider_name} "
+            "syncs, and regulated mode or an NDA workflow promises nothing leaves this Mac. "
+            "Point the sink at a folder outside the synced tree."
+        )
+
+
+def _local_target(name: str, cfg: Config) -> Path | None:
+    """The folder a local-writing sink would write into, or None for a sink with no
+    local target (Notion) or one left unconfigured (which `_build_one` skips)."""
+    if name == "filesystem":
+        return Path(cfg.filesystem.output_dir).expanduser()
+    if name == "obsidian" and cfg.obsidian.vault_path:
+        return Path(cfg.obsidian.vault_path).expanduser()
+    # No `lan` here: a network mount is not a sync folder, and `detect_sync_provider`
+    # walks every ancestor with `listxattr`, which a stale SMB mount can hang.
+    return None
+
+
+def _build_synced_refusal(name: str, cfg: Config) -> UnavailablePublisher | None:
+    """SEC18: under zero egress, stand in for a file sink whose target a sync client
+    owns. Checked for the filesystem and Obsidian targets, not only the filesystem one the
+    sink clamp currently leaves, so relaxing the clamp cannot reopen the hole."""
+    if not zero_egress(cfg):
+        return None
+    target = _local_target(name, cfg)
+    if target is None:
+        return None
+    from .cloudsync import detect_sync_provider
+    provider = detect_sync_provider(target)
+    if provider is None:
+        return None
+    log.error("%s sink refused: %s is synced by %s under zero egress", name, target, provider.name)
+    return UnavailablePublisher(name, SyncedTargetError(name, target, provider.name))
 
 
 class UnavailablePublisher:
@@ -137,9 +193,9 @@ def _build_one(name: str, cfg: Config) -> MeetingPublisher | None:
         from .publish_fs import FilesystemPublisher
         return FilesystemPublisher(output_dir=Path(cfg.filesystem.output_dir).expanduser())
     if name == "lan":
-        # TECH-FEAT1: on-prem mounted share. Allowed under regulated mode
-        # (effective_sinks only clamps the cloud Notion sink); the reachability
-        # check fires at upsert time, not config-load time.
+        # TECH-FEAT1: on-prem mounted share. Zero egress no longer reaches this
+        # branch (`effective_sinks` leaves only the filesystem sink, SEC18); the
+        # reachability check fires at upsert time, not config-load time.
         from .publish_lan import LanPublisher
         return LanPublisher(
             mount_path=Path(cfg.lan.mount_path).expanduser(),
@@ -224,6 +280,8 @@ def fanout(
             from .failure_details import emit_failure
             failure = emit_failure(e, operation="publish", provider=p.name)
             per_sink[p.name] = {"error": str(e), "error_type": type(e).__name__, "failure": failure}
+            if isinstance(e, SyncedTargetError):
+                per_sink[p.name]["reason"] = e.reason
             failures.append((p.name, str(e)))
             events.emit("publisher", "sink_failed", sink=p.name, file=stem,
                         error=str(e), error_type=type(e).__name__)
@@ -319,6 +377,9 @@ def _write_publish_sidecar(summary_json: Path, result: dict[str, Any]) -> None:
                 "page_url": res.get("page_url") if isinstance(res, dict) else None,
                 "error": res.get("error") if isinstance(res, dict) else None,
                 "failure": res.get("failure") if isinstance(res, dict) else None,
+                # SEC18: present only on a failure that names a machine-readable cause
+                # (`synced_target`); absent otherwise, so the CI4 golden shape is unchanged.
+                **({"reason": res["reason"]} if isinstance(res, dict) and res.get("reason") else {}),
             }
             for name, res in sinks.items()
         },

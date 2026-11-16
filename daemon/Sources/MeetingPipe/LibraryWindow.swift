@@ -1136,7 +1136,8 @@ struct LibraryRootView: View {
                     workflow: wf,
                     meetings: meetings(for: wf),
                     sourceNames: sourceDisplayNames,
-                    notionNames: notionDatabaseNames
+                    notionNames: notionDatabaseNames,
+                    regulated: model.coordinator?.regulatedMode ?? false
                 ),
                 onEdit: { editingWorkflow = wf },
                 // UX33: the recents are buttons now, and the selection they set

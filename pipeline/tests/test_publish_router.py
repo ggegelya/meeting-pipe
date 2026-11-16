@@ -192,22 +192,24 @@ def test_build_publishers_unknown_name_raises() -> None:
         build_publishers(cfg)
 
 
-def test_build_publishers_notion_in_regulated_mode_is_dropped() -> None:
+def test_build_publishers_notion_in_regulated_mode_is_dropped(tmp_path: Path) -> None:
     # regulated_mode is a hard zero-egress guarantee. Notion is the one sink
     # that transmits off-device, so build_publishers must DROP it entirely
     # rather than build a token-less placeholder that would still POST to
-    # api.notion.com at upsert time (TECH-SEC2).
+    # api.notion.com at upsert time (TECH-SEC2). Since SEC18 the filesystem
+    # sink is what is left, the same as on the sidecar path.
     cfg = Config.model_validate({
         "output": {"sinks": ["notion"]},
+        "filesystem": {"output_dir": str(tmp_path / "out")},
         "modes": {"regulated_mode": True},
     })
     pubs = build_publishers(cfg)
-    assert pubs == [], "notion sink must be dropped under regulated_mode"
+    assert [p.name for p in pubs] == ["filesystem"], "notion sink must be dropped under regulated_mode"
 
 
-def test_build_publishers_regulated_drops_notion_keeps_local_sinks(tmp_path: Path) -> None:
-    # The clamp is surgical: only the egressing sink (notion) is dropped; the
-    # local-only sinks (obsidian, filesystem) still build and run.
+def test_build_publishers_regulated_keeps_only_the_filesystem_sink(tmp_path: Path) -> None:
+    # SEC18: one rule on both paths. Notion, Obsidian and LAN drop; the filesystem
+    # sink is what zero egress leaves, as `apply_overrides` always enforced.
     cfg = Config.model_validate({
         "output": {"sinks": ["notion", "obsidian", "filesystem"]},
         "obsidian": {"vault_path": str(tmp_path / "vault")},
@@ -215,7 +217,7 @@ def test_build_publishers_regulated_drops_notion_keeps_local_sinks(tmp_path: Pat
         "modes": {"regulated_mode": True},
     })
     pubs = build_publishers(cfg)
-    assert [p.name for p in pubs] == ["obsidian", "filesystem"]
+    assert [p.name for p in pubs] == ["filesystem"]
 
 
 def test_build_publishers_workflow_nda_mode_drops_notion(tmp_path: Path) -> None:
@@ -249,12 +251,13 @@ def test_fanout_regulated_mode_issues_no_request(tmp_path: Path, monkeypatch: py
 
     cfg = Config.model_validate({
         "output": {"sinks": ["notion"]},
+        "filesystem": {"output_dir": str(tmp_path / "out")},
         "modes": {"regulated_mode": True},
     })
     summary_json = tmp_path / "20260506-1500.summary.json"
     _write_summary_json(summary_json)
     res = fanout(summary_json=summary_json, cfg=cfg, transcript_md=None)
-    assert res["sinks"] == {}, "notion must be dropped, leaving no sinks to run"
+    assert list(res["sinks"]) == ["filesystem"], "notion is dropped; only the local sink runs"
 
 
 def test_build_publishers_obsidian_without_vault_path_skips() -> None:
@@ -518,12 +521,13 @@ def test_publish_state_is_local_when_no_sink_was_configured(tmp_path: Path) -> N
     assert sidecar["page_url"] is None
 
 
-def test_publish_state_is_local_for_a_regulated_notion_only_run(tmp_path: Path) -> None:
-    # The case `fanout`'s no-publisher branch was first written for: the egress
-    # clamp in `effective_sinks` drops the only configured sink, so nothing was
-    # meant to run here either. It used to read "none" and render as a failure.
+def test_a_regulated_notion_only_run_lands_in_the_filesystem_sink(tmp_path: Path) -> None:
+    # SEC18: the clamp used to drop the only configured sink and leave nothing to
+    # run ("local"). It now leaves the filesystem sink, as the sidecar path always
+    # did, so the meeting is published to the local folder.
     cfg = Config.model_validate({
         "output": {"sinks": ["notion"]},
+        "filesystem": {"output_dir": str(tmp_path / "out")},
         "modes": {"regulated_mode": True},
     })
     summary_json = tmp_path / "m.summary.json"
@@ -531,9 +535,9 @@ def test_publish_state_is_local_for_a_regulated_notion_only_run(tmp_path: Path) 
 
     res = fanout(summary_json=summary_json, cfg=cfg, transcript_md=None)
 
-    assert publish_state(res) == "local"
+    assert publish_state(res) == "full"
     assert not all_sinks_failed(res)
-    assert json.loads((tmp_path / "m.publish.json").read_text())["state"] == "local"
+    assert json.loads((tmp_path / "m.publish.json").read_text())["state"] == "full"
 
 
 def test_publish_state_stays_none_when_the_only_sink_was_skipped_for_missing_config(

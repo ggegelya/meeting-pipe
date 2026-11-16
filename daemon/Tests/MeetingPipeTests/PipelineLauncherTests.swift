@@ -87,7 +87,7 @@ final class PipelineLauncherTests: XCTestCase {
     func testFreshEnvironmentStripsAnthropicKeyOnly() {
         let tokens = ["ANTHROPIC_API_KEY": "sk-x", "NOTION_TOKEN": "nt-y"]
         let env = PipelineLauncher.freshEnvironment(
-            baseEnvironment: [:], tokens: tokens, stripAnthropicKey: true, stripNotionToken: false
+            baseEnvironment: [:], tokens: tokens, strip: ["ANTHROPIC_API_KEY"]
         )
         XCTAssertNil(env["ANTHROPIC_API_KEY"])
         XCTAssertEqual(env["NOTION_TOKEN"], "nt-y")
@@ -96,7 +96,7 @@ final class PipelineLauncherTests: XCTestCase {
     func testFreshEnvironmentStripsBothTokens() {
         let tokens = ["ANTHROPIC_API_KEY": "sk-x", "NOTION_TOKEN": "nt-y"]
         let env = PipelineLauncher.freshEnvironment(
-            baseEnvironment: [:], tokens: tokens, stripAnthropicKey: true, stripNotionToken: true
+            baseEnvironment: [:], tokens: tokens, strip: ["ANTHROPIC_API_KEY", "NOTION_TOKEN"]
         )
         XCTAssertNil(env["ANTHROPIC_API_KEY"])
         XCTAssertNil(env["NOTION_TOKEN"])
@@ -123,9 +123,50 @@ final class PipelineLauncherTests: XCTestCase {
     func testFreshEnvironmentPassesUnrelatedKeysThrough() {
         let base = ["PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-x"]
         let env = PipelineLauncher.freshEnvironment(
-            baseEnvironment: base, tokens: ["ANTHROPIC_API_KEY": "sk-x"], stripAnthropicKey: true)
+            baseEnvironment: base, tokens: ["ANTHROPIC_API_KEY": "sk-x"], strip: ["ANTHROPIC_API_KEY"])
         XCTAssertEqual(env["PATH"], "/usr/bin")
         XCTAssertNil(env["ANTHROPIC_API_KEY"])
+    }
+
+    /// SEC18: the strip is a policy over every managed key. Zero egress removes all four, whatever the
+    /// run was handed.
+    func testZeroEgressPolicyStripsAllFourManagedKeys() {
+        let all = Dictionary(uniqueKeysWithValues: KeychainSecrets.managedKeys.map { ($0, "v-\($0)") })
+        let policy = PipelineLauncher.CloudSecretPolicy(
+            stripAnthropic: true, stripNotion: true, stripOpenAI: true, zeroEgress: true)
+        let env = PipelineLauncher.freshEnvironment(baseEnvironment: [:], tokens: all, strip: policy.strippedKeys)
+        for key in KeychainSecrets.managedKeys { XCTAssertNil(env[key], key) }
+    }
+
+    /// SEC18: outside zero egress an on-device summary keeps neither cloud summarizer key, Notion
+    /// follows the sink rule, and HF_TOKEN is never handed to a run.
+    func testNonZeroEgressPolicyWithholdsWhatTheRunCannotUse() {
+        let all = Dictionary(uniqueKeysWithValues: KeychainSecrets.managedKeys.map { ($0, "v-\($0)") })
+        let onDevice = PipelineLauncher.CloudSecretPolicy(
+            stripAnthropic: true, stripNotion: false, stripOpenAI: true, zeroEgress: false)
+        let env = PipelineLauncher.freshEnvironment(baseEnvironment: [:], tokens: all, strip: onDevice.strippedKeys)
+        XCTAssertNil(env["ANTHROPIC_API_KEY"])
+        XCTAssertNil(env["OPENAI_API_KEY"])
+        XCTAssertNil(env["HF_TOKEN"])
+        XCTAssertEqual(env["NOTION_TOKEN"], "v-NOTION_TOKEN")
+
+        let cloud = PipelineLauncher.CloudSecretPolicy(
+            stripAnthropic: false, stripNotion: false, stripOpenAI: false, zeroEgress: false)
+        let cloudEnv = PipelineLauncher.freshEnvironment(baseEnvironment: [:], tokens: all, strip: cloud.strippedKeys)
+        XCTAssertEqual(cloudEnv["ANTHROPIC_API_KEY"], "v-ANTHROPIC_API_KEY")
+        XCTAssertEqual(cloudEnv["OPENAI_API_KEY"], "v-OPENAI_API_KEY")
+        XCTAssertNil(cloudEnv["HF_TOKEN"])
+    }
+
+    /// SEC18: the policy derived from a live config. Regulated mode is zero egress and strips OpenAI too.
+    func testCloudSecretPolicyForRegulatedModeIsZeroEgressWithOpenAIStripped() throws {
+        let cfg = FileManager.default.temporaryDirectory.appendingPathComponent("sec18-\(UUID().uuidString).toml")
+        defer { try? FileManager.default.removeItem(at: cfg) }
+        try "[modes]\nregulated_mode = true\n".write(to: cfg, atomically: true, encoding: .utf8)
+        let policy = PipelineLauncher.cloudSecretPolicy(for: nil, configURL: cfg)
+        XCTAssertTrue(policy.zeroEgress)
+        XCTAssertTrue(policy.stripOpenAI)
+        XCTAssertEqual(policy.strippedKeys, Set(KeychainSecrets.managedKeys))
     }
 
     /// SEC23: a spawn's environment carries exactly the tokens the SEC5 policy keeps, taken from the token

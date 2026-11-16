@@ -12,7 +12,8 @@ final class FailurePresentationTests: XCTestCase {
             let payload = try JSONSerialization.data(withJSONObject: try XCTUnwrap(item["payload"]))
             let metadata = try XCTUnwrap(FailureMetadata.decode(payload))
             XCTAssertEqual(metadata.cause.rawValue, item["cause"] as? String)
-            XCTAssertEqual(metadata.operation, .summary)
+            // Each case carries its own operation (the synced-target case is a publish failure, SEC18).
+            XCTAssertEqual(metadata.operation.rawValue, (item["payload"] as? [String: Any])?["operation"] as? String)
         }
     }
 

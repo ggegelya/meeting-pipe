@@ -18,6 +18,8 @@ protocol NotifierDelegate: AnyObject {
     func notifierDidRequestKeepRecording(_ notifier: Notifier)
     /// User tapped "Start recording" (or the banner body) on the timeout-skip notification (UX10). Coordinator clears the bundle's suppression and starts a late recording.
     func notifier(_ notifier: Notifier, didRequestStartLate source: AppSource)
+    /// User tapped "Move library..." (or the banner) on the synced-library warning (SEC18). Coordinator opens Preferences > Storage.
+    func notifierDidRequestStoragePreferences(_ notifier: Notifier)
     /// User clicked "Looks good" on the published-meeting notification.
     func notifier(
         _ notifier: Notifier,
@@ -51,6 +53,8 @@ enum SkipOrigin: Equatable {
 /// Wraps UNUserNotificationCenter for informational banners (started / processing / done / error). The "Record this meeting?" prompt lives in `MeetingPromptWindow` - banners are silenced by Focus mode and are the secondary surface.
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     weak var delegate: NotifierDelegate?
+    /// SEC18: the once-per-session latch for the synced-library start warning.
+    private var librarySyncWarning = LibrarySyncStartWarning()
 
     // `NotificationRouter` owns the identifier vocabulary: it is the type that
     // interprets these, and the routing table's test needs them without
@@ -74,6 +78,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private static let stillMeetingIDPrefix = NotificationRouter.stillMeetingIDPrefix
     private static let skipLateCategory = "MP_SKIP_LATE"
     private static let actionStartLate = NotificationRouter.actionStartLate
+    private static let librarySyncedCategory = NotificationRouter.librarySyncedCategory
+    private static let actionMoveLibrary = NotificationRouter.actionMoveLibrary
     private static let skipLateIDPrefix = NotificationRouter.skipLateIDPrefix
 
     /// Per-notification state kept so "Looks good" can find the recording without re-deriving paths on click.
@@ -400,6 +406,35 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
+    /// SEC18: a zero-egress recording is starting over a library a sync client owns. Reads the
+    /// provider off main (a stat/xattr walk) and only when the cheap pre-check says it could warn, so
+    /// an ordinary meeting never pays for it. At most one banner per session, never a refusal.
+    func notifyLibrarySyncedIfNeeded(captureMode: CaptureMode, libraryRoot: URL) {
+        guard librarySyncWarning.mayWarn(captureMode: captureMode) else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let provider = CloudSyncDetector.detect(path: libraryRoot)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard case .warn(let name) = self.librarySyncWarning.consider(captureMode: captureMode, provider: provider)
+                else { return }
+                Log.event(category: "coordinator", action: "library_synced_zero_egress_warned", attributes: [
+                    "provider": name,
+                    "mode": captureMode.marker,
+                ])
+                let content = UNMutableNotificationContent()
+                content.title = "Your library is in a synced folder"
+                content.body = LibrarySyncStartWarning.body(providerName: name)
+                content.sound = .default
+                content.categoryIdentifier = Self.librarySyncedCategory
+                let req = UNNotificationRequest(
+                    identifier: "\(NotificationRouter.librarySyncedIDPrefix)\(Int(Date().timeIntervalSince1970))",
+                    content: content, trigger: nil
+                )
+                UNUserNotificationCenter.current().add(req)
+            }
+        }
+    }
+
     /// REC20: the library volume is short of space for this recording. A warning with no action:
     /// the recording keeps running, and the HUD carries the countdown.
     func notifyLowSpace(title: String, body: String) {
@@ -510,8 +545,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             intentIdentifiers: [],
             options: []
         )
+        let moveLibrary = UNNotificationAction(identifier: Self.actionMoveLibrary, title: "Move library…", options: [.foreground])
+        let librarySynced = UNNotificationCategory(
+            identifier: Self.librarySyncedCategory,
+            actions: [moveLibrary],
+            intentIdentifiers: [],
+            options: []
+        )
         UNUserNotificationCenter.current().setNotificationCategories(
-            Set(doneCategories + [doneCorrectableLocal, perm, accessibility, stillMeeting, skipLate,
+            Set(doneCategories + [doneCorrectableLocal, perm, accessibility, stillMeeting, skipLate, librarySynced,
                 UNNotificationCategory(identifier: NotificationRouter.failureCategory,
                     actions: [UNNotificationAction(identifier: NotificationRouter.actionOpenFailure, title: "Review failure", options: [.foreground])],
                     intentIdentifiers: [], options: [])])
@@ -565,6 +607,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                 delegate?.notifierDidRequestStopRecording(self)
             case .keepRecording:
                 delegate?.notifierDidRequestKeepRecording(self)
+            case .openStoragePreferences:
+                delegate?.notifierDidRequestStoragePreferences(self)
             case .startLate:
                 // The host still owns the decode, so an undecodable payload
                 // drops the route rather than starting an unattributed recording.

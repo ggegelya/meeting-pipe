@@ -350,13 +350,11 @@ def test_lan_sink_literal_resolves_to_the_lan_publisher(tmp_path: Path) -> None:
 
 
 def test_zero_egress_collapses_the_lan_sink_too(tmp_path: Path) -> None:
-    # Worth pinning because the two clamps disagree and the coarser one runs
-    # first. `config.effective_sinks` preserves the on-prem LAN sink under zero
-    # egress and drops only Notion (`test_lan_survives_regulated_mode`), but any
-    # recorded meeting reaches the publishers through this overlay, whose
-    # belt-and-braces clamp is filesystem-only for NDA and regulated alike. So a
-    # LAN sink does NOT in practice survive a regulated meeting, and UX45's
-    # editor copy must not promise that it does.
+    # Worth pinning even though SEC18 made `config.effective_sinks` the one owner
+    # of the rule (it and this overlay agree: filesystem only for NDA and
+    # regulated alike; `test_lan_does_not_survive_regulated_mode` pins the other
+    # path). A LAN sink does NOT survive a regulated meeting, and UX45's editor
+    # copy must not promise that it does.
     cfg = Config.model_validate({"lan": {"mount_path": str(tmp_path / "share")}})
     stem = "20260512-lanreg"
     _write_meta(tmp_path, stem, {

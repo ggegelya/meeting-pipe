@@ -64,9 +64,9 @@ enum PrivacyReach {
     /// whatever the workflow editors hold, because `apply_overrides` re-applies
     /// that fail-closed rather than trusting the daemon to have done it.
     static func reachableSinks(regulatedMode: Bool, workflowSinks: [WorkflowSink]) -> [WorkflowSink] {
-        guard !regulatedMode else { return [.filesystem] }
+        let sinks = RegulatedMode.effectiveSinks(configured: workflowSinks, regulated: regulatedMode, workflowNDA: false)
         var seen: [WorkflowSink] = []
-        for sink in workflowSinks where !seen.contains(sink) {
+        for sink in sinks where !seen.contains(sink) {
             seen.append(sink)
         }
         return seen

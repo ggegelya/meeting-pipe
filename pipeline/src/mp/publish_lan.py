@@ -15,8 +15,9 @@ not do matter on a share:
     temp file and `os.replace`d into place (an atomic same-directory rename).
 
 The rendered files are identical to the filesystem sink (summary, transcript,
-actions), reusing its renderer so the two never drift. On-prem, no cloud
-metering, so this sink is allowed under regulated mode.
+actions), reusing its renderer so the two never drift. Zero egress leaves only
+the filesystem sink (SEC18), so this sink does not publish under regulated
+mode or an NDA workflow.
 """
 from __future__ import annotations
 

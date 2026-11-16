@@ -226,7 +226,7 @@ cat >"$APP_BUILD/Contents/Info.plist" <<'PLIST'
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>MeetingPipe records meeting audio for transcription. Audio never leaves your Mac.</string>
+    <string>MeetingPipe records your meetings so it can transcribe them on this Mac.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>MeetingPipe captures system audio, which is everyone else's voice in a call, through ScreenCaptureKit. That API also requires a video stream, which is kept at two pixels square and thrown away, so nothing of your screen is saved.</string>
     <key>CFBundleURLTypes</key>

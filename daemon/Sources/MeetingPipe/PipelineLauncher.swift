@@ -1434,7 +1434,7 @@ final class PipelineLauncher: PipelineDriver {
         var env = Self.freshEnvironment(
             baseEnvironment: environment,
             tokens: tokenSource(),
-            stripAnthropicKey: policy.stripAnthropic, stripNotionToken: policy.stripNotion
+            strip: policy.strippedKeys
         )
         for (k, v) in extraEnv { env[k] = v }
         let failureURL = FileManager.default.temporaryDirectory.appendingPathComponent("mp-failure-\(UUID().uuidString).json")
@@ -1549,7 +1549,7 @@ final class PipelineLauncher: PipelineDriver {
         }
     }
 
-    /// Build a pipeline subprocess environment from the daemon's current env and apply the SEC5 strip policy.
+    /// Build a pipeline subprocess environment from the daemon's current env and apply the strip policy (SEC5, SEC18).
     /// The daemon's env carries no managed token since SEC23, and any a base environment does carry is
     /// dropped here: a caller gets exactly the `tokens` it passes (only `runMP` passes any) and the four
     /// that spawn `mp` for a status read, a doctor or a model check get none. A Python child that needs one
@@ -1557,20 +1557,20 @@ final class PipelineLauncher: PipelineDriver {
     static func freshEnvironment(
         baseEnvironment: [String: String]? = nil,
         tokens: [String: String] = [:],
-        stripAnthropicKey: Bool = false,
-        stripNotionToken: Bool = false
+        strip: Set<String> = []
     ) -> [String: String] {
         var env = Secrets.scrubbedEnvironment(from: baseEnvironment ?? ProcessInfo.processInfo.environment)
         for key in KeychainSecrets.managedKeys {
             if let value = tokens[key], !value.isEmpty { env[key] = value }
         }
         // TECH-SEC5: withhold cloud tokens the resolved run must not use, so a consumer that reads only the
-        // process env fails closed (missing credential) instead of egressing. NOTE: the Python child re-reads
-        // the token from the Keychain via load_secrets(), so a stripped token reappears in its os.environ; the
-        // egress guard (TECH-SEC3), armed from the resolved config inside the subprocess, is the authoritative
-        // network-layer backstop, and this strip is defense-in-depth.
-        if stripAnthropicKey { env.removeValue(forKey: "ANTHROPIC_API_KEY") }
-        if stripNotionToken { env.removeValue(forKey: "NOTION_TOKEN") }
+        // process env fails closed (missing credential) instead of egressing. Under zero egress the Python
+        // child cannot refill one: `egress_guard.arm` pops every managed key and `load_secrets` returns early
+        // once the guard is armed (SEC13). Outside zero egress it can: the child re-reads the token from the
+        // Keychain via `load_secrets()`, so a stripped token reappears in its os.environ. There the egress
+        // guard is not armed and this strip is defense-in-depth only; whether `load_secrets` should also stop
+        // refilling a token the daemon withheld is left open (SEC18).
+        for key in strip { env.removeValue(forKey: key) }
         return env
     }
 
@@ -1601,7 +1601,7 @@ final class PipelineLauncher: PipelineDriver {
         for meeting: URL?,
         backendOverride: String? = nil,
         configURL: URL = Config.defaultPath
-    ) -> (stripAnthropic: Bool, stripNotion: Bool) {
+    ) -> CloudSecretPolicy {
         let config = ConfigStore(configURL: configURL)
         var regulated = config.regulatedMode
         let globalBackend = config.summarizationBackend
@@ -1625,7 +1625,31 @@ final class PipelineLauncher: PipelineDriver {
         // forces local and strips both tokens, so the override cannot widen egress.
         let backend = regulated ? "local" : (backendOverride ?? sidecarBackend ?? globalBackend)
         let onDeviceSummary = regulated || nda || backend == "local" || backend == "apple_intelligence"
-        return (stripAnthropic: onDeviceSummary, stripNotion: regulated || nda)
+        return CloudSecretPolicy(
+            stripAnthropic: onDeviceSummary, stripNotion: regulated || nda,
+            stripOpenAI: onDeviceSummary, zeroEgress: regulated || nda
+        )
+    }
+
+    /// Which managed tokens a pipeline spawn is withheld (SEC5, widened by SEC18 from two booleans to
+    /// the whole `KeychainSecrets.managedKeys` list). Zero egress takes all four. Otherwise the run is
+    /// handed only what it can use: an on-device summary gets neither cloud summarizer key, Notion
+    /// follows the sink rule, and `HF_TOKEN` is never handed to a run (the local server never
+    /// downloads, SEC27, and `SecretsStore` does not persist one for this path anyway).
+    struct CloudSecretPolicy: Equatable {
+        var stripAnthropic: Bool
+        var stripNotion: Bool
+        var stripOpenAI: Bool
+        var zeroEgress: Bool
+
+        var strippedKeys: Set<String> {
+            if zeroEgress { return Set(KeychainSecrets.managedKeys) }
+            var keys: Set<String> = ["HF_TOKEN"]
+            if stripAnthropic { keys.insert("ANTHROPIC_API_KEY") }
+            if stripNotion { keys.insert("NOTION_TOKEN") }
+            if stripOpenAI { keys.insert("OPENAI_API_KEY") }
+            return keys
+        }
     }
 
     /// Resolution order: embedded runtime (DIST1) -> prebuilt venv -> `uv run mp` from the repo's pipeline dir -> bare `mp` on PATH.

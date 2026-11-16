@@ -34,6 +34,9 @@ enum NotificationRouter {
     static let actionKeepRecording = "MP_KEEP_RECORDING"
     static let actionStartLate = "MP_START_LATE"
     static let failureCategory = "MP_FAILURE"
+    static let librarySyncedCategory = "MP_LIBRARY_SYNCED"
+    static let actionMoveLibrary = "MP_MOVE_LIBRARY"
+    static let librarySyncedIDPrefix = "library-synced-"
     static let actionOpenFailure = "MP_OPEN_FAILURE"
     static let failureIDPrefix = "failure-"
 
@@ -90,6 +93,7 @@ enum NotificationRouter {
         case stopRecording
         case keepRecording
         case startLate
+        case openStoragePreferences
     }
 
     /// The per-notification state `Notifier` keeps for a "done" notification.
@@ -180,6 +184,13 @@ enum NotificationRouter {
         if id.hasPrefix(skipLateIDPrefix),
            action == actionStartLate || isDefault {
             routes.append(.startLate)
+        }
+
+        // SEC18: "Move library..." (or a banner tap) opens Preferences > Storage, where the
+        // existing move flow lives. The notification only points at it.
+        if id.hasPrefix(librarySyncedIDPrefix),
+           action == actionMoveLibrary || isDefault {
+            routes.append(.openStoragePreferences)
         }
 
         return Decision(routes: routes, consumeDoneEntry: consume)

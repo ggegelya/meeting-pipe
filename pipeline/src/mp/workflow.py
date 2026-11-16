@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from . import events
-from .config import BACKENDS, Config, ExtraSectionSpec, zero_egress
+from .config import BACKENDS, Config, ExtraSectionSpec, effective_sinks, zero_egress
 
 log = logging.getLogger("mp.workflow")
 
@@ -238,8 +238,9 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
         if overlay.summarization.backend != "local":
             overlay.summarization.backend = "local"  # type: ignore[assignment]
             changed.append("zero_egress→backend=local")
-        if overlay.output.sinks != ["filesystem"]:
-            overlay.output.sinks = ["filesystem"]
+        clamped_sinks = effective_sinks(overlay)
+        if overlay.output.sinks != clamped_sinks:
+            overlay.output.sinks = clamped_sinks
             changed.append("zero_egress→sinks=filesystem")
 
     if changed:

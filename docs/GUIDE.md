@@ -61,7 +61,7 @@ Press `⌃⌥M` anywhere in macOS, or pick **Start Recording** from the menu bar
 
 **Record (BYO)** records exactly like a normal meeting but does not ask any engine for a summary. Afterwards, open the meeting in the Library and the **Summary** tab shows a **Paste your summary** box: drop your text in, click **Save & publish**, and it goes to the same destinations a normal meeting would.
 
-Useful for a call you do not want summarized by anything, or one you would rather hand-write.
+Useful for a call you do not want summarized by anything, or one you would rather hand-write. Not available for a regulated or NDA meeting: those never produce a paste-into-a-chat bundle, and the meeting is summarized on your Mac instead.
 
 ### If the panel says "Mic lost"
 
@@ -401,6 +401,8 @@ A policy only ever touches a meeting that finished and published cleanly. Anythi
 meeting-pipe keeps your meetings on your Mac. It cannot stop macOS syncing a file after it is written, and the default library location is inside iCloud's reach: if **Desktop & Documents Folders** is on in your iCloud settings, your recordings and transcripts are uploading to Apple. The same is true of a library placed inside Dropbox, Google Drive, or OneDrive.
 
 The app checks and tells you: **Preferences ▸ Storage** shows a **Cloud sync** panel naming the provider, with **Move library…** beside it, which asks for a folder outside every sync folder, shows what it will move, and moves it only after you confirm. Under a confidential setup this is reported as a failure rather than a warning, because a synced library breaks the promise no matter what the summarizer does. The check is not only about the library: `mp doctor` also looks at the folder your summaries are published to, your backup folder, and your Obsidian vault. And when you choose a backup folder in **Preferences ▸ Storage**, the app tells you if that folder is inside a sync folder, because every backup archive carries your recordings and transcripts; it does not stop you, it just names the provider.
+
+Under a confidential setup the app goes further than naming. The first regulated or NDA recording of a session over a synced library posts one notification naming the provider, with a **Move library…** button that opens the Storage pane; it never stops the recording. A meeting that is regulated or in an NDA workflow is not published to a local folder that a sync client owns: the Library row says **The publish folder is synced**, the summary stays in your library, and it publishes once you choose a folder outside the synced tree. A backup to a synced folder is refused the same way when your library holds any such meeting. And **Record (BYO)** is declined for them, since its whole point is to paste the transcript into a cloud chat: the meeting is summarized on your Mac instead.
 
 ---
 

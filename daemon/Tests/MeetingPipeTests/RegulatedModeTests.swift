@@ -8,6 +8,60 @@ import XCTest
 /// rather than against a literal, in the shape `SpeakerAccuracyTests` uses.
 final class RegulatedModeTests: XCTestCase {
 
+    // MARK: - The sink rule, mirroring Python (SEC18)
+
+    private struct SinkCase: Decodable {
+        let configured: [String]
+        let regulated: Bool
+        let nda: Bool
+        let expected: [String]
+    }
+
+    private func sink(_ name: String) -> WorkflowSink {
+        switch name {
+        case "notion": return .notion(databaseId: "")
+        case "obsidian": return .obsidian
+        case "filesystem": return .filesystem
+        default: return .lan
+        }
+    }
+
+    /// The table `pipeline/tests/test_zero_egress_files.py` runs `config.effective_sinks` and
+    /// `workflow.apply_overrides` against: the same file, so the two trees cannot disagree.
+    func testTheSinkRuleMatchesTheSharedTableWithPython() throws {
+        struct Table: Decodable { let cases: [SinkCase] }
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/sink-rule-golden.json")
+        let table = try JSONDecoder().decode(Table.self, from: Data(contentsOf: url))
+        XCTAssertFalse(table.cases.isEmpty)
+        for c in table.cases {
+            let got = RegulatedMode.effectiveSinks(
+                configured: c.configured.map(sink), regulated: c.regulated, workflowNDA: c.nda
+            ).map(\.typeName)
+            XCTAssertEqual(got, c.expected, "configured=\(c.configured) regulated=\(c.regulated) nda=\(c.nda)")
+        }
+    }
+
+    /// One Swift owner: the workflow and the privacy callout read the same rule.
+    func testWorkflowAndPrivacyReachDelegateToTheOneRule() {
+        let sinks: [WorkflowSink] = [.obsidian, .lan]
+        XCTAssertEqual(PrivacyReach.reachableSinks(regulatedMode: true, workflowSinks: sinks), [.filesystem])
+        XCTAssertEqual(PrivacyReach.reachableSinks(regulatedMode: false, workflowSinks: sinks), sinks)
+    }
+
+    /// G034: the copy names the sinks the rule takes away, built from the rule rather than beside it,
+    /// so an Obsidian-only configuration is told its vault is skipped, not just Notion.
+    func testTheCopyNamesEverySinkTheRuleDrops() {
+        for engine in SummarizationEngine.all {
+            for text in [RegulatedMode.footer(configured: engine.id), RegulatedMode.sublabel(isOn: true, configured: engine.id)] {
+                XCTAssertTrue(text.contains("Obsidian"), text)
+                XCTAssertTrue(text.contains("Notion"), text)
+                XCTAssertTrue(text.contains("folder on this Mac"), text)
+            }
+        }
+        XCTAssertEqual(RegulatedMode.droppedSinkNames, "Notion, Obsidian and the network share")
+    }
+
     // MARK: - The clamp, mirroring Python
 
     func testRegulatedModeForcesLocalFromEveryCloudBackend() {

@@ -93,13 +93,13 @@ def test_cli_backends_are_a_subset_of_backends_and_cloud() -> None:
     assert "local" not in CLI_BACKENDS
 
 
-def test_effective_sinks_drops_notion_under_zero_egress() -> None:
+def test_effective_sinks_is_filesystem_only_under_zero_egress() -> None:
+    # SEC18: one rule on both paths. Obsidian, LAN and Notion all drop, the same
+    # collapse `workflow.apply_overrides` always applied on the sidecar path.
     for mode in ("regulated_mode", "workflow_nda_mode"):
-        cfg = Config.model_validate({
-            "output": {"sinks": ["notion", "obsidian", "filesystem"]},
-            "modes": {mode: True},
-        })
-        assert effective_sinks(cfg) == ["obsidian", "filesystem"]
+        for sinks in (["notion", "obsidian", "filesystem"], ["obsidian"], ["notion", "lan"], []):
+            cfg = Config.model_validate({"output": {"sinks": sinks}, "modes": {mode: True}})
+            assert effective_sinks(cfg) == ["filesystem"]
 
 
 def test_effective_sinks_passthrough_preserves_order_when_unrestricted() -> None:

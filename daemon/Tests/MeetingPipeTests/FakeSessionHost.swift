@@ -153,6 +153,10 @@ final class SpyNotifier: SessionNotifying {
         skipped.append((source: source, origin: origin))
     }
     func notifyStillMeeting() { stillMeetingCount += 1 }
+    private(set) var librarySyncedChecks: [(mode: CaptureMode, root: URL)] = []
+    func notifyLibrarySyncedIfNeeded(captureMode: CaptureMode, libraryRoot: URL) {
+        librarySyncedChecks.append((mode: captureMode, root: libraryRoot))
+    }
     func notifyMicOnlyRecording(file: URL, permissionState: SystemAudioCapture.PermissionState) {
         micOnly.append(file)
     }

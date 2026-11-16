@@ -141,6 +141,17 @@
         "remedy": "retry"
       },
       "cause": "unknown"
+    },
+    {
+      "name": "synced_target",
+      "payload": {
+        "schema_version": 1,
+        "cause": "synced_target",
+        "operation": "publish",
+        "remedy": "integrations",
+        "provider": "filesystem"
+      },
+      "cause": "synced_target"
     }
   ]
 }

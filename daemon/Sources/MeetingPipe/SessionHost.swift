@@ -123,6 +123,8 @@ protocol SessionNotifying: AnyObject {
     func notifyMicRecordedNothing(file: URL)
     func notifyShortRecording(file: URL, audioSec: Double, wallclockSec: Double)
     func notifyInputDeviceMismatch()
+    /// SEC18: warn once per session when a zero-egress recording starts over a library a sync client owns.
+    func notifyLibrarySyncedIfNeeded(captureMode: CaptureMode, libraryRoot: URL)
     /// REC20: the library volume's free space is short, at start or mid-recording. A warning,
     /// not a failure: the recording keeps running.
     func notifyLowSpace(title: String, body: String)

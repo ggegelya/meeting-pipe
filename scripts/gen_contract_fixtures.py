@@ -464,6 +464,7 @@ def gen_failures() -> str:
     import httpx
     from mp.config import MissingSecretError
     from mp.failure_details import describe
+    from mp.publish_router import SyncedTargetError
 
     request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
     cases = []
@@ -485,6 +486,12 @@ def gen_failures() -> str:
                         ("model_missing", RuntimeError("not in the local HuggingFace cache")),
                         ("unknown", RuntimeError("synthetic unknown failure"))]:
         cases.append({"name": name, "payload": describe(error, operation="summary"), "cause": name})
+    cases.append({
+        "name": "synced_target",
+        "payload": describe(SyncedTargetError("filesystem", Path("/synthetic/synced"), "Dropbox"),
+                            operation="publish", provider="filesystem"),
+        "cause": "synced_target",
+    })
     return _envelope("Generated synthetic failure metadata from mp.failure_details.describe. No owner data.", cases)
 
 

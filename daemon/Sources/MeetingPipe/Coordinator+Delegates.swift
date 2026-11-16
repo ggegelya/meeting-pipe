@@ -86,6 +86,10 @@ extension Coordinator: NotifierDelegate {
         }
     }
 
+    func notifierDidRequestStoragePreferences(_ notifier: Notifier) {
+        preferencesWindow?.show(initial: .storage)
+    }
+
     func notifierDidRequestScreenRecordingSettings(_ notifier: Notifier) {
         SystemAudioCapture.openScreenRecordingSettings()
     }

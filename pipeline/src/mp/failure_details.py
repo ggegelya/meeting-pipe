@@ -74,10 +74,15 @@ def describe(error: BaseException, *, operation: str, provider: str | None = Non
     elif "not in the local huggingface cache" in message or type(error).__name__ == "EmbedderUnavailableError":
         cause = "model_missing"
         provider = "local"
+    elif type(error).__name__ == "SyncedTargetError":
+        # SEC18: a zero-egress run's file sink sits inside a sync folder. Retrying cannot help until the
+        # publish folder is changed in Integrations, so it is its own cause with that remedy.
+        cause = "synced_target"
     elif operation == "publish":
         cause = "publish"
     remedy = {"credits": "billing", "quota": "billing", "missing_key": "integrations",
-              "rejected_key": "integrations", "expired_key": "integrations", "memory": "model",
+              "rejected_key": "integrations", "expired_key": "integrations", "synced_target": "integrations",
+              "memory": "model",
               "model_missing": "model"}.get(cause, "retry")
     result: dict = {"schema_version": 1, "cause": cause,
                     "operation": operation if operation in OPERATIONS else "processing", "remedy": remedy}

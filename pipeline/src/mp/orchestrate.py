@@ -28,7 +28,13 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import entry, providers, storage
-from .config import Config, effective_backend, extract_backend_flag, with_backend_override
+from .config import (
+    Config,
+    effective_backend,
+    extract_backend_flag,
+    with_backend_override,
+    zero_egress,
+)
 from .corrections import set_publish_state, write_empty_marker, write_run_sidecar
 from .transcript_quality import transcript_issues
 from .diarize import (
@@ -372,10 +378,22 @@ def _check_suspect_transcript(wav: Path, t: dict[str, Path], structured: dict) -
     return _skip_result(t, "suspect_transcript")
 
 
-def _check_byo(wav: Path, t: dict[str, Path], md_text: str, force_byo: bool) -> dict | None:
+def _check_byo(
+    wav: Path, t: dict[str, Path], md_text: str, force_byo: bool, cfg: Config
+) -> dict | None:
     """Explicit BYO request from the user (per-meeting toggle on the prompt
-    panel). Same machinery as the long-meeting guard: write the bundle and stop."""
+    panel). Same machinery as the long-meeting guard: write the bundle and stop.
+
+    Declined under zero egress (SEC18): the bundle's only purpose is to be pasted
+    into a cloud chat, which a regulated or NDA meeting promised never happens. The
+    run falls through to the on-device summary instead of stopping, so the owner who
+    ticked BYO still gets a summary and nothing is written for pasting."""
     if not force_byo:
+        return None
+    if zero_egress(cfg):
+        log.warning("BYO summary requested but this run is zero-egress; summarizing on-device instead.")
+        events.emit("pipeline", "byo_refused", wav=str(wav), reason="byo_refused_zero_egress",
+                    transcript_chars=len(md_text))
         return None
     bundle = _write_manual_bundle(t["md"], len(md_text), threshold=0)
     log.info("BYO summary requested — skipping Anthropic call.")
@@ -509,7 +527,7 @@ def _run_all_inner(
         return skip
 
     md_text = t["md"].read_text(encoding="utf-8")
-    skip = _check_byo(wav, t, md_text, force_byo) or _check_too_long(wav, t, md_text, cfg)
+    skip = _check_byo(wav, t, md_text, force_byo, cfg) or _check_too_long(wav, t, md_text, cfg)
     if skip is not None:
         return skip
 
