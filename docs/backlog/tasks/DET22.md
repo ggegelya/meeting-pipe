@@ -2,9 +2,9 @@
 id: DET22
 title: In a contested scan an idle native with stale signals raises the bar for, or blanks, a real call, because pickBest judges contenders against a shared floor instead of each app's own bar
 category: Detection
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). Code-derived, not yet seen costing a call: an idle Teams matches its permissive title most of the day (DET9 counted 293 of 294 Teams drops title-only) and 12 of 108 work-laptop picks had two candidates, so a Zoom title-plus-Mute (4) or a Webex Mute-only call that passes alone fails beside it, and a native with two stale signals scoring 4 blanks a real browser Meet. Drop contenders that fail their own lone bar before choosing the branch, and let a native block a browser only if it clears the contested floor itself.
+comment: Shipped 2026-11-16: MeetingSourceScorer.passesOwnBar filters contenders before the branch (none qualifies nil, one qualifies wins), and a native blocks the browser exemption only with the toolbar or by clearing the contested floor itself; 7 new scorer tests, test_contested_exemption_is_title_gated re-pinned to a Webex rival, ci-local green. Remainder: owner approval to close as done; no owner check is owed.
 ---
 
 # DET22: In a contested scan an idle native with stale signals raises the bar for, or blanks, a real call, because pickBest judges contenders against a shared floor instead of each app's own bar
@@ -44,3 +44,9 @@ Correction at filing: the class summary says `candidate_count` is 1 on every log
 - `MeetingSourceScorerTests`, new cases: an idle Teams (title only) plus a Zoom with title and Mute picks Zoom; an idle Teams (title only, sticky) plus a Webex with Mute only picks Webex; a native with title and a stale Mute (score 4) plus a browser with a Meet title picks the browser; a native showing title, Leave and Mute (score 7, a real native call) plus a browser Meet title still picks the native; two qualified natives both at score 4 return nil; a lone native title-only still returns nil and a lone browser title-only still wins.
 - The existing scorer and scanner tests stay green unchanged, including DET5's idle-Teams-chat-versus-Meet regression and DET12's audio cases.
 - `cd daemon && swift build` and `swift test` green with N new tests named in the commit body; `bash scripts/ci-local.sh` green.
+
+**Progress (2026-11-16): two departures from the scope's wording.**
+
+- Item 2's block rule keeps the calling-controls toolbar as a blocker beside "clears the contested floor". Without it, `test_contested_confident_native_still_blocks_the_exemption` (toolbar-only Zoom at 4 beside a Meet title) would flip from nil to the browser, and the acceptance says the existing tests stay unchanged. The toolbar is the one signal non-meeting shells never render, so it is not the stale-signal shape D014 is about. D014's case (title plus a lingering Mute) no longer blocks.
+- `test_contested_exemption_is_title_gated` could not stay unchanged: its rival was a title-only Teams, which item 1 removes from contention, so the shareable-content-only browser became the sole qualified contender and wins as it would alone. That is item 1's intended effect, so the test was re-pinned with a single-control Webex (qualified, below the floor) as the rival, which keeps what it tests: no exemption without a title.
+

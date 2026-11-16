@@ -516,9 +516,13 @@ final class MeetingSourceScorerTests: XCTestCase {
 
     func test_contested_exemption_is_title_gated() {
         // A browser with no real title match (a name-only PWA admission carries titleMatch==false,
-        // START3) gets no exemption, so a weak contest against a title-only native stays nil.
+        // START3) gets no exemption, so a weak contest against another qualified candidate stays
+        // nil. DET22 re-pinned the rival: it was a title-only Teams, which no longer contends at
+        // all (it fails its own bar), so the browser now wins that pairing as it would alone. A
+        // single-control Webex passes its own bar and keeps the contest weak, which is the case
+        // this test is for.
         var candidates = [
-            teams(signals: .init(titleMatch: true)),             // 2
+            webex(signals: .init(leaveButton: true)),             // 3, qualified, no audio leg
             chrome(signals: .init(shareableContentActive: true)), // 2, NOT title-matched
         ]
         XCTAssertNil(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil))
@@ -534,5 +538,72 @@ final class MeetingSourceScorerTests: XCTestCase {
         let winner = MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)
         XCTAssertEqual(winner?.source.bundleID, "com.google.Chrome")
         XCTAssertEqual(winner?.score, 6)
+    }
+
+    // MARK: - DET22: each contender is judged against its own bar first
+
+    func test_idle_teams_does_not_raise_the_bar_for_a_zoom_call() {
+        // D025: title plus Mute (4, two distinct) passes a lone Zoom's bar; beside a title-only
+        // Teams the shared floor of 5 used to return nil.
+        var candidates = [
+            teams(signals: .init(titleMatch: true)),
+            zoom(signals: .init(muteButton: true, titleMatch: true)),
+        ]
+        XCTAssertEqual(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)?.source.bundleID, zoomBundle)
+    }
+
+    func test_idle_sticky_teams_does_not_raise_the_bar_for_a_webex_call() {
+        var candidates = [
+            teams(signals: .init(titleMatch: true)),
+            webex(signals: .init(muteButton: true)),
+        ]
+        let winner = MeetingSourceScorer.pickBest(
+            &candidates,
+            lastWinner: AppSource(bundleID: teamsBundle, displayName: "Microsoft Teams")
+        )
+        XCTAssertEqual(winner?.source.bundleID, webexBundle)
+    }
+
+    func test_a_native_with_a_stale_mute_does_not_blank_a_browser_meet() {
+        // D014: title plus a lingering Mute (4, two distinct) is a confident native, so it used to
+        // block the browser exemption and then fail the floor itself, returning nil.
+        var candidates = [
+            zoom(signals: .init(muteButton: true, titleMatch: true)),
+            chrome(signals: .init(titleMatch: true)),
+        ]
+        XCTAssertEqual(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)?.source.bundleID, chromeBundle)
+    }
+
+    func test_a_real_native_call_still_beats_a_browser_meet_title() {
+        var candidates = [
+            zoom(signals: .init(leaveButton: true, muteButton: true, titleMatch: true)),   // 7
+            chrome(signals: .init(titleMatch: true)),                                     // 2
+        ]
+        XCTAssertEqual(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil)?.source.bundleID, zoomBundle)
+    }
+
+    func test_two_qualified_natives_below_the_floor_return_nil() {
+        var candidates = [
+            zoom(signals: .init(muteButton: true, titleMatch: true)),    // 4, qualified
+            teams(signals: .init(muteButton: true, titleMatch: true)),   // 4, qualified
+        ]
+        XCTAssertNil(MeetingSourceScorer.pickBest(&candidates, lastWinner: nil))
+    }
+
+    func test_lone_title_only_candidates_keep_their_bars() {
+        var native = [teams(signals: .init(titleMatch: true))]
+        XCTAssertNil(MeetingSourceScorer.pickBest(&native, lastWinner: nil))
+        var browser = [chrome(signals: .init(titleMatch: true))]
+        XCTAssertEqual(MeetingSourceScorer.pickBest(&browser, lastWinner: nil)?.source.bundleID, chromeBundle)
+    }
+
+    func test_passes_own_bar_matches_the_lone_candidate_rule() {
+        XCTAssertTrue(MeetingSourceScorer.passesOwnBar(chrome(signals: .init(titleMatch: true))))
+        XCTAssertFalse(MeetingSourceScorer.passesOwnBar(meetPWA()))
+        XCTAssertTrue(MeetingSourceScorer.passesOwnBar(meetPWA(signals: .init(muteButton: true))))
+        XCTAssertFalse(MeetingSourceScorer.passesOwnBar(teams(signals: .init(titleMatch: true))))
+        XCTAssertTrue(MeetingSourceScorer.passesOwnBar(zoom(signals: .init(callingControlsToolbar: true))))
+        XCTAssertFalse(MeetingSourceScorer.passesOwnBar(zoom(signals: .init(leaveButton: true))))
+        XCTAssertTrue(MeetingSourceScorer.passesOwnBar(webex(signals: .init(leaveButton: true))))
     }
 }
