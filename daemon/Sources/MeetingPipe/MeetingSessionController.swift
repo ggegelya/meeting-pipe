@@ -74,6 +74,17 @@ final class MeetingSessionController: @unchecked Sendable {
 
     private(set) var startLatch = RecordingStartLatch()
 
+    /// END19: the engage discovery's last winner left behind, and how many winnerless scans it has
+    /// gone without a sighting. Main-queue only.
+    private(set) var staleEngage = StaleEngageBound()
+
+    /// END19: when the lifecycle was last engaged, and when the running recording committed, and
+    /// whether that engage reached `.inMeeting` under this recording. Together they say whether an
+    /// end that reaches a source-less recording came from an engage that was ever its own.
+    private var lifecycleEngagedAt: Date?
+    private var recordingCommittedAt: Date?
+    private var lifecycleReachedInMeetingThisRecording = false
+
     /// END17 item 5: what the last lifecycle end stopped, kept for `ResumeAfterEnd.windowSec` so a
     /// call sighted again inside it resumes instead of being suppressed by the cooldown.
     var resumeCandidate: ResumeAfterEnd?
@@ -258,6 +269,10 @@ final class MeetingSessionController: @unchecked Sendable {
                     switch verdict {
                     case .starting:
                         break
+                    case .inMeeting:
+                        if case .recording = self.coordinator.stateMachine.current {
+                            self.lifecycleReachedInMeetingThisRecording = true
+                        }
                     case .endingProvisional(let context, _):
                         // END17: every weak end holds with the recorder running, browser included,
                         // and the native rescue re-walk still runs so a Leave button that merely
@@ -711,6 +726,8 @@ final class MeetingSessionController: @unchecked Sendable {
                 default:
                     break
                 }
+                self.recordingCommittedAt = Date()
+                self.lifecycleReachedInMeetingThisRecording = false
                 self.coordinator.stateMachine.setRecording(file: file, source: source, summaryMode: summaryMode)
                 self.coordinator.statusUI.setRecording(file: file, source: source, summaryMode: summaryMode, workflow: resolvedWorkflow)
                 self.coordinator.hud.present(
@@ -1377,21 +1394,37 @@ final class MeetingSessionController: @unchecked Sendable {
                 ])
                 return
             }
+            // END19 item 3 (owner's decision, 2026-11-16): a source-less recording ignores an end
+            // from an engage that began before it and never reached `.inMeeting` under it. That
+            // engage was never this recording's: on 2026-11-11 a stale Chrome engage from 13 min
+            // before a hand start reached `.starting` mid-recording and its unconfirmed tab-title
+            // end stopped it at 876.9 s. This narrows END11 item 4 rather than reversing it: a
+            // source-less recording with no engage at all, or whose engage it promoted, still
+            // honours the end, since that is the only automatic stop it has short of the backstop.
+            if src == nil, ignoresEndForSourcelessRecording() {
+                Log.event(category: "coordinator", action: "meeting_end_ignored_sourceless", attributes: [
+                    "ended_bundle_id": bundleID,
+                    "leading_signal": reason.leadingSignal,
+                    "engaged_before_recording": true,
+                ])
+                return
+            }
             // Recording-stop honors every end the engine confirmed: since END17 a weak end only
             // reaches here after a dwell or a definitive signal, so what arrives is already the
             // late decision.
             //
             // END17 item 5: leave the way back open. A call of the same app sighted again inside
             // the window resumes into a new stem instead of meeting the cooldown.
-            if let src = src {
-                resumeCandidate = ResumeAfterEnd(
-                    bundleID: src.bundleID,
-                    stem: MeetingStore.stem(of: file),
-                    endedAt: Date(),
-                    workflowID: activeWorkflow?.id,
-                    summaryMode: mode
-                )
-            }
+            // END19 item 4: a source-less recording an end stopped resumes too, keyed to the app
+            // that ended it, so the same call sighted again inside the window records (now with
+            // its source) instead of meeting a prompt that times out into a skip.
+            resumeCandidate = ResumeAfterEnd(
+                bundleID: src?.bundleID ?? bundleID,
+                stem: MeetingStore.stem(of: file),
+                endedAt: Date(),
+                workflowID: activeWorkflow?.id,
+                summaryMode: mode
+            )
             stopRecording(file: file, source: src, summaryMode: mode)
         case .prompting, .suppressed:
             // Both branches below used to be gated on `PromptEndPolicy.clearsPromptState`,
@@ -1636,6 +1669,8 @@ final class MeetingSessionController: @unchecked Sendable {
     /// idle and the bundle isn't in its post-meeting cooldown.
     func handleDiscovery(_ source: AppSource) {
         guard coordinator.stateMachine.isAcceptingPrompts else { return }
+        // END19: every winner is a sighting of its bundle, whichever branch below handles it.
+        staleEngage.sighted(bundleID: source.bundleID, at: Date())
 
         // The skipped-meeting latch is anchored here: this scan is proof the meeting the
         // user dismissed is still live, so refresh the latch and stay out. A scan reaches this
@@ -1763,6 +1798,7 @@ final class MeetingSessionController: @unchecked Sendable {
         }
         do {
             try coordinator.lifecycleCoord.engage(context: handles.context, handle: handles.lifecycle)
+            lifecycleEngagedAt = Date()
         } catch {
             Log.event(category: "coordinator", action: "lifecycle_engage_failed", attributes: [
                 "bundle_id": source.bundleID,
@@ -2094,7 +2130,36 @@ final class MeetingSessionController: @unchecked Sendable {
 
     /// Tear down the lifecycle adapter + reset the engine. Wired to the
     /// state machine's idle transition so every idle path disengages once.
+    /// END19 item 3: whether an end reaching the running source-less recording comes from an engage
+    /// that predates it and never reached `.inMeeting` for it. False when nothing was engaged, or
+    /// the commit time is unknown (a state set by hand), so those keep today's behaviour.
+    private func ignoresEndForSourcelessRecording() -> Bool {
+        guard let engagedAt = lifecycleEngagedAt, let committedAt = recordingCommittedAt else { return false }
+        return engagedAt <= committedAt && !lifecycleReachedInMeetingThisRecording
+    }
+
+    /// END19 item 1: a discovery scan found no winner. Counted against the engage the last winner
+    /// left behind; once it has gone `StaleEngageBound.scansWithoutSighting` scans unsighted while
+    /// its engine is still `.idle`, it is torn down.
+    func handleScanWithoutWinner() {
+        guard coordinator.stateMachine.isAcceptingPrompts else { return }
+        guard coordinator.lifecycleCoord.isEngaged else {
+            staleEngage.clear()
+            return
+        }
+        let engineIdle = coordinator.lifecycleCoord.current == .idle
+        guard case .disengage(let bundleID, let engagedSec, let scans) =
+            staleEngage.scanWithoutWinner(engineIdle: engineIdle, at: Date()) else { return }
+        Log.event(category: "coordinator", action: "lifecycle_disengaged_stale", attributes: [
+            "bundle_id": bundleID,
+            "engaged_sec": engagedSec,
+            "scans_without_sighting": scans,
+        ])
+        disengageLifecycle()
+    }
+
     func disengageLifecycle() {
+        staleEngage.clear()
         releaseTeardownHold()
         // PERF15: a discovery build still walking belongs to the session being torn down, so its
         // landing must not engage; the next discovery requests a fresh one.

@@ -2,9 +2,9 @@
 id: END19
 title: A browser engage that never reached a recording is never torn down, and its lone weak end from .starting stops a hand-started recording mid-call
 category: Detection
-status: new
+status: partial
 priority: P1
-comment: Filed 2026-11-13 (audit band 2026-11-13). Broken promise, a recording lasts as long as the meeting: the hand-started 20261111-155951 was stopped mid-conversation at 876.9 s by a stale Chrome engage's unconfirmed tab-title end from .starting, and stale browser engages lived 15 to 176 minutes on four days; the owner may re-band. Bound an engage that never reaches .starting, and let a source-less recording ignore an end from an engage that predates it and never reached in_meeting.
+comment: Shipped 2026-11-16. Item 1: `StaleEngageBound` disengages an engage still idle after 5 winnerless scans (`lifecycle_disengaged_stale`, watcher `onScanWithoutWinner`). Item 2: the scanner's browser admission is already a subset of the adapter's matchers (pinned); the real gap is AX-all-windows against on-screen-only, recorded, bounded by item 1. Item 3 (owner-approved 2026-11-16): a source-less recording ignores an end from an engage that predates it and never reached in-meeting (`meeting_end_ignored_sourceless`). Item 4: an honoured end on a source-less recording leaves a resume keyed to the ending app. Remaining: the owner walkthrough (owner-verify needs approval).
 ---
 
 # END19: A browser engage that never reached a recording is never torn down, and its lone weak end from .starting stops a hand-started recording mid-call
@@ -62,3 +62,12 @@ Correction at filing: the class summary says the stale engages lasted 95 to 176 
 2. [session] Confirm the installed build is newer than the landing commit.
 3. [owner] Once, with a Meet tab open but not in a call, start a recording by hand with the hotkey, then join and later leave a Meet call in that tab. Pass: the recording is not stopped by the tab title changing; it stops by hand.
 4. [session] Grep that day's `events.jsonl` for `meeting_end_ignored_sourceless` and `lifecycle_disengaged_stale` and report each with its timestamps.
+
+**Progress (2026-11-16): code-complete, the walkthrough is owed.**
+
+- *Owner decision recorded.* Item 3 was put to the owner on 2026-11-16 and approved as recommended: honour only ends from an engage this recording promoted (or no engage at all), ignore an end from an engage that began before the recording and never reached `.inMeeting` under it. This narrows END11 item 4; `test_endStillStopsASourcelessRecording` (no engage) is unchanged and green.
+- *Item 1.* `StaleEngageBound` (pure, `StaleEngageBoundTests`): every discovery winner is a sighting (`handleDiscovery`), every winnerless scan is counted (`MeetingDiscoveryWatcher.onScanWithoutWinner`, wired in `Coordinator`, fenced by `StaleEngageWiringFenceTests`), and the engage is disengaged after `scansWithoutSighting` = DET9's `skipLatchGracePolls` (5, 60 s at the 12 s quiet poll) while the engine is still `.idle`. The life is DET9's because a live Teams call goes tens of seconds with no confident winner (48 s on 2026-07-27); an engage past `.idle` is never torn down here.
+- *Item 2, argued.* The two predicates already agree: the scanner admits a plain browser tab only on `strongTitleMatchers`, a strict subset of the adapter's `defaultTitleMatchers` (`browserWindowIndicatesMeeting` and `browserWindowIndicatesStrongMeeting` both read the adapter's lists), so no engage is made for a title the window signal rejects; `test_everyTitleTheScannerAdmits_isOneTheAdapterReadsLive` pins it over a fixture of shape classes. The 2026-11-11 gap is the window *set*: the scanner reads every AX window's title, `ShareableContentSignal` only on-screen windows, so a meeting tab in a background window is admitted and never seen live. That is the scanner's (group B's) change if it is wanted; item 1 bounds it and item 3 removes its harm to a hand start. DET17's prompt-only opener is unaffected by anything here. Narrative in `daemon/docs/gotchas.md`.
+- *Item 4, choice: resume.* An honoured end on a source-less recording leaves END17's `ResumeAfterEnd` keyed to the ending app, so the same call sighted again inside 120 s records (now with its source) without a prompt, rather than a prompt whose timeout skips. Chosen over "prompt with Record as its timeout action" because it reuses the shipped path and its `resumed_from` link.
+- *Tests:* `StaleEngageBoundTests` (5), `StaleEngageSessionTests` (4: the stale engage disengaged after its life, one re-sighted kept, the 2026-11-11 shape ignored once with the recording running, a promoted engage's end honoured and resumed), `StaleEngageWiringFenceTests` (1). The session tests were run red with each fix switched off.
+

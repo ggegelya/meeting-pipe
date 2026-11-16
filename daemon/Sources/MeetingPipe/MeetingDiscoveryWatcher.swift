@@ -8,6 +8,9 @@ final class MeetingDiscoveryWatcher {
 
     /// Called on main queue when a scan finds a winner. Owner gates on its own state; nil keeps the watcher silent.
     var onDiscovered: ((AppSource) -> Void)?
+    /// END19: a scan that completed with no winner. The session counts these against the engage the
+    /// last winner left behind (`StaleEngageBound`); a no-winner scan was otherwise invisible to it.
+    var onScanWithoutWinner: (() -> Void)?
 
     /// DET1: called on main when a sustained mic-busy dwell with no whitelist winner should raise a
     /// quiet generic prompt. The owner routes it through the normal prompt path so the skip-latch,
@@ -280,7 +283,11 @@ final class MeetingDiscoveryWatcher {
             let winnerSource = result.winner?.source
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
-                if let winnerSource { self.onDiscovered?(winnerSource) }
+                if let winnerSource {
+                    self.onDiscovered?(winnerSource)
+                } else {
+                    self.onScanWithoutWinner?()
+                }
                 self.evaluateMicInUseTier(hasWinner: winnerSource != nil)
                 // PERF17: release the gate; a trigger that arrived mid-scan gets exactly one
                 // follow-up, unless the session has left `.idle` meanwhile.

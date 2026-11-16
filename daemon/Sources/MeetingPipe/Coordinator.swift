@@ -506,6 +506,10 @@ final class Coordinator: NSObject {
         discoveryWatcher.onDiscovered = { [weak self] source in
             self?.session.handleDiscovery(source)
         }
+        // END19: the no-winner scans are what bound an engage discovery stopped sighting.
+        discoveryWatcher.onScanWithoutWinner = { [weak self] in
+            self?.session.handleScanWithoutWinner()
+        }
         // PERF17: outside idle every consumer of a scan returns at this same guard, so the
         // watcher skips the scan (and its AX walks) instead of producing log lines nobody reads.
         discoveryWatcher.isAcceptingPrompts = { [weak self] in
