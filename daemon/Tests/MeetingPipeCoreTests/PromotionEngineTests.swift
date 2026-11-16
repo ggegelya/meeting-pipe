@@ -490,9 +490,9 @@ final class PromotionEngineTests: XCTestCase {
         XCTAssertNotNil(engine.tick(at: Date(timeIntervalSince1970: 1 + lone)))
     }
 
-    func test_evidence_class_groups_only_ax_leave_and_window_gone() {
-        // END6/AUD-10: ONLY ax-leave + window-gone share a class (correlated). Every other
-        // signal is its own class, so it still cross-corroborates exactly as before.
+    func test_evidence_class_groups_only_correlated_reads() {
+        // END6/AUD-10: ax-leave + window-gone share a class (correlated), and since the END14
+        // amendment so do the two title reads. Every other signal is its own class.
         XCTAssertEqual(
             PrimarySignalKind.axLeaveButton.evidenceClass,
             PrimarySignalKind.shareableContentWindow.evidenceClass,
@@ -506,7 +506,9 @@ final class PromotionEngineTests: XCTestCase {
             PrimarySignalKind.shareableContentWindow.evidenceClass,
             PrimarySignalKind.workspaceAppTerminated.evidenceClass
         )
-        XCTAssertNotEqual(
+        // END14 amendment (F158): the AX window title and the shareable-content tab title are
+        // one PWA title read twice, so they are one class.
+        XCTAssertEqual(
             PrimarySignalKind.windowTitleLeftPattern.evidenceClass,
             PrimarySignalKind.browserTabTitle.evidenceClass
         )
@@ -572,8 +574,11 @@ final class PromotionEngineTests: XCTestCase {
         }
     }
 
-    /// The real end after a veto: Teams releases the mic, process audio leads, and the remembered
-    /// window-gone pairs with it once both have dwelled.
+    /// The real end after a veto: Teams releases the mic, process audio leads, and the Leave button
+    /// going invalid inside the hold pairs with it once both have dwelled. The window-gone remembered
+    /// from minute zero is not that second class (END14 amendment, G024): it is 599 s older than
+    /// the hold, so the pair waits for Leave's own edge. `confirmed_by` still lists every reading
+    /// that stood ended, the stale one included.
     func test_real_end_after_a_veto_takes_the_process_audio_path_END14() {
         let engine = PromotionEngine()
         _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
@@ -588,8 +593,12 @@ final class PromotionEngineTests: XCTestCase {
             )
         )
         XCTAssertNil(engine.ingest(event(.axLeaveButton, .ended, at: 600.4)))
+        XCTAssertNil(
+            engine.tick(at: Date(timeIntervalSince1970: 600 + dwell)),
+            "the remembered window-gone is not a fresh second class"
+        )
         XCTAssertEqual(
-            engine.tick(at: Date(timeIntervalSince1970: 600 + dwell))?.verdict,
+            engine.tick(at: Date(timeIntervalSince1970: 600.4 + dwell))?.verdict,
             .ended(
                 context: teamsContext,
                 reason: EndingReason(
@@ -597,6 +606,167 @@ final class PromotionEngineTests: XCTestCase {
                     confirmedBy: ["ax_leave_button_invalid", "shareable_content_window_gone"]
                 )
             )
+        )
+    }
+
+    // MARK: - END14 amendment (F031, G024, F158): a class pairs only on a fresh, uncontradicted edge
+
+    /// A class with a member reading live is contradicted, not ended: the window-gone inside the
+    /// hold does not pair with the mic release while the Leave button reads healthy.
+    func test_a_class_with_a_live_sibling_does_not_pair_END14() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 100))
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 100.5))
+        for held in [dwell, dwell + 1, dwell * 3, lone - 1] {
+            XCTAssertNil(
+                engine.tick(at: Date(timeIntervalSince1970: 100.5 + held)),
+                "\(held) s on, the Leave button still says the call is up"
+            )
+        }
+    }
+
+    /// The audit's minimised-window shape with the Leave button never read: the window-gone was
+    /// vetoed at minute 2 and remembered, and a 61 s mic drop at minute 22 must not pair with it.
+    func test_a_stale_remembered_window_gone_does_not_pair_END14() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 120)))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 1320))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1320 + dwell)))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1320 + 61)))
+    }
+
+    /// The same shape with the Leave button healthy throughout, as the audit wrote it.
+    func test_a_stale_window_gone_with_a_healthy_leave_does_not_pair_END14() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 120)))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 1320))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1320 + dwell)))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1320 + 61)))
+    }
+
+    /// The freshness allowance is the old 2 s debounce and no more: a window-gone 2.5 s before
+    /// the mic release is remembered, not fresh.
+    func test_a_window_gone_just_past_the_allowance_does_not_pair_END14() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 57.5))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 60))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 60 + dwell)))
+    }
+
+    /// A Leave button first read healthy inside a mic-led hold, after the window went, is a true
+    /// contradiction: it was never declined, so the window-gone does not pair.
+    func test_a_first_healthy_leave_inside_the_hold_contradicts_the_window_END14() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 100))
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 110))
+        XCTAssertNil(engine.ingest(event(.axLeaveButton, .live, at: 111)))
+        XCTAssertNil(engine.takeDeclinedRevert(), "a cross-class first reading is left alone, not declined")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 111 + dwell * 2)))
+    }
+
+    /// A declined healthy Leave contradicts a window edge that comes after it: only the class-mates
+    /// that had already gone ended are exempt (END18's decline, not a blanket pass).
+    func test_a_declined_leave_still_contradicts_a_later_window_gone_END14() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 100))
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 101))
+        XCTAssertNil(engine.ingest(event(.axLeaveButton, .live, at: 102)))
+        XCTAssertNotNil(engine.takeDeclinedRevert())
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 103))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 103 + dwell * 2)))
+    }
+
+    /// A decline belongs to its hold. `states` outlives the hold, so a Leave reading declined in
+    /// one hold must not stop contradicting the window-gone of the next.
+    func test_a_decline_from_an_earlier_hold_does_not_carry_over_END14() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 100))
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 101))
+        XCTAssertNil(engine.ingest(event(.axLeaveButton, .live, at: 102)))
+        XCTAssertNotNil(engine.takeDeclinedRevert())
+        XCTAssertEqual(
+            engine.ingest(event(.processAudioIsRunningInput, .live, at: 110))?.verdict,
+            .inMeeting(context: teamsContext)
+        )
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 200))
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 200.5))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 200.5 + dwell * 2)))
+    }
+
+    /// The sibling rule runs both ways: a call window still reading present contradicts a Leave
+    /// button gone invalid beside it, so that pair waits for the lone dwell.
+    func test_a_present_window_contradicts_an_invalid_leave_END14() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 100))
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 100.3))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 100.3 + dwell)))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 100 + lone - 1)))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 100 + lone))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "process_audio_is_running_input_false",
+                    confirmedBy: ["ax_leave_button_invalid", "lone_dwell"]
+                )
+            )
+        )
+    }
+
+    /// One PWA title change is one root cause read twice (F158): the AX window title and the
+    /// shareable-content snapshot match the same `titleMatchers`, so they do not pair.
+    func test_the_two_title_reads_of_one_pwa_do_not_pair_END14() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
+        _ = engine.ingest(browserEvent(.windowTitleLeftPattern, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(browserEvent(.windowTitleLeftPattern, .ended, at: 10))
+        _ = engine.ingest(browserEvent(.browserTabTitle, .ended, at: 10.2))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 10.2 + dwell)))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 10 + lone - 1)))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 10 + lone))?.verdict,
+            .ended(
+                context: browserContext,
+                reason: EndingReason(
+                    leadingSignal: "window_title_left_pattern",
+                    confirmedBy: ["browser_tab_title_left_meet_pattern", "lone_dwell"]
+                )
+            )
+        )
+    }
+
+    /// With the two title reads one class, the tab title reading live again reverts a hold the
+    /// window title led, as END8's same-class revert does for the Leave button and the window.
+    func test_one_title_read_returning_reverts_a_hold_the_other_led_END14() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(browserEvent(.windowTitleLeftPattern, .ended, at: 10))
+        XCTAssertEqual(
+            engine.ingest(browserEvent(.browserTabTitle, .live, at: 12))?.verdict,
+            .inMeeting(context: browserContext)
         )
     }
 

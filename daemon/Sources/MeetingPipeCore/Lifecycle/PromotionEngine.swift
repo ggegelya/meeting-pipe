@@ -14,15 +14,16 @@ public enum PrimarySignalKind: String, Equatable, CaseIterable {
 
 /// Correlation grouping for end signals (END6 / AUD-10). Signals in the SAME class can fail
 /// together from one root cause, so a second signal in the same class is not independent
-/// corroboration of the first. Only ax-leave + window-gone are grouped (a Teams share re-render
-/// invalidates the Leave button and drops the call window together); every other signal is its
-/// own class, so the cross-class corroboration that already works is unchanged.
+/// corroboration of the first. Two pairs are grouped: ax-leave + window-gone (a Teams share
+/// re-render invalidates the Leave button and drops the call window together), and since the
+/// END14 amendment (F158) the two title reads, since a PWA's AX window title and its
+/// shareable-content tab title are one title matched against the same `titleMatchers`. Every
+/// other signal is its own class.
 public enum EndEvidenceClass: Hashable {
     case callWindowOrControl
     case processAudio
-    case browserTabTitle
+    case meetingTitle
     case workspaceTermination
-    case windowTitle
 }
 
 public extension PrimarySignalKind {
@@ -62,19 +63,18 @@ public extension PrimarySignalKind {
 
     /// The evidence class this signal belongs to (END6 / AUD-10). End corroboration must come
     /// from a DIFFERENT class to count as genuinely independent: ax-leave + window-gone share a
-    /// class (correlated), so neither corroborates the other; every other signal is its own class.
+    /// class (correlated), and so do the tab title and the window title (END14 amendment), so
+    /// neither of a pair corroborates the other.
     var evidenceClass: EndEvidenceClass {
         switch self {
         case .axLeaveButton, .shareableContentWindow:
             return .callWindowOrControl
         case .processAudioIsRunningInput:
             return .processAudio
-        case .browserTabTitle:
-            return .browserTabTitle
+        case .browserTabTitle, .windowTitleLeftPattern:
+            return .meetingTitle
         case .workspaceAppTerminated:
             return .workspaceTermination
-        case .windowTitleLeftPattern:
-            return .windowTitle
         }
     }
 
@@ -173,6 +173,14 @@ public final class PromotionEngine {
     /// would otherwise keep a hang-up before the prompt is answered from ever ending `.starting`.
     public static let defaultVetoerGrace: TimeInterval = 2
 
+    /// END14 amendment (F031): how long before a hold opened a class's ended edge may fall and
+    /// still count toward the pair. It is the retired end debounce, END14's "younger than the
+    /// debounce" rule: the corpus' clean leaves have the window go 0.2 to 0.4 s before the mic,
+    /// and that pair is one leave. Anything older is a remembered reading (a call window minimised
+    /// minutes ago and vetoed), which is not evidence about this hold. Not END21's 30 s
+    /// `TeardownHoldPolicy.secondSignalLeadSec`, which says where a Stop may cut, not what confirms.
+    public static let pairEdgeAllowance: TimeInterval = 2
+
     private enum Phase {
         case idle
         case starting(context: MeetingLifecycleContext, observed: Set<PrimarySignalKind>, states: SignalStates)
@@ -205,6 +213,10 @@ public final class PromotionEngine {
     struct SignalReading: Equatable {
         let state: PrimarySignalState
         let at: Date
+        /// END14 amendment: a `.live` reading whose revert END18 declined. END18 already ruled it
+        /// untrusted (a teardown read of the Leave button passing as healthy), so `pairEdges` does
+        /// not let it contradict the class-mates that had gone ended before it.
+        var declined = false
     }
 
     /// END14: an end the engine declined because a live signal contradicted it. The engine stays
@@ -330,6 +342,34 @@ public final class PromotionEngine {
             .sorted { $0.rawValue < $1.rawValue }
     }
 
+    /// END14 amendment (F031, G024): the ended edge of each evidence class that may count toward
+    /// the pair. A class counts only when no member of it reads `.live` (the Leave button healthy
+    /// contradicts the window-gone beside it), and only on an edge inside the hold or at most
+    /// `pairEdgeAllowance` before it opened; the earliest such member edge is the class's edge.
+    /// Before this a class counted on its oldest stamp in `states`, so a window-gone remembered
+    /// from minute two paired with any 60 s mic drop later on.
+    ///
+    /// One exception keeps END18's decline whole: a live reading END18 declined inside this hold
+    /// does not contradict a class-mate that had already gone ended when it arrived (the
+    /// 2026-11-12 Zoom hold, whose Leave button read healthy after the window had gone). It still
+    /// contradicts an edge that comes after it, and a declined flag from an earlier hold counts
+    /// for nothing, because `states` outlives a hold.
+    static func pairEdges(in states: SignalStates, holdStartedAt: Date) -> [EndEvidenceClass: Date] {
+        let earliest = holdStartedAt.addingTimeInterval(-pairEdgeAllowance)
+        let live = states.filter { $0.value.state == .live }
+        var edges: [EndEvidenceClass: Date] = [:]
+        for (kind, reading) in states where reading.state == .ended && reading.at >= earliest {
+            let cls = kind.evidenceClass
+            let contradicted = live.contains { other in
+                other.key.evidenceClass == cls
+                    && !(other.value.declined && other.value.at >= holdStartedAt && reading.at <= other.value.at)
+            }
+            guard !contradicted else { continue }
+            edges[cls] = min(edges[cls] ?? reading.at, reading.at)
+        }
+        return edges
+    }
+
     /// END14: the live signal that vetoes an end led by `kind`, if any.
     private func veto(for kind: PrimarySignalKind, in states: SignalStates) -> PrimarySignalKind? {
         guard kind.yieldsToLiveVeto else { return nil }
@@ -398,7 +438,8 @@ public final class PromotionEngine {
     ///
     /// Two routes, and a veto over both. The pair: weak signals from two evidence classes have each
     /// stayed ended for `confirmDwell`, measured from the later of the two, so a signal that
-    /// flickers back (END15's mic switch, DET8's object churn) never completes it. The lone dwell:
+    /// flickers back (END15's mic switch, DET8's object churn) never completes it, and each class
+    /// counts only on a fresh edge no class-mate contradicts (`pairEdges`, END14 amendment). The lone dwell:
     /// the hold has run `loneDwell` with nothing returning, which is the only way a browser meeting
     /// with no app quit ends (PD-3). Neither fires while a vetoer reads `.live`, because Teams
     /// holding the mic is the one reading that says the call is up whatever the window or the
@@ -417,11 +458,8 @@ public final class PromotionEngine {
         }
         if states.contains(where: { $0.key.vetoesLoneEnd && $0.value.state == .live }) { return nil }
 
-        var endedSince: [EndEvidenceClass: Date] = [:]
-        for (kind, reading) in states where reading.state == .ended {
-            endedSince[kind.evidenceClass] = min(endedSince[kind.evidenceClass] ?? reading.at, reading.at)
-        }
-        let dwelled = endedSince.values.filter { now.timeIntervalSince($0) >= confirmDwell }
+        let dwelled = Self.pairEdges(in: states, holdStartedAt: startedAt).values
+            .filter { now.timeIntervalSince($0) >= confirmDwell }
         let pairHeld = dwelled.count >= 2
         // END18: the lone dwell counts from the last liveness reading, not the first doubt (D029),
         // and it does not run at all while the Leave button reads live against a window-gone lead
@@ -561,8 +599,9 @@ public final class PromotionEngine {
                 return Decision(verdict: .ended(context: context, reason: reason))
             }
             // END14: a lone end contradicted by a live process-audio reading opens no hold. It is
-            // remembered in `states`, and when Teams releases the mic, process audio leads a hold
-            // that this remembered window-gone pairs with once both have dwelled.
+            // remembered in `states`, but it pairs with a later mic-led hold only if it went within
+            // `pairEdgeAllowance` of that hold opening (the clean leave); an older one is not
+            // evidence about the hold, and the pair waits for a fresh second class (END14 amendment).
             if let vetoedBy = veto(for: event.kind, in: states) {
                 pendingVeto = EndVeto(leading: event.kind, vetoedBy: vetoedBy)
                 phase = .inMeeting(context: context, observed: observed, states: states)
@@ -648,6 +687,7 @@ public final class PromotionEngine {
                 let ended = Self.otherClassesEndedInside(states, excluding: event.kind, since: startedAt)
                 if !ended.isEmpty {
                     pendingDeclinedRevert = DeclinedRevert(leading: leading, reading: event.kind, endedClasses: ended)
+                    states[event.kind]?.declined = true
                     phase = .endingProvisional(
                         context: context, leading: leading,
                         startedAt: startedAt, loneSince: event.timestamp, observed: observed, states: states
