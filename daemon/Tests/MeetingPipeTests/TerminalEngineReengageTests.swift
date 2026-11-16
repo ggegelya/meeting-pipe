@@ -81,6 +81,9 @@ final class TerminalEngineReengageTests: XCTestCase {
 
         // Discovery engages and the engine ends on its first readings (an adapter with no process
         // audio, so nothing holds the window-gone): the consumer prompts and then withdraws it.
+        // DET18: a weak end only withdraws a prompt once the microphone has been released, so the
+        // host reads the call as down here; a weak end alone keeps the panel up.
+        host.liveCallSignal = .callIsDown
         try host.lifecycleCoord.engage(context: discovery, handle: LifecycleAdapterHandle())
         emit(adapter, .axLeaveButton, .live, discovery)
         emit(adapter, .shareableContentWindow, .ended, discovery)
@@ -121,6 +124,29 @@ final class TerminalEngineReengageTests: XCTestCase {
         if case .recording = host.stateMachine.current {} else {
             XCTFail("a weak end holds with the recorder running")
         }
+    }
+
+    /// DET18 item 4: a weak end keeps the prompt up over a terminal engine, and a Record from that
+    /// kept panel re-engages rather than recording with no end detection.
+    func test_aRecordFromAPromptKeptThroughAWeakEnd_reengagesTheTerminalEngine() async throws {
+        let (controller, host, adapter, _) = makeController()
+        controller.startConsumers()
+        defer { controller.shutdownConsumers() }
+
+        try host.lifecycleCoord.engage(context: discovery, handle: LifecycleAdapterHandle())
+        emit(adapter, .axLeaveButton, .live, discovery)
+        emit(adapter, .shareableContentWindow, .ended, discovery)
+        await waitUntil({ host.lifecycleCoord.isTerminal }, "the terminal engine")
+        await waitUntil({ host.promptSpy.mayHaveEndedCount == 1 }, "the panel kept and marked")
+        XCTAssertEqual(host.promptSpy.dismissCount, 0, "a weak end no longer withdraws the panel")
+        guard case .prompting(let prompted) = host.stateMachine.current else {
+            return XCTFail("the prompt is still up, got \(host.stateMachine.current)")
+        }
+
+        host.recorderSpy.fileToReturn = tempDir.appendingPathComponent("20261116-101500.wav")
+        XCTAssertTrue(controller.resolvePromptPick(.record, source: prompted))
+        await waitUntil({ adapter.starts.count == 2 }, "the re-engage")
+        XCTAssertEqual(eventRows(action: "lifecycle_reengaged").first?["reason"] as? String, "terminal_at_start")
     }
 
     /// A start against a live engine keeps it: the guard's protection for every non-terminal phase.

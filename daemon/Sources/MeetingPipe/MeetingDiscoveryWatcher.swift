@@ -11,6 +11,8 @@ final class MeetingDiscoveryWatcher {
     /// END19: a scan that completed with no winner. The session counts these against the engage the
     /// last winner left behind (`StaleEngageBound`); a no-winner scan was otherwise invisible to it.
     var onScanWithoutWinner: (() -> Void)?
+    /// DET18: every completed scan's per-bundle span evidence, delivered on main before the winner.
+    var onScanReadings: (([String: SkippedMeetingLatch.Reading]) -> Void)?
 
     /// DET1: called on main when a sustained mic-busy dwell with no whitelist winner should raise a
     /// quiet generic prompt. The owner routes it through the normal prompt path so the skip-latch,
@@ -281,8 +283,12 @@ final class MeetingDiscoveryWatcher {
             // rejoined. Hop to main even on a no-winner scan, because that is exactly when DET1's
             // mic-in-use tier fires.
             let winnerSource = result.winner?.source
+            let spanReadings = result.spanReadings
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
+                // DET18: the readings first, so a call span that ended on this scan no longer
+                // holds the prompt off when its winner is handled below.
+                self.onScanReadings?(spanReadings)
                 if let winnerSource {
                     self.onDiscovered?(winnerSource)
                 } else {

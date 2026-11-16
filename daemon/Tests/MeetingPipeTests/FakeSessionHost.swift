@@ -115,6 +115,13 @@ final class SpyStatusPresenter: SessionStatusPresenting {
     func setSuppressed(_ source: AppSource, isStillSuppressed: @escaping () -> Bool) {
         suppressedSources.append(source)
     }
+    /// DET18: the timeout's offer, with its liveness read kept so a test can ask it.
+    private(set) var offeredSources: [AppSource] = []
+    private(set) var isStillOffered: (() -> Bool)?
+    func setOffered(_ source: AppSource, isStillOffered: @escaping () -> Bool) {
+        offeredSources.append(source)
+        self.isStillOffered = isStillOffered
+    }
     func refreshMenuForPermissionChange() { permissionRefreshCount += 1 }
 }
 
@@ -311,6 +318,10 @@ final class SpyPrompt: SessionPromptPresenting {
         lastSuggestion = suggestion
     }
     func dismiss(animated: Bool) { dismissCount += 1 }
+    /// DET18: settable so a test can state where the pointer was when the prompt left.
+    var isPointerOver = false
+    private(set) var mayHaveEndedCount = 0
+    func markCallMayHaveEnded() { mayHaveEndedCount += 1 }
 }
 
 final class SpyJobDispatcher: SessionJobDispatching {

@@ -1,100 +1,119 @@
 import XCTest
 @testable import MeetingPipe
 
-/// Pure-value gate that holds a skipped meeting's prompt off for its whole lifetime,
-/// anchored to discovery liveness rather than a fixed clock. Locking in:
-///   - Arm latches the bundle; it stays active within the grace window.
-///   - Refresh extends the window, so a long meeting kept alive by discovery never lapses.
-///   - Without refresh the latch lapses after the grace (the meeting ended).
-///   - Refresh is a no-op for a bundle that was never skipped (routine sightings don't latch).
-///   - The latch is per-bundle (a Teams skip mustn't gate Zoom).
-///   - clear() drops the entry so manual-hotkey / "Always" paths force-start.
-///   - graceSec <= 0 disables the gate entirely.
+/// The pure span-bound prompt hold (DET18). Locking in:
+///   - A skip and a timeout's offer are both holds; only the skip is a skip.
+///   - A live reading keeps the hold however long the call runs.
+///   - For a microphone-span app, a positive "off" read with no confident winner ends the span at
+///     once, and so does the app vanishing from the scan; an unknown read is ignorance.
+///   - Ignorance lapses the hold after the grace, counted per feed and capped per gap.
+///   - A title-span app has no positive end.
+///   - A mic-tier hold reads only the mic-busy feed.
+///   - Holds are per bundle, and `clear` drops one.
 final class SkippedMeetingLatchTests: XCTestCase {
 
-    private static let teams = "com.microsoft.teams2"
-    private static let zoom = "us.zoom.xos"
-    private static let grace: Double = 15
+    private static let teams = AppSource(bundleID: "com.microsoft.teams2", displayName: "Teams")
+    private static let zoom = AppSource(bundleID: "us.zoom.xos", displayName: "Zoom")
+    private static let t0 = Date(timeIntervalSince1970: 1_000_000)
 
-    func test_no_entry_means_not_latched() {
-        let l = SkippedMeetingLatch()
-        XCTAssertFalse(l.isLatched(bundleID: Self.teams, graceSec: Self.grace))
+    private func latch() -> SkippedMeetingLatch {
+        SkippedMeetingLatch(ignoranceGraceSec: 60, maxGapSec: 12)
     }
 
-    func test_within_grace_is_latched() {
-        var l = SkippedMeetingLatch()
-        let t0 = Date(timeIntervalSince1970: 1_000_000)
-        l.arm(bundleID: Self.teams, at: t0)
-        let t1 = t0.addingTimeInterval(10)
-        XCTAssertTrue(l.isLatched(bundleID: Self.teams, graceSec: Self.grace, now: t1))
+    func test_no_entry_means_no_hold() {
+        let l = latch()
+        XCTAssertFalse(l.isHeld(bundleID: Self.teams.bundleID))
+        XCTAssertFalse(l.isSkipped(bundleID: Self.teams.bundleID))
     }
 
-    func test_lapses_after_grace_without_refresh() {
-        var l = SkippedMeetingLatch()
-        let t0 = Date(timeIntervalSince1970: 1_000_000)
-        l.arm(bundleID: Self.teams, at: t0)
-        // Discovery stopped seeing the meeting (it ended); past the grace it lapses so the
-        // next meeting in this app can prompt.
-        let t1 = t0.addingTimeInterval(20)
-        XCTAssertFalse(l.isLatched(bundleID: Self.teams, graceSec: Self.grace, now: t1))
+    func test_skip_and_offer_are_both_holds_but_only_one_is_a_skip() {
+        var l = latch()
+        l.arm(source: Self.teams, mode: .skipped, liveness: .processAudio, at: Self.t0)
+        l.arm(source: Self.zoom, mode: .offered, liveness: .processAudio, at: Self.t0)
+        XCTAssertTrue(l.isSkipped(bundleID: Self.teams.bundleID))
+        XCTAssertTrue(l.isHeld(bundleID: Self.zoom.bundleID))
+        XCTAssertFalse(l.isSkipped(bundleID: Self.zoom.bundleID))
+        XCTAssertTrue(l.isOffered(bundleID: Self.zoom.bundleID))
     }
 
-    func test_refresh_keeps_a_long_meeting_latched_well_past_the_arm() {
-        var l = SkippedMeetingLatch()
-        let t0 = Date(timeIntervalSince1970: 1_000_000)
-        l.arm(bundleID: Self.teams, at: t0)
-        // Simulate a 50-minute meeting: discovery refreshes every 3 s. Each refresh is well
-        // inside the grace, so the latch never lapses even though it is now 3000 s past arm.
-        var t = t0
-        for _ in 0..<1000 {
-            t = t.addingTimeInterval(3)
-            l.refresh(bundleID: Self.teams, at: t)
+    func test_a_live_microphone_keeps_the_hold_for_an_hour() {
+        var l = latch()
+        l.arm(source: Self.teams, mode: .skipped, liveness: .processAudio, at: Self.t0)
+        for i in 1...300 {
+            let ended = l.feedScan([Self.teams.bundleID: .init(processAudio: true)], at: Self.t0.addingTimeInterval(Double(i) * 12))
+            XCTAssertTrue(ended.isEmpty)
         }
-        XCTAssertGreaterThan(t.timeIntervalSince(t0), 2900)
-        XCTAssertTrue(
-            l.isLatched(bundleID: Self.teams, graceSec: Self.grace, now: t.addingTimeInterval(5)),
-            "a meeting kept alive by discovery stays latched indefinitely"
-        )
-        // Once discovery stops (meeting ended), the last refresh lapses after the grace.
-        XCTAssertFalse(
-            l.isLatched(bundleID: Self.teams, graceSec: Self.grace, now: t.addingTimeInterval(20))
-        )
+        XCTAssertTrue(l.isHeld(bundleID: Self.teams.bundleID))
     }
 
-    func test_refresh_is_a_noop_when_not_armed() {
-        var l = SkippedMeetingLatch()
-        let t0 = Date(timeIntervalSince1970: 1_000_000)
-        // A routine discovery sighting of a meeting the user never skipped must not latch it.
-        l.refresh(bundleID: Self.teams, at: t0)
-        XCTAssertFalse(
-            l.isLatched(bundleID: Self.teams, graceSec: Self.grace, now: t0.addingTimeInterval(1))
-        )
+    func test_two_positive_off_reads_with_no_winner_end_the_span() {
+        var l = latch()
+        l.arm(source: Self.teams, mode: .skipped, liveness: .processAudio, at: Self.t0)
+        XCTAssertTrue(l.feedScan([Self.teams.bundleID: .init(processAudio: false)], at: Self.t0.addingTimeInterval(1)).isEmpty)
+        let ended = l.feedScan([Self.teams.bundleID: .init(processAudio: false)], at: Self.t0.addingTimeInterval(4))
+        XCTAssertEqual(ended.map(\.source), [Self.teams])
+        XCTAssertFalse(l.isHeld(bundleID: Self.teams.bundleID))
     }
 
-    func test_latch_is_per_bundle() {
-        var l = SkippedMeetingLatch()
-        let t0 = Date(timeIntervalSince1970: 1_000_000)
-        l.arm(bundleID: Self.teams, at: t0)
-        let t1 = t0.addingTimeInterval(5)
-        XCTAssertTrue(l.isLatched(bundleID: Self.teams, graceSec: Self.grace, now: t1))
-        XCTAssertFalse(l.isLatched(bundleID: Self.zoom, graceSec: Self.grace, now: t1))
+    func test_an_unknown_read_is_not_an_end() {
+        var l = latch()
+        l.arm(source: Self.teams, mode: .skipped, liveness: .processAudio, at: Self.t0)
+        _ = l.feedScan([Self.teams.bundleID: .init(processAudio: nil)], at: Self.t0.addingTimeInterval(12))
+        XCTAssertTrue(l.isHeld(bundleID: Self.teams.bundleID))
     }
 
-    func test_clear_drops_entry_so_manual_start_is_unblocked() {
-        var l = SkippedMeetingLatch()
-        let t0 = Date(timeIntervalSince1970: 1_000_000)
-        l.arm(bundleID: Self.teams, at: t0)
-        l.clear(bundleID: Self.teams)
-        let t1 = t0.addingTimeInterval(5)
-        XCTAssertFalse(l.isLatched(bundleID: Self.teams, graceSec: Self.grace, now: t1))
+    func test_ignorance_lapses_after_the_grace_and_a_long_gap_counts_one_poll() {
+        var l = latch()
+        l.arm(source: Self.teams, mode: .skipped, liveness: .processAudio, at: Self.t0)
+        // One huge gap (the scans were gated) adds only 12 s.
+        _ = l.feedScan([Self.teams.bundleID: .init()], at: Self.t0.addingTimeInterval(3_600))
+        XCTAssertEqual(l.entry(bundleID: Self.teams.bundleID)?.unseenSec, 12)
+        var at = Self.t0.addingTimeInterval(3_600)
+        for _ in 1...3 {
+            at = at.addingTimeInterval(12)
+            _ = l.feedScan([Self.teams.bundleID: .init()], at: at)
+        }
+        XCTAssertTrue(l.isHeld(bundleID: Self.teams.bundleID), "48 s of ignorance is inside DET9's grace")
+        at = at.addingTimeInterval(12)
+        let ended = l.feedScan([Self.teams.bundleID: .init()], at: at)
+        XCTAssertEqual(ended.count, 1)
     }
 
-    func test_zero_grace_disables_gate() {
-        var l = SkippedMeetingLatch()
-        let t0 = Date(timeIntervalSince1970: 1_000_000)
-        l.arm(bundleID: Self.teams, at: t0)
-        let t1 = t0.addingTimeInterval(1)
-        XCTAssertFalse(l.isLatched(bundleID: Self.teams, graceSec: 0, now: t1))
-        XCTAssertFalse(l.isLatched(bundleID: Self.teams, graceSec: -5, now: t1))
+    func test_the_verdict_table() {
+        typealias L = SkippedMeetingLatch
+        XCTAssertEqual(L.verdict(liveness: .processAudio, kind: .native, reading: nil), .gone)
+        XCTAssertEqual(L.verdict(liveness: .processAudio, kind: .native, reading: .init(processAudio: true)), .live)
+        XCTAssertEqual(L.verdict(liveness: .processAudio, kind: .native, reading: .init(processAudio: false, isWinner: true)), .live)
+        XCTAssertEqual(L.verdict(liveness: .processAudio, kind: .native, reading: .init(processAudio: false)), .absent)
+        XCTAssertEqual(L.verdict(liveness: .processAudio, kind: .native, reading: .init(processAudio: nil)), .unknown)
+        XCTAssertEqual(L.verdict(liveness: .title, kind: .browser, reading: nil), .unknown)
+        XCTAssertEqual(L.verdict(liveness: .title, kind: .browser, reading: .init(titleMatch: true)), .live)
+        XCTAssertEqual(L.verdict(liveness: .title, kind: .native, reading: .init(isWinner: true)), .live)
+        XCTAssertEqual(L.verdict(liveness: .title, kind: .native, reading: .init()), .unknown)
+    }
+
+    func test_mic_busy_holds_ignore_scans_and_end_on_a_change_of_holder() {
+        var l = latch()
+        let slack = AppSource(bundleID: "com.tinyspeck.slackmacgap", displayName: "Slack")
+        l.arm(source: slack, mode: .offered, liveness: .micBusy, at: Self.t0)
+        XCTAssertTrue(l.feedScan([:], at: Self.t0.addingTimeInterval(600)).isEmpty)
+        XCTAssertTrue(l.feedMicBusy(busyBundle: slack.bundleID, at: Self.t0.addingTimeInterval(601)).isEmpty)
+        XCTAssertEqual(l.feedMicBusy(busyBundle: nil, at: Self.t0.addingTimeInterval(602)).map(\.source), [slack])
+    }
+
+    func test_holds_are_per_bundle_and_clear_drops_one() {
+        var l = latch()
+        l.arm(source: Self.teams, mode: .skipped, liveness: .processAudio, at: Self.t0)
+        l.arm(source: Self.zoom, mode: .skipped, liveness: .processAudio, at: Self.t0)
+        for i in 1...2 {
+            _ = l.feedScan(
+                [Self.teams.bundleID: .init(processAudio: false), Self.zoom.bundleID: .init(processAudio: true)],
+                at: Self.t0.addingTimeInterval(Double(i))
+            )
+        }
+        XCTAssertFalse(l.isHeld(bundleID: Self.teams.bundleID))
+        XCTAssertTrue(l.isHeld(bundleID: Self.zoom.bundleID))
+        l.clear(bundleID: Self.zoom.bundleID)
+        XCTAssertFalse(l.isHeld(bundleID: Self.zoom.bundleID))
     }
 }

@@ -10,6 +10,9 @@ protocol MeetingPromptDelegate: AnyObject {
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecordBYO source: AppSource)
     /// User picked a workflow override. Prompt stays open; the Coordinator stashes it so the next `beginRecording` matcher call returns this workflow.
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseWorkflow id: UUID?)
+    /// DET18 item 5: the pointer entered or left the panel, or the chevron menu opened or closed.
+    /// `paused` is true while either holds; the session pauses the timer that acts on it.
+    func meetingPrompt(_ prompt: MeetingPromptWindow, didPauseTimeout paused: Bool)
 }
 
 /// UX34: how tall the detection prompt stands with the CAL2 "Last time" card
@@ -87,6 +90,17 @@ final class MeetingPromptWindow {
 
     private var panel: NSPanel?
     private var currentSource: AppSource?
+    /// DET18 item 5: the source the chevron menu was opened for. A pick is delivered with it even
+    /// if the panel was dismissed while the menu was up, and the session decides whether it still
+    /// acts (on the prompt, or on the offer a timeout left) or is refused.
+    private var menuSource: AppSource?
+    /// DET18: what pauses the acting timer. Reported to the delegate as one combined flag.
+    private var hovered = false
+    private var menuOpen = false
+    private var reportedPaused = false
+    /// The question line, so a weak end can say "call may have ended" without a rebuild.
+    private weak var questionLabel: HintLabel?
+    private var questionIsWarning = false
     private weak var liveWaveform: LiveWaveformView?
     private weak var dismissProgress: DismissProgressView?
     private weak var workflowChip: WorkflowChipView?
@@ -122,10 +136,8 @@ final class MeetingPromptWindow {
     private var currentWorkflow: Workflow?
     private let levelMonitor = MicLevelMonitor()
 
-    /// Cancels the auto-dismiss timer; paused on hover. Common-mode (CONC10), like the timeout it mirrors.
-    private var cancelDismissTimer: (() -> Void)?
-    private var dismissDeadline: Date?
-    private var dismissRemainingOnPause: TimeInterval?
+    /// DET18: whether the pointer is over the panel right now (for `prompt_dismissed`).
+    var isPointerOver: Bool { panel != nil && hovered }
 
     // 520 → 600 to fit the workflow chip (TECH-B5) without crowding the action cluster.
     private static let panelWidth: CGFloat = 600
@@ -177,16 +189,16 @@ final class MeetingPromptWindow {
         levelMonitor.start { [weak self] level in
             self?.liveWaveform?.push(level: level)
         }
+        // DET18: the panel no longer runs a dismiss timer of its own. The session's timeout is the
+        // one that acts, and it dismisses the panel; a second timer here is how the bar came to
+        // freeze on hover while the real one ran on (F011).
         dismissProgress?.start(timeoutSec: seconds)
-        scheduleAutoDismiss(after: seconds)
         loadPrepCard()
     }
 
     func dismiss(animated: Bool = true) {
-        cancelDismissTimer?()
-        cancelDismissTimer = nil
-        dismissDeadline = nil
-        dismissRemainingOnPause = nil
+        hovered = false
+        reportPause()
         levelMonitor.stop()
         dismissProgress?.stop()
 
@@ -288,6 +300,8 @@ final class MeetingPromptWindow {
             question.stringValue = "Record this meeting?"
             question.textColor = MPColors.fg
         }
+        questionLabel = question
+        questionIsWarning = permDenied
         // DSN25 anchor retune: the mockup's 14pt question collapses to the nearest
         // ramp step (15 / textMD), down from the old 17pt title. One anchor per surface.
         question.font = .systemFont(ofSize: MPType.textMD, weight: MPType.semibold)
@@ -470,50 +484,49 @@ final class MeetingPromptWindow {
         panel.setFrameOrigin(origin)
     }
 
-    private func scheduleAutoDismiss(after seconds: TimeInterval) {
-        cancelDismissTimer?()
-        dismissDeadline = Date().addingTimeInterval(seconds)
-        cancelDismissTimer = Schedulers.mainRunLoopOnce(seconds) { [weak self] in
-            DispatchQueue.main.async { self?.dismiss() }
-        }
+    fileprivate func setHovered(_ hovered: Bool) {
+        self.hovered = hovered
+        reportPause()
     }
 
-    fileprivate func setHovered(_ hovered: Bool) {
-        dismissProgress?.setPaused(hovered)
-        if hovered {
-            if let deadline = dismissDeadline {
-                dismissRemainingOnPause = max(0, deadline.timeIntervalSinceNow)
-            }
-            cancelDismissTimer?()
-            cancelDismissTimer = nil
-        } else if let remaining = dismissRemainingOnPause {
-            scheduleAutoDismiss(after: remaining)
-            dismissRemainingOnPause = nil
-        }
+    /// Tell the delegate when the combined pause flag changes, and freeze the hairline with it.
+    private func reportPause() {
+        let paused = panel != nil && (hovered || menuOpen)
+        dismissProgress?.setPaused(paused)
+        guard paused != reportedPaused else { return }
+        reportedPaused = paused
+        delegate?.meetingPrompt(self, didPauseTimeout: paused)
+    }
+
+    /// DET18 item 4: a weak end arrived while the panel was up. It stays, and says so.
+    func markCallMayHaveEnded() {
+        guard let question = questionLabel, !questionIsWarning else { return }
+        question.stringValue = "Call may have ended. Record anyway?"
+        question.textColor = MPColors.fgMuted
     }
 
     // MARK: - Click handling
 
     fileprivate func handleRecord() {
-        guard let s = currentSource else { return }
+        guard let s = menuSource ?? currentSource else { return }
         delegate?.meetingPrompt(self, didChooseRecord: s)
         dismiss()
     }
 
     fileprivate func handleSkip() {
-        guard let s = currentSource else { return }
+        guard let s = menuSource ?? currentSource else { return }
         delegate?.meetingPrompt(self, didChooseSkip: s)
         dismiss()
     }
 
     fileprivate func handleAlways() {
-        guard let s = currentSource else { return }
+        guard let s = menuSource ?? currentSource else { return }
         delegate?.meetingPrompt(self, didChooseAlways: s)
         dismiss()
     }
 
     fileprivate func handleRecordBYO() {
-        guard let s = currentSource else { return }
+        guard let s = menuSource ?? currentSource else { return }
         delegate?.meetingPrompt(self, didChooseRecordBYO: s)
         dismiss()
     }
@@ -560,8 +573,17 @@ final class MeetingPromptWindow {
             menu.addItem(openSettings)
         }
 
+        // DET18 item 5: the menu is modal and the acting timer is common-mode, so it used to fire
+        // under an open menu and a pick then found no source. Pause it while the menu is up, and
+        // carry the source the menu was opened for.
+        menuSource = source
+        menuOpen = true
+        reportPause()
         let origin = NSPoint(x: 0, y: button.bounds.height + 4)
         menu.popUp(positioning: nil, at: origin, in: button)
+        menuOpen = false
+        menuSource = nil
+        reportPause()
     }
 
     @objc private func menuPickAlways() { handleAlways() }

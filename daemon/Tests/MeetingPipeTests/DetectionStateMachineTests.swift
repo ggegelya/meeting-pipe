@@ -109,20 +109,30 @@ final class DetectionStateMachineTests: XCTestCase {
 
     // MARK: - Skip-latch facade
 
+    /// A settable clock for the span and timeout tests.
+    private final class Clock {
+        var now = Date(timeIntervalSince1970: 2_000_000)
+        func advance(_ sec: TimeInterval) { now = now.addingTimeInterval(sec) }
+    }
+
+    private static let teamsLive = SkippedMeetingLatch.Reading(processAudio: true)
+    private static let teamsBothAbsent = SkippedMeetingLatch.Reading(processAudio: false)
+    private static let teamsUnknown = SkippedMeetingLatch.Reading(processAudio: nil)
+
     func test_skip_latch_facade_round_trips() {
         let m = DetectionStateMachine()
         XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
-        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        m.armSkipLatch(source: Self.teams)
         XCTAssertTrue(m.isSkipLatched(bundleID: Self.teams.bundleID))
         // Per-bundle: arming Teams doesn't latch Zoom.
         XCTAssertFalse(m.isSkipLatched(bundleID: "us.zoom.xos"))
     }
 
-    func test_refreshSkipLatch_is_noop_when_unarmed() {
+    func test_a_scan_reading_never_latches_a_bundle_nobody_skipped() {
         let m = DetectionStateMachine()
         // A routine discovery sighting of a never-skipped meeting must not latch it.
-        m.refreshSkipLatch(bundleID: Self.teams.bundleID)
-        XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
+        m.noteScanReadings([Self.teams.bundleID: Self.teamsLive])
+        XCTAssertFalse(m.isPromptHeld(bundleID: Self.teams.bundleID))
     }
 
     // MARK: - DET9: the grace is measured in discovery polls, not wall-clock taste
@@ -138,47 +148,252 @@ final class DetectionStateMachineTests: XCTestCase {
             accuracy: 0.001,
             "the grace has to be a multiple of the poll it exists to bridge, or the next cadence change re-opens DET9"
         )
-        // The old constant was the right answer to the old poll, which is exactly why a literal
-        // was the wrong shape: 15 was never wrong, it just stopped being 5 polls.
         XCTAssertEqual(DetectionStateMachine.skipLatchGrace(idlePollSec: 3), 15, accuracy: 0.001)
         XCTAssertEqual(DetectionStateMachine.skipLatchGrace(idlePollSec: 12), 60, accuracy: 0.001)
     }
 
-    /// Drive the latch at the *idle* cadence, one poll at a time, with every scan finding no
-    /// confident winner. That is the 2026-07-27 shape from the owner's own log: a skipped Teams
-    /// call went 48 s between confident winners while it was plainly still running, because the
-    /// AX control walk found no Leave, Mute or toolbar the whole time (Teams' compact /
-    /// backgrounded call UI). Nothing refreshes the latch across any of these polls and it has to
-    /// hold anyway, or the prompt re-opens over the live meeting and the menu bar's
-    /// `Suppressed (<app>)` label - DET7's only handle on the still-running call - collapses with it.
-    func test_skipLatch_survives_a_stretch_of_polls_that_find_no_confident_winner() {
-        let m = DetectionStateMachine()
-        let idle = DiscoveryScanCadence.discoveryDefault.idle
-        let skippedAt = Date()
-        m.armSkipLatch(bundleID: Self.teams.bundleID)
-
-        for missedPolls in 1...4 {
-            let elapsed = idle * Double(missedPolls)
-            XCTAssertTrue(
-                m.isSkipLatched(bundleID: Self.teams.bundleID, now: skippedAt.addingTimeInterval(elapsed)),
-                "the latch lapsed \(elapsed) s in (\(missedPolls) missed polls), mid-call"
-            )
+    /// DET9's 2026-07-27 shape, re-read for DET18: a skipped Teams call went 48 s between
+    /// confident winners while plainly live. With the microphone reading true the span holds
+    /// however long the controls stay dark (D016, D067 closed in the same change).
+    func test_skipLatch_holds_while_the_microphone_reads_true_with_no_confident_winner() {
+        let clock = Clock()
+        let m = DetectionStateMachine(clock: { clock.now })
+        m.armSkipLatch(source: Self.teams)
+        for _ in 1...20 {
+            clock.advance(DiscoveryScanCadence.discoveryDefault.idle)
+            m.noteScanReadings([Self.teams.bundleID: Self.teamsLive])
         }
+        XCTAssertTrue(m.isSkipLatched(bundleID: Self.teams.bundleID), "four minutes of a live microphone is one call")
     }
 
-    /// The other half, and the reason the grace cannot simply be made enormous: a latch that never
-    /// lapses silently swallows every later meeting in the same app, which is a missed recording
-    /// rather than a spurious prompt.
-    func test_skipLatch_still_lapses_once_discovery_has_stopped_seeing_the_meeting() {
+    /// An unresolved microphone read is ignorance, not absence (DET8 measured a client
+    /// re-registering mid-call). The hold rides it out for DET9's measured grace, then lapses.
+    func test_skipLatch_rides_out_unknown_reads_for_the_grace_then_lapses() {
+        let clock = Clock()
+        let m = DetectionStateMachine(clock: { clock.now })
+        m.armSkipLatch(source: Self.teams)
+        for _ in 1...4 {
+            clock.advance(DiscoveryScanCadence.discoveryDefault.idle)
+            m.noteScanReadings([Self.teams.bundleID: Self.teamsUnknown])
+            XCTAssertTrue(m.isSkipLatched(bundleID: Self.teams.bundleID), "an unknown read is not an end")
+        }
+        clock.advance(DiscoveryScanCadence.discoveryDefault.idle)
+        let ended = m.noteScanReadings([Self.teams.bundleID: Self.teamsUnknown])
+        XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
+        XCTAssertEqual(ended.map(\.source), [Self.teams])
+    }
+
+    /// Time the scans were gated (a 30 s prompt for another app, a recording) is not silence:
+    /// one gap adds at most one idle poll.
+    func test_time_outside_idle_does_not_count_against_the_hold() {
+        let clock = Clock()
+        let m = DetectionStateMachine(clock: { clock.now })
+        m.armSkipLatch(source: Self.teams)
+        clock.advance(600)
+        m.noteScanReadings([Self.teams.bundleID: Self.teamsUnknown])
+        XCTAssertTrue(m.isSkipLatched(bundleID: Self.teams.bundleID))
+    }
+
+    /// Acceptance: an explicit Skip still latches, and the latch clears when the span-end input
+    /// fires (the microphone reads off and the app is not the scan's winner), so a second
+    /// same-bundle sighting after it prompts. The cooldown the skip armed goes with it.
+    func test_skipLatch_clears_on_a_both_absent_poll_and_takes_the_cooldown_with_it() {
         let m = DetectionStateMachine()
-        let skippedAt = Date()
-        m.armSkipLatch(bundleID: Self.teams.bundleID)
-        XCTAssertFalse(
-            m.isSkipLatched(
-                bundleID: Self.teams.bundleID,
-                now: skippedAt.addingTimeInterval(DetectionStateMachine.skipLatchGraceSec + 1)
-            )
-        )
+        m.setPrompting(source: Self.teams)
+        m.abandonPrompt(source: Self.teams)
+        XCTAssertTrue(m.isSkipLatched(bundleID: Self.teams.bundleID))
+        m.noteScanReadings([Self.teams.bundleID: Self.teamsBothAbsent])
+        XCTAssertTrue(m.isSkipLatched(bundleID: Self.teams.bundleID), "one absent read is the poll of grace")
+        m.noteScanReadings([Self.teams.bundleID: Self.teamsBothAbsent])
+        XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
+        XCTAssertFalse(m.isCoolingDown(bundleID: Self.teams.bundleID, cooldownSec: 60),
+                       "the span ended, so the next call in the same app prompts normally")
+    }
+
+    /// A blip of the microphone read while the call's controls are still found is not an end.
+    func test_a_microphone_blip_with_a_confident_winner_keeps_the_hold() {
+        let m = DetectionStateMachine()
+        m.armSkipLatch(source: Self.teams)
+        m.noteScanReadings([Self.teams.bundleID: .init(processAudio: false, isWinner: true)])
+        XCTAssertTrue(m.isSkipLatched(bundleID: Self.teams.bundleID))
+    }
+
+    /// DET8 measured a client re-registering mid-call, and DET9 a stretch with the controls hidden:
+    /// one off read in that stretch, with a live read after it, is not an end.
+    func test_a_single_absent_read_followed_by_a_live_one_keeps_the_hold() {
+        let m = DetectionStateMachine()
+        m.armSkipLatch(source: Self.teams)
+        m.noteScanReadings([Self.teams.bundleID: Self.teamsBothAbsent])
+        m.noteScanReadings([Self.teams.bundleID: Self.teamsLive])
+        m.noteScanReadings([Self.teams.bundleID: Self.teamsBothAbsent])
+        XCTAssertTrue(m.isSkipLatched(bundleID: Self.teams.bundleID), "the streak resets on a live read")
+    }
+
+    /// A Teams that is not enumerated at all has quit.
+    func test_a_native_missing_from_the_scan_ends_its_span() {
+        let m = DetectionStateMachine()
+        m.armSkipLatch(source: Self.teams)
+        m.noteScanReadings([:])
+        XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
+    }
+
+    /// A browser's span is its meeting title: a page retitling itself is not an end (D005), so
+    /// only DET9's grace of ignorance lapses it.
+    func test_a_browser_hold_lives_on_its_title_and_has_no_positive_end() {
+        let clock = Clock()
+        let m = DetectionStateMachine(clock: { clock.now })
+        let chrome = AppSource(bundleID: "com.google.Chrome", displayName: "Chrome", kind: .browser)
+        m.armSkipLatch(source: chrome)
+        clock.advance(12)
+        m.noteScanReadings([:])
+        XCTAssertTrue(m.isSkipLatched(bundleID: chrome.bundleID))
+        clock.advance(12)
+        m.noteScanReadings([chrome.bundleID: .init(titleMatch: true)])
+        for _ in 1...4 {
+            clock.advance(12)
+            m.noteScanReadings([:])
+        }
+        XCTAssertTrue(m.isSkipLatched(bundleID: chrome.bundleID))
+        clock.advance(12)
+        m.noteScanReadings([:])
+        XCTAssertFalse(m.isSkipLatched(bundleID: chrome.bundleID))
+    }
+
+    /// DET1 mic-tier sources are never scanner candidates; they live on the mic-busy span.
+    func test_a_mic_tier_hold_lives_on_the_mic_busy_span() {
+        let m = DetectionStateMachine()
+        let slack = AppSource(bundleID: "com.tinyspeck.slackmacgap", displayName: "Slack")
+        m.armSkipLatch(source: slack, liveness: .micBusy)
+        m.noteScanReadings([:])
+        XCTAssertTrue(m.isSkipLatched(bundleID: slack.bundleID), "a scan says nothing about a mic-tier call")
+        m.noteMicBusy(bundleID: slack.bundleID)
+        XCTAssertTrue(m.isSkipLatched(bundleID: slack.bundleID))
+        m.noteMicBusy(bundleID: nil)
+        XCTAssertFalse(m.isSkipLatched(bundleID: slack.bundleID))
+    }
+
+    // MARK: - DET18: the timeout's offer
+
+    /// Acceptance: a prompt timeout with action `skip` leaves `isCoolingDown` and `isSkipLatched`
+    /// false for the bundle and keeps the source as the attachable candidate.
+    func test_a_timeout_offer_arms_no_cooldown_and_no_latch_and_keeps_the_source() {
+        let m = DetectionStateMachine()
+        m.setPrompting(source: Self.teams)
+        m.offerPrompt(source: Self.teams)
+        XCTAssertEqual(m.current, .idle)
+        XCTAssertFalse(m.isCoolingDown(bundleID: Self.teams.bundleID, cooldownSec: 60))
+        XCTAssertFalse(m.isSkipLatched(bundleID: Self.teams.bundleID))
+        XCTAssertTrue(m.isOffered(bundleID: Self.teams.bundleID))
+        XCTAssertEqual(m.liveSuppressedCandidate(), Self.teams)
+    }
+
+    func test_an_offer_goes_with_its_span_and_takes_the_candidate_with_it() {
+        let m = DetectionStateMachine()
+        m.setPrompting(source: Self.teams)
+        m.offerPrompt(source: Self.teams)
+        m.noteScanReadings([Self.teams.bundleID: Self.teamsBothAbsent])
+        let ended = m.noteScanReadings([Self.teams.bundleID: Self.teamsBothAbsent])
+        XCTAssertEqual(ended.first?.mode, .offered)
+        XCTAssertFalse(m.isPromptHeld(bundleID: Self.teams.bundleID))
+        XCTAssertNil(m.liveSuppressedCandidate())
+    }
+
+    func test_clearSuppression_drops_an_offer() {
+        let m = DetectionStateMachine()
+        m.setPrompting(source: Self.teams)
+        m.offerPrompt(source: Self.teams)
+        m.clearSuppression(bundleID: Self.teams.bundleID)
+        XCTAssertFalse(m.isPromptHeld(bundleID: Self.teams.bundleID))
+        XCTAssertNil(m.liveSuppressedCandidate())
+    }
+
+    // MARK: - DET18: hover pauses the timer that acts
+
+    private final class ManualScheduler {
+        var pending: [(delay: TimeInterval, action: () -> Void, cancelled: Bool)] = []
+        func schedule(_ delay: TimeInterval, _ action: @escaping () -> Void) -> () -> Void {
+            pending.append((delay, action, false))
+            let index = pending.count - 1
+            return { [weak self] in self?.pending[index].cancelled = true }
+        }
+        var live: [(delay: TimeInterval, action: () -> Void, cancelled: Bool)] { pending.filter { !$0.cancelled } }
+    }
+
+    /// Acceptance: hovering at 20 s and leaving at 50 s fires the timeout at 60 s, not 30 s.
+    func test_hover_pauses_the_acting_timer_and_carries_the_remaining_time() {
+        let clock = Clock()
+        let scheduler = ManualScheduler()
+        let m = DetectionStateMachine(scheduler: scheduler.schedule, clock: { clock.now })
+        let startedAt = clock.now
+        m.setPrompting(source: Self.teams)
+        var firedAt: Date?
+        m.startPromptTimeout(for: Self.teams, timeoutSec: 30) { firedAt = clock.now }
+        XCTAssertEqual(scheduler.live.map(\.delay), [30])
+
+        clock.advance(20)
+        m.pausePromptTimeout()
+        XCTAssertEqual(scheduler.live.map(\.delay), [DetectionStateMachine.maxPromptPauseSec],
+                       "the 30 s timer must not survive the hover; only the pause's cap is armed")
+        XCTAssertTrue(m.isPromptTimeoutPaused)
+
+        clock.advance(30)
+        m.resumePromptTimeout()
+        XCTAssertEqual(scheduler.live.map(\.delay), [10], "10 s were left when the pointer arrived")
+
+        clock.advance(10)
+        scheduler.live.first?.action()
+        let fired = expectation(description: "the timeout acts")
+        DispatchQueue.main.async { fired.fulfill() }
+        wait(for: [fired], timeout: 1)
+        XCTAssertEqual(firedAt.map { $0.timeIntervalSince(startedAt) }, 60)
+    }
+
+    /// Pause and resume are idempotent, so hover and an open menu can overlap.
+    func test_pause_and_resume_are_idempotent() {
+        let clock = Clock()
+        let scheduler = ManualScheduler()
+        let m = DetectionStateMachine(scheduler: scheduler.schedule, clock: { clock.now })
+        m.setPrompting(source: Self.teams)
+        m.startPromptTimeout(for: Self.teams, timeoutSec: 30) {}
+        m.pausePromptTimeout()
+        m.pausePromptTimeout()
+        m.resumePromptTimeout()
+        m.resumePromptTimeout()
+        XCTAssertEqual(scheduler.live.map(\.delay), [30])
+    }
+
+    /// A pause cannot hold the prompt up forever: the cap resumes it.
+    func test_a_pause_is_capped() {
+        let clock = Clock()
+        let scheduler = ManualScheduler()
+        let m = DetectionStateMachine(scheduler: scheduler.schedule, clock: { clock.now })
+        m.setPrompting(source: Self.teams)
+        m.startPromptTimeout(for: Self.teams, timeoutSec: 30) {}
+        clock.advance(5)
+        m.pausePromptTimeout()
+        clock.advance(DetectionStateMachine.maxPromptPauseSec)
+        scheduler.live.first?.action()
+        let resumed = expectation(description: "the cap resumes")
+        DispatchQueue.main.async { resumed.fulfill() }
+        wait(for: [resumed], timeout: 1)
+        XCTAssertFalse(m.isPromptTimeoutPaused)
+        XCTAssertEqual(scheduler.live.map(\.delay), [25])
+    }
+
+    /// A fire already queued when the timer was paused in the same turn does not act.
+    func test_a_fire_queued_before_a_pause_does_not_act() {
+        let scheduler = ManualScheduler()
+        let m = DetectionStateMachine(scheduler: scheduler.schedule)
+        m.setPrompting(source: Self.teams)
+        var fired = false
+        m.startPromptTimeout(for: Self.teams, timeoutSec: 30) { fired = true }
+        let fire = scheduler.live.first?.action
+        fire?()
+        m.pausePromptTimeout()
+        let drained = expectation(description: "main drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 1)
+        XCTAssertFalse(fired)
     }
 
     func test_abandonPrompt_arms_both_the_cooldown_and_the_skip_latch() {
@@ -195,7 +410,7 @@ final class DetectionStateMachineTests: XCTestCase {
     func test_clearSuppression_drops_both_the_cooldown_and_the_skip_latch() {
         let m = DetectionStateMachine()
         m.recordCooldownEnd(bundleID: Self.teams.bundleID)
-        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        m.armSkipLatch(source: Self.teams)
         // Explicit "record now" (manual hotkey / "Always for {App}") wipes every suppression.
         m.clearSuppression(bundleID: Self.teams.bundleID)
         XCTAssertFalse(m.isCoolingDown(bundleID: Self.teams.bundleID, cooldownSec: 60))
@@ -206,26 +421,25 @@ final class DetectionStateMachineTests: XCTestCase {
 
     func test_suppressed_candidate_is_returned_while_the_latch_holds() {
         let m = DetectionStateMachine()
-        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        m.armSkipLatch(source: Self.teams)
         m.noteSuppressedCandidate(Self.teams, origin: .skipLatch)
         XCTAssertEqual(m.liveSuppressedCandidate(), Self.teams)
     }
 
     func test_suppressed_candidate_lapses_with_its_latch_and_is_dropped() {
         let m = DetectionStateMachine()
-        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        m.armSkipLatch(source: Self.teams)
         m.noteSuppressedCandidate(Self.teams, origin: .skipLatch)
-        // Discovery stopped refreshing the latch: past the grace, the meeting is over and
-        // the candidate is not something a start should attribute itself to.
-        let afterGrace = Date().addingTimeInterval(DetectionStateMachine.skipLatchGraceSec + 1)
-        XCTAssertNil(m.liveSuppressedCandidate(now: afterGrace))
-        // The lapsed read drops it, so nothing has to run a timer to expire it.
+        // DET18: the call's span ended: the meeting is over and the candidate is not something a
+        // start should attribute itself to.
+        m.noteScanReadings([Self.teams.bundleID: Self.teamsBothAbsent])
+        m.noteScanReadings([Self.teams.bundleID: Self.teamsBothAbsent])
         XCTAssertNil(m.liveSuppressedCandidate())
     }
 
     func test_clearSuppression_also_drops_the_candidate() {
         let m = DetectionStateMachine()
-        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        m.armSkipLatch(source: Self.teams)
         m.noteSuppressedCandidate(Self.teams, origin: .skipLatch)
         // An explicit start consumed it; leaving it cached would let a *second* start
         // minutes later re-attach to a meeting nothing is watching any more.
@@ -235,7 +449,7 @@ final class DetectionStateMachineTests: XCTestCase {
 
     func test_clearSuppression_for_another_bundle_leaves_the_candidate() {
         let m = DetectionStateMachine()
-        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        m.armSkipLatch(source: Self.teams)
         m.noteSuppressedCandidate(Self.teams, origin: .skipLatch)
         m.clearSuppression(bundleID: "us.zoom.xos")
         XCTAssertEqual(m.liveSuppressedCandidate(), Self.teams,
@@ -365,7 +579,7 @@ final class DetectionStateMachineTests: XCTestCase {
     /// tightening. Past the cooldown grace and well inside the latch's, this is still attachable.
     func test_a_latched_candidate_keeps_the_full_grace() {
         let m = DetectionStateMachine()
-        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        m.armSkipLatch(source: Self.teams)
         let seenAt = Date()
         m.noteSuppressedCandidate(Self.teams, origin: .skipLatch, at: seenAt)
 
@@ -395,7 +609,7 @@ final class DetectionStateMachineTests: XCTestCase {
     /// still is, and the end is newer information than the sighting that armed it.
     func test_a_confirmed_end_drops_a_latched_candidate_too() {
         let m = DetectionStateMachine()
-        m.armSkipLatch(bundleID: Self.teams.bundleID)
+        m.armSkipLatch(source: Self.teams)
         m.noteSuppressedCandidate(Self.teams, origin: .skipLatch)
         XCTAssertEqual(m.liveSuppressedCandidate(), Self.teams)
 

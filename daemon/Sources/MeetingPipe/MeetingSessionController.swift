@@ -119,6 +119,11 @@ final class MeetingSessionController: @unchecked Sendable {
     /// a mic-gate verdict). nil for whitelist / manual recordings, which keep their own end path.
     private var micTierRecordingBundle: String?
 
+    /// DET18 item 4: a prompt withdrawn while the call may still be on screen is not re-raised by
+    /// the very next discovery refresh. Held for one idle poll. Before this, 298 prompts in era 1
+    /// were withdrawn by a weak end and re-raised within 15 s, on screen for 15 to 30 ms each.
+    var promptBackoff: (bundleID: String, until: Date)?
+
     /// Latest system-audio dBFS (from `recorder.onSystemLevel`), read by
     /// the silence backstop. `-120` is the "no audio observed yet" sentinel.
     var latestSystemLevelDb: Float = -120
@@ -446,10 +451,11 @@ final class MeetingSessionController: @unchecked Sendable {
         case .recording(let file, let src, let mode):
             stopRecording(file: file, source: src, summaryMode: mode, stopRoute: reason)
         case .prompting(let src):
-            // Same as Skip: don't record, return to idle, and cool down the bundle
-            // so the next discovery poll doesn't immediately re-prompt this meeting.
+            // Same as Skip: don't record, return to idle, and hold this call's prompt off for its
+            // span (DET18) so the next discovery poll doesn't immediately re-prompt this meeting.
+            notePromptDismissed(src, reason: .skipped, extra: ["route": reason])
             coordinator.prompt.dismiss()
-            coordinator.stateMachine.abandonPrompt(source: src)
+            coordinator.stateMachine.abandonPrompt(source: src, liveness: holdLiveness(for: src))
             coordinator.statusUI.setIdle()
         case .idle, .suppressed, .stopping:
             break
@@ -572,7 +578,12 @@ final class MeetingSessionController: @unchecked Sendable {
         case .recording, .stopping:
             Log.writeLine("daemon", "beginRecording ignored: already recording")
             return
-        case .idle, .prompting, .suppressed:
+        case .prompting(let src):
+            // DET18 item 6: every accepting route (Record, Record BYO, Always, the toggle, a
+            // `record` / `byo` default at the timeout) comes through here from the prompt.
+            notePromptDismissed(src, reason: .accepted)
+            coordinator.prompt.dismiss()
+        case .idle, .suppressed:
             break
         }
         let startOrigin: RecordingStartLatch.Origin
@@ -723,7 +734,15 @@ final class MeetingSessionController: @unchecked Sendable {
                 // END20: a prompt raised behind this start (a `.starting` that slipped in during an
                 // idle-origin bring-up) would otherwise outlive the commit.
                 switch self.coordinator.stateMachine.current {
-                case .prompting, .suppressed:
+                case .prompting(let src):
+                    // A prompt-origin start already logged its own prompt's exit; only a prompt
+                    // raised behind an idle-origin start is new here.
+                    if startOrigin != .prompt {
+                        self.notePromptDismissed(src, reason: .accepted, extra: ["route": "start_in_flight"])
+                    }
+                    self.coordinator.stateMachine.cancelPromptTimeout()
+                    self.coordinator.prompt.dismiss()
+                case .suppressed:
                     self.coordinator.stateMachine.cancelPromptTimeout()
                     self.coordinator.prompt.dismiss()
                 default:
@@ -1193,7 +1212,6 @@ final class MeetingSessionController: @unchecked Sendable {
         ) { [weak self] in
             guard let self = self else { return }
             let action = (self.coordinator.configStore?.defaultPromptAction ?? "skip").lowercased()
-            self.coordinator.prompt.dismiss()
             Log.event(category: "coordinator", action: "prompt_timeout", attributes: [
                 "bundle_id": source.bundleID,
                 "default_action": action,
@@ -1206,24 +1224,169 @@ final class MeetingSessionController: @unchecked Sendable {
                 Log.writeLine("daemon", "prompt timed out → auto-record byo (\(source.bundleID))")
                 self.beginRecording(source: source, summaryMode: .byo)
             default:
-                Log.writeLine("daemon", "prompt timed out → idle + cooldown (\(source.bundleID))")
-                // Like an explicit Skip: return to idle (other apps still detect) and
-                // cool down this bundle. Not the old global `.suppressed`, which wedged
-                // detection for the rest of the meeting when the leave-button end never
-                // corroborated.
-                self.coordinator.stateMachine.abandonPrompt(source: source)
-                // UX10 / AUD-12: unlike an explicit Skip, a *silent* timeout-skip
-                // needs a surface. Show "Suppressed (<app>)" in the menu bar for as
-                // long as the skip latch holds (the whole meeting), and notify with a
-                // start-late action. The state machine stays `.idle` (START1); the
-                // menu-bar label is presentation-only and polls the real latch.
+                Log.writeLine("daemon", "prompt timed out → one-click offer (\(source.bundleID))")
+                self.notePromptDismissed(source, reason: .timedOutToOffer)
+                self.coordinator.prompt.dismiss()
+                // DET18 item 1: a timeout is not a skip. On the work laptop all 32 timeouts became
+                // skips and 19 Teams calls went wholly unrecorded while the app stayed on screen.
+                // No cooldown and no latch: the panel collapses into a one-click offer holding the
+                // prompt's own source, live for the call's span (item 2), so a click attaches with
+                // the source and arms end detection.
+                self.coordinator.stateMachine.offerPrompt(source: source, liveness: self.holdLiveness(for: source))
+                // UX10's two surfaces stay, reworded: the menu bar reads "Detected <app>" with the
+                // "Record this <app> meeting" row for as long as the offer lives, and the banner
+                // carries the same one click.
                 let bundleID = source.bundleID
-                self.coordinator.statusUI.setSuppressed(source) { [weak self] in
-                    self?.coordinator.stateMachine.isSkipLatched(bundleID: bundleID) ?? false
+                self.coordinator.statusUI.setOffered(source) { [weak self] in
+                    self?.coordinator.stateMachine.isOffered(bundleID: bundleID) ?? false
                 }
                 self.coordinator.notifications.notifySkippedMeeting(source: source, origin: .timedOut)
             }
         }
+    }
+
+    // MARK: - DET18: the prompt's exits, its offer and its pause
+
+    /// Why a prompt left the screen (DET18 item 6). `coordinator/prompt_dismissed` carries it, so
+    /// the field can finally say how a prompt ended rather than inferring it from the next state.
+    enum PromptDismissReason: String {
+        case accepted
+        case skipped
+        case timedOutToOffer = "timed_out_to_offer"
+        case withdrawnDefinitive = "withdrawn_definitive"
+        case withdrawnMicReleased = "withdrawn_mic_released"
+        /// The offer a timeout left behind went away with its call's span.
+        case spanLapsed = "span_lapsed"
+    }
+
+    func notePromptDismissed(_ source: AppSource, reason: PromptDismissReason, extra: [String: Any] = [:]) {
+        var attributes: [String: Any] = [
+            "bundle_id": source.bundleID,
+            "reason": reason.rawValue,
+            // An offer lapsing has no panel to be over.
+            "pointer_over": reason == .spanLapsed ? false : coordinator.prompt.isPointerOver,
+        ]
+        attributes.merge(extra) { _, new in new }
+        Log.event(category: "coordinator", action: "prompt_dismissed", attributes: attributes)
+    }
+
+    /// What keeps a hold on this prompt's call alive: the DET1 mic-in-use tier's sources are never
+    /// scanner candidates, so they live on the mic-busy span; everything else on the scan.
+    func holdLiveness(for source: AppSource) -> SkippedMeetingLatch.Liveness {
+        micTierPromptBundle == source.bundleID ? .micBusy : DetectionStateMachine.spanLiveness(for: source)
+    }
+
+    /// An explicit Skip (the panel's ×, the chevron's Skip, the banner's Skip). Holds this call's
+    /// prompt off for its span, with the quiet undo surfaces DET7 gave it.
+    func skipPrompt(source: AppSource) {
+        guard case .prompting(let pending) = coordinator.stateMachine.current, pending == source else { return }
+        notePromptDismissed(source, reason: .skipped)
+        coordinator.prompt.dismiss()
+        coordinator.stateMachine.abandonPrompt(source: source, liveness: holdLiveness(for: source))
+        noteSkipped(source)
+    }
+
+    /// DET7's two quiet surfaces for a skip: the menu-bar label, which reads the latch and collapses
+    /// on its own once the call's span ends, and a silent banner as an undo affordance.
+    private func noteSkipped(_ source: AppSource) {
+        let bundleID = source.bundleID
+        coordinator.statusUI.setSuppressed(source) { [weak self] in
+            self?.coordinator.stateMachine.isSkipLatched(bundleID: bundleID) ?? false
+        }
+        coordinator.notifications.notifySkippedMeeting(source: source, origin: .dismissed)
+        Log.writeLine("daemon", "user skipped (\(source.bundleID))")
+        Log.event(category: "coordinator", action: "user_skipped", attributes: [
+            "bundle_id": source.bundleID,
+        ])
+    }
+
+    enum PromptPick: String {
+        case record
+        case recordBYO = "record_byo"
+        case always
+        case skip
+    }
+
+    /// DET18 item 5: a pick from the panel or its chevron menu, resolved against the source this
+    /// controller holds rather than the panel's own copy, which the panel clears on dismiss. A pick
+    /// that lands after the timeout collapsed the panel acts on the offer; one that matches neither
+    /// is refused and returns false so the caller can say so. Returns true when it acted.
+    @discardableResult
+    func resolvePromptPick(_ pick: PromptPick, source: AppSource) -> Bool {
+        if case .prompting(let pending) = coordinator.stateMachine.current, pending == source {
+            switch pick {
+            case .record: beginRecording(source: source, summaryMode: .auto)
+            case .recordBYO: beginRecording(source: source, summaryMode: .byo)
+            case .always: chooseAlways(source: source)
+            case .skip: skipPrompt(source: source)
+            }
+            return true
+        }
+        if coordinator.stateMachine.isOffered(bundleID: source.bundleID),
+           let held = coordinator.stateMachine.heldSource(bundleID: source.bundleID) {
+            switch pick {
+            case .record:
+                recordAttached(to: held, summaryMode: .auto, trigger: "prompt_offer")
+            case .recordBYO:
+                recordAttached(to: held, summaryMode: .byo, trigger: "prompt_offer")
+            case .always:
+                coordinator.consent.setAutoConsented(bundleID: held.bundleID, value: true)
+                Log.event(category: "coordinator", action: "user_consented_always", attributes: [
+                    "bundle_id": held.bundleID,
+                ])
+                recordAttached(to: held, summaryMode: .auto, trigger: "prompt_offer")
+            case .skip:
+                // The offer becomes a skip, keeping the span it was already bound to.
+                coordinator.stateMachine.armSkipLatch(
+                    source: held,
+                    liveness: coordinator.stateMachine.heldLiveness(bundleID: held.bundleID)
+                )
+                noteSkipped(held)
+            }
+            return true
+        }
+        Log.event(category: "coordinator", action: "prompt_pick_refused", attributes: [
+            "bundle_id": source.bundleID,
+            "pick": pick.rawValue,
+            "state": DetectionStateMachine.label(coordinator.stateMachine.current),
+        ])
+        return false
+    }
+
+    /// DET18 item 5: the pointer over the panel, or its chevron menu open, pauses the timer that
+    /// acts. Driven by `MeetingPromptWindow` through its delegate.
+    func setPromptTimeoutPaused(_ paused: Bool) {
+        guard case .prompting = coordinator.stateMachine.current else { return }
+        if paused {
+            coordinator.stateMachine.pausePromptTimeout()
+        } else {
+            coordinator.stateMachine.resumePromptTimeout()
+        }
+    }
+
+    /// DET18 item 2: one completed discovery scan's readings, fed before its winner is handled so a
+    /// span that ended on this scan no longer holds that winner's prompt off.
+    func handleScanReadings(_ readings: [String: SkippedMeetingLatch.Reading]) {
+        noteHoldsEnded(coordinator.stateMachine.noteScanReadings(readings))
+    }
+
+    private func noteHoldsEnded(_ ended: [SkippedMeetingLatch.Entry]) {
+        for entry in ended {
+            Log.event(category: "coordinator", action: "prompt_hold_ended", attributes: [
+                "bundle_id": entry.source.bundleID,
+                "mode": entry.mode == .skipped ? "skipped" : "offered",
+            ])
+            if entry.mode == .offered {
+                notePromptDismissed(entry.source, reason: .spanLapsed)
+            }
+        }
+    }
+
+    private func isInPromptBackoff(_ bundleID: String, now: Date = Date()) -> Bool {
+        guard let backoff = promptBackoff, backoff.bundleID == bundleID else { return false }
+        if now < backoff.until { return true }
+        promptBackoff = nil
+        return false
     }
 
     // MARK: - Detection-to-record handlers (lifecycle verdict consumers)
@@ -1250,6 +1413,8 @@ final class MeetingSessionController: @unchecked Sendable {
     /// recordings (not tagged); the tracker debounces the release, so a brief flap keeps the bundle
     /// held and never triggers a false stop.
     func handleMicBusyBundle(_ currentBusyBundle: String?) {
+        // DET18: a DET1 mic-tier hold (skip or offer) lives on this span.
+        noteHoldsEnded(coordinator.stateMachine.noteMicBusy(bundleID: currentBusyBundle))
         guard let recBundle = micTierRecordingBundle, currentBusyBundle != recBundle,
               case .recording(let file, let src, let mode) = coordinator.stateMachine.current,
               src?.bundleID == recBundle else { return }
@@ -1296,7 +1461,11 @@ final class MeetingSessionController: @unchecked Sendable {
         // cooldown, so a `.starting` re-published mid-call can't re-open the prompt. Safety
         // net only - after a skip the lifecycle is disengaged, so this rarely fires - but it
         // closes the race where a `.starting` was queued just before disengage.
-        if coordinator.stateMachine.isSkipLatched(bundleID: source.bundleID) {
+        if coordinator.stateMachine.isPromptHeld(bundleID: source.bundleID) {
+            return
+        }
+        // DET18 item 4: a prompt just withdrawn for this app is not re-raised inside its backoff.
+        if isInPromptBackoff(source.bundleID) {
             return
         }
 
@@ -1457,17 +1626,62 @@ final class MeetingSessionController: @unchecked Sendable {
             // START1's, in Core. See `daemon/docs/gotchas.md`.
             //
             // REC7's latch for a start in flight from here moved above the switch (END20).
-            handleMeetingEndedDuringPrompt()
+            handleMeetingEndedDuringPrompt(bundleID: bundleID, reason: reason)
         default:
             break
         }
     }
 
-    /// Dismiss a stale prompt when the meeting ends before the user
-    /// answers. Reached via the lifecycle `.ended` verdict.
-    func handleMeetingEndedDuringPrompt() {
+    /// A lifecycle `.ended` arrived while the prompt was up (DET18 item 4).
+    ///
+    /// It used to withdraw the panel on every end, and in `.starting` the engine ends on any reliable
+    /// weak end unless process audio vetoes it, which browsers never can. In era 1, 298 prompts were
+    /// withdrawn by a lone `shareable_content_window_gone` and re-raised within 15 s, on screen for
+    /// 15 to 30 ms each, and two Chrome prompts lasted 0.18 s and 0.84 s.
+    ///
+    /// Now only two ends withdraw it: a definitive one (the app quit), and a microphone release for
+    /// an app whose microphone read is the call's span. Any other end keeps the panel up, marked
+    /// "call may have ended", and leaves its timeout armed. No scan runs while prompting (PERF17)
+    /// and the engine is terminal after `.ended` (END27), so the kept panel learns nothing new: its
+    /// exits are the owner or the timeout, which collapses it into the span-bound offer, and that
+    /// offer goes with the span. A Record from the kept panel re-engages the terminal engine
+    /// (`engageLifecycleIfNeeded`, END27). A withdraw backs off for one idle poll so the very next
+    /// discovery refresh does not re-raise it.
+    func handleMeetingEndedDuringPrompt(bundleID: String, reason: EndingReason) {
         switch coordinator.stateMachine.current {
-        case .prompting, .suppressed:
+        case .prompting(let src) where src.bundleID == bundleID:
+            let definitive = PrimarySignalKind(rawValue: reason.leadingSignal)?.isDefinitive == true
+                || reason.confirmedBy.contains(PrimarySignalKind.workspaceAppTerminated.rawValue)
+            let micReleased = DetectionStateMachine.spanLiveness(for: src) == .processAudio
+                && coordinator.liveCallSignal == .callIsDown
+            guard definitive || micReleased else {
+                coordinator.prompt.markCallMayHaveEnded()
+                Log.event(category: "coordinator", action: "prompt_kept_after_end", attributes: [
+                    "bundle_id": src.bundleID,
+                    "ended_bundle_id": bundleID,
+                    "leading_signal": reason.leadingSignal,
+                ])
+                return
+            }
+            let backoffSec = DiscoveryScanCadence.discoveryDefault.idle
+            notePromptDismissed(
+                src,
+                reason: definitive ? .withdrawnDefinitive : .withdrawnMicReleased,
+                extra: ["leading_signal": reason.leadingSignal, "backoff_sec": backoffSec]
+            )
+            coordinator.stateMachine.cancelPromptTimeout()
+            coordinator.prompt.dismiss()
+            promptBackoff = (bundleID: src.bundleID, until: Date().addingTimeInterval(backoffSec))
+            coordinator.stateMachine.setIdle()
+            coordinator.statusUI.setIdle()
+        case .prompting(let src):
+            // Another app's end says nothing about this prompt's call.
+            Log.event(category: "coordinator", action: "prompt_kept_after_end", attributes: [
+                "bundle_id": src.bundleID,
+                "ended_bundle_id": bundleID,
+                "leading_signal": reason.leadingSignal,
+            ])
+        case .suppressed:
             coordinator.stateMachine.cancelPromptTimeout()
             coordinator.prompt.dismiss()
             coordinator.stateMachine.setIdle()
@@ -1691,23 +1905,24 @@ final class MeetingSessionController: @unchecked Sendable {
         // END19: every winner is a sighting of its bundle, whichever branch below handles it.
         staleEngage.sighted(bundleID: source.bundleID, at: Date())
 
-        // The skipped-meeting latch is anchored here: this scan is proof the meeting the
-        // user dismissed is still live, so refresh the latch and stay out. A scan reaches this
-        // point only when it produced a *confident* winner, which is why the grace it refreshes is
-        // `skipLatchGracePolls` polls wide rather than one (DET9): a live Teams call regularly goes
-        // tens of seconds with no confident winner while its compact / backgrounded call UI hides
-        // the Leave, Mute and toolbar controls, and a narrower grace dropped the latch inside that
-        // stretch. So "discovery stopped seeing it" is not "it ended", and only a full grace of
-        // silence is read as the end. We do NOT re-engage the lifecycle, so there's no
-        // Leave-button poll to leak.
-        if coordinator.stateMachine.isSkipLatched(bundleID: source.bundleID) {
-            coordinator.stateMachine.refreshSkipLatch(bundleID: source.bundleID)
+        // A held prompt (an explicit skip, or the offer a timeout left behind) stays out. DET18 bound
+        // the hold to the call's span, which `handleScanReadings` feeds from this same scan before
+        // this runs. A confident sighting used to refresh it and lapse it 60 s after the last one,
+        // which was both too long (a second call in the same app inherited it: no prompt for 25.6
+        // minutes on 2026-10-21) and too short (it lapsed mid-call, D016 and D067). We do NOT
+        // re-engage the lifecycle, so there's no Leave-button poll to leak.
+        if coordinator.stateMachine.isPromptHeld(bundleID: source.bundleID) {
             // DET7: this sighting is also proof of *what* is running, and it is the only
             // live handle on it once the prompt is gone. Keep it so a manual start (menu
             // row, hotkey, `meetingpipe://record`) can attach to the meeting the user
             // skipped instead of recording `source: nil`, which resolves the default
             // workflow, writes no source into the sidecar, and arms no AX end detection.
             coordinator.stateMachine.noteSuppressedCandidate(source, origin: .skipLatch)
+            return
+        }
+
+        // DET18 item 4: a prompt withdrawn while the call was still on screen backs off one poll.
+        if isInPromptBackoff(source.bundleID) {
             return
         }
 

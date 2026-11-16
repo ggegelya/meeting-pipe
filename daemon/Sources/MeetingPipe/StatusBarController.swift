@@ -56,6 +56,8 @@ final class StatusBarController {
     /// saw the meeting and not "shortly after it ends" (DET9).
     private var suppressedDisplayTimer: Timer?
     private var suppressedIsActive: (() -> Bool)?
+    /// DET18: the suppressed display is a timeout's offer ("Detected <app>"), not a skip.
+    private var suppressedIsOffer = false
     private static let suppressedRecheckInterval: TimeInterval = 5
 
     /// Delegate for the "Recent meetings" submenu; populates on its own
@@ -219,8 +221,20 @@ final class StatusBarController {
     /// stays `.idle` (re-entering the old global `.suppressed` is the START1 wedge),
     /// so detection keeps running for other apps the whole time.
     func setSuppressed(_ source: AppSource, isStillSuppressed: @escaping () -> Bool) {
+        showSuppressed(source, isOffer: false, isStillActive: isStillSuppressed)
+    }
+
+    /// DET18: a prompt that timed out collapses into a one-click offer, shown for as long as the
+    /// call's span lives. Same lifetime as a skip's label, different words: "Detected <app>", with
+    /// the "Record this <app> meeting" row beneath it.
+    func setOffered(_ source: AppSource, isStillOffered: @escaping () -> Bool) {
+        showSuppressed(source, isOffer: true, isStillActive: isStillOffered)
+    }
+
+    private func showSuppressed(_ source: AppSource, isOffer: Bool, isStillActive: @escaping () -> Bool) {
         cancelSuppressedDisplay()
-        suppressedIsActive = isStillSuppressed
+        suppressedIsOffer = isOffer
+        suppressedIsActive = isStillActive
         titleState = .suppressed(source: source)
         applyIcon()
         applyTitle()
@@ -246,6 +260,7 @@ final class StatusBarController {
         suppressedDisplayTimer?.invalidate()
         suppressedDisplayTimer = nil
         suppressedIsActive = nil
+        suppressedIsOffer = false
     }
 
     /// Update the processing-jobs badge. Writes into the sibling
@@ -309,7 +324,8 @@ final class StatusBarController {
             summaryMode: summaryMode,
             queue: queue,
             regulatedMode: regulatedMode,
-            download: modelDownload
+            download: modelDownload,
+            suppressedIsOffer: suppressedIsOffer
         )
     }
 
@@ -442,7 +458,8 @@ final class StatusBarController {
             finishSetupTitle: finishSetupTitle,
             disableAutoRestart: UISettings.shared.disableAutoRestart,
             launchAgentEnabled: launchAgentEnabled,
-            suppressedCandidateAppName: coordinator?.stateMachine.liveSuppressedCandidate()?.displayName
+            suppressedCandidateAppName: coordinator?.stateMachine.liveSuppressedCandidate()?.displayName,
+            suppressedIsOffer: suppressedIsOffer
         )
     }
 

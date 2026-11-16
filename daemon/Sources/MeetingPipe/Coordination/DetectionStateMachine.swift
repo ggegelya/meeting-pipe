@@ -7,6 +7,22 @@ final class DetectionStateMachine {
     /// Fires on every transition to `.idle`. Used by the Coordinator to apply config refreshes deferred during a recording.
     var onIdleTransition: (() -> Void)?
 
+    typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
+
+    /// The prompt timeout's timer and clock. Injectable so a test can drive DET18's hover pause on a
+    /// manual clock; the default stays the common-mode one-shot (CONC10), so an alert left open does
+    /// not swallow the timeout.
+    private let scheduler: Scheduler
+    private let clock: () -> Date
+
+    init(
+        scheduler: @escaping Scheduler = Schedulers.mainRunLoopOnce,
+        clock: @escaping () -> Date = { Date() }
+    ) {
+        self.scheduler = scheduler
+        self.clock = clock
+    }
+
     private(set) var current: AppState = .idle {
         didSet {
             Log.main.info("state: \(String(describing: oldValue)) → \(String(describing: self.current))")
@@ -62,30 +78,82 @@ final class DetectionStateMachine {
     /// Mute or toolbar across that whole stretch (Teams' compact / backgrounded call UI); END9
     /// measured a 21-33 s control blackout the same way. Five polls is 60 s, which clears both.
     ///
-    /// Widening it is not free, and the cost is the blind spot in `SkippedMeetingLatch`: the latch
-    /// keys on bundle id, so a *different* meeting starting in the same app within the grace of
-    /// the last one inherits it and is never prompted. That is a missed recording rather than a
-    /// spurious prompt, so the grace is bounded deliberately and must not simply be made large.
+    /// Widening it is not free: a *different* meeting starting in the same app within the grace of
+    /// the last one inherits the hold and is never prompted. That is a missed recording rather than
+    /// a spurious prompt, so the grace is bounded deliberately and must not simply be made large.
+    ///
+    /// DET18 narrowed what this grace is for. The hold is now bound to the call's span
+    /// (`SkippedMeetingLatch`): for Teams and Zoom a positive microphone-off reading with no
+    /// confident winner ends it at once, so the next call prompts, and this grace bounds only
+    /// ignorance (an unresolved read, or a browser title gone quiet), counted across scans so time
+    /// spent outside `.idle` is not mistaken for silence.
     static let skipLatchGraceSec: Double = DetectionStateMachine.skipLatchGrace(
         idlePollSec: DiscoveryScanCadence.discoveryDefault.idle
     )
 
-    private var skipLatch = SkippedMeetingLatch()
+    private var skipLatch = SkippedMeetingLatch(ignoranceGraceSec: DetectionStateMachine.skipLatchGraceSec)
 
-    func armSkipLatch(bundleID: String) {
-        skipLatch.arm(bundleID: bundleID)
+    /// DET18: what keeps a hold on `source` alive. The DET1 mic-in-use tier passes `.micBusy`
+    /// itself, since its sources are never scanner candidates.
+    static func spanLiveness(for source: AppSource) -> SkippedMeetingLatch.Liveness {
+        MeetingSourceScanner.readsProcessAudio(bundleID: source.bundleID, kind: source.kind)
+            ? .processAudio : .title
     }
 
-    /// Discovery still sees this skipped meeting: extend its latch. No-op if unarmed.
-    func refreshSkipLatch(bundleID: String) {
-        skipLatch.refresh(bundleID: bundleID)
+    /// An explicit Skip holds the prompt off. Only `abandonPrompt` should need this.
+    func armSkipLatch(source: AppSource, liveness: SkippedMeetingLatch.Liveness? = nil) {
+        skipLatch.arm(source: source, mode: .skipped, liveness: liveness ?? Self.spanLiveness(for: source), at: clock())
     }
 
-    /// `now` is injectable because `SkippedMeetingLatch.isLatched` already takes it and
-    /// this facade was the only thing dropping it: a test asking "has this lapsed 60 s
-    /// from now?" would otherwise have to sleep through the 15 s grace.
-    func isSkipLatched(bundleID: String, now: Date = Date()) -> Bool {
-        skipLatch.isLatched(bundleID: bundleID, graceSec: Self.skipLatchGraceSec, now: now)
+    /// An explicit Skip is in force for this bundle (DET18: not a timeout's offer).
+    func isSkipLatched(bundleID: String) -> Bool {
+        skipLatch.isSkipped(bundleID: bundleID)
+    }
+
+    /// The prompt timed out into a one-click offer that is still live for this bundle.
+    func isOffered(bundleID: String) -> Bool {
+        skipLatch.isOffered(bundleID: bundleID)
+    }
+
+    /// Either hold: a skip or an offer keeps the prompt from re-opening over the same call.
+    func isPromptHeld(bundleID: String) -> Bool {
+        skipLatch.isHeld(bundleID: bundleID)
+    }
+
+    /// What keeps this bundle's hold alive, if it has one.
+    func heldLiveness(bundleID: String) -> SkippedMeetingLatch.Liveness? {
+        skipLatch.entry(bundleID: bundleID)?.liveness
+    }
+
+    /// The source an offer or a skip is holding, if any.
+    func heldSource(bundleID: String) -> AppSource? {
+        skipLatch.entry(bundleID: bundleID)?.source
+    }
+
+    /// DET18: one completed discovery scan's readings. Returns the holds whose span ended, so the
+    /// caller can log an offer that lapsed. A skip's end also clears the re-prompt cooldown
+    /// `abandonPrompt` armed, so the next call in the same app prompts normally, and drops the
+    /// attachable candidate it was holding.
+    @discardableResult
+    func noteScanReadings(_ readings: [String: SkippedMeetingLatch.Reading]) -> [SkippedMeetingLatch.Entry] {
+        spanEnded(skipLatch.feedScan(readings, at: clock()))
+    }
+
+    /// DET18: the debounced mic-busy holder (nil when free), for DET1 mic-tier holds.
+    @discardableResult
+    func noteMicBusy(bundleID: String?) -> [SkippedMeetingLatch.Entry] {
+        spanEnded(skipLatch.feedMicBusy(busyBundle: bundleID, at: clock()))
+    }
+
+    private func spanEnded(_ ended: [SkippedMeetingLatch.Entry]) -> [SkippedMeetingLatch.Entry] {
+        for entry in ended {
+            let bundleID = entry.source.bundleID
+            if entry.mode == .skipped { cooldown.clear(bundleID: bundleID) }
+            if suppressedCandidate?.source.bundleID == bundleID, suppressedCandidate?.origin == .skipLatch {
+                suppressedCandidate = nil
+            }
+        }
+        return ended
     }
 
     /// Clear every re-prompt suppression for `bundleID` (the latch and the cooldown) so an
@@ -215,7 +283,7 @@ final class DetectionStateMachine {
     /// carries, not a retreat from that ordering.
     func liveSuppressedCandidate(now: Date = Date()) -> AppSource? {
         guard let candidate = suppressedCandidate else { return nil }
-        if isSkipLatched(bundleID: candidate.source.bundleID, now: now) { return candidate.source }
+        if isPromptHeld(bundleID: candidate.source.bundleID) { return candidate.source }
         let grace: Double
         switch candidate.origin {
         case .skipLatch: grace = Self.suppressedCandidateGraceSec
@@ -267,10 +335,26 @@ final class DetectionStateMachine {
     /// `SkippedMeetingLatch` - refreshed by every discovery sighting of the bundle - holds
     /// the prompt off for the *rest of this meeting*, so the 60 s cooldown lapsing mid-call
     /// can no longer re-prompt the meeting the user just dismissed.
-    func abandonPrompt(source: AppSource) {
+    ///
+    /// DET18: the latch is now bound to the call's span (`SkippedMeetingLatch`), and the span's end
+    /// clears the cooldown too, so the next call in the same app is prompted normally.
+    func abandonPrompt(source: AppSource, liveness: SkippedMeetingLatch.Liveness? = nil) {
         cancelPromptTimeout()
         recordCooldownEnd(bundleID: source.bundleID)
-        armSkipLatch(bundleID: source.bundleID)
+        armSkipLatch(source: source, liveness: liveness)
+        setIdle()
+    }
+
+    /// DET18: the prompt timed out with the `skip` default. Not a skip: no cooldown and no latch.
+    /// The panel collapses into a one-click offer that holds the prompt's own source as the
+    /// attachable candidate for as long as the call's span lives, so a click attaches with the
+    /// source and arms end detection. The offer holds the prompt off for that span (re-raising a
+    /// panel the owner let lapse every 42 s would be the popup storm the quiet register forbids),
+    /// and nothing else.
+    func offerPrompt(source: AppSource, liveness: SkippedMeetingLatch.Liveness? = nil) {
+        cancelPromptTimeout()
+        skipLatch.arm(source: source, mode: .offered, liveness: liveness ?? Self.spanLiveness(for: source), at: clock())
+        noteSuppressedCandidate(source, origin: .skipLatch, at: clock())
         setIdle()
     }
 
@@ -288,6 +372,17 @@ final class DetectionStateMachine {
     /// action an alert left open does not swallow the start of the meeting.
     private var cancelPromptTimer: (() -> Void)?
 
+    /// The armed timeout: whose it is, what it does, and either when it fires or (while paused)
+    /// how long it has left.
+    private var promptTimeout: (source: AppSource, action: () -> Void, deadline: Date?, remaining: TimeInterval?)?
+    /// Bumped on every schedule, pause and cancel, so a fire already queued on main when the
+    /// timer was paused or cancelled in the same run-loop turn does not act.
+    private var promptTimeoutGeneration = 0
+
+    /// The longest a hover or an open menu may hold the timeout. A pointer resting where the panel
+    /// appears would otherwise keep the prompt up, with discovery stopped for every app, forever.
+    static let maxPromptPauseSec: TimeInterval = 300
+
     /// Arm the prompt-timeout timer. Action is invoked on main only if state is still `.prompting(source:)` when the timer fires, guarding the race where the user acts after the timer is scheduled.
     func startPromptTimeout(
         for source: AppSource,
@@ -295,10 +390,59 @@ final class DetectionStateMachine {
         action: @escaping () -> Void
     ) {
         cancelPromptTimeout()
-        cancelPromptTimer = Schedulers.mainRunLoopOnce(timeoutSec) { [weak self] in
+        promptTimeout = (source: source, action: action, deadline: nil, remaining: nil)
+        schedulePromptTimeout(after: timeoutSec)
+    }
+
+    /// DET18 (F011): hover or an open chevron menu pauses the timer that acts, not only the panel's
+    /// hairline. Before this the bar froze while the real timer ran on and dismissed the panel
+    /// from under the pointer. Idempotent; a no-op with nothing armed.
+    func pausePromptTimeout() {
+        guard var armed = promptTimeout, let deadline = armed.deadline else { return }
+        cancelPromptTimer?()
+        cancelPromptTimer = nil
+        promptTimeoutGeneration += 1
+        armed.remaining = max(0, deadline.timeIntervalSince(clock()))
+        armed.deadline = nil
+        promptTimeout = armed
+        // The cap: a pause that outlives `maxPromptPauseSec` resumes on its own.
+        let generation = promptTimeoutGeneration
+        cancelPromptTimer = scheduler(Self.maxPromptPauseSec) { [weak self] in
+            DispatchQueue.main.async {
+                guard let self = self, self.promptTimeoutGeneration == generation else { return }
+                self.resumePromptTimeout()
+            }
+        }
+    }
+
+    /// Re-arm with the time that was left at the pause. Idempotent.
+    func resumePromptTimeout() {
+        guard let armed = promptTimeout, armed.deadline == nil, let remaining = armed.remaining else { return }
+        schedulePromptTimeout(after: remaining)
+    }
+
+    /// Whether the prompt timeout is armed and currently paused. For tests and logging.
+    var isPromptTimeoutPaused: Bool {
+        promptTimeout != nil && promptTimeout?.deadline == nil
+    }
+
+    private func schedulePromptTimeout(after seconds: TimeInterval) {
+        guard var armed = promptTimeout else { return }
+        armed.deadline = clock().addingTimeInterval(seconds)
+        armed.remaining = nil
+        promptTimeout = armed
+        let source = armed.source
+        let action = armed.action
+        cancelPromptTimer?()
+        promptTimeoutGeneration += 1
+        let generation = promptTimeoutGeneration
+        cancelPromptTimer = scheduler(seconds) { [weak self] in
             guard let self = self else { return }
             DispatchQueue.main.async {
+                guard self.promptTimeoutGeneration == generation else { return }
                 guard case .prompting(let src) = self.current, src == source else { return }
+                self.promptTimeout = nil
+                self.cancelPromptTimer = nil
                 action()
             }
         }
@@ -307,6 +451,8 @@ final class DetectionStateMachine {
     func cancelPromptTimeout() {
         cancelPromptTimer?()
         cancelPromptTimer = nil
+        promptTimeoutGeneration += 1
+        promptTimeout = nil
     }
 
     // MARK: - Deferred config refresh

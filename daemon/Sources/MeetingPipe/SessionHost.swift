@@ -95,6 +95,10 @@ protocol SessionStatusPresenting: AnyObject {
     /// which carries the same three values (ARCH6).
     func setStopping(file: URL, source: AppSource?, summaryMode: SummaryMode)
     func setSuppressed(_ source: AppSource, isStillSuppressed: @escaping () -> Bool)
+    /// DET18: the prompt timed out into a one-click offer. Same presentation lifetime as
+    /// `setSuppressed`, but it reads "Detected <app>" rather than a suppression, because nothing
+    /// was declined.
+    func setOffered(_ source: AppSource, isStillOffered: @escaping () -> Bool)
     func refreshMenuForPermissionChange()
 }
 
@@ -192,6 +196,10 @@ protocol SessionPromptPresenting: AnyObject {
         autoDismissAfter seconds: TimeInterval
     )
     func dismiss(animated: Bool)
+    /// DET18 item 6: whether the pointer is over the panel right now, for `prompt_dismissed`.
+    var isPointerOver: Bool { get }
+    /// DET18 item 4: a weak end arrived while the panel was up. The panel stays, saying so.
+    func markCallMayHaveEnded()
 }
 
 // A protocol requirement carries no default argument, but every `dismiss()` call

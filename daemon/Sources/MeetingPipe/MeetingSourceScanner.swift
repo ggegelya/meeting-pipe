@@ -35,6 +35,10 @@ final class MeetingSourceScanner {
         /// `unreadableNatives` is: that list filters `candidates`, and a refused tab never enters
         /// it. Feeds `browser_tab_rejected`.
         let rejectedBrowserTabs: [RejectedBrowserTab]
+        /// DET18: every enumerated candidate's span evidence, keyed by bundle id, including the
+        /// zero-signal natives `droppedCandidates` filters out. A running native is always
+        /// enumerated, so a bundle missing here is not running. Feeds the prompt hold.
+        let spanReadings: [String: SkippedMeetingLatch.Reading]
     }
 
     /// DET6: one plain-browser tab refused at the admission gate, carried out of the scan so the
@@ -151,7 +155,8 @@ final class MeetingSourceScanner {
                 winnerChanged: false,
                 droppedCandidates: dropped,
                 unreadableNatives: unreadable,
-                rejectedBrowserTabs: rejectedBrowserTabs
+                rejectedBrowserTabs: rejectedBrowserTabs,
+                spanReadings: MeetingSourceScanner.spanReadings(candidates: candidates, winnerBundleID: nil)
             )
         }
         let changed = lastScorerWinner?.bundleID != winner.source.bundleID
@@ -162,7 +167,11 @@ final class MeetingSourceScanner {
             winnerChanged: changed,
             droppedCandidates: dropped,
             unreadableNatives: unreadable,
-            rejectedBrowserTabs: rejectedBrowserTabs
+            rejectedBrowserTabs: rejectedBrowserTabs,
+            spanReadings: MeetingSourceScanner.spanReadings(
+                candidates: candidates,
+                winnerBundleID: winner.source.bundleID
+            )
         )
     }
 
@@ -429,10 +438,33 @@ final class MeetingSourceScanner {
     /// `NSWorkspace`. An unknown read (nothing matched, or the list would not enumerate) degrades to
     /// false, like every other signal in the tuple.
     func processAudioIsRunningInput(bundleID: String, kind: AppSourceKind, pid: pid_t) -> Bool {
+        processAudioRead(bundleID: bundleID, kind: kind, pid: pid) ?? false
+    }
+
+    /// DET18: the same read without the degrade, nil when unread or unresolved.
+    func processAudioRead(bundleID: String, kind: AppSourceKind, pid: pid_t) -> Bool? {
         guard MeetingSourceScanner.readsProcessAudio(bundleID: bundleID, kind: kind) else {
-            return false
+            return nil
         }
-        return processAudio.isRunningInput(bundleID: bundleID, pid: pid) ?? false
+        return processAudio.isRunningInput(bundleID: bundleID, pid: pid)
+    }
+
+    /// DET18: what one scan says about each candidate's call span. Pure.
+    static func spanReadings(
+        candidates: [MeetingSourceCandidate],
+        winnerBundleID: String?
+    ) -> [String: SkippedMeetingLatch.Reading] {
+        var readings: [String: SkippedMeetingLatch.Reading] = [:]
+        for c in candidates {
+            var reading = readings[c.source.bundleID] ?? SkippedMeetingLatch.Reading()
+            if let read = c.signals.processAudioRead {
+                reading.processAudio = (reading.processAudio ?? false) || read
+            }
+            reading.titleMatch = reading.titleMatch || c.signals.titleMatch
+            reading.isWinner = reading.isWinner || c.source.bundleID == winnerBundleID
+            readings[c.source.bundleID] = reading
+        }
+        return readings
     }
 
     /// Populate the signal tuple. Each signal degrades to false on a read failure, and every signal
@@ -471,11 +503,8 @@ final class MeetingSourceScanner {
         // skipping the read: resolution is now a whole-list enumeration, heavier than the old
         // per-process translate, so `ProcessAudioScanProbe` enumerates once per scan and matches every
         // candidate against that one snapshot.
-        signals.processAudioIsRunningInput = processAudioIsRunningInput(
-            bundleID: bundleID,
-            kind: kind,
-            pid: pid
-        )
+        signals.processAudioRead = processAudioRead(bundleID: bundleID, kind: kind, pid: pid)
+        signals.processAudioIsRunningInput = signals.processAudioRead ?? false
 
         if axTrusted {
             let axApp = AXUIElementCreateApplication(pid)

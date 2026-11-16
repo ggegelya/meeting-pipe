@@ -58,6 +58,12 @@ struct MeetingSourceCandidate: Equatable {
         /// signal a native still carries when AX is denied (DET11's blackout).
         var processAudioIsRunningInput: Bool
 
+        /// DET18: the same read before it degrades, nil when it was not read or did not resolve.
+        /// The prompt hold reads this rather than the Bool above: DET8 measured an audio client
+        /// re-registering mid-call, and an unknown taken as false would end a skipped live call's
+        /// span on that blip.
+        var processAudioRead: Bool?
+
         /// SCShareableContent lists this bundle as an active source. Reserved; scanner always passes `false` pending async pre-scan wiring.
         var shareableContentActive: Bool
 
@@ -67,13 +73,15 @@ struct MeetingSourceCandidate: Equatable {
             muteButton: Bool = false,
             titleMatch: Bool = false,
             processAudioIsRunningInput: Bool = false,
-            shareableContentActive: Bool = false
+            shareableContentActive: Bool = false,
+            processAudioRead: Bool? = nil
         ) {
             self.callingControlsToolbar = callingControlsToolbar
             self.leaveButton = leaveButton
             self.muteButton = muteButton
             self.titleMatch = titleMatch
             self.processAudioIsRunningInput = processAudioIsRunningInput
+            self.processAudioRead = processAudioRead ?? (processAudioIsRunningInput ? true : nil)
             self.shareableContentActive = shareableContentActive
         }
     }

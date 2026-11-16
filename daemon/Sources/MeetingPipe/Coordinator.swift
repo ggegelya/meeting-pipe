@@ -510,6 +510,10 @@ final class Coordinator: NSObject {
         discoveryWatcher.onScanWithoutWinner = { [weak self] in
             self?.session.handleScanWithoutWinner()
         }
+        // DET18: the prompt hold's span is fed from every completed scan, ahead of its winner.
+        discoveryWatcher.onScanReadings = { [weak self] readings in
+            self?.session.handleScanReadings(readings)
+        }
         // PERF17: outside idle every consumer of a scan returns at this same guard, so the
         // watcher skips the scan (and its AX walks) instead of producing log lines nobody reads.
         discoveryWatcher.isAcceptingPrompts = { [weak self] in

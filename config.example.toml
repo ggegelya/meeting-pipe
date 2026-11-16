@@ -63,16 +63,17 @@ flag_moment_hotkey = "ctrl+option+f"
 off_the_record_hotkey = "ctrl+option+o"
 prompt_timeout_sec = 30
 # What happens when you ignore the prompt for `prompt_timeout_sec`.
-#   "skip"   : (default) suppress the call. The menu bar shows
-#              "Suppressed (<app>)" while the meeting is still detected, and a
-#              "Skipped <app>" notification offers a Start recording action that
-#              begins the recording late, bypassing the cooldown.
+#   "skip"   : (default) collapse the panel into a one-click offer, not a
+#              skip (DET18). The menu bar shows "Detected <app>" with a
+#              "Record this <app> meeting" row, and a notification offers a
+#              Start recording action, for as long as the call is up. No
+#              cooldown is armed, so the next call still prompts.
 #   "record" : auto-start an auto-summary recording.
 #   "byo"    : auto-start a BYO (manual-paste) recording, no Anthropic call.
 # Also a segmented control in Preferences -> Prompt.
 default_prompt_action = "skip"
-# After a recording for a bundle ends (or its prompt is skipped /
-# timed out), suppress detector-driven prompts for the same bundle for
+# After a recording for a bundle ends (or its prompt is skipped; a
+# timeout's offer arms none since DET18), suppress detector-driven prompts for the same bundle for
 # this many seconds. Catches the post-call "Teams chat surface
 # reclaims the mic" case where a fresh prompt would otherwise pop up
 # 2-3 seconds after a stop flush. The manual hotkey always bypasses

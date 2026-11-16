@@ -39,8 +39,9 @@ extension NotifierDelegate {
 /// Why a detected meeting was not recorded, which decides how loudly the skip banner
 /// asks about it (UX10 + DET7).
 enum SkipOrigin: Equatable {
-    /// The prompt timed out with the skip default. The user may never have seen the
-    /// prompt at all, so the banner is the first surface and it makes a sound.
+    /// The prompt timed out with the skip default and collapsed into an offer (DET18). The
+    /// user may never have seen the prompt at all, so the banner is the first surface and it
+    /// makes a sound.
     case timedOut
     /// The user pressed Skip, or the prompt's × close. That is a decision, not a miss,
     /// so the banner is a silent undo affordance rather than an alert.
@@ -219,12 +220,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// user made that call deliberately and does not need to be alerted to their own click.
     func notifySkippedMeeting(source: AppSource, origin: SkipOrigin) {
         let content = UNMutableNotificationContent()
-        content.title = "Skipped \(source.displayName)"
         switch origin {
         case .timedOut:
-            content.body = "Meeting prompt timed out. Start recording?"
+            // DET18: a timeout is no longer a skip. Nothing was declined; the offer to record
+            // stays for as long as the call is up.
+            content.title = "\(source.displayName) meeting detected"
+            content.body = "Not recording yet. Start recording?"
             content.sound = .default
         case .dismissed:
+            content.title = "Skipped \(source.displayName)"
             content.body = "Meeting is still running. Start recording?"
         }
         content.categoryIdentifier = Self.skipLateCategory

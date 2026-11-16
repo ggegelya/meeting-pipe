@@ -100,6 +100,10 @@ enum StatusBarModel {
         /// candidate can outlive either, so keying the row off the state would miss the
         /// case the owner actually reported.
         var suppressedCandidateAppName: String?
+        /// DET18: the `.suppressed` presentation is a timeout's offer, not a skip. Nothing was
+        /// declined, so it reads as a detected meeting (with the record row) rather than a
+        /// suppression.
+        var suppressedIsOffer: Bool
 
         init(
             state: AppState = .idle,
@@ -117,7 +121,8 @@ enum StatusBarModel {
             finishSetupTitle: String? = nil,
             disableAutoRestart: Bool = false,
             launchAgentEnabled: Bool = true,
-            suppressedCandidateAppName: String? = nil
+            suppressedCandidateAppName: String? = nil,
+            suppressedIsOffer: Bool = false
         ) {
             self.state = state
             self.workflowName = workflowName
@@ -135,6 +140,7 @@ enum StatusBarModel {
             self.disableAutoRestart = disableAutoRestart
             self.launchAgentEnabled = launchAgentEnabled
             self.suppressedCandidateAppName = suppressedCandidateAppName
+            self.suppressedIsOffer = suppressedIsOffer
         }
     }
 
@@ -186,7 +192,7 @@ enum StatusBarModel {
         case .prompting(let source):
             return "Detected \(source.displayName)"
         case .suppressed(let source):
-            return "Suppressed (\(source.displayName))"
+            return i.suppressedIsOffer ? "Detected \(source.displayName)" : "Suppressed (\(source.displayName))"
         case .recording:
             // TECH-B5: show the active workflow so the destination is confirmable
             // at a glance; NDA mode gets a marker.
@@ -228,7 +234,10 @@ enum StatusBarModel {
         switch i.state {
         case .idle:                  return "MeetingPipe: Idle\(suffix)"
         case .prompting(let src):    return "MeetingPipe: Detected \(src.displayName)\(suffix)"
-        case .suppressed(let src):   return "MeetingPipe: Suppressed (\(src.displayName))\(suffix)"
+        case .suppressed(let src):
+            return i.suppressedIsOffer
+                ? "MeetingPipe: Detected \(src.displayName)\(suffix)"
+                : "MeetingPipe: Suppressed (\(src.displayName))\(suffix)"
         case .recording:             return "MeetingPipe: Recording\(suffix)"
         case .stopping:              return "MeetingPipe: Stopping…\(suffix)"
         }

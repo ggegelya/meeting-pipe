@@ -6,38 +6,22 @@ import Foundation
 import MeetingPipeCore
 
 extension Coordinator: NotifierDelegate {
+    // DET18 item 5: the three outcomes resolve on the session against the source it holds, so a
+    // pick that lands after the timeout collapsed the panel acts on the offer instead of vanishing.
     func notifier(_ notifier: Notifier, didChooseRecord source: AppSource) {
-        guard case .prompting(let pending) = stateMachine.current, pending == source else { return }
-        session.beginRecording(source: source, summaryMode: .auto)
+        session.resolvePromptPick(.record, source: source)
     }
 
     func notifier(_ notifier: Notifier, didChooseSkip source: AppSource) {
-        guard case .prompting(let pending) = stateMachine.current, pending == source else { return }
-        // Skip (and the prompt's × close, which routes here) = don't record this meeting.
-        // Return to idle (so meetings in other apps are still detected) and cool down this
-        // bundle so a post-call mic flicker - or the same still-live meeting - can't
-        // re-prompt immediately.
-        stateMachine.abandonPrompt(source: source)
-        // DET7: an explicit skip now gets the same two quiet surfaces a timeout-skip has
-        // had since UX10, because the way back in is the whole point of this task and the
-        // owner's report was about an explicit skip. The menu-bar label reads the skip
-        // latch and collapses to Idle on its own once the meeting ends (~15 s), and it is
-        // what makes the "Record this <app> meeting" row legible in context. The banner is
-        // silent here: the user chose this, so it is an undo affordance, not an alert.
-        let bundleID = source.bundleID
-        statusBar.setSuppressed(source) { [weak self] in
-            self?.stateMachine.isSkipLatched(bundleID: bundleID) ?? false
-        }
-        notifier.notifySkippedMeeting(source: source, origin: .dismissed)
-        Log.writeLine("daemon", "user skipped (\(source.bundleID))")
-        Log.event(category: "coordinator", action: "user_skipped", attributes: [
-            "bundle_id": source.bundleID,
-        ])
+        // Skip (and the prompt's × close, which routes here) = don't record this meeting. The
+        // session returns to idle (so meetings in other apps are still detected) and holds this
+        // call's prompt off for its span, with DET7's quiet undo surfaces.
+        session.resolvePromptPick(.skip, source: source)
     }
 
     func notifier(_ notifier: Notifier, didChooseAlways source: AppSource) {
         // END20: the body lives on the session, guarded like Record and Skip, so it is testable.
-        session.chooseAlways(source: source)
+        session.resolvePromptPick(.always, source: source)
     }
 
     func notifier(_ notifier: Notifier, didOpenPage url: URL) {
@@ -137,19 +121,22 @@ extension Coordinator: NotifierDelegate {
 }
 
 extension Coordinator: MeetingPromptDelegate {
-    // Panel and banner share one handler per outcome.
+    // The panel's picks: refused visibly when neither the prompt nor its offer is still there.
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecord source: AppSource) {
-        notifier(notifier, didChooseRecord: source)
+        if !session.resolvePromptPick(.record, source: source) { NSSound.beep() }
     }
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseSkip source: AppSource) {
-        notifier(notifier, didChooseSkip: source)
+        if !session.resolvePromptPick(.skip, source: source) { NSSound.beep() }
     }
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseAlways source: AppSource) {
-        notifier(notifier, didChooseAlways: source)
+        if !session.resolvePromptPick(.always, source: source) { NSSound.beep() }
     }
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseRecordBYO source: AppSource) {
-        guard case .prompting(let pending) = stateMachine.current, pending == source else { return }
-        session.beginRecording(source: source, summaryMode: .byo)
+        if !session.resolvePromptPick(.recordBYO, source: source) { NSSound.beep() }
+    }
+
+    func meetingPrompt(_ prompt: MeetingPromptWindow, didPauseTimeout paused: Bool) {
+        session.setPromptTimeoutPaused(paused)
     }
 
     func meetingPrompt(_ prompt: MeetingPromptWindow, didChooseWorkflow id: UUID?) {

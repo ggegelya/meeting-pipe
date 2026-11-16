@@ -172,6 +172,25 @@ final class MeetingSourceScannerTests: XCTestCase {
 
     /// The emitted line, not a re-spelling of it: this is the function `emitRejectedBrowserTabs`
     /// calls, writing through the real `Log.event` into a redirected logs dir (the DET11 shape).
+    /// DET18: the scan hands the prompt hold every candidate it enumerated, including a zero-signal
+    /// native the dropped list filters out (that is the both-absent read that ends a call's span),
+    /// and it keeps an unresolved microphone read as nil rather than false.
+    func test_span_readings_cover_every_candidate_and_keep_an_unknown_mic_read() {
+        let teams = MeetingSourceCandidate(
+            source: AppSource(bundleID: "com.microsoft.teams2", displayName: "Teams"),
+            signals: .init(processAudioIsRunningInput: false, processAudioRead: false)
+        )
+        let zoom = MeetingSourceCandidate(
+            source: AppSource(bundleID: "us.zoom.xos", displayName: "Zoom"),
+            signals: .init(callingControlsToolbar: true, muteButton: true, titleMatch: true)
+        )
+        let result = MeetingSourceScanner().scan(candidates: [teams, zoom], axTrusted: true)
+        XCTAssertEqual(result.winner?.source.bundleID, "us.zoom.xos")
+        XCTAssertTrue(result.droppedCandidates.isEmpty, "the idle Teams carries no signal")
+        XCTAssertEqual(result.spanReadings["com.microsoft.teams2"], .init(processAudio: false))
+        XCTAssertEqual(result.spanReadings["us.zoom.xos"], .init(processAudio: nil, titleMatch: true, isWinner: true))
+    }
+
     func test_refused_browser_tab_emits_browser_tab_rejected() throws {
         let fm = FileManager.default
         let logs = fm.temporaryDirectory

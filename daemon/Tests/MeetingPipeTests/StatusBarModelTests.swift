@@ -241,6 +241,18 @@ final class StatusBarModelTests: XCTestCase {
         )
     }
 
+    /// DET18: a timeout's offer reads as a detected meeting, not a suppression, and keeps the
+    /// one-click row: nothing was declined.
+    func test_an_offer_reads_detected_and_keeps_the_record_row() {
+        let i = M.Inputs(state: .suppressed(source: source()), suppressedCandidateAppName: "Zoom", suppressedIsOffer: true)
+        XCTAssertEqual(M.title(i), " Detected Zoom")
+        XCTAssertEqual(M.headerLabel(i), "MeetingPipe: Detected Zoom")
+        XCTAssertEqual(
+            M.rows(i),
+            [.recordSuppressedMeeting(appName: "Zoom", title: "Record this Zoom meeting"), .quitWithoutRelaunch]
+        )
+    }
+
     /// The row is keyed off the candidate, not off `.suppressed`. An explicit Skip and a
     /// timeout-skip put the menu bar in different presentation states, and the owner's
     /// report was about the explicit one, so keying it off the state would miss it.

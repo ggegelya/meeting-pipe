@@ -459,43 +459,34 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         XCTAssertEqual(host.stateMachine.liveSuppressedCandidate()?.displayName, "Microsoft Teams")
     }
 
-    /// DET9's consequence at the surface that shows it. The menu bar's `Suppressed (<app>)` label
-    /// and the "Record this <app> meeting" row both read the skip latch, so a latch that lapses
-    /// during a mid-call stretch of scans with no confident winner takes DET7's whole attach
-    /// affordance with it, while the call is still running. Walk the quiet discovery cadence
-    /// across the 48 s gap the owner's log actually recorded on 2026-07-27.
+    /// DET9's consequence at the surface that shows it, re-read for DET18. The menu bar's
+    /// `Suppressed (<app>)` label and the "Record this <app> meeting" row both read the hold, so a
+    /// hold that lapses during a mid-call stretch of scans with no confident winner takes DET7's
+    /// whole attach affordance with it. With the hold bound to the call's microphone span, a stretch
+    /// of scans that read the microphone live and find no winner keeps it however long it runs.
     func test_cachedCandidate_survivesAMidCallStretchWithNoConfidentWinner() {
         let (controller, host) = makeController()
         let teams = source("com.microsoft.teams2")
-        let sightedAt = Date()
         skipThenSight(controller, host, teams)
 
-        let idle = DiscoveryScanCadence.discoveryDefault.idle
-        for missedPolls in 1...4 {
-            let now = sightedAt.addingTimeInterval(idle * Double(missedPolls))
-            XCTAssertTrue(
-                host.stateMachine.isSkipLatched(bundleID: teams.bundleID, now: now),
-                "the menu bar drops back to Start Recording \(idle * Double(missedPolls)) s into a live call"
-            )
-            XCTAssertNotNil(
-                host.stateMachine.liveSuppressedCandidate(now: now),
-                "and the meeting the user skipped is no longer attachable, so a manual start records generic"
-            )
+        for _ in 1...10 {
+            controller.handleScanReadings([teams.bundleID: .init(processAudio: true)])
+            XCTAssertTrue(host.stateMachine.isSkipLatched(bundleID: teams.bundleID))
+            XCTAssertNotNil(host.stateMachine.liveSuppressedCandidate())
         }
     }
 
-    func test_cachedCandidate_clearsWhenTheLatchLapses() {
+    func test_cachedCandidate_clearsWhenTheSpanEnds() {
         let (controller, host) = makeController()
         let teams = source("com.microsoft.teams2")
         skipThenSight(controller, host, teams)
         XCTAssertNotNil(host.stateMachine.liveSuppressedCandidate())
 
-        // Discovery stops seeing the meeting for a whole grace: the latch lapses and the stale
-        // candidate goes with it. Otherwise a start hours later would attribute itself to a
-        // meeting that ended, which is worse than recording generic.
-        let afterGrace = Date().addingTimeInterval(DetectionStateMachine.skipLatchGraceSec + 1)
-        XCTAssertNil(host.stateMachine.liveSuppressedCandidate(now: afterGrace))
-        // And the drop is durable, not just a filtered read.
+        // The call ended (the microphone reads off and nothing wins the scan): the hold and the
+        // stale candidate go together, so a start later records generic rather than attributing
+        // itself to a meeting that ended.
+        controller.handleScanReadings([teams.bundleID: .init(processAudio: false)])
+        controller.handleScanReadings([teams.bundleID: .init(processAudio: false)])
         XCTAssertNil(host.stateMachine.liveSuppressedCandidate())
     }
 
@@ -555,15 +546,12 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
                      "a truly idle manual start has nothing to attach to and stays generic")
     }
 
-    func test_toggleManual_afterTheLatchLapses_recordsGeneric() async {
+    func test_toggleManual_afterTheSpanEnds_recordsGeneric() async {
         let (controller, host) = makeController()
         let teams = source("com.microsoft.teams2")
         skipThenSight(controller, host, teams)
-        // Read once past the grace so the stale candidate is dropped, exactly as the menu
-        // row's read would have done when the user next opened it.
-        _ = host.stateMachine.liveSuppressedCandidate(
-            now: Date().addingTimeInterval(DetectionStateMachine.skipLatchGraceSec + 1)
-        )
+        controller.handleScanReadings([teams.bundleID: .init(processAudio: false)])
+        controller.handleScanReadings([teams.bundleID: .init(processAudio: false)])
 
         controller.toggleManual()
         await waitUntil({ host.stateMachine.current.isRecording }, "the manual recording to start")
@@ -758,7 +746,9 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         await waitUntil({ !host.notifierSpy.skipped.isEmpty }, "the timeout-skip notification")
 
         XCTAssertEqual(host.notifierSpy.skipped.last?.origin, .timedOut)
-        XCTAssertEqual(host.statusBarSpy.suppressedSources.last, teams)
+        // DET18: the timeout collapses into an offer, not a suppression.
+        XCTAssertEqual(host.statusBarSpy.offeredSources.last, teams)
+        XCTAssertTrue(host.statusBarSpy.suppressedSources.isEmpty)
     }
 
     // MARK: - The invariant ARCHITECTURE.md declares
