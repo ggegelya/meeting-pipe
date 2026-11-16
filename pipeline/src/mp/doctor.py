@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 
@@ -629,32 +631,119 @@ def check_last_backup(home: Path | None = None, now: datetime | None = None) -> 
     _info(f"last backup {when}{suffix}: {data.get('archive', marker)}")
 
 
-def _synced_roots(cfg: Config, home: Path | None) -> list[tuple[str, cloudsync.SyncProvider]]:
+class _SyncedRoot(NamedTuple):
+    label: str
+    provider: cloudsync.SyncProvider
+    # Whether this root is FAIL-level under a zero-egress promise (SEC35). The library, the
+    # digests, the published folder and the backups are: they hold the data those modes
+    # promise not to send anywhere. The vault and the LAN share are chosen destinations, so
+    # they are WARN unless regulated_mode is on and the global sinks list them.
+    strict: bool
+
+
+def _backup_destinations(home: Path | None) -> list[Path]:
+    """Where `mp backup` writes, as far as this Mac records it (SEC35): the parent of the
+    last archive in the backup marker, and the destination baked into the schedule agent's
+    `ProgramArguments`. The destination is in the daemon's UserDefaults, not `config.toml`,
+    so these two are all doctor can see. A relative archive path (a hand-typed CLI run) is
+    skipped rather than guessed at, and an unreadable file is simply absent."""
+    found: list[Path] = []
+    try:
+        archive = json.loads(storage.backup_marker(home).read_text(encoding="utf-8")).get("archive")
+    except (OSError, ValueError, AttributeError):
+        archive = None
+    if isinstance(archive, str) and archive:
+        path = Path(archive).expanduser()
+        if path.is_absolute():
+            found.append(path.parent)
+    plist = (home or Path.home()) / "Library" / "LaunchAgents" / "com.meetingpipe.backup.plist"
+    try:
+        with plist.open("rb") as handle:
+            args = plistlib.load(handle).get("ProgramArguments")
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        args = None
+    if isinstance(args, list) and "backup" in args:
+        at = args.index("backup") + 1
+        if at < len(args) and isinstance(args[at], str) and args[at]:
+            path = Path(args[at]).expanduser()
+            if path.is_absolute():
+                found.append(path)
+    return found
+
+
+def _folder_has_files(path: Path) -> bool:
+    try:
+        return any(p.is_file() for p in path.expanduser().rglob("*"))
+    except OSError:
+        return False
+
+
+def _synced_roots(
+    cfg: Config, home: Path | None, workflows_dir: Path | None = None
+) -> list[_SyncedRoot]:
     """Every on-disk root meeting-pipe writes to that a sync client owns.
 
     Not just the recordings dir: `digests/` and the filesystem sink's `published/`
     hold generated summaries, and the daemon's assisted move deliberately relocates
-    only the recordings and digests. Deduped by sync root, since the three are
-    usually siblings inside one synced tree and saying so three times is noise.
+    only the recordings and digests. The roots (SEC35):
+
+    - the library and its `digests/`;
+    - the published folder, whenever anything can send meetings there: `filesystem` in
+      the global sinks, `regulated_mode`, any NDA workflow (`apply_overrides` forces
+      every zero-egress meeting onto this sink, and so does an unreadable sidecar),
+      a workflow that lists a filesystem sink, or a folder that already holds files;
+    - the backup destination (the last archive's folder and the schedule agent's), since
+      an archive holds all audio, transcripts, voiceprints and the roster;
+    - the Obsidian vault and the LAN share when a sink or a workflow names them. A vault
+      copies the recording itself in beside the note.
+
+    Deduped by sync root, since several are usually siblings inside one synced tree and
+    saying so repeatedly is noise; the deduped line is strict if any of its roots is.
     """
     library = cfg.recording.output_dir
-    roots: list[tuple[str, Path]] = [
-        ("library", library),
-        ("digests", storage.digests_dir(library)),
-    ]
-    if "filesystem" in cfg.output.sinks:
-        # `filesystem.output_dir` is a raw string with a possible `~`;
-        # `detect_sync_provider` expands it.
-        roots.append(("published summaries", Path(cfg.filesystem.output_dir)))
+    nda = bool(workflows.nda_workflow_names(workflows_dir))
+    workflow_sinks = workflows.sink_types_in_use(workflows_dir)
+    global_sinks = set(cfg.output.sinks)
+    zero_egress = cfg.modes.regulated_mode or nda
 
-    found: list[tuple[str, cloudsync.SyncProvider]] = []
-    seen: set[Path] = set()
-    for label, path in roots:
+    roots: list[tuple[str, Path, bool]] = [
+        ("library", library, True),
+        ("digests", storage.digests_dir(library), True),
+    ]
+    # `filesystem.output_dir` is a raw string with a possible `~`; `detect_sync_provider`
+    # expands it.
+    published = Path(cfg.filesystem.output_dir)
+    if (
+        "filesystem" in global_sinks or zero_egress or "filesystem" in workflow_sinks
+        or _folder_has_files(published)
+    ):
+        roots.append(("published summaries", published, True))
+    for destination in _backup_destinations(home):
+        roots.append(("backups", destination, True))
+    if "obsidian" in global_sinks | workflow_sinks and cfg.obsidian.vault_path:
+        roots.append((
+            "Obsidian vault", Path(cfg.obsidian.vault_path),
+            cfg.modes.regulated_mode and "obsidian" in global_sinks,
+        ))
+    if "lan" in global_sinks | workflow_sinks and cfg.lan.mount_path:
+        roots.append((
+            "LAN share", Path(cfg.lan.mount_path),
+            cfg.modes.regulated_mode and "lan" in global_sinks,
+        ))
+
+    found: list[_SyncedRoot] = []
+    index: dict[Path, int] = {}
+    for label, path, strict in roots:
         provider = cloudsync.detect_sync_provider(path, home=home)
-        if provider is None or provider.root in seen:
+        if provider is None:
             continue
-        seen.add(provider.root)
-        found.append((label, provider))
+        if provider.root in index:
+            at = index[provider.root]
+            if strict and not found[at].strict:
+                found[at] = found[at]._replace(strict=True)
+            continue
+        index[provider.root] = len(found)
+        found.append(_SyncedRoot(label, provider, strict))
     return found
 
 
@@ -678,7 +767,7 @@ def check_library_sync(
     exception is not worth breaking every caller that relies on that contract.
     Grep for `[FAIL]`.
     """
-    synced = _synced_roots(cfg, home)
+    synced = _synced_roots(cfg, home, workflows_dir)
     if not synced:
         _ok("no meeting data is inside a cloud-sync folder")
         return
@@ -686,8 +775,8 @@ def check_library_sync(
     nda_workflows = workflows.nda_workflow_names(workflows_dir)
     zero_egress_promised = cfg.modes.regulated_mode or bool(nda_workflows)
 
-    for label, provider in synced:
-        if zero_egress_promised:
+    for label, provider, strict in synced:
+        if zero_egress_promised and strict:
             _fail(f"{label} is synced to {provider.name}, and this Mac promises zero egress")
         else:
             _warn(f"{label} is synced to {provider.name}; this data leaves your Mac")
@@ -701,7 +790,10 @@ def check_library_sync(
         _info("summarization stays on-device, but the recording is uploaded after it is written")
 
     _info("fix: Preferences > Storage > Move library..., and pick a folder outside the synced tree")
-    if any(p.name == "iCloud Drive" for _, p in synced):
+    if any(r.label in {"backups", "Obsidian vault", "LAN share"} for r in synced):
+        _info("     backups, the vault and the LAN share are chosen separately: pick a folder "
+              "outside the synced tree for each")
+    if any(r.provider.name == "iCloud Drive" for r in synced):
         _info("     or turn off System Settings > [your name] > iCloud > Desktop & Documents Folders")
 
 

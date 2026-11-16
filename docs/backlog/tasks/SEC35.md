@@ -2,9 +2,9 @@
 id: SEC35
 title: Doctor's cloud-sync check never looks at the folder NDA and regulated meetings publish to, or at the backup destination, so it reports an all-clear while both sit in iCloud
 category: Security
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). F018, F137, F086: `doctor._synced_roots` adds the published folder only when the global `output.sinks` lists filesystem, but `apply_overrides` forces every NDA, regulated or unreadable-sidecar meeting onto that sink, and no check looks at the backup destination or the Obsidian vault; SEC12's every-synced-root claim does not hold. The zero-egress legs are latent on this Mac (regulated off, no NDA workflow); the vault leg is live (110 notes and 110 WAVs in a vault under the iCloud-synced Desktop folder, never named by doctor). Add the published folder, the backup destination (from the backup marker and the backup agent) and the vault and LAN targets as doctor roots, and warn in the Storage pane's backup picker. Promote before enabling regulated or NDA. [Spec](./SEC35.md)
+comment: Shipped 2026-11-16 (ci-local fences, pipeline and daemon lanes green; see Progress): doctor checks the published folder under any condition that can put meetings there, the backup destination (marker and agent plist), and the vault and LAN roots; Storage backup picker warns on a synced folder. Owed - the owner's approval to close; no owner walkthrough written.
 ---
 
 # SEC35: Doctor's cloud-sync check never looks at the folder NDA and regulated meetings publish to, or at the backup destination, so it reports an all-clear while both sit in iCloud
@@ -50,3 +50,6 @@ All in `pipeline/src/mp/doctor.py` unless named.
 - `test_workflows.py`: the new sink reader returns the sink types across workflow TOMLs, skipping malformed files like its neighbours.
 - Swift: the picker's pure decision returns a warning for a synced path, the stronger wording under regulated mode or an NDA workflow, and nothing for a local path.
 - `cd pipeline && uv run --extra dev pytest -q` and `swift test` green with the new test counts in the commit body; ruff and pyright green; `bash scripts/ci-local.sh` green. The `_synced_roots` docstring, README's doctor section and CONVENTIONS say what is checked, in the same commit.
+
+**Progress (2026-11-16):** shipped as specced. Decisions that were not in the spec: (a) `_synced_roots` returns `_SyncedRoot(label, provider, strict)` so severity is per root: the library, digests, published folder and backups are FAIL under a zero-egress promise, the vault and LAN share WARN unless `regulated_mode` is on and the global sinks list them (SEC18 item 1 has not landed, so FAIL is the pinned current rule), and a deduped line is strict if any of its roots is; (b) the backup agent's destination is read as the argument after `backup` in `ProgramArguments`; (c) the test helper `_storage_cfg` now pins the published folder beside the library, because its default is under the real home and, once doctor looks at it whenever it holds files, would make those tests depend on the machine; (d) the picker warning sits in the section footer, below an error and a restore line and above the backup age, and is set only when a destination is chosen (doctor covers one chosen earlier). Not done, by design: refusing a synced destination (SEC18 item 5) and the publish-time gate (SEC18 item 2).
+

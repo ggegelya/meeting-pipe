@@ -425,7 +425,8 @@ meeting-pipe keeps summarization on your Mac. It cannot keep macOS from syncing 
 This is an operating-system behaviour, not something the app can override, so meeting-pipe detects it and tells you:
 
 - **Preferences ▸ Storage** shows a **Cloud sync** panel naming the provider, with a **Move library…** button.
-- `mp doctor` prints `[WARN] library is synced to ...` under `== storage ==`, and checks the `digests/` and `published/` folders too.
+- `mp doctor` prints `[WARN] library is synced to ...` under `== storage ==`, and checks every other place meeting data goes: the `digests/` folder; the `published/` folder whenever anything can send meetings there (the filesystem sink, regulated mode, an NDA workflow, a workflow with a filesystem sink, or a folder that already holds files, since NDA and regulated meetings are forced onto it); the backup destination (the folder of the last archive and the one the backup schedule uses, since an archive holds all your audio, transcripts and voiceprints); and the Obsidian vault and LAN share when a sink or workflow names them.
+- **Preferences ▸ Storage ▸ Choose destination…** for backups warns, without refusing, when the folder you pick is inside a sync folder.
 - Under `regulated_mode`, or on a Mac with any NDA workflow, the same finding is a `[FAIL]`, not a warning. Those modes promise that nothing leaves your Mac, and a synced library breaks that promise no matter what the summarizer does. (`mp doctor` still exits 0 either way; it is a diagnostic, not a gate. Grep for `[FAIL]` if you want to fail a script on it.)
 
 **To fix it**, either move the library or turn the sync off:

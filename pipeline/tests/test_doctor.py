@@ -224,7 +224,13 @@ def test_identity_probe_fails_loudly_on_a_foreign_listener(capsys, monkeypatch) 
 
 
 def _storage_cfg(library: Path) -> Config:
-    return Config.model_validate({"recording": {"output_dir": str(library)}})
+    # The published folder is pinned beside the library: its default is under the REAL home,
+    # and since SEC35 doctor looks at it whenever it holds files, which would make these tests
+    # depend on the machine that runs them.
+    return Config.model_validate({
+        "recording": {"output_dir": str(library)},
+        "filesystem": {"output_dir": str(library.parent / "published-elsewhere")},
+    })
 
 
 def test_check_storage_reports_the_library_size(capsys, tmp_path, monkeypatch) -> None:
@@ -360,6 +366,7 @@ def test_check_library_sync_warns_when_synced_and_nothing_promises_zero_egress(
 def test_check_library_sync_fails_under_regulated_mode(capsys, tmp_path) -> None:
     cfg = Config.model_validate({
         "recording": {"output_dir": str(_synced_library(tmp_path))},
+        "filesystem": {"output_dir": str(tmp_path / "published-elsewhere")},
         "modes": {"regulated_mode": True},
     })
     check_library_sync(cfg, home=tmp_path, workflows_dir=tmp_path / "none")
@@ -453,6 +460,7 @@ def test_doctor_main_still_exits_zero_on_a_hard_fail(monkeypatch, tmp_path) -> N
     # invocation on a half-configured Mac.
     cfg = Config.model_validate({
         "recording": {"output_dir": str(_synced_library(tmp_path))},
+        "filesystem": {"output_dir": str(tmp_path / "published-elsewhere")},
         "modes": {"regulated_mode": True},
     })
     monkeypatch.setattr("mp.doctor.check_secrets", lambda: dict.fromkeys(
@@ -648,3 +656,149 @@ def test_app_index_names_other_indexed_copies_when_ours_is_missing(
     out = capsys.readouterr().out
     assert "[FAIL]" in out
     assert "/Applications/MeetingPipe.app" in out
+
+
+# ---------- SEC35: the other roots (published folder, backups, vault, LAN) -------------------
+
+
+def _local_library(tmp_path: Path) -> Path:
+    library = tmp_path / "Meetings" / "raw"
+    library.mkdir(parents=True, exist_ok=True)
+    return library
+
+
+def _synced_published(tmp_path: Path) -> Path:
+    published = tmp_path / "Library" / "CloudStorage" / "OneDrive-Contoso" / "published"
+    published.mkdir(parents=True)
+    return published
+
+
+def _sec35_cfg(tmp_path: Path, published: Path | None = None, **extra) -> Config:
+    return Config.model_validate({
+        "recording": {"output_dir": str(_local_library(tmp_path))},
+        "filesystem": {"output_dir": str(published or tmp_path / "published-local")},
+        **extra,
+    })
+
+
+def _sink_workflow(tmp_path: Path, sink: str) -> Path:
+    directory = tmp_path / "workflows"
+    directory.mkdir(exist_ok=True)
+    (directory / f"{sink}.toml").write_text(
+        f'name = "uses {sink}"\n\n[[sinks]]\ntype = "{sink}"\n', encoding="utf-8")
+    return directory
+
+
+def test_an_nda_workflow_makes_a_synced_published_folder_a_fail_under_default_sinks(capsys, tmp_path) -> None:
+    # The audit's reproduction: default sinks, a local library, the published folder in a synced
+    # tree. apply_overrides forces every NDA meeting onto that folder, so it has to be checked.
+    cfg = _sec35_cfg(tmp_path, _synced_published(tmp_path))
+    check_library_sync(cfg, home=tmp_path, workflows_dir=_nda_workflows(tmp_path))
+    out = capsys.readouterr().out
+    assert "[FAIL] published summaries is synced to OneDrive" in out
+
+
+def test_regulated_mode_makes_a_synced_published_folder_a_fail(capsys, tmp_path) -> None:
+    cfg = _sec35_cfg(tmp_path, _synced_published(tmp_path), modes={"regulated_mode": True})
+    check_library_sync(cfg, home=tmp_path, workflows_dir=tmp_path / "none")
+    assert "[FAIL] published summaries is synced to OneDrive" in capsys.readouterr().out
+
+
+def test_a_workflow_with_a_filesystem_sink_makes_the_published_folder_a_warn(capsys, tmp_path) -> None:
+    cfg = _sec35_cfg(tmp_path, _synced_published(tmp_path))
+    check_library_sync(cfg, home=tmp_path, workflows_dir=_sink_workflow(tmp_path, "filesystem"))
+    out = capsys.readouterr().out
+    assert "[WARN] published summaries is synced to OneDrive" in out
+    assert "[FAIL]" not in out
+
+
+def test_an_empty_or_absent_published_folder_adds_nothing_without_a_reason(capsys, tmp_path) -> None:
+    published = _synced_published(tmp_path)        # exists, empty, no condition holds
+    check_library_sync(_sec35_cfg(tmp_path, published), home=tmp_path, workflows_dir=tmp_path / "none")
+    assert "[ OK ] no meeting data is inside a cloud-sync folder" in capsys.readouterr().out
+    absent = tmp_path / "Library" / "CloudStorage" / "OneDrive-Contoso" / "never-made"
+    check_library_sync(_sec35_cfg(tmp_path, absent), home=tmp_path, workflows_dir=tmp_path / "none")
+    assert "[ OK ] no meeting data is inside a cloud-sync folder" in capsys.readouterr().out
+
+
+def test_a_non_empty_published_folder_adds_the_root_even_with_no_condition(capsys, tmp_path) -> None:
+    # The SEC25 fail-closed path and every earlier run leave files here with nothing in config
+    # saying so.
+    published = _synced_published(tmp_path)
+    (published / "20261001-100000.summary.md").write_text("x")
+    check_library_sync(_sec35_cfg(tmp_path, published), home=tmp_path, workflows_dir=tmp_path / "none")
+    assert "[WARN] published summaries is synced to OneDrive" in capsys.readouterr().out
+
+
+def _stamp_archive(tmp_path: Path, archive: str) -> None:
+    marker = storage.backup_marker(tmp_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"at": datetime.now(timezone.utc).isoformat(), "archive": archive}))
+
+
+def test_a_backup_archive_in_a_synced_folder_is_a_backups_line(capsys, tmp_path) -> None:
+    dest = tmp_path / "Library" / "CloudStorage" / "Dropbox-Personal" / "backups"
+    dest.mkdir(parents=True)
+    _stamp_archive(tmp_path, str(dest / "meeting-pipe-backup-20261101.tar.gz"))
+    cfg = _sec35_cfg(tmp_path)
+    check_library_sync(cfg, home=tmp_path, workflows_dir=tmp_path / "none")
+    assert "[WARN] backups is synced to Dropbox" in capsys.readouterr().out
+    check_library_sync(cfg, home=tmp_path, workflows_dir=_nda_workflows(tmp_path))
+    assert "[FAIL] backups is synced to Dropbox" in capsys.readouterr().out
+
+
+def test_a_backup_agent_destination_in_a_synced_folder_is_a_backups_line(capsys, tmp_path) -> None:
+    import plistlib
+
+    dest = tmp_path / "Library" / "CloudStorage" / "Dropbox-Personal" / "backups"
+    dest.mkdir(parents=True)
+    agents = tmp_path / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    with (agents / "com.meetingpipe.backup.plist").open("wb") as f:
+        plistlib.dump({"Label": "com.meetingpipe.backup",
+                       "ProgramArguments": ["/x/mp", "backup", str(dest)]}, f)
+    check_library_sync(_sec35_cfg(tmp_path), home=tmp_path, workflows_dir=tmp_path / "none")
+    assert "[WARN] backups is synced to Dropbox" in capsys.readouterr().out
+
+
+def test_no_backup_marker_and_no_agent_adds_nothing_and_a_relative_archive_is_skipped(capsys, tmp_path) -> None:
+    cfg = _sec35_cfg(tmp_path)
+    check_library_sync(cfg, home=tmp_path, workflows_dir=tmp_path / "none")
+    assert "[ OK ] no meeting data is inside a cloud-sync folder" in capsys.readouterr().out
+    _stamp_archive(tmp_path, "relative/x.tar.gz")   # a hand-typed CLI run: skipped, not guessed
+    check_library_sync(cfg, home=tmp_path, workflows_dir=tmp_path / "none")
+    assert "[ OK ] no meeting data is inside a cloud-sync folder" in capsys.readouterr().out
+
+
+def test_a_synced_obsidian_vault_is_a_warn_with_obsidian_in_the_sinks(capsys, tmp_path) -> None:
+    vault = tmp_path / "Library" / "CloudStorage" / "Dropbox-Personal" / "Vault"
+    vault.mkdir(parents=True)
+    cfg = _sec35_cfg(tmp_path, output={"sinks": ["obsidian"]}, obsidian={"vault_path": str(vault)})
+    check_library_sync(cfg, home=tmp_path, workflows_dir=_nda_workflows(tmp_path))
+    out = capsys.readouterr().out
+    assert "[WARN] Obsidian vault is synced to Dropbox" in out   # an NDA workflow does not make it a FAIL
+    assert "[FAIL] Obsidian vault" not in out
+    # With no obsidian sink anywhere it is not a root at all.
+    quiet = _sec35_cfg(tmp_path, obsidian={"vault_path": str(vault)})
+    check_library_sync(quiet, home=tmp_path, workflows_dir=tmp_path / "none")
+    assert "Obsidian vault" not in capsys.readouterr().out
+
+
+def test_a_synced_obsidian_vault_is_a_fail_under_regulated_mode_until_sec18_item_1(capsys, tmp_path) -> None:
+    # The sidecar-less path under global regulated_mode still reaches the vault, so while
+    # SEC18 item 1 has not landed this pins FAIL; once it has, this becomes WARN-only.
+    vault = tmp_path / "Library" / "CloudStorage" / "Dropbox-Personal" / "Vault"
+    vault.mkdir(parents=True)
+    cfg = _sec35_cfg(
+        tmp_path, output={"sinks": ["obsidian"]}, obsidian={"vault_path": str(vault)},
+        modes={"regulated_mode": True})
+    check_library_sync(cfg, home=tmp_path, workflows_dir=tmp_path / "none")
+    assert "[FAIL] Obsidian vault is synced to Dropbox" in capsys.readouterr().out
+
+
+def test_a_synced_lan_mount_named_by_a_workflow_is_a_warn(capsys, tmp_path) -> None:
+    mount = tmp_path / "Library" / "CloudStorage" / "Dropbox-Personal" / "share"
+    mount.mkdir(parents=True)
+    cfg = _sec35_cfg(tmp_path, lan={"mount_path": str(mount)})
+    check_library_sync(cfg, home=tmp_path, workflows_dir=_sink_workflow(tmp_path, "lan"))
+    assert "[WARN] LAN share is synced to Dropbox" in capsys.readouterr().out

@@ -21,6 +21,9 @@ struct StorageSectionView: View {
     @State private var launcher = PipelineLauncher()
     @State private var backupInFlight = false
     @State private var backupError: String?
+    /// SEC35: set when the chosen backup folder is inside a cloud-sync folder; the choice is kept.
+    @State private var backupSyncWarning: String?
+    private let workflowStore: WorkflowStore
     @State private var lastBackupAge: String?
 
     // STOR5: the restore's two-step state lives on its own object, not in this
@@ -30,6 +33,7 @@ struct StorageSectionView: View {
 
     init(store: ConfigStore, workflowStore: WorkflowStore, onRestored: (() -> Void)? = nil) {
         self.store = store
+        self.workflowStore = workflowStore
         _stats = StateObject(wrappedValue: StorageStatsStore(
             configStore: store, workflowStore: workflowStore
         ))
@@ -318,6 +322,8 @@ struct StorageSectionView: View {
                 if restore.hasFailed {
                     FailureNotice(failure: FailurePresentation(diagnostics: line, operation: .storage, title: "Couldn't restore the backup"))
                 } else { Text(line).foregroundStyle(Color(MPColors.fgMuted)) }
+            } else if let warning = backupSyncWarning {
+                Text(warning).foregroundStyle(.mpDanger)
             } else {
                 Text("\(lastBackupAge ?? "No backup has run on this Mac yet"). Restoring here recovers meetings this Mac lost; a first restore onto a new Mac still runs from the Terminal, see the README backup runbook.")
             }
@@ -345,6 +351,11 @@ struct StorageSectionView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         ui.backupDestinationPath = url.path
         backupError = nil
+        // SEC35: a synced folder is named, never refused. Doctor reports the same folder later.
+        backupSyncWarning = BackupDestinationAdvice.syncWarning(
+            provider: CloudSyncDetector.detect(path: url),
+            promisesZeroEgress: store.regulatedMode || workflowStore.workflows.contains { $0.flags.ndaMode }
+        )
         // The destination is baked into the agent's ProgramArguments, so a change
         // has to rewrite the plist or the schedule keeps backing up to the old folder.
         applyBackupSchedule()

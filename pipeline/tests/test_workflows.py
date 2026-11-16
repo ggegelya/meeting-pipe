@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mp.workflows import local_backend_workflow_names, nda_workflow_names
+from mp.workflows import local_backend_workflow_names, nda_workflow_names, sink_types_in_use
 
 
 def _write(directory: Path, name: str, *, nda: bool) -> None:
@@ -80,3 +80,17 @@ def test_local_backend_names_skips_a_malformed_toml(tmp_path: Path) -> None:
     _write_backend(tmp_path, "Good", backend="local")
     tmp_path.joinpath("broken.toml").write_text("this is not [ toml", encoding="utf-8")
     assert local_backend_workflow_names(tmp_path) == ["Good"]
+
+
+def test_sink_types_in_use_reads_every_workflow_and_skips_bad_files(tmp_path) -> None:
+    # SEC35: a workflow can publish somewhere the global `output.sinks` does not say.
+    (tmp_path / "a.toml").write_text(
+        'name = "a"\n\n[[sinks]]\ntype = "filesystem"\n\n[[sinks]]\ntype = "notion"\ndatabase_id = "x"\n',
+        encoding="utf-8")
+    (tmp_path / "b.toml").write_text('name = "b"\n\n[[sinks]]\ntype = "obsidian"\n', encoding="utf-8")
+    (tmp_path / "bad.toml").write_text("this is [not toml", encoding="utf-8")
+    (tmp_path / "odd.toml").write_text(
+        'name = "odd"\nsinks = "notion"\n\n[[other]]\ntype = "lan"\n', encoding="utf-8")
+    (tmp_path / "typeless.toml").write_text('name = "t"\n\n[[sinks]]\nfoo = 1\n', encoding="utf-8")
+    assert sink_types_in_use(tmp_path) == {"filesystem", "notion", "obsidian"}
+    assert sink_types_in_use(tmp_path / "absent") == set()

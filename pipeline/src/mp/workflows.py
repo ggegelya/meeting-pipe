@@ -49,6 +49,27 @@ def nda_workflow_names(directory: Path | None = None) -> list[str]:
     return sorted(names)
 
 
+def sink_types_in_use(directory: Path | None = None) -> set[str]:
+    """Every sink type any workflow lists (`[[sinks]]` tables with a `type` key, as the
+    daemon's `WorkflowStore` writes them), across all workflow TOMLs (SEC35).
+
+    `mp doctor` asks this because a workflow can publish to the filesystem, the vault
+    or the LAN share while the global `output.sinks` says `notion`: the per-meeting
+    overlay replaces the global list, so the global one is not the whole answer.
+    Malformed files and entries without a string `type` are skipped, like the rest.
+    """
+    types: set[str] = set()
+    for doc in _load_workflow_docs(directory):
+        sinks = doc.get("sinks")
+        if not isinstance(sinks, list):
+            continue
+        for entry in sinks:
+            kind = entry.get("type") if isinstance(entry, dict) else None
+            if isinstance(kind, str) and kind:
+                types.add(kind)
+    return types
+
+
 def local_backend_workflow_names(directory: Path | None = None) -> list[str]:
     """Names of every workflow that forces on-device summarization, sorted: an
     explicit `backend = "local"` pin, or `[flags] nda_mode = true` (NDA forces

@@ -390,7 +390,7 @@ A policy only ever touches a meeting that finished and published cleanly. Anythi
 
 meeting-pipe keeps your meetings on your Mac. It cannot stop macOS syncing a file after it is written, and the default library location is inside iCloud's reach: if **Desktop & Documents Folders** is on in your iCloud settings, your recordings and transcripts are uploading to Apple. The same is true of a library placed inside Dropbox, Google Drive, or OneDrive.
 
-The app checks and tells you: **Preferences ▸ Storage** shows a **Cloud sync** panel naming the provider, with **Move library…** beside it, which asks for a folder outside every sync folder, shows what it will move, and moves it only after you confirm. Under a confidential setup this is reported as a failure rather than a warning, because a synced library breaks the promise no matter what the summarizer does.
+The app checks and tells you: **Preferences ▸ Storage** shows a **Cloud sync** panel naming the provider, with **Move library…** beside it, which asks for a folder outside every sync folder, shows what it will move, and moves it only after you confirm. Under a confidential setup this is reported as a failure rather than a warning, because a synced library breaks the promise no matter what the summarizer does. The check is not only about the library: `mp doctor` also looks at the folder your summaries are published to, your backup folder, and your Obsidian vault. And when you choose a backup folder in **Preferences ▸ Storage**, the app tells you if that folder is inside a sync folder, because every backup archive carries your recordings and transcripts; it does not stop you, it just names the provider.
 
 ---
 
