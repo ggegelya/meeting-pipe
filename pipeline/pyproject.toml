@@ -133,3 +133,10 @@ venv = ".venv"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+
+# SEC31. Holds huggingface-hub on 1.x. 2.x moves its HTTP onto httpx2/httpcore2 and
+# truststore, a transport `egress_guard`'s httpx patch never sees, and nothing in
+# the suite would fail (the CI8 fence checks only the Anthropic client). SEC19 owns
+# the structural fix; lift this when it lands.
+[tool.uv]
+constraint-dependencies = ["huggingface-hub<2"]

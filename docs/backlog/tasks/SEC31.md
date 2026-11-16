@@ -2,9 +2,10 @@
 id: SEC31
 title: The pipeline's TLS trust store still trusts the emSign root whose intermediates leaked, and the locked transitive stack carries 120 more advisories a constrained refresh clears
 category: Security
-status: new
+status: done
+closed: 2026-11-16
 priority: P1
-comment: Filed 2026-11-12 (upgrade review, owner approved): certifi 2026.4.22 (PYSEC-2026-4320) is the bundle every Anthropic, Notion and OpenAI call trusts, so an on-path holder of a leaked eMudhra intermediate can read transcripts and API keys; broken promise is that cloud traffic is TLS-private. Bump certifi, then refresh the 12 other flagged packages with huggingface-hub held below 2. P1 for the certifi half; owner may re-band.
+comment: Shipped 2026-11-16 as one commit: certifi 2026.10.23 plus the other flagged packages refreshed with `huggingface-hub<2` held (1.33.0), no httpx2/truststore in the lock; pip-audit clean, ci-local pipeline green (1666 tests, pyright 0), local-backend summarize and embedder smokes pass on the owner's Mac.
 ---
 
 # SEC31: the pipeline's TLS trust store still trusts the emSign root whose intermediates leaked, and the locked transitive stack carries 120 more advisories a constrained refresh clears
@@ -67,3 +68,5 @@ Nothing in `pipeline/src` sets `verify=`, `SSL_CERT_FILE` or `truststore`. An at
 - `uv.lock` resolves certifi >= 2026.10.19 and huggingface-hub < 2, and contains no `httpx2` entry.
 - `bash scripts/ci-local.sh pipeline` is green.
 - The local-backend summarize smoke and the embed-index rebuild both succeed on the owner's Mac, noted in this file's progress line.
+
+**Progress (2026-11-16):** done in one commit rather than two (the group lands one commit per task). Lock moves beyond the named packages, all already locked: click, hf-xet, safetensors, typing-extensions (transitive follow-ons); aiohttp, aiohappyeyeballs, aiosignal, frozenlist, multidict, propcache, yarl dropped out. `pip-audit --no-deps --disable-pip` on the export: no known vulnerabilities (the `uvx` default path aborts in `ensurepip` here, so the audit ran with `--disable-pip` on a hashed export). Smokes: a real `LocalSummaryClient` completion through mlx-lm with transformers 5.23.0 / tokenizers 0.23.3, and `MLXEmbedder` embedding two strings offline from the cached model (384-dim).
