@@ -106,6 +106,13 @@ truth_fences() {
     bash scripts/test-keychain-migration.sh
     end
 
+    begin "Uninstall keeps the owner's data (DIST8)"
+    # The real uninstall.sh against a scratch HOME with stubbed launchctl, pkill,
+    # security, tccutil and killall: a plain run keeps originals/ (held/ included),
+    # corrections/ and auto_consent.json; --purge lists them and asks first.
+    bash scripts/test-uninstall.sh
+    end
+
     begin "macOS floor parity (DOC16)"
     # The floor is written three times: Package.swift's platforms, install.sh's
     # version check, and the LSMinimumSystemVersion install.sh writes into the

@@ -748,8 +748,13 @@ This bites after changing `summarization.local_model` and then recording an NDA 
 ## Uninstall
 
 ```bash
-./scripts/uninstall.sh                    # keeps config + leaves TCC alone
-./scripts/uninstall.sh --purge            # also removes ~/.config/meeting-pipe
+./scripts/uninstall.sh                    # keeps your data (Application Support/MeetingPipe:
+                                          # originals/ incl. held-back recordings, corrections/,
+                                          # auto_consent.json), config and TCC; removes only the
+                                          # app, venv, logs and model cache
+./scripts/uninstall.sh --purge            # also deletes that data and ~/.config/meeting-pipe,
+                                          # after listing it and asking y/N (--yes to skip the
+                                          # question; without a terminal it refuses unless --yes)
 ./scripts/uninstall.sh --reset-tcc        # also resets macOS Microphone /
                                           # ScreenCapture / Accessibility /
                                           # AppleEvents permissions for the
@@ -757,6 +762,8 @@ This bites after changing `summarization.local_model` and then recording an NDA 
                                           # re-prompts cleanly
 ./scripts/uninstall.sh --all              # shorthand for --purge --reset-tcc
 ```
+
+`originals/` (the kept full recordings and `originals/held/`, the held-back ones) is in no backup, ADR 0016, so a plain uninstall and `--reset-tcc` leave it alone; only `--purge` deletes it. `scripts/test-uninstall.sh` pins this against a scratch `HOME`.
 
 Why `--reset-tcc` exists: macOS keys permission grants on the bundle id (`com.meetingpipe.daemon`). If you denied a permission once, removing the .app does NOT clear that denial. TCC keeps the cached state, and the next install silently runs without the permission instead of re-prompting. The flag SIGKILLs any running daemon (so its in-process verdict cache can't write itself back), then runs `tccutil reset` for every service the daemon touches plus `reset All` as a catch-all. Notifications are NOT under TCC — they live in a separate authorization store managed by `usernoted` and have to be cleared manually from System Settings → Notifications → MeetingPipe.
 

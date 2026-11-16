@@ -214,7 +214,9 @@ To remove meeting-pipe, from the `meeting-pipe` folder:
 ./scripts/uninstall.sh
 ```
 
-That leaves your recordings, your settings, and your macOS permissions alone. Add `--purge` to also delete the settings, and `--all` to additionally reset the permissions so a future install prompts cleanly. Your recordings in `~/Documents/Meetings/` are never touched by the uninstaller; delete them yourself if you want them gone.
+That leaves your recordings, your settings, and your macOS permissions alone. It removes only the app, its login item, the Python environment, the logs and the downloaded speech models. It keeps `~/Library/Application Support/MeetingPipe`, which holds any recording meeting-pipe held back (the only copy of that audio, and in no backup), the kept full-length originals, your summary gradings and your "Always for this app" choices, plus your settings in `~/.config/meeting-pipe` and the API keys in your Keychain. Your recordings in `~/Documents/Meetings/` are never touched; delete them yourself if you want them gone.
+
+Add `--purge` to also delete all of that. It first lists what it will remove (with file counts and sizes, and a reminder that held-back recordings are in no backup) and asks `y/N`; answer `n` and nothing at all is stopped or removed. Run from a script with no terminal, it refuses unless you also pass `--yes`. Add `--all` (or `--reset-tcc`) to additionally reset the permissions so a future install prompts cleanly; `--reset-tcc` on its own deletes none of your data.
 
 ## A note on this being a from-source install
 

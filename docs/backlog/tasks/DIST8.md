@@ -2,9 +2,9 @@
 id: DIST8
 title: A default uninstall deletes the only copies of held-back recordings, every kept original and the corrections corpus, against what SETUP.md promises
 category: Distribution
-status: new
+status: partial
 priority: P1
-comment: Filed 2026-11-13 (audit band 2026-11-13). Broken promise: SETUP.md says a plain `uninstall.sh` leaves recordings and settings alone, yet it rm -rf's Application Support/MeetingPipe with no flag and no prompt, deleting originals/ (the only copy of a held-back or quarantined recording, excluded from mp backup and Time Machine), the summary-grading corrections corpus and auto_consent.json; README's `--reset-tcc` permissions fix runs the same rm (F020, not seen in the field). A hard precondition of MIC18; the owner may re-band. Keep Application Support/MeetingPipe unless --purge, list it with sizes and confirm before a purge, a stubbed scratch-HOME test, and true SETUP.md and README text in the same commit.
+comment: Shipped 2026-11-16 (ci-local green): uninstall.sh keeps Application Support/MeetingPipe (originals/ incl. held/, corrections/, auto_consent.json) unless --purge; --purge lists each with count and size, asks y/N before anything is stopped or removed, refuses exit 2 without a TTY unless --yes; scripts/test-uninstall.sh (scratch HOME, stubbed launchctl/pkill/security/tccutil/killall, pty answers) wired into ci-local truth-fences; SETUP.md and README true. Owed: the owner runs walkthrough steps 1-2 (owner-verify not self-assigned).
 ---
 
 # DIST8: A default uninstall deletes the only copies of held-back recordings, every kept original and the corrections corpus, against what SETUP.md promises

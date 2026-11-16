@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 # Reverse what install.sh did.
 #
-# Default: removes the app bundle, LaunchAgent, venv, logs, and
-# Application Support data. Keeps config so a re-install does not destroy
-# your model preferences; API tokens live in the Keychain (SEC8) and also
-# survive unless --purge is passed.
+# Default: removes the app bundle, LaunchAgent, venv, logs and the FluidAudio
+# model cache, all of which a re-install rebuilds. Keeps your own data:
+# ~/Library/Application Support/MeetingPipe (originals/ with any held-back
+# recording, which is in no backup; corrections/; auto_consent.json) and
+# ~/.config/meeting-pipe (config), so a re-install does not destroy your
+# recordings or preferences; API tokens live in the Keychain (SEC8) and also
+# survive unless --purge is passed. --reset-tcc deletes none of that either.
 #
 # Flags:
-#   --purge        also remove ~/.config/meeting-pipe (config) and clear the
-#                  API tokens from the macOS Keychain
+#   --purge        also remove Application Support/MeetingPipe and
+#                  ~/.config/meeting-pipe (config) and clear the API tokens
+#                  from the macOS Keychain. It lists what it will delete and
+#                  asks y/N first; declining aborts before anything is stopped
+#                  or removed. Without a terminal it refuses (exit 2) unless
+#                  --yes is also given.
+#   --yes          answer the --purge confirmation with yes (non-interactive)
 #   --reset-tcc    also reset macOS TCC permissions for the bundle ID
 #                  (Microphone, ScreenCapture, Accessibility,
 #                  plus `tccutil reset All` as a belt-and-suspenders).
@@ -25,10 +33,12 @@ set -euo pipefail
 
 PURGE=0
 RESET_TCC=0
+ASSUME_YES=0
 for arg in "$@"; do
     case "$arg" in
         --purge)     PURGE=1 ;;
         --reset-tcc) RESET_TCC=1 ;;
+        --yes)       ASSUME_YES=1 ;;
         --all)       PURGE=1; RESET_TCC=1 ;;
         -h|--help)
             # Print the leading comment block (lines up to the first
@@ -61,6 +71,19 @@ FLUID_AUDIO_SUPPORT="$HOME/Library/Application Support/FluidAudio"
 LEGACY_DIAR_CACHE="$HOME/.cache/meeting-pipe"
 APP_BUNDLE="$HOME/Applications/MeetingPipe.app"
 
+# DIST8: list and confirm before anything is stopped or removed, so declining
+# (or a non-interactive run without --yes) leaves the whole install untouched.
+if (( PURGE )); then
+    # shellcheck source=scripts/lib/uninstall-purge.sh
+    source "$(cd "$(dirname "$0")" && pwd)/lib/uninstall-purge.sh"
+    rc=0
+    uninstall_confirm_purge "$ASSUME_YES" "$APP_SUPPORT" "$CONFIG_DIR" || rc=$?
+    if (( rc != 0 )); then
+        echo "Aborted: nothing was stopped or removed."
+        exit "$(( rc == 1 ? 1 : 2 ))"
+    fi
+fi
+
 PLIST="$LAUNCHAGENTS/${LAUNCHD_LABEL}.plist"
 if [[ -f "$PLIST" ]]; then
     # Use bootout if the user-domain handle is available; falls back to
@@ -90,10 +113,9 @@ fi
 
 rm -rf "$DATA_DIR"
 rm -rf "$LOG_DIR"
-rm -rf "$APP_SUPPORT"
 rm -rf "$FLUID_AUDIO_SUPPORT"
 rm -rf "$APP_BUNDLE"
-echo "Removed venv, logs, app support, FluidAudio model cache, and ~/Applications/MeetingPipe.app."
+echo "Removed venv, logs, FluidAudio model cache, and ~/Applications/MeetingPipe.app."
 if [[ -d "$LEGACY_DIAR_CACHE" ]]; then
     echo "Kept $LEGACY_DIAR_CACHE (legacy sherpa-onnx models). rm -rf manually if you also want them gone."
 fi
@@ -143,14 +165,18 @@ if (( RESET_TCC )); then
 fi
 
 if (( PURGE )); then
+    # DIST8: the user's own data (originals incl. held-back recordings,
+    # corrections corpus, consent list) goes only here, after the confirm above.
+    rm -rf "$APP_SUPPORT"
     rm -rf "$CONFIG_DIR"
     # SEC8: API tokens live in the login Keychain, not a file. Clear them too.
     for key in ANTHROPIC_API_KEY NOTION_TOKEN HF_TOKEN; do
         security delete-generic-password -s com.meetingpipe.daemon -a "$key" >/dev/null 2>&1 || true
     done
-    echo "Removed $CONFIG_DIR and cleared API tokens from the Keychain (per --purge)."
+    echo "Removed $APP_SUPPORT and $CONFIG_DIR and cleared API tokens from the Keychain (per --purge)."
 else
-    echo "Kept $CONFIG_DIR + Keychain tokens. Pass --purge to remove them too, or --reset-tcc to clear permissions."
+    echo "Kept $APP_SUPPORT (originals incl. any held-back recording, corrections, consent), $CONFIG_DIR and Keychain tokens."
+    echo "Pass --purge to remove them too (it lists them and asks first), or --reset-tcc to clear permissions."
 fi
 
 echo "✓ Uninstalled."
