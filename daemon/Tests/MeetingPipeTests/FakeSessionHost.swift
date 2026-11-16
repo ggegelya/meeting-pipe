@@ -297,6 +297,8 @@ final class SpyHUD: SessionHUDPresenting {
     /// REC20: every push, nil being a clear.
     private(set) var lowSpaceTexts: [String?] = []
     func setLowSpace(_ text: String?) { lowSpaceTexts.append(text) }
+    private(set) var writerBehindStates: [Bool] = []
+    func setWriterBehind(_ on: Bool) { writerBehindStates.append(on) }
 }
 
 final class SpyPrompt: SessionPromptPresenting {

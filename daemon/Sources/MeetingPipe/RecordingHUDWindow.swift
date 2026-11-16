@@ -88,6 +88,9 @@ enum HUDPanelGeometry {
 /// way: a reader who believes they are on the record says less, not more, and the off-record
 /// control keeps its active glyph throughout.
 enum HUDStateLabel {
+    /// REC22: the writer-backlog state's copy. Fits the shared pill (`CaptureWriteReportREC22Tests`).
+    static let writerBehindText = "Disk falling behind"
+
     enum Tone: Equatable {
         /// `fgMuted`, the resting "Recording".
         case muted
@@ -100,11 +103,15 @@ enum HUDStateLabel {
     static func resolve(
         micCaptureLost: Bool,
         lowSpace: String?,
+        writerBehind: Bool = false,
         offRecord: Bool,
         confirmingEnd: Bool
     ) -> (text: String, tone: Tone) {
         if micCaptureLost { return ("Mic lost", .alert) }
         if let lowSpace { return (lowSpace, .alert) }
+        // REC22 (F155): a capture writer is over 30 s behind the audio it was handed. Below the
+        // two that already name a loss, above the states that are deliberate.
+        if writerBehind { return (writerBehindText, .alert) }
         if offRecord { return ("Off the record", .alert) }
         if confirmingEnd { return ("Confirming end", .subtle) }
         return ("Recording", .muted)
@@ -297,6 +304,7 @@ final class RecordingHUDWindow {
         micCaptureLost = false
         // REC20 / END9: the same, for the other two persisted label owners.
         lowSpaceText = nil
+        writerBehind = false
         confirmingEnd = false
 
         guard let panel = panel else { return }
@@ -420,6 +428,16 @@ final class RecordingHUDWindow {
     /// recording, else nil. Per recording, cleared by `dismiss`.
     private(set) var lowSpaceText: String?
 
+    /// REC22 (F155): a capture writer fell over 30 s behind. Per recording, cleared by `dismiss`;
+    /// nothing clears it sooner, since the backlog policy warns once and says nothing on recovery.
+    private(set) var writerBehind = false
+
+    /// REC22: show the writer-backlog state. Idempotent, main-queue only.
+    func setWriterBehind(_ on: Bool) {
+        writerBehind = on
+        applyStateLabel()
+    }
+
     /// END9: whether a held end is being confirmed. Stored since REC20 so the label can be
     /// resolved from all four states at once rather than by whichever setter ran last.
     private var confirmingEnd = false
@@ -436,6 +454,7 @@ final class RecordingHUDWindow {
         let label = HUDStateLabel.resolve(
             micCaptureLost: micCaptureLost,
             lowSpace: lowSpaceText,
+            writerBehind: writerBehind,
             offRecord: isOffTheRecord,
             confirmingEnd: confirmingEnd
         )

@@ -71,6 +71,10 @@ It means the microphone stopped reaching the recording and the app could not get
 
 The disk your recordings are saved to is running short, and that is how much more of this meeting fits. The app checks when a recording starts and once a minute while it runs, and shows the countdown whenever less than two hours of recording fits. A recording that starts short is never refused: it records, and a notification says how much space is free. If the countdown drops under 15 minutes you get one more notification, and if it reaches the point where there would no longer be room to save what was already recorded, the app stops the recording itself, the same way your Stop button does, so the meeting up to then is kept and processed as normal. Freeing up space while it runs is enough; the countdown follows. A recording uses about 2 GB an hour on disk while it runs and keeps about 230 MB an hour once it stops, which is why the countdown is shorter than the free space suggests.
 
+### If the panel says "Disk falling behind"
+
+The disk your recordings are saved to has stopped keeping up: the app is holding more than 30 seconds of audio it could not write yet. Nothing is lost while the app holds it, and the label stays until the recording ends even if the disk catches up. If the disk never catches up, the app stops the recording itself after roughly another quarter of an hour and keeps everything written up to then, so a slow external or network drive is the thing to check.
+
 ### Off the record
 
 For a stretch where what *you* say should not reach your notes, press `⌃⌥O`, or click the **mic-with-a-slash** button on the recording panel (it is also **Go off the record** on that panel's right-click menu). The panel shows a steady **Off the record** state and the voice meter drops to zero until you turn it off again. Press it a second time to resume; an open stretch closes by itself when you stop.

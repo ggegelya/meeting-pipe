@@ -463,6 +463,10 @@ final class Coordinator: NSObject {
         recorder.onLowSpace = { [weak self] update in
             self?.session.handleLowSpace(update)
         }
+        // REC22 (F155): a writer over 30 s behind shows on the HUD until the recording ends.
+        recorder.onWriterBacklog = { [weak self] in
+            self?.session.handleWriterBacklog()
+        }
         // REC27: the recorder has abandoned enough wedged audio-engine calls that it stops making
         // them. Once per process; only a restart clears it.
         recorder.onEngineCallsExhausted = { [weak self] in

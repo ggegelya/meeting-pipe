@@ -181,6 +181,10 @@ protocol SessionHUDPresenting: AnyObject {
     /// REC20: show or clear the low-space countdown ("Disk: 1h 25m left"). Persistent for the
     /// same reason as REC16's: the notification is a moment, and the shortage lasts.
     func setLowSpace(_ text: String?)
+
+    /// REC22 (F155): show the "Disk falling behind" state once a capture writer is 30 s behind,
+    /// for the rest of the recording. The force-stop at the hard cap posts its own banner.
+    func setWriterBehind(_ on: Bool)
 }
 
 /// The "record this meeting?" prompt (`MeetingPromptWindow`).

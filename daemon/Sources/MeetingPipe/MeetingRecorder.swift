@@ -147,6 +147,10 @@ final class MeetingRecorder {
         set { lowSpaceWatch.onUpdate = newValue }
     }
 
+    /// REC22 (F155): fired on main when a writer's backlog crosses the soft threshold
+    /// (`WriterBacklogPolicy.evaluate` said `.warn`), once per channel per recording.
+    var onWriterBacklog: (() -> Void)?
+
     /// Per-source ~1 Hz RMS averages on the main queue. `onSystemLevel` feeds the
     /// idle backstop's `hasSystemAudio` mirror (TECH-END3); `onMicLevel` is currently
     /// unconsumed (the mic side of the backstop is verdict-driven). `nil`
@@ -191,6 +195,8 @@ final class MeetingRecorder {
     /// Serial writer that drains mic buffers to disk off the latency-sensitive delivery
     /// thread. The system channel's lives on `SystemAudioChannel`.
     private var micWriter: SerialBufferWriter<AVAudioPCMBuffer>?
+    /// REC22: the mic writer's failure ledger, read once at stop after the drain.
+    private var micWriteLedger: WriteFailureLedger?
 
     /// Format the mic `.wav` was opened with; tap buffers after a device
     /// change are resampled back to this so the file stays one format.
@@ -848,16 +854,15 @@ final class MeetingRecorder {
             label: "com.meetingpipe.recorder.mic-writer",
             size: { MeetingRecorder.byteSize(of: $0) }
         ) { buffer in
-            let ok: Bool
             do {
                 try micFile.write(from: buffer)
-                ok = true
+                noteOutcome.record(nil)
             } catch {
                 Log.recorder.error("mic write: \(error.localizedDescription)")
-                ok = false
+                noteOutcome.record(error)
             }
-            noteOutcome(ok)
         }
+        micWriteLedger = noteOutcome
 
         // The `sampleRate > 0` check above is a pre-flight on a format read a few lines earlier,
         // and it never looked at the channel count; this is the check at the instant of use, which
@@ -1215,10 +1220,13 @@ final class MeetingRecorder {
             system: systemChannel.systemWriter?.highWaterBytes ?? 0
         )
         let writerWedged = await drainWriters()
+        // REC22: after the drain, so writes enqueued before stop have landed; a wedged drain
+        // leaves the queue owning the tracker, and the report says unknown instead of reading it.
+        let writeReport = captureWriteReport(writerWedged: writerWedged, backlogPeaks: backlogPeaks, session: session)
         finalizeFiles()
         let producedUsableFinal = await mergeIntermediates(
             final: final, micURL: micURL, systemURL: systemURL,
-            session: session, backlogPeaks: backlogPeaks,
+            session: session, writeReport: writeReport,
             writerWedged: writerWedged, limitSeconds: limitSeconds
         )
         persistAfterMerge(final: final, producedUsableFinal: producedUsableFinal, started: session.started)
@@ -1234,6 +1242,9 @@ final class MeetingRecorder {
         let micFires: UInt64
         let systemFires: UInt64
         let systemHeadOffsetSec: Double
+        /// REC22: the mic file's byte rate, read before `snapshotMicCoverage` clears its format,
+        /// for the backlog peak in seconds.
+        let micBytesPerSecond: Double
     }
 
     /// Step 1: read the counters and the REC9 offset, then mark the recorder idle. First, so
@@ -1248,7 +1259,8 @@ final class MeetingRecorder {
             started: startedAt,
             micFires: micFires,
             systemFires: systemChannel.systemFires,
-            systemHeadOffsetSec: firstFrame > 0 ? max(0, firstFrame - startedAtUptime) : 0
+            systemHeadOffsetSec: firstFrame > 0 ? max(0, firstFrame - startedAtUptime) : 0,
+            micBytesPerSecond: micFileFormat.map { MeetingRecorder.bytesPerSecond($0) } ?? 0
         )
 
         currentFile = nil
@@ -1389,6 +1401,29 @@ final class MeetingRecorder {
         return writerWedged
     }
 
+    /// REC22: the writers' failure totals and backlog peaks, after the drain, plus the
+    /// `capture_write_failures` event when either channel failed a write. The ledgers are
+    /// dropped here: the next recording builds its own.
+    @MainActor
+    private func captureWriteReport(
+        writerWedged: Bool, backlogPeaks: (mic: Int, system: Int), session: StopSnapshot
+    ) -> CaptureWriteReport {
+        let report = CaptureWriteReport.make(
+            writerWedged: writerWedged,
+            mic: writerWedged ? [] : [micWriteLedger?.summary].compactMap { $0 },
+            system: writerWedged ? [] : systemChannel.systemWriteLedgers.map(\.summary),
+            micBacklogPeakBytes: backlogPeaks.mic,
+            systemBacklogPeakBytes: backlogPeaks.system,
+            micBytesPerSecond: session.micBytesPerSecond,
+            systemBytesPerSecond: MeetingRecorder.bytesPerSecond(SystemAudioCapture.captureFormat)
+        )
+        micWriteLedger = nil
+        if let attributes = report.event {
+            Log.event(category: "recorder", action: "capture_write_failures", attributes: attributes)
+        }
+        return report
+    }
+
     /// Step 8: drop the AVAudioFiles to flush their headers before ffmpeg reads. After the
     /// drains, which still hold the files through their write closures until they finish.
     @MainActor
@@ -1412,14 +1447,14 @@ final class MeetingRecorder {
         micURL: URL,
         systemURL: URL,
         session: StopSnapshot,
-        backlogPeaks: (mic: Int, system: Int),
+        writeReport: CaptureWriteReport,
         writerWedged: Bool,
         limitSeconds: Double?
     ) async -> Bool {
         let hasSystem = FileManager.default.fileExists(atPath: systemURL.path) && RecordingPostProcessor.fileSize(systemURL) > 4096
         let hasMic = FileManager.default.fileExists(atPath: micURL.path) && RecordingPostProcessor.fileSize(micURL) > 4096
 
-        Log.writeLine("recorder", "stopping: mic_fires=\(session.micFires) system_fires=\(session.systemFires) mic_bytes=\(RecordingPostProcessor.fileSize(micURL)) system_bytes=\(RecordingPostProcessor.fileSize(systemURL)) mic_backlog_peak_bytes=\(backlogPeaks.mic) system_backlog_peak_bytes=\(backlogPeaks.system)")
+        Log.writeLine("recorder", "stopping: mic_fires=\(session.micFires) system_fires=\(session.systemFires) mic_bytes=\(RecordingPostProcessor.fileSize(micURL)) system_bytes=\(RecordingPostProcessor.fileSize(systemURL)) \(writeReport.stoppingFields)")
 
         // Per-channel duration diagnostic for the reported end-of-call skew
         // (TECH-CAP1): log both durations + delta before the merge pads to the
@@ -1697,6 +1732,7 @@ final class MeetingRecorder {
                 format: "WARN: %@ writer is %.1fs behind (%d bytes waiting) - the output volume is not keeping up",
                 channel.rawValue, pendingSec, pending
             ))
+            onWriterBacklog?()
         case .stop:
             writeFailures.escalateBacklog(channel: mic >= system ? .mic : .system, pendingBytes: mic + system)
         }

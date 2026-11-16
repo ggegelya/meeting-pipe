@@ -1826,6 +1826,14 @@ final class MeetingSessionController: @unchecked Sendable {
         }
     }
 
+    /// REC22 (F155): a capture writer is over 30 s behind. HUD only: the owner learns the volume
+    /// is not keeping up while there is still time to act, and the hard cap's force-stop posts its
+    /// own banner if it comes to that.
+    func handleWriterBacklog() {
+        guard case .recording = coordinator.stateMachine.current else { return }
+        coordinator.hud.setWriterBehind(true)
+    }
+
     func handleIdleAutoStop() {
         guard case .recording(let file, let src, let mode) = coordinator.stateMachine.current else { return }
         // Stand the backstop down when a native meeting is still tracked live: the

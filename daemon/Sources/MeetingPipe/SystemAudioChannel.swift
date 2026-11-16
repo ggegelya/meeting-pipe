@@ -67,6 +67,8 @@ final class SystemAudioChannel {
     /// Readable so `MeetingRecorder.stop()` can hold on to it across `drainWriter`, which drops
     /// it: an abandoned drain keeps the stem owned until the writer finishes (REC23).
     private(set) var systemWriter: SerialBufferWriter<AVAudioPCMBuffer>?
+    /// REC22: the failure ledger of every system writer this recording built, read at stop.
+    private(set) var systemWriteLedgers: [WriteFailureLedger] = []
 
     /// Buffers delivered this recording, across retries. Zeroed at `start()`, not at `stop()`
     /// (REC17): a buffer landing during teardown must not hand the next recording a count.
@@ -162,6 +164,7 @@ final class SystemAudioChannel {
         systemAccumSumSq = 0
         systemAccumFrames = 0
         systemLostAt = 0
+        systemWriteLedgers = []
     }
 
     /// Open the system WAV and start the SCStream for a new recording.
@@ -546,16 +549,17 @@ final class SystemAudioChannel {
                 label: "com.meetingpipe.recorder.system-writer",
                 size: { MeetingRecorder.byteSize(of: $0) }
             ) { buffer in
-                let ok: Bool
                 do {
                     try systemFile.write(from: buffer)
-                    ok = true
+                    noteOutcome?.record(nil)
                 } catch {
                     Log.recorder.error("system write: \(error.localizedDescription)")
-                    ok = false
+                    noteOutcome?.record(error)
                 }
-                noteOutcome?(ok)
             }
+            // REC22: every system writer of this recording, so a fresh-opened file mid-recording
+            // adds its count to the stop-time total rather than replacing it.
+            if let noteOutcome { systemWriteLedgers.append(noteOutcome) }
         }
     }
 

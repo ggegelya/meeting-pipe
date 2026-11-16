@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// REC25: carries a capture writer's failures to `onWriteFailure`, and only for the recording the
 /// writer belongs to.
@@ -64,18 +65,26 @@ final class WriteFailureRouter {
         liveGeneration = nil
     }
 
-    /// The outcome callback for one writer, built on main as the writer is. Call the result on the
-    /// writer's own queue with each write's success. The tracker lives in the closure and the
-    /// generation is captured by value, which is the whole fix: see the type doc.
-    func makeOutcomeHandler(channel: CaptureWriteChannel, directory: URL) -> (Bool) -> Void {
+    /// The outcome sink for one writer, built on main as the writer is. Call it on the writer's own
+    /// queue with each write's outcome (`ledger.record(error)`, or `ledger(success)` where there is
+    /// no error to carry). The tracker lives in the ledger and the generation is captured by value,
+    /// which is the whole fix: see the type doc. REC22: the ledger also counts every failure and
+    /// keeps the first one's error, read back at stop through `summary`.
+    func makeOutcomeHandler(channel: CaptureWriteChannel, directory: URL) -> WriteFailureLedger {
         let generation = lastGeneration
-        var tracker = WriteFailureTracker(threshold: threshold)
-        return { [weak self] success in
-            guard tracker.record(success: success) else { return }
-            self?.escalate(
-                channel: channel, consecutive: tracker.consecutiveFailures,
-                generation: generation, directory: directory
-            )
+        return WriteFailureLedger(channel: channel, threshold: threshold) { [weak self] outcome, tracker in
+            switch outcome {
+            case .none:
+                return
+            case .firstFailure:
+                let code = tracker.firstFailure
+                Log.writeLine("recorder", "WARN: \(channel.rawValue) writer failed a write (domain=\(code?.domain ?? "unknown") code=\(code.map { String($0.code) } ?? "unknown")); counting further failures")
+            case .escalate:
+                self?.escalate(
+                    channel: channel, consecutive: tracker.consecutiveFailures,
+                    generation: generation, directory: directory
+                )
+            }
         }
     }
 
@@ -130,4 +139,45 @@ final class WriteFailureRouter {
         Log.writeLine("recorder", "ERROR: capture writers hold \(pendingBytes) bytes unwritten (largest backlog: \(decision.channel)) - the output volume stopped finishing writes; force-stopping to preserve the intact prefix")
         onWriteFailure?(decision)
     }
+}
+
+/// REC22: one capture writer's failure tracker, behind a lock so `stop()` can read its totals once
+/// the writer has drained. REC25's ownership is unchanged: built inside `makeOutcomeHandler`, fed
+/// only by its own writer's queue, never reset from outside. The lock is for the one read from
+/// main at stop; on a wedged drain that read is skipped rather than taken mid-write.
+final class WriteFailureLedger {
+    let channel: CaptureWriteChannel
+    private let tracker: OSAllocatedUnfairLock<WriteFailureTracker>
+    private let react: (WriteFailureTracker.Outcome, WriteFailureTracker) -> Void
+
+    init(
+        channel: CaptureWriteChannel,
+        threshold: Int,
+        react: @escaping (WriteFailureTracker.Outcome, WriteFailureTracker) -> Void
+    ) {
+        self.channel = channel
+        self.tracker = OSAllocatedUnfairLock(initialState: WriteFailureTracker(threshold: threshold))
+        self.react = react
+    }
+
+    /// One write's outcome, on the writer's queue: nil for a success, the thrown error otherwise.
+    func record(_ error: Error?) {
+        record(error.map(WriteFailureTracker.FailureCode.init))
+    }
+
+    /// The outcome without an error to carry (tests, and any writer that has none).
+    func callAsFunction(_ success: Bool) {
+        record(success ? nil : WriteFailureTracker.FailureCode(domain: "unknown", code: 0))
+    }
+
+    private func record(_ failure: WriteFailureTracker.FailureCode?) {
+        let (outcome, snapshot) = tracker.withLock { state in
+            let outcome = state.record(failure)
+            return (outcome, state)
+        }
+        react(outcome, snapshot)
+    }
+
+    /// The totals so far. Read at stop, after the drain.
+    var summary: WriteFailureTracker { tracker.withLock { $0 } }
 }

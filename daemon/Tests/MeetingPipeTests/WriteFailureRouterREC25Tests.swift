@@ -30,7 +30,7 @@ final class WriteFailureRouterREC25Tests: XCTestCase {
 
     private func actions() -> [String] { events.map(\.action) }
 
-    private func fail(_ handler: (Bool) -> Void, times: Int) {
+    private func fail(_ handler: WriteFailureLedger, times: Int) {
         for _ in 0..<times { handler(false) }
     }
 
