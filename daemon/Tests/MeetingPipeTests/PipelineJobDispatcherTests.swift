@@ -55,6 +55,31 @@ final class PipelineJobDispatcherTests: XCTestCase {
         )
     }
 
+    func test_onJobSucceeded_fires_on_the_next_main_turn_for_a_success_and_never_for_a_failure() {
+        // PIPE41: the second trigger for the one automatic re-run.
+        var succeeded = 0
+        let d = PipelineJobDispatcher(
+            sinkDispatcher: sink,
+            onDone: { _, _, _ in }, onError: { _ in }, onQueueActivity: { _ in },
+            onJobSucceeded: { succeeded += 1 }
+        )
+        withExtendedLifetime(d) {
+        sink.onJobCompleted?(job("/tmp/recordings/meeting.wav"), .success(nil))
+        XCTAssertEqual(succeeded, 0, "not inside the completion: the dispatcher still holds the job there")
+        let e = expectation(description: "next main turn")
+        DispatchQueue.main.async { e.fulfill() }
+        wait(for: [e], timeout: 1)
+        XCTAssertEqual(succeeded, 1)
+
+        struct Boom: Error {}
+        sink.onJobCompleted?(job("/tmp/recordings/meeting.wav"), .failure(Boom()))
+        let f = expectation(description: "drain")
+        DispatchQueue.main.async { f.fulfill() }
+        wait(for: [f], timeout: 1)
+        XCTAssertEqual(succeeded, 1, "a failed job is not a trigger")
+        }
+    }
+
     func test_success_routes_stem_dir_and_page_to_onDone() {
         let page = URL(string: "https://notion.example/p")
         sink.onJobCompleted?(job("/tmp/recordings/meeting.wav"), .success(page))

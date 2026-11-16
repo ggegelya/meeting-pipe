@@ -235,6 +235,20 @@ final class MeetingLibraryServiceTests: XCTestCase {
         if let backend = driver.summarizeBackends.first { XCTAssertNil(backend) }
     }
 
+    func test_an_automatic_retry_takes_the_same_summary_path_as_the_librarys_retry() throws {
+        // PIPE41: the one automatic re-run goes through `retryMeeting`, so the transcript reuse,
+        // PIPE18's coalescing and the moved-into-NDA publish guard apply to it unchanged.
+        try touch("meeting.wav")
+        try touch("meeting.md", contents: "# Transcript\n\nSpeaker: A synthetic finalized sentence.")
+        try touch("meeting.json", contents: """
+        {"segments":[{"start":0,"end":2,"text":"A synthetic finalized sentence.","speaker":"ME"}],"finalized":true}
+        """)
+        PipelineFailureSidecar.write(stem: "meeting", in: dir, stage: .pipeline, reason: "summary timed out")
+        XCTAssertNoThrow(try service.retryMeeting(stem: "meeting", trigger: .auto).get())
+        XCTAssertTrue(enqueued.isEmpty, "no transcription: the transcript is reused")
+        XCTAssertEqual(driver.summarizeInputs, [dir.appendingPathComponent("meeting.md")])
+    }
+
     func test_summary_retry_is_serialized_coalesced_and_cancelled_without_notification() throws {
         try touch("m.md", contents: "Synthetic transcript")
         try touch("m.json", contents: "{\"finalized\":true,\"segments\":[{\"start\":0,\"end\":1,\"text\":\"Synthetic transcript\"}]}")

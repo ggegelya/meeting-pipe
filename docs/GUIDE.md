@@ -477,6 +477,8 @@ An **Insufficient Anthropic credits** notice means the provider reported a credi
 
 **Details…** opens selectable, scrollable local diagnostics in a fixed-size sheet. Use **Close** or Escape to return. The **Report preview** shows exactly what **Copy report** puts on the clipboard: app version, time, operation, cause, and any known provider, status, or request identifier. The report excludes the traceback, credentials, meeting titles, personal paths, and meeting content. Previewing and copying work offline and send nothing. Ask, Digests, People, and Preferences use the same Details control; an error notification opens its meeting when one is known.
 
+A summary that failed for a reason a retry can fix, such as a timed-out request to the summarizing service, is retried once automatically: a minute and a half after the app starts, or as soon as the next meeting finishes processing, whichever comes first. A meeting recorded with **Record (BYO)** is never retried for you, and a second failure is left for you. If a meeting is still failed a day later, the app shows one notification when it starts, naming how many; clicking it opens the Library on the oldest.
+
 Once you press Retry the button steps aside and the pane says what is happening, so you can tell the click landed without pressing it again; pressing it repeatedly queues one run, not one per press.
 
 Some failures lead with a more specific fix than plain Retry, because plain Retry would just fail again. A summary the engine refused because of the language leads with re-summarizing on the on-device model. A confidential meeting that needed a model you have not downloaded leads with **Download model**, then Retry.

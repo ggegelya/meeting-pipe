@@ -432,6 +432,90 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertNotNil(failure?.reason)
     }
 
+    // MARK: - PIPE41: eligibility is decided where the failure happens
+
+    /// A run-all failure carrying the pipeline's own metadata, as `mp` reports a timed-out summary.
+    private func reported(remedy: String?, exit: Int32 = 1) -> Error {
+        PipelineLauncher.LaunchError.reportedFailure(
+            exit, FailureMetadata(cause: .timeout, operation: .summary, remedy: remedy), "timed out")
+    }
+
+    private func autoRetryStore(_ wav: URL) -> AutoRetryStore {
+        AutoRetryStore(url: wav.deletingLastPathComponent().appendingPathComponent("auto_retry.json"))
+    }
+
+    /// Enqueue one job in `mode`, fail it with `error`, and return the store the dispatcher was given.
+    private func failRun(_ error: Error, mode: SummaryMode = .auto) throws -> (AutoRetryStore, URL) {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        let store = autoRetryStore(wav)
+        dispatcher.autoRetryStore = store
+        dispatcher.enqueue(file: wav, summaryMode: mode)
+        waitForPipelineStart(driver)
+        driver.finish(.failure(error))
+        drainMain()
+        return (store, wav)
+    }
+
+    func test_a_retryable_pipeline_failure_on_an_auto_job_is_marked_for_one_re_run() throws {
+        let (store, wav) = try failRun(reported(remedy: "retry"))
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+        XCTAssertEqual(store.pending().map(\.stem), ["clip"])
+        let ts = PipelineFailureSidecar.read(stem: "clip", in: wav.deletingLastPathComponent())?.ts
+        XCTAssertEqual(store.pending().first?.failedAt, ts, "the entry names the failure it was decided for")
+    }
+
+    func test_failures_that_are_not_retryable_are_not_marked() throws {
+        for (label, error, mode) in [
+            ("byo", reported(remedy: "retry"), SummaryMode.byo),
+            ("billing", reported(remedy: "billing"), .auto),
+            ("no remedy", reported(remedy: nil), .auto),
+            ("no metadata", NSError(domain: "t", code: 1), .auto),
+            ("publish stage", reported(remedy: "retry", exit: PipelineLauncher.publishFailedExitCode), .auto),
+            ("launch stage", PipelineLauncher.LaunchError.mpNotFound, .auto),
+        ] as [(String, Error, SummaryMode)] {
+            let (store, wav) = try failRun(error, mode: mode)
+            defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+            XCTAssertTrue(store.entries.isEmpty, label)
+        }
+    }
+
+    func test_a_failure_after_the_one_re_run_is_spent_is_not_marked_again() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+        let store = autoRetryStore(wav)
+        dispatcher.autoRetryStore = store
+        store.markEligible(stem: "clip", failedAt: "earlier")
+        XCTAssertTrue(store.claim(stem: "clip"))
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        driver.finish(.failure(reported(remedy: "retry")))
+        drainMain()
+        XCTAssertTrue(store.pending().isEmpty, "the run-all fallback path of the re-run cannot loop")
+        XCTAssertEqual(store.entries["clip"]?.state, .spent)
+    }
+
+    func test_a_run_that_succeeds_drops_its_pending_entry_and_keeps_a_spent_one() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+        let store = autoRetryStore(wav)
+        dispatcher.autoRetryStore = store
+        store.markEligible(stem: "clip", failedAt: "t")
+        store.markEligible(stem: "other", failedAt: "t")
+        XCTAssertTrue(store.claim(stem: "other"))
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        driver.finish(.success(nil))
+        drainMain()
+        XCTAssertNil(store.entries["clip"], "a finished run has nothing waiting")
+        XCTAssertEqual(store.entries["other"]?.state, .spent, "a spent entry is the bound and stays")
+    }
+
     func test_launch_failure_records_the_launch_stage() throws {
         let driver = FakeDriver()
         let dispatcher = makeDispatcher(driver)

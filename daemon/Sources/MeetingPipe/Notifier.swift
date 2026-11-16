@@ -207,6 +207,21 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
     }
 
+    /// Posted once per launch when meetings still have no summary a day or more after they failed and nothing is
+    /// going to re-run them (PIPE41). A banner tap opens the Library on the oldest such meeting, through the same
+    /// failure route a per-meeting failure banner uses, so there is no new notification category to register.
+    func notifyUnresolvedFailures(count: Int, oldestStem: String) {
+        let content = UNMutableNotificationContent()
+        content.title = count == 1 ? "A meeting still has no summary" : "\(count) meetings still have no summary"
+        content.body = "They failed a day or more ago. Open the Library to retry."
+        content.categoryIdentifier = NotificationRouter.failureCategory
+        content.userInfo = ["failureStem": oldestStem]
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: NotificationRouter.failureIDPrefix + "unresolved-" + UUID().uuidString,
+            content: content, trigger: nil
+        ))
+    }
+
     /// Posted when a detected meeting is not recorded (UX10 / AUD-12, extended by DET7).
     /// The skip otherwise discards a detected meeting with no surface at all (every other
     /// failure branch notifies). "Start recording" begins a late recording, bypassing the

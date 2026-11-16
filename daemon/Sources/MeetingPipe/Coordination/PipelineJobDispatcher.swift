@@ -56,6 +56,10 @@ final class PipelineJobDispatcher: LibraryRunLane {
     /// job's own completions, so this is the first point at which every sidecar a completion
     /// might write is on disk. The status menu recounts its failed row from here.
     private let onJobSettled: () -> Void
+    /// PIPE41: a job has landed *successfully* (a full run or a Library re-run). Fired on the next main turn
+    /// rather than inside the completion, because `SinkDispatcher` still holds `activeJob` there and a re-run
+    /// enqueued from inside would queue behind a job that is already over.
+    private let onJobSucceeded: () -> Void
 
     init(
         sinkDispatcher: SinkDispatcher,
@@ -68,10 +72,12 @@ final class PipelineJobDispatcher: LibraryRunLane {
         onPending: @escaping ([QueuedJob]) -> Void = { _ in },
         onLibraryRun: @escaping (LibraryRun?) -> Void = { _ in },
         onFailure: ((String, Error) -> Void)? = nil,
-        onJobSettled: @escaping () -> Void = {}
+        onJobSettled: @escaping () -> Void = {},
+        onJobSucceeded: @escaping () -> Void = {}
     ) {
         self.sinkDispatcher = sinkDispatcher
         self.onJobSettled = onJobSettled
+        self.onJobSucceeded = onJobSucceeded
         self.onDone = onDone
         self.onError = onError
         self.onFailure = onFailure
@@ -93,6 +99,9 @@ final class PipelineJobDispatcher: LibraryRunLane {
         sinkDispatcher.onJobCompleted = { [weak self] job, result in
             self?.route(job: job, result: result)
             self?.onJobSettled()
+            if case .success = result {
+                DispatchQueue.main.async { [weak self] in self?.onJobSucceeded() }
+            }
         }
         sinkDispatcher.onActiveProgress = { [weak self] stem, progress in
             self?.onProgress(stem, progress)

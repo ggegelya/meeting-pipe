@@ -62,6 +62,9 @@ final class SinkDispatcher: @unchecked Sendable {
 
     /// Fires once per job at completion (success or failure), on main.
     var onJobCompleted: ((ProcessingJob, Result<URL?, Error>) -> Void)?
+    /// PIPE41: where a failure eligible for one automatic re-run is recorded, at the moment it happens and the
+    /// job is known. Nil (every existing test) records nothing.
+    var autoRetryStore: AutoRetryStore?
 
     /// The active job's live phase (TECH-UX5): (stem, stage+elapsed). Main queue.
     ///
@@ -679,6 +682,8 @@ final class SinkDispatcher: @unchecked Sendable {
                     // The run finished; clear any failure sidecar a prior
                     // failed run (or retry) left behind for this stem.
                     PipelineFailureSidecar.clear(stem: loc.stem, in: loc.dir)
+                    // PIPE41: a run that finished has nothing waiting for its re-run. A spent entry stays.
+                    self.autoRetryStore?.dropPending(stem: loc.stem)
                 case .failure(let err):
                     // UX50: a Cancel is not a fault. The app sent the SIGTERM
                     // itself, so `pipeline_failed` does not fire (the
@@ -710,10 +715,28 @@ final class SinkDispatcher: @unchecked Sendable {
                             stage: SinkDispatcher.stage(for: err), reason: PipelineLauncher.diagnostics(for: err),
                             metadata: FailureMetadata.from(err)
                         )
+                        self.noteAutoRetryEligibility(job: job, loc: loc, error: err)
                     }
                 }
                 self.completeActiveJob(job, with: result)
             }
+        }
+    }
+
+    /// PIPE41: decide, here and now, whether this failure gets its one automatic re-run. Eligibility is a
+    /// property of the failure and the job (kind, summary mode, stage, the pipeline's own remedy), none of which
+    /// the later pickup could know, so it is recorded at failure time and the pickup only re-validates. The
+    /// store refuses a stem that already has an entry, which is what keeps a failure produced by the automatic
+    /// re-run itself from being marked again.
+    private func noteAutoRetryEligibility(job: ProcessingJob, loc: (stem: String, dir: URL), error: Error) {
+        guard let store = autoRetryStore,
+              AutoRetryEligibility.isEligible(
+                kind: job.kind, summaryMode: job.summaryMode,
+                stage: SinkDispatcher.stage(for: error), metadata: FailureMetadata.from(error)
+              ),
+              let failedAt = PipelineFailureSidecar.read(stem: loc.stem, in: loc.dir)?.ts else { return }
+        if store.markEligible(stem: loc.stem, failedAt: failedAt) {
+            Log.event(category: "coordinator", action: "auto_retry_scheduled", attributes: ["stem": loc.stem])
         }
     }
 

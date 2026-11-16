@@ -194,12 +194,23 @@ final class MeetingLibraryService {
         MuteRedactor.heldRecording(stem: stem, in: originalsDir())
     }
 
+    /// Who asked for a retry (PIPE41). The Library's Retry is `.user`; the one automatic re-run is `.auto`.
+    enum RetryTrigger {
+        case user, auto
+        /// Only `.auto` adds an attribute, so the Library's Retry keeps logging exactly the row it always did.
+        var attributes: [String: Any] { self == .auto ? ["trigger": "auto"] : [:] }
+    }
+
     /// Retry a failed meeting, reusing whatever the failed run already produced (PIPE1).
     ///
     /// A publish-stage failure reuses its saved summary. Other failures reuse a valid finalized transcript in the serialized regenerate lane, unless transcription itself failed. Missing prerequisites fall back to the recording job.
     ///
     /// Fails immediately when the work the chosen path needs is missing (no recording for a full retry, no summary for a publish retry); all other errors surface via the existing pipeline notifier.
-    func retryMeeting(stem: String) -> Result<Void, Error> {
+    ///
+    /// `trigger` says who asked (PIPE41): the owner's Retry, or the one automatic re-run of a failure that was
+    /// eligible when it happened. It changes only the `retry_requested` row, so both go through the same
+    /// coalescing, transcript reuse and moved-into-NDA publish guard.
+    func retryMeeting(stem: String, trigger: RetryTrigger = .user) -> Result<Void, Error> {
         // Every exit, refused ones included: a recount that finds nothing moved costs one listing
         // off main, and a missed one leaves the menu's failed row stale until the next open.
         defer { failedSetMayHaveChanged() }
@@ -224,7 +235,7 @@ final class MeetingLibraryService {
             Log.writeLine("daemon", "retry publish → \(stem)")
             Log.event(category: "coordinator", action: "retry_requested", attributes: [
                 "stem": stem, "scope": "publish",
-            ])
+            ].merging(trigger.attributes) { a, _ in a })
             PipelineFailureSidecar.clear(stem: stem, in: dir)
             // republishMeeting rewrites a publish-stage failure sidecar if the sinks fail again, so the row returns to the failed set rather than looking done.
             republishMeeting(stem: stem) { _ in }
@@ -232,7 +243,8 @@ final class MeetingLibraryService {
         }
 
         if failure?.stage != .transcribe, Self.hasReusableTranscript(stem: stem, in: dir) {
-            Log.event(category: "coordinator", action: "retry_requested", attributes: ["stem": stem, "scope": "summary"])
+            Log.event(category: "coordinator", action: "retry_requested",
+                      attributes: ["stem": stem, "scope": "summary"].merging(trigger.attributes) { a, _ in a })
             regenerateMeeting(stem: stem) { _ in }
             return .success(())
         }
@@ -248,7 +260,7 @@ final class MeetingLibraryService {
         Log.writeLine("daemon", "retry pipeline → \(stem)")
         Log.event(category: "coordinator", action: "retry_requested", attributes: [
             "stem": stem, "scope": "run_all",
-        ])
+        ].merging(trigger.attributes) { a, _ in a })
         // Drop the failure sidecar immediately so the row leaves the failed set before the run finishes. The dispatcher writes a fresh sidecar if it fails again.
         PipelineFailureSidecar.clear(stem: stem, in: dir)
         // A held meeting's manifest also carries the summary mode it was recorded under.

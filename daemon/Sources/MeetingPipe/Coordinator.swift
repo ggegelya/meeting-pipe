@@ -54,6 +54,8 @@ final class Coordinator: NSObject {
 
     /// Pipeline-job queue + in-process transcription runner.
     let sinkDispatcher: SinkDispatcher
+    /// PIPE41: the per-stem record behind the one automatic re-run of a failed summarize job.
+    let autoRetryStore = AutoRetryStore()
 
     /// Wraps `sinkDispatcher`; owns per-job completion routing + the
     /// queue-depth surface (TECH-H1-FINISH). Built in `wireSubsystems()`.
@@ -144,6 +146,7 @@ final class Coordinator: NSObject {
             languageHint: transcriptionLanguage
         )
         self.sinkDispatcher = sinkDispatcher
+        sinkDispatcher.autoRetryStore = autoRetryStore
         Log.event(category: "transcription", action: "engine_resolved", attributes: [
             "engine": sinkDispatcher.transcriptionBackendName,
         ])
@@ -399,6 +402,10 @@ final class Coordinator: NSObject {
             // landing is what usually moves it.
             onJobSettled: { [weak self] in
                 self?.statusBar.refreshFailedMeetingCount()
+            },
+            // PIPE41: the second trigger for the one automatic re-run, whichever comes first with the launch pass.
+            onJobSucceeded: { [weak self] in
+                self?.runAutoRetry()
             }
         )
         // MicGate consumes the recorder's per-buffer mic RMS on the
@@ -629,6 +636,9 @@ final class Coordinator: NSObject {
         // async merges create any new final WAVs (else a just-recovered WAV would
         // look stranded and re-enqueue).
         reconcileStrandedJobs()
+        // PIPE41: the launch trigger for the one automatic re-run, and the once-per-launch notice for
+        // failures nothing will re-run. After the reconcile, so an `.interrupted` mark is never a candidate.
+        scheduleLaunchAutoRetry()
         // PERF24: the menu's two cached reads, after the reconcile above so a stranded job
         // marked just now is in the first count. Both run off main.
         statusBar.primeCachedReads()
