@@ -472,7 +472,21 @@ public final class PromotionEngine {
             && leading.evidenceClass == PrimarySignalKind.axLeaveButton.evidenceClass
             && states[.axLeaveButton]?.state == .live
             && Self.otherClassesEndedInside(states, excluding: leading, since: startedAt).isEmpty
-        let loneHeld = !leadClassContradicted && now.timeIntervalSince(loneSince) >= loneDwell
+        // END29: nor while the Leave button reads live under a mic-led hold with no other class
+        // freshly ended. A headphone switch releases the mic and keeps the call UI up; if the
+        // return never reaches the engine (DET8's re-registration under an object the resolver
+        // does not follow), the lone dwell would end a live call 12 minutes on and END21 would cut
+        // it back to the switch. A real leave takes the Leave control away (it reads invalid, or a
+        // fresh window-gone pairs), which lifts this. No Leave reading, no refusal: nothing then
+        // contradicts the release. The idle backstop stays the ceiling. A Leave reading END18
+        // declined in this hold is not that contradiction: it went invalid inside the hold and
+        // came back untrusted, and END18 already lets the lone dwell run from it.
+        let leave = states[.axLeaveButton]
+        let micLeadContradicted = leading.vetoesLoneEnd
+            && leave?.state == .live
+            && !(leave?.declined == true && (leave?.at ?? .distantPast) >= startedAt)
+            && !Self.pairEdges(in: states, holdStartedAt: startedAt).keys.contains { $0 != leading.evidenceClass }
+        let loneHeld = !leadClassContradicted && !micLeadContradicted && now.timeIntervalSince(loneSince) >= loneDwell
         guard pairHeld || loneHeld else { return nil }
 
         var confirmedBy = states

@@ -1,0 +1,26 @@
+{
+  "scenario": "teams_native_end29_switch_return_missed",
+  "description": "END29, synthetic, code-derived (not seen in the field): Teams releases its input for a headphone switch at 900 s and the mic's return never reaches the engine (DET8's re-registration under an object the resolver does not follow). The Leave button and the call window read live throughout, so the mic-led hold neither pairs nor lone-confirms; before END29 the lone dwell ended it at 1620 s, cut back to the switch.",
+  "engine": "promotion",
+  "origin": "synthetic",
+  "expected_outcome": "no_end",
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "events": [
+    {"t": 0.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": 0.1, "kind": "shareable_content_window", "state": "live"},
+    {"t": 0.2, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 900.0, "kind": "process_audio_is_running_input_false", "state": "ended"},
+    {"t": 960.0, "kind": "tick"},
+    {"t": 1620.0, "kind": "tick"},
+    {"t": 2340.0, "kind": "tick"}
+  ],
+  "expected_verdicts": [
+    {"after": "events[0]", "verdict": "starting"},
+    {"after": "events[0]", "verdict": "in_meeting"},
+    {"after": "events[3]", "verdict": "ending_provisional", "leading": "process_audio_is_running_input_false"}
+  ]
+}

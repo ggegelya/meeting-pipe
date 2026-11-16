@@ -774,6 +774,69 @@ final class ProcessAudioSignalTests: XCTestCase {
         signal.stop()
     }
 
+    // MARK: - END29: a re-registered object's return is emitted
+
+    /// DET8's shape on a headphone switch: Teams' audio client tears down and re-registers under a
+    /// new process object that reads running. The list change's re-resolve must pick it up and
+    /// emit the return, or the engine keeps a mic-led hold open on a release that is over.
+    func test_a_re_registered_object_reading_running_emits_the_return_END29() throws {
+        let log = RecordingEventLog()
+        let backend = CoreAudioHALBusTests.RecordingBackend()
+        let oneShot = ManualOneShot()
+        let objects = LockedBox<[AudioObjectID]>([101])
+        let bus = CoreAudioHALBus(backend: backend, eventLog: log)
+        var observed: [Bool] = []
+        let signal = ProcessAudioSignal(
+            halBus: bus,
+            eventLog: log,
+            probe: { _, resolved in resolved.contains(102) },
+            scheduler: manualScheduler(ManualScheduler()),
+            resolver: { _ in .resolved(objects.get()) },
+            oneShot: { _, work in oneShot.pending.append(work) }
+        )
+        signal.onChange = { observed.append($0) }
+        try signal.start(context: teamsContext)
+        XCTAssertEqual(observed, [false], "the switch: the old object reads released")
+
+        objects.set([102])
+        fireListChange(backend, bus: bus)
+        oneShot.runAll()
+
+        XCTAssertEqual(observed, [false, true], "the new object's return is emitted")
+        let row = log.entries.last { $0.action == "process_audio_is_running_input" }
+        XCTAssertEqual(row?.attributes["reason"], "list_changed")
+        signal.stop()
+    }
+
+    /// The same re-registration with no list change delivered: the old object vanishes, so the
+    /// poll reads nothing, re-resolves once for the streak and emits the return from the new one.
+    func test_a_vanished_object_is_re_resolved_by_the_poll_and_the_return_emitted_END29() throws {
+        let scheduler = ManualScheduler()
+        let objects = LockedBox<[AudioObjectID]>([101])
+        let vanished = LockedBox(false)
+        var observed: [Bool] = []
+        let signal = ProcessAudioSignal(
+            halBus: CoreAudioHALBus(),
+            eventLog: RecordingEventLog(),
+            probe: { _, resolved in
+                if resolved.contains(102) { return true }
+                return vanished.get() ? nil : false
+            },
+            scheduler: manualScheduler(scheduler),
+            resolver: { _ in .resolved(objects.get()) }
+        )
+        signal.onChange = { observed.append($0) }
+        try signal.start(context: teamsContext)
+        XCTAssertEqual(observed, [false])
+
+        vanished.set(true)
+        objects.set([102])
+        scheduler.tick?()
+
+        XCTAssertEqual(observed, [false, true])
+        signal.stop()
+    }
+
     func test_an_unresolved_resolve_backs_off_the_next_list_change() throws {
         let log = RecordingEventLog()
         let backend = CoreAudioHALBusTests.RecordingBackend()

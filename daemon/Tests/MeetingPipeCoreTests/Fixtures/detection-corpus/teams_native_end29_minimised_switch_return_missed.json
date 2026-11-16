@@ -1,0 +1,27 @@
+{
+  "scenario": "teams_native_end29_minimised_switch_return_missed",
+  "description": "END29's minimised-window variant, synthetic, code-derived: the call window is minimised at 120 s under a live mic (vetoed, remembered as gone), a headphone switch at 420 s releases the mic and its return never arrives, and the Leave button reads live throughout. Before END14's amendment the remembered window-gone paired with the release at 480 s; before END29 the lone dwell ended it at 1140 s. Neither fires now.",
+  "engine": "promotion",
+  "origin": "synthetic",
+  "expected_outcome": "no_end",
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "events": [
+    {"t": 0.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": 0.1, "kind": "shareable_content_window", "state": "live"},
+    {"t": 0.2, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 120.0, "kind": "shareable_content_window", "state": "ended"},
+    {"t": 420.0, "kind": "process_audio_is_running_input_false", "state": "ended"},
+    {"t": 480.0, "kind": "tick"},
+    {"t": 1140.0, "kind": "tick"},
+    {"t": 1860.0, "kind": "tick"}
+  ],
+  "expected_verdicts": [
+    {"after": "events[0]", "verdict": "starting"},
+    {"after": "events[0]", "verdict": "in_meeting"},
+    {"after": "events[4]", "verdict": "ending_provisional", "leading": "process_audio_is_running_input_false"}
+  ]
+}

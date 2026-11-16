@@ -1184,4 +1184,94 @@ final class PromotionEngineTests: XCTestCase {
     func test_a_window_gone_well_before_the_release_does_not_back_it_END21() {
         XCTAssertEqual(holdEvidence(windowGoneAt: 940, leaveGoneAt: nil, micReleasedAt: 1000)?.callWindowBacksRelease, false)
     }
+
+    // MARK: - END29: a mic-led hold does not lone-confirm against a live call UI
+
+    /// A headphone switch whose mic return never reaches the engine: the Leave button and the
+    /// window read live throughout and nothing else ends, so the hold neither pairs nor runs out.
+    func test_a_missed_mic_return_does_not_lone_confirm_while_the_leave_reads_live_END29() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        XCTAssertNotNil(engine.ingest(event(.processAudioIsRunningInput, .ended, at: 900)))
+        for held in [dwell, lone, lone + 1, lone * 2] {
+            XCTAssertNil(
+                engine.tick(at: Date(timeIntervalSince1970: 900 + held)),
+                "\(held) s after the switch the call UI still reads live"
+            )
+        }
+        XCTAssertTrue(engine.hasPendingEndDeadline, "the hold stays open; the idle backstop is the ceiling")
+    }
+
+    /// The same hold once the Leave button goes: the refusal lifts and the lone dwell decides as
+    /// before, counted from the release.
+    func test_the_leave_going_invalid_lifts_the_refusal_END29() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 900))
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 930))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 900 + lone - 1)))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 900 + lone))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "process_audio_is_running_input_false",
+                    confirmedBy: ["ax_leave_button_invalid", "lone_dwell"]
+                )
+            )
+        )
+    }
+
+    /// And a real leave, the Leave button and the window both gone, still pairs on the dwell.
+    func test_a_real_leave_after_the_release_still_pairs_END29() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 900))
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 900.3))
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 900.5))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 900.3 + dwell))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "process_audio_is_running_input_false",
+                    confirmedBy: ["ax_leave_button_invalid", "shareable_content_window_gone"]
+                )
+            )
+        )
+    }
+
+    /// The minimised-window variant (2026-11-16): the window minimised under a live mic is vetoed
+    /// and remembered, a switch 300 s later loses its return, and the Leave button reads live.
+    /// END14's amendment stops the stale pair at T0 + 360 s; END29 stops the lone dwell after it.
+    func test_a_minimised_window_and_a_missed_mic_return_do_not_end_the_call_END29() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 100)))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 400))
+        for at in [460.0, 400 + lone, 400 + lone * 2] {
+            XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: at)), "no end at \(at) s")
+        }
+    }
+
+    /// An app whose Leave button was never read is not refused: nothing contradicts the release,
+    /// so a lone mic drop still ends on the lone dwell (the spec's recommended "no").
+    func test_without_a_leave_reading_the_lone_dwell_still_runs_END29() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 900))
+        XCTAssertNotNil(engine.tick(at: Date(timeIntervalSince1970: 900 + lone)))
+    }
 }
