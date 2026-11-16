@@ -24,7 +24,7 @@ import Foundation
 /// from launch). Released samples add time, capped per sample so a stalled host never credits an
 /// unobserved gap; unknown samples (stale, list failed, a vanished holder) pause without clearing;
 /// a held sample clears; a `leftHeldAt` that moved (a hold too short for the host to see) restarts.
-/// A release that began before the recording does not arm it (owner question open, see END23).
+/// A release that began before the recording does not arm it (owner decision 2026-11-17, see END23).
 public struct MicReleaseCeiling {
 
     /// The Teams family, as the monitor's registry defines it.
