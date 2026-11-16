@@ -803,7 +803,7 @@ final class Coordinator: NSObject {
             // (TECH-MIC5 review). Tell the user so they can recover manually.
             let n = result.quarantined.count
             notifier.notifyError(
-                "\(n) interrupted recording\(n == 1 ? "" : "s") were kept for review but not auto-published: the mute timeline was lost when the app stopped unexpectedly, so muted moments could not be removed. They are in the MeetingPipe originals folder."
+                "\(n) interrupted recording\(n == 1 ? "" : "s") were kept for review but not auto-published: the mute timeline was lost when the app stopped unexpectedly, so muted moments could not be removed. They are in the MeetingPipe originals folder (held) and are not deleted automatically."
             )
         }
     }

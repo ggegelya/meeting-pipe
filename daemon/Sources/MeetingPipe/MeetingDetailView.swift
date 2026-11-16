@@ -191,16 +191,19 @@ struct MeetingDetailView: View {
             savedRecording: meeting.audioURL != nil, savedTranscript: meeting.hasTranscriptMD,
             savedSummary: meeting.hasSummaryJSON)
         let canRetry = RetryAffordance.decide(processing: libraryModel.processing(for: meeting.stem))
+        // SEC26: a held-back meeting has no recording to re-run, so it shows the held recording instead.
+        let held = FailedMeetingFix.decide(failureReason: meeting.failureReason) == .showHeldRecording
         return VStack(alignment: .leading, spacing: 4) {
             FailureNotice(failure: problem,
                 retryLabel: meeting.failureStage == "publish" ? "Retry publishing" : meeting.canReuseTranscript ? "Retry summary" : "Retry",
-                retry: canRetry.isOffered ? {
+                retry: canRetry.isOffered && !held ? {
                     if meeting.publishState == "partial" {
                         Task { _ = await libraryModel.republishMeeting(stem: meeting.stem) }
                     } else if case .failure(let error) = libraryModel.retryMeeting(stem: meeting.stem) {
                         FailureDialog.show(FailurePresentation(error: error, title: "Couldn't retry this meeting"))
                     }
                 } : nil,
+                showRecording: held ? { FailedMeetingFix.revealHeldRecording(stem: meeting.stem) } : nil,
                 settings: {
                     if [.memory, .modelMissing].contains(problem.metadata.cause) {
                         libraryModel.coordinator?.preferencesWindow?.show(initial: .pipeline)

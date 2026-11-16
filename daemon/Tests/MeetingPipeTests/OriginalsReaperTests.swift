@@ -95,4 +95,53 @@ final class OriginalsReaperTests: XCTestCase {
             .appendingPathComponent("mp-reaper-absent-\(UUID().uuidString)")
         XCTAssertEqual(OriginalsReaper.sweep(in: dir, now: Date()), 0)
     }
+
+    // MARK: - held/ is never reaped (SEC26)
+
+    private func tempOriginals() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("reaper-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
+    private func age(_ url: URL, days: Double) throws {
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-days * 24 * 3600)], ofItemAtPath: url.path)
+    }
+
+    func test_a_held_recording_older_than_the_window_is_never_reaped_and_a_top_level_copy_still_is() throws {
+        let originals = try tempOriginals()
+        let held = MuteRedactor.heldDirectory(in: originals)
+        try FileManager.default.createDirectory(at: held, withIntermediateDirectories: true)
+        let heldFile = held.appendingPathComponent("held.wav")
+        let copy = originals.appendingPathComponent("copy.wav")
+        try Data(repeating: 1, count: 16).write(to: heldFile)
+        try Data(repeating: 1, count: 16).write(to: copy)
+        try age(heldFile, days: 90)
+        try age(copy, days: 90)
+        try age(held, days: 90)
+
+        XCTAssertEqual(OriginalsReaper.sweep(in: originals), 1)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: heldFile.path), "the only copy survives")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: held.path), "the held folder itself is not a candidate")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copy.path), "a top-level copy past the window still reaps")
+    }
+
+    func test_a_held_folder_over_the_size_ceiling_is_never_reaped() throws {
+        let originals = try tempOriginals()
+        let held = MuteRedactor.heldDirectory(in: originals)
+        try FileManager.default.createDirectory(at: held, withIntermediateDirectories: true)
+        let big = held.appendingPathComponent("big.wav")
+        FileManager.default.createFile(atPath: big.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: big)
+        try handle.truncate(atOffset: UInt64(OriginalsReaper.maxTotalBytes) + 1024 * 1024)  // sparse
+        try handle.close()
+        let fresh = originals.appendingPathComponent("fresh.wav")
+        try Data(repeating: 1, count: 16).write(to: fresh)
+
+        XCTAssertEqual(OriginalsReaper.sweep(in: originals), 0, "held bytes do not count toward the ceiling, and nothing else is over it")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: big.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fresh.path))
+    }
 }

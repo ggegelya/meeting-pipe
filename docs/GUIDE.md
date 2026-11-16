@@ -75,7 +75,7 @@ Off the record covers your microphone only. The other people on the call are sti
 
 What it does to your microphone depends on the workflow. Under an ordinary workflow the microphone keeps recording and your side of the marked stretch is cut out before anything reads the audio, so your voice from it never reaches the transcript, the summary, or anything you publish. The uncut recording is kept on your Mac as a recovery copy, readable only by you and never backed up or synced anywhere, and it is reclaimed after a month or so. Under a workflow in NDA mode, or with regulated mode on, the microphone is silenced for real while the stretch is open, because those modes promise no such audio is kept at all.
 
-If the cut cannot be made (the audio tool it needs is missing, say), the meeting is held back rather than processed: its row in the Library shows it failed and says why, nothing is transcribed or published, and the full recording is moved into the private recovery folder instead of being used. The same applies to a workflow set to cut out the stretches where you were muted.
+If the cut cannot be made (the audio tool it needs is missing, say), the meeting is held back rather than processed: its row in the Library shows it failed and says why, nothing is transcribed or published, and the full recording is moved into the private recovery folder instead of being used. That recording is never deleted automatically, unlike the recovery copies kept when a cut succeeds: the meeting's row offers **Show recording** to reveal it, and **Preferences ▸ Storage** lists its size. The same applies to a workflow set to cut out the stretches where you were muted.
 
 ### Flagging a moment
 

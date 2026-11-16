@@ -12,7 +12,8 @@ import Foundation
 /// `maxTotalBytes`, reap oldest-first until it fits. Deletion is permanent
 /// (`removeItem`, not the Trash): the goal is to reclaim disk, and these copies
 /// are owner-only and backup-excluded, so parking them in the Trash would defeat
-/// both. As a side benefit the sweep also clears copies that leaked before the
+/// both. `originals/held/` (SEC26) is outside every rule here: it holds recordings held back or
+/// quarantined with no redacted twin, so it is never swept and only the owner deletes from it. As a side benefit the sweep also clears copies that leaked before the
 /// delete cascade existed.
 enum OriginalsReaper {
 
@@ -75,15 +76,18 @@ enum OriginalsReaper {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else {
             return 0
         }
         let candidates: [Candidate] = entries.compactMap { url in
+            // Regular files only (SEC26): `held/` is a subfolder, and what is in it is the only copy of
+            // a recording that was held back. The reaper must never see it, as a candidate or as bytes.
             guard let values = try? url.resourceValues(
-                forKeys: [.fileSizeKey, .contentModificationDateKey]
+                forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
             ),
+                values.isRegularFile == true,
                 let size = values.fileSize,
                 let modified = values.contentModificationDate
             else { return nil }

@@ -23,6 +23,9 @@ final class MeetingLibraryService {
         case noSummary(stem: String)
         /// Soft-delete found nothing on disk under this stem.
         case noFiles(stem: String)
+        /// The meeting was held back because a stretch that had to be cut out could not be (SEC16). Its
+        /// recording is in `originals/held/`, not in `raw/`, so there is nothing to re-run.
+        case heldBack(stem: String)
         /// "Keep" pressed with no candidate summary alongside the live one.
         case noCandidateSummary
         /// Ask was invoked with a blank question.
@@ -51,6 +54,8 @@ final class MeetingLibraryService {
                 return "No summary.json for \(stem) - corrected summary must be written before republish"
             case .noFiles(let stem):
                 return "No files found for \(stem)"
+            case .heldBack:
+                return "No recording to retry: this meeting was held back and its recording is kept in MeetingPipe's originals folder (held). Use Show recording."
             case .noCandidateSummary:
                 return "No candidate summary to keep"
             case .emptyQuestion:
@@ -184,6 +189,11 @@ final class MeetingLibraryService {
         MeetingMetaRead.load(stem: stem, in: dir).isZeroEgress
     }
 
+    /// The held-back recording for a stem (`originals/held/`), if there is one (SEC26).
+    func heldRecordingURL(stem: String) -> URL? {
+        MuteRedactor.heldRecording(stem: stem, in: originalsDir())
+    }
+
     /// Retry a failed meeting, reusing whatever the failed run already produced (PIPE1).
     ///
     /// A publish-stage failure reuses its saved summary. Other failures reuse a valid finalized transcript in the serialized regenerate lane, unless transcription itself failed. Missing prerequisites fall back to the recording job.
@@ -228,6 +238,11 @@ final class MeetingLibraryService {
         }
 
         guard let audioURL = MeetingStore.finalRecordingURL(stem: stem, in: dir) else {
+            // SEC26: a held meeting's recording is in `held/`; "No audio" would be wrong and a retry
+            // cannot run. A validation-prefixed error so the dialog explains rather than offering more.
+            if heldRecordingURL(stem: stem) != nil {
+                return .failure(LibraryError.heldBack(stem: stem))
+            }
             return .failure(LibraryError.noAudio(stem: stem))
         }
         Log.writeLine("daemon", "retry pipeline → \(stem)")
@@ -1123,6 +1138,17 @@ final class MeetingLibraryService {
                 originalTrashed = true
             } catch {
                 Log.main.warning("trashItem failed for kept original \(original.lastPathComponent): \(error.localizedDescription)")
+                if firstFailure == nil { firstFailure = error }
+            }
+        }
+        // SEC26: and into the held-back recording, which has no twin in raw/ and is deleted only here, by
+        // the owner's own delete. Best-effort, like the kept original above.
+        for held in MuteRedactor.heldRecordings(stem: stem, in: originalsDir()) {
+            var trashedURL: NSURL?
+            do {
+                try fm.trashItem(at: held, resultingItemURL: &trashedURL)
+            } catch {
+                Log.main.warning("trashItem failed for held recording \(held.lastPathComponent): \(error.localizedDescription)")
                 if firstFailure == nil { firstFailure = error }
             }
         }

@@ -11,8 +11,10 @@ struct StorageStats: Equatable {
     var flacBytes = 0
     /// Free space on the volume holding the library.
     var freeBytes = 0
-    /// Kept full recordings under `originals/` (ADR 0016, reaped by MIC13).
+    /// Kept full recordings under `originals/` (ADR 0016, reaped by MIC13), without `held/`.
     var originalsBytes = 0
+    /// Recordings held back or quarantined, under `originals/held/` (SEC26). Never reaped: the only copy.
+    var heldBytes = 0
     /// The waveform peaks cache. Rebuildable; safe to clear.
     var waveformCacheBytes = 0
     /// One HuggingFace hub entry, and whether the current config still points at it.
@@ -138,7 +140,8 @@ enum StorageScanner {
     ) -> StorageStats {
         var stats = StorageStats()
         stats.libraryBytes = bytesOnDisk(libraryDir)
-        stats.originalsBytes = bytesOnDisk(originalsDir)
+        stats.heldBytes = bytesOnDisk(MuteRedactor.heldDirectory(in: originalsDir))
+        stats.originalsBytes = max(0, bytesOnDisk(originalsDir) - stats.heldBytes)
         stats.waveformCacheBytes = bytesOnDisk(waveformCacheDir)
         stats.freeBytes = freeBytes(on: libraryDir)
         stats.models = models(in: hubRoot, activeModelID: activeModelID)

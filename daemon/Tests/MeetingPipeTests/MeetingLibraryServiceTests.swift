@@ -353,6 +353,64 @@ final class MeetingLibraryServiceTests: XCTestCase {
 
     // MARK: - retry
 
+    // MARK: - held-back recordings (SEC26)
+
+    private func hold(_ stem: String) throws -> URL {
+        let held = MuteRedactor.heldDirectory(in: originalsDir)
+        try FileManager.default.createDirectory(at: held, withIntermediateDirectories: true)
+        let file = held.appendingPathComponent("\(stem).wav")
+        try "x".write(to: file, atomically: true, encoding: .utf8)
+        return file
+    }
+
+    func test_a_held_stem_exposes_its_recording() throws {
+        XCTAssertNil(service.heldRecordingURL(stem: "m"))
+        let file = try hold("m")
+        XCTAssertEqual(service.heldRecordingURL(stem: "m"), file)
+    }
+
+    func test_retry_of_a_held_meeting_returns_the_held_error_not_no_audio() throws {
+        _ = try hold("m")
+        PipelineFailureSidecar.write(stem: "m", in: dir, stage: .transcribe,
+                                     reason: SinkDispatcher.heldBackReason(.ffmpegMissing))
+        guard case .failure(let error) = service.retryMeeting(stem: "m") else { return XCTFail("expected failure") }
+        XCTAssertEqual(error as? MeetingLibraryService.LibraryError, .heldBack(stem: "m"))
+        XCTAssertTrue(enqueued.isEmpty)
+        // The dialog explains instead of offering more: the message is one FailurePresentation reads as validation.
+        let text = error.localizedDescription
+        XCTAssertTrue(text.hasPrefix("No recording "), text)
+        XCTAssertEqual(FailurePresentation(error: error).explanation, text)
+    }
+
+    func test_deleting_a_meeting_also_removes_its_held_recording() throws {
+        try touch("m.wav")
+        try touch("m.meta.json")
+        let file = try hold("m")
+        guard case .success = service.softDeleteMeeting(stem: "m") else { return XCTFail("expected success") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func test_deleting_a_meeting_removes_every_held_recording_of_its_stem() throws {
+        try touch("m.wav")
+        try touch("m.meta.json")
+        let first = try hold("m")
+        let second = MuteRedactor.heldDirectory(in: originalsDir).appendingPathComponent("m.held-1.wav")
+        try "y".write(to: second, atomically: true, encoding: .utf8)
+        guard case .success = service.softDeleteMeeting(stem: "m") else { return XCTFail("expected success") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: second.path))
+    }
+
+    func test_a_held_row_offers_show_recording_and_no_retry() {
+        XCTAssertEqual(FailedMeetingFix.decide(failureReason: SinkDispatcher.heldBackReason(.timelineMissing)), .showHeldRecording)
+        XCTAssertEqual(FailedMeetingFix.decide(failureReason: "summary failed"), .retry)
+        XCTAssertEqual(FailedMeetingFix.decide(failureReason: nil), .retry)
+        for reason in [MuteRedactor.FailureReason.audioUnreadable, .ffmpegFailed, .promoteFailed, .timelineUnreadable] {
+            XCTAssertTrue(SinkDispatcher.heldBackReason(reason).count <= 260, "FailurePresentation.isValidation reads at most 260 characters")
+            XCTAssertEqual(FailedMeetingFix.decide(failureReason: SinkDispatcher.heldBackReason(reason)), .showHeldRecording)
+        }
+    }
+
     func test_retry_missing_wav_fails_without_enqueue() {
         let result = service.retryMeeting(stem: "absent")
         guard case .failure = result else { return XCTFail("expected failure") }

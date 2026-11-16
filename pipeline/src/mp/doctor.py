@@ -571,9 +571,13 @@ def check_storage(cfg: Config | None, home: Path | None = None, now: datetime | 
     digests_bytes = storage.bytes_on_disk(storage.digests_dir(library))
     _ok(f"library {storage.human_bytes(library_bytes)} (digests {storage.human_bytes(digests_bytes)})")
 
-    originals_bytes = storage.bytes_on_disk(storage.originals_dir(home))
+    originals_dir = storage.originals_dir(home)
+    held_bytes = storage.bytes_on_disk(originals_dir / "held")
+    originals_bytes = max(0, storage.bytes_on_disk(originals_dir) - held_bytes)
     if originals_bytes:
         _info(f"kept originals {storage.human_bytes(originals_bytes)} (reaped after 30 days)")
+    if held_bytes:
+        _info(f"held-back recordings {storage.human_bytes(held_bytes)} (never deleted automatically)")
 
     caches = [
         ("waveform peaks", storage.bytes_on_disk(storage.waveform_cache_dir(home))),

@@ -119,6 +119,12 @@ extension TranscriptSidecar {
         let data = try encoder.encode(self)
         try data.write(to: url, options: .atomic)
         // SEC14: transcripts carry meeting content, so keep them user-private (0600), like originals/ and the logs.
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        do {
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch {
+            let ns = error as NSError
+            MuteRedactor.reportProtectionFailures(
+                [.init(protection: "permissions", errorDomain: ns.domain, errorCode: ns.code)], file: url)
+        }
     }
 }

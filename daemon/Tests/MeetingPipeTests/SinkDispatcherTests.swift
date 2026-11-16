@@ -521,12 +521,66 @@ final class SinkDispatcherTests: XCTestCase {
         let failure = try XCTUnwrap(PipelineFailureSidecar.read(stem: "clip", in: dir))
         XCTAssertTrue(failure.reason.contains("ffmpeg_missing"), "the row names why: \(failure.reason)")
         XCTAssertFalse(FileManager.default.fileExists(atPath: wav.path), "the WAV left the library directory")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: originals.appendingPathComponent("clip.wav").path),
-                      "it is kept in the originals directory for recovery")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: MuteRedactor.heldDirectory(in: originals).appendingPathComponent("clip.wav").path),
+                      "it is kept in originals/held/, which the reaper never enters (SEC26)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: originals.appendingPathComponent("clip.wav").path))
+        XCTAssertTrue(failure.reason.contains("not deleted automatically"), failure.reason)
         guard case .failure(let error) = completed.first?.1 else { return XCTFail("expected .failure") }
         XCTAssertEqual(error as? SinkDispatcher.RedactionHeldBack,
                        SinkDispatcher.RedactionHeldBack(reason: .ffmpegMissing, quarantined: true))
         XCTAssertFalse(PipelineLauncher.isCancellation(error), "a held-back meeting is reported, not silent")
+    }
+
+    /// SEC26: a promote whose restore also failed leaves the only copy in `originals/`, where the reaper
+    /// would take it. The held-back path finds no WAV in the library and holds the originals copy.
+    func test_a_held_back_job_whose_wav_was_not_restored_holds_the_originals_copy() throws {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        let originals = dir.appendingPathComponent("originals", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: originals, withIntermediateDirectories: true)
+        // The state a failed restore leaves: the WAV is only in originals/.
+        try FileManager.default.moveItem(at: wav, to: originals.appendingPathComponent("clip.wav"))
+        let dispatcher = makeHeldBackDispatcher(driver, runner, originals: originals) { _ in .failed(.promoteFailed) }
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForJobCompletion { completed.count }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: MuteRedactor.heldDirectory(in: originals).appendingPathComponent("clip.wav").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: originals.appendingPathComponent("clip.wav").path),
+                       "it left the reaped top level")
+        XCTAssertEqual(MuteRedactor.heldRecording(stem: "clip", in: originals)?.lastPathComponent, "clip.wav", "the hold reports the held path, not null")
+        guard case .failure(let error) = completed.first?.1 else { return XCTFail("expected .failure") }
+        XCTAssertEqual(error as? SinkDispatcher.RedactionHeldBack,
+                       SinkDispatcher.RedactionHeldBack(reason: .promoteFailed, quarantined: true))
+    }
+
+    /// SEC26: the redactor itself holds the aside copy after a failed restore, so the dispatcher finds
+    /// nothing to move and must still report the hold rather than a recording left where it was.
+    func test_a_hold_already_made_by_the_redactor_is_reported_as_kept() throws {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        let originals = dir.appendingPathComponent("originals", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        _ = try MuteRedactor.quarantine(wav, in: originals)  // what the redactor did
+        let dispatcher = makeHeldBackDispatcher(driver, runner, originals: originals) { _ in .failed(.promoteFailed) }
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForJobCompletion { completed.count }
+
+        guard case .failure(let error) = completed.first?.1 else { return XCTFail("expected .failure") }
+        XCTAssertEqual(error as? SinkDispatcher.RedactionHeldBack,
+                       SinkDispatcher.RedactionHeldBack(reason: .promoteFailed, quarantined: true))
+        let failure = try XCTUnwrap(PipelineFailureSidecar.read(stem: "clip", in: dir))
+        XCTAssertTrue(SinkDispatcher.isHeldBackReason(failure.reason))
     }
 
     /// The acceptance case for SEC16 scope 3, through the real redactor: a clean

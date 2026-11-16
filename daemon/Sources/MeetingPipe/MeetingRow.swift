@@ -1,6 +1,35 @@
 import AppKit
 import SwiftUI
 
+/// What a failed meeting offers to fix it (SEC26). A held-back meeting (SEC16) has no recording in
+/// `raw/`, so Retry can only answer "No audio"; its fix is to show the held recording instead.
+enum FailedMeetingFix: Equatable {
+    case retry
+    case showHeldRecording
+
+    static func decide(failureReason: String?) -> FailedMeetingFix {
+        SinkDispatcher.isHeldBackReason(failureReason) ? .showHeldRecording : .retry
+    }
+
+    /// Reveal the held recording in Finder, or the held folder when the file is not there (a hold from
+    /// before `held/` existed lives in `originals/`).
+    static func revealHeldRecording(stem: String) {
+        let held = MuteRedactor.heldRecordings(stem: stem)
+        if !held.isEmpty {
+            NSWorkspace.shared.activateFileViewerSelecting(held)
+        } else {
+            let legacy = MuteRedactor.originalsURL(for: URL(fileURLWithPath: "\(stem).wav"))
+            if FileManager.default.fileExists(atPath: legacy.path) {
+                NSWorkspace.shared.activateFileViewerSelecting([legacy])
+            } else {
+                let folder = MuteRedactor.heldDirectory()
+                try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                NSWorkspace.shared.open(folder)
+            }
+        }
+    }
+}
+
 /// One Library list row (TECH-A12). Holds no `@ObservedObject`/`@EnvironmentObject` so model broadcasts (status flips, processing ticks) don't invalidate every row. The list computes `isLiveRecording` and passes plain closures for context-menu actions.
 struct MeetingRow: View, Equatable {
     let meeting: Meeting
@@ -200,6 +229,7 @@ struct MeetingRow: View, Equatable {
         case republish        // edited since publish -> re-publish
         case revealBundle     // paste-pending -> reveal the manual bundle
         case revealRecording  // no speech -> reveal the recording to inspect
+        case revealHeld       // held back (SEC16) -> show the held recording; there is nothing to retry
 
         var label: String {
             switch self {
@@ -208,6 +238,7 @@ struct MeetingRow: View, Equatable {
             case .republish:               return "Republish"
             case .revealBundle:            return "Reveal bundle"
             case .revealRecording:         return "Reveal"
+            case .revealHeld:              return "Show recording"
             }
         }
 
@@ -217,7 +248,7 @@ struct MeetingRow: View, Equatable {
             switch self {
             case .publish, .republish:            return .publish
             case .retryRun, .retryPublish:        return .retry
-            case .revealBundle, .revealRecording: return .neutral
+            case .revealBundle, .revealRecording, .revealHeld: return .neutral
             }
         }
 
@@ -237,6 +268,7 @@ struct MeetingRow: View, Equatable {
             case .republish:       return "Republish"
             case .revealBundle:    return "Reveal transcript bundle in Finder"
             case .revealRecording: return "Reveal recording in Finder"
+            case .revealHeld:      return "Show the held-back recording in Finder"
             }
         }
     }
@@ -250,7 +282,8 @@ struct MeetingRow: View, Equatable {
     /// ran no sink, so `needsRepublish` (which needs one that landed) stays false.
     private var inlineFix: InlineFix? {
         switch effectiveStatus {
-        case .failed:           return .retryRun
+        case .failed:
+            return FailedMeetingFix.decide(failureReason: meeting.failureReason) == .showHeldRecording ? .revealHeld : .retryRun
         case .manualPasteReady: return .revealBundle
         case .empty:            return .revealRecording
         case .done:
@@ -269,6 +302,7 @@ struct MeetingRow: View, Equatable {
         case .retryPublish, .publish, .republish: Task { await onRepublish() }
         case .revealBundle:                       revealBundle()
         case .revealRecording:                    revealRecording()
+        case .revealHeld:                         FailedMeetingFix.revealHeldRecording(stem: meeting.stem)
         }
     }
 

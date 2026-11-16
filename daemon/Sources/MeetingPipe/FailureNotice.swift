@@ -12,6 +12,8 @@ struct FailureNotice: View {
     let failure: FailurePresentation
     var retryLabel = "Retry"
     var retry: (() -> Void)? = nil
+    /// Show the held-back recording (SEC26); offered instead of `retry` on a held meeting.
+    var showRecording: (() -> Void)? = nil
     var settings: (() -> Void)? = nil
     var downloadModel: (() -> Void)? = nil
     @State private var showDetails = false
@@ -59,6 +61,7 @@ struct FailureNotice: View {
         } else if let label = failure.settingsLabel, let settings {
             Button(label, action: settings)
         }
+        if let showRecording { Button("Show recording", action: showRecording) }
         if let retry { Button(retryLabel, action: retry) }
         Button("Details…") { showDetails = true }
             .accessibilityLabel("Failure details")

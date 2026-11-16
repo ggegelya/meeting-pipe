@@ -455,7 +455,7 @@ final class SinkDispatcher: @unchecked Sendable {
                 if job.kind == .full {
                     PipelineFailureSidecar.write(
                         stem: loc.stem, in: loc.dir,
-                        stage: .transcribe, reason: SinkDispatcher.heldBackReason(reason)
+                        stage: .transcribe, reason: SinkDispatcher.heldBackReason(reason, kept: kept)
                     )
                 }
                 self.completeActiveJob(job, with: .failure(RedactionHeldBack(reason: reason, quarantined: kept)))
@@ -996,17 +996,56 @@ final class SinkDispatcher: @unchecked Sendable {
     /// `FailurePresentation.isValidation` knows, so the row explains itself
     /// instead of offering a retry that has no recording left to run on. No
     /// slash in it for the same reason: the path stays in the event log.
-    static func heldBackReason(_ reason: MuteRedactor.FailureReason) -> String {
-        "A stretch marked off the record or muted could not be cut out (\(reason.rawValue)), so this meeting was held back: nothing was transcribed or published. The full recording is kept in MeetingPipe's originals folder."
+    static func heldBackReason(_ reason: MuteRedactor.FailureReason, kept: Bool = true) -> String {
+        // A hold that could not move the recording says so: Show recording would open a folder with
+        // nothing in it, and the recording is still where it was.
+        guard kept else {
+            return "Redaction failed (\(reason.rawValue)), so this meeting was held back: nothing was transcribed or published. The recording could not be moved aside and is still in the library."
+        }
+        return "\(heldBackPrefix) (\(reason.rawValue)), so this meeting was held back: nothing was transcribed or published. The full recording is kept in MeetingPipe's originals folder (held). It is not deleted automatically."
+    }
+
+    /// The head every held-back reason shares. A row whose failure reason starts with it is a held
+    /// meeting: Show recording is its fix, because Retry has no recording in `raw/` to run on (SEC26).
+    static let heldBackPrefix = "A stretch marked off the record or muted could not be cut out"
+
+    static func isHeldBackReason(_ reason: String?) -> Bool {
+        reason?.hasPrefix(heldBackPrefix) == true
     }
 
     /// Move a held-back recording out of the Library-scanned tree, the same move
     /// orphan quarantine makes. Off main: it touches the disk. A recording that
     /// cannot be moved stays where it is, still never transcribed.
     private func quarantineHeldBack(_ wav: URL) -> Bool {
-        guard FileManager.default.fileExists(atPath: wav.path) else { return false }
+        // SEC26: a promote whose restore also failed leaves the only copy in `originals/`, where the
+        // reaper would take it. Nothing in `raw/` then, but a copy there: that is what gets held.
+        var source = wav
+        if !FileManager.default.fileExists(atPath: wav.path) {
+            let aside = MuteRedactor.originalsURL(for: wav, in: originalsDir)
+            guard FileManager.default.fileExists(atPath: aside.path) else {
+                // The redactor already held the aside copy itself after a failed restore.
+                let stem = wav.deletingPathExtension().lastPathComponent
+                if let held = MuteRedactor.heldRecording(stem: stem, in: originalsDir) {
+                    Log.event(category: "coordinator", action: "recording_held_back", attributes: [
+                        "file": wav.lastPathComponent,
+                        "kept": held.path,
+                    ])
+                    return true
+                }
+                return false
+            }
+            source = aside
+        }
         do {
-            let dest = try MuteRedactor.quarantine(wav, in: originalsDir)
+            let dest = try MuteRedactor.quarantine(source, in: originalsDir)
+            // A WAV in raw/ AND a copy aside (a pass that finished after its deadline): the aside copy is
+            // the full recording and the reaper would take it, so it is held too.
+            if source == wav {
+                let aside = MuteRedactor.originalsURL(for: wav, in: originalsDir)
+                if FileManager.default.fileExists(atPath: aside.path) {
+                    _ = try? MuteRedactor.quarantine(aside, in: originalsDir)
+                }
+            }
             Log.event(category: "coordinator", action: "recording_held_back", attributes: [
                 "file": wav.lastPathComponent,
                 "kept": dest.path,

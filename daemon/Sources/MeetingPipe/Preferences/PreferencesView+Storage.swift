@@ -208,6 +208,18 @@ struct StorageSectionView: View {
                 sublabel: "Pre-redaction copies, app-private and excluded from backups. Reaped after 30 days.") {
                 valueText(stats.stats?.originalsBytes)
             }
+            SettingsRow("Held-back recordings",
+                sublabel: "Recordings a meeting was held back for, and interrupted recordings kept aside. Never deleted automatically: remove them yourself once you no longer need them.") {
+                HStack(spacing: 8) {
+                    valueText(stats.stats?.heldBytes)
+                    Button("Show") {
+                        let held = MuteRedactor.heldDirectory()
+                        try? FileManager.default.createDirectory(at: held, withIntermediateDirectories: true)
+                        NSWorkspace.shared.open(held)
+                    }
+                    .buttonStyle(.mpGhost)
+                }
+            }
             SettingsRow("Free on this volume") {
                 valueText(stats.stats?.freeBytes)
             }
