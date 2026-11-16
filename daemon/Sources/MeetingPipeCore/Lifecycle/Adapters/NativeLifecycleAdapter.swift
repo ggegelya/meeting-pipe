@@ -18,8 +18,9 @@ public struct NativeLifecycleConfig {
     /// owner-run live-call probe on 2026-08-05 returned GO: input true at the call's first event
     /// and false within 11.4 s of the leave, against a 60 s bar. `ProcessAudioSignal` now resolves
     /// by enumerate-and-match, and `processAudioIsRunningInput` carries `requiresCorroboration ==
-    /// true` in `PromotionEngine`. Those two ship together: the flag is only safe to set here
-    /// because a lone input drop cannot solo-confirm an end.
+    /// true` in `PromotionEngine`. Since END17 a lone input drop opens a hold and confirms only
+    /// after `PromotionEngine.loneDwell` (12 min), never sooner, and a drop that comes back reverts
+    /// it; that is what keeps the flag safe here.
     ///
     /// Webex and Slack stay false, which is NOT a leftover from TECH-END1. Cisco holds the mic open
     /// post-call for ultrasound device discovery, so an input read there says nothing about whether
@@ -117,6 +118,10 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
     private let processAudio: ProcessAudioSignal?
     private let shareableContent: ShareableContentSignal
     private let axLeaveButton: AXLeaveButtonSignal
+    /// END17 (2026-11-13 amendment, G025): the app quit, the one definitive end signal. Before it
+    /// only the browser adapter started one, so ADR 0017's "app quit ends at once" never held for a
+    /// native app (0 of 381 field ends carried it).
+    private let workspace: WorkspaceSignal
 
     /// Context captured at `start` so `armLeaveButton` emits under the same context the engine matches against.
     private var startedContext: MeetingLifecycleContext?
@@ -126,7 +131,8 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
         config: NativeLifecycleConfig,
         halBus: CoreAudioHALBus? = nil,
         axBus: AXObserverBus,
-        eventLog: EventLog = NoopEventLog()
+        eventLog: EventLog = NoopEventLog(),
+        workspace: WorkspaceSignal? = nil
     ) {
         precondition(
             !config.usesProcessAudio || halBus != nil,
@@ -135,6 +141,7 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
         self.config = config
         self.shareableContent = ShareableContentSignal(eventLog: eventLog)
         self.axLeaveButton = AXLeaveButtonSignal(axBus: axBus, eventLog: eventLog)
+        self.workspace = workspace ?? WorkspaceSignal(eventLog: eventLog)
         if config.usesProcessAudio, let halBus {
             self.processAudio = ProcessAudioSignal(halBus: halBus, eventLog: eventLog)
         } else {
@@ -148,12 +155,14 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
         config: NativeLifecycleConfig,
         processAudio: ProcessAudioSignal?,
         shareableContent: ShareableContentSignal,
-        axLeaveButton: AXLeaveButtonSignal
+        axLeaveButton: AXLeaveButtonSignal,
+        workspace: WorkspaceSignal = WorkspaceSignal()
     ) {
         self.config = config
         self.processAudio = processAudio
         self.shareableContent = shareableContent
         self.axLeaveButton = axLeaveButton
+        self.workspace = workspace
     }
 
     public func start(
@@ -171,7 +180,26 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
                     context: context
                 ))
             }
+            processAudio.onUnknown = {
+                sink(PrimarySignalEvent(
+                    kind: .processAudioIsRunningInput,
+                    state: .unknown,
+                    timestamp: Date(),
+                    context: context
+                ))
+            }
         }
+        // The context's own bundle, matched exactly (`WorkspaceSignal`), never the config's family
+        // or a prefix: a definitive end has no hold, so a helper exiting must not end the call.
+        workspace.onTerminated = { endedContext in
+            sink(PrimarySignalEvent(
+                kind: .workspaceAppTerminated,
+                state: .ended,
+                timestamp: Date(),
+                context: endedContext
+            ))
+        }
+        workspace.start(context: context)
         shareableContent.onChange = { present in
             sink(PrimarySignalEvent(
                 kind: .shareableContentWindow,
@@ -225,6 +253,7 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
         processAudio?.stop()
         shareableContent.stop()
         axLeaveButton.stop()
+        workspace.stop()
         startedContext = nil
     }
 }

@@ -838,21 +838,6 @@ final class PromotionEngineTests: XCTestCase {
         )
     }
 
-    /// An app quit is definitive and is never vetoed, even while the last mic reading was live.
-    func test_workspace_termination_is_not_vetoed_by_live_process_audio_END14() {
-        let engine = PromotionEngine()
-        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
-        _ = engine.confirmRecording()
-        XCTAssertEqual(
-            engine.ingest(event(.workspaceAppTerminated, .ended, at: 1))?.verdict,
-            .ended(
-                context: teamsContext,
-                reason: EndingReason(leadingSignal: "workspace_app_terminated", confirmedBy: [])
-            )
-        )
-        XCTAssertNil(engine.takeVeto())
-    }
-
     /// A released mic is not a veto: window-gone after process audio has already ended keeps
     /// today's direct end, so the change only ever applies while the mic is actually held.
     func test_released_mic_does_not_veto_window_gone_END14() {
@@ -1273,5 +1258,106 @@ final class PromotionEngineTests: XCTestCase {
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 900))
         XCTAssertNotNil(engine.tick(at: Date(timeIntervalSince1970: 900 + lone)))
+    }
+
+    // MARK: - END17 amendment: a mic gone unknown stops vetoing
+
+    /// END13's shape under a crash: a Leave-led hold sits under a live mic, then the mic turns
+    /// unreadable. The veto lapses, and the lone dwell runs from the moment it did, not from the
+    /// hold's start. Red against HEAD as the same sequence with no unknown event: the hold stayed
+    /// vetoed past the lone dwell for good.
+    func test_a_mic_gone_unknown_lets_a_held_end_confirm_on_the_lone_dwell_END17() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 100))
+        XCTAssertNil(engine.ingest(event(.processAudioIsRunningInput, .unknown, at: 1000)))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1000 + lone - 0.1)), "counted from the unknown")
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 1000 + lone))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "ax_leave_button_invalid", confirmedBy: ["lone_dwell"])
+            )
+        )
+    }
+
+    /// The crash with the window gone too: Leave and window are one class, so no pair, and the
+    /// lone dwell decides once the veto has lapsed.
+    func test_a_native_hold_with_the_mic_unknown_and_the_window_gone_confirms_END17() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 50)), "vetoed")
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 50.2))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .unknown, at: 51))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 51 + lone))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "ax_leave_button_invalid",
+                    confirmedBy: ["lone_dwell", "shareable_content_window_gone"]
+                )
+            )
+        )
+    }
+
+    /// Unknown is taken only over a live reading: a released mic whose objects then vanish (every
+    /// quit) keeps its release, which END21 cuts at.
+    func test_unknown_over_a_released_mic_is_dropped_END17() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 100))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .unknown, at: 105))
+        XCTAssertEqual(engine.holdEvidence?.processAudio, .ended)
+        XCTAssertEqual(engine.holdEvidence?.releasedAt, Date(timeIntervalSince1970: 100))
+    }
+
+    /// In `.starting` an unreadable read decides nothing: the held window-gone stays held, so one
+    /// bad read cannot dismiss the prompt.
+    func test_unknown_in_starting_does_not_lift_a_held_end_END17() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 1)))
+        XCTAssertNil(engine.ingest(event(.processAudioIsRunningInput, .unknown, at: 2)))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 60)))
+        XCTAssertEqual(engine.confirmRecording()?.verdict, .inMeeting(context: teamsContext))
+    }
+
+    /// Unknown opens no hold in `.inMeeting` and is not evidence of an end: a teardown confirm of a
+    /// later hold does not list it.
+    func test_unknown_opens_no_hold_and_is_not_listed_as_evidence_END17() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        XCTAssertNil(engine.ingest(event(.processAudioIsRunningInput, .unknown, at: 10)))
+        XCTAssertFalse(engine.hasPendingEndDeadline)
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 20))
+        XCTAssertEqual(
+            engine.confirmProvisionalEnd()?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "ax_leave_button_invalid", confirmedBy: ["call_teardown_observed"])
+            )
+        )
+    }
+
+    /// The mic coming back after an unknown reverts a hold, as any vetoer reading live does.
+    func test_the_mic_returning_after_unknown_reverts_the_hold_END17() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 100))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .unknown, at: 101))
+        XCTAssertEqual(
+            engine.ingest(event(.processAudioIsRunningInput, .live, at: 103))?.verdict,
+            .inMeeting(context: teamsContext)
+        )
     }
 }

@@ -101,6 +101,12 @@ public extension PrimarySignalKind {
 public enum PrimarySignalState: Equatable {
     case live
     case ended
+    /// END17 (2026-11-13 amendment, G025): a signal that read `.live` can no longer be read at all,
+    /// so its live reading must stop vetoing. Only process audio sends it, when the objects that
+    /// carried the input vanish or turn unreadable (a crashed or force-quit app). The engine takes
+    /// it only over a `.live` reading and never ends anything on it: it is the absence of evidence
+    /// that the call is up, not evidence that it is over.
+    case unknown
 }
 
 public struct PrimarySignalEvent: Equatable {
@@ -406,9 +412,13 @@ public final class PromotionEngine {
 
     /// Record `event` in `states`, keeping the first stamp of an unchanged state (END17), and
     /// return what the signal said before it.
+    ///
+    /// END17: `.unknown` is taken only over a `.live` reading. A released mic must stay released when
+    /// the app's objects then vanish, as they do on every quit, or END21 loses its release stamp.
     @discardableResult
     private static func record(_ event: PrimarySignalEvent, in states: inout SignalStates) -> SignalReading? {
         let previous = states[event.kind]
+        if event.state == .unknown, previous?.state != .live { return previous }
         if previous?.state != event.state {
             states[event.kind] = SignalReading(state: event.state, at: event.timestamp)
         }
@@ -544,6 +554,12 @@ public final class PromotionEngine {
         let heldBefore = heldForVetoer(in: states)
         Self.record(event, in: &states)
         switch event.state {
+        case .unknown:
+            // END17: the veto lapses, but an unreadable read decides nothing here: lifting a held
+            // window-gone on it would dismiss the prompt on one bad read. A crash ends through the
+            // app quit; a held end otherwise waits for the next `.ended` or the prompt's own bound.
+            phase = .starting(context: context, observed: observed, states: states)
+            return nil
         case .live:
             // Absorb; promotion to `.inMeeting` is `confirmRecording()`'s job so `.inMeeting` tracks the recorder, not signals.
             observed.insert(event.kind)
@@ -601,6 +617,10 @@ public final class PromotionEngine {
         guard event.context == context else { return nil }
         Self.record(event, in: &states)
         switch event.state {
+        case .unknown:
+            // END17: no hold opens on an unreadable read; the veto it held simply lapses.
+            phase = .inMeeting(context: context, observed: observed, states: states)
+            return nil
         case .live:
             observed.insert(event.kind)
             phase = .inMeeting(context: context, observed: observed, states: states)
@@ -650,6 +670,17 @@ public final class PromotionEngine {
         guard event.context == context else { return nil }
         let previous = Self.record(event, in: &states)
         switch event.state {
+        case .unknown:
+            // END17: a vetoer that stops reading live inside the hold restarts the lone dwell, as a
+            // release does (END18), so END13's shape (a Leave-led hold under a live mic) cannot
+            // confirm on the first tick after the mic turns unreadable. No revert, no verdict, and
+            // not in `observed`, so a teardown confirm does not list it.
+            let anchor = (event.kind.vetoesLoneEnd && previous?.state == .live) ? event.timestamp : loneSince
+            phase = .endingProvisional(
+                context: context, leading: leading,
+                startedAt: startedAt, loneSince: anchor, observed: observed, states: states
+            )
+            return nil
         case .ended:
             observed.insert(event.kind)
             // END18 (D029): a vetoer that stops reading live inside the hold restarts the lone

@@ -265,7 +265,12 @@ public final class MeetingLifecycleCoordinator {
         lock.lock()
         defer { lock.unlock() }
         guard self.generation == generation else { return }
-        liveCallSignalState = event.state == .live ? .callIsUp : .callIsDown
+        switch event.state {
+        case .live: liveCallSignalState = .callIsUp
+        case .ended: liveCallSignalState = .callIsDown
+        // END17: an unreadable mic is no reading; it never overwrites a release.
+        case .unknown: if liveCallSignalState == .callIsUp { liveCallSignalState = .unknown }
+        }
     }
 
     /// Drive a tick on the current generation. The production timer captures its

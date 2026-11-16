@@ -29,9 +29,16 @@ import Foundation
 /// streak: the probe measured the object present before the join and holding its ID throughout, so it is
 /// process-tied rather than per-call and aggressive re-enumeration would buy nothing.
 ///
-/// The safety rail is not in this file: `processAudioIsRunningInput` carries `requiresCorroboration ==
-/// true` in `PromotionEngine`, so a mute-, churn- or restart-induced input drop can never solo-confirm a
-/// meeting end. It is what makes the flip safe. Do not turn it off.
+/// The safety rail is not in this file. Since END17 no weak signal ends a recording alone: an input
+/// drop opens a hold, a mute-, churn- or restart-induced drop that comes back reverts it, and a lone
+/// drop confirms only after `PromotionEngine.loneDwell` (12 min), never sooner. `requiresCorroboration`
+/// still keeps it from ending a `.starting` alone.
+///
+/// END17 (2026-11-13 amendment, G025, G028): the objects that last read running are remembered as
+/// the input's owners. When an owner turns unreadable or leaves the list and nothing reads running,
+/// the reading is unknown rather than false (a stale owner beside idle helpers is not a release),
+/// and an unknown that follows a running reading, after one re-resolve, is delivered through
+/// `onUnknown` so the engine's live veto lapses instead of holding for ever over a crashed app.
 ///
 /// Threading (CONC9): every mutable field is confined to `queue`, a private serial queue, and the
 /// production poll is a `DispatchSourceTimer` on it, so neither the probe nor the start-time resolve
@@ -75,8 +82,12 @@ public final class ProcessAudioSignal {
     /// Resolves a detected app to its HAL process objects. Tests inject a stub; production uses `defaultResolver`.
     public typealias ProcessObjectResolver = (MeetingLifecycleContext) -> ProcessObjectResolution
 
-    /// Returns `isRunningInput` OR-ed across the resolved objects. nil when nothing could be read; the signal holds prior state on nil to avoid flapping.
+    /// A whole-set reading, OR-ed across the resolved objects; nil when nothing could be read. A test
+    /// seam: production reads each object through `ObjectReader` so it can track the input's owners.
     public typealias Probe = (MeetingLifecycleContext, [AudioObjectID]) -> Bool?
+
+    /// One object's `kAudioProcessPropertyIsRunningInput`, nil when unreadable.
+    public typealias ObjectReader = (AudioObjectID) -> Bool?
 
     /// Schedules a repeating tick; returns a cancellation closure.
     public typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
@@ -88,6 +99,12 @@ public final class ProcessAudioSignal {
     public var onChange: ((Bool) -> Void)? {
         get { lock.withLock { _onChange } }
         set { lock.withLock { _onChange = newValue } }
+    }
+
+    /// END17: a running reading can no longer be read. Same lock and delivery rules as `onChange`.
+    public var onUnknown: (() -> Void)? {
+        get { lock.withLock { _onUnknown } }
+        set { lock.withLock { _onUnknown = newValue } }
     }
 
     public static let defaultPollInterval: TimeInterval = 1.0
@@ -105,7 +122,9 @@ public final class ProcessAudioSignal {
 
     private let halBus: CoreAudioHALBus
     private let eventLog: EventLog
-    private let probe: Probe
+    /// nil in production, which reads each object through `readObject` and tracks the owners.
+    private let probe: Probe?
+    private let readObject: ObjectReader
     private let scheduler: Scheduler
     private let resolver: ProcessObjectResolver
     private let pollInterval: TimeInterval
@@ -121,6 +140,7 @@ public final class ProcessAudioSignal {
     /// Bumped by every `start` and `stop`. A queued block whose captured value no longer matches does nothing.
     private var generation: UInt64 = 0
     private var _onChange: ((Bool) -> Void)?
+    private var _onUnknown: (() -> Void)?
 
     // Queue-confined from here down. `lastValue` used to be a public getter read across threads; it
     // had no reader outside the tests, and the coordinator caches its own copy (END13).
@@ -141,6 +161,9 @@ public final class ProcessAudioSignal {
     private var reResolvedThisStreak = false
     /// DET21: a coalesced list-driven re-resolve is scheduled; further list changes only count.
     private var reresolvePending = false
+    /// END17: the objects that last read running. Queue-confined. Narrowed by every resolve that
+    /// matched, so an owner that left the list for good stops making the reading unknown.
+    private var liveOwners: Set<AudioObjectID> = []
     /// List-change deliveries folded into the pending re-resolve, reported as `coalesced`.
     private var coalescedDeliveries = 0
     /// DET21: no list-driven re-resolve before this (`clock` time); nil when the last resolve matched.
@@ -152,7 +175,8 @@ public final class ProcessAudioSignal {
     public init(
         halBus: CoreAudioHALBus,
         eventLog: EventLog = NoopEventLog(),
-        probe: @escaping Probe = ProcessAudioSignal.defaultProbe,
+        probe: Probe? = nil,
+        readObject: @escaping ObjectReader = ProcessAudioSignal.defaultObjectReader,
         scheduler: Scheduler? = nil,
         resolver: @escaping ProcessObjectResolver = ProcessAudioSignal.defaultResolver,
         pollInterval: TimeInterval = ProcessAudioSignal.defaultPollInterval,
@@ -164,6 +188,7 @@ public final class ProcessAudioSignal {
         self.halBus = halBus
         self.eventLog = eventLog
         self.probe = probe
+        self.readObject = readObject
         self.resolver = resolver
         self.pollInterval = pollInterval
         self.slowPollInterval = slowPollInterval
@@ -264,6 +289,7 @@ public final class ProcessAudioSignal {
         unresolvedLogged = false
         reResolvedThisStreak = false
         reresolvePending = false
+        liveOwners = []
         coalescedDeliveries = 0
         unresolvedBackoffUntil = nil
         nextUnresolvedBackoff = ProcessAudioSignal.initialUnresolvedBackoff
@@ -292,6 +318,9 @@ public final class ProcessAudioSignal {
             unresolvedBackoffUntil = nil
             nextUnresolvedBackoff = ProcessAudioSignal.initialUnresolvedBackoff
             resolvedObjects = objects
+            // END17: an owner a successful resolve no longer lists has gone for good (the helper
+            // exited or re-registered), so what the remaining objects read is the answer again.
+            liveOwners.formIntersection(objects)
             let wanted = Set(objects)
             var removed = 0
             for (object, token) in held where !wanted.contains(object) {
@@ -468,13 +497,25 @@ public final class ProcessAudioSignal {
         }
     }
 
+    /// One reading of the resolved set: the injected `probe` when a test gave one, else each object
+    /// through `readObject`, reduced against the remembered owners. Queue-confined.
+    private func read(_ context: MeetingLifecycleContext) -> Bool? {
+        if let probe { return probe(context, resolvedObjects) }
+        let reduced = Self.reduceIsRunningInput(
+            resolvedObjects.map { ($0, readObject($0)) },
+            liveOwners: liveOwners
+        )
+        liveOwners = reduced.liveOwners
+        return reduced.value
+    }
+
     /// Re-read the probe and emit `onChange` if the value flipped. Queue-confined. Returns what
     /// the read said against `lastValue`, which the poll hands to its cadence (PERF19).
     @discardableResult
     private func evaluate(reason: String, generation: UInt64) -> AdaptivePollCadence.PollObservation {
         guard let context = context, isCurrent(generation) else { return .unknown }
 
-        var reading = probe(context, resolvedObjects)
+        var reading = read(context)
         if reading == nil && !reResolvedThisStreak {
             // The app may have restarted the helper that owns its audio, which leaves the cached object
             // IDs stale. Re-resolve once per streak rather than per tick: the 2026-08-05 probe measured
@@ -486,7 +527,7 @@ public final class ProcessAudioSignal {
                 generation: generation,
                 reresolve: Reresolve(reason: "unresolved_streak", coalesced: 0)
             )
-            reading = probe(context, resolvedObjects)
+            reading = read(context)
         }
 
         guard let value = reading else {
@@ -497,6 +538,20 @@ public final class ProcessAudioSignal {
                     "pid": Int(context.pid),
                     "reason": reason
                 ])
+            }
+            // END17: a running reading that cannot be read even after this streak's re-resolve is
+            // delivered as unknown, once, so the engine's veto lapses. Only after a running
+            // reading: a released mic whose objects then vanish (every quit) stays released.
+            if lastValue == true, reResolvedThisStreak, isCurrent(generation) {
+                lastValue = nil
+                eventLog.emit(category: "signal", action: "process_audio_input_unknown", attributes: [
+                    "bundle_id": context.bundleID,
+                    "pid": Int(context.pid),
+                    "reason": reason,
+                    "owners": liveOwners.count
+                ])
+                let deliver: (() -> Void)? = lock.withLock { self.generation == generation ? _onUnknown : nil }
+                deliver?()
             }
             return .unknown
         }
@@ -609,10 +664,23 @@ public final class ProcessAudioSignal {
         return .resolved(matched)
     }
 
-    /// OR `kAudioProcessPropertyIsRunningInput` across the resolved objects.
-    public static let defaultProbe: Probe = { _, objects in
-        guard !objects.isEmpty else { return nil }
-        return reduceIsRunningInput(objects.map { readIsRunningInput($0) })
+    /// Production's per-object read of `kAudioProcessPropertyIsRunningInput`.
+    public static let defaultObjectReader: ObjectReader = { readIsRunningInput($0) }
+
+    /// END17: `reduceIsRunningInput` with the input's owners remembered. Any object running is
+    /// running, and becomes the owner set. Otherwise, an owner that is unreadable or no longer in
+    /// the set makes the answer unknown, not false (G028: a stale owner beside readable idle helpers
+    /// is not a release). Otherwise the plain rule, and a false clears the owners.
+    static func reduceIsRunningInput(
+        _ readings: [(object: AudioObjectID, isRunning: Bool?)],
+        liveOwners: Set<AudioObjectID>
+    ) -> (value: Bool?, liveOwners: Set<AudioObjectID>) {
+        let running = Set(readings.filter { $0.isRunning == true }.map(\.object))
+        if !running.isEmpty { return (true, running) }
+        let readable = Set(readings.filter { $0.isRunning != nil }.map(\.object))
+        if !liveOwners.isSubset(of: readable) { return (nil, liveOwners) }
+        let value = reduceIsRunningInput(readings.map(\.isRunning))
+        return (value, value == false ? [] : liveOwners)
     }
 
     /// Pure: "is any of them on the mic". nil means UNKNOWN, and it is deliberately reserved for the

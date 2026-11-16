@@ -100,8 +100,149 @@ final class ProcessAudioSignalTests: XCTestCase {
         probeReturn = nil
         scheduler.tick?()
 
-        XCTAssertEqual(observed, [true], "nil probe must not emit transitions")
+        XCTAssertEqual(observed, [true], "nil probe must not emit a true/false transition")
         XCTAssertTrue(log.entries.contains { $0.action == "process_audio_unresolved" })
+    }
+
+    // MARK: - END17 amendment (G025, G028): a running reading that cannot be read is unknown
+
+    /// Live, then nothing readable even after the streak's re-resolve: unknown is delivered once,
+    /// so the engine's veto lapses, and never as a false.
+    func test_a_running_reading_gone_unreadable_emits_unknown_once_END17() throws {
+        let log = RecordingEventLog()
+        let scheduler = ManualScheduler()
+        let probeReturn = LockedBox<Bool?>(true)
+        var observed: [Bool] = []
+        var unknowns = 0
+        let signal = ProcessAudioSignal(
+            halBus: CoreAudioHALBus(),
+            eventLog: log,
+            probe: { _, _ in probeReturn.get() },
+            scheduler: manualScheduler(scheduler)
+        )
+        signal.onChange = { observed.append($0) }
+        signal.onUnknown = { unknowns += 1 }
+        try signal.start(context: teamsContext)
+
+        probeReturn.set(nil)
+        scheduler.tick?()
+        scheduler.tick?()
+        XCTAssertEqual(observed, [true])
+        XCTAssertEqual(unknowns, 1)
+        XCTAssertEqual(log.entries.filter { $0.action == "process_audio_input_unknown" }.count, 1)
+
+        probeReturn.set(true)
+        scheduler.tick?()
+        XCTAssertEqual(observed, [true, true], "a reading after unknown is a fresh transition")
+    }
+
+    /// A released mic whose objects then vanish (every quit) stays released: no unknown.
+    func test_a_released_reading_gone_unreadable_emits_nothing_END17() throws {
+        let scheduler = ManualScheduler()
+        let objects = LockedBox<[AudioObjectID]>([101])
+        var unknowns = 0
+        var observed: [Bool] = []
+        let signal = ProcessAudioSignal(
+            halBus: CoreAudioHALBus(),
+            readObject: { objects.get().contains($0) ? false : nil },
+            scheduler: manualScheduler(scheduler),
+            resolver: { _ in objects.get().isEmpty ? .unresolved(noErr) : .resolved(objects.get()) }
+        )
+        signal.onChange = { observed.append($0) }
+        signal.onUnknown = { unknowns += 1 }
+        try signal.start(context: teamsContext)
+        XCTAssertEqual(observed, [false])
+
+        objects.set([])
+        scheduler.tick?()
+        XCTAssertEqual(unknowns, 0)
+        XCTAssertEqual(observed, [false])
+    }
+
+    /// G028: the owner unreadable beside a readable idle helper is unknown, after a re-resolve,
+    /// not a false that would open a hold on a call that may still be up.
+    func test_an_owner_unreadable_beside_an_idle_helper_is_unknown_not_false_END17() throws {
+        let scheduler = ManualScheduler()
+        let ownerReading = LockedBox<Bool?>(true)
+        let resolves = LockedBox(0)
+        var unknowns = 0
+        var observed: [Bool] = []
+        let signal = ProcessAudioSignal(
+            halBus: CoreAudioHALBus(),
+            readObject: { $0 == 101 ? ownerReading.get() : false },
+            scheduler: manualScheduler(scheduler),
+            resolver: { _ in resolves.mutate { $0 += 1 }; return .resolved([101, 102]) }
+        )
+        signal.onChange = { observed.append($0) }
+        signal.onUnknown = { unknowns += 1 }
+        try signal.start(context: teamsContext)
+        XCTAssertEqual(observed, [true])
+        let afterStart = resolves.get()
+
+        ownerReading.set(nil)
+        scheduler.tick?()
+        XCTAssertEqual(observed, [true], "never a false")
+        XCTAssertEqual(unknowns, 1)
+        XCTAssertEqual(resolves.get(), afterStart + 1, "the streak re-resolved first")
+    }
+
+    /// The owner memory expires: once a successful resolve no longer lists the owner, what the
+    /// remaining objects read is the answer again, so the mic can still read released.
+    func test_an_owner_gone_from_a_successful_resolve_stops_making_it_unknown_END17() throws {
+        let scheduler = ManualScheduler()
+        let objects = LockedBox<[AudioObjectID]>([101, 102])
+        let ownerReading = LockedBox<Bool?>(true)
+        var unknowns = 0
+        var observed: [Bool] = []
+        let signal = ProcessAudioSignal(
+            halBus: CoreAudioHALBus(),
+            readObject: { $0 == 101 ? ownerReading.get() : false },
+            scheduler: manualScheduler(scheduler),
+            resolver: { _ in .resolved(objects.get()) }
+        )
+        signal.onChange = { observed.append($0) }
+        signal.onUnknown = { unknowns += 1 }
+        try signal.start(context: teamsContext)
+
+        ownerReading.set(nil)
+        objects.set([102])
+        scheduler.tick?()
+        XCTAssertEqual(unknowns, 0, "the re-resolve dropped the vanished owner before the reading settled")
+        XCTAssertEqual(observed, [true, false])
+    }
+
+    /// A stopped session's owners do not carry into the next one.
+    func test_owners_reset_across_stop_and_start_END17() throws {
+        let scheduler = ManualScheduler()
+        let ownerReading = LockedBox<Bool?>(true)
+        var observed: [Bool] = []
+        let signal = ProcessAudioSignal(
+            halBus: CoreAudioHALBus(),
+            readObject: { $0 == 101 ? ownerReading.get() : false },
+            scheduler: manualScheduler(scheduler),
+            resolver: { _ in .resolved([101, 102]) }
+        )
+        signal.onChange = { observed.append($0) }
+        try signal.start(context: teamsContext)
+        signal.stop()
+        // Still listed, now unreadable: session one's owner would make this unknown.
+        ownerReading.set(nil)
+        try signal.start(context: teamsContext)
+        XCTAssertEqual(observed, [true, false], "a fresh session reads its own objects, not session one's owner")
+    }
+
+    func test_owner_aware_reduce_END17() {
+        typealias R = (object: AudioObjectID, isRunning: Bool?)
+        let running: [R] = [(101, true), (102, false)]
+        XCTAssertEqual(ProcessAudioSignal.reduceIsRunningInput(running, liveOwners: []).value, true)
+        XCTAssertEqual(ProcessAudioSignal.reduceIsRunningInput(running, liveOwners: []).liveOwners, [101])
+        let ownerUnreadable: [R] = [(101, nil), (102, false)]
+        XCTAssertNil(ProcessAudioSignal.reduceIsRunningInput(ownerUnreadable, liveOwners: [101]).value)
+        XCTAssertEqual(ProcessAudioSignal.reduceIsRunningInput(ownerUnreadable, liveOwners: []).value, false)
+        let ownerReleased: [R] = [(101, false), (102, false)]
+        XCTAssertEqual(ProcessAudioSignal.reduceIsRunningInput(ownerReleased, liveOwners: [101]).value, false)
+        XCTAssertEqual(ProcessAudioSignal.reduceIsRunningInput(ownerReleased, liveOwners: [101]).liveOwners, [])
+        XCTAssertNil(ProcessAudioSignal.reduceIsRunningInput([], liveOwners: [101]).value, "the set emptied")
     }
 
     func test_unresolved_probe_logs_once_per_streak() throws {

@@ -93,7 +93,7 @@ final class DetectionCorpusTests: XCTestCase {
             }
             let signalKind = try mapSignalKind(kind)
             let stateString = (event["state"] as? String) ?? "live"
-            let state: PrimarySignalState = stateString == "ended" ? .ended : .live
+            let state: PrimarySignalState = stateString == "ended" ? .ended : stateString == "unknown" ? .unknown : .live
             let primaryEvent = PrimarySignalEvent(
                 kind: signalKind, state: state,
                 timestamp: Date(timeIntervalSince1970: t),
@@ -225,8 +225,9 @@ final class DetectionCorpusTests: XCTestCase {
                 switch event["state"] as? String {
                 case "live": state = .live
                 case "ended": state = .ended
+                case "unknown": state = .unknown
                 default:
-                    XCTFail("\(traceName).events[\(index)] signal state must be live or ended")
+                    XCTFail("\(traceName).events[\(index)] signal state must be live, ended or unknown")
                     throw NSError(domain: "DetectionCorpus", code: 6)
                 }
                 timeline.append((at, .signal(signal, state)))

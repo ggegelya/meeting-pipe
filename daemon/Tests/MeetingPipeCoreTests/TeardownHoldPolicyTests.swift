@@ -127,6 +127,17 @@ final class TeardownHoldPolicyTests: XCTestCase {
         }
     }
 
+    /// END17: a mic that read live and then turned unreadable (a crashed app) is not a release, so
+    /// no route cuts anything: the reading that cuts less, since nothing says when the call ended.
+    func test_a_mic_gone_unknown_trims_nothing_END17() {
+        var policy = TeardownHoldPolicy()
+        policy.open(context: teams, at: at(100))
+        let unknown = HoldEvidence(processAudio: .unknown, releasedAt: nil, liveSinceRelease: false, callWindowBacksRelease: false)
+        for conclusion in [TeardownHoldPolicy.Conclusion.engineEnd, .teardown, .loneDwell, .stop] {
+            XCTAssertNil(policy.trimPoint(concludingAt: at(900), evidence: unknown, conclusion: conclusion), "\(conclusion)")
+        }
+    }
+
     /// F032, the owner's item 2: with no process audio a lone-dwell end trims nothing.
     func test_without_process_audio_a_lone_dwell_end_trims_nothing() {
         var policy = TeardownHoldPolicy()
