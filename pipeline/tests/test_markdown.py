@@ -202,14 +202,14 @@ def test_identify_user_speaker_end_to_end_picks_mic_speaker(tmp_path):
     wav = tmp_path / "stereo.wav"
     _write_stereo_wav(
         wav,
-        l_segments=[(0.0, 2.0), (4.0, 5.0)],   # speaker_0 (me) on the mic
-        r_segments=[(2.0, 4.0)],                # speaker_1 (other) on system
-        total_seconds=6,
+        l_segments=[(0.0, 20.0), (40.0, 50.0)],   # speaker_0 (me) on the mic: 30 s, over the floor
+        r_segments=[(20.0, 40.0)],                 # speaker_1 (other) on system
+        total_seconds=52,
     )
     segs = [
-        {"speaker": "speaker_0", "start": 0.0, "end": 2.0, "text": "hi"},
-        {"speaker": "speaker_1", "start": 2.0, "end": 4.0, "text": "hello"},
-        {"speaker": "speaker_0", "start": 4.0, "end": 5.0, "text": "bye"},
+        {"speaker": "speaker_0", "start": 0.0, "end": 20.0, "text": "hi"},
+        {"speaker": "speaker_1", "start": 20.0, "end": 40.0, "text": "hello"},
+        {"speaker": "speaker_0", "start": 40.0, "end": 50.0, "text": "bye"},
     ]
     assert identify_user_speaker(segs, wav) == "speaker_0"
 

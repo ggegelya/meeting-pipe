@@ -19,6 +19,10 @@ if TYPE_CHECKING:
     # runtime would close the cycle. The annotation only needs the name.
     from .roster import RosterStore
 
+# The share of a cluster's speech that must be on the mic channel for it to count as a mic-side
+# voice, in both the mic tier and the voiceprint tier's agreement check (DIAR11).
+MIC_FRACTION_MIN = 0.6
+
 # Speaker labels for the stereo channel-aware path. Stable strings so
 # downstream Markdown renders consistently across recordings.
 USER_SPEAKER = "speaker_user"
@@ -125,16 +129,26 @@ def assign_speakers_by_channel(
     return out
 
 
-def _resolve_me_id(
+def _resolve_me(
     segments: list[dict],
     *,
     channel_me: str = USER_SPEAKER,
     mic_me: str | None = None,
     voiceprint_me: str | None = None,
-) -> str | None:
-    """Pick which diarization speaker id is the user, by precedence: the
-    channel-assigned mic speaker, else the mic-channel identification, else the
-    voiceprint match.
+    mic_fractions: dict[str, float] | None = None,
+    min_fraction: float = MIC_FRACTION_MIN,
+) -> tuple[str | None, str]:
+    """Which diarization speaker id is the user, and which tier decided
+    (`channel`, `mic`, `voiceprint` or `none`).
+
+    Precedence: the channel-assigned mic speaker, else the mic-channel
+    identification, else the voiceprint match. When the mic pick and the
+    voiceprint both name a speaker and DISAGREE (DIAR11), the voiceprint wins if
+    that speaker is itself mic-side (its `mic_fractions` entry clears
+    `min_fraction`) and otherwise nobody is named: the mic pick never overrides a
+    voiceprint that disagrees with it. A voiceprint match with no mic pick to
+    disagree with is unchanged and not mic-checked (it also serves mono and the
+    merged-cluster case); only the fold below insists on mic-side.
 
     None when no signal places the user among these speakers, which is the
     correct answer when the user sat silent. Naming "me" requires positive
@@ -144,12 +158,33 @@ def _resolve_me_id(
     """
     present = {s.get("speaker") for s in segments if s.get("speaker")}
     if channel_me in present:
-        return channel_me
-    if mic_me and mic_me in present:
-        return mic_me
-    if voiceprint_me and voiceprint_me in present:
-        return voiceprint_me
-    return None
+        return channel_me, "channel"
+    mic = mic_me if mic_me and mic_me in present else None
+    vp = voiceprint_me if voiceprint_me and voiceprint_me in present else None
+    if mic and vp and mic != vp:
+        if mic_fractions is not None and mic_fractions.get(vp, 0.0) >= min_fraction:
+            return vp, "voiceprint"
+        return None, "none"
+    if mic:
+        return mic, "mic"
+    if vp:
+        return vp, "voiceprint"
+    return None, "none"
+
+
+def _resolve_me_id(
+    segments: list[dict],
+    *,
+    channel_me: str = USER_SPEAKER,
+    mic_me: str | None = None,
+    voiceprint_me: str | None = None,
+    mic_fractions: dict[str, float] | None = None,
+) -> str | None:
+    """`_resolve_me`'s speaker id alone."""
+    return _resolve_me(
+        segments, channel_me=channel_me, mic_me=mic_me, voiceprint_me=voiceprint_me,
+        mic_fractions=mic_fractions,
+    )[0]
 
 
 def label_me_speaker(
@@ -247,18 +282,88 @@ def match_voiceprint(
     return top_id
 
 
-def identify_user_speaker(
+# DIAR11: the mic-tier contest. The tier used to be `max(total_time, key=mic_fraction)`, which
+# has no floor and no runner-up: a one-utterance cluster at fraction 1.0 beat the owner's main
+# cluster at 0.85, and two local voices on one laptop mic both read near 1.0, so whichever was
+# heard first was named the owner. In the 2026-11-13 field pack the owner's name sat on a cluster
+# under cosine 0.5 to their voice in 26 of 107 stems, always a small one (0 to 53 s of speech).
+#
+# Speech time on the mic decides, among clusters that clear the fraction bar, and two bars guard
+# the pick. MIN_MIC_SPEECH_SEC is the least mic-side speech that counts as evidence of a voice: a
+# cluster under it is a cough, a clipped "yes", or a leaked word, and enrolling it would put a
+# stranger's sample in the self-voiceprint. PROVISIONAL: the field wrong clusters held 0 to 53 s,
+# so 15 s clears most of them on its own and the time ordering handles the rest; the value is
+# meant to be revised from the owner-run `scripts/valid1_check.py --owner-cluster` replay.
+# RUNNER_UP_SHARE is how much of the winner's mic time a second mic-side voice may have before
+# the pick is a coin flip between two local voices (F096's hybrid call): at a quarter or more,
+# decline, and let the voiceprint tier decide. Reaching the share is enough ("or more").
+MIN_MIC_SPEECH_SEC = 15.0
+RUNNER_UP_SHARE = 0.25
+
+
+class MicTier(NamedTuple):
+    """The mic channel's verdict on one meeting (DIAR11).
+
+    `winner` is the owner cluster the mic tier picks, or None. `mic_time` and
+    `total_time` are each speaker's speech seconds on the mic channel and overall,
+    kept so the voiceprint tier and the fold can ask a cluster's mic fraction
+    without a second pass over the WAV.
+    """
+
+    winner: str | None
+    mic_time: dict[str, float]
+    total_time: dict[str, float]
+
+    def fraction(self, spk: str) -> float:
+        total = self.total_time.get(spk, 0.0)
+        return self.mic_time.get(spk, 0.0) / total if total > 0 else 0.0
+
+
+def pick_mic_speaker(
+    mic_time: dict[str, float],
+    total_time: dict[str, float],
+    *,
+    min_fraction: float = MIC_FRACTION_MIN,
+    min_mic_seconds: float = MIN_MIC_SPEECH_SEC,
+    runner_up_share: float = RUNNER_UP_SHARE,
+) -> MicTier:
+    """The mic-tier decision over per-speaker speech seconds (pure, DIAR11).
+
+    Among speakers whose mic fraction clears `min_fraction`, the one with the most
+    mic-channel speech wins (a tie goes to the higher fraction, then the lower id,
+    never to whoever was heard first), provided it has `min_mic_seconds` of it.
+    The pick is None when another speaker also clears the fraction bar with more
+    than `runner_up_share` of the winner's mic time: two local voices, which the
+    voiceprint tier has to tell apart.
+    """
+    def fraction(spk: str) -> float:
+        t = total_time.get(spk, 0.0)
+        return mic_time.get(spk, 0.0) / t if t > 0 else 0.0
+
+    by_mic = sorted(total_time, key=lambda k: (-mic_time.get(k, 0.0), -fraction(k), k))
+    candidates = [k for k in by_mic if fraction(k) >= min_fraction]
+    winner = candidates[0] if candidates else None
+    if winner is not None:
+        if mic_time.get(winner, 0.0) < min_mic_seconds:
+            winner = None
+        elif any(
+            k != winner and mic_time.get(k, 0.0) >= runner_up_share * mic_time[winner]
+            for k in candidates
+        ):
+            winner = None
+    return MicTier(winner, dict(mic_time), dict(total_time))
+
+
+def analyze_mic_tier(
     segments: list[dict],
     wav: Path,
     *,
-    min_fraction: float = 0.6,
-) -> str | None:
-    """On a stereo recording, return which diarized speaker is the mic-channel
-    user (the voiceprint-enrollment target), or None when mono / ambiguous.
+    min_fraction: float = MIC_FRACTION_MIN,
+) -> MicTier | None:
+    """Cross-tabulate each diarized speaker against the stereo mic/other verdict
+    and run the mic-tier contest. None on mono or when the channels cannot tell the
+    user's voice apart (the mic-only recording where the system channel is silent).
 
-    Runs the channel-aware assignment on a copy and cross-tabulates each
-    original diarized speaker against the mic/other verdict: the speaker whose
-    speech time is at least `min_fraction` on the mic channel is the user.
     Deliberately conservative, since a wrong enrollment poisons the voiceprint.
     """
     if not segments or not is_stereo_recording(wav):
@@ -284,12 +389,20 @@ def identify_user_speaker(
     # user's voice apart there, so decline to enroll.
     if not total_time or not saw_other:
         return None
+    return pick_mic_speaker(mic_time, total_time, min_fraction=min_fraction)
 
-    def mic_fraction(spk: str) -> float:
-        return mic_time.get(spk, 0.0) / total_time[spk] if total_time[spk] > 0 else 0.0
 
-    best = max(total_time, key=mic_fraction)
-    return best if mic_fraction(best) >= min_fraction else None
+def identify_user_speaker(
+    segments: list[dict],
+    wav: Path,
+    *,
+    min_fraction: float = MIC_FRACTION_MIN,
+) -> str | None:
+    """On a stereo recording, return which diarized speaker is the mic-channel
+    user (the voiceprint-enrollment target), or None when mono / ambiguous.
+    See `pick_mic_speaker` for the rule."""
+    tier = analyze_mic_tier(segments, wav, min_fraction=min_fraction)
+    return tier.winner if tier else None
 
 
 def them_label(idx: int) -> str:
@@ -302,6 +415,24 @@ def them_label(idx: int) -> str:
         if n < 0:
             break
     return f"THEM-{letters}"
+
+
+class OwnerChoice(NamedTuple):
+    """How the owner cluster was chosen for one meeting (DIAR11), the numbers
+    behind `pipeline`/`owner_cluster_chosen`. Carries no label, name or text:
+    only which tier decided and the evidence it had, so a field pack can check the
+    rule without embeddings. `None` fields mean the evidence did not exist (mono,
+    no voiceprint, no runner-up).
+    """
+
+    tier: str                          # channel | mic | voiceprint | none
+    mic_fraction: float | None         # the chosen cluster's mic-channel share of its speech
+    mic_seconds: float | None          # its mic-channel speech seconds
+    voiceprint_score: float | None     # its cosine to the self-voiceprint
+    runner_up_fraction: float | None   # the best other cluster by mic time
+    runner_up_seconds: float | None
+    folded: int                        # owner-matching mic-side clusters given the owner's name
+    flagged: int                       # owner-matching but system-side clusters left alone
 
 
 class SpeakerLabelResolution(NamedTuple):
@@ -317,6 +448,9 @@ class SpeakerLabelResolution(NamedTuple):
 
     mapping: dict[str, str]
     near_misses: dict[str, str]
+    owner: OwnerChoice | None = None
+    # The raw diarization id named the owner, or None. Kept out of `OwnerChoice`, which is logged.
+    owner_id: str | None = None
 
 
 def resolve_speaker_labels(
@@ -328,6 +462,8 @@ def resolve_speaker_labels(
     channel_me: str = USER_SPEAKER,
     mic_me: str | None = None,
     voiceprint_me: str | None = None,
+    mic_tier: MicTier | None = None,
+    voiceprint: list[float] | None = None,
 ) -> SpeakerLabelResolution:
     """Map each diarization speaker id present in `segments` to its final label:
     the user's name ("me"), a matched roster name (`roster.match`), or a stable
@@ -343,10 +479,24 @@ def resolve_speaker_labels(
     A cluster the roster declined but came close on is reported in `near_misses`
     (FEAT14) so the app can offer that person as a suggestion. It changes no
     label here: a near miss is still a `THEM-x` cluster on disk, and stays one
-    until a human accepts the name."""
+    until a human accepts the name.
+
+    DIAR11: with the self-`voiceprint` and the meeting's `mic_tier` (the per-cluster
+    mic fractions), a cluster the roster did not name that matches the voiceprint
+    at the roster's same-person bar AND is mic-side is the owner over-split, and is
+    given the owner's name too. One that matches but is system-side is a remote voice
+    that sounds like the owner and is left alone, counted as flagged: it must never
+    take the owner's name. A cluster the roster already names is never folded.
+    `owner` reports the choice for the event log."""
+    from .roster import MATCH_MIN as _SAME_PERSON_MIN  # lazy: roster imports this module
+
     mapping: dict[str, str] = {}
-    me = _resolve_me_id(
-        segments, channel_me=channel_me, mic_me=mic_me, voiceprint_me=voiceprint_me
+    fractions = (
+        {spk: mic_tier.fraction(spk) for spk in mic_tier.total_time} if mic_tier else None
+    )
+    me, tier = _resolve_me(
+        segments, channel_me=channel_me, mic_me=mic_me, voiceprint_me=voiceprint_me,
+        mic_fractions=fractions,
     )
     label = user_label.strip()
     if me is not None and label:
@@ -360,22 +510,65 @@ def resolve_speaker_labels(
             order.append(spk)
     unknown_idx = 0
     near_misses: dict[str, str] = {}
+    folded = flagged = 0
+    # A mic pick and a voiceprint pick that disagreed left nobody named; folding the mic pick in
+    # anyway would name somebody the rule just declined to.
+    disagreed = me is None and bool(mic_me) and bool(voiceprint_me) and mic_me != voiceprint_me
+    me_emb = speaker_embeddings.get(me) if (me and speaker_embeddings) else None
     for spk in order:
         emb = speaker_embeddings.get(spk) if speaker_embeddings else None
         scored = roster.match_detail(emb) if (roster is not None and emb) else None
         name = scored.name if scored else None
         if name and name != label:
             mapping[spk] = name
-        elif emb is not None:
-            them = them_label(unknown_idx)
-            mapping[spk] = them
-            unknown_idx += 1
-            # Same guard the accept path applies: the owner is identified by their
-            # own voiceprint, so suggesting their name for another voice would be
-            # wrong in the one case the roster cannot arbitrate.
-            if scored and scored.near_miss and scored.near_miss != label:
-                near_misses[them] = scored.near_miss
-    return SpeakerLabelResolution(mapping, near_misses)
+            continue
+        if emb is None:
+            continue
+        if (
+            label and voiceprint and fractions is not None and not disagreed
+            and cosine_similarity(emb, voiceprint) >= _SAME_PERSON_MIN
+            # With an owner already named, the cluster must also sound like THAT cluster: a second
+            # local voice that happens to score 0.66 to the voiceprint is not an over-split owner.
+            and (me_emb is None or cosine_similarity(emb, me_emb) >= _SAME_PERSON_MIN)
+        ):
+            if fractions.get(spk, 0.0) >= MIC_FRACTION_MIN:
+                mapping[spk] = label
+                folded += 1
+                continue
+            flagged += 1
+        them = them_label(unknown_idx)
+        mapping[spk] = them
+        unknown_idx += 1
+        # Same guard the accept path applies: the owner is identified by their
+        # own voiceprint, so suggesting their name for another voice would be
+        # wrong in the one case the roster cannot arbitrate.
+        if scored and scored.near_miss and scored.near_miss != label:
+            near_misses[them] = scored.near_miss
+
+    chosen_emb = speaker_embeddings.get(me) if (me and speaker_embeddings) else None
+    runner = None
+    if mic_tier is not None:
+        # The best cluster other than the one named, by mic speech: what the
+        # pick had to beat (or, when nobody was named, the contenders' leader).
+        runner = min(
+            (k for k in mic_tier.total_time if k != me),
+            key=lambda k: (-mic_tier.mic_time.get(k, 0.0), k),
+            default=None,
+        )
+    owner = OwnerChoice(
+        tier=tier,
+        mic_fraction=round(mic_tier.fraction(me), 3) if (mic_tier and me) else None,
+        mic_seconds=round(mic_tier.mic_time.get(me, 0.0), 1) if (mic_tier and me) else None,
+        voiceprint_score=(
+            round(cosine_similarity(chosen_emb, voiceprint), 3)
+            if (chosen_emb and voiceprint) else None
+        ),
+        runner_up_fraction=round(mic_tier.fraction(runner), 3) if (mic_tier and runner) else None,
+        runner_up_seconds=round(mic_tier.mic_time.get(runner, 0.0), 1) if (mic_tier and runner) else None,
+        folded=folded,
+        flagged=flagged,
+    )
+    return SpeakerLabelResolution(mapping, near_misses, owner, me if label else None)
 
 
 def apply_speaker_labels(segments: list[dict], mapping: dict[str, str]) -> list[dict]:

@@ -207,3 +207,129 @@ def test_der_empty_corpus_is_not_a_crash():
 def test_attribution_empty_corpus_is_not_a_crash():
     assert valid1_check.build_attribution_report([]) == {"meetings": 0}
     assert valid1_check.build_attribution_report([("m", {"segments": []})]) == {"meetings": 0}
+
+
+# ------------------------------------------------- DIAR11: the owner-cluster replay
+
+
+def _vec(cos_to_axis0: float, dim: int = 256) -> list[float]:
+    v = [0.0] * dim
+    v[0] = cos_to_axis0
+    v[1] = (1 - cos_to_axis0 ** 2) ** 0.5
+    return v
+
+
+def _write_meeting(d: Path, stem: str, segments: list[dict], embeddings: dict, wav: bool = False) -> None:
+    import json
+
+    (d / f"{stem}.json").write_text(json.dumps({"segments": segments}), encoding="utf-8")
+    (d / f"{stem}.embeddings.json").write_text(
+        json.dumps({"schema_version": 2, "embeddings": embeddings}), encoding="utf-8")
+    if wav:
+        (d / f"{stem}.wav").write_bytes(b"")
+
+
+def test_owner_cluster_before_counts_the_two_field_numbers(tmp_path):
+    ref = _vec(1.0)
+    # wrong owner: the name sits on a small cluster far from the owner's voice.
+    _write_meeting(tmp_path, "20261001-100000",
+                   [_seg(0, 5, "Heorhii"), _seg(5, 100, "THEM-A")],
+                   {"Heorhii": _vec(0.2), "THEM-A": _vec(0.95)})
+    # THEM-x matching the owner and holding more than 5 percent of the speech.
+    _write_meeting(tmp_path, "20261002-100000",
+                   [_seg(0, 50, "Heorhii"), _seg(50, 100, "THEM-A")],
+                   {"Heorhii": _vec(1.0), "THEM-A": _vec(0.8)})
+    # clean.
+    _write_meeting(tmp_path, "20261003-100000",
+                   [_seg(0, 50, "Heorhii"), _seg(50, 100, "THEM-A")],
+                   {"Heorhii": _vec(1.0), "THEM-A": _vec(0.1)})
+    inputs = valid1_check.load_owner_inputs(tmp_path)
+    report = valid1_check.build_owner_cluster_report(
+        inputs, ref, lambda it: valid1_check.current_placement(it, "Heorhii"))
+    assert report["wrong_owner"]["stems"] == ["20261001-100000"]
+    assert report["them_matching"]["stems"] == ["20261001-100000", "20261002-100000"]
+    assert report["stems"] == 3 and report["skipped"] == 0
+
+
+def test_owner_cluster_reference_is_the_voiceprint_else_the_owner_label_mean(tmp_path):
+    _write_meeting(tmp_path, "20261001-100000", [_seg(0, 5, "Heorhii")], {"Heorhii": _vec(1.0)})
+    inputs = valid1_check.load_owner_inputs(tmp_path)
+    # The default yardstick is the field report's own: the owner-labelled centroid, NOT the
+    # voiceprint the new pick is fed (measuring against it at the fold's own bar would pass by
+    # construction).
+    mean = valid1_check.owner_reference(inputs, "Heorhii", [9.0])
+    assert mean is not None and abs(mean[0] - 1.0) < 1e-9
+    assert valid1_check.owner_reference(inputs, "Heorhii", [9.0], mode="voiceprint") == [9.0]
+    assert valid1_check.owner_reference(inputs, "Nobody", [9.0]) == [9.0]   # nothing to average
+    assert valid1_check.owner_reference(inputs, "Nobody", None) is None
+
+
+def test_owner_reference_mean_ignores_vectors_of_another_length(tmp_path):
+    _write_meeting(tmp_path, "20261001-100000", [_seg(0, 5, "H")], {"H": [1.0, 0.0]})
+    _write_meeting(tmp_path, "20261002-100000", [_seg(0, 5, "H")], {"H": [3.0, 0.0]})
+    _write_meeting(tmp_path, "20261003-100000", [_seg(0, 5, "H")], {"H": [9.0, 9.0, 9.0]})
+    inputs = valid1_check.load_owner_inputs(tmp_path)
+    assert valid1_check.owner_reference(inputs, "H", None) == [2.0, 0.0]
+
+
+def test_owner_cluster_reselect_moves_the_name_to_the_big_mic_cluster(tmp_path, monkeypatch):
+    # Before: the name is on a 5 s cluster far from the owner. After the new pick, the 600 s
+    # mic-side cluster that matches the voiceprint is the owner and the clip is not.
+    ref = _vec(1.0)
+    _write_meeting(
+        tmp_path, "20261001-100000",
+        [_seg(0, 5, "Heorhii"), _seg(5, 605, "THEM-A")],
+        {"Heorhii": _vec(0.2), "THEM-A": _vec(1.0)}, wav=True)
+    from mp import diarize
+
+    monkeypatch.setattr(
+        diarize, "analyze_mic_tier",
+        lambda segs, wav: diarize.pick_mic_speaker({"Heorhii": 5.0, "THEM-A": 590.0},
+                                                   {"Heorhii": 5.0, "THEM-A": 600.0}))
+    inputs = valid1_check.load_owner_inputs(tmp_path)
+    before = valid1_check.build_owner_cluster_report(
+        inputs, ref, lambda it: valid1_check.current_placement(it, "Heorhii"))
+    after = valid1_check.build_owner_cluster_report(
+        inputs, ref, lambda it: valid1_check.reselect_placement(it, "Heorhii", ref))
+    assert before["wrong_owner"]["count"] == 1
+    assert after["wrong_owner"]["count"] == 0
+    assert after["moved_onto_roster_named"]["count"] == 0
+
+
+def test_owner_cluster_reselect_skips_a_stem_whose_audio_is_gone(tmp_path):
+    _write_meeting(tmp_path, "20261001-100000", [_seg(0, 5, "Heorhii")], {"Heorhii": _vec(1.0)})
+    inputs = valid1_check.load_owner_inputs(tmp_path)
+    after = valid1_check.build_owner_cluster_report(
+        inputs, _vec(1.0), lambda it: valid1_check.reselect_placement(it, "Heorhii", None))
+    assert after["skipped"] == 1
+
+
+def test_owner_cluster_mode_needs_the_owner_name(capsys):
+    assert valid1_check.main(["--owner-cluster"]) == 2
+
+
+def test_owner_cluster_reselect_never_moves_the_name_onto_a_roster_named_cluster_it_can_see(tmp_path, monkeypatch):
+    # "Dana" is a roster-named cluster in the transcript. The replay's roster stand-in keeps her
+    # named, so the fold cannot take her, and if a tier picked her the report would count it.
+    ref = _vec(1.0)
+    _write_meeting(
+        tmp_path, "20261001-100000",
+        [_seg(0, 300, "Heorhii"), _seg(300, 600, "Dana")],
+        {"Heorhii": _vec(1.0), "Dana": _vec(0.9)}, wav=True)
+    from mp import diarize
+
+    monkeypatch.setattr(
+        diarize, "analyze_mic_tier",
+        lambda segs, wav: diarize.pick_mic_speaker({"Heorhii": 300.0, "Dana": 0.0},
+                                                   {"Heorhii": 300.0, "Dana": 300.0}))
+    inputs = valid1_check.load_owner_inputs(tmp_path)
+    placement = valid1_check.reselect_placement(inputs[0], "Heorhii", ref)
+    assert placement is not None
+    assert placement["owner"] == {"Heorhii"} and placement["moved_onto_roster_named"] is False
+    # A tier that does pick her is reported.
+    monkeypatch.setattr(
+        diarize, "analyze_mic_tier",
+        lambda segs, wav: diarize.pick_mic_speaker({"Heorhii": 10.0, "Dana": 290.0},
+                                                   {"Heorhii": 300.0, "Dana": 300.0}))
+    picked = valid1_check.reselect_placement(inputs[0], "Heorhii", None)
+    assert picked is not None and picked["moved_onto_roster_named"] is True

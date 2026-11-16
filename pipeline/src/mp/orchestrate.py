@@ -25,7 +25,7 @@ import threading
 import time
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from . import entry, providers, storage
 from .config import Config, effective_backend, extract_backend_flag, with_backend_override
@@ -34,7 +34,8 @@ from .transcript_quality import transcript_issues
 from .diarize import (
     apply_speaker_labels,
     assign_speakers_by_channel,
-    identify_user_speaker,
+    MicTier,
+    analyze_mic_tier,
     is_stereo_recording,
     label_me_speaker,
     match_voiceprint,
@@ -686,39 +687,59 @@ def _streamed_segments_have_speakers(streamed: dict) -> bool:
 _VOICEPRINT_ENROLL_CAP = 12
 
 
+class MeSignals(NamedTuple):
+    """The evidence `_me_signals` gathered for the owner cluster (DIAR11)."""
+
+    mic_me: str | None
+    voiceprint_me: str | None
+    mic_tier: MicTier | None
+    voiceprint: list[float] | None  # the self-voiceprint as it stood BEFORE this meeting enrolled
+
+
 def _me_signals(
     segments: list[dict],
     speaker_embeddings: dict | None,
     wav: Path,
     store: VoiceprintStore,
-) -> tuple[str | None, str | None]:
+) -> MeSignals:
     """Identify which diarized speaker is the user, and auto-enroll them.
 
-    Returns `(mic_me, voiceprint_me)`, either None when that signal cannot
-    decide:
+    Returns the mic pick (`mic_me`), the voiceprint match (`voiceprint_me`), the
+    mic tier's per-cluster numbers and the voiceprint, any of them None when that
+    signal cannot decide:
       - `mic_me`: the speaker whose speech is predominantly on the mic channel
-        of the stereo recording. Physical evidence, so it outranks the
-        voiceprint; None on mono, and None when a merged cluster leaves no
-        speaker clearly mic-side.
+        of the stereo recording, chosen by mic speech time with a floor and a
+        runner-up check (`diarize.pick_mic_speaker`); None on mono, and None when
+        no cluster is clearly the one mic-side voice.
       - `voiceprint_me`: the speaker matching the persisted self-voiceprint,
-        which still resolves those two cases.
+        which still resolves those cases. When it disagrees with `mic_me`, the
+        resolution prefers it (`diarize._resolve_me`).
 
     Both None means no evidence the user spoke at all, and the caller names
     nobody. No-ops when the daemon wrote no per-speaker embeddings (diarization
     failed). Matches before enrolling, so a meeting never just matches its own
     freshly added sample.
+
+    Enrolment folds the mic pick's sample in only when it is corroborated
+    (DIAR11): the voiceprint picked the same cluster, or no voiceprint exists yet
+    and the mic pick cleared its checks. A pick the voiceprint disagrees with, or
+    cannot place, is not evidence of the owner's voice, and a poisoned print weakens
+    the very fallback the next meeting relies on.
     """
     if not isinstance(speaker_embeddings, dict) or not speaker_embeddings:
-        return None, None
-    voiceprint_me = match_voiceprint(speaker_embeddings, store.embedding())
-    mic_me = identify_user_speaker(segments, wav)
+        return MeSignals(None, None, None, None)
+    voiceprint = store.embedding()
+    voiceprint_me = match_voiceprint(speaker_embeddings, voiceprint)
+    tier = analyze_mic_tier(segments, wav)
+    mic_me = tier.winner if tier else None
     if (
         store.meetings() < _VOICEPRINT_ENROLL_CAP
         and mic_me is not None
         and mic_me in speaker_embeddings
+        and (voiceprint is None or voiceprint_me == mic_me)
     ):
         store.update(speaker_embeddings[mic_me])
-    return mic_me, voiceprint_me
+    return MeSignals(mic_me, voiceprint_me, tier, voiceprint)
 
 
 def _write_embeddings_sidecar(
@@ -726,6 +747,7 @@ def _write_embeddings_sidecar(
     speaker_embeddings: dict | None,
     mapping: dict[str, str],
     near_misses: dict[str, str] | None = None,
+    first: str | None = None,
 ) -> None:
     """Persist per-speaker embeddings keyed by FINAL label to
     `<stem>.embeddings.json`, so the Library naming UI can enroll a renamed
@@ -742,7 +764,11 @@ def _write_embeddings_sidecar(
     if not isinstance(speaker_embeddings, dict) or not speaker_embeddings:
         return
     by_label: dict[str, list[float]] = {}
-    for raw_id, emb in speaker_embeddings.items():
+    # `first` is the raw id the owner was resolved to: when a fold gives one label to several raw
+    # ids, the stored vector must be the chosen cluster's, not whichever fragment the daemon listed
+    # first (DIAR11).
+    items = sorted(speaker_embeddings.items(), key=lambda kv: str(kv[0]) != first)
+    for raw_id, emb in items:
         label = mapping.get(str(raw_id), str(raw_id))
         by_label.setdefault(label, emb)  # first wins on collision
     payload: dict = {"schema_version": 2, "embeddings": by_label}
@@ -784,14 +810,19 @@ def finalize_streamed_transcript(
     if _streamed_segments_have_speakers(streamed):
         log.info("FluidAudio sidecar already labelled segments; finalizing as-is")
         segs = streamed.get("segments") or []
-        mic_me, voiceprint_me = _me_signals(segs, speaker_embeddings, wav, store)
+        sig = _me_signals(segs, speaker_embeddings, wav, store)
         resolved = resolve_speaker_labels(
             segs, speaker_embeddings, roster,
-            user_label=user_label, mic_me=mic_me, voiceprint_me=voiceprint_me,
+            user_label=user_label, mic_me=sig.mic_me, voiceprint_me=sig.voiceprint_me,
+            mic_tier=sig.mic_tier, voiceprint=sig.voiceprint,
         )
+        if resolved.owner is not None:
+            # DIAR11: once per finalize. No label, name or text: the evidence only.
+            events.emit("pipeline", "owner_cluster_chosen", stem=wav.stem, **resolved.owner._asdict())
         segments = apply_speaker_labels(segs, resolved.mapping)
         _write_embeddings_sidecar(
-            wav, speaker_embeddings, resolved.mapping, resolved.near_misses
+            wav, speaker_embeddings, resolved.mapping, resolved.near_misses,
+            first=resolved.owner_id,
         )
         structured = {**streamed, "segments": segments, "finalized": True}
         # Atomic (PIPE8) + 0600 (SEC14): a crash mid-finalize leaves the prior

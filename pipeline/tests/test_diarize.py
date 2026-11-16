@@ -4,13 +4,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from mp.diarize import (
+    MIN_MIC_SPEECH_SEC,
     OTHER_SPEAKER,
+    RUNNER_UP_SHARE,
     USER_SPEAKER,
+    _resolve_me,
     apply_speaker_labels,
     cosine_similarity,
     identify_user_speaker,
     label_me_speaker,
     match_voiceprint,
+    pick_mic_speaker,
     resolve_speaker_labels,
     them_label,
 )
@@ -79,12 +83,19 @@ def test_mic_me_identifies_the_user_when_no_channel_label():
     assert [s["speaker"] for s in out] == ["speaker_0", "Me"]
 
 
-def test_mic_me_beats_voiceprint():
-    # Both signals fired and disagree; the mic channel is a physical measurement
-    # of which voice reached the user's microphone, so it wins.
+def test_mic_me_alone_names_the_mic_speaker():
+    segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6)]
+    out = label_me_speaker(segs, "Me", mic_me="speaker_0")
+    assert [s["speaker"] for s in out] == ["Me", "speaker_1"]
+
+
+def test_a_disagreeing_voiceprint_without_mic_side_evidence_names_nobody():
+    # DIAR11: the mic pick used to override the voiceprint, and the mic tier has no
+    # voiceprint-style gates. Now a disagreement is settled by the voiceprint, provided
+    # its own cluster is mic-side; without that evidence nobody is named.
     segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6)]
     out = label_me_speaker(segs, "Me", mic_me="speaker_0", voiceprint_me="speaker_1")
-    assert [s["speaker"] for s in out] == ["Me", "speaker_1"]
+    assert [s["speaker"] for s in out] == ["speaker_0", "speaker_1"]
 
 
 def test_mic_me_ignored_when_not_in_segments():
@@ -179,7 +190,8 @@ def test_identify_user_speaker_mono_returns_none(monkeypatch):
 
 
 def test_identify_user_speaker_cross_tabs_mic_dominant(monkeypatch):
-    segs = [_seg("speaker_0", 0, 2), _seg("speaker_1", 2, 4), _seg("speaker_0", 4, 5)]
+    # Long enough to clear the mic tier's speech floor (DIAR11): 30 s on the mic.
+    segs = [_seg("speaker_0", 0, 20), _seg("speaker_1", 20, 40), _seg("speaker_0", 40, 50)]
     monkeypatch.setattr("mp.diarize.is_stereo_recording", lambda wav: True)
     monkeypatch.setattr(
         "mp.diarize.assign_speakers_by_channel",
@@ -316,3 +328,196 @@ def test_apply_speaker_labels_replaces_only_mapped():
     segs = [_seg("speaker_0", 0, 1), _seg("speaker_1", 1, 2)]
     out = apply_speaker_labels(segs, {"speaker_0": "Me"})
     assert [s["speaker"] for s in out] == ["Me", "speaker_1"]
+
+
+# --- DIAR11: the owner cluster is picked by mic speech time, with a floor and a runner-up ----
+
+
+def _tier(mic: dict[str, float], total: dict[str, float]):
+    return pick_mic_speaker(mic, total)
+
+
+def test_two_local_voices_on_one_mic_decline_the_pick():
+    # F096: a hybrid call, two people at the laptop. Both read near 1.0 on the mic and
+    # have similar mic time, so whichever was heard first used to be named the owner.
+    tier = _tier({"a": 300.0, "b": 260.0}, {"a": 300.0, "b": 270.0})
+    assert tier.winner is None
+
+
+def test_two_local_voices_with_a_voiceprint_match_name_that_one_only():
+    segs = [_seg("a", 0, 300), _seg("b", 300, 560)]
+    tier = _tier({"a": 300.0, "b": 260.0}, {"a": 300.0, "b": 260.0})
+    me, why = _resolve_me(segs, mic_me=tier.winner, voiceprint_me="b")
+    assert (me, why) == ("b", "voiceprint")
+    out = label_me_speaker(segs, "Me", mic_me=tier.winner, voiceprint_me="b")
+    assert [s["speaker"] for s in out] == ["a", "Me"]
+
+
+def test_a_three_second_cluster_at_full_fraction_loses_to_the_main_cluster():
+    # The shape of the field's 26 small non-matching clusters: one clipped utterance
+    # at mic fraction 1.0 beat the owner's 600 s cluster at 0.85.
+    tier = _tier({"clip": 3.0, "main": 510.0}, {"clip": 3.0, "main": 600.0})
+    assert tier.winner == "main"
+
+
+def test_a_cluster_under_the_speech_floor_is_not_evidence_of_a_voice():
+    assert _tier({"clip": MIN_MIC_SPEECH_SEC - 1}, {"clip": MIN_MIC_SPEECH_SEC - 1}).winner is None
+    assert _tier({"ok": MIN_MIC_SPEECH_SEC}, {"ok": MIN_MIC_SPEECH_SEC}).winner == "ok"
+
+
+def test_a_tie_on_fraction_goes_to_the_most_mic_speech_not_the_first_heard():
+    # `max` over an insertion-ordered dict used to break the tie to whoever spoke first.
+    tier = _tier({"first": 20.0, "second": 100.0}, {"first": 20.0, "second": 100.0})
+    assert tier.winner == "second"
+
+
+def test_a_brief_second_mic_voice_does_not_stop_the_owner_being_picked():
+    tier = _tier({"owner": 400.0, "aside": 400.0 * RUNNER_UP_SHARE - 1}, {"owner": 400.0, "aside": 100.0})
+    assert tier.winner == "owner"
+    # At the share ("a quarter or more"), or above, it is a second local voice.
+    assert _tier({"owner": 400.0, "other": 400.0 * RUNNER_UP_SHARE}, {"owner": 400.0, "other": 110.0}).winner is None
+    assert _tier({"owner": 400.0, "other": 400.0 * RUNNER_UP_SHARE + 1}, {"owner": 400.0, "other": 110.0}).winner is None
+
+
+def test_a_remote_voice_never_competes_for_the_mic_tier():
+    tier = _tier({"owner": 200.0, "remote": 5.0}, {"owner": 210.0, "remote": 800.0})
+    assert tier.winner == "owner"
+
+
+def test_the_voiceprint_pick_wins_a_disagreement_when_it_is_mic_side():
+    segs = [_seg("a", 0, 100), _seg("b", 100, 200)]
+    assert _resolve_me(segs, mic_me="a", voiceprint_me="b", mic_fractions={"a": 1.0, "b": 0.9}) == ("b", "voiceprint")
+
+
+def test_a_system_side_voiceprint_pick_names_nobody_against_a_mic_pick():
+    segs = [_seg("a", 0, 100), _seg("b", 100, 200)]
+    assert _resolve_me(segs, mic_me="a", voiceprint_me="b", mic_fractions={"a": 1.0, "b": 0.1}) == (None, "none")
+    # And never falls back to the mic pick against a voiceprint that disagrees with it.
+    out = label_me_speaker(segs, "Me", mic_me="a", voiceprint_me="b")
+    assert "Me" not in [s["speaker"] for s in out]
+
+
+def test_agreement_and_single_signals_resolve_as_before():
+    segs = [_seg("a", 0, 100), _seg("b", 100, 200)]
+    assert _resolve_me(segs, mic_me="a", voiceprint_me="a") == ("a", "mic")
+    assert _resolve_me(segs, mic_me="a") == ("a", "mic")
+    assert _resolve_me(segs, voiceprint_me="b") == ("b", "voiceprint")
+    assert _resolve_me(segs) == (None, "none")
+    assert _resolve_me([_seg(USER_SPEAKER, 0, 5)], mic_me="a")[1] == "channel"
+
+
+def _unit_at(cos_to_axis0: float) -> list[float]:
+    """A 256-d unit vector at the given cosine to axis 0."""
+    v = [0.0] * 256
+    v[0] = cos_to_axis0
+    v[1] = (1 - cos_to_axis0**2) ** 0.5
+    return v
+
+
+def _fold_case(second_mic_fraction: float, second_cos: float = 0.7, roster=None):
+    vp = _unit_at(1.0)
+    embs = {"a": _unit_at(1.0), "b": _unit_at(second_cos)}
+    mic = {"a": 300.0, "b": 30.0 * second_mic_fraction}
+    total = {"a": 300.0, "b": 30.0}
+    segs = [_seg("a", 0, 300), _seg("b", 300, 330)]
+    tier = pick_mic_speaker(mic, total)
+    assert tier.winner == "a"
+    return resolve_speaker_labels(
+        segs, embs, roster or _FakeRoster([]), user_label="Me",
+        mic_me=tier.winner, mic_tier=tier, voiceprint=vp,
+    )
+
+
+def test_an_owner_matching_mic_side_cluster_is_folded_into_the_owner():
+    # 0.1 mic fraction is system-side, so use a mic-side fraction for the over-split case.
+    res = _fold_case(second_mic_fraction=0.9)
+    assert res.mapping == {"a": "Me", "b": "Me"}
+    assert (res.owner.folded, res.owner.flagged) == (1, 0)
+
+
+def test_an_owner_matching_system_side_cluster_is_left_alone_and_flagged():
+    # A remote voice that sounds like the owner must never take the owner's name.
+    res = _fold_case(second_mic_fraction=0.1)
+    assert res.mapping == {"a": "Me", "b": "THEM-A"}
+    assert (res.owner.folded, res.owner.flagged) == (0, 1)
+
+
+def test_a_cluster_below_the_same_person_bar_is_not_folded_or_flagged():
+    res = _fold_case(second_mic_fraction=0.9, second_cos=0.5)
+    assert res.mapping["b"] == "THEM-A"
+    assert (res.owner.folded, res.owner.flagged) == (0, 0)
+
+
+def test_a_cluster_the_roster_already_names_is_never_folded():
+    emb = _unit_at(0.7)
+    res = _fold_case(second_mic_fraction=0.9, roster=_FakeRoster([(emb, "Dana")]))
+    assert res.mapping["b"] == "Dana"
+    assert res.owner.folded == 0
+
+
+def test_owner_choice_reports_the_evidence_and_no_label_text():
+    res = _fold_case(second_mic_fraction=0.9)
+    owner = res.owner
+    assert owner.tier == "mic"
+    assert owner.mic_fraction == 1.0 and owner.mic_seconds == 300.0
+    assert owner.voiceprint_score == 1.0
+    assert owner.runner_up_seconds == 27.0 and owner.runner_up_fraction == 0.9
+    assert all(isinstance(v, (int, float, str, type(None))) for v in owner._asdict().values())
+    assert not any("Me" == v for v in owner._asdict().values())
+
+
+def test_no_mic_tier_and_no_owner_still_reports_a_none_choice():
+    res = resolve_speaker_labels([_seg("a", 0, 5)], None, _FakeRoster([]), user_label="Me")
+    assert res.owner is not None and res.owner.tier == "none"
+    assert res.owner.mic_fraction is None and res.owner.runner_up_seconds is None
+
+
+def test_an_owner_over_split_into_two_mic_side_clusters_names_both_when_the_pick_declined():
+    # Two big mic-side clusters that both match the voiceprint: the mic tier declines
+    # (two local voices?), the voiceprint's own margin gate declines (two near scores), and
+    # the fold is what gives the owner back the speech the two-gate rule would not name.
+    vp = _unit_at(1.0)
+    embs = {"a": _unit_at(1.0), "b": _unit_at(0.9)}
+    tier = pick_mic_speaker({"a": 300.0, "b": 250.0}, {"a": 300.0, "b": 250.0})
+    assert tier.winner is None
+    res = resolve_speaker_labels(
+        [_seg("a", 0, 300), _seg("b", 300, 550)], embs, _FakeRoster([]), user_label="Me",
+        mic_tier=tier, voiceprint=vp,
+    )
+    assert res.mapping == {"a": "Me", "b": "Me"}
+    assert res.owner.tier == "none" and res.owner.folded == 2
+
+
+def test_a_second_local_voice_that_only_matches_the_voiceprint_is_not_folded():
+    # A cluster at 0.7 to the voiceprint but unlike the owner's own cluster: with an owner already
+    # named, the fold also asks the candidate to sound like THAT cluster (the colleague case).
+    vp = _unit_at(1.0)
+    owner = _unit_at(0.8)            # 0.8 to the voiceprint
+    like_owner = _unit_at(0.8)       # same voice as the named cluster: folded
+    unlike = [0.0] * 256             # 0.7 to the voiceprint, but 0.56 to the owner's cluster
+    unlike[0] = 0.7
+    unlike[2] = (1 - 0.7**2) ** 0.5
+    tier = pick_mic_speaker({"a": 300.0, "b": 30.0}, {"a": 300.0, "b": 30.0})
+    segs = [_seg("a", 0, 300), _seg("b", 300, 330)]
+    folded = resolve_speaker_labels(
+        segs, {"a": owner, "b": like_owner}, _FakeRoster([]), user_label="Me",
+        mic_me="a", mic_tier=tier, voiceprint=vp)
+    assert folded.mapping["b"] == "Me"
+    kept = resolve_speaker_labels(
+        segs, {"a": owner, "b": unlike}, _FakeRoster([]), user_label="Me",
+        mic_me="a", mic_tier=tier, voiceprint=vp)
+    assert kept.mapping["b"] == "THEM-A"
+
+
+def test_a_disagreeing_pair_that_named_nobody_folds_nobody():
+    # The mic winner matches the voiceprint too, but the picks disagreed and the voiceprint's own
+    # cluster is system-side: nobody is named, so nobody may be folded in either.
+    vp = _unit_at(1.0)
+    embs = {"a": _unit_at(0.9), "b": _unit_at(1.0)}
+    tier = pick_mic_speaker({"a": 300.0, "b": 0.0}, {"a": 300.0, "b": 300.0})
+    res = resolve_speaker_labels(
+        [_seg("a", 0, 300), _seg("b", 300, 600)], embs, _FakeRoster([]), user_label="Me",
+        mic_me="a", voiceprint_me="b", mic_tier=tier, voiceprint=vp)
+    assert "Me" not in res.mapping.values()
+    assert res.owner.tier == "none" and res.owner.folded == 0
+    assert res.owner_id is None

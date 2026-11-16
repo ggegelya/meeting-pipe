@@ -22,6 +22,8 @@ Usage:
   scripts/valid1_check.py --der           # DIAR1 DER lower bound, from in-app corrections
   scripts/valid1_check.py --der --reviewed 20260716-113206 ...   # a real DER over meetings you reviewed fully
   scripts/valid1_check.py --cleanup       # DIAR5: what the LLM speaker-cleanup pass changed, per segment
+  scripts/valid1_check.py --owner-cluster --owner-name NAME   # DIAR11: the owner-cluster bar, before
+  scripts/valid1_check.py --owner-cluster --owner-name NAME --reselect   # ... and after the new pick
   scripts/valid1_check.py --coldstart     # A15: measure a cold vs warm local summarize (runs the model)
   scripts/valid1_check.py --timings       # only the run/stage timing table
   scripts/valid1_check.py --since 2026-06-03T00:00:00Z
@@ -690,6 +692,199 @@ def report_cleanup(meetings_dir: Path, since: datetime | None = None) -> None:
 
 # ------------------------------------------------------------ A15 cold-start
 
+# ------------------------------------------- DIAR11: the owner cluster, before and after
+#
+# The field report's two numbers, recomputed from `<stem>.json`, `<stem>.embeddings.json` and the
+# self-voiceprint, so the before and after of the owner-cluster change are the same instrument:
+#   wrong_owner     stems where the owner's name sits on a cluster under OWNER_NONMATCH_COS to the
+#                   owner's voice (always a small cluster in the field pack),
+#   them_matching   stems with an unnamed THEM-x cluster at OWNER_MATCH_COS or more to the owner's
+#                   voice that holds OWNER_MIN_SHARE or more of the meeting's speech.
+# Read-only: it reads the meetings dir you point it at and writes nothing, so run it on a scratch
+# copy of the library (or fixtures), never as a side effect of anything live. `--reselect` re-runs
+# the new selection over the stored segments and the audio, which needs the `mp` package
+# importable (run it with `uv run` from pipeline/) and the recording's WAV/FLAC beside the transcript.
+
+OWNER_NONMATCH_COS = 0.5
+OWNER_MATCH_COS = 0.65
+OWNER_MIN_SHARE = 0.05
+_PIPELINE_SRC = Path(__file__).resolve().parents[1] / "pipeline" / "src"
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    if not a or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na > 1e-9 and nb > 1e-9 else 0.0
+
+
+def _speech_by_label(segments: list[dict]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for seg in segments:
+        spk = seg.get("speaker")
+        if isinstance(spk, str) and spk:
+            out[spk] = out.get(spk, 0.0) + max(0.0, float(seg.get("end", 0)) - float(seg.get("start", 0)))
+    return out
+
+
+def load_owner_inputs(meetings_dir: Path, since: datetime | None = None) -> list[dict]:
+    """Per stem: the transcript's segments, its embeddings keyed by final label, and the
+    recording beside it (None when it was dropped or compressed away)."""
+    inputs: list[dict] = []
+    for stem, doc in load_transcripts(meetings_dir, since):
+        try:
+            emb_doc = json.loads((meetings_dir / f"{stem}.embeddings.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        embeddings = emb_doc.get("embeddings") if isinstance(emb_doc, dict) else None
+        segments = doc.get("segments")
+        if not isinstance(embeddings, dict) or not isinstance(segments, list):
+            continue
+        wav = next((meetings_dir / f"{stem}.{ext}" for ext in ("wav", "flac")
+                    if (meetings_dir / f"{stem}.{ext}").is_file()), None)
+        inputs.append({"stem": stem, "segments": segments, "embeddings": embeddings, "wav": wav})
+    return inputs
+
+
+def owner_reference(inputs: list[dict], owner_label: str, voiceprint: list[float] | None,
+                    mode: str = "centroid") -> list[float] | None:
+    """The owner's voice to measure against. `centroid` (the default, and the field report's own
+    reference) is the mean of every owner-labelled vector on disk, falling back to the voiceprint when
+    there is none. It stays the yardstick for BOTH tables: the new pick is fed the voiceprint, and
+    measuring its result against the same voiceprint at the same 0.65 bar the fold uses would make the
+    "after" number pass by construction. `voiceprint` measures against the self-voiceprint instead."""
+    if mode == "voiceprint" and voiceprint:
+        return voiceprint
+    vectors = [i["embeddings"][owner_label] for i in inputs
+               if isinstance(i["embeddings"].get(owner_label), list)]
+    if vectors:
+        n = len(vectors[0])
+        same = [v for v in vectors if len(v) == n]
+        return [sum(v[k] for v in same) / len(same) for k in range(n)]
+    return voiceprint or None
+
+
+def current_placement(item: dict, owner_label: str) -> dict:
+    """Where the transcript on disk puts the owner, and which clusters are unnamed THEM-x."""
+    labels = set(_speech_by_label(item["segments"]))
+    return {
+        "owner": {owner_label} & labels,
+        "them": {lbl for lbl in labels if lbl.startswith("THEM-")},
+        "moved_onto_roster_named": False,
+    }
+
+
+def reselect_placement(item: dict, owner_label: str, voiceprint: list[float] | None) -> dict | None:
+    """Re-run the owner-cluster selection (`mp.diarize`) over a stored transcript and its audio.
+    None when the audio is gone, since the mic tier needs it."""
+    if item["wav"] is None:
+        return None
+    if str(_PIPELINE_SRC) not in sys.path:
+        sys.path.insert(0, str(_PIPELINE_SRC))
+    from mp import diarize  # lazy: only --reselect needs the package
+    from mp.roster import MatchResult
+
+    segments, embeddings = item["segments"], item["embeddings"]
+    labels = set(_speech_by_label(segments))
+    roster_named = {lbl for lbl in labels
+                    if lbl != owner_label and not lbl.startswith("THEM-") and lbl in embeddings}
+
+    class _Replay:
+        """Roster stand-in: clusters the transcript already names a person keep that name."""
+
+        def match_detail(self, emb):
+            for lbl in roster_named:
+                if embeddings.get(lbl) is emb:
+                    return MatchResult(lbl, None, 1.0)
+            return MatchResult(None, None, None)
+
+    tier = diarize.analyze_mic_tier(segments, item["wav"])
+    voiceprint_me = diarize.match_voiceprint(embeddings, voiceprint)
+    res = diarize.resolve_speaker_labels(
+        segments, embeddings, _Replay(), user_label=owner_label,  # type: ignore[arg-type]
+        mic_me=tier.winner if tier else None, voiceprint_me=voiceprint_me,
+        mic_tier=tier, voiceprint=voiceprint,
+    )
+    owner = {k for k, v in res.mapping.items() if v == owner_label}
+    return {
+        "owner": owner,
+        "them": {k for k, v in res.mapping.items() if v.startswith("THEM-")},
+        "moved_onto_roster_named": bool(owner & roster_named),
+    }
+
+
+def build_owner_cluster_report(inputs: list[dict], reference: list[float] | None,
+                               placement_of) -> dict:
+    """The two field numbers over `inputs`, with `placement_of(item)` saying where the owner is.
+    Counts and stems only, no embeddings and no text."""
+    wrong_owner: list[str] = []
+    them_matching: list[str] = []
+    moved: list[str] = []
+    skipped = 0
+    for item in inputs:
+        placement = placement_of(item)
+        if placement is None or reference is None:
+            skipped += 1
+            continue
+        speech = _speech_by_label(item["segments"])
+        total = sum(speech.values()) or 1.0
+        emb = item["embeddings"]
+        if any(isinstance(emb.get(lbl), list) and _cosine(emb[lbl], reference) < OWNER_NONMATCH_COS
+               for lbl in placement["owner"]):
+            wrong_owner.append(item["stem"])
+        if any(isinstance(emb.get(lbl), list)
+               and _cosine(emb[lbl], reference) >= OWNER_MATCH_COS
+               and speech.get(lbl, 0.0) / total >= OWNER_MIN_SHARE
+               for lbl in placement["them"]):
+            them_matching.append(item["stem"])
+        if placement["moved_onto_roster_named"]:
+            moved.append(item["stem"])
+    return {
+        "stems": len(inputs), "skipped": skipped,
+        "wrong_owner": {"count": len(wrong_owner), "stems": wrong_owner},
+        "them_matching": {"count": len(them_matching), "stems": them_matching},
+        "moved_onto_roster_named": {"count": len(moved), "stems": moved},
+    }
+
+
+def report_owner_cluster(meetings_dir: Path, owner_label: str, voiceprint_path: Path,
+                         since: datetime | None, reselect: bool, reference_mode: str = "centroid") -> bool:
+    inputs = load_owner_inputs(meetings_dir, since)
+    voiceprint = None
+    try:
+        vp_doc = json.loads(voiceprint_path.read_text(encoding="utf-8"))
+        emb = vp_doc.get("embedding") if isinstance(vp_doc, dict) else None
+        voiceprint = emb if isinstance(emb, list) else None
+    except (OSError, json.JSONDecodeError):
+        pass
+    reference = owner_reference(inputs, owner_label, voiceprint, reference_mode)
+    print("== DIAR11: the owner cluster (counts and stems only) ==")
+    if not inputs or reference is None:
+        print(f"  (no stems with embeddings under {meetings_dir}, or no owner voice to measure against)")
+        return False
+    print(f"  {len(inputs)} stems; reference: "
+          f"{'self-voiceprint' if (reference_mode == 'voiceprint' and voiceprint) else 'mean of owner-labelled vectors on disk'}")
+    rows = [("before (on disk)", build_owner_cluster_report(
+        inputs, reference, lambda it: current_placement(it, owner_label)))]
+    if reselect:
+        try:
+            rows.append(("after (new pick)", build_owner_cluster_report(
+                inputs, reference, lambda it: reselect_placement(it, owner_label, voiceprint))))
+        except ImportError as exc:
+            print(f"  --reselect needs the mp package importable (uv run from pipeline/): {exc}")
+            return False
+    for name, r in rows:
+        print(f"  {name}")
+        print(f"    owner's name on a cluster under cosine {OWNER_NONMATCH_COS}: {r['wrong_owner']['count']} stems")
+        print(f"    THEM-x at cosine {OWNER_MATCH_COS}+ holding {OWNER_MIN_SHARE * 100:.0f}%+ of speech: "
+              f"{r['them_matching']['count']} stems")
+        print(f"    owner's name moved onto a roster-named cluster: {r['moved_onto_roster_named']['count']} stems"
+              f"  (skipped, no audio or no reference: {r['skipped']})")
+    return True
+
+
 def free_memory_pct() -> float | None:
     """System-wide free memory, per `memory_pressure`. None when unavailable."""
     try:
@@ -883,6 +1078,19 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--cleanup", action="store_true",
                     help="only DIAR5's read of what the LLM speaker-cleanup pass changed")
     ap.add_argument("--timings", action="store_true", help="only the pipeline timing table")
+    ap.add_argument("--owner-cluster", action="store_true",
+                    help="DIAR11: the owner-cluster bar (wrong-owner and THEM-x-matching-the-owner stems)")
+    ap.add_argument("--owner-name", type=str, default=None,
+                    help="your display name as it appears in transcripts, for --owner-cluster")
+    ap.add_argument("--voiceprint", type=Path,
+                    default=Path("~/.config/meeting-pipe/voiceprint.json").expanduser(),
+                    help="self-voiceprint, the owner reference for --owner-cluster")
+    ap.add_argument("--reference", choices=("centroid", "voiceprint"), default="centroid",
+                    help="with --owner-cluster: measure against the mean of owner-labelled vectors "
+                         "(the field report's yardstick, default) or the self-voiceprint")
+    ap.add_argument("--reselect", action="store_true",
+                    help="with --owner-cluster: also re-run the new selection over the stored audio "
+                         "(needs `uv run` from pipeline/)")
     ap.add_argument("--coldstart", action="store_true",
                     help="A15: measure a cold vs warm local summarize (runs the model)")
     ap.add_argument("--transcript", type=Path, default=None,
@@ -906,6 +1114,15 @@ def main(argv: list[str]) -> int:
             print(f"error: no transcript to summarize under {args.meetings_dir}", file=sys.stderr)
             return 2
         return 0 if run_coldstart(resolve_mp(), transcript, args.endpoint, args.out) else 1
+
+    # --owner-cluster is likewise explicit-only: it reads every transcript and embedding file, and
+    # with --reselect decodes audio, so it never rides along with the default report.
+    if args.owner_cluster:
+        if not args.owner_name:
+            print("error: --owner-cluster needs --owner-name", file=sys.stderr)
+            return 2
+        return 0 if report_owner_cluster(args.meetings_dir, args.owner_name, args.voiceprint,
+                                         since, args.reselect, args.reference) else 1
 
     selected = (args.ux4 or args.diar or args.attribution or args.der
                 or args.cleanup or args.timings)

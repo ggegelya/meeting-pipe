@@ -346,8 +346,8 @@ def test_finalize_enrolls_voiceprint_from_stereo_mic_channel(tmp_path: Path, mon
     streamed = _streamed_with_embeddings(
         wav,
         [
-            {"start": 0.0, "end": 2.0, "text": "hi", "speaker": "speaker_0"},
-            {"start": 2.0, "end": 4.0, "text": "hello", "speaker": "speaker_1"},
+            {"start": 0.0, "end": 30.0, "text": "hi", "speaker": "speaker_0"},
+            {"start": 30.0, "end": 60.0, "text": "hello", "speaker": "speaker_1"},
         ],
         {"speaker_0": e0, "speaker_1": e1},
     )
@@ -368,6 +368,150 @@ def test_finalize_enrolls_voiceprint_from_stereo_mic_channel(tmp_path: Path, mon
 
     assert store.meetings() == 1
     assert cosine_similarity(store.embedding(), e0) > 0.99  # enrolled speaker_0
+
+
+# --- DIAR11: the owner cluster, its enrolment and its event ------------------------------------
+
+
+def _axis_emb(i: int) -> list[float]:
+    v = [0.0] * EMBEDDING_DIM
+    v[i] = 1.0
+    return v
+
+
+def _mic_channel(monkeypatch, verdicts: list[str]) -> None:
+    """Stereo, with the channel verdict per segment ('speaker_user' = mic side)."""
+    monkeypatch.setattr("mp.diarize.is_stereo_recording", lambda w: True)
+    monkeypatch.setattr(
+        "mp.diarize.assign_speakers_by_channel",
+        lambda segments, w: [{**seg, "speaker": v} for seg, v in zip(segments, verdicts)],
+    )
+
+
+def _finalize_two(tmp_path: Path, monkeypatch, *, store, durations=(60.0, 60.0), verdicts=("speaker_user", "speaker_other"),
+                  embeddings=None):
+    wav = tmp_path / "20260501-1100.wav"
+    wav.write_bytes(b"")
+    a, b = durations
+    streamed = _streamed_with_embeddings(
+        wav,
+        [
+            {"start": 0.0, "end": a, "text": "hi", "speaker": "speaker_0"},
+            {"start": a, "end": a + b, "text": "hello", "speaker": "speaker_1"},
+        ],
+        embeddings or {"speaker_0": _axis_emb(0), "speaker_1": _axis_emb(1)},
+    )
+    _mic_channel(monkeypatch, list(verdicts))
+    events: list[tuple] = []
+    monkeypatch.setattr("mp.events.emit", lambda cat, action, **kw: events.append((cat, action, kw)))
+    out = finalize_streamed_transcript(
+        wav, streamed, user_label="Me",
+        voiceprint_store=store, roster_store=RosterStore(tmp_path / "roster.json"),
+    )
+    data = json.loads(out["json"].read_text(encoding="utf-8"))
+    return [seg["speaker"] for seg in data["segments"]], events
+
+
+def test_two_local_voices_name_the_voiceprint_match_and_enroll_nothing(tmp_path: Path, monkeypatch):
+    # F096, end to end: both voices are on the mic with similar time, so the mic tier
+    # declines, the self-voiceprint (speaker_1's voice) decides, and nothing is enrolled.
+    store = VoiceprintStore(tmp_path / "vp.json")
+    store.update(_axis_emb(1))
+    before = store.meetings()
+    speakers, events = _finalize_two(
+        tmp_path, monkeypatch, store=store, verdicts=("speaker_user", "speaker_user"), durations=(100.0, 90.0))
+    assert speakers == ["THEM-A", "Me"]
+    assert store.meetings() == before
+    assert [e[2]["tier"] for e in events if e[1] == "owner_cluster_chosen"] == ["voiceprint"]
+
+
+def test_a_mic_pick_the_voiceprint_disagrees_with_is_not_enrolled(tmp_path: Path, monkeypatch):
+    # The voiceprint is speaker_1's voice; the mic side is speaker_0. A system-side voiceprint
+    # pick names nobody, and the mic pick's sample must not poison the voiceprint.
+    store = VoiceprintStore(tmp_path / "vp.json")
+    store.update(_axis_emb(1))
+    before = store.meetings()
+    speakers, _ = _finalize_two(tmp_path, monkeypatch, store=store)
+    assert speakers == ["THEM-A", "THEM-B"]
+    assert store.meetings() == before
+
+
+def test_a_mic_pick_the_voiceprint_agrees_with_is_enrolled(tmp_path: Path, monkeypatch):
+    store = VoiceprintStore(tmp_path / "vp.json")
+    store.update(_axis_emb(0))
+    speakers, events = _finalize_two(tmp_path, monkeypatch, store=store)
+    assert speakers == ["Me", "THEM-A"]
+    assert store.meetings() == 2
+    assert [e[2]["tier"] for e in events if e[1] == "owner_cluster_chosen"] == ["mic"]
+
+
+def test_a_voiceprint_that_places_nobody_blocks_enrolment_of_the_mic_pick(tmp_path: Path, monkeypatch):
+    # A voiceprint exists but matches neither cluster: the mic pick cannot be corroborated.
+    store = VoiceprintStore(tmp_path / "vp.json")
+    store.update(_axis_emb(7))
+    speakers, _ = _finalize_two(tmp_path, monkeypatch, store=store)
+    assert speakers[0] == "Me"  # still named, by the mic tier
+    assert store.meetings() == 1  # but not folded into the print
+
+
+def test_owner_cluster_chosen_is_emitted_once_with_the_evidence_and_no_label_text(tmp_path: Path, monkeypatch):
+    store = VoiceprintStore(tmp_path / "vp.json")
+    store.update(_axis_emb(0))
+    _, events = _finalize_two(tmp_path, monkeypatch, store=store)
+    chosen = [e for e in events if e[1] == "owner_cluster_chosen"]
+    assert len(chosen) == 1
+    cat, _, attrs = chosen[0]
+    assert cat == "pipeline"
+    assert set(attrs) == {
+        "stem", "tier", "mic_fraction", "mic_seconds", "voiceprint_score",
+        "runner_up_fraction", "runner_up_seconds", "folded", "flagged",
+    }
+    assert attrs["stem"] == "20260501-1100"
+    assert attrs["tier"] == "mic" and attrs["mic_fraction"] == 1.0 and attrs["mic_seconds"] == 60.0
+    assert attrs["voiceprint_score"] == 1.0
+    assert attrs["runner_up_fraction"] == 0.0 and attrs["runner_up_seconds"] == 0.0
+    assert (attrs["folded"], attrs["flagged"]) == (0, 0)
+    assert "Me" not in json.dumps(attrs) and "THEM" not in json.dumps(attrs)
+
+
+def test_a_fold_keeps_the_chosen_clusters_vector_for_the_owner_label(tmp_path: Path, monkeypatch):
+    # speaker_0 (mic-side, the pick) and speaker_1 (a mic-side fragment of the same voice) both
+    # become "Me". The daemon lists the fragment first; the stored vector must still be the
+    # pick's, which Library naming and the replay read.
+    store = VoiceprintStore(tmp_path / "vp.json")
+    store.update(_axis_emb(0))
+    frag = [0.9, 0.1] + [0.0] * (EMBEDDING_DIM - 2)
+    wav = tmp_path / "20260501-1100.wav"
+    wav.write_bytes(b"")
+    streamed = _streamed_with_embeddings(
+        wav,
+        [
+            {"start": 0.0, "end": 30.0, "text": "frag", "speaker": "speaker_1"},
+            {"start": 30.0, "end": 330.0, "text": "main", "speaker": "speaker_0"},
+            {"start": 330.0, "end": 400.0, "text": "remote", "speaker": "speaker_2"},
+        ],
+        {"speaker_1": frag, "speaker_0": _axis_emb(0), "speaker_2": _axis_emb(5)},
+    )
+    _mic_channel(monkeypatch, ["speaker_user", "speaker_user", "speaker_other"])
+    finalize_streamed_transcript(
+        wav, streamed, user_label="Me",
+        voiceprint_store=store, roster_store=RosterStore(tmp_path / "roster.json"),
+    )
+    data = json.loads((tmp_path / "20260501-1100.embeddings.json").read_text())
+    assert data["embeddings"]["Me"] == _axis_emb(0)
+
+
+def test_an_owner_matching_system_side_cluster_is_flagged_in_the_event_not_named(tmp_path: Path, monkeypatch):
+    store = VoiceprintStore(tmp_path / "vp.json")
+    store.update(_axis_emb(0))
+    near_owner = [0.7] + [0.0] * (EMBEDDING_DIM - 1)
+    near_owner[1] = math.sqrt(1 - 0.49)
+    speakers, events = _finalize_two(
+        tmp_path, monkeypatch, store=store,
+        embeddings={"speaker_0": _axis_emb(0), "speaker_1": near_owner})
+    assert speakers == ["Me", "THEM-A"]
+    attrs = next(e[2] for e in events if e[1] == "owner_cluster_chosen")
+    assert (attrs["folded"], attrs["flagged"]) == (0, 1)
 
 
 def test_finalize_roster_names_enrolled_person_and_clusters_unknown(
