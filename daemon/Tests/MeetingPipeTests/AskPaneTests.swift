@@ -274,4 +274,102 @@ final class AskPaneTests: XCTestCase {
         let text = String(SummaryMarkdown.inline("**unclosed bold").characters)
         XCTAssertTrue(text.contains("unclosed bold"))
     }
+
+    // MARK: - SEC33: suggestions and counts come from Ask-visible rows only
+
+    private func row(
+        _ stem: String, title: String, workflow: String? = nil,
+        nda: Bool? = nil, regulated: Bool? = nil, unreadable: Bool = false, sidecar: Bool = true
+    ) -> Meeting {
+        var m = Meeting(
+            stem: stem, startedAt: Date(), audioURL: nil, recordingsDir: URL(fileURLWithPath: "/tmp"),
+            summaryTitle: title, meetingTitle: nil, sourceBundleID: nil, sourceDisplayName: nil, sourceKind: nil,
+            workflowName: workflow, workflowColor: nil, durationSec: nil, backend: nil, modelId: nil,
+            status: .done, failureReason: nil, failureStage: nil, searchableText: ""
+        )
+        m.workflowNDAMode = nda
+        m.regulatedMode = regulated
+        m.metaUnreadable = unreadable
+        m.hasMetaSidecar = sidecar
+        return m
+    }
+
+    private func pane(_ meetings: [Meeting]) -> AskPane {
+        let facts = AskPane.libraryFacts(meetings)
+        return AskPane.derive(
+            inFlight: nil, history: [],
+            recentWorkflow: facts.recentWorkflow, recentTitle: facts.recentTitle,
+            meetingCount: facts.visibleCount, withheldCount: facts.withheldCount
+        )
+    }
+
+    func testANewestNDARowNamesNeitherItsTitleNorItsWorkflowAndTheNewestVisibleRowSuppliesThem() {
+        let library = [
+            row("3", title: "Layoffs plan", workflow: "Board NDA", nda: true),
+            row("2", title: "Sprint planning", workflow: "Engineering"),
+            row("1", title: "Retro"),
+        ]
+        let texts = pane(library).suggestions.map(\.text)
+        XCTAssertFalse(texts.joined().contains("Layoffs"))
+        XCTAssertFalse(texts.joined().contains("Board NDA"))
+        XCTAssertEqual(texts, ["What did we decide in Engineering recently?",
+                               "What came out of Sprint planning?",
+                               "What are my open action items?"])
+    }
+
+    func testANewestRowWithNoSidecarARegulatedSidecarOrAnUnreadableOneIsSkippedTheSameWay() {
+        for secret in [
+            row("3", title: "Secret one", workflow: "Secret WF", sidecar: false),
+            row("3", title: "Secret one", workflow: "Secret WF", regulated: true),
+            row("3", title: "Secret one", workflow: "Secret WF", unreadable: true),
+        ] {
+            let p = pane([secret, row("2", title: "Visible one", workflow: "Open WF")])
+            let all = p.suggestions.map(\.text).joined(separator: " | ")
+            XCTAssertFalse(all.contains("Secret"), all)
+            XCTAssertTrue(all.contains("Visible one"), all)
+            XCTAssertTrue(all.contains("Open WF"), all)
+        }
+    }
+
+    func testAWithheldRowDeepInTheNewestTwentyNeverSuppliesTheWorkflowChip() {
+        let library = [row("9", title: "Visible", workflow: nil), row("8", title: "Hidden", workflow: "NDA WF", nda: true)]
+        XCTAssertEqual(AskPane.libraryFacts(library).recentWorkflow, nil)
+        XCTAssertFalse(pane(library).suggestions.map(\.text).joined().contains("NDA WF"))
+    }
+
+    func testALibraryWhereEveryRowIsWithheldSaysSoAndOffersNoChip() {
+        let library = [row("2", title: "A", nda: true), row("1", title: "B", sidecar: false)]
+        let p = pane(library)
+        XCTAssertEqual(p.subhead, "2 meetings are kept out of Ask because of their privacy settings.")
+        XCTAssertNotEqual(p.subhead, "No meetings recorded yet.")
+        XCTAssertTrue(p.suggestions.isEmpty)
+    }
+
+    func testOneWithheldMeetingReadsInTheSingular() {
+        XCTAssertEqual(pane([row("1", title: "A", nda: true)]).subhead,
+                       "1 meeting is kept out of Ask because of its privacy settings.")
+    }
+
+    func testSomeWithheldKeepsTheInvitationAndNotesTheCountInOneLine() {
+        let p = pane([row("2", title: "A"), row("1", title: "B", regulated: true)])
+        XCTAssertEqual(p.subhead,
+                       "Answers cite the meetings they came from. 1 meeting is kept out of Ask because of its privacy settings.")
+        XCTAssertFalse(p.suggestions.isEmpty)
+    }
+
+    func testAnAllVisibleLibraryKeepsTodaysChipsAndSubheadUnchanged() {
+        let p = pane([row("2", title: "Sprint planning", workflow: "Engineering"), row("1", title: "Retro")])
+        XCTAssertEqual(p.subhead, "Answers cite the meetings they came from.")
+        XCTAssertEqual(p.suggestions.map(\.text), ["What did we decide in Engineering recently?",
+                                                  "What came out of Sprint planning?",
+                                                  "What are my open action items?"])
+        XCTAssertEqual(pane([]).subhead, "No meetings recorded yet.")
+    }
+
+    func testAnEmptyAnswerNoteSaysWhyWhenTheLibraryHoldsRows() {
+        XCTAssertEqual(AskPane.emptyAnswerNote(meetingCount: 0, withheldCount: 3),
+                       "3 meetings are kept out of Ask because of their privacy settings.")
+        XCTAssertEqual(AskPane.emptyAnswerNote(meetingCount: 0, withheldCount: 0), "No meetings to search yet.")
+        XCTAssertEqual(AskPane.emptyAnswerNote(meetingCount: 4, withheldCount: 1), "No searchable meetings found.")
+    }
 }

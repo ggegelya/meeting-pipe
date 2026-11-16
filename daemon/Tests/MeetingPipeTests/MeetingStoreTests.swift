@@ -667,6 +667,32 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(row.displayTitle, "Aligned scope for Q3")
     }
 
+    /// SEC33: Python withholds a stem with no `<stem>.meta.json` as `no_sidecar`, and `isZeroEgress` is
+    /// false for it, so the row carries the fact itself.
+    func test_a_row_records_whether_it_has_a_meta_sidecar() throws {
+        let dir = try tempDir()
+        try writeFile(dir.appendingPathComponent("20260511-143110.wav"))
+        try writeFile(dir.appendingPathComponent("20260511-143110.meta.json"), #"{"source_display_name": "Zoom"}"#)
+        try writeFile(dir.appendingPathComponent("20260510-080000.wav"))  // no sidecar
+        let store = MeetingStore(recordingsDir: dir)
+        let exp = expectation(description: "scan")
+        var captured: [Meeting] = []
+        let cancel = store.$meetings.dropFirst().sink { meetings in
+            captured = meetings
+            exp.fulfill()
+        }
+        store.start()
+        wait(for: [exp], timeout: 2.0)
+        cancel.cancel()
+        let with = try XCTUnwrap(captured.first { $0.stem == "20260511-143110" })
+        let without = try XCTUnwrap(captured.first { $0.stem == "20260510-080000" })
+        XCTAssertTrue(with.hasMetaSidecar)
+        XCTAssertTrue(with.isAskVisible)
+        XCTAssertFalse(without.hasMetaSidecar)
+        XCTAssertFalse(without.isAskVisible, "no sidecar is no_sidecar to mp ask, though isZeroEgress is false")
+        XCTAssertFalse(without.isZeroEgress)
+    }
+
     func test_displayTitle_falls_back_to_source_when_summary_missing() throws {
         let dir = try tempDir()
         let stem = "20260511-143110"

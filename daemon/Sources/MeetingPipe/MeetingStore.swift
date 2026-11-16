@@ -98,6 +98,10 @@ struct Meeting: Identifiable, Hashable {
     /// `<stem>.meta.json` exists but could not be read or parsed (SEC25). The NDA flag may be in
     /// there, so the row counts as zero-egress rather than as a meeting with no workflow.
     var metaUnreadable: Bool = false
+    /// `<stem>.meta.json` is present (SEC33). Python's visibility gate withholds a stem with none as
+    /// `no_sidecar`, and `isZeroEgress` is false for it, so the row needs its own fact. Defaulted true so
+    /// test constructors need not supply it.
+    var hasMetaSidecar: Bool = true
 
     /// The input device the recorder captured, from `<stem>.meta.json["mic_device_name"]`
     /// (MIC15). Shown in the detail pane so the user can tell which mic a recording used. Nil for
@@ -183,6 +187,12 @@ struct Meeting: Identifiable, Hashable {
     /// "Local only" privacy badge, which must never be inferred (TECH-DSN6).
     /// A sidecar that could not be read counts too (SEC25): unknown is not permission.
     var isZeroEgress: Bool { (workflowNDAMode ?? false) || (regulatedMode ?? false) || metaUnreadable }
+
+    /// Whether `mp ask` can see this meeting (SEC33), mirroring `visibility.withheld_reason`: no sidecar is
+    /// `no_sidecar`, and an NDA, regulated or unreadable one is withheld. The Ask pane builds its
+    /// suggestions only from rows this is true for, so a withheld meeting's title or workflow name is never
+    /// put into a question sent to the configured backend.
+    var isAskVisible: Bool { hasMetaSidecar && !isZeroEgress }
 
     /// Best-effort display label: summary title > meeting title > "{source} at HH:mm" > raw stem. Never empty.
     var displayTitle: String {
@@ -842,6 +852,11 @@ final class MeetingStore: ObservableObject {
         let metaRead = metaURL.map { MeetingMetaRead.load(at: $0) }
         let meta = metaRead?.dictionary
         let metaUnreadable = metaRead?.isUnreadable ?? false
+        let hasMetaSidecar: Bool = {
+            guard let metaRead else { return false }
+            if case .absent = metaRead { return false }
+            return true
+        }()
         let run = runURL.flatMap { readJSON(at: $0) }
         let summary: MeetingSummary? = summaryURL.flatMap { MeetingSummary.load(from: $0) }
         // A saved summary supersedes a legacy processing marker. Publish failures
@@ -965,6 +980,7 @@ final class MeetingStore: ObservableObject {
             workflowNDAMode: (meta?["workflow_nda_mode"] as? Bool),
             regulatedMode: (meta?["regulated_mode"] as? Bool),
             metaUnreadable: metaUnreadable,
+            hasMetaSidecar: hasMetaSidecar,
             micDeviceName: (meta?["mic_device_name"] as? String),
             micWarning: (meta?["mic_silent"] as? Bool) ?? false,
             heldEndTrimSec: meta.flatMap(HeldEndTrim.trimSeconds(meta:)),

@@ -298,7 +298,7 @@ A link inside an answer or a summary is written by the model, so the app treats 
 
 **What it cannot do.** It is not a chat: it answers one question at a time and does not remember the previous one. It only knows what is in your meetings, so it cannot answer from anything else. And it only answers, it never acts: it will not send anything, change anything, or schedule anything.
 
-**Confidential meetings are not in Ask at all.** A meeting recorded under an NDA workflow is left out of the searchable index, so Ask cannot quote it and cannot cite it, whichever engine is answering. So are meetings recorded before workflows existed, which have no record of whether they were confidential: the app treats "we never wrote it down" as "do not use it" rather than guessing. If a meeting you expect is missing from an answer, that is usually why.
+**Confidential meetings are not in Ask at all.** A meeting recorded under an NDA workflow is left out of the searchable index, so Ask cannot quote it and cannot cite it, whichever engine is answering. So are meetings recorded before workflows existed, which have no record of whether they were confidential: the app treats "we never wrote it down" as "do not use it" rather than guessing. If a meeting you expect is missing from an answer, that is usually why. The same rule governs the suggested questions on the empty Ask screen: they are built only from meetings Ask can see, so a left-out meeting's title or workflow name never appears in one. When every meeting you have is left out, the screen says how many are and why, instead of claiming nothing has been recorded.
 
 ### Asking from another app
 

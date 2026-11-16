@@ -2,9 +2,9 @@
 id: SEC33
 title: Ask's suggestion chips and empty state ignore the visibility gate mp ask enforces, so a withheld meeting's title can be sent to a cloud backend
 category: Security
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). G037: `mp ask` drops NDA, regulated and sidecar-less stems through `visibility.visible_stems`, but `AskView` builds its chips from the newest Library rows unfiltered, so one click puts a withheld meeting's title or workflow name into a question sent to the configured backend; latent here (no NDA or regulated sidecar among the 113 field meetings), the NDA and regulated legs need those modes, the sidecar-less leg does not. Derive chips and the invitation's count from visible rows only, add a sidecar-present fact to `Meeting`, and say when meetings are withheld instead of "No meetings to search yet.". [Spec](./SEC33.md)
+comment: Shipped 2026-11-16 (ci-local green): Meeting.hasMetaSidecar and isAskVisible mirror visibility.withheld_reason; Ask chips, the invitation count and the empty-answer note come from Ask-visible rows only and say how many meetings are withheld. Awaiting the owner to close it.
 ---
 
 # SEC33: Ask's suggestion chips and empty state ignore the visibility gate mp ask enforces, so a withheld meeting's title can be sent to a cloud backend
@@ -46,3 +46,5 @@ Source: [independent audit](../../audits/2026-11-12-independent-audit.md) findin
 - A `MeetingStore` test (existing scan fixture) that a stem with no `<stem>.meta.json` gets `hasMetaSidecar == false` and one with a sidecar gets `true`.
 - `swift test` green with the new test count in the commit body; `bash scripts/ci-local.sh` green.
 - [docs/GUIDE.md](../../GUIDE.md)'s Ask recipe mentions that withheld meetings are left out of Ask and its suggestions, in the same commit, if it describes the suggestions at all.
+
+**Progress (2026-11-16):** shipped as specced. The facts are derived by `AskPane.libraryFacts(_:)` (pure, takes `[Meeting]`), and `AskView` feeds `derive` the visible count plus a new `withheldCount`. Wording: "N meetings are kept out of Ask because of their privacy settings." (singular for one), appended to the invitation's usual line when some are withheld and replacing "No meetings recorded yet." when all are; `AskView`'s empty-answer row uses `AskPane.emptyAnswerNote`. The all-visible library renders exactly as before. docs/GUIDE.md's Ask recipe says the suggestions follow the same rule.

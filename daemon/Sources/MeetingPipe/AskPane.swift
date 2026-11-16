@@ -107,15 +107,14 @@ struct AskPane: Equatable {
         history: [AskEntry],
         recentWorkflow: String? = nil,
         recentTitle: String? = nil,
-        meetingCount: Int = 0
+        meetingCount: Int = 0,
+        withheldCount: Int = 0
     ) -> AskPane {
         let docked = inFlight != nil || !history.isEmpty
         return AskPane(
             layout: docked ? .docked : .centered,
             headline: docked ? nil : "Ask about your meetings.",
-            subhead: docked ? nil : (meetingCount == 0
-                                     ? "No meetings recorded yet."
-                                     : "Answers cite the meetings they came from."),
+            subhead: docked ? nil : subhead(meetingCount: meetingCount, withheldCount: withheldCount),
             fieldPlaceholder: docked
                 ? "Ask another question\u{2026}"
                 : "What did we decide about\u{2026}?",
@@ -129,6 +128,53 @@ struct AskPane: Equatable {
             inputNote: inFlight == nil
                 ? nil
                 : "One question at a time. Cancel to ask another."
+        )
+    }
+
+    /// The invitation's second line. `meetingCount` is the Ask-visible count, so "No meetings recorded yet."
+    /// is only said of a library that holds none; a library whose every meeting is withheld says why
+    /// instead (SEC33).
+    static func subhead(meetingCount: Int, withheldCount: Int) -> String {
+        if meetingCount == 0 {
+            return withheldCount > 0 ? withheldSentence(withheldCount) : "No meetings recorded yet."
+        }
+        let base = "Answers cite the meetings they came from."
+        return withheldCount > 0 ? base + " " + withheldSentence(withheldCount) : base
+    }
+
+    /// Plain wording for meetings the gate keeps out of Ask. Matches the GUIDE's Ask recipe.
+    static func withheldSentence(_ count: Int) -> String {
+        count == 1
+            ? "1 meeting is kept out of Ask because of its privacy settings."
+            : "\(count) meetings are kept out of Ask because of their privacy settings."
+    }
+
+    /// What an empty answer row says. `mp ask` returns it when its index is empty, which for a library with
+    /// rows means every one is withheld, not that there is nothing recorded.
+    static func emptyAnswerNote(meetingCount: Int, withheldCount: Int) -> String {
+        if meetingCount == 0 && withheldCount > 0 { return withheldSentence(withheldCount) }
+        if meetingCount == 0 { return "No meetings to search yet." }
+        return "No searchable meetings found."
+    }
+
+    /// The library facts the pane derives from, taken from Ask-visible rows only (SEC33): the newest
+    /// title, the newest workflow among the newest twenty, and the visible and withheld counts. A
+    /// withheld row never contributes text, because a chip's text becomes the question `mp ask` sends to
+    /// the configured backend. `meetings` is newest first.
+    struct LibraryFacts: Equatable {
+        var recentTitle: String?
+        var recentWorkflow: String?
+        var visibleCount: Int
+        var withheldCount: Int
+    }
+
+    static func libraryFacts(_ meetings: [Meeting]) -> LibraryFacts {
+        let visible = meetings.filter(\.isAskVisible)
+        return LibraryFacts(
+            recentTitle: visible.first?.displayTitle,
+            recentWorkflow: visible.prefix(20).compactMap(\.workflowName).first,
+            visibleCount: visible.count,
+            withheldCount: meetings.count - visible.count
         )
     }
 

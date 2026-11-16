@@ -58,21 +58,21 @@ struct AskView: View {
         self.onOpenMeeting = onOpenMeeting
     }
 
+    /// SEC33: every library-derived fact comes from Ask-visible rows only, the same gate `mp ask` applies,
+    /// because a suggestion's text becomes the question sent to the configured backend. Bounded work:
+    /// one filter pass per store revision.
+    private var facts: AskPane.LibraryFacts { AskPane.libraryFacts(meetingStore.meetings) }
+
     private var pane: AskPane {
-        AskPane.derive(
+        let facts = facts
+        return AskPane.derive(
             inFlight: askModel.inFlight,
             history: askModel.history,
-            recentWorkflow: recentWorkflow,
-            recentTitle: meetingStore.meetings.first?.displayTitle,
-            meetingCount: meetingStore.meetings.count
+            recentWorkflow: facts.recentWorkflow,
+            recentTitle: facts.recentTitle,
+            meetingCount: facts.visibleCount,
+            withheldCount: facts.withheldCount
         )
-    }
-
-    /// The newest tagged meeting's workflow. Bounded rather than a full scan:
-    /// this runs on every store revision, and a workflow nobody has used in
-    /// twenty meetings is not what "recently" means anyway.
-    private var recentWorkflow: String? {
-        meetingStore.meetings.prefix(20).compactMap(\.workflowName).first
     }
 
     /// AI12: which widths this backend on this Mac may honestly be asked for.
@@ -364,7 +364,7 @@ struct AskView: View {
         } else if let answer = entry.answer {
             if answer.empty {
                 noteRow(icon: "tray", tint: Color(MPColors.fgSubtle),
-                        text: "No meetings to search yet.")
+                        text: AskPane.emptyAnswerNote(meetingCount: facts.visibleCount, withheldCount: facts.withheldCount))
             } else {
                 answerBody(answer)
             }
