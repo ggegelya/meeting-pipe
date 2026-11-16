@@ -3,6 +3,7 @@ import ApplicationServices
 import AVFoundation
 import Combine
 import Foundation
+import os
 import MeetingPipeCore
 
 /// Owns one meeting's lifetime (TECH-ARCH2): the two verdict-consumer Tasks,
@@ -54,10 +55,10 @@ final class MeetingSessionController: @unchecked Sendable {
     /// too. Per-meeting (TECH-C14).
     var axWindowWatcher: MeetingAXWindowWatcher?
 
-    /// True while an async `beginRecording` start is in flight. The engine
-    /// bring-up is bounded off the main thread now, so the UI stays live during
-    /// it; this guard stops a second Record/toggle press from stacking another
-    /// `recorder.start()` (five stacked starts were seen in the 2026-06-12 freeze).
+    /// END20: the async `beginRecording` start in flight, if any, and what happened to it during the
+    /// bring-up. Non-nil stops a second Record press from stacking another `recorder.start()` (five
+    /// stacked starts were seen in the 2026-06-12 freeze), latches an end of the start's own meeting
+    /// (REC7, now for every origin) and a Stop pressed meanwhile. Main-queue only.
     /// END9: the open call-teardown hold's decisions (T8: `TeardownHoldPolicy`, in Core so the
     /// detection corpus replays them on a virtual clock). Main-queue only, like everything else here.
     var holdPolicy = TeardownHoldPolicy()
@@ -71,7 +72,7 @@ final class MeetingSessionController: @unchecked Sendable {
     /// Read once by `stopRecording` and cleared there, so it can never leak into the next meeting.
     var pendingEndTrimAt: Date?
 
-    private var recordingStartInFlight = false
+    private(set) var startLatch = RecordingStartLatch()
 
     /// END17 item 5: what the last lifecycle end stopped, kept for `ResumeAfterEnd.windowSec` so a
     /// call sighted again inside it resumes instead of being suppressed by the cooldown.
@@ -81,14 +82,6 @@ final class MeetingSessionController: @unchecked Sendable {
     /// triggers, then held as the active recording's for its sidecar. Main-queue only.
     private var pendingResumedFrom: String?
     private var activeResumedFrom: String?
-
-    /// REC7: latched when a confirmed lifecycle `.ended` lands during the async
-    /// `recorder.start()` window (the meeting ended as the user answered the
-    /// prompt). Consumed once the start commits, so the fresh recording is stopped
-    /// immediately instead of running against a dead meeting until the idle
-    /// backstop. Main-queue only; the start Task and the verdict consumer both run
-    /// on MainActor, so the set-then-read is serialized, not raced.
-    private var endObservedDuringStart: EndingReason?
 
     /// Offsets (seconds from recording start) the user flagged mid-recording via
     /// the flag hotkey (FEAT8). Reset at start, written to `<stem>.markers.json`
@@ -150,8 +143,19 @@ final class MeetingSessionController: @unchecked Sendable {
         var buildHandles: (AppSource, MuteLabels) -> MeetingAXHandleBuilder.Handles? = MeetingAXHandleBuilder.build
         var resolveContext: (AppSource) -> MeetingLifecycleContext? = MeetingAXHandleBuilder.context(for:)
         var startMicGate: ((MeetingLifecycleContext, MicGateAdapterHandle) throws -> Void)?
+        /// END20 (D075): the prompt's source for a `.starting`, a title read on `axWalkQueue`.
+        var resolveStartingSource: @Sendable (MeetingLifecycleContext) async -> AppSource = { context in
+            await MeetingSessionController.resolveAppSource(from: context)
+        }
     }
     var engageSeams = EngageSeams()
+
+    /// END20 (D075): how long a prompt waits for its window title before it shows without one. A
+    /// healthy read takes milliseconds; the bound is for a hung client, where each AX call waits out
+    /// the 2 s messaging timeout. The title is not on the panel, only in the workflow rules' match,
+    /// so the cost of the bound is a title-rule workflow not being preselected for that one prompt.
+    static let startingTitleDeadline: TimeInterval = 2.0
+    var startingTitleDeadlineSec = MeetingSessionController.startingTitleDeadline
 
     /// PERF15: the discovery-time build in flight, or nil. One per bundle at a time, so a 3 s poll
     /// cannot stack walks against a slow client; `generation` is how its landing tells it is still
@@ -221,37 +225,39 @@ final class MeetingSessionController: @unchecked Sendable {
                 // PERF15: the prompt's source (display name plus a window-title read per window)
                 // resolves off main, awaited here so the verdicts still reach main in order: a
                 // `.starting` handed off and an `.ended` behind it overtaking would prompt for a
-                // call that is over. The prompt shows the same copy at the same moment as before,
-                // since the title was always read before it was presented; only main stops waiting.
-                let startingSource: AppSource?
+                // call that is over.
+                //
+                // END20 (D075): the late-start confirm needs no title, so it runs first, and only a
+                // `.starting` that is really a prompt waits for the read. That read shares
+                // `axWalkQueue` with the mute walk and both AX builds, each AX call bounded only by
+                // the 2 s messaging timeout, and while it waited an explicit start sat in
+                // `.starting`, where a reliable end is immediate. The read is bounded too now.
                 if case .starting(let context) = verdict {
-                    startingSource = await MeetingSessionController.resolveAppSource(from: context)
-                } else {
-                    startingSource = nil
+                    // The seam and the deadline are read on main with everything else here.
+                    let (confirmed, resolve, deadline) = await MainActor.run {
+                        self.resolveTeardownHold(for: verdict)
+                        return (
+                            self.confirmLateStartIfRecording(context),
+                            self.engageSeams.resolveStartingSource,
+                            self.startingTitleDeadlineSec
+                        )
+                    }
+                    if confirmed { continue }
+                    let source = await MeetingSessionController.resolveAppSource(
+                        from: context, within: deadline, using: resolve
+                    )
+                    await MainActor.run {
+                        // The start may have committed while the title was read.
+                        if self.confirmLateStartIfRecording(context) { return }
+                        self.handleMeetingStarted(source: source)
+                    }
+                    continue
                 }
                 await MainActor.run {
-                    // END9: any verdict other than another provisional resolves an open hold. An
-                    // end concludes it, which is what marks the held tail for trimming whichever
-                    // route confirmed it (END17: the teardown, a dwell, or an app quit). Anything
-                    // else releases it, and the one that matters is `.inMeeting`: a returning
-                    // signal reverts the hold, and that revert is the whole reason for holding.
+                    self.resolveTeardownHold(for: verdict)
                     switch verdict {
-                    case .endingProvisional:
+                    case .starting:
                         break
-                    case .ended:
-                        self.concludeTeardownHold()
-                    default:
-                        self.releaseTeardownHold(rescued: verdict.isLive)
-                        // A teardown confirm that lost the race to a revert never produced an
-                        // `.ended`, so its trim point must not survive into this call's real end.
-                        self.pendingEndTrimAt = nil
-                    }
-                    switch verdict {
-                    case .starting(let context):
-                        if self.confirmLateStartIfRecording(context) { break }
-                        self.handleMeetingStarted(
-                            source: startingSource ?? MeetingSessionController.appSource(from: context, title: nil)
-                        )
                     case .endingProvisional(let context, _):
                         // END17: every weak end holds with the recorder running, browser included,
                         // and the native rescue re-walk still runs so a Leave button that merely
@@ -262,12 +268,48 @@ final class MeetingSessionController: @unchecked Sendable {
                         }
                     case .ended(let context, let reason):
                         self.handleMeetingEnded(bundleID: context.bundleID, reason: reason)
+                        // END20: an end that left a recording running means that recording's
+                        // engine (or the one engaged beside it) is terminal and ignores every later
+                        // signal. Countable, so the dogfood report can see it happen at all.
+                        if case .recording(_, let src, _) = self.coordinator.stateMachine.current {
+                            self.noteRecordingOnTerminalEngine(
+                                bundleID: context.bundleID, recordingBundleID: src?.bundleID, reason: "end_not_applied"
+                            )
+                        }
                     default:
                         break
                     }
                 }
             }
         }
+    }
+
+    /// END9: any verdict other than another provisional resolves an open hold. An end concludes it,
+    /// which is what marks the held tail for trimming whichever route confirmed it (END17: the
+    /// teardown, a dwell, or an app quit). Anything else releases it, and the one that matters is
+    /// `.inMeeting`: a returning signal reverts the hold, and that revert is the whole reason for
+    /// holding.
+    private func resolveTeardownHold(for verdict: MeetingLifecycleVerdict) {
+        switch verdict {
+        case .endingProvisional:
+            break
+        case .ended:
+            concludeTeardownHold()
+        default:
+            releaseTeardownHold(rescued: verdict.isLive)
+            // A teardown confirm that lost the race to a revert never produced an `.ended`, so its
+            // trim point must not survive into this call's real end.
+            pendingEndTrimAt = nil
+        }
+    }
+
+    /// END20: a recording is running on an engine that has already ended. Logged, never acted on.
+    func noteRecordingOnTerminalEngine(bundleID: String, recordingBundleID: String?, reason: String) {
+        Log.event(category: "coordinator", action: "lifecycle_recording_on_terminal_engine", attributes: [
+            "bundle_id": bundleID,
+            "recording_bundle_id": recordingBundleID ?? "manual",
+            "reason": reason,
+        ])
     }
 
     func shutdownConsumers() {
@@ -279,7 +321,30 @@ final class MeetingSessionController: @unchecked Sendable {
 
     // MARK: - State transitions
 
+    /// The prompt's "Always for <app>": consent for good, then record. END20: guarded like its
+    /// siblings (`didChooseRecord`, `didChooseSkip`) on the prompt it answers still being up. It was
+    /// the one outcome without that guard, so a stale panel clicked while a recording ran called
+    /// `beginRecording`, whose `alreadyRecording` catch then went idle over a running recorder.
+    func chooseAlways(source: AppSource) {
+        guard case .prompting(let pending) = coordinator.stateMachine.current, pending == source else { return }
+        coordinator.consent.setAutoConsented(bundleID: source.bundleID, value: true)
+        Log.writeLine("daemon", "user always-consented (\(source.bundleID))")
+        Log.event(category: "coordinator", action: "user_consented_always", attributes: [
+            "bundle_id": source.bundleID,
+        ])
+        // Explicit "always": clear every suppression (cooldown + skip latch) so a
+        // stale skip/end can't block it (as with the manual hotkey path).
+        coordinator.stateMachine.clearSuppression(bundleID: source.bundleID)
+        beginRecording(source: source, summaryMode: .auto)
+    }
+
     func toggleManual() {
+        // END20: the toggle pressed while a start is coming up means stop, not a second start (which
+        // `beginRecording` would ignore anyway), so it cancels the start in flight.
+        if startLatch.cancel(by: "toggle") {
+            Log.writeLine("daemon", "toggle during a start in flight → cancelling the start")
+            return
+        }
         switch coordinator.stateMachine.current {
         case .idle:
             startManual(summaryMode: .auto, trigger: "manual")
@@ -351,9 +416,13 @@ final class MeetingSessionController: @unchecked Sendable {
     /// a panic-press when nothing runs is a logged no-op. The detector
     /// state is preserved, so a fresh `.started` only fires after a real end.
     func forceStop(reason: String) {
+        // END20: a Stop during a start's bring-up cancels the start, which then stops the fresh
+        // recording at commit. From `.idle` this used to do nothing at all.
+        let cancelledStart = startLatch.cancel(by: reason)
         Log.event(category: "coordinator", action: "force_stop", attributes: [
             "reason": reason,
             "state": DetectionStateMachine.label(coordinator.stateMachine.current),
+            "cancelled_start": cancelledStart,
         ])
         switch coordinator.stateMachine.current {
         case .recording(let file, let src, let mode):
@@ -473,9 +542,28 @@ final class MeetingSessionController: @unchecked Sendable {
         // thread), so the UI stays live while a wedged device is waited out.
         // Ignore a second Record/toggle press while one is in flight rather than
         // stacking another recorder.start().
-        guard !recordingStartInFlight else {
+        guard !startLatch.isInFlight else {
             Log.writeLine("daemon", "beginRecording ignored: a start is already in flight")
             return
+        }
+        // END20: never a second recording. Every caller already guards on its own state, except
+        // the ones that did not (`didChooseAlways` until END20); refusing here, before the build
+        // below bumps its id, keeps a stray start from detaching the live recording's AX attach,
+        // and from the catch's `setIdle` that used to strand a running recorder.
+        switch coordinator.stateMachine.current {
+        case .recording, .stopping:
+            Log.writeLine("daemon", "beginRecording ignored: already recording")
+            return
+        case .idle, .prompting, .suppressed:
+            break
+        }
+        let startOrigin: RecordingStartLatch.Origin
+        if resumedFrom != nil {
+            startOrigin = .resume
+        } else if case .idle = coordinator.stateMachine.current {
+            startOrigin = .idle
+        } else {
+            startOrigin = .prompt
         }
 
         // Mic is non-negotiable (no mic = silent recording, empty
@@ -557,21 +645,22 @@ final class MeetingSessionController: @unchecked Sendable {
         // Committed to starting: guard re-entry until this start resolves. The
         // recorder bounds the engine bring-up off the main thread, so the await
         // below never blocks the UI; the post-start wiring runs back on main.
-        recordingStartInFlight = true
-        endObservedDuringStart = nil  // REC7: a fresh latch per start (never a stale end from a prior failed start)
+        startLatch.begin(origin: startOrigin, bundleID: source?.bundleID)
         // PERF15: the start's one AX build, on `axWalkQueue` and overlapping the engine bring-up.
         // It replaces three: MicGate's (synchronous on main), the explicit-start lifecycle engage's
         // (also on main) and the Leave-button arm's (off main, its mute walks discarded).
         let recordStartBuild = source.map { beginRecordStartBuild(for: $0) }
         Task { @MainActor [weak self] in
             guard let self = self else { return }
-            defer { self.recordingStartInFlight = false }
             do {
                 let file = try await self.coordinator.audioRecorder.start(
                     outputDir: self.coordinator.liveOutputDir,
                     captureMode: captureMode,
                     voiceProcessing: self.coordinator.liveVoiceProcessing
                 )
+                // END20: read what happened during the bring-up before anything commits. No await
+                // from here to `setRecording`, so no verdict or Stop can interleave.
+                let startOutcome = self.startLatch.resolve()
                 self.activeWorkflow = resolvedWorkflow
                 self.activeCaptureMode = captureMode
                 self.activeResumedFrom = resumedFrom
@@ -588,6 +677,40 @@ final class MeetingSessionController: @unchecked Sendable {
                 // `handleMicBusyBundle` stops this recording when its app releases the mic. Reading
                 // it here would race a concurrent handleMeetingStarted during the start.
                 self.micTierRecordingBundle = isMicTierRecording ? source?.bundleID : nil
+                // END20 (REC7 for every origin): an end of this meeting, or a Stop, that landed
+                // during the bring-up stops the fresh recording here, before it is ever committed,
+                // so no HUD or started notification flashes for it. The short capture is still
+                // finalized and enqueued through the normal stop path; nothing is discarded.
+                if startOutcome != .commit {
+                    self.cancelRecordStartBuild()
+                    switch startOutcome {
+                    case .endedDuringStart(let endReason):
+                        Log.event(category: "coordinator", action: "recording_ended_during_start", attributes: [
+                            "file": file.lastPathComponent,
+                            "leading_signal": endReason.leadingSignal,
+                            "origin": startOrigin.rawValue,
+                        ])
+                    case .cancelled(let by):
+                        Log.event(category: "coordinator", action: "recording_cancelled_during_start", attributes: [
+                            "file": file.lastPathComponent,
+                            "origin": startOrigin.rawValue,
+                            "cancelled_by": by,
+                        ])
+                    case .commit:
+                        break
+                    }
+                    self.stopRecording(file: file, source: source, summaryMode: summaryMode, committed: false)
+                    return
+                }
+                // END20: a prompt raised behind this start (a `.starting` that slipped in during an
+                // idle-origin bring-up) would otherwise outlive the commit.
+                switch self.coordinator.stateMachine.current {
+                case .prompting, .suppressed:
+                    self.coordinator.stateMachine.cancelPromptTimeout()
+                    self.coordinator.prompt.dismiss()
+                default:
+                    break
+                }
                 self.coordinator.stateMachine.setRecording(file: file, source: source, summaryMode: summaryMode)
                 self.coordinator.statusUI.setRecording(file: file, source: source, summaryMode: summaryMode, workflow: resolvedWorkflow)
                 self.coordinator.hud.present(
@@ -629,21 +752,20 @@ final class MeetingSessionController: @unchecked Sendable {
                 // engine reaches `.starting` only after this, once its build lands; the
                 // lifecycle consumer promotes that one (`confirmLateStartIfRecording`).
                 self.coordinator.lifecycleCoord.confirmRecording()
-                // REC7: a confirmed `.ended` that landed during the async start above
-                // was latched (it could not act while the state was still `.prompting`).
-                // Honor it now, on the same MainActor run as `setRecording` (no await
-                // between, so no verdict can interleave): stop the fresh recording so
-                // its short capture is finalized and enqueued via the normal path,
-                // instead of running against a dead meeting until the idle backstop.
-                if let endReason = self.endObservedDuringStart {
-                    self.endObservedDuringStart = nil
-                    Log.event(category: "coordinator", action: "recording_ended_during_start", attributes: [
-                        "file": file.lastPathComponent,
-                        "leading_signal": endReason.leadingSignal,
-                    ])
-                    self.stopRecording(file: file, source: source, summaryMode: summaryMode)
-                }
             } catch {
+                self.startLatch.clear()
+                // END20: a start refused because a recording is already running must not touch
+                // that recording's state. The old path went `setIdle` here with the recorder still
+                // running, and every stop path keys on `.recording`, so nothing could stop it.
+                if case MeetingRecorder.RecorderError.alreadyRecording = error {
+                    Log.event(category: "coordinator", action: "recording_error", attributes: [
+                        "stage": "start",
+                        "reason": "already_recording",
+                        "bundle_id": source?.bundleID ?? "manual",
+                        "cooldown_armed": false,
+                    ])
+                    return
+                }
                 // MIC11 / AUD: a failed start must fail *bounded*, not silently churn
                 // the audio stack. The 2026-06-09 storm was an engine-start that
                 // returned to .idle with no backoff, so the detector's next discovery
@@ -652,7 +774,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 // on (a renegotiating Bluetooth headset) backs off for repromptCooldownSec
                 // before it can re-prompt, and emit a structured event so `mp logs` /
                 // `mp analyze-detection` can see failed starts (the catch was os_log-only).
-                // Manual recordings have no bundle to cool down; `recordingStartInFlight`
+                // Manual recordings have no bundle to cool down; `startLatch`
                 // already bounds re-clicks there.
                 let reason = MeetingSessionController.startFailureReason(error)
                 self.cancelRecordStartBuild()  // PERF15: nothing to attach it to
@@ -720,7 +842,11 @@ final class MeetingSessionController: @unchecked Sendable {
         return .none
     }
 
-    func stopRecording(file: URL, source: AppSource?, summaryMode: SummaryMode) {
+    /// `committed` is false only for END20's start that an end or a Stop overtook during its
+    /// bring-up: it is finalized and enqueued like any recording, but the coverage warnings below
+    /// (no remote audio, short, silent mic) say nothing true about a capture a second long that
+    /// nobody asked for.
+    func stopRecording(file: URL, source: AppSource?, summaryMode: SummaryMode, committed: Bool = true) {
         micTierRecordingBundle = nil // DET1: this recording is ending; drop its mic-release tag
         // END13 item 5: hand the just-stopped source to the candidate slot at the instant of the
         // stop, so a Record pressed straight afterwards attaches to it instead of recording
@@ -820,10 +946,10 @@ final class MeetingSessionController: @unchecked Sendable {
                 // mic-only (Screen Recording denied; the notifier shows "Open Settings" only
                 // when a perm change helps). A mid-meeting SCStream death (frames > 0 but
                 // degraded) is a partial loss the old `== 0` gate never caught (REC4 / AUD-13).
-                switch MeetingSessionController.remoteAudioWarning(
+                switch committed ? MeetingSessionController.remoteAudioWarning(
                     systemFires: recorder.lastSystemFires,
                     degraded: recorder.lastSystemDegraded
-                ) {
+                ) : .none {
                 case .micOnly:
                     let perm = SystemAudioCapture.permissionState
                     self.coordinator.notifications.notifyMicOnlyRecording(file: file, permissionState: perm)
@@ -840,7 +966,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 // which CHANNEL is missing; this one fires when the file itself is short,
                 // whatever the cause, and it is the surface the 2026-07-15 truncation
                 // never had.
-                if let parity = recorder.lastDurationParity, parity.isShort {
+                if committed, let parity = recorder.lastDurationParity, parity.isShort {
                     self.coordinator.notifications.notifyShortRecording(
                         file: file, audioSec: parity.audioSec, wallclockSec: parity.wallclockSec
                     )
@@ -857,7 +983,7 @@ final class MeetingSessionController: @unchecked Sendable {
                     unmutedSeconds: coverage.unmutedSeconds,
                     peakUnmutedRmsDb: coverage.peakUnmutedRmsDb
                 )
-                if micWarning == .micRecordedNothing {
+                if committed, micWarning == .micRecordedNothing {
                     self.coordinator.notifications.notifyMicRecordedNothing(file: file)
                     Log.event(category: "recorder", action: "mic_recorded_nothing", attributes: [
                         "file": file.lastPathComponent,
@@ -1105,6 +1231,10 @@ final class MeetingSessionController: @unchecked Sendable {
         let isMicTier = micTierPromptSource
         micTierPromptSource = false
         guard coordinator.stateMachine.isAcceptingPrompts else { return }
+        // END20: an idle-origin start leaves the state `.idle` for its whole bring-up, so a
+        // `.starting` landing then would raise a prompt for the meeting being started (or a
+        // second one) that outlives the commit.
+        guard !startLatch.isInFlight else { return }
 
         // END17 item 5: the same app's call is back inside the window after an end, so the end was
         // probably wrong. Resume without a prompt, under the workflow and mode the stopped
@@ -1216,6 +1346,18 @@ final class MeetingSessionController: @unchecked Sendable {
         // candidate straight back, which is what keeps this clear of DET13's false-end rescue.
         coordinator.stateMachine.noteMeetingEnded(bundleID: bundleID)
 
+        // END20: a start in flight owns the end, whatever the state machine reads. REC7 latched only
+        // under `.prompting`, so an end during an idle-origin start (the resume, auto-consent, the
+        // hotkey) fell to `default` and was dropped, and the start committed onto a dead meeting.
+        // Only the start's own app's end is latched; a foreign one, or any end while a source-less
+        // start comes up, is dropped rather than dismissing a prompt the start is answering.
+        switch startLatch.noteEnd(bundleID: bundleID, reason: reason) {
+        case .latched, .ignored:
+            return
+        case .notInFlight:
+            break
+        }
+
         switch coordinator.stateMachine.current {
         case .recording(let file, let src, let mode):
             // END11 item 4: an end belongs to the recording it names. A stale adapter for a
@@ -1262,14 +1404,7 @@ final class MeetingSessionController: @unchecked Sendable {
             // for every end since. ARCH6 removed it; the guard that actually holds is
             // START1's, in Core. See `daemon/docs/gotchas.md`.
             //
-            // REC7: if a start is in flight (the user just answered Record and the recorder
-            // is coming up), the state machine is still `.prompting` until the start commits
-            // `.recording`. A confirmed end here would be swallowed by that commit, so latch
-            // it and let the start path stop the fresh recording at once.
-            if recordingStartInFlight {
-                endObservedDuringStart = reason
-                return
-            }
+            // REC7's latch for a start in flight from here moved above the switch (END20).
             handleMeetingEndedDuringPrompt()
         default:
             break
@@ -1669,6 +1804,9 @@ final class MeetingSessionController: @unchecked Sendable {
                 "has_handles": handles != nil,
             ])
             engageLifecycle(source: source, handles: handles)
+            if handles == nil {
+                noteRecordingOnTerminalEngine(bundleID: source.bundleID, recordingBundleID: source.bundleID, reason: "no_handles")
+            }
             return
         }
         guard !coordinator.lifecycleCoord.isEngaged else {
@@ -1962,6 +2100,37 @@ final class MeetingSessionController: @unchecked Sendable {
         // landing must not engage; the next discovery requests a fresh one.
         lifecycleBuild = nil
         coordinator.lifecycleCoord.disengage()
+    }
+
+    /// END20 (D075): `resolve`, or a title-less source once `deadline` passes, whichever is first.
+    /// The deadline is a Dispatch timer, never `Task.sleep`: a bound built from tasks starves with
+    /// the cooperative pool (CI8), and the read it bounds is the one that might be wedged. A read
+    /// that lands late is dropped.
+    static func resolveAppSource(
+        from context: MeetingLifecycleContext,
+        within deadline: TimeInterval,
+        using resolve: @escaping @Sendable (MeetingLifecycleContext) async -> AppSource
+    ) async -> AppSource {
+        await withCheckedContinuation { (continuation: CheckedContinuation<AppSource, Never>) in
+            let pending = OSAllocatedUnfairLock<CheckedContinuation<AppSource, Never>?>(initialState: continuation)
+            @Sendable func finish(_ source: AppSource) -> Bool {
+                let waiting = pending.withLock { state -> CheckedContinuation<AppSource, Never>? in
+                    defer { state = nil }
+                    return state
+                }
+                waiting?.resume(returning: source)
+                return waiting != nil
+            }
+            Task { _ = finish(await resolve(context)) }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + deadline) {
+                if finish(appSource(from: context, title: nil)) {
+                    Log.event(category: "coordinator", action: "prompt_title_deadline_passed", attributes: [
+                        "bundle_id": context.bundleID,
+                        "deadline_sec": deadline,
+                    ])
+                }
+            }
+        }
     }
 
     /// PERF15: `appSource(from:)` on `axWalkQueue`, awaited by the lifecycle consumer. GCD rather

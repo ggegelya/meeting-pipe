@@ -896,6 +896,8 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         await settle()
         XCTAssertEqual(host.hudSpy.flagCount, 2)
 
+        // END20: `beginRecording` refuses while a recording is running, so the first one is over.
+        host.stateMachine.setIdle()
         controller.beginRecording(source: source(), summaryMode: .auto)
         await waitUntil({ host.hudSpy.flagResetCount > 0 }, "the next recording to reset the flag count")
 

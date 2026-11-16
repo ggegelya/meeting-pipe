@@ -36,15 +36,8 @@ extension Coordinator: NotifierDelegate {
     }
 
     func notifier(_ notifier: Notifier, didChooseAlways source: AppSource) {
-        consent.setAutoConsented(bundleID: source.bundleID, value: true)
-        Log.writeLine("daemon", "user always-consented (\(source.bundleID))")
-        Log.event(category: "coordinator", action: "user_consented_always", attributes: [
-            "bundle_id": source.bundleID,
-        ])
-        // Explicit "always": clear every suppression (cooldown + skip latch) so a
-        // stale skip/end can't block it (as with the manual hotkey path).
-        stateMachine.clearSuppression(bundleID: source.bundleID)
-        session.beginRecording(source: source, summaryMode: .auto)
+        // END20: the body lives on the session, guarded like Record and Skip, so it is testable.
+        session.chooseAlways(source: source)
     }
 
     func notifier(_ notifier: Notifier, didOpenPage url: URL) {

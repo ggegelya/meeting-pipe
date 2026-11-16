@@ -158,7 +158,14 @@ final class SpyRecorder: SessionRecording {
         /// Parks until `releaseHang()`, so a test can observe the in-flight guard. A test that
         /// uses it must release it, and wait for the start to resolve, before it returns.
         case hang
+        /// END20: parks until `releasePark()`, then succeeds (or throws `parkFailure`), so a test
+        /// can land an end or a Stop during the bring-up of a start that does come up.
+        case park
     }
+
+    var parkFailure: Error?
+    private let parkReleased = OSAllocatedUnfairLockBox<Bool>(false)
+    func releasePark() { parkReleased.value = true }
 
     var startBehaviour: StartBehaviour = .succeed
     private let hangReleased = OSAllocatedUnfairLockBox<Bool>(false)
@@ -215,6 +222,13 @@ final class SpyRecorder: SessionRecording {
                 try? await Task.sleep(nanoseconds: 1_000_000)
             }
             throw CancellationError()
+        case .park:
+            while !parkReleased.value {
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+            if let parkFailure { throw parkFailure }
+            startedAt = Date()
+            return fileToReturn
         }
     }
 
