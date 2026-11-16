@@ -2,10 +2,9 @@
 id: PERF12
 title: Playing a meeting's audio re-renders the whole detail pane 15 times a second
 category: Performance
-status: done
-closed: 2026-11-16
+status: partial
 priority: P2
-comment: Shipped 2026-11-16 - PlaybackClock observable owned by the controller; only PlaybackBar, the header transport row, the Audio tab timecode and play head, and invisible clock observers for the transcript highlighter and waveform watch it. One test (30 moves fire the clock 30 times, the controller 0); ci-local green. Not done - the marker-map cache in the transcript list (it now runs per active-row change, not per tick). Owner check (confirms) - sample MeetingPipe 10 while audio plays on Transcript shows no MeetingDetailView.body per tick.
+comment: Shipped 2026-11-16 - PlaybackClock observable owned by the controller; only PlaybackBar, the header transport row, the Audio tab timecode and play head, and invisible clock observers for the transcript highlighter and waveform watch it. One test (30 moves fire the clock 30 times, the controller 0); ci-local green. Remainder - Owner approval to close, the owner sample check (sample MeetingPipe 10 while audio plays on Transcript shows no MeetingDetailView.body per tick), and the marker-map cache in the transcript list, which still runs per active-row change.
 ---
 
 # PERF12: playing a meeting's audio re-renders the whole detail pane 15 times a second

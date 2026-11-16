@@ -2,10 +2,9 @@
 id: PERF30
 title: Library search waits 200 ms plus an index lookup even for title, app and summary matches that need no index
 category: Performance
-status: done
-closed: 2026-11-16
+status: partial
 priority: P2
-comment: Shipped 2026-11-16 - LibrarySearchState.ftsMatches (pure) plus recomputeDerived now derives from the typed text, with FTS rows merged only when settled for exactly that text; 2 new MeetingFilterTests, FTSLookup and Quick Find tests unchanged; ci-local green. Debounce left at 0.2 s. Owner check (confirms) - type a title word fast in a large library and watch the list narrow per key.
+comment: Shipped 2026-11-16 - LibrarySearchState.ftsMatches (pure) plus recomputeDerived now derives from the typed text, with FTS rows merged only when settled for exactly that text; 2 new MeetingFilterTests, FTSLookup and Quick Find tests unchanged; ci-local green. Debounce left at 0.2 s. Remainder - Owner approval to close and the owner check (type a title word fast in a large library, the list narrows per key). Debounce left at 0.2 s.
 ---
 
 # PERF30: Library search waits 200 ms plus an index lookup even for title, app and summary matches that need no index

@@ -57,6 +57,7 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
     private let queue = DispatchQueue(label: "meetingpipe.stall-watchdog", qos: .utility)
     private var timer: DispatchSourceTimer?
     private let interval: TimeInterval
+    private let thresholdMs: Double
     private let context: @Sendable () -> [String: Any]
     private let emit: @Sendable (_ attributes: [String: Any]) -> Void
 
@@ -69,12 +70,14 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
     /// `context` runs on main (cheap reads only). `emit` defaults to the `perf` event.
     init(
         interval: TimeInterval = 0.25,
+        thresholdMs: Double = StallDetector.logThresholdMs,
         context: @escaping @Sendable () -> [String: Any] = { [:] },
         emit: @escaping @Sendable ([String: Any]) -> Void = { attrs in
             Log.event(category: "perf", action: "main_thread_stall", attributes: attrs)
         }
     ) {
         self.interval = interval
+        self.thresholdMs = thresholdMs
         self.context = context
         self.emit = emit
     }
@@ -116,7 +119,8 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
         snapshot = ctx
         switch StallDetector.decide(
             waitMs: waitMs, nowUptime: nowUptime,
-            lastEmitUptime: lastEmitUptime, suppressedSoFar: suppressed
+            lastEmitUptime: lastEmitUptime, suppressedSoFar: suppressed,
+            thresholdMs: thresholdMs
         ) {
         case .none:
             return

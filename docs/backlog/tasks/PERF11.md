@@ -4,7 +4,7 @@ title: A main-thread stall is invisible unless someone runs `sample` at the righ
 category: Performance
 status: partial
 priority: P2
-comment: Shipped 2026-11-16 (MainThreadStallWatchdog + pure StallDetector, perf/main_thread_stall at 100 ms, over_budget at 250 ms, 10 s rate limit with suppressed; 6 tests, ci-local green). Remainder - last_ui_seq and since_ui_action_ms wait on OBS7; owner check after install - scroll the Library and confirm mp logs shows main_thread_stall rows. No stack capture (optional).
+comment: Shipped 2026-11-16 (MainThreadStallWatchdog + pure StallDetector, perf/main_thread_stall at 100 ms, over_budget at 250 ms, 10 s rate limit with suppressed; 6 tests, ci-local green). Remainder - last_ui_seq and since_ui_action_ms wait on OBS7; owner check after install - scroll the Library and confirm mp logs shows main_thread_stall rows. No stack capture (optional). Note - the 4 Hz ping undercounts duration by up to 250 ms, so duration_ms is a lower bound and 100 to 250 ms stalls are often missed.
 ---
 
 # PERF11: a main-thread stall is invisible unless someone runs `sample` at the right moment, so "is it the app or the OS" cannot be answered from the logs

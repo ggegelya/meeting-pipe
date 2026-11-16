@@ -2,10 +2,9 @@
 id: PERF31
 title: Opening the Recent meetings submenu lists and mtime-sorts the whole recordings directory on the main thread
 category: Performance
-status: done
-closed: 2026-11-16
+status: partial
 priority: P2
-comment: Shipped 2026-11-16 - the status menu lists recent meetings on countQueue per open and at launch (MeetingLibraryService.recentCorrectableMeetings(in:), one mtime read per sidecar), the submenu fills from the cache and refills in place when the list changes; 5 new tests (4 StatusMenuReads, 1 service); ci-local green. Not done - folding the failed count and recent list into one listing (optional). Owner check (confirms) - hover Recent meetings in a large library, no hitch.
+comment: Shipped 2026-11-16 - the status menu lists recent meetings on countQueue per open and at launch (MeetingLibraryService.recentCorrectableMeetings(in:), one mtime read per sidecar), the submenu fills from the cache and refills in place when the list changes; 5 new tests (4 StatusMenuReads, 1 service); ci-local green. Remainder - Owner approval to close and the owner check (hover Recent meetings in a large library, no hitch). Folding the failed count and the recent list into one listing is optional and not done.
 ---
 
 # PERF31: Opening the Recent meetings submenu lists and mtime-sorts the whole recordings directory on the main thread
