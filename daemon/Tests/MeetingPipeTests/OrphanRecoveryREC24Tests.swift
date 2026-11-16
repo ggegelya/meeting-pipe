@@ -188,9 +188,10 @@ final class OrphanRecoveryREC24Tests: XCTestCase {
             encoding: .utf8
         )
         func count(_ needle: String) -> Int { source.components(separatedBy: needle).count - 1 }
-        let onDone = try XCTUnwrap(source.range(of: "onDone: { [weak self] stem, recordingsDir, pageURL in"))
-        let afterJob = try XCTUnwrap(source.range(of: "self.reapStorage(orphanSweep: .afterJob)"))
-        XCTAssertLessThan(onDone.lowerBound, afterJob.lowerBound, "the job-completion path asks for an after-job sweep")
+        // REC32: the request moved from `onDone` (successful full jobs only) to `onJobSettled`.
+        let settled = try XCTUnwrap(source.range(of: "onJobSettled: { [weak self] in"))
+        let afterJob = try XCTUnwrap(source.range(of: "self?.reapStorage(orphanSweep: .afterJob)"))
+        XCTAssertLessThan(settled.lowerBound, afterJob.lowerBound, "the job-completion path asks for an after-job sweep")
         XCTAssertEqual(count("reapStorage(orphanSweep: .afterJob)"), 1)
         XCTAssertEqual(count("reapStorage(orphanSweep: .launch)"), 1)
         XCTAssertEqual(count("orphanRecovery.request(orphanSweep)"), 1)
