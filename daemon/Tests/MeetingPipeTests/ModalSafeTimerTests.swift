@@ -129,9 +129,7 @@ final class ModalSafeTimerTests: XCTestCase {
     /// token is `scheduledTimer(` rather than `Timer.scheduledTimer(` so a spacing or a `Timer.self`
     /// spelling cannot walk around it.
     static let defaultModeTimers: [String: (count: Int, reason: String)] = [
-        "MeetingPipe/ConfigStore.swift": (1, "debounced save; firing after the alert closes is harmless (CONC8 is reshaping it)"),
-        "MeetingPipe/SecretsStore.swift": (1, "debounced save; firing after the alert closes is harmless (CONC8 is reshaping it)"),
-        "MeetingPipe/GlossaryStore.swift": (1, "debounced save; firing after the alert closes is harmless (CONC8 is reshaping it)"),
+        "MeetingPipe/DebouncedSaver.swift": (1, "the one debounced save; firing after the alert closes is harmless"),
         "MeetingPipe/StatusBarController.swift": (2, "the Suppressed and Downloaded labels; a late collapse is cosmetic, and touching the title while the menu is open is what default mode avoids"),
         "MeetingPipe/Coordination/SinkDispatcher.swift": (1, "startStallTracking is an elapsed-time check, so a late fire still reports the stall correctly"),
         "MeetingPipe/AudioPlaybackController.swift": (1, "already re-added with RunLoop.main.add(_, forMode: .common) on the next line"),

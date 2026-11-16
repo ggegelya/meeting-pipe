@@ -14,27 +14,41 @@ final class SecretsStoreTests: XCTestCase {
     /// Records every call so a test can say exactly what a save wrote. `unreadable` accounts read as a
     /// failed read; `failSet` accounts throw on set; `failRemove` ones throw on remove.
     private final class InMemorySecretsBackend: SecretsBackend {
-        private(set) var store: [String: String]
+        private let lock = NSLock()
+        private var _store: [String: String]
+        private var _sets: [String] = []
+        private var _removes: [String] = []
+        private var _callThreadsOnMain: [Bool] = []
         var unreadable: Set<String> = []
         var failSet: Set<String> = []
         var failRemove: Set<String> = []
-        private(set) var sets: [String] = []
-        private(set) var removes: [String] = []
-        init(_ initial: [String: String] = [:]) { self.store = initial }
+        /// Sleeps this long inside each `set`, standing in for a slow `security`.
+        var setDelay: TimeInterval = 0
+        var store: [String: String] { lock.lock(); defer { lock.unlock() }; return _store }
+        var sets: [String] { lock.lock(); defer { lock.unlock() }; return _sets }
+        var removes: [String] { lock.lock(); defer { lock.unlock() }; return _removes }
+        /// Whether each backend call (set or remove) ran on the main thread.
+        var callThreadsOnMain: [Bool] { lock.lock(); defer { lock.unlock() }; return _callThreadsOnMain }
+        init(_ initial: [String: String] = [:]) { self._store = initial }
         func value(for account: String) -> SecretRead {
             if unreadable.contains(account) { return .unreadable(status: 36, detail: "locked") }
             return store[account].map { .found($0) } ?? .notFound
         }
         func stored(_ account: String) -> String? { store[account] }
         func set(_ value: String, for account: String) throws {
-            sets.append(account)
+            if setDelay > 0 { Thread.sleep(forTimeInterval: setDelay) }
+            lock.lock(); defer { lock.unlock() }
+            _sets.append(account)
+            _callThreadsOnMain.append(Thread.isMainThread)
             if failSet.contains(account) { throw KeychainBackend.KeychainError.commandFailed("boom") }
-            store[account] = value
+            _store[account] = value
         }
         func remove(_ account: String) throws {
-            removes.append(account)
+            lock.lock(); defer { lock.unlock() }
+            _removes.append(account)
+            _callThreadsOnMain.append(Thread.isMainThread)
             if failRemove.contains(account) { throw KeychainBackend.KeychainError.commandFailed("boom") }
-            store.removeValue(forKey: account)
+            _store.removeValue(forKey: account)
         }
     }
 
@@ -331,6 +345,77 @@ final class SecretsStoreTests: XCTestCase {
         let backend = InMemorySecretsBackend()
         XCTAssertTrue(SecretsStore.migrateEnvFileIfPresent(at: url, backend: backend))
         XCTAssertEqual(backend.stored("OPENAI_API_KEY"), "sk-oai")
+    }
+
+    // MARK: - Off-main saves and save state (CONC8)
+
+    private func spin(until done: () -> Bool, timeout: TimeInterval = 5) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !done() && Date() < deadline { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01)) }
+    }
+
+    func test_a_slow_keychain_write_does_not_block_the_main_run_loop() {
+        let backend = InMemorySecretsBackend()
+        backend.setDelay = 0.5
+        let store = SecretsStore(backend: backend)
+        var persisted = false
+        var persistedOnMain = false
+        let cancellable = store.didPersist.sink { persistedOnMain = Thread.isMainThread; persisted = true }
+        store.notionToken = "ntn-slow"
+        // `saving` is set on main when the debounce fires, so the 500 ms `set` is now in flight.
+        spin(until: { store.saveStates["NOTION_TOKEN"] == .saving })
+        XCTAssertEqual(store.saveStates["NOTION_TOKEN"], .saving)
+        var mainRan = false
+        let posted = Date()
+        DispatchQueue.main.async { mainRan = true }
+        spin(until: { mainRan }, timeout: 1)
+        XCTAssertTrue(mainRan)
+        XCTAssertLessThan(Date().timeIntervalSince(posted), 0.1, "main was blocked behind the Keychain write")
+        spin(until: { persisted })
+        XCTAssertTrue(persisted)
+        XCTAssertTrue(persistedOnMain)
+        XCTAssertEqual(backend.callThreadsOnMain, [false], "every backend call must run off main")
+        cancellable.cancel()
+    }
+
+    func test_the_save_state_goes_saving_then_saved_and_then_clears() {
+        let backend = InMemorySecretsBackend()
+        backend.setDelay = 0.3
+        let store = SecretsStore(backend: backend)
+        store.notionToken = "ntn-x"
+        XCTAssertNil(store.saveStates["NOTION_TOKEN"], "nothing is saving before the debounce fires")
+        spin(until: { store.saveStates["NOTION_TOKEN"] == .saving })
+        XCTAssertEqual(store.saveStates["NOTION_TOKEN"], .saving)
+        XCTAssertNil(store.saveStates["ANTHROPIC_API_KEY"], "an account nobody edited stays quiet")
+        spin(until: { store.saveStates["NOTION_TOKEN"] == .saved })
+        XCTAssertEqual(store.saveStates["NOTION_TOKEN"], .saved)
+        spin(until: { store.saveStates["NOTION_TOKEN"] == nil }, timeout: 4)
+        XCTAssertNil(store.saveStates["NOTION_TOKEN"])
+    }
+
+    func test_a_failed_save_goes_saving_then_failed_without_didPersist_or_the_secret() {
+        let backend = InMemorySecretsBackend()
+        backend.failSet = ["NOTION_TOKEN"]
+        let store = SecretsStore(backend: backend)
+        var persisted = false
+        let cancellable = store.didPersist.sink { persisted = true }
+        store.notionToken = "ntn-SECRETVALUE"
+        spin(until: { if case .failed = store.saveStates["NOTION_TOKEN"] { return true } else { return false } })
+        guard case .failed(let message)? = store.saveStates["NOTION_TOKEN"] else { return XCTFail("expected failed, got \(String(describing: store.saveStates["NOTION_TOKEN"]))") }
+        XCTAssertFalse(message.contains("SECRETVALUE"))
+        XCTAssertFalse(persisted)
+        XCTAssertEqual(store.saveErrors["NOTION_TOKEN"], message)
+        cancellable.cancel()
+    }
+
+    func test_typing_a_character_and_deleting_it_spawns_nothing() {
+        let backend = InMemorySecretsBackend(["NOTION_TOKEN": "ntn-b"])
+        let store = SecretsStore(backend: backend)
+        store.notionToken = "ntn-bX"
+        store.notionToken = "ntn-b"
+        RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.8))
+        XCTAssertTrue(backend.sets.isEmpty)
+        XCTAssertTrue(store.saveStates.isEmpty)
     }
 
     // MARK: - parse

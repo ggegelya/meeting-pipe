@@ -40,7 +40,7 @@ The replayed first value is a correctness problem as well as a cost one when the
 
 ### ObservableObject and @Published debounce writes
 
-**`ObservableObject` + `@Published` debounce writes.** `ConfigStore.scheduleSave` is the template: 500 ms `Timer.scheduledTimer`, gated on an `isInitialized` flag so the init's `didSet` storm doesn't trigger a spurious save.
+**`ObservableObject` + `@Published` debounce writes.** `DebouncedSaver` is the template (CONC8): the store's `didSet` calls `saver.schedule()`, gated on an `isInitialized` flag so the init's `didSet` storm doesn't trigger a spurious save. When the 500 ms timer fires, the store's `prepare` runs **on main** (mutate the published state, render the TOML or snapshot the tokens, return the work or `nil` to skip), the work runs on the saver's own serial utility queue, and the result reaches the store's `completion` on main. Never touch a store's tree or `@Published` values from the work: it renders an immutable string or reads a snapshot. `saveNow()` is `saver.performNow`, which waits behind any write in flight, so a debounced write and an Apply never share the `.writing` temp and the last render wins (the old `ConfigStore` converted `rawDocument` off main while `saveNow` mutated it, MAINTHREAD-13). `SecretsStore` reports `saveStates` (saving, saved, failed) per account back to the key fields, because a `security` call can park on a locked keychain and the owner otherwise never learns the key did not land.
 
 ### TOML round-trip preserves unknown keys
 

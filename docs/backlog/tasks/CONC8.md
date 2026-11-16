@@ -2,9 +2,9 @@
 id: CONC8
 title: The debounced-save template is copied three times, and the SecretsStore copy runs three blocking security subprocesses on the main thread per Preferences edit
 category: Concurrency
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (code-quality audit SW2, SW3): the 500 ms debounce is hand-copied into ConfigStore, GlossaryStore and SecretsStore and has diverged; SecretsStore persists inside its main-thread Timer, so each token edit runs 3 unbounded security round-trips on main. One DebouncedSaver that persists on a utility queue, each store keeps its policy; SEC23 owns what is written, CONC5 the ceiling. Amended 2026-10-25 (performance review): ConfigStore converts rawDocument on writeQueue while saveNow mutates it on main; render the TOML string on main and hand only that to the write (MAINTHREAD-13). [Spec](./CONC8.md) Amended 2026-11-13 by the audit band: the SecretsStore save must also report Saving, then Saved or Failed, back to the key fields, and the pipeline's load_secrets re-probes absent keys on every entry.prepare (P040, F208).
+comment: Shipped 2026-11-16 (ci-local green): DebouncedSaver owns the 500 ms debounce for ConfigStore, GlossaryStore and SecretsStore; the token save runs off main and reports Saving, Saved or Failed per account to the key fields; ConfigStore renders TOML on main; load_secrets caches absent keys per process. Awaiting the owner to close it.
 ---
 
 # CONC8: The debounced-save template is copied three times, and the SecretsStore copy runs three blocking security subprocesses on the main thread per Preferences edit
@@ -80,3 +80,5 @@ Added from the [2026-11-13 responsiveness audit](../../audits/2026-11-13-respons
 - `cd pipeline && uv run --extra dev pytest -q`, ruff and pyright green, plus the daemon gates already listed; new test counts in the commit body.
 
 Related and not filed separately: F053 and F076 in the independent audit cover the same Keychain-on-main ground and are folded into this task and SEC23.
+
+**Progress (2026-11-16):** shipped as specced, with these choices the spec left open. `DebouncedSaver.flush()` and `performNow` use `queue.sync`, which GCD may run on the calling thread, so an explicit save (an Apply button, `saveNow`, the Glossary editor's `.onDisappear`) still blocks main for the write; only the debounced path is off main. `SecretsStore` marks an account `saving` only when its value changed since the last snapshot, so a timer armed by a no-op edit (typing a character and deleting it) spawns no `security` call; `saved` clears itself after 2.5 s, `failed` stays until a later save succeeds. `Timer.scheduledTimer(withTimeInterval: 0.5` is now only in `DebouncedSaver.swift`, and `ModalSafeTimerTests.defaultModeTimers` lists that one site in place of the three stores. The pipeline fixture `_fresh_secret_probe_state` in `tests/conftest.py` clears the process-lifetime absent and unreadable maps between tests.

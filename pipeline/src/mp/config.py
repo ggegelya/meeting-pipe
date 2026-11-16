@@ -533,6 +533,10 @@ def _keychain_get(account: str, service: str = KEYCHAIN_SERVICE) -> str | None:
     return val or None
 
 
+_ABSENT_SECRETS: set[str] = set()
+"""Managed tokens the Keychain has no item for, remembered for the life of the process (CONC8, F208): a
+run reaches `entry.prepare` more than once, and each pass used to spawn a `security` per absent key."""
+
 _UNREADABLE_SECRETS: dict[str, "KeychainUnreadableError"] = {}
 """Managed tokens the last `load_secrets` could not read, by name (SEC23)."""
 
@@ -556,6 +560,8 @@ def load_secrets(reader=_keychain_get) -> None:
         if os.environ.get(key):
             _UNREADABLE_SECRETS.pop(key, None)
             continue
+        if key in _ABSENT_SECRETS:
+            continue
         try:
             val = reader(key)
         except KeychainUnreadableError as error:
@@ -567,6 +573,9 @@ def load_secrets(reader=_keychain_get) -> None:
         _UNREADABLE_SECRETS.pop(key, None)
         if val:
             os.environ[key] = val
+            _ABSENT_SECRETS.discard(key)
+        else:
+            _ABSENT_SECRETS.add(key)
 
 
 class MissingSecretError(Exception):

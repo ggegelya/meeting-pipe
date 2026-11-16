@@ -147,7 +147,7 @@ The `lazy var` form (`private lazy var icon = …`) avoids the error too but def
 ### `ObservableObject` + Combine
 
 - `@Published` properties auto-fire `objectWillChange`. Wire subscribers via Combine on `didPersist` / dedicated PassthroughSubjects rather than `objectWillChange` directly — fewer spurious rebuilds.
-- Debounce writes (see `ConfigStore.scheduleSave` — 500 ms via `Timer.scheduledTimer`).
+- Debounce writes through `DebouncedSaver` (CONC8): the store snapshots on main, the write runs on the saver's utility queue, the result comes back on main. `Timer.scheduledTimer(withTimeInterval: 0.5` appears only there.
 - Round-trip TOML through `TOMLTable` so unknown keys survive (`ConfigStore.rawDocument`). Don't model fields you don't need.
 
 ### Status bar / menu rebuilds

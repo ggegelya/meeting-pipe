@@ -9,6 +9,10 @@ import Foundation
 /// SEC23: a save writes only the accounts whose value changed (so typing in one field never republishes the
 /// other tokens), and an account whose read failed at launch is left alone until the user types a value into
 /// it: the empty field says "could not read", not "no token", and a save must not turn it into a remove.
+///
+/// CONC8: the save runs on a `DebouncedSaver`'s utility queue, never on main, because every Keychain call is a
+/// `security` subprocess that a locked keychain can park. The snapshot is taken on main; `saveStates` reports
+/// Saving, then Saved or Failed, back to the key fields.
 final class SecretsStore: ObservableObject {
     private let backend: SecretsBackend
 
@@ -19,15 +23,37 @@ final class SecretsStore: ObservableObject {
     /// when summarization.backend = openai (claude_cli needs no key at all).
     @Published var openaiAPIKey: String { didSet { scheduleSave() } }
 
-    /// Why the last save of an account failed (a token that cannot be stored, the Keychain refusing), keyed by
-    /// env-var name, for the Preferences field to show. An account is absent once a later save succeeds.
-    @Published private(set) var saveErrors: [String: String] = [:]
+    /// Where each account's save stands, keyed by env-var name; an account never edited is absent. Only an
+    /// edit sets `saving`; `saved` falls back to absent after a moment so the field's own state shows again.
+    enum SaveState: Equatable {
+        case saving
+        case saved
+        /// The error kind, never a value.
+        case failed(String)
+    }
+    @Published private(set) var saveStates: [String: SaveState] = [:]
 
-    /// Fired after a successful Keychain write.
+    /// Why the last save of an account failed (a token that cannot be stored, the Keychain refusing), keyed by
+    /// env-var name, for the Preferences field to show.
+    var saveErrors: [String: String] {
+        saveStates.compactMapValues { if case .failed(let message) = $0 { return message } else { return nil } }
+    }
+
+    /// Fired on main after a save in which every attempted account landed.
     let didPersist = PassthroughSubject<Void, Never>()
 
-    private var saveTimer: Timer?
     private var isInitialized = false
+
+    /// The debounced save (CONC8): snapshots on main, writes on its own utility queue.
+    private lazy var saver = DebouncedSaver(
+        queue: DebouncedSaver.makeQueue(label: "com.meetingpipe.secretsstore.write"),
+        prepare: { [weak self] in self?.prepareSave() },
+        completion: { [weak self] result in self?.finishSave(result) }
+    )
+
+    /// The values the last `prepareSave` snapshotted, main-confined: an account whose value differs from it
+    /// was edited since, which is what marks it `saving`.
+    private var lastSnapshot: [String: String] = [:]
 
     private static let anthropicAccount = "ANTHROPIC_API_KEY"
     private static let notionAccount = "NOTION_TOKEN"
@@ -35,6 +61,7 @@ final class SecretsStore: ObservableObject {
 
     /// What the Keychain holds per account as far as this store knows, trimmed. An account missing from the
     /// map is one whose read failed: it is never removed, and is written only once the field is non-empty.
+    /// Written by the save queue, so guarded by `snapshotLock` with `snapshotValues`.
     private var persisted: [String: String] = [:]
 
     /// The persisted (not merely typed) tokens, readable from any thread. This is where a pipeline spawn
@@ -69,6 +96,7 @@ final class SecretsStore: ObservableObject {
         self.notionToken = loaded[Self.notionAccount] ?? ""
         self.openaiAPIKey = loaded[Self.openaiAccount] ?? ""
         self.snapshotValues = persisted.filter { !$0.value.isEmpty }
+        self.lastSnapshot = Self.trimmedValues(loaded)
         self.isInitialized = true
     }
 
@@ -84,67 +112,119 @@ final class SecretsStore: ObservableObject {
     /// `persistedTokens` of the live store, or none before one exists.
     static func liveTokens() -> [String: String] { live?.persistedTokens ?? [:] }
 
-    /// Force an immediate save. Used by Apply buttons + tests. Cancels a pending debounced save, which
-    /// this one supersedes.
+    /// Force an immediate save and wait for it (tests, and any caller that must know). The Keychain calls
+    /// still run on the saver's queue, not on the calling thread; this blocks the caller until they finish.
     func saveNow() throws {
-        saveTimer?.invalidate()
-        saveTimer = nil
-        try persist()
+        markSaving()
+        do {
+            try saver.performNow(makeWork(snapshot: currentValues()))
+            finishSave(.success(()))
+        } catch {
+            finishSave(.failure(error))
+            throw (error as? SaveFailure)?.first ?? error
+        }
     }
 
     private func scheduleSave() {
         guard isInitialized else { return }
-        guard Thread.current.isMainThread else {
-            DispatchQueue.main.async { [weak self] in self?.scheduleSave() }
-            return
+        saver.schedule()
+    }
+
+    private func currentValues() -> [String: String] {
+        Self.trimmedValues([
+            Self.anthropicAccount: anthropicAPIKey,
+            Self.notionAccount: notionToken,
+            Self.openaiAccount: openaiAPIKey,
+        ])
+    }
+
+    private static func trimmedValues(_ raw: [String: String]) -> [String: String] {
+        raw.mapValues { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
+
+    /// Main: mark every account edited since the last snapshot as `saving`, and return those accounts.
+    @discardableResult
+    private func markSaving() -> Set<String> {
+        let now = currentValues()
+        let edited = Set(now.filter { lastSnapshot[$0.key] != $0.value }.keys)
+        lastSnapshot = now
+        for account in edited { saveStates[account] = .saving }
+        return edited
+    }
+
+    /// Main, when the debounce fires. Nothing edited and nothing failed means nothing to do, so no
+    /// subprocess is spawned for a timer that a no-op edit (typing a character and deleting it) armed.
+    private func prepareSave() -> DebouncedSaver.Work? {
+        guard isInitialized else { return nil }
+        let attempted = markSaving()
+        let retrying = saveStates.contains { if case .failed = $0.value { return true } else { return false } }
+        guard !attempted.isEmpty || retrying else { return nil }
+        return makeWork(snapshot: lastSnapshot)
+    }
+
+    /// The accounts whose save failed, with the first underlying error.
+    struct SaveFailure: Error {
+        let errors: [String: String]
+        let first: Error
+    }
+
+    /// Runs on the saver's queue. Writes or removes each account whose trimmed value differs from what the
+    /// Keychain holds; one account failing does not stop the others. Throws `SaveFailure` naming the failed
+    /// accounts, or nothing when every difference landed.
+    private func makeWork(snapshot: [String: String]) -> DebouncedSaver.Work {
+        return { [self] in
+            var errors: [String: String] = [:]
+            var firstError: Error?
+            for account in Self.accounts {
+                do {
+                    try write(snapshot[account] ?? "", to: account)
+                } catch {
+                    Log.main.error("SecretsStore: writing \(account) failed: \(String(describing: error))")
+                    errors[account] = error.localizedDescription
+                    firstError = firstError ?? error
+                }
+            }
+            if let firstError { throw SaveFailure(errors: errors, first: firstError) }
         }
-        saveTimer?.invalidate()
-        saveTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
-            guard let self = self else { return }
-            do {
-                try self.persist()
-                self.didPersist.send()
-            } catch {
-                Log.main.error("SecretsStore persist failed: \(String(describing: error))")
+    }
+
+    /// Main: settle `saving` accounts from the save's outcome.
+    private func finishSave(_ result: Result<Void, Error>) {
+        var failed: [String: String] = [:]
+        if case .failure(let error) = result {
+            failed = (error as? SaveFailure)?.errors ?? Dictionary(uniqueKeysWithValues: Self.accounts.map { ($0, error.localizedDescription) })
+        }
+        var settledSaved: [String] = []
+        for account in Self.accounts {
+            if let message = failed[account] {
+                saveStates[account] = .failed(message)
+            } else if let state = saveStates[account], state != .saved {
+                saveStates[account] = .saved
+                settledSaved.append(account)
+            }
+        }
+        if failed.isEmpty { didPersist.send() }
+        if !settledSaved.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                for account in settledSaved where self?.saveStates[account] == .saved { self?.saveStates[account] = nil }
             }
         }
     }
 
-    /// Write or remove each account whose trimmed value differs from what the Keychain holds. One account
-    /// failing does not stop the others; the first failure is thrown once all have been tried.
-    private func persist() throws {
-        var firstError: Error?
-        for (account, value) in [
-            (Self.anthropicAccount, anthropicAPIKey),
-            (Self.notionAccount, notionToken),
-            (Self.openaiAccount, openaiAPIKey),
-        ] {
-            do {
-                try write(value, to: account)
-                if saveErrors[account] != nil { saveErrors[account] = nil }
-            } catch {
-                saveErrors[account] = error.localizedDescription
-                Log.main.error("SecretsStore: writing \(account) failed: \(String(describing: error))")
-                firstError = firstError ?? error
-            }
-        }
-        if let firstError { throw firstError }
-    }
-
-    private func write(_ value: String, to account: String) throws {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func write(_ trimmed: String, to account: String) throws {
+        snapshotLock.lock()
         let known = persisted[account]
+        snapshotLock.unlock()
         if trimmed.isEmpty {
             // Nothing stored, or unknown (the read failed): nothing to remove.
             guard let known, !known.isEmpty else { return }
             try backend.remove(account)
-            persisted[account] = ""
         } else {
             guard trimmed != known else { return }
             try backend.set(trimmed, for: account)
-            persisted[account] = trimmed
         }
         snapshotLock.lock()
+        persisted[account] = trimmed
         snapshotValues[account] = trimmed.isEmpty ? nil : trimmed
         snapshotLock.unlock()
     }

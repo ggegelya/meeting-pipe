@@ -51,7 +51,7 @@ final class GlossaryStore: ObservableObject {
     }
 
     private let fileURL: URL
-    private let writeQueue = DispatchQueue(label: "com.meetingpipe.glossarystore.write", qos: .utility)
+    private let writeQueue = DebouncedSaver.makeQueue(label: "com.meetingpipe.glossarystore.write")
 
     /// Read once at load, mutated in place and re-serialized on persist; that is how
     /// `[fuzzy].max_distance`, a per-workflow table for a workflow the editor is not
@@ -82,7 +82,20 @@ final class GlossaryStore: ObservableObject {
     /// the user typed and the pipeline never sees is the whole bug this task fixes.
     @Published private(set) var saveError: String?
 
-    private var saveTimer: Timer?
+    /// The debounced save (CONC8): snapshots on main, writes on `writeQueue`.
+    private lazy var saver = DebouncedSaver(
+        queue: writeQueue,
+        prepare: { [weak self] in self?.prepareSave() },
+        completion: { [weak self] result in
+            switch result {
+            case .success:
+                self?.saveError = nil
+            case .failure(let error):
+                Log.main.error("GlossaryStore persist failed: \(String(describing: error))")
+                self?.saveError = error.localizedDescription
+            }
+        }
+    )
 
     /// Gates `scheduleSave` until init finishes, so the `didSet` storm from assigning
     /// the loaded values does not immediately rewrite the file (the `ConfigStore` idiom).
@@ -225,10 +238,12 @@ final class GlossaryStore: ObservableObject {
 
     // MARK: - Persistence
 
-    /// Force an immediate save (used by tests and by the editor's explicit actions).
+    /// Force an immediate save (used by tests and by the editor's explicit actions). Written through the
+    /// saver's queue, behind any debounced write already in flight.
     func saveNow() throws {
         writeBack()
-        try persistToDisk()
+        let toml = currentTOML()
+        try saver.performNow { try self.writeToDisk(toml) }
     }
 
     /// Write pending edits out now, recording a failure instead of throwing. The editor
@@ -236,38 +251,20 @@ final class GlossaryStore: ObservableObject {
     /// closed Preferences window can outlive by less than that, and a dropped last
     /// keystroke here is a term the pipeline silently never applies.
     func flush() {
-        saveTimer?.invalidate()
-        saveTimer = nil
-        do {
-            try saveNow()
-            saveError = nil
-        } catch {
-            Log.main.error("GlossaryStore flush failed: \(String(describing: error))")
-            saveError = error.localizedDescription
-        }
+        saver.flush()
     }
 
     private func scheduleSave() {
         guard isInitialized else { return }
-        guard Thread.current.isMainThread else {
-            DispatchQueue.main.async { [weak self] in self?.scheduleSave() }
-            return
-        }
-        saveTimer?.invalidate()
-        saveTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
-            guard let self = self else { return }
-            self.writeBack()
-            self.writeQueue.async {
-                do {
-                    try self.persistToDisk()
-                    DispatchQueue.main.async { self.saveError = nil }
-                } catch {
-                    Log.main.error("GlossaryStore persist failed: \(String(describing: error))")
-                    let message = error.localizedDescription
-                    DispatchQueue.main.async { self.saveError = message }
-                }
-            }
-        }
+        saver.schedule()
+    }
+
+    /// On main when the debounce fires: mutate the tree and render it here, so the queue only sees a string.
+    private func prepareSave() -> DebouncedSaver.Work? {
+        guard isInitialized else { return nil }
+        writeBack()
+        let toml = currentTOML()
+        return { [self] in try writeToDisk(toml) }
     }
 
     /// Mutate `rawDocument` to reflect the current rows. Visible to tests so they can
@@ -321,8 +318,8 @@ final class GlossaryStore: ObservableObject {
         return order.compactMap { byFold[$0] }
     }
 
-    private func persistToDisk() throws {
-        let toml = rawDocument.convert(to: .toml, options: GlossaryStore.renderOptions)
+    /// Replace `fileURL` with `toml` atomically. Runs on `writeQueue`.
+    func writeToDisk(_ toml: String) throws {
         try FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -347,7 +344,7 @@ final class GlossaryStore: ObservableObject {
         .indentations,
     ]
 
-    /// Render the document as TOML; mirrors `persistToDisk` so tests see the on-disk
+    /// Render the document as TOML; mirrors the disk write so tests see the on-disk
     /// output. Visible to tests.
     func currentTOML() -> String {
         rawDocument.convert(to: .toml, options: GlossaryStore.renderOptions)

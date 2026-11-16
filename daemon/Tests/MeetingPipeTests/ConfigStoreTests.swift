@@ -665,4 +665,35 @@ final class ConfigStoreTests: XCTestCase {
         store.reloadIfUnparsed()
         XCTAssertEqual(store.manualHotkey, "ctrl+option+k")
     }
+
+    // MARK: - CONC8: the write half takes a string, and the two writers are ordered
+
+    func test_the_write_half_writes_exactly_the_string_it_is_given() throws {
+        let url = try makeTempConfigURL()
+        let store = ConfigStore(configURL: url)
+        try store.writeToDisk("[recording]\noutput_dir = \"/tmp/exact\"\n")
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "[recording]\noutput_dir = \"/tmp/exact\"\n")
+    }
+
+    func test_a_debounced_save_a_later_mutation_and_saveNow_leave_the_saveNow_state_and_no_temp_file() throws {
+        let url = try makeTempConfigURL()
+        let queue = DispatchQueue(label: "test.config.write")
+        let store = ConfigStore(configURL: url, writeQueue: queue)
+
+        // Hold the write queue so the debounced write cannot start.
+        let release = DispatchSemaphore(value: 0)
+        queue.async { release.wait() }
+
+        store.manualHotkey = "cmd+shift+a"
+        // Let the 500 ms debounce fire: it renders on main and queues the write behind the held queue.
+        RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.8))
+        store.manualHotkey = "cmd+shift+b"
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { release.signal() }
+        try store.saveNow()
+
+        let onDisk = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(onDisk.contains("cmd+shift+b"), onDisk)
+        XCTAssertFalse(onDisk.contains("cmd+shift+a"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.appendingPathExtension("writing").path))
+    }
 }

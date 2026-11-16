@@ -38,11 +38,7 @@ struct IntegrationsSectionView: View {
                     }
                 }
                 SettingsRow("Status") {
-                    if !secrets.anthropicAPIKey.isEmpty {
-                        SettingsStatusPill(tone: .granted, icon: "checkmark.circle.fill", text: "Configured")
-                    } else {
-                        SettingsStatusPill(tone: .needed, icon: "exclamationmark.triangle.fill", text: "Not configured")
-                    }
+                    keyStatus("ANTHROPIC_API_KEY", configured: !secrets.anthropicAPIKey.isEmpty)
                 }
             } footer: {
                 Text("Used to summarize transcripts. Get a key at console.anthropic.com. Local MLX backend doesn't need this.")
@@ -56,11 +52,7 @@ struct IntegrationsSectionView: View {
                     }
                 }
                 SettingsRow("Status") {
-                    if !secrets.openaiAPIKey.isEmpty {
-                        SettingsStatusPill(tone: .granted, icon: "checkmark.circle.fill", text: "Configured")
-                    } else {
-                        SettingsStatusPill(tone: .needed, icon: "exclamationmark.triangle.fill", text: "Not configured")
-                    }
+                    keyStatus("OPENAI_API_KEY", configured: !secrets.openaiAPIKey.isEmpty)
                 }
             } footer: {
                 Text("Only needed for the OpenAI summarization backend. Get a key at platform.openai.com. Anthropic, local, and Claude CLI backends don't need this.")
@@ -86,11 +78,7 @@ struct IntegrationsSectionView: View {
                     isOn: $store.notionIncludeFullTranscript
                 )
                 SettingsRow("Status") {
-                    if !secrets.notionToken.isEmpty && !store.notionDatabaseId.isEmpty {
-                        SettingsStatusPill(tone: .granted, icon: "checkmark.circle.fill", text: "Configured")
-                    } else {
-                        SettingsStatusPill(tone: .needed, icon: "exclamationmark.triangle.fill", text: "Not configured")
-                    }
+                    keyStatus("NOTION_TOKEN", configured: !secrets.notionToken.isEmpty && !store.notionDatabaseId.isEmpty)
                 }
             } footer: {
                 Text("Create the integration at notion.so/profile/integrations and share your Meetings database with it. Fetch pulls your databases to pick from; paste a database ID if it is not listed.")
@@ -120,6 +108,26 @@ struct IntegrationsSectionView: View {
     /// switch: a fail-closed filter is only trustworthy if the number it
     /// withholds is a number you can read, and it comes from `mp.visibility`,
     /// the same function the server enforces, rather than a Swift recount.
+    /// The status pill beside a key field (CONC8): Saving, Saved or Not saved while a save is in the air or
+    /// has just settled, otherwise Configured by the field's content. A failed save never reads Configured.
+    @ViewBuilder
+    private func keyStatus(_ account: String, configured: Bool) -> some View {
+        switch secrets.saveStates[account] {
+        case .saving?:
+            SettingsStatusPill(tone: .neutral, icon: "arrow.triangle.2.circlepath", text: "Saving…")
+        case .saved?:
+            SettingsStatusPill(tone: .granted, icon: "checkmark.circle.fill", text: "Saved to Keychain")
+        case .failed?:
+            SettingsStatusPill(tone: .denied, icon: "xmark.octagon.fill", text: "Not saved")
+        case nil:
+            if configured {
+                SettingsStatusPill(tone: .granted, icon: "checkmark.circle.fill", text: "Configured")
+            } else {
+                SettingsStatusPill(tone: .needed, icon: "exclamationmark.triangle.fill", text: "Not configured")
+            }
+        }
+    }
+
     /// Why this token could not be saved (SEC23), under its field, or nothing.
     @ViewBuilder
     private func secretSaveError(_ account: String) -> some View {

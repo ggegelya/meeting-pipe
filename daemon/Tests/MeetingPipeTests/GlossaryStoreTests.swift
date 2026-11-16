@@ -184,6 +184,16 @@ final class GlossaryStoreTests: XCTestCase {
         )
     }
 
+    func test_flush_has_the_pending_edit_on_disk_before_it_returns() throws {
+        let url = try makeTempURL()
+        let store = GlossaryStore(fileURL: url)
+        store.globalTerms = [GlossaryTerm(heard: "acme", canonical: "ACME")]
+        // The 500 ms debounce has not fired; flush is what the editor's .onDisappear calls.
+        store.flush()
+        XCTAssertEqual(GlossaryStore.resolvedTerms(at: url, workflowName: nil), ["acme": "ACME"])
+        XCTAssertNil(store.saveError)
+    }
+
     func test_selecting_a_workflow_loads_its_existing_terms() throws {
         let url = try makeTempURL()
         try write("""

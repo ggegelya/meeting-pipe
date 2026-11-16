@@ -32,7 +32,7 @@ struct ConfigParseError: Error, Equatable {
 /// `ConfigStoreFenceTests` keeps any other file from parsing it.
 final class ConfigStore: ObservableObject {
     private let configURL: URL
-    private let writeQueue = DispatchQueue(label: "com.meetingpipe.configstore.write", qos: .utility)
+    private let writeQueue: DispatchQueue
 
     /// Read once at load, mutated in place and re-serialized on persist;
     /// that's how unknown keys survive. Empty while `parseError` is set.
@@ -226,14 +226,26 @@ final class ConfigStore: ObservableObject {
     /// polling ("config changed, refresh what you care about").
     let didPersist = PassthroughSubject<Void, Never>()
 
-    private var saveTimer: Timer?
+    /// The debounced save (CONC8): snapshots on main, writes on `writeQueue`.
+    private lazy var saver = DebouncedSaver(
+        queue: writeQueue,
+        prepare: { [weak self] in self?.prepareSave() },
+        completion: { [weak self] result in
+            switch result {
+            case .success: self?.didPersist.send()
+            case .failure(let error): Log.main.error("ConfigStore persist failed: \(String(describing: error))")
+            }
+        }
+    )
 
     /// Gates `scheduleSave` until init finishes, so the `didSet` storm from
     /// assigning defaults doesn't write compile-time defaults to the file.
     private var isInitialized: Bool = false
 
-    init(configURL: URL = Config.defaultPath) {
+    init(configURL: URL = Config.defaultPath,
+         writeQueue: DispatchQueue = DebouncedSaver.makeQueue(label: "com.meetingpipe.configstore.write")) {
         self.configURL = configURL
+        self.writeQueue = writeQueue
         apply(Self.read(configURL))
         // Arm last: every assignment's didSet in `apply` no-ops on !isInitialized.
         self.isInitialized = true
@@ -362,36 +374,30 @@ final class ConfigStore: ObservableObject {
 
     // MARK: - Persistence
 
-    /// Force an immediate save (used by tests and "Apply" buttons).
+    /// Force an immediate save (used by tests and "Apply" buttons). Renders on the calling (main) thread and
+    /// writes through `writeQueue`, behind any debounced write already in flight, so the two never share
+    /// the `.writing` temp file and the last render wins.
     func saveNow() throws {
         if let parseError { throw parseError }
         writeBack()
-        try persistToDisk()
+        let toml = currentTOML()
+        try saver.performNow { try self.writeToDisk(toml) }
     }
 
     /// Debounce a burst of UI changes into one disk write (500 ms).
     private func scheduleSave() {
         guard isInitialized else { return }   // drop the init didSet storm
         guard parseError == nil else { return }   // ARCH9: never write over an unparsed file
-        // Timer.scheduledTimer needs a run loop; hop to main if a non-UI
-        // setter raced in.
-        guard Thread.current.isMainThread else {
-            DispatchQueue.main.async { [weak self] in self?.scheduleSave() }
-            return
-        }
-        saveTimer?.invalidate()
-        saveTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
-            guard let self = self else { return }
-            self.writeBack()
-            self.writeQueue.async {
-                do {
-                    try self.persistToDisk()
-                    DispatchQueue.main.async { self.didPersist.send() }
-                } catch {
-                    Log.main.error("ConfigStore persist failed: \(String(describing: error))")
-                }
-            }
-        }
+        saver.schedule()
+    }
+
+    /// On main when the debounce fires: mutate the tree and render it here, so the queue only ever sees an
+    /// immutable string (MAINTHREAD-13: it used to convert `rawDocument` off main while `saveNow` mutated it).
+    private func prepareSave() -> DebouncedSaver.Work? {
+        guard isInitialized, parseError == nil else { return nil }
+        writeBack()
+        let toml = currentTOML()
+        return { [self] in try writeToDisk(toml) }
     }
 
     /// Mutate `rawDocument` to reflect current `@Published` values.
@@ -440,23 +446,8 @@ final class ConfigStore: ObservableObject {
         ensureTable("lan")["host"] = lanHost
     }
 
-    /// Render `rawDocument` and replace `configURL` atomically.
-    private func persistToDisk() throws {
-        if let parseError { throw parseError }
-        // Omit `.allowLiteralStrings` so strings serialize as canonical
-        // double-quoted basic strings; the single-quote form broke
-        // round-trip assertions once TOMLKit started preferring it.
-        let toml = rawDocument.convert(
-            to: .toml,
-            options: [
-                .allowMultilineStrings,
-                .allowUnicodeStrings,
-                .allowBinaryIntegers,
-                .allowOctalIntegers,
-                .allowHexadecimalIntegers,
-                .indentations,
-            ]
-        )
+    /// Replace `configURL` with `toml` atomically. Runs on `writeQueue`.
+    func writeToDisk(_ toml: String) throws {
         try FileManager.default.createDirectory(
             at: configURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -490,8 +481,9 @@ final class ConfigStore: ObservableObject {
         return new
     }
 
-    /// Render the document as TOML; mirrors `persistToDisk`'s options so
-    /// tests see the on-disk output. Visible to tests.
+    /// Render the document as TOML, with the options the disk write uses (so tests see the on-disk output).
+    /// Main thread only: the tree is not safe to read while `writeBack` mutates it, so the debounce renders
+    /// here and hands only the string to the write queue (MAINTHREAD-13). Visible to tests.
     func currentTOML() -> String {
         rawDocument.convert(
             to: .toml,

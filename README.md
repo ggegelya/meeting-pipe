@@ -158,7 +158,7 @@ The installer will:
 
 The installer can't do these for you:
 
-1. **API keys.** The installer prompts for your Anthropic and Notion tokens and stores them in the macOS Keychain, not a plaintext file (SEC8). Skipped the prompt, or need to change a key? Set them any time in **Preferences -> Integrations**, or from a terminal:
+1. **API keys.** The installer prompts for your Anthropic and Notion tokens and stores them in the macOS Keychain, not a plaintext file (SEC8). Skipped the prompt, or need to change a key? Set them any time in **Preferences -> Integrations**, where the status beside each key reads Saving, then Saved to Keychain, or Not saved (with the reason under the field) if the Keychain refused it, or from a terminal:
 
    ```sh
    security add-generic-password -U -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY -w sk-ant-...

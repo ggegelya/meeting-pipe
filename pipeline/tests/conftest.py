@@ -92,3 +92,16 @@ def _fixed_server_token(monkeypatch, tmp_path_factory):
     # situation every fake-server test was written for; the tests of the foreign
     # path and of `served_identity` itself patch their own answers over this.
     monkeypatch.setattr(local_server, "listening_pid", lambda port: None)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_secret_probe_state():
+    """`load_secrets` remembers absent and unreadable keys for the life of the process (CONC8, SEC23),
+    which is a property of a real run and a leak between tests."""
+    from mp import config
+
+    config._ABSENT_SECRETS.clear()
+    config._UNREADABLE_SECRETS.clear()
+    yield
+    config._ABSENT_SECRETS.clear()
+    config._UNREADABLE_SECRETS.clear()

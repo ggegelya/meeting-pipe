@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 import pytest
@@ -29,9 +30,11 @@ def _clean(monkeypatch: pytest.MonkeyPatch):
     for key in MANAGED_SECRET_KEYS:
         monkeypatch.delenv(key, raising=False)
     config._UNREADABLE_SECRETS.clear()
+    config._ABSENT_SECRETS.clear()
     monkeypatch.setattr("mp.egress_guard.is_armed", lambda: False)
     yield
     config._UNREADABLE_SECRETS.clear()
+    config._ABSENT_SECRETS.clear()
 
 
 def test_status_44_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -123,3 +126,40 @@ def test_doctor_says_could_not_be_read_not_not_in_keychain(monkeypatch: pytest.M
     assert not any(presence.values())
     assert "could not be read" in out
     assert "not in Keychain" not in out
+
+
+def test_an_absent_key_is_probed_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CONC8 / F208: `entry.prepare` runs more than once per run; each pass used to spawn a `security` per
+    absent key."""
+    calls: list[str] = []
+
+    def reader(key: str):
+        calls.append(key)
+        return None
+
+    load_secrets(reader=reader)
+    first = list(calls)
+    load_secrets(reader=reader)
+    assert sorted(first) == sorted(MANAGED_SECRET_KEYS)
+    assert calls == first  # the second pass probed nothing
+
+
+def test_a_key_in_the_environment_is_never_read_and_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NOTION_TOKEN", "from-daemon")
+    calls: list[str] = []
+    load_secrets(reader=lambda key: calls.append(key))
+    assert "NOTION_TOKEN" not in calls
+    assert os.environ["NOTION_TOKEN"] == "from-daemon"
+
+
+def test_an_armed_guard_never_calls_the_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("mp.egress_guard.is_armed", lambda: True)
+    load_secrets(reader=lambda key: pytest.fail("keychain read under a zero-egress run"))
+    assert not config._ABSENT_SECRETS
+
+
+def test_a_key_found_later_clears_the_absent_mark(monkeypatch: pytest.MonkeyPatch) -> None:
+    load_secrets(reader=lambda key: None)
+    config._ABSENT_SECRETS.discard("NOTION_TOKEN")
+    load_secrets(reader=lambda key: "ntn-x" if key == "NOTION_TOKEN" else None)
+    assert os.environ["NOTION_TOKEN"] == "ntn-x"
