@@ -553,4 +553,95 @@ final class ShareableContentSignalTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - END30: Zoom follows the call window's identity too
+
+    private let zoomApp = "us.zoom.xos"
+    private let zoomContext = MeetingLifecycleContext(bundleID: "us.zoom.xos", kind: .native, pid: 8)
+
+    private func zoomSignal(
+        _ windows: LockedBox<[Summary]>,
+        log: RecordingEventLog = RecordingEventLog(),
+        observed: LockedBox<[Bool]>
+    ) -> ManualScheduler {
+        let scheduler = ManualScheduler()
+        let signal = ShareableContentSignal(eventLog: log, probe: { windows.get() }, scheduler: manualScheduler(scheduler))
+        signal.onChange = { value in observed.mutate { $0.append(value) } }
+        retained.append(signal)
+        signal.start(
+            context: zoomContext,
+            lockRank: NativeLifecycleConfig.zoom.windowLockRank,
+            titleMatch: NativeLifecycleConfig.zoom.titleMatch
+        )
+        return scheduler
+    }
+
+    func test_zoom_locks_the_meeting_window_not_the_workplace_window() {
+        let windows = LockedBox([
+            Summary(bundleIdentifier: zoomApp, title: "Zoom Workplace", windowID: 5, pid: 8),
+            Summary(bundleIdentifier: zoomApp, title: "Zoom Meeting", windowID: 51, pid: 8)
+        ])
+        let observed = LockedBox<[Bool]>([])
+        let log = RecordingEventLog()
+        _ = zoomSignal(windows, log: log, observed: observed)
+        XCTAssertEqual(observed.get(), [true])
+        let locked = log.entries.first { $0.action == "shareable_content_window_locked" }
+        XCTAssertEqual(locked?.attributes["count"], "1")
+        XCTAssertEqual(locked?.attributes["shapes"], "[\"meeting_window\": 1]")
+    }
+
+    /// The review's catch: a call window whose title lacks "Zoom Meeting" (a webinar, a localised
+    /// build) is still the call window. Requiring the token read it gone from the first reading.
+    func test_a_zoom_webinar_window_is_locked_and_reads_present() {
+        let windows = LockedBox([
+            Summary(bundleIdentifier: zoomApp, title: "Zoom Workplace", windowID: 5, pid: 8),
+            Summary(bundleIdentifier: zoomApp, title: "Zoom Webinar", windowID: 61, pid: 8)
+        ])
+        let observed = LockedBox<[Bool]>([])
+        let log = RecordingEventLog()
+        _ = zoomSignal(windows, log: log, observed: observed)
+        XCTAssertEqual(observed.get(), [true])
+        XCTAssertEqual(log.entries.first { $0.action == "shareable_content_window_locked" }?.attributes["rank"], "1")
+    }
+
+    /// The defect END30 fixes: after a leave the main Workplace window stays listed, and under the
+    /// old any-"zoom" title rule it kept the call window reading present.
+    func test_zoom_meeting_window_closed_reads_gone_while_the_workplace_window_stays() {
+        let windows = LockedBox([
+            Summary(bundleIdentifier: zoomApp, title: "Zoom Workplace", windowID: 5, pid: 8),
+            Summary(bundleIdentifier: zoomApp, title: "Zoom Meeting", windowID: 51, pid: 8)
+        ])
+        let observed = LockedBox<[Bool]>([])
+        let scheduler = zoomSignal(windows, observed: observed)
+        windows.set([Summary(bundleIdentifier: zoomApp, title: "Zoom Workplace", windowID: 5, pid: 8)])
+        scheduler.tick?()
+        XCTAssertEqual(observed.get(), [true, false])
+    }
+
+    func test_a_zoom_window_opened_after_the_lock_never_reads_present_for_the_call() {
+        let windows = LockedBox([Summary(bundleIdentifier: zoomApp, title: "Zoom Meeting", windowID: 51, pid: 8)])
+        let observed = LockedBox<[Bool]>([])
+        let scheduler = zoomSignal(windows, observed: observed)
+        windows.set([])
+        scheduler.tick?()
+        windows.set([Summary(bundleIdentifier: zoomApp, title: "Zoom Meeting", windowID: 52, pid: 8)])
+        scheduler.tick?()
+        XCTAssertEqual(observed.get(), [true, false])
+    }
+
+    /// A minimised meeting window leaves the on-screen list and reads gone whatever else Zoom has
+    /// open, and the same id coming back reads present. Under the title rule it depended on whether
+    /// another Zoom window happened to be on screen.
+    func test_a_minimised_zoom_meeting_window_reads_gone_then_present_when_restored() {
+        let workplace = Summary(bundleIdentifier: zoomApp, title: "Zoom Workplace", windowID: 5, pid: 8)
+        let meeting = Summary(bundleIdentifier: zoomApp, title: "Zoom Meeting", windowID: 51, pid: 8)
+        let windows = LockedBox([workplace, meeting])
+        let observed = LockedBox<[Bool]>([])
+        let scheduler = zoomSignal(windows, observed: observed)
+        windows.set([workplace])
+        scheduler.tick?()
+        windows.set([workplace, meeting])
+        scheduler.tick?()
+        XCTAssertEqual(observed.get(), [true, false, true])
+    }
 }

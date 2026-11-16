@@ -245,10 +245,11 @@ public final class ShareableContentSignal {
         guard isCurrent else { return }
 
         if lockTaken {
-            // Teams' shape classes: identity mode is Teams-only today (`NativeLifecycleConfig.teams`).
-            // A second identity-mode app would pass its own classifier in with its rank.
+            // The app's own shape classes: Teams (END24) or Zoom (END30), the identity-mode apps.
             var shapes: [String: Int] = [:]
-            for window in toLock { shapes[MeetingTitlePatterns.teamsWindowShape(window.title), default: 0] += 1 }
+            for window in toLock {
+                shapes[MeetingTitlePatterns.windowShape(bundleID: context.bundleID, title: window.title), default: 0] += 1
+            }
             eventLog.emit(category: "signal", action: "shareable_content_window_locked", attributes: [
                 "bundle_id": context.bundleID,
                 "count": toLock.count,

@@ -673,11 +673,8 @@ final class MeetingSourceScanner {
 
         switch (bundleID, kind) {
         case ("us.zoom.xos", _):
-            // Active meeting windows always contain "zoom meeting". Idle launcher and dialogs explicitly rejected.
-            if lowered == "zoom" { return false }                    // launcher
-            if lowered.hasPrefix("schedule meeting") { return false } // dialog
-            if lowered.hasPrefix("join meeting") { return false }     // dialog
-            return lowered.contains("zoom meeting")
+            // END30: the shared recognizer, so the end side's window pick cannot drift from this.
+            return MeetingTitlePatterns.zoomWindow(title)
 
         case ("com.microsoft.teams2", .native), ("com.microsoft.teams", .native):
             // END24: the shared recognizer, so the end side's window pick cannot drift from this.

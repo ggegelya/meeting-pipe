@@ -108,7 +108,7 @@ final class MeetingAppRegistryFenceTests: XCTestCase {
         // the shared matcher, and zoom/teams keep their stricter recognizer but must still accept
         // any live title the adapter accepts. This pins that agreement.
         let cases: [(bundle: String, title: String, adapter: (String?) -> Bool)] = [
-            ("us.zoom.xos", "Zoom Meeting", MeetingTitlePatterns.zoom),
+            ("us.zoom.xos", "Zoom Meeting", NativeLifecycleConfig.zoom.titleMatch),
             ("com.microsoft.teams2", "Standup | Microsoft Teams", NativeLifecycleConfig.teams.titleMatch),
             ("com.cisco.webexmeetingsapp", "Webex Meeting", MeetingTitlePatterns.webex),
             ("com.cisco.spark", "Webex Meeting", MeetingTitlePatterns.webex),

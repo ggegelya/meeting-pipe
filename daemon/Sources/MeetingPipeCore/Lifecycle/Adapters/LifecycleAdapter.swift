@@ -149,10 +149,65 @@ public enum MeetingTitlePatterns {
         "files", "apps", "store", "join meeting", "schedule meeting",
     ]
 
-    /// Zoom: "Zoom Meeting", "Zoom -", localised "Reunion Zoom", or plain "Zoom" (older builds).
-    public static let zoom: (String?) -> Bool = { title in
-        guard let lowered = title?.lowercased() else { return false }
-        return zoomTokens.contains { lowered.contains($0) }
+    /// Native Zoom call-window recognizer, the ONE predicate both sides use (END30, END24's lesson).
+    /// The start side (`MeetingSourceScanner.isActiveMeetingWindow`) and the end side
+    /// (`NativeLifecycleConfig.zoom`, which uses it only to pick the call window to follow at
+    /// engage) both call it. The end side used to match any title holding "zoom", so the main Zoom
+    /// Workplace window kept a finished call's window reading present, and whether a minimised
+    /// meeting window read gone depended on what else Zoom had on screen.
+    ///
+    /// Permissive by design, like `teamsWindow`: it rejects the known non-call shapes (the launcher,
+    /// the main window as "Zoom", "Zoom Workplace..." or "Zoom - <account>", the schedule and join
+    /// dialogs, chrome surfaces) and accepts the rest. Requiring "Zoom Meeting" would read a webinar,
+    /// a localised build ("Réunion Zoom") or any other call-window title gone from the start of the
+    /// call, a constant end vote, which is END24's failure in reverse; the only real Zoom data
+    /// (DET12) matched that token on 1 of 8 detector rows. On the start side the scorer still wants a
+    /// corroborating signal, so a title alone admits nothing. `zoomLockRank` prefers a "Zoom
+    /// Meeting" title, so the lock takes the meeting window when one is on screen.
+    public static let zoomWindow: (String?) -> Bool = { title in
+        guard let title else { return false }
+        let lowered = title.lowercased().trimmingCharacters(in: .whitespaces)
+        if lowered.isEmpty { return false }
+        if lowered == "zoom" || lowered.hasPrefix("zoom workplace") || lowered.hasPrefix("zoom -") { return false }
+        if lowered.hasPrefix("schedule meeting") || lowered.hasPrefix("join meeting") { return false }
+        return !zoomChrome.contains(lowered)
+    }
+
+    /// The shape class of a Zoom window title, never the title itself (END30): `meeting_window`
+    /// ("Zoom Meeting"), `meeting_window_with_topic` (another title holding it), `other_window`
+    /// (accepted without it: a webinar, a localised build, a floating panel), `main_window`
+    /// ("Zoom", "Zoom Workplace...", "Zoom - <account>"), `chrome`, `empty`. Seeded from expected
+    /// formats until the owner captures real ones.
+    public static func zoomWindowShape(_ title: String?) -> String {
+        let lowered = (title ?? "").lowercased().trimmingCharacters(in: .whitespaces)
+        if lowered.isEmpty { return "empty" }
+        if zoomWindow(title) {
+            if lowered == "zoom meeting" { return "meeting_window" }
+            return lowered.contains("zoom meeting") ? "meeting_window_with_topic" : "other_window"
+        }
+        if lowered == "zoom" || lowered.hasPrefix("zoom workplace") || lowered.hasPrefix("zoom -") { return "main_window" }
+        return "chrome"
+    }
+
+    /// How the end side ranks the Zoom windows `zoomWindow` accepts when locking the call window
+    /// (END30), lowest first: a title carrying "Zoom Meeting", then any other accepted window.
+    public static let zoomLockRank: (String?) -> Int = { title in
+        switch zoomWindowShape(title) {
+        case "meeting_window", "meeting_window_with_topic": return 0
+        default: return 1
+        }
+    }
+
+    private static let zoomChrome: Set<String> = [
+        "settings", "chat", "team chat", "contacts", "calendar", "mail", "whiteboards", "notes",
+        "docs", "clips", "phone", "scheduler", "home",
+    ]
+
+    /// The shape classifier for an identity-mode app's window, for the lock's log row.
+    public static func windowShape(bundleID: String, title: String?) -> String {
+        if NativeLifecycleConfig.zoom.bundleIDs.contains(bundleID) { return zoomWindowShape(title) }
+        if NativeLifecycleConfig.teams.bundleIDs.contains(bundleID) { return teamsWindowShape(title) }
+        return "unclassified"
     }
 
     /// Webex: "Webex Meetings" (classic) or the unified Webex App "Meeting"/"Reunion" stems shared with Teams.
@@ -250,9 +305,6 @@ public enum MeetingTitlePatterns {
         "microsoft teams"
     ]
 
-    private static let zoomTokens: [String] = [
-        "zoom meeting", "zoom -", "reunion zoom", "zoom"
-    ]
 
     private static let webexTokens: [String] = [
         "webex meetings", "webex meeting", "webex"

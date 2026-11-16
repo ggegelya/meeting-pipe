@@ -169,17 +169,33 @@ final class LifecycleAdapterTests: XCTestCase {
         XCTAssertEqual(MeetingTitlePatterns.teamsWindowShape("Chat"), "chrome")
     }
 
-    func test_teams_config_follows_window_identity() {
+    func test_teams_and_zoom_configs_follow_window_identity() {
         XCTAssertNotNil(NativeLifecycleConfig.teams.windowLockRank)
-        XCTAssertNil(NativeLifecycleConfig.zoom.windowLockRank)
+        XCTAssertNotNil(NativeLifecycleConfig.zoom.windowLockRank, "END30")
         XCTAssertNil(NativeLifecycleConfig.webex.windowLockRank)
         XCTAssertNil(NativeLifecycleConfig.slack.windowLockRank)
     }
 
-    func test_zoom_title_pattern_matches_zoom_meeting_strings() {
-        XCTAssertTrue(MeetingTitlePatterns.zoom("Zoom Meeting"))
-        XCTAssertTrue(MeetingTitlePatterns.zoom("Zoom - Standup"))
-        XCTAssertFalse(MeetingTitlePatterns.zoom("Slack | Standup"))
+    /// END30: a call window, never the main Workplace window or the account-titled one, which the
+    /// old any-"zoom" matcher accepted and which stays open all day. Permissive about the call
+    /// window's own title, so a webinar or a localised build does not read gone from the start.
+    func test_zoom_recognizer_accepts_call_windows_and_rejects_the_main_window() {
+        XCTAssertTrue(MeetingTitlePatterns.zoomWindow("Zoom Meeting"))
+        XCTAssertTrue(MeetingTitlePatterns.zoomWindow("Daily standup | Zoom Meeting"))
+        XCTAssertTrue(MeetingTitlePatterns.zoomWindow("Zoom Webinar"))
+        XCTAssertTrue(MeetingTitlePatterns.zoomWindow("Réunion Zoom"))
+        XCTAssertFalse(MeetingTitlePatterns.zoomWindow("Settings"))
+        XCTAssertLessThan(
+            MeetingTitlePatterns.zoomLockRank("Zoom Meeting"), MeetingTitlePatterns.zoomLockRank("Zoom Webinar"),
+            "the meeting window is locked before any other accepted window"
+        )
+        XCTAssertFalse(MeetingTitlePatterns.zoomWindow("Zoom Workplace"))
+        XCTAssertFalse(MeetingTitlePatterns.zoomWindow("Zoom"))
+        XCTAssertFalse(MeetingTitlePatterns.zoomWindow("Zoom - Licensed Account"))
+        XCTAssertFalse(MeetingTitlePatterns.zoomWindow("Schedule Meeting"))
+        XCTAssertEqual(NativeLifecycleConfig.zoom.titleMatch("Zoom Workplace"), false, "the end side uses it")
+        XCTAssertEqual(MeetingTitlePatterns.zoomWindowShape("Zoom Workplace"), "main_window")
+        XCTAssertEqual(MeetingTitlePatterns.zoomWindowShape("Zoom Meeting"), "meeting_window")
     }
 
     func test_google_meet_pattern_requires_meeting_code_not_bare_meet() {

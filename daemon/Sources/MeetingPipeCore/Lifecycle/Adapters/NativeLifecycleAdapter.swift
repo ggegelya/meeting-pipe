@@ -31,7 +31,8 @@ public struct NativeLifecycleConfig {
     /// END24: when set, the window signal follows window identity rather than title vocabulary.
     /// `titleMatch` then only picks the call window at the first present reading (the matching
     /// windows this ranks lowest); afterwards the reading is whether a locked window still exists.
-    /// Nil keeps the title rule (Zoom, Webex, Slack: unmeasured, left as they were).
+    /// END30 gave Zoom the same identity mode. Nil keeps the title rule (Webex, Slack: unmeasured,
+    /// left as they were).
     public let windowLockRank: ((String?) -> Int)?
 
     public init(
@@ -65,8 +66,9 @@ public extension NativeLifecycleConfig {
     /// to unresolved and holds prior state, which is the pre-DET8 behaviour rather than a new risk.
     static let zoom = NativeLifecycleConfig(
         bundleIDs: ["us.zoom.xos"],
-        titleMatch: MeetingTitlePatterns.zoom,
-        usesProcessAudio: true
+        titleMatch: MeetingTitlePatterns.zoomWindow,
+        usesProcessAudio: true,
+        windowLockRank: MeetingTitlePatterns.zoomLockRank
     )
 
     /// ShareableContent + AXLeaveButton. Covers legacy `com.cisco.webexmeetingsapp` and the unified

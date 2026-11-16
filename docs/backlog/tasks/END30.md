@@ -2,9 +2,9 @@
 id: END30
 title: Zoom's end-side window reading matches any Zoom window, so the main Zoom window keeps a finished call's window present and can mask a minimised one; give Zoom END24's window identity
 category: Detection
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-16 at the owner's request (group A's minimised-window analysis). `NativeLifecycleConfig.zoom` reads the call window through `MeetingTitlePatterns.zoom`, whose tokens include the bare "zoom", so any Zoom window (the main Zoom Workplace window, Chat, Settings) reads as the call window: after a leave the window signal can stay present, and a minimised meeting window is masked while another Zoom window is on screen. Code-derived, no field incident. Scope: END24's identity mode for Zoom, a Zoom lock rank and recognizer shared with the scanner, pinned by window_titles.json rows. P2: Zoom's ends still confirm on the mic release and the Leave button.
+comment: Shipped 2026-11-17: one shared, permissive Zoom call-window recognizer (MeetingTitlePatterns.zoomWindow rejects the launcher, main window, account window, dialogs and chrome), zoomWindowShape and zoomLockRank (a "Zoom Meeting" title first); NativeLifecycleConfig.zoom runs END24's identity mode; the scanner calls the same predicate; window_titles.json Zoom rows carry shapes plus Workplace, account, settings, webinar and localised rows, with a cross-side agreement test. Remainder: real Zoom captures, including a screen share and a breakout (rows stay seeded, as VALOWN1 is for Teams). Nothing else owed; the owner closes it.
 ---
 
 # END30: Zoom's end-side window reading matches any Zoom window, so the main Zoom window keeps a finished call's window present and can mask a minimised one; give Zoom END24's window identity
@@ -38,3 +38,11 @@ Zoom stayed on the title rule, and its title rule is loose. `MeetingTitlePattern
 - `LifecycleAdapterTests`: `NativeLifecycleConfig.zoom` carries a lock rank, and the Zoom recognizer accepts the meeting shape and rejects the Workplace main window.
 - `WindowRecognizerFixtureTests`: start and end sides agree on every Zoom row.
 - The existing Zoom corpus traces (`zoom_native_clean_leave_en`, `zoom_native_lifecycle_pair_dwell_trim`, `zoom_native_lifecycle_end18_leave_return_declined`) stay green; `cd daemon && swift test` green with the new tests named in the commit body; `bash scripts/ci-local.sh` green.
+
+**Progress (2026-11-17): shipped; real Zoom captures remain.** `MeetingTitlePatterns.zoomWindow` is shared by the scanner and `NativeLifecycleConfig.zoom`, and is permissive like `teamsWindow`: it rejects the known non-call shapes (the launcher and the main window as "Zoom", "Zoom Workplace..." or "Zoom - <account>", the schedule and join dialogs, chrome tabs such as Settings or Team Chat) and accepts the rest. `zoomWindowShape` (`meeting_window`, `meeting_window_with_topic`, `other_window`, `main_window`, `chrome`, `empty`) feeds the lock row, whose classifier is now picked by bundle (`MeetingTitlePatterns.windowShape`). `zoomLockRank` puts a "Zoom Meeting" title first and any other accepted window second.
+
+Decisions not in the spec: the first draft lifted the start side's old rule ("Zoom Meeting" required) and the Opus review rejected it: a webinar, a localised build or any other call-window title would have read gone from the call's first reading, END24's failure in reverse, and the only real Zoom data (DET12) matched that token on 1 of 8 rows. So the start side widens too (the scorer still needs a corroborating signal, so a title alone admits nothing), and the old end-side tokens are gone. No mini or floating bar row was added, since its title is unknown.
+
+**Remainder (owner captures, as VALOWN1 is for Teams):** Zoom's window titles in the meeting window, the main window, a webinar, and in particular during a screen share and a breakout room, where Zoom may hide or recreate its meeting window; under identity mode a hidden or recreated locked window reads gone for that stretch (the live-mic veto covers most of it).
+
+Tests: 5 `ShareableContentSignalTests` (the meeting window locked beside the Workplace window, a webinar window locked when it is the only call window, its close reading gone while the Workplace window stays, a later window never reading present, minimise and restore), `LifecycleAdapterTests` (the config carries a rank; the recognizer accepts the meeting, webinar and localised shapes, rejects the Workplace, account, dialog and settings titles, and ranks the meeting window first), `WindowRecognizerFixtureTests.test_zoom_start_and_end_sides_agree_on_every_row` over 6 new seeded rows plus shapes on the existing ones; the Zoom corpus traces stay green.

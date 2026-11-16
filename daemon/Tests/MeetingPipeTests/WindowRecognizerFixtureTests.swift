@@ -162,6 +162,28 @@ final class WindowRecognizerFixtureTests: XCTestCase {
                       "the 2026-10-08 shape must stay pinned")
     }
 
+    /// END30: the Zoom start side and end side are one predicate too, so every Zoom row reads the
+    /// same through both, and a single-title row's shape is what `zoomWindowShape` says.
+    func test_zoom_start_and_end_sides_agree_on_every_row() throws {
+        let fixture = try loadFixture()
+        let zoomRows = fixture.entries.filter {
+            NativeLifecycleConfig.zoom.bundleIDs.contains($0.bundleID) && $0.kind == "native"
+        }
+        XCTAssertFalse(zoomRows.isEmpty)
+        for entry in zoomRows {
+            for title in entry.titles {
+                let start = MeetingSourceScanner.isActiveMeetingWindow(bundleID: entry.bundleID, kind: .native, title: title)
+                let end = NativeLifecycleConfig.zoom.titleMatch(title)
+                XCTAssertEqual(start, end, "start=\(start) end=\(end) on state=\(entry.state)")
+            }
+            if let shape = entry.shape, entry.titles.count == 1 {
+                XCTAssertEqual(MeetingTitlePatterns.zoomWindowShape(entry.titles[0]), shape, "state=\(entry.state)")
+            }
+        }
+        XCTAssertTrue(zoomRows.contains { $0.shape == "main_window" && $0.expected == "reject" },
+                      "the all-day Workplace window must stay pinned as rejected")
+    }
+
     func test_an_unknown_kind_is_malformed() throws {
         let row = #"{"bundle_id":"x","kind":"pwa","state":"s","expected":"reject","seeded":true,"titles":["t"]}"#
         let entry = try JSONDecoder().decode(Entry.self, from: Data(row.utf8))
