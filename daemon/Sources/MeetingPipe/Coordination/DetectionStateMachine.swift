@@ -338,10 +338,18 @@ final class DetectionStateMachine {
     ///
     /// DET18: the latch is now bound to the call's span (`SkippedMeetingLatch`), and the span's end
     /// clears the cooldown too, so the next call in the same app is prompted normally.
+    ///
+    /// DET13 (D098): the prompt's own source is seeded as the attachable candidate here, in the
+    /// same call that arms the latch. The slot used to be written only by the next confident
+    /// discovery scan, so for the 3 to 12 s until then a hand start recorded source-less: no app,
+    /// the default workflow and no automatic end (20261021-103054 began 10 s after a skip and ran
+    /// 315 s past the last speech). The timeout's offer seeds it the same way (`offerPrompt`); a
+    /// prompt withdrawn because the meeting ended does not (DET14's rule).
     func abandonPrompt(source: AppSource, liveness: SkippedMeetingLatch.Liveness? = nil) {
         cancelPromptTimeout()
         recordCooldownEnd(bundleID: source.bundleID)
         armSkipLatch(source: source, liveness: liveness)
+        noteSuppressedCandidate(source, origin: .skipLatch, at: clock())
         setIdle()
     }
 

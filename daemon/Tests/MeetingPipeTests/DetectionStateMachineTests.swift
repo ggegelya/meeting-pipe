@@ -407,6 +407,18 @@ final class DetectionStateMachineTests: XCTestCase {
         XCTAssertTrue(m.isSkipLatched(bundleID: Self.teams.bundleID))
     }
 
+    /// DET13 (D098): the skip seeds the candidate itself, so a hand start in the seconds before the
+    /// next discovery scan still attaches; and it goes when the call's span does.
+    func test_abandonPrompt_seeds_the_candidate_at_once_and_it_goes_with_the_span() {
+        let m = DetectionStateMachine()
+        m.setPrompting(source: Self.teams)
+        m.abandonPrompt(source: Self.teams)
+        XCTAssertEqual(m.liveSuppressedCandidate(), Self.teams, "no discovery sighting needed")
+        m.noteScanReadings([Self.teams.bundleID: Self.teamsBothAbsent])
+        m.noteScanReadings([Self.teams.bundleID: Self.teamsBothAbsent])
+        XCTAssertNil(m.liveSuppressedCandidate())
+    }
+
     func test_clearSuppression_drops_both_the_cooldown_and_the_skip_latch() {
         let m = DetectionStateMachine()
         m.recordCooldownEnd(bundleID: Self.teams.bundleID)
