@@ -287,9 +287,10 @@ public final class PromotionEngine {
             liveSinceRelease: releasedAt.map { release in
                 states.contains { $0.value.state == .live && $0.value.at >= release }
             } ?? false,
-            callWindowEndedSinceRelease: releasedAt.map { release in
-                states.contains {
-                    $0.key.evidenceClass == .callWindowOrControl && $0.value.state == .ended && $0.value.at >= release
+            callWindowBacksRelease: releasedAt.map { release in
+                let earliest = release.addingTimeInterval(-TeardownHoldPolicy.secondSignalLeadSec)
+                return states.contains {
+                    $0.key.evidenceClass == .callWindowOrControl && $0.value.state == .ended && $0.value.at >= earliest
                 }
             } ?? false
         )

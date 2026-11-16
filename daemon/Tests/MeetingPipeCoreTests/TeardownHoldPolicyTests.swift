@@ -103,7 +103,7 @@ final class TeardownHoldPolicyTests: XCTestCase {
     private func released(at release: TimeInterval, liveSince: Bool = false, windowSince: Bool = true) -> HoldEvidence {
         HoldEvidence(
             processAudio: .ended, releasedAt: at(release),
-            liveSinceRelease: liveSince, callWindowEndedSinceRelease: windowSince
+            liveSinceRelease: liveSince, callWindowBacksRelease: windowSince
         )
     }
 
@@ -121,7 +121,7 @@ final class TeardownHoldPolicyTests: XCTestCase {
     func test_a_hold_concluding_while_the_mic_reads_live_trims_nothing() {
         var policy = TeardownHoldPolicy()
         policy.open(context: teams, at: at(100))
-        let live = HoldEvidence(processAudio: .live, releasedAt: nil, liveSinceRelease: false, callWindowEndedSinceRelease: false)
+        let live = HoldEvidence(processAudio: .live, releasedAt: nil, liveSinceRelease: false, callWindowBacksRelease: false)
         for conclusion in [TeardownHoldPolicy.Conclusion.engineEnd, .teardown, .loneDwell, .stop] {
             XCTAssertNil(policy.trimPoint(concludingAt: at(900), evidence: live, conclusion: conclusion), "\(conclusion)")
         }
@@ -132,7 +132,7 @@ final class TeardownHoldPolicyTests: XCTestCase {
         var policy = TeardownHoldPolicy()
         policy.open(context: teams, at: at(100))
         XCTAssertNil(policy.trimPoint(concludingAt: at(820), evidence: nil, conclusion: .loneDwell))
-        let unresolved = HoldEvidence(processAudio: nil, releasedAt: nil, liveSinceRelease: false, callWindowEndedSinceRelease: false)
+        let unresolved = HoldEvidence(processAudio: nil, releasedAt: nil, liveSinceRelease: false, callWindowBacksRelease: false)
         XCTAssertNil(policy.trimPoint(concludingAt: at(820), evidence: unresolved, conclusion: .loneDwell))
     }
 

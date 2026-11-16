@@ -980,4 +980,38 @@ final class PromotionEngineTests: XCTestCase {
             )
         )
     }
+
+    // MARK: - END21 amendment: the second signal may lead the release by up to 30 s
+
+    private func holdEvidence(windowGoneAt window: TimeInterval?, leaveGoneAt leave: TimeInterval?, micReleasedAt release: TimeInterval) -> HoldEvidence? {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        var steps: [(TimeInterval, PrimarySignalKind)] = [(release, .processAudioIsRunningInput)]
+        if let window { steps.append((window, .shareableContentWindow)) }
+        if let leave { steps.append((leave, .axLeaveButton)) }
+        for (t, kind) in steps.sorted(by: { $0.0 < $1.0 }) {
+            _ = engine.ingest(event(kind, .ended, at: t))
+        }
+        return engine.holdEvidence
+    }
+
+    func test_a_window_gone_just_before_the_release_backs_it_END21() {
+        XCTAssertEqual(holdEvidence(windowGoneAt: 999.7, leaveGoneAt: nil, micReleasedAt: 1000)?.callWindowBacksRelease, true)
+    }
+
+    func test_a_leave_gone_seconds_before_the_release_backs_it_END21() {
+        XCTAssertEqual(holdEvidence(windowGoneAt: nil, leaveGoneAt: 989, micReleasedAt: 1000)?.callWindowBacksRelease, true)
+    }
+
+    func test_a_window_gone_after_the_release_backs_it_END21() {
+        XCTAssertEqual(holdEvidence(windowGoneAt: 1005, leaveGoneAt: nil, micReleasedAt: 1000)?.callWindowBacksRelease, true)
+    }
+
+    /// A window that went long before (minimised a minute earlier) does not back a later release.
+    func test_a_window_gone_well_before_the_release_does_not_back_it_END21() {
+        XCTAssertEqual(holdEvidence(windowGoneAt: 940, leaveGoneAt: nil, micReleasedAt: 1000)?.callWindowBacksRelease, false)
+    }
 }

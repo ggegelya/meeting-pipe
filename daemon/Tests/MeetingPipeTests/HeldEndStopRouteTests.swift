@@ -61,8 +61,10 @@ final class HeldEndStopRouteTests: XCTestCase {
     }
 
     /// Record a Teams call whose engine is in `.inMeeting` with the Leave button, the mic and the
-    /// window all live; then the Leave button goes invalid 1 s later and opens a hold.
-    private func recordIntoAHold(workflows: [Workflow] = [], override: UUID? = nil) async throws -> Rig {
+    /// window all live; then `opener` (the Leave button by default) goes ended and opens a hold.
+    private func recordIntoAHold(
+        workflows: [Workflow] = [], override: UUID? = nil, opener: PrimarySignalKind = .axLeaveButton
+    ) async throws -> Rig {
         let host = FakeSessionHost(tempDir: tempDir, workflows: workflows)
         hosts.append(host)
         host.recorderSpy.lastSystemFires = 1
@@ -82,7 +84,7 @@ final class HeldEndStopRouteTests: XCTestCase {
         adapter.emit(.shareableContentWindow, .live, context)
         await waitUntil({ host.lifecycleCoord.current == .inMeeting(context: context) }, "in meeting")
         try? await Task.sleep(nanoseconds: 20_000_000)
-        adapter.emit(.axLeaveButton, .ended, context)
+        adapter.emit(opener, .ended, context)
         await waitUntil({ controller.holdPolicy.isOpen }, "the hold")
         // The hold must be at least `minimumTrimmedHoldSec` old before anything can be cut.
         try? await Task.sleep(nanoseconds: 1_100_000_000)
@@ -94,7 +96,7 @@ final class HeldEndStopRouteTests: XCTestCase {
         rig.adapter.emit(.processAudioIsRunningInput, .ended, context)
         try? await Task.sleep(nanoseconds: 20_000_000)
         rig.adapter.emit(.shareableContentWindow, .ended, context)
-        await waitUntil({ rig.host.lifecycleCoord.holdEvidence?.callWindowEndedSinceRelease == true }, "the evidence")
+        await waitUntil({ rig.host.lifecycleCoord.holdEvidence?.callWindowBacksRelease == true }, "the evidence")
     }
 
     private func finish(_ rig: Rig) async {
@@ -120,9 +122,10 @@ final class HeldEndStopRouteTests: XCTestCase {
 
     /// The owner's case (a): a headphone switch drops only the mic, so a Stop inside it cuts nothing.
     func test_aStopDuringAHeadphoneSwitch_cutsNothing() async throws {
-        let rig = try await recordIntoAHold()
-        rig.adapter.emit(.processAudioIsRunningInput, .ended, context)
+        // A switch takes only the mic: the hold opens on its release, the Leave button and window stay live.
+        let rig = try await recordIntoAHold(opener: .processAudioIsRunningInput)
         await waitUntil({ rig.host.lifecycleCoord.holdEvidence?.processAudio == .ended }, "the release")
+        XCTAssertEqual(rig.host.lifecycleCoord.holdEvidence?.callWindowBacksRelease, false)
         rig.controller.toggleManual()
         await finish(rig)
         XCTAssertTrue(rows("held_end_trimmed").isEmpty)
@@ -167,20 +170,35 @@ final class HeldEndStopRouteTests: XCTestCase {
         XCTAssertEqual(row["limit_sec"] as? Double ?? .nan, release.timeIntervalSince(startedAt), accuracy: 0.01, "cut at the release")
     }
 
-    /// The other signal order: the Leave button (which opened the hold) and the window go before the
+    /// The other real-end order: the Leave button (which opened the hold) and the window go before the
     /// mic releases, the order of `zoom_native_lifecycle_pair_dwell_trim` and of the window gone 50 to
-    /// 400 ms ahead of the mic on a Teams leave (END14). The owner's rule asks for a second signal
-    /// *after* the release, so a Stop here cuts nothing: the rule fails toward keeping audio, at the
-    /// cost of up to the pair dwell's minute of post-call tail left in the notes.
-    func test_aStopAfterTheWindowWentBeforeTheMic_cutsNothing_asTheRuleReads() async throws {
+    /// 400 ms ahead of the mic on a Teams leave (END14). Under the owner's amendment a second signal
+    /// up to `secondSignalLeadSec` before the release counts, so a Stop here cuts at the release.
+    func test_aStopAfterTheWindowWentBeforeTheMic_cutsAtTheRelease() async throws {
         let rig = try await recordIntoAHold()
         rig.adapter.emit(.shareableContentWindow, .ended, context)
         try? await Task.sleep(nanoseconds: 20_000_000)
         rig.adapter.emit(.processAudioIsRunningInput, .ended, context)
-        await waitUntil({ rig.host.lifecycleCoord.holdEvidence?.processAudio == .ended }, "the release")
-        XCTAssertEqual(rig.host.lifecycleCoord.holdEvidence?.callWindowEndedSinceRelease, false)
+        await waitUntil({ rig.host.lifecycleCoord.holdEvidence?.callWindowBacksRelease == true }, "the evidence")
+        let release = try XCTUnwrap(rig.host.lifecycleCoord.holdEvidence?.releasedAt)
+        let startedAt = try XCTUnwrap(rig.host.recorderSpy.startedAt)
         rig.controller.toggleManual()
         await finish(rig)
-        XCTAssertTrue(rows("held_end_trimmed").isEmpty)
+        let row = try XCTUnwrap(rows("held_end_trimmed").first)
+        XCTAssertEqual(row["limit_sec"] as? Double ?? .nan, release.timeIntervalSince(startedAt), accuracy: 0.01)
+    }
+
+    /// The accepted edge (owner, 2026-11-16): the window minimised moments before a headphone switch
+    /// backs the switch's mic release, so a Stop during the switch cuts the seconds since it. They
+    /// stay on disk under a lossless capture and Restore brings them back.
+    func test_aStopDuringASwitchJustAfterMinimising_cutsTheSecondsSinceTheSwitch_asAccepted() async throws {
+        let rig = try await recordIntoAHold()
+        rig.adapter.emit(.shareableContentWindow, .ended, context)   // minimised: the window reads gone
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        rig.adapter.emit(.processAudioIsRunningInput, .ended, context)   // the headphone switch
+        await waitUntil({ rig.host.lifecycleCoord.holdEvidence?.callWindowBacksRelease == true }, "the evidence")
+        rig.controller.toggleManual()
+        await finish(rig)
+        XCTAssertEqual(rows("held_end_trimmed").first?["mode"] as? String, "suggested", "restorable")
     }
 }

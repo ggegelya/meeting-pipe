@@ -41,6 +41,14 @@ public struct TeardownHoldPolicy: Equatable {
         }
     }
 
+    /// END21 amendment (owner, 2026-11-16): how long before the mic release a Leave button or call
+    /// window end still counts as the second signal a stop's cut needs. On a real leave the window
+    /// goes 50 to 400 ms before Teams lets go of the mic (END14's corpus) and the Leave control up to
+    /// DET8's 11.4 s before it, so "after the release" alone left those ends untrimmed on a Stop. The
+    /// owner accepted the known cost: minimising, or Teams' compact view, inside this window before
+    /// a headphone switch makes a Stop during the switch cut the few restorable seconds since it.
+    public static let secondSignalLeadSec: TimeInterval = 30
+
     /// A hold shorter than this is not trimmed. The normal Teams end confirms on the first consult,
     /// a few milliseconds in, and marking those would be churn on every genuine leave.
     public static let minimumTrimmedHoldSec: TimeInterval = 1.0
@@ -86,8 +94,10 @@ public struct TeardownHoldPolicy: Equatable {
     /// - it still reads live: nothing is cut, the call was up;
     /// - it reads released: the cut is the release (never earlier than the hold's start). A stop
     ///   cuts there only under the owner's rule of 2026-11-16: no signal read live again after the
-    ///   release, and the Leave button or the call window also went after it. A headphone switch drops
-    ///   only the mic, so a Stop pressed during one cuts nothing.
+    ///   release, and the Leave button or the call window also went, after it or within
+    ///   `secondSignalLeadSec` before it (the owner's amendment, same day). A headphone switch drops
+    ///   only the mic, so a Stop pressed during one cuts nothing unless the window or the Leave
+    ///   button went just before it.
     /// Where it never reported (browser, Webex, Slack, an unresolved mic), the owner's decision of
     /// 2026-11-16: the hold's start for a pair, teardown or definitive end, and nothing for a lone-dwell
     /// end, which is no evidence of when the call ended (F032), or for a stop.
@@ -96,7 +106,7 @@ public struct TeardownHoldPolicy: Equatable {
         guard let hold, now.timeIntervalSince(hold.startedAt) >= Self.minimumTrimmedHoldSec else { return nil }
         if let evidence, let processAudio = evidence.processAudio {
             guard processAudio == .ended, let releasedAt = evidence.releasedAt else { return nil }
-            if conclusion == .stop, evidence.liveSinceRelease || !evidence.callWindowEndedSinceRelease {
+            if conclusion == .stop, evidence.liveSinceRelease || !evidence.callWindowBacksRelease {
                 return nil
             }
             return max(releasedAt, hold.startedAt)
@@ -128,18 +138,19 @@ public struct HoldEvidence: Equatable {
     public let releasedAt: Date?
     /// Some signal went live at or after the release.
     public let liveSinceRelease: Bool
-    /// The Leave button or the call window went ended at or after the release and still reads so.
-    public let callWindowEndedSinceRelease: Bool
+    /// The Leave button or the call window reads ended, having gone no earlier than
+    /// `TeardownHoldPolicy.secondSignalLeadSec` before the release.
+    public let callWindowBacksRelease: Bool
 
     public init(
         processAudio: PrimarySignalState?,
         releasedAt: Date?,
         liveSinceRelease: Bool,
-        callWindowEndedSinceRelease: Bool
+        callWindowBacksRelease: Bool
     ) {
         self.processAudio = processAudio
         self.releasedAt = releasedAt
         self.liveSinceRelease = liveSinceRelease
-        self.callWindowEndedSinceRelease = callWindowEndedSinceRelease
+        self.callWindowBacksRelease = callWindowBacksRelease
     }
 }
