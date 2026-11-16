@@ -2,9 +2,9 @@
 id: SEC32
 title: Spike: kernel-enforced zero egress for the mp child under regulated and NDA policy, proven by a standing bypass harness, with a per-meeting egress receipt as the later leg
 category: Security
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (product-direction band, idea I01, picked by all three judges, 16.34 of 20, folding idea I31's F014 replay and connect recorder): the egress guard is an in-process httpx patch (SEC19) and the audit found later features walking around the gate. /spike shaped, 5 days, synthetic only: 10 planted bypasses under sandbox-exec, golden local summary under the profile, overhead under 5%. Pass wraps only the mp child; the receipt and Library state are a later leg. Fail falls back to SEC19's in-process layer. Child of [EPIC3](./EPIC3.md).
+comment: Spike shipped 2026-11-17: docs/spikes/sec32-kernel-zero-egress.md plus the read-only probe pipeline/scripts/sec32_kernel_egress_probe.py. Smoke on this Mac (macOS 27.2): 10 of 10 planted bypasses blocked with EPERM under the profile against 2 of 10 for the armed-only guard, loopback control and storage check hold; the golden local summary and its overhead are not run. Owner-owed: `cd pipeline && uv run python scripts/sec32_kernel_egress_probe.py --transcript <synthetic transcript .md>`, then PASS (build the mp re-exec wrap under regulated and NDA) or close in favour of SEC19. [Spec](./SEC32.md)
 ---
 
 # SEC32: spike, kernel-enforced zero egress for the pipeline child
@@ -43,6 +43,8 @@ The F014 replay is expected to fail today; it is reported as a count of leaked s
 - The durable replacements (App Sandbox entitlements, a NetworkExtension filter): they need a Developer ID, which is on the not-for-sale list; P3 if ever.
 - Confining the daemon (idea I15); FluidAudio 0.14.8 under a network deny turns a model load error into a deleted cache with no refetch.
 - Publishing the harness as a public conformance kit (idea I31's public half) while red rows are open.
+
+**Progress (2026-11-17):** spike shipped probe-first, nothing built. The analysis doc has the decision tree, the closures (App Sandbox and NetworkExtension need a Developer ID, pf needs root, the daemon is not confined, re-exec chosen over in-process `sandbox_init`), the thresholds verbatim plus a pre-registered NOT PASS row for the gap the table left, and the profile text. The probe runs each of the ten bypasses armed-only and then under `sandbox-exec` with the guard off, classifies a case as blocked only on EPERM, adds an audit-hook witness and a loopback positive control, runs the storage check on a planted synced folder, and optionally the golden-summary leg through `docs/spikes/local12_bench.py`. Agent smoke (an instrument check, not the verdict): 2 of 10 blocked by the armed guard (httpx only), 10 of 10 blocked in the kernel, loopback ok, planted synced folder reported as not confined. Departures from the spec's wording: DNS is read through a control lookup because a unique name cannot tell blocked from NXDOMAIN, and the F014 replay is not in this probe (policy-layer, expected to fail, excluded from the PASS count; it goes to the F014 defect). The probe makes outbound attempts (the planted ones at the unrouted TEST-NET-1 canary, and two DNS lookups), so it is not in `ci-local.sh` until a PASS builds the offline fence.
 
 ## Owner walkthrough
 
