@@ -60,10 +60,9 @@ final class CallTeardownHoldTests: XCTestCase {
                 return { self?.pending = nil }
             }
         }
+        /// Repeating, as the watcher's timer is since END16: the action stays until cancelled.
         func fire() {
-            let action = pending
-            pending = nil
-            action?()
+            pending?()
         }
     }
 

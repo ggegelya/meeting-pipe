@@ -79,9 +79,10 @@ public final class LogMuteAdapter: MicGateAdapter {
     private var pending = Data()
     /// Last state handed to the sink, so `MicGate` only ever sees real transitions.
     private var lastMuted: Bool?
-    /// True once the absent-family event has been emitted for this watch, so a
-    /// missing log says so once instead of at 1 Hz for the whole meeting.
-    private var reportedMissing = false
+    /// END16: when an outage of the log is worth a row. It used to be a flag the next good tick
+    /// cleared, so a listing that flapped about once a minute logged once per flap (649 rows in 42
+    /// recordings). Not reset by `stop`, so a recording boundary does not reopen the hour.
+    private var outages = SourceOutageReport()
     /// Bumped on every `stop()`, so a read still in flight on `readQueue` is dropped
     /// on delivery instead of re-arming a stopped poll (the MIC16 pattern).
     private var generation: Int = 0
@@ -128,7 +129,6 @@ public final class LogMuteAdapter: MicGateAdapter {
         skipHistory = true
         pending = Data()
         lastMuted = nil
-        reportedMissing = false
     }
 
     // MARK: - Poll loop
@@ -162,20 +162,13 @@ public final class LogMuteAdapter: MicGateAdapter {
     /// One tick's continuation: apply the read, emit a transition if the state moved, re-arm. Runs on main in production (hopped from `readQueue`), synchronously on the caller in tests.
     private func consume(_ tail: SlimCoreMuteLog.Tail) {
         defer { rearm() }
+        reportOutage(tail)
         guard let url = tail.url else {
             // The family is absent: Teams never ran on this Mac, or the log moved.
             // That degrades to no reading at all, NEVER to unmuted. `AirPodsService`
             // is a misnomer for this component, but the measurement cannot rule out
             // a dependency on AirPods being connected for output, so an absent line
             // has to stay unknown and let the AX read carry.
-            if !reportedMissing {
-                reportedMissing = true
-                eventLog.emit(category: "micgate", action: "log_mute_source_missing", attributes: [
-                    "bundle_id": bundleID,
-                    "app": config.app,
-                    "family": config.family,
-                ])
-            }
             return
         }
         if tail.rotated {
@@ -190,7 +183,6 @@ public final class LogMuteAdapter: MicGateAdapter {
         }
         current = url
         offset = tail.offset
-        reportedMissing = false
         guard !tail.chunk.isEmpty else { return }
         pending.append(tail.chunk)
         // Only the LAST transition in the batch matters: the sink is edge-triggered
@@ -216,6 +208,31 @@ public final class LogMuteAdapter: MicGateAdapter {
             // buys over the label scrape.
             locale: ""
         ))
+    }
+
+    /// END16: one `log_mute_source_missing` per cause per hour, carrying the failed ticks since the
+    /// last row, and `log_mute_source_recovered` when a reported outage ends. A listing that failed
+    /// while the tailed generation was still readable is a failure too, though the read went on.
+    private func reportOutage(_ tail: SlimCoreMuteLog.Tail) {
+        let now = Date()
+        if let cause = tail.resolveFailure ?? (tail.url == nil ? "family absent from a directory that listed" : nil) {
+            guard let missing = outages.failure(cause: cause, at: now) else { return }
+            eventLog.emit(category: "micgate", action: "log_mute_source_missing", attributes: [
+                "bundle_id": bundleID,
+                "app": config.app,
+                "family": config.family,
+                "reason": missing.cause,
+                "failures": missing.failures,
+            ])
+        } else if let recovered = outages.success(at: now) {
+            eventLog.emit(category: "micgate", action: "log_mute_source_recovered", attributes: [
+                "bundle_id": bundleID,
+                "app": config.app,
+                "family": config.family,
+                "outage_sec": recovered.outageSec,
+                "failures": recovered.failures,
+            ])
+        }
     }
 
     /// Split `pending` on newlines, decoding only complete lines and leaving any

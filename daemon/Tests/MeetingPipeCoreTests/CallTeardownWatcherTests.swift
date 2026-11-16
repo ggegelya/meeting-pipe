@@ -31,18 +31,21 @@ final class CallTeardownWatcherTests: XCTestCase {
         return url
     }
 
-    /// Steps the poll by hand instead of racing a real timer.
+    /// Steps the poll by hand instead of racing a real timer. Repeating, as the production timer
+    /// is since END16: `fire()` keeps the action until the cancel closure clears it, so a
+    /// multi-fire test cannot go quietly vacuous after its first tick.
     private final class ManualScheduler {
         private let lock = NSLock()
         private var pending: (() -> Void)?
+        private(set) var arms: [TimeInterval] = []
         var schedule: CallTeardownWatcher.Scheduler {
-            { [self] _, action in
-                lock.lock(); pending = action; lock.unlock()
+            { [self] interval, action in
+                lock.lock(); pending = action; arms.append(interval); lock.unlock()
                 return { [self] in lock.lock(); pending = nil; lock.unlock() }
             }
         }
         func fire() {
-            lock.lock(); let action = pending; pending = nil; lock.unlock()
+            lock.lock(); let action = pending; lock.unlock()
             action?()
         }
         var hasPending: Bool { lock.lock(); defer { lock.unlock() }; return pending != nil }
@@ -82,6 +85,7 @@ final class CallTeardownWatcherTests: XCTestCase {
         XCTAssertTrue(watcher.isRunning)
         watcher.stop()
         XCTAssertFalse(watcher.isRunning)
+        XCTAssertFalse(scheduler.hasPending, "stop() must cancel the repeating timer, not only outrun it")
         let before = watcher.tickCount
         scheduler.fire()
         XCTAssertEqual(watcher.tickCount, before, "a fired tick after stop() must be dropped")
@@ -241,5 +245,302 @@ final class CallTeardownWatcherTests: XCTestCase {
             "a readable directory with no matching family is absence, not a failure, and must not "
                 + "be reported as one"
         )
+    }
+
+    // MARK: - END16
+
+    /// An in-memory SlimCore folder that counts the calls the read path makes.
+    private final class FakeFolder {
+        var files: [String: Data] = [:]
+        var mtimes: [String: Date] = [:]
+        var listingFails = false
+        var statFails = false
+        private(set) var listings = 0
+        private(set) var stats = 0
+        let dir = "/fake/Logs"
+
+        func path(_ name: String) -> String { dir + "/" + name }
+        func append(_ name: String, _ text: String) { files[path(name), default: Data()].append(Data(text.utf8)) }
+
+        var fileSystem: SlimCoreMuteLog.FileSystem {
+            SlimCoreMuteLog.FileSystem(
+                names: { [self] _ in
+                    listings += 1
+                    if listingFails { throw NSError(domain: NSCocoaErrorDomain, code: 256) }
+                    return files.keys.map { ($0 as NSString).lastPathComponent }
+                },
+                stat: { [self] path in
+                    stats += 1
+                    guard !statFails, let data = files[path] else { return nil }
+                    return (UInt64(data.count), mtimes[path] ?? Date(timeIntervalSince1970: 0))
+                },
+                read: { [self] path, offset in
+                    guard let data = files[path], offset <= UInt64(data.count) else { return nil }
+                    return data.subdata(in: Int(offset)..<data.count)
+                }
+            )
+        }
+    }
+
+    private static let generation = "MSTeamsNM_SlimCore_2026-11-01_09-00-00.10.log"
+    private static let teardownLine = "2026-11-12T14:32:40.100000+02:00 0x1 <INFO> SlimCoreModule::WindowContentProtectionProvider: UnregisterCall 406\n"
+    private static let registerLine = "2026-11-12T14:00:00.000000+02:00 0x1 <INFO> SlimCoreModule::WindowContentProtectionProvider: SetWindowContentProtection 406\n"
+
+    private func fakeWatcher(
+        _ folder: FakeFolder, scheduler: ManualScheduler, events: EventLog = NoopEventLog(),
+        clock: LockedBox<Date> = LockedBox(Date(timeIntervalSince1970: 1_000_000))
+    ) -> CallTeardownWatcher {
+        CallTeardownWatcher(
+            directory: URL(fileURLWithPath: folder.dir), family: Self.family,
+            scheduler: scheduler.schedule, readQueue: nil, eventLog: events,
+            fileSystem: folder.fileSystem, now: { clock.get() }
+        )
+    }
+
+    func testManyTicksAreDrivenByOneTimer() throws {
+        let folder = FakeFolder()
+        folder.append(Self.generation, "start\n")
+        let scheduler = ManualScheduler()
+        let watcher = fakeWatcher(folder, scheduler: scheduler)
+        watcher.start()
+        for _ in 0..<10 { scheduler.fire() }
+        XCTAssertEqual(watcher.tickCount, 11)
+        XCTAssertEqual(scheduler.arms.count, 1, "one repeating timer, not one per tick")
+    }
+
+    func testATickThatIsNotRelistingStatsOnlyTheTailedFile() throws {
+        let folder = FakeFolder()
+        folder.append(Self.generation, "start\n")
+        folder.append("MSTeamsNM_SlimCore_2026-10-01_09-00-00.10.log", "old\n")
+        let scheduler = ManualScheduler()
+        let clock = LockedBox(Date(timeIntervalSince1970: 1_000_000))
+        let watcher = fakeWatcher(folder, scheduler: scheduler, clock: clock)
+        watcher.start()   // first tick lists
+        let (listings, stats) = (folder.listings, folder.stats)
+        clock.set(clock.get().addingTimeInterval(1))
+        scheduler.fire()
+        XCTAssertEqual(folder.listings, listings, "no listing inside relistInterval")
+        XCTAssertEqual(folder.stats - stats, 1, "one stat: the generation being tailed")
+
+        clock.set(clock.get().addingTimeInterval(CallTeardownWatcher.relistInterval))
+        scheduler.fire()
+        XCTAssertEqual(folder.listings, listings + 1, "a listing once relistInterval has passed")
+    }
+
+    func testListingParsesEachNameOnce() {
+        let folder = FakeFolder()
+        for day in 1...9 { folder.append("MSTeamsNM_SlimCore_2026-10-0\(day)_09-00-00.10.log", "x\n") }
+        let parses = LockedBox(0)
+        let listed = SlimCoreMuteLog.listing(
+            in: URL(fileURLWithPath: folder.dir), family: Self.family, fileSystem: folder.fileSystem,
+            parseName: { name in parses.mutate { $0 += 1 }; return SlimCoreMuteLog.nameTimestamp(name) }
+        )
+        XCTAssertEqual(listed.generations.count, 9)
+        XCTAssertEqual(parses.get(), 9, "one parse per name, not two per comparison")
+        XCTAssertEqual(listed.generations.last?.url.lastPathComponent, "MSTeamsNM_SlimCore_2026-10-09_09-00-00.10.log")
+    }
+
+    func testSnapshotIsNotHeldUpByATicksParse() throws {
+        let folder = FakeFolder()
+        folder.append(Self.generation, "start\n")
+        let parsing = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let watcher = CallTeardownWatcher(
+            directory: URL(fileURLWithPath: folder.dir), family: Self.family,
+            scheduler: { _, _ in {} }, readQueue: DispatchQueue(label: "END16.parse"),
+            fileSystem: folder.fileSystem,
+            parse: { chunk, pending in
+                parsing.signal()
+                _ = release.wait(timeout: .now() + 2)
+                return SlimCoreTeardownLog.lines(inChunk: chunk, pending: pending)
+            }
+        )
+        watcher.start()
+        XCTAssertEqual(parsing.wait(timeout: .now() + 2), .success)
+        let started = Date()
+        _ = watcher.snapshot()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.1, "snapshot() waited on a parse")
+        release.signal()
+        watcher.stop()
+    }
+
+    func testIdleCadenceWhileTeamsIsNotRunningKeepsAvailability() throws {
+        let folder = FakeFolder()
+        folder.append(Self.generation, "start\n")
+        let scheduler = ManualScheduler()
+        let watcher = fakeWatcher(folder, scheduler: scheduler)
+        watcher.start()
+        XCTAssertEqual(scheduler.arms, [CallTeardownWatcher.defaultPollInterval], "1 Hz until told otherwise")
+        XCTAssertTrue(watcher.snapshot().available)
+
+        watcher.setTeamsRunning(false)
+        XCTAssertEqual(scheduler.arms.last, CallTeardownWatcher.idlePollInterval)
+        XCTAssertEqual(watcher.currentPollInterval, CallTeardownWatcher.idlePollInterval)
+        XCTAssertTrue(watcher.snapshot().available, "slowing down must not lapse the oracle")
+
+        let ticks = watcher.tickCount
+        let listings = folder.listings
+        watcher.setTeamsRunning(true)
+        XCTAssertEqual(scheduler.arms.last, CallTeardownWatcher.defaultPollInterval)
+        XCTAssertEqual(watcher.tickCount, ticks + 1, "a launch ticks at once, before any consult")
+        XCTAssertEqual(folder.listings, listings + 1, "a launch lists, since a launch is when Teams rotates")
+        XCTAssertTrue(watcher.snapshot().available)
+    }
+
+    func testATeamsQuitTicksAtOnce() throws {
+        let folder = FakeFolder()
+        folder.append(Self.generation, "start\n")
+        let scheduler = ManualScheduler()
+        let watcher = fakeWatcher(folder, scheduler: scheduler)
+        watcher.start()
+        folder.append(Self.generation, Self.teardownLine)
+        watcher.setTeamsRunning(false)
+        XCTAssertNotNil(watcher.snapshot().lastTeardownAt, "the teardown a quit flushed was read at once, not 30 s later")
+    }
+
+    func testALineWrittenAcrossAFailedListingIsStillRead() throws {
+        // F160: the old tick dropped `current` on a failed listing, and the next success started at
+        // end of file, so these bytes were never read.
+        let folder = FakeFolder()
+        folder.append(Self.generation, "start\n")
+        let scheduler = ManualScheduler()
+        let clock = LockedBox(Date(timeIntervalSince1970: 1_000_000))
+        let watcher = fakeWatcher(folder, scheduler: scheduler, clock: clock)
+        watcher.start()
+        // Half a line is read and carried before the failure, the rest is written during it.
+        folder.append(Self.generation, "2026-11-12T14:32:40.100000+02:00 0x1 <INFO> SlimCoreModule::Window")
+        scheduler.fire()
+
+        folder.listingFails = true
+        folder.statFails = true
+        folder.append(Self.generation, "ContentProtec")
+        clock.set(clock.get().addingTimeInterval(11))
+        scheduler.fire()
+        folder.listingFails = false
+        folder.statFails = false
+        folder.append(Self.generation, "tionProvider: UnregisterCall 406\n")
+        clock.set(clock.get().addingTimeInterval(11))
+        scheduler.fire()
+        XCTAssertNotNil(watcher.snapshot().lastTeardownAt)
+    }
+
+    func testAFailedListingStillReadsTheTailedGeneration() throws {
+        let folder = FakeFolder()
+        folder.append(Self.generation, "start\n")
+        let scheduler = ManualScheduler()
+        let clock = LockedBox(Date(timeIntervalSince1970: 1_000_000))
+        let events = RecordingEventLog()
+        let watcher = fakeWatcher(folder, scheduler: scheduler, events: events, clock: clock)
+        watcher.start()
+        folder.listingFails = true
+        folder.append(Self.generation, Self.teardownLine)
+        clock.set(clock.get().addingTimeInterval(11))
+        scheduler.fire()
+        XCTAssertNotNil(watcher.snapshot().lastTeardownAt)
+        XCTAssertTrue(watcher.snapshot().available)
+        XCTAssertEqual(events.entries.filter { $0.action == "call_teardown_source_missing" }.count, 1)
+    }
+
+    func testARotationStartsTheNewGenerationAtZero() throws {
+        let folder = FakeFolder()
+        folder.append(Self.generation, "start\n")
+        let scheduler = ManualScheduler()
+        let watcher = fakeWatcher(folder, scheduler: scheduler)
+        watcher.start()
+        folder.append("MSTeamsNM_SlimCore_2026-11-12_09-00-00.10.log", Self.teardownLine)
+        watcher.setTeamsRunning(false)
+        watcher.setTeamsRunning(true)   // a launch forces the listing that finds the rotation
+        XCTAssertNotNil(watcher.snapshot().lastTeardownAt, "a generation newer than the tail is read from 0")
+    }
+
+    func testThreeFlapsInAnHourLogOneMissingAndOneRecoveredRow() throws {
+        let folder = FakeFolder()
+        folder.append(Self.generation, "start\n")
+        let scheduler = ManualScheduler()
+        let clock = LockedBox(Date(timeIntervalSince1970: 1_000_000))
+        let events = RecordingEventLog()
+        let watcher = fakeWatcher(folder, scheduler: scheduler, events: events, clock: clock)
+        watcher.start()
+        for _ in 0..<3 {
+            folder.listingFails = true
+            clock.set(clock.get().addingTimeInterval(11))
+            scheduler.fire()
+            folder.listingFails = false
+            clock.set(clock.get().addingTimeInterval(11))
+            scheduler.fire()
+        }
+        let missing = events.entries.filter { $0.action == "call_teardown_source_missing" }
+        let recovered = events.entries.filter { $0.action == "call_teardown_source_recovered" }
+        XCTAssertEqual(missing.count, 1)
+        XCTAssertEqual(missing.first?.attributes["failures"], "1")
+        XCTAssertEqual(recovered.count, 1)
+        XCTAssertEqual(recovered.first?.attributes["outage_sec"], "11.0")
+
+        // Past the hour the next failure reports again, carrying the two that were suppressed.
+        clock.set(clock.get().addingTimeInterval(3600))
+        folder.listingFails = true
+        scheduler.fire()
+        XCTAssertEqual(events.entries.filter { $0.action == "call_teardown_source_missing" }.last?.attributes["failures"], "3")
+    }
+
+    func testAStatOnlyTickDoesNotEndAListingOutage() throws {
+        // In production a failed listing is followed a second later by a stat-only tick that reads
+        // the tailed file fine; that proves nothing about the folder and must not close the outage.
+        let folder = FakeFolder()
+        folder.append(Self.generation, "start\n")
+        let scheduler = ManualScheduler()
+        let clock = LockedBox(Date(timeIntervalSince1970: 1_000_000))
+        let events = RecordingEventLog()
+        let watcher = fakeWatcher(folder, scheduler: scheduler, events: events, clock: clock)
+        watcher.start()
+        folder.listingFails = true
+        clock.set(clock.get().addingTimeInterval(11))
+        scheduler.fire()
+        for _ in 0..<5 {
+            clock.set(clock.get().addingTimeInterval(1))
+            scheduler.fire()
+        }
+        XCTAssertFalse(events.entries.contains { $0.action == "call_teardown_source_recovered" })
+        folder.listingFails = false
+        clock.set(clock.get().addingTimeInterval(5))
+        scheduler.fire()
+        let recovered = events.entries.filter { $0.action == "call_teardown_source_recovered" }
+        XCTAssertEqual(recovered.count, 1)
+        XCTAssertEqual(recovered.first?.attributes["outage_sec"], "10.0", "the outage runs to the listing that worked")
+    }
+
+    func testEachParsedLineIsLoggedWithItsOwnTimeAndAHashedID() throws {
+        let folder = FakeFolder()
+        folder.append(Self.generation, "start\n")
+        let scheduler = ManualScheduler()
+        let events = RecordingEventLog()
+        let watcher = fakeWatcher(folder, scheduler: scheduler, events: events)
+        watcher.start()
+        folder.append(Self.generation, Self.registerLine)
+        scheduler.fire()
+        XCTAssertNil(watcher.snapshot().lastTeardownAt, "a registration line must never read as a teardown")
+        folder.append(Self.generation, Self.teardownLine)
+        scheduler.fire()
+
+        let rows = events.entries.filter { $0.action == "call_teardown_line" }
+        XCTAssertEqual(rows.map { $0.attributes["kind"] }, ["register", "unregister"])
+        XCTAssertEqual(rows.last?.attributes["line_at"], "2026-11-12T14:32:40.100Z", "SlimCore prints UTC with a local offset")
+        XCTAssertEqual(rows.first?.attributes["call_id_hash"], rows.last?.attributes["call_id_hash"], "one call pairs")
+        XCTAssertFalse(rows.contains { $0.attributes.values.contains("406") }, "the raw call id is never logged")
+        XCTAssertNotNil(rows.last?.attributes["read_lag_sec"])
+        XCTAssertNotNil(watcher.snapshot().lastTeardownAt)
+    }
+
+    func testSourceOutageReportRateLimitsPerCause() {
+        var report = SourceOutageReport(interval: 3600)
+        let t0 = Date(timeIntervalSince1970: 0)
+        XCTAssertEqual(report.failure(cause: "a", at: t0), .init(cause: "a", failures: 1))
+        XCTAssertNil(report.failure(cause: "a", at: t0.addingTimeInterval(1)))
+        XCTAssertEqual(report.failure(cause: "b", at: t0.addingTimeInterval(2)), .init(cause: "b", failures: 2),
+                       "a different cause reports at once, carrying the suppressed failure")
+        XCTAssertEqual(report.success(at: t0.addingTimeInterval(10)), .init(outageSec: 10, failures: 3))
+        XCTAssertNil(report.success(at: t0.addingTimeInterval(11)), "one recovered row per outage")
+        XCTAssertNil(report.failure(cause: "a", at: t0.addingTimeInterval(20)))
+        XCTAssertNil(report.success(at: t0.addingTimeInterval(21)), "no recovered row for an outage nobody was told about")
     }
 }

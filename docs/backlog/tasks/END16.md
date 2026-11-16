@@ -2,9 +2,9 @@
 id: END16
 title: The call-teardown watcher stats Teams' log folder every second around the clock, and reports the folder unreadable thousands of times
 category: Detection
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-23. A 60 s idle trace had the `CallTeardownWatcher` queue busy about 21% of the window, mostly `attributesOfItem` / `getxattr` on Teams' Group Container. `call_teardown_source_missing` transitions number about 21,700 since 2026-09-17, a median 68 s apart, so the END9 oracle is intermittently blind. Scope: find the flapping cause, cheap stat-only tailing, idle cadence, count blind confirms. Amended 2026-10-25 (performance review): since END17 an unreadable log is no evidence rather than a confirm, so the flapping now costs holds that wait out a dwell, not chopped calls; added legs for the per-tick `DispatchQueue` and timer, the regex and `DateFormatter` in the sort comparator, chunk parsing under the lock `snapshot()` takes, and a Teams-running cadence that keeps END10's warm tail. [Spec](./END16.md) Amended 2026-11-13 by the audit band: the oracle confirmed 0 of 59 Teams ends (4 of 4 era C ends waited the 60 s dwell), so log the teardown line's own time, keep the tail across a failed listing, rate-limit source_missing, gate the consult on Teams.
+comment: Shipped 2026-11-16 (watcher and oracle legs): one repeating timer, 1 Hz while Teams runs and 30 s otherwise via TeamsRunningObserver, a stat(2) of the tailed file per tick with a listing every 10 s or on a Teams launch, names parsed once, parse outside the snapshot lock, the tail kept across a failed listing (F160), source_missing rate-limited per cause per hour with recovered rows (teardown and mute), each SlimCore register/unregister line logged with its own time and a per-process hashed id, and the trace script building snapshots from those rows. Remainder: the hold-side rows and blind-consult count (MeetingSessionController) and the Teams gate on TeardownHoldPolicy.consult (G053), both in files group A owned at pickup; the owner's flapping-cause measurement, the after-install sample and the one-week field read.
 ---
 
 # END16: the call-teardown watcher stats Teams' log folder every second around the clock, and reports the folder unreadable thousands of times
@@ -97,3 +97,19 @@ The fix decision itself (confirm a Teams end on evidence available within second
 - A case in `pipeline/tests/test_detection_trace_scripts.py` that a pack with line rows builds the snapshot from the line's time, not the confirm's.
 - New event actions documented in `CONVENTIONS.md`; `python3 scripts/truth_fences.py both` and `bash scripts/ci-local.sh` green, new test counts in the commit body.
 - Field read after one working week on the build (counts and timestamps only): the delay from mic release to the teardown line's own stamp and to its read, per Teams end, written into this file.
+
+**Progress (2026-11-16): what shipped, what is left, and why.**
+
+Shipped, in `CallTeardownWatcher`, `SlimCoreMuteLog`, `SlimCoreTeardownLog`, `LogMuteAdapter`, a new `SourceOutageReport` (pure, shared) and `TeamsRunningObserver` (MeetingPipe target, a `SessionWatchers` member so dropping it is a compile error), plus `scripts/extract_detection_trace.py`:
+
+- Scope item 2 and the 2026-10-25 legs: one repeating `DispatchSourceTimer` on the watcher's serial read queue (overlap impossible, missed fires coalesced, armed atomically with the started check so a timer cannot outlive `stop`); a per-tick `stat(2)` of the tailed generation and a directory listing only every `relistInterval` (10 s), on a Teams launch, or when that stat fails (the spec's "size stopped moving" trigger was rejected: SlimCore writes only on events, so it would list nearly every tick); `stat(2)` rather than `URLResourceValues`, whose cache never clears on a GCD worker; each family name parsed once per listing; the teardown parse runs outside the lock `snapshot()` takes; 1 Hz while Teams runs and `idlePollInterval` (30 s) otherwise, with an immediate tick on a launch (warm before any consult) and on a quit (a quit can flush the `UnregisterCall`). The watcher defaults to "running", so a host that never reports keeps today's 1 Hz. The original "1 Hz on engage" acceptance line is replaced by the amendment's Teams-running test.
+- The 2026-11-13 amendment, items 1 (line rows), 2, 3 and 5: `call_teardown_line` per parsed register/unregister line with its own time, `read_lag_sec` and a hashed id (Swift's per-process `Hasher`: Teams' ids are small counters, so an unsalted digest would be reversible); the tail kept across a failed listing, which now still reads the generation being tailed; `call_teardown_source_missing` and `log_mute_source_missing` rate-limited per cause per hour with `failures`, plus recovered rows with the outage's length; `Snapshot` gained `tailOffset` and `tailFileSize`; the trace script places a snapshot at each unregister line row with the line's own time, maps recovered rows to available, never treats a register line as a teardown, and falls back to the confirm time per confirm (saying so) only when no line row covers it.
+
+Remainder, not doable from this task's files:
+
+1. The hold-side half of amendment item 1 (the newest stamp, its age, `log_written_at`, offset and size in `lifecycle_end_held` and an edge-limited per-consult row) and the count of consults made while `available` is false: both live in `MeetingSessionController`, which another session owned at pickup. `Snapshot.tailOffset` / `tailFileSize` are there so that change is a few lines.
+2. Amendment item 4 (G053): gate `TeardownHoldPolicy.consult` on the Teams bundle family, not only `.native`. One line in `TeardownHoldPolicy.swift`, same reason; DET15 item 4 names the same seam.
+3. Owner: scope item 1 (why the folder listing flapped, now visible as `failures` and `outage_sec` on the rate-limited rows), the after-install 60 s idle `sample` (target under 2 percent for the watcher's queue), and the one-week field read of mic release to line time to read time.
+
+Design and diff reviewed by an independent reviewer; its required changes (the listing trigger, the URL cache, keeping the carried half line on a failure, the timer's lifecycle, a tick on quit, the trace filter and recovered mapping, rate-limit semantics, logging the registration line with a fence) are in.
+

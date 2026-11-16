@@ -915,8 +915,15 @@ final class Coordinator: NSObject {
     lazy var watchers = SessionWatchers.production(
         discovery: discoveryWatcher,
         callTeardown: callTeardown,
+        teamsRunning: teamsRunning,
         configRefresh: configRefresh
     )
+
+    /// END16: drives `callTeardown`'s cadence (1 Hz while Teams runs, slow otherwise). Started by
+    /// `watchers`, after the watcher it feeds.
+    lazy var teamsRunning = TeamsRunningObserver { [callTeardown] running in
+        callTeardown.setTeamsRunning(running)
+    }
 
 
 }

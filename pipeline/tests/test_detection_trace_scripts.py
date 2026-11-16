@@ -271,3 +271,47 @@ def test_every_committed_corpus_trace_passes_the_strict_check():
             continue
         trace = json.loads(path.read_text(encoding="utf-8"))
         assert _clean(trace), f"{path.name} fails redact_detection_trace.py --check"
+
+
+def test_a_teardown_line_row_puts_its_own_time_in_the_snapshot():
+    # END16: the confirm-time fallback could only replay the logged decision. With the line's own
+    # row, the snapshot carries when Teams wrote it, so a replay can ask whether a different rule
+    # would have confirmed sooner. A registration line is never teardown evidence.
+    rows = _end15_log()[:6] + [
+        _row("2026-10-22T12:14:53.443Z", "coordinator", "lifecycle_end_held", bundle_id=TEAMS,
+             oracle_available=True, log_written_sec_ago=30.5, live_signal="call_is_down"),
+        _row("2026-10-22T12:14:54.000Z", "coordinator", "call_teardown_line", kind="register",
+             line_at="2026-10-22T12:00:00.000Z", call_id_hash="ab12cd34", read_lag_sec=894.0),
+        _row("2026-10-22T12:15:40.000Z", "coordinator", "call_teardown_line", kind="unregister",
+             line_at="2026-10-22T12:15:38.500Z", call_id_hash="ab12cd34", read_lag_sec=1.5),
+        _row("2026-10-22T12:15:40.200Z", "coordinator", "lifecycle_provisional_end_confirmed",
+             bundle_id=TEAMS, oracle="teardown_observed", held_sec=46.8),
+    ]
+    trace, report = _extract(rows, "2026-10-22T12:14:50Z", "2026-10-22T12:16:30Z")
+
+    snapshots = [e for e in trace["events"] if e["kind"] == "teardown_snapshot"]
+    assert snapshots[1:] == [
+        {"t": 50.0, "kind": "teardown_snapshot", "available": True, "teardown_at": 48.5, "log_written_at": None},
+    ], "one snapshot at the line's read, carrying the line's own time; none from the register line or the confirm"
+    assert any("covered by a call_teardown_line" in line for line in report)
+
+
+def test_a_confirm_without_a_line_row_falls_back_and_says_so():
+    rows = _end15_log()[:6] + [
+        _row("2026-10-22T12:16:24.000Z", "coordinator", "lifecycle_provisional_end_confirmed",
+             bundle_id=TEAMS, oracle="teardown_observed", held_sec=150.6),
+    ]
+    trace, report = _extract(rows, "2026-10-22T12:14:50Z", "2026-10-22T12:16:30Z")
+    snapshots = [e for e in trace["events"] if e["kind"] == "teardown_snapshot"]
+    assert snapshots == [{"t": 94.0, "kind": "teardown_snapshot", "available": True, "teardown_at": 94.0, "log_written_at": None}]
+    assert any("teardown_at is the confirm time" in line for line in report)
+
+
+def test_a_recovered_row_makes_the_log_readable_again():
+    rows = _end15_log()[:6] + [
+        _row("2026-10-22T12:14:52.000Z", "coordinator", "call_teardown_source_missing", reason="x", failures=1),
+        _row("2026-10-22T12:14:55.000Z", "coordinator", "call_teardown_source_recovered", outage_sec=3.0, failures=3),
+    ]
+    trace, _ = _extract(rows, "2026-10-22T12:14:50Z", "2026-10-22T12:15:00Z")
+    availability = [e["available"] for e in trace["events"] if e["kind"] == "teardown_snapshot"]
+    assert availability == [False, True]

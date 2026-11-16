@@ -40,6 +40,50 @@ public enum SlimCoreTeardownLog {
         return SlimCoreMuteLog.parseTimestamp(line[line.startIndex..<marker.lowerBound])
     }
 
+    /// The registration side of the same DRM object, verbatim:
+    /// `2026-08-20T10:38:56.531207+03:00 0x1 <INFO> SlimCoreModule::WindowContentProtectionProvider: SetWindowContentProtection 385`
+    ///
+    /// Parsed for logging only (END16), so a field pack shows when each call registered and tore
+    /// down, never to confirm anything: it fires at call START, and reading it as an end would read
+    /// every call's beginning as its end. `newestTeardown` ignores it.
+    public static let registrationMarker = "SlimCoreModule::WindowContentProtectionProvider: SetWindowContentProtection "
+
+    /// One parsed line of either kind, with Teams' own timestamp and call id.
+    public struct Line: Equatable, Sendable {
+        public enum Kind: String, Sendable { case register, unregister }
+        public let kind: Kind
+        public let at: Date
+        /// Teams' small per-process call counter (378, 406). Never logged raw.
+        public let callID: String
+    }
+
+    /// Parse one line as a teardown or registration, or nil for anything else.
+    public static func parseLine(_ line: some StringProtocol) -> Line? {
+        for (marker, kind) in [(teardownMarker, Line.Kind.unregister), (registrationMarker, .register)] {
+            guard let range = line.range(of: marker) else { continue }
+            let id = line[range.upperBound...].prefix { !$0.isWhitespace }
+            guard !id.isEmpty, id.allSatisfy(\.isNumber),
+                  let at = SlimCoreMuteLog.parseTimestamp(line[line.startIndex..<range.lowerBound]) else { return nil }
+            return Line(kind: kind, at: at, callID: String(id))
+        }
+        return nil
+    }
+
+    /// Every teardown and registration line in a chunk, plus the trailing partial line the next
+    /// tick has to prepend (END16, so each line can be logged with its own time).
+    public static func lines(inChunk chunk: Data, pending: Data) -> (lines: [Line], carry: Data) {
+        var buffer = pending
+        buffer.append(chunk)
+        guard let lastNewline = buffer.lastIndex(of: UInt8(ascii: "\n")) else {
+            return ([], buffer)
+        }
+        let complete = buffer[buffer.startIndex...lastNewline]
+        let carry = Data(buffer[buffer.index(after: lastNewline)...])
+        guard let text = String(data: Data(complete), encoding: .utf8) else { return ([], carry) }
+        let parsed = text.split(separator: "\n", omittingEmptySubsequences: true).compactMap { parseLine($0) }
+        return (parsed, carry)
+    }
+
     /// The newest teardown in a chunk of appended bytes, plus whatever trailing partial line the
     /// next tick has to prepend.
     ///

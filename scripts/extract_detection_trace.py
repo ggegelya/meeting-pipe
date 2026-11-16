@@ -324,8 +324,18 @@ LIVE_SIGNALS = {"call_is_up", "call_is_down", "unknown"}
 VERDICTS = {"idle", "starting", "in_meeting", "ending_provisional", "ended"}
 
 
-def _host_events(row: dict, t: float, report: list[str]) -> list[dict]:
-    """The host inputs one `coordinator` row carries, as lifecycle-trace events."""
+# END16: coordinator rows that carry no bundle_id but still feed the replay.
+BUNDLELESS_HOST_ROWS = {"call_teardown_source_missing", "call_teardown_source_recovered", "call_teardown_line"}
+# CallTeardownOracle.defaultLookbackSec: how far before a hold opened a teardown line still confirms it.
+TEARDOWN_LOOKBACK_SEC = 15.0
+
+
+def _host_events(row: dict, t: float, report: list[str], line_at: float | None = None,
+                 lines_seen: list[float] | None = None) -> list[dict]:
+    """The host inputs one `coordinator` row carries, as lifecycle-trace events.
+
+    `line_at` is a `call_teardown_line` row's own timestamp on the trace clock; `lines_seen` the
+    unregister line times already read when this row was written (END16)."""
     act = row.get("action")
     out: list[dict] = []
     if act == "recording_started":
@@ -343,9 +353,15 @@ def _host_events(row: dict, t: float, report: list[str]) -> list[dict]:
     elif act == "lifecycle_provisional_end_confirmed":
         oracle = row.get("oracle")
         if oracle == "teardown_observed":
-            # The old host's consult saw the teardown line here, so it was on disk by now; the
-            # replay consults on a snapshot row, which reproduces the logged moment.
-            out.append({"kind": "teardown_snapshot", "available": True, "teardown_at": t, "log_written_at": None})
+            held = row.get("held_sec") if isinstance(row.get("held_sec"), (int, float)) else 0.0
+            if any(t - held - TEARDOWN_LOOKBACK_SEC <= at <= t for at in (lines_seen or [])):
+                # END16: the line's own row already put its own time into the trace.
+                report.append(f"t={t}: confirm covered by a call_teardown_line row; its own time is the snapshot")
+            else:
+                # A pack from before END16 logs no line rows: fall back to the confirm's time, which
+                # only reproduces the logged moment and cannot test whether a rule would confirm sooner.
+                report.append(f"t={t}: no call_teardown_line row inside the lookback; teardown_at is the confirm time")
+                out.append({"kind": "teardown_snapshot", "available": True, "teardown_at": t, "log_written_at": None})
         else:
             # oracle_unavailable, hold_cap_reached, live_signal_ceiling_reached, or the pre-END9
             # empty re-walk: retired confirms, none of them evidence a teardown happened.
@@ -354,6 +370,13 @@ def _host_events(row: dict, t: float, report: list[str]) -> list[dict]:
         out.append({"kind": "rewalk", "found": True})
     elif act == "call_teardown_source_missing":
         out.append({"kind": "teardown_snapshot", "available": False, "teardown_at": None, "log_written_at": None})
+    elif act == "call_teardown_source_recovered":
+        # Missing rows are rate-limited since END16, so without this a replay stays blind after one outage.
+        out.append({"kind": "teardown_snapshot", "available": True, "teardown_at": None, "log_written_at": None})
+    elif act == "call_teardown_line" and row.get("kind") == "unregister" and line_at is not None:
+        # Placed at the row's own time (when the watcher read it), carrying the line's own time.
+        # A registration line fires at call start and is never teardown evidence.
+        out.append({"kind": "teardown_snapshot", "available": True, "teardown_at": line_at, "log_written_at": None})
     return out
 
 
@@ -451,6 +474,7 @@ def extract_raw(
 
     logged: list[dict] = []
     dropped: dict[str, int] = {}
+    lines_seen: list[float] = []
     for e in window:
         cat, act, own = e.get("category"), e.get("action"), e.get("bundle_id")
         t = rel(e)
@@ -460,8 +484,13 @@ def extract_raw(
                 out.append({"t": t, **sig})
             elif act in UNMAPPABLE_SIGNALS:
                 dropped[act] = dropped.get(act, 0) + 1
-        elif cat == "coordinator" and (own == bundle or (own is None and act == "call_teardown_source_missing")):
-            out.extend({"t": t, **ev} for ev in _host_events(e, t, report))
+        elif cat == "coordinator" and (own == bundle or (own is None and act in BUNDLELESS_HOST_ROWS)):
+            line_at = None
+            if act == "call_teardown_line" and (stamp := _parse_ts(e.get("line_at"))) is not None:
+                line_at = round((stamp - start).total_seconds(), 3)
+            out.extend({"t": t, **ev} for ev in _host_events(e, t, report, line_at, lines_seen))
+            if line_at is not None and e.get("kind") == "unregister":
+                lines_seen.append(line_at)
         elif cat == "lifecycle" and (own == bundle or own is None):
             rec = _verdict_record(e, t)
             if rec is not None:

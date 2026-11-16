@@ -13,7 +13,9 @@ import os
 ///
 /// It runs for the whole session rather than per meeting. A per-meeting watcher would start reading
 /// at the moment the meeting starts, and the teardown line it needs can arrive within a second of
-/// that; a long-lived tail is already warm and costs one `stat` plus a short read per second.
+/// that; a long-lived tail is already warm. END16 made it cheap: one `stat(2)` of the generation
+/// being tailed per tick and a directory listing only every `relistInterval` (or on a Teams launch,
+/// or when that stat fails), at 1 Hz while Teams runs and every `idlePollInterval` while it does not.
 public final class CallTeardownWatcher {
 
     /// What the oracle needs, read atomically. `available` is about the *log*, never about whether
@@ -28,39 +30,58 @@ public final class CallTeardownWatcher {
         /// item 5: a generation frozen before the recording began is a log that is not being
         /// written, which must not read as a healthy oracle that has simply seen no teardown.
         public let logLastWrittenAt: Date?
+        /// END16: how far into the generation the tail has read, and the generation's size at the
+        /// last stat, so a hold's log row can say whether the tail was caught up.
+        public let tailOffset: UInt64
+        public let tailFileSize: UInt64?
 
-        public init(lastTeardownAt: Date?, available: Bool, logLastWrittenAt: Date? = nil) {
+        public init(
+            lastTeardownAt: Date?, available: Bool, logLastWrittenAt: Date? = nil,
+            tailOffset: UInt64 = 0, tailFileSize: UInt64? = nil
+        ) {
             self.lastTeardownAt = lastTeardownAt
             self.available = available
             self.logLastWrittenAt = logLastWrittenAt
+            self.tailOffset = tailOffset
+            self.tailFileSize = tailFileSize
         }
     }
 
-    /// Returns a cancel closure. Default re-arms a one-shot `Timer` per tick; tests inject a manual
-    /// driver to step the poll without sleeping.
+    /// Starts a REPEATING tick every `interval` and returns its cancel closure (END16; it was a
+    /// one-shot re-armed after every tick, one new `DispatchQueue` and timer source per second for
+    /// the life of the process). Tests inject a manual driver that keeps the action until cancelled.
     public typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
 
     /// One second, matching `LogMuteAdapter`. The teardown leads the AX edge by ~1.3 s, so a 1 Hz
-    /// tail is comfortably ahead of the consult that reads it.
+    /// tail is comfortably ahead of the consult that reads it. Used while Teams is running.
     public static let defaultPollInterval: TimeInterval = 1.0
+
+    /// END16: the cadence while Teams is not running. The oracle only matters inside a Teams hold,
+    /// a hold needs a Teams call, and a Teams launch returns the tail to 1 Hz with an immediate tick,
+    /// so the warm tail END10 needs is never cold when a consult can come.
+    public static let idlePollInterval: TimeInterval = 30.0
+
+    /// END16: a full directory listing at most this often; every other tick stats only the file
+    /// being tailed. A generation rotates only when Teams restarts, and a Teams launch forces a
+    /// listing, so this bounds how late a rotation that slipped past both is noticed. No line is
+    /// lost meanwhile: the old generation keeps its offset, and the new one is read from 0.
+    public static let relistInterval: TimeInterval = 10.0
 
     /// END10 item 2: a `DispatchSourceTimer`, not `Timer.scheduledTimer`.
     ///
-    /// `rearm` is called from inside the `readQueue` work closure, and a `Timer` attaches to
-    /// `RunLoop.current`. A GCD worker has no run loop being run, so the timer never fired and the
-    /// tail ticked exactly once for the life of the process. `LogMuteAdapter` avoids this by
-    /// hopping to main before re-arming; this watcher deliberately does not hop, because its whole
-    /// design is that the blocking half stays off main and only the parsed instant crosses back
-    /// under a lock. A dispatch timer has no run-loop dependency at all, so it keeps that design
-    /// instead of bouncing a once-a-second file read through the main queue.
-    public static let defaultScheduler: Scheduler = { delay, action in
-        let timer = DispatchSource.makeTimerSource(
-            queue: DispatchQueue(label: "MeetingPipeCore.CallTeardownWatcher.timer")
-        )
-        timer.schedule(deadline: .now() + delay)
-        timer.setEventHandler { action() }
-        timer.resume()
-        return { timer.cancel() }
+    /// The tick runs on a GCD worker, and a `Timer` attaches to `RunLoop.current`, which no GCD
+    /// worker runs, so the timer never fired and the tail ticked exactly once for the life of the
+    /// process. A dispatch timer has no run-loop dependency. END16 made it one repeating timer on
+    /// `queue` (the watcher's serial `readQueue` in production), with leeway, so ticks can never
+    /// overlap and a fire missed while a slow read runs is coalesced rather than stacked.
+    public static func dispatchScheduler(on queue: DispatchQueue) -> Scheduler {
+        return { interval, action in
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(Int(interval * 100)))
+            timer.setEventHandler { action() }
+            timer.resume()
+            return { timer.cancel() }
+        }
     }
 
     private struct State {
@@ -76,7 +97,18 @@ public final class CallTeardownWatcher {
         var consecutiveResolveFailures = 0
         var logLastWrittenAt: Date?
         var ticks = 0
-        var reportedFailure: String?
+        /// END16 (F160): a resolve has succeeded since `start`, so a later success after a failed
+        /// listing is not a first resolve and must not skip to end of file.
+        var everResolved = false
+        var tailFileSize: UInt64?
+        var lastRelistAt: Date?
+        /// Set by a Teams launch: the next tick lists the directory, since a launch is when Teams rotates.
+        var forceRelist = false
+        /// END16: the cadence follows whether Teams runs. True until told otherwise, so a host
+        /// that never reports keeps END10's 1 Hz rather than silently slowing the oracle down.
+        var teamsRunning = true
+        /// Survives `stop`, so a session boundary does not reopen the hourly report window.
+        var outages = SourceOutageReport()
     }
 
     /// Consecutive failed resolves before `available` drops.
@@ -95,31 +127,51 @@ public final class CallTeardownWatcher {
     private let scheduler: Scheduler
     private let readQueue: DispatchQueue?
     private let pollInterval: TimeInterval
+    private let idleInterval: TimeInterval
+    private let fileSystem: SlimCoreMuteLog.FileSystem
+    private let now: () -> Date
+    /// Seam for the parse-outside-the-lock test; production is `SlimCoreTeardownLog.lines`.
+    private let parse: (Data, Data) -> (lines: [SlimCoreTeardownLog.Line], carry: Data)
+    /// Serialises arming against `stop` and against a cadence change, so a timer made for a
+    /// stopped session is cancelled rather than left doing I/O every second forever.
+    private let armLock = NSLock()
     private let state = OSAllocatedUnfairLock(initialState: State())
     /// `uncheckedState` because a cancel closure is not `Sendable` and cannot be made so; the
     /// lock is what makes the access safe, and the target's two documented `@unchecked Sendable`
     /// conformances stay two (the island rule in `MeetingPipeCore/CLAUDE.md`).
     private let cancelBox = OSAllocatedUnfairLock<(() -> Void)?>(uncheckedState: nil)
 
+    /// `scheduler` nil is production: one repeating dispatch timer on `readQueue` (or a private
+    /// serial queue when `readQueue` is nil).
     public init(
         directory: URL,
         family: String,
-        scheduler: @escaping Scheduler = CallTeardownWatcher.defaultScheduler,
+        scheduler: Scheduler? = nil,
         readQueue: DispatchQueue? = DispatchQueue(label: "MeetingPipeCore.CallTeardownWatcher"),
         pollInterval: TimeInterval = CallTeardownWatcher.defaultPollInterval,
-        eventLog: EventLog = NoopEventLog()
+        idleInterval: TimeInterval = CallTeardownWatcher.idlePollInterval,
+        eventLog: EventLog = NoopEventLog(),
+        fileSystem: SlimCoreMuteLog.FileSystem = .real,
+        now: @escaping () -> Date = { Date() },
+        parse: @escaping (Data, Data) -> (lines: [SlimCoreTeardownLog.Line], carry: Data) = SlimCoreTeardownLog.lines
     ) {
         self.directory = directory
         self.family = family
         self.eventLog = eventLog
-        self.scheduler = scheduler
+        self.scheduler = scheduler ?? CallTeardownWatcher.dispatchScheduler(
+            on: readQueue ?? DispatchQueue(label: "MeetingPipeCore.CallTeardownWatcher.timer")
+        )
         self.readQueue = readQueue
         self.pollInterval = pollInterval
+        self.idleInterval = idleInterval
+        self.fileSystem = fileSystem
+        self.now = now
+        self.parse = parse
     }
 
     /// Teams' SlimCore media stack, the same directory and family MIC8 reads for mute.
     public static func teams(
-        scheduler: @escaping Scheduler = CallTeardownWatcher.defaultScheduler,
+        scheduler: Scheduler? = nil,
         readQueue: DispatchQueue? = DispatchQueue(label: "MeetingPipeCore.CallTeardownWatcher"),
         pollInterval: TimeInterval = CallTeardownWatcher.defaultPollInterval,
         eventLog: EventLog = NoopEventLog()
@@ -143,7 +195,9 @@ public final class CallTeardownWatcher {
             Snapshot(
                 lastTeardownAt: $0.lastTeardownAt,
                 available: $0.available,
-                logLastWrittenAt: $0.logLastWrittenAt
+                logLastWrittenAt: $0.logLastWrittenAt,
+                tailOffset: $0.offset,
+                tailFileSize: $0.tailFileSize
             )
         }
     }
@@ -156,6 +210,11 @@ public final class CallTeardownWatcher {
     /// a GCD worker it stops at 1 forever, which is exactly the second END10 defect.
     public var tickCount: Int { state.withLock { $0.ticks } }
 
+    /// The interval the poll runs at now: 1 Hz while Teams runs, `idleInterval` while it does not.
+    public var currentPollInterval: TimeInterval {
+        state.withLock { $0.teamsRunning } ? pollInterval : idleInterval
+    }
+
     public func start() {
         let alreadyStarted = state.withLock { s -> Bool in
             if s.started { return true }
@@ -163,28 +222,70 @@ public final class CallTeardownWatcher {
             return false
         }
         guard !alreadyStarted else { return }
+        arm()
         tick()
     }
 
     public func stop() {
-        state.withLock { s in
-            s.started = false
-            s.generation &+= 1
-            s.current = nil
-            s.offset = 0
-            s.pending = Data()
-            s.consecutiveResolveFailures = 0
-            s.available = false
-            s.logLastWrittenAt = nil
-            s.reportedFailure = nil
-        }
-        cancelBox.withLock { cancel in
-            cancel?()
-            cancel = nil
+        armLock.withLock {
+            state.withLock { s in
+                s.started = false
+                s.generation &+= 1
+                s.current = nil
+                s.offset = 0
+                s.pending = Data()
+                s.consecutiveResolveFailures = 0
+                s.available = false
+                s.logLastWrittenAt = nil
+                s.everResolved = false
+                s.tailFileSize = nil
+                s.lastRelistAt = nil
+            }
+            cancelBox.withLock { cancel in
+                cancel?()
+                cancel = nil
+            }
         }
     }
 
-    /// One poll: resolve the newest generation, read what was appended, keep the newest teardown.
+    /// END16: Teams launched or quit. Either way the poll re-arms at the new cadence and ticks once
+    /// at once: on a launch so the tail (and `available`) are warm before any consult can come, and
+    /// on a quit because quitting can flush the very `UnregisterCall` a hold is waiting on. A launch
+    /// also forces a directory listing, since a launch is when Teams rotates its generation.
+    /// `available`, the current generation and the offset are never touched here.
+    public func setTeamsRunning(_ running: Bool) {
+        let changed = state.withLock { s -> Bool in
+            guard s.teamsRunning != running else { return false }
+            s.teamsRunning = running
+            if running { s.forceRelist = true }
+            return s.started
+        }
+        guard changed else { return }
+        arm()
+        tick()
+    }
+
+    /// (Re)arm the repeating poll at the current cadence, atomically with the started check.
+    private func arm() {
+        armLock.withLock {
+            let (live, interval, generation) = state.withLock { s in
+                (s.started, s.teamsRunning ? pollInterval : idleInterval, s.generation)
+            }
+            cancelBox.withLock { cancel in
+                cancel?()
+                cancel = nil
+            }
+            guard live else { return }
+            let cancel = scheduler(interval) { [weak self] in
+                guard let self, self.state.withLock({ $0.generation == generation && $0.started }) else { return }
+                self.tick()
+            }
+            cancelBox.withLock { $0 = cancel }
+        }
+    }
+
+    /// One poll: read what was appended to the generation being tailed (re-resolving the newest
+    /// generation when a listing is due), parse it, and keep the newest teardown.
     ///
     /// The first resolve starts at end-of-file (`skipHistory`), so engaging this does not replay
     /// every call Teams has ever torn down and hand the oracle a teardown from last week. That also
@@ -194,61 +295,89 @@ public final class CallTeardownWatcher {
         let generation = state.withLock { $0.generation }
         let work: () -> Void = { [weak self] in
             guard let self = self else { return }
-            let (dir, fam) = (self.directory, self.family)
-            let (current, offset, firstResolve) = self.state.withLock {
-                ($0.current, $0.offset, $0.current == nil)
-            }
+            let now = self.now()
+            // The session check comes before any I/O, so a stopped watcher reads nothing.
+            let input: (current: URL?, offset: UInt64, firstResolve: Bool, relist: Bool, pending: Data)? =
+                self.state.withLock { s in
+                    guard s.generation == generation, s.started else { return nil }
+                    let relist = s.forceRelist || s.current == nil || s.lastRelistAt.map {
+                        now.timeIntervalSince($0) >= CallTeardownWatcher.relistInterval
+                    } ?? true
+                    if relist {
+                        s.forceRelist = false
+                        s.lastRelistAt = now
+                    }
+                    return (s.current, s.offset, !s.everResolved, relist, s.pending)
+                }
+            guard let input else { return }
             let tail = SlimCoreMuteLog.tail(
-                directory: dir, family: fam,
-                current: current, offset: offset, skipHistory: firstResolve
+                directory: self.directory, family: self.family,
+                current: input.current, offset: input.offset, skipHistory: input.firstResolve,
+                relist: input.relist, fileSystem: self.fileSystem
             )
-            // Returned rather than captured: the lock body is `@Sendable`, so the report has to
-            // leave through the return value instead of a mutated local.
-            let failureToReport: String? = self.state.withLock { s -> String? in
+            // Parse outside the lock `snapshot()` takes (END16). A rotation means a Teams restart,
+            // so a carried half line belongs to a file no longer being read.
+            let parsed = self.parse(tail.chunk, tail.rotated ? Data() : input.pending)
+
+            typealias Report = (missing: SourceOutageReport.Missing?, recovered: SourceOutageReport.Recovered?)
+            let report: Report? = self.state.withLock { s -> Report? in
                 guard s.generation == generation, s.started else { return nil }
                 s.ticks &+= 1
-                var reportable: String?
                 if tail.url != nil {
-                    // Rises on the first success: a resolve that worked is proof the log is there.
+                    // Rises on the first success: a read that worked is proof the log is there.
                     // Only the fall is damped (END10 item 3).
                     s.consecutiveResolveFailures = 0
                     s.available = true
                     s.logLastWrittenAt = tail.modified
-                    s.reportedFailure = nil
+                    s.current = tail.url
+                    s.offset = tail.offset
+                    s.tailFileSize = tail.fileSize
+                    s.everResolved = true
+                    s.pending = parsed.carry
                 } else {
+                    // F160: keep `current`, `offset` and the carried half line, so bytes written
+                    // across a failed listing are read on the next success instead of skipped.
                     s.consecutiveResolveFailures &+= 1
                     if s.consecutiveResolveFailures >= CallTeardownWatcher.unavailableAfterFailures {
                         s.available = false
                         s.logLastWrittenAt = nil
                     }
-                    // One row per distinct cause per outage rather than one per tick, matching
-                    // `LogMuteAdapter.reportedMissing`. The cause is the point: END10 item 4 exists
-                    // because the old `try?` could not say whether this was TCC, I/O, or absence.
-                    let cause = tail.resolveFailure ?? "family absent from a directory that listed"
-                    if s.reportedFailure != cause {
-                        s.reportedFailure = cause
-                        reportable = cause
-                    }
                 }
-                s.current = tail.url
-                s.offset = tail.offset
-                // A rotation means a Teams restart, so a carried half line belongs to a file we are
-                // no longer reading and must not be prepended to the new one.
-                if tail.rotated { s.pending = Data() }
-                let parsed = SlimCoreTeardownLog.newestTeardown(inChunk: tail.chunk, pending: s.pending)
-                s.pending = parsed.carry
-                if let newest = parsed.newest, newest > (s.lastTeardownAt ?? .distantPast) {
+                if let newest = parsed.lines.filter({ $0.kind == .unregister }).map(\.at).max(),
+                   newest > (s.lastTeardownAt ?? .distantPast) {
                     s.lastTeardownAt = newest
                 }
-                return reportable
+                // The cause is the point: END10 item 4 exists because the old `try?` could not
+                // say whether this was TCC, I/O, or absence.
+                if let failure = tail.resolveFailure ?? (tail.url == nil ? "family absent from a directory that listed" : nil) {
+                    return (s.outages.failure(cause: failure, at: now), nil)
+                }
+                // Only a tick that listed can end a listing outage: the stat-only tick a second
+                // after a failed listing proves nothing about the folder, and counting it would
+                // close every outage after about one second.
+                return (nil, input.relist ? s.outages.success(at: now) : nil)
             }
-            if let failureToReport {
+            guard let report else { return }
+            if let missing = report.missing {
                 self.eventLog.emit(
                     category: "coordinator", action: "call_teardown_source_missing",
-                    attributes: ["family": fam, "reason": failureToReport]
+                    attributes: ["family": self.family, "reason": missing.cause, "failures": missing.failures]
                 )
             }
-            self.rearm(generation: generation)
+            if let recovered = report.recovered {
+                self.eventLog.emit(
+                    category: "coordinator", action: "call_teardown_source_recovered",
+                    attributes: ["family": self.family, "outage_sec": recovered.outageSec, "failures": recovered.failures]
+                )
+            }
+            for line in parsed.lines {
+                self.eventLog.emit(category: "coordinator", action: "call_teardown_line", attributes: [
+                    "kind": line.kind.rawValue,
+                    "line_at": CallTeardownWatcher.isoFormatter.string(from: line.at),
+                    "call_id_hash": CallTeardownWatcher.hashCallID(line.callID),
+                    "read_lag_sec": now.timeIntervalSince(line.at)
+                ])
+            }
         }
         if let readQueue = readQueue {
             readQueue.async(execute: work)
@@ -257,10 +386,20 @@ public final class CallTeardownWatcher {
         }
     }
 
-    private func rearm(generation: Int) {
-        let stillRunning = state.withLock { $0.generation == generation && $0.started }
-        guard stillRunning else { return }
-        let cancel = scheduler(pollInterval) { [weak self] in self?.tick() }
-        cancelBox.withLock { $0 = cancel }
+    /// Teams' call ids are small per-process counters (378, 406), so an unsalted digest of one could
+    /// be reversed by enumerating a few thousand values. Swift's `Hasher` is seeded per process, so
+    /// this pairs a call's register and unregister rows within one daemon run and reveals nothing;
+    /// the cost is that the same call hashes differently after a daemon restart.
+    static func hashCallID(_ id: String) -> String {
+        var hasher = Hasher()
+        hasher.combine(id)
+        let value = UInt64(bitPattern: Int64(hasher.finalize()))
+        return String(String(value, radix: 16).prefix(8))
     }
+
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 }

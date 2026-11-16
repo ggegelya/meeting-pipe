@@ -25,26 +25,33 @@ final class SessionWatchers {
     let discovery: Startable
     let callTeardown: Startable
     let configRefresh: Startable
+    /// END16: feeds the teardown watcher's cadence, so it starts after it (its first report ticks it).
+    let teamsRunning: Startable
 
     /// In start order. Discovery and call-teardown kept the order they had inline in
     /// `Coordinator.start()`; config refresh used to start after hotkey registration, which none of
-    /// the three depends on.
-    var members: [Startable] { [discovery, callTeardown, configRefresh] }
+    /// the three depends on. The Teams-running observer follows the watcher it drives.
+    var members: [Startable] { [discovery, callTeardown, teamsRunning, configRefresh] }
 
     private(set) var hasStarted = false
 
-    init(discovery: Startable, callTeardown: Startable, configRefresh: Startable) {
+    init(discovery: Startable, callTeardown: Startable, teamsRunning: Startable, configRefresh: Startable) {
         self.discovery = discovery
         self.callTeardown = callTeardown
+        self.teamsRunning = teamsRunning
         self.configRefresh = configRefresh
     }
 
     static func production(
         discovery: MeetingDiscoveryWatcher,
         callTeardown: CallTeardownWatcher,
+        teamsRunning: TeamsRunningObserver,
         configRefresh: ConfigRefreshCoordinator
     ) -> SessionWatchers {
-        SessionWatchers(discovery: discovery, callTeardown: callTeardown, configRefresh: configRefresh)
+        SessionWatchers(
+            discovery: discovery, callTeardown: callTeardown,
+            teamsRunning: teamsRunning, configRefresh: configRefresh
+        )
     }
 
     /// Starts every member once. A second call is a no-op: `CallTeardownWatcher.start()` guards
