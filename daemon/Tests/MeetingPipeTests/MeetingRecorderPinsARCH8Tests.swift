@@ -4,7 +4,7 @@ import XCTest
 /// ARCH8 step 1: the recorder behaviour the extraction moves, pinned before anything moved.
 ///
 /// Every test here runs on an idle `MeetingRecorder` and never reaches `engine.inputNode`, for
-/// the reason `MicLevelMonitorTests` gives: touching the HAL from a test is itself in the raise
+/// the reason the removed `MicLevelMonitorTests` gave: touching the HAL from a test is itself in the raise
 /// class REC12 is about. What needs a live recording (a change that schedules a recovery, a stop
 /// that drains one) is pinned on `InputDeviceRecovery` against a fake host instead, in
 /// `InputDeviceRecoveryTests`.

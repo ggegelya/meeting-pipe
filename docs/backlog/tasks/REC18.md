@@ -2,9 +2,9 @@
 id: REC18
 title: The meeting prompt opens the microphone with a second AVAudioEngine only to animate a level meter, before the user has said yes
 category: Recording
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch M12): MeetingPromptWindow.present starts MicLevelMonitor, its own AVAudioEngine tapping the input, so the mic opens and macOS shows MeetingPipe using it while the consent question is still on screen, in the window where all four REC12 crashes happened. Owner picks a static glyph or a mic-busy pulse, then delete MicLevelMonitor and update the design kit. [Spec](./REC18.md)
+comment: Shipped 2026-11-17 on the owner's option (b): MicLevelMonitor and its tests deleted, LiveWaveformView became MicActivityPulseView, driven by MeetingDiscoveryWatcher's mic-busy signal through Coordinator; design kit, README and REC12's walkthrough updated. Owner walkthrough (no mic indicator naming MeetingPipe at prompt time) is optional; owner to close.
 ---
 
 # REC18: the meeting prompt opens the microphone with a second AVAudioEngine only to animate a level meter, before the user has said yes
@@ -43,3 +43,13 @@ The meter is also part of the design system: `design/README.md` lists "the live 
 - For option (b), a test drives the pulse from a fake mic-busy signal and asserts it reads idle when the signal is false.
 - `cd daemon && swift build` warning-clean, `swift test` green (tests removed with the deleted type are listed in the commit body, N new tests stated), `bash scripts/ci-local.sh` green, including the design-token fences on any new glyph colour.
 - Owner walkthrough (confirms, does not gate): with a Teams call starting, the prompt appears without the macOS mic indicator naming MeetingPipe until Record is chosen.
+
+## Progress (2026-11-17)
+
+**Owner decision:** option (b), relayed by the parent session on 2026-11-16.
+
+Shipped in one commit. `MicLevelMonitor.swift` (246 lines) and `MicLevelMonitorTests.swift` (its 11 tests) are deleted. `LiveWaveformView` became `MicActivityPulseView` (renamed, since a "waveform" that shows no level would be a misleading name): four still bars in `onair600` that breathe 0.45 to 1.0 opacity, 1.4 s each way, while another app holds the mic, rest at 0.3 when none does, and stay lit and still under Reduce Motion. The decision is the pure `MicActivityPulse.appearance(micBusy:reduceMotion:)`. `Coordinator` forwards `MeetingDiscoveryWatcher.onMicBusyBundle` (already sampled on every mic KVO and backstop poll for DET1) to `MeetingPromptWindow.setMicBusy`, which keeps the value while the panel is down, so a prompt raised with the mic already held opens lit. No new motion token: a breath period has no peer in `MPMotion` (its durations are interaction timings of 90 to 280 ms), so it lives as one constant beside the decision.
+
+The mic-busy signal is "some other app holds the input", not "the prompted app does"; for a meeting prompt that is nearly always the same thing, and it never opens a device to find out. Stale comments naming `MicLevelMonitor` in `GuardedTapInstall`, `RunWithTimeout`, `MeetingRecorder` and two tests are rewritten, `daemon/CLAUDE.md`'s engine-bound rule drops it, and `daemon/docs/gotchas.md`'s REC12 section gains a one-paragraph note that it is history. `design/README.md`, `MeetingPrompt.jsx` (a `micBusy` prop), `.design-sync/docs/MeetingPrompt.md` and REC12's walkthrough (items 3 and 4 no longer apply as written) are updated.
+
+`.notDetermined` mic authorization from the prompt path (the spec's open question) is moot: the prompt no longer touches the input at all. The tutorial rings no prompt control, so its fences are unaffected.

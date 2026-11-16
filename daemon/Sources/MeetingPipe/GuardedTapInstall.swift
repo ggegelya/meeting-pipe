@@ -31,20 +31,14 @@ import os
 /// through whatever `InstallTapOnNode` was doing. So the engine is condemned on the way out,
 /// and this seam refuses to hand a condemned engine another tap for as long as that engine
 /// exists. A barrier used as "try again" would be worse than the abort it replaces, and
-/// leaving that to a comment is how it would have become one: `MicLevelMonitor.start` runs
-/// on every prompt and `MeetingRecorder.recoverCapture` runs on every device change, so both
-/// callers have a live retry path into this call.
+/// leaving that to a comment is how it would have become one: `MeetingRecorder.recoverCapture`
+/// runs on every device change, so its caller has a live retry path into this call. (The
+/// prompt's level meter, the other caller and the one that crashed, was removed by REC18.)
 ///
 /// The way back is a **new** engine, which is why the condemnation is keyed on engine
 /// identity and held weakly rather than being a global latch. `MeetingRecorder` already
 /// replaces its engine on the abandoned-start path and now does the same for a condemned
-/// one; `MicLevelMonitor` holds one for its lifetime and simply stops metering, which is
-/// its documented degradation.
-///
-/// A skip is that documented degradation, not a failure. `MicLevelMonitor`'s own contract
-/// already says "the callback never fires and the waveform stays flat", and a flat
-/// waveform on a decorative prompt animation is worth incomparably less than the process
-/// that would otherwise abort under it.
+/// one.
 enum GuardedTapInstall {
 
     /// What happened at the seam. Four cases because two of them are retryable on this
@@ -67,8 +61,7 @@ enum GuardedTapInstall {
         var isInstalled: Bool { self == .installed }
 
         /// Whether the caller has to replace its engine before the next attempt can do
-        /// anything but refuse. `MeetingRecorder` acts on this; `MicLevelMonitor` cannot
-        /// (its engine is a `let` and its degradation is a flat waveform) and does not.
+        /// anything but refuse. `MeetingRecorder` acts on this.
         var requiresFreshEngine: Bool {
             self == .raised || self == .refusedCondemnedEngine
         }

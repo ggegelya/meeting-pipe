@@ -24,7 +24,7 @@ final class RunWithTimeoutTests: XCTestCase {
 
     // MARK: - runBoundedSync (REC13)
 
-    /// The synchronous sibling, for the paths that cannot suspend: `MicLevelMonitor`'s
+    /// The synchronous sibling, for the paths that cannot suspend: a private `DispatchQueue` block (the prompt meter's, gone since REC18)
     /// private queue and `flushIntermediatesForTermination` under SIGTERM.
     func test_boundedSync_returns_true_when_operation_finishes_in_time() {
         let ran = OSAllocatedUnfairLockBox<Bool>(false)

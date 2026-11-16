@@ -543,6 +543,8 @@ final class Coordinator: NSObject {
         // permission-light end path; a level check, so a late-started recording still stops).
         discoveryWatcher.onMicBusyBundle = { [weak self] bundle in
             self?.session.handleMicBusyBundle(bundle)
+            // REC18: the prompt's activity pulse, which opens no device of its own.
+            self?.promptWindow.setMicBusy(bundle != nil)
         }
         // T7: discovery, call-teardown and config-refresh start together here, after the
         // discovery callbacks above are set. END10 item 1 is why call-teardown starts at launch

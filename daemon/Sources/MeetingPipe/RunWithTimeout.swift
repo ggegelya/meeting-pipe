@@ -48,9 +48,8 @@ func runWithTimeout(
     }
 }
 
-/// The synchronous sibling of `runWithTimeout`, for the two paths that cannot
-/// suspend: a private `DispatchQueue` block (`MicLevelMonitor.start`) and the
-/// synchronous termination flush (`MeetingRecorder.flushIntermediatesForTermination`,
+/// The synchronous sibling of `runWithTimeout`, for the paths that cannot suspend,
+/// such as the synchronous termination flush (`MeetingRecorder.flushIntermediatesForTermination`,
 /// which runs under `applicationWillTerminate` / the SIGTERM dispatch source and has
 /// no async context to await in).
 ///

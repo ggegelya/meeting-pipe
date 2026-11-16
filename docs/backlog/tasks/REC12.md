@@ -64,7 +64,7 @@ So the sequence the owner sees is: a meeting starts, the Record prompt appears, 
 
 ## Why it raises, and the one thing not proven
 
-`installTap` is passed `input.outputFormat(forBus: 0)` read one statement earlier ([MicLevelMonitor.swift:19](../../../daemon/Sources/MeetingPipe/Design/MicLevelMonitor.swift#L19)) with **no validation in between**. `AVAudioEngineImpl::InstallTapOnNode` raises on an invalid format (a zero sample rate or zero channel count), on a format that disagrees with the node's hardware format, and on a bus that already has a tap.
+`installTap` is passed `input.outputFormat(forBus: 0)` read one statement earlier (`MicLevelMonitor.swift:19` (deleted by REC18)) with **no validation in between**. `AVAudioEngineImpl::InstallTapOnNode` raises on an invalid format (a zero sample rate or zero channel count), on a format that disagrees with the node's hardware format, and on a bus that already has a tap.
 
 The prompt fires at the exact moment the meeting client is acquiring the input device, which is when a transitional format is most likely. One data point makes that concrete: after the 2026-08-13 15:00:25 relaunch, `input_device_resolved` reports the device as **AirPods Pro at a 24000 Hz sample rate**, while the 2026-08-14 crashes resolve to **MacBook Pro Microphone at 48000**. A Bluetooth input renegotiating its rate as a call starts is the textbook version of this window, and the crash reproduces on the built-in mic too.
 
@@ -199,6 +199,7 @@ Per the 2026-07-30 standing rule. Steps are tagged [owner] / [session] by who ac
 
 1. [session] `./scripts/rebuild.sh` after landing, then tell the owner it is ready. Still owed as of the item-2 ship: that session ran in a worktree and did not land, so nothing has been staged into the installed app yet.
 2. [owner] Use the app normally for a working day with several Teams meetings. Pass: `ls ~/Library/Logs/DiagnosticReports/MeetingPipe*` gains no new entry. The base rate was four crashes in 36 hours, so a clean day is meaningful evidence. Worth grepping the same day: `mic_tap_install_skipped` means the format check refused one, and `mic_tap_install_raised` means the barrier caught a raise that would previously have been an abort. Either row is the fix working; **neither is expected**, and one would carry the `reason` string all four crash reports lacked.
+   **REC18 (2026-11-17):** the prompt's live waveform and its `MicLevelMonitor` engine were removed (replaced by a mic-busy pulse that opens no device), so items 3 and 4 below no longer apply as written: the prompt-side tap they exercise does not exist. Item 2 still holds for the recorder's own tap, and item 3's AirPods repro now exercises only the recording path.
 3. [owner] The targeted repro, worth trying because it is the fastest way to exercise the transitional window: put on the AirPods, and while Teams is connecting the call audio, watch for the prompt. Pass: the prompt appears and stays. The waveform being flat or briefly absent is an acceptable outcome and is the documented degradation.
 4. [owner] Confirm the waveform still animates on an ordinary prompt with the built-in mic, so the guard did not disable the feature everywhere.
 5. [owner] Say "REC12 good to close" (or what is wrong); [session] moves the row and this spec into `q6-final.md` and deletes this file.

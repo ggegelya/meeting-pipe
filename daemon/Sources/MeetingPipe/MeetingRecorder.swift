@@ -988,8 +988,8 @@ final class MeetingRecorder {
     /// Install the mic tap. Shared by `start()` and device-change recovery.
     ///
     /// REC12: through `GuardedTapInstall` because this is the same bare `installTap` that
-    /// aborted the process four times from `MicLevelMonitor`, on the path where an abort
-    /// costs a meeting rather than a prompt animation, and it is reached from device-change
+    /// aborted the process four times from the prompt's level meter (removed by REC18), on the
+    /// path where an abort costs a meeting rather than a prompt animation, and it is reached from device-change
     /// recovery, which is exactly the transitional window that crash lives in. Returns the
     /// outcome rather than a `Bool` because the two failures need different recoveries:
     /// both call sites treat any of them as a capture failure rather than silently

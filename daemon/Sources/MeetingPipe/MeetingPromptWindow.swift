@@ -101,7 +101,7 @@ final class MeetingPromptWindow {
     /// The question line, so a weak end can say "call may have ended" without a rebuild.
     private weak var questionLabel: HintLabel?
     private var questionIsWarning = false
-    private weak var liveWaveform: LiveWaveformView?
+    private weak var micPulse: MicActivityPulseView?
     private weak var dismissProgress: DismissProgressView?
     private weak var workflowChip: WorkflowChipView?
     /// AI9: the caption under the chip explaining a routing suggestion, and the
@@ -134,7 +134,9 @@ final class MeetingPromptWindow {
     private var availableWorkflows: [Workflow] = []
     /// Workflow displayed on the chip; updated on override pick so the chip reflects the choice without a full panel rebuild.
     private var currentWorkflow: Workflow?
-    private let levelMonitor = MicLevelMonitor()
+    /// REC18: whether another app holds the microphone, from `MeetingDiscoveryWatcher`. Kept while
+    /// the panel is down so a prompt raised with the mic already held starts lit.
+    private var micBusy = false
 
     /// DET18: whether the pointer is over the panel right now (for `prompt_dismissed`).
     var isPointerOver: Bool { panel != nil && hovered }
@@ -186,9 +188,10 @@ final class MeetingPromptWindow {
             panel.animator().alphaValue = 1
         }
 
-        levelMonitor.start { [weak self] level in
-            self?.liveWaveform?.push(level: level)
-        }
+        // REC18: no device is opened here. The pulse follows the mic-busy signal the discovery
+        // watcher already keeps; the old live meter started its own engine on the input while
+        // the consent question was up.
+        micPulse?.setMicBusy(micBusy)
         // DET18: the panel no longer runs a dismiss timer of its own. The session's timeout is the
         // one that acts, and it dismisses the panel; a second timer here is how the bar came to
         // freeze on hover while the real one ran on (F011).
@@ -196,10 +199,15 @@ final class MeetingPromptWindow {
         loadPrepCard()
     }
 
+    /// REC18: the discovery watcher's mic-busy signal, forwarded on every sample.
+    func setMicBusy(_ busy: Bool) {
+        micBusy = busy
+        micPulse?.setMicBusy(busy)
+    }
+
     func dismiss(animated: Bool = true) {
         hovered = false
         reportPause()
-        levelMonitor.stop()
         dismissProgress?.stop()
 
         guard let panel = panel else { return }
@@ -310,11 +318,11 @@ final class MeetingPromptWindow {
         question.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(question)
 
-        // --- Live waveform (small, between title and primary action) -
-        let waveform = LiveWaveformView(frame: .zero)
+        // --- Mic-activity pulse (small, between title and primary action), REC18 -
+        let waveform = MicActivityPulseView(frame: .zero)
         waveform.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(waveform)
-        self.liveWaveform = waveform
+        self.micPulse = waveform
 
         // Workflow chip (TECH-B5): tap opens the override menu. Hidden when no workflow exists (rare: fresh install before migration, or store deleted by hand) so there is no noisy "(none)" pill.
         let chip = WorkflowChipView()
@@ -430,7 +438,7 @@ final class MeetingPromptWindow {
             // Waveform sits left of the chip + action cluster; when chip is hidden it falls back to recordBYO via the chip's leading constraint.
             waveform.trailingAnchor.constraint(equalTo: chip.leadingAnchor, constant: -8),
             waveform.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
-            waveform.widthAnchor.constraint(equalToConstant: LiveWaveformView.intrinsicWidth),
+            waveform.widthAnchor.constraint(equalToConstant: MicActivityPulseView.intrinsicWidth),
             waveform.heightAnchor.constraint(equalToConstant: 14),
 
             // Max width prevents a long workflow name from pushing the action cluster off-canvas.

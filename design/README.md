@@ -169,7 +169,9 @@ The design system is built on three motifs:
   editor's *Delete*; a third destructive control reaches for the same style
   rather than inventing one. Nothing decorative uses pulse.
 - **On-air** (`#0FBFAC`) is the Instrument LED accent, capture surfaces only:
-  meter segments, level dots, the record-key ring, the live mic waveform. Part
+  meter segments, level dots, the record-key ring, the prompt's mic-activity
+  pulse (four still bars that breathe while the meeting app holds the mic; no
+  level, no device opened, REC18). Part
   of the one-signal budget, not a second accent.
 - **Semantic** — success / warning / danger — appear only in inline status
   rows. Not as backgrounds for entire toasts.

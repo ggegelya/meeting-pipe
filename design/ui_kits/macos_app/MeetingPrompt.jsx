@@ -4,7 +4,7 @@
 //
 // Layout (left to right): a top-left close x that means Skip, the app glyph, a
 // stacked eyebrow (UPPERCASE app name) over the title "Record this meeting?",
-// the live mic waveform, the workflow chip, then the action cluster
+// the mic-activity pulse (REC18), the workflow chip, then the action cluster
 // [Record (BYO)] [Record] [v]. The secondary actions live under the v chevron
 // menu (Always / Skip / Open Screen Recording Settings) because inline buttons
 // for "Always for Microsoft Teams" alone are ~190pt and crowd the cluster.
@@ -62,6 +62,8 @@ const MeetingPrompt = ({
   source = { displayName: "Zoom" },
   workflow = { name: "General", color: "var(--mp-signal-600)" },
   timeoutSec = 30,
+  // REC18. Whether another app holds the mic (the meeting app, normally): the pulse breathes.
+  micBusy = true,
   // AI9. Null (the common case) means no correction pattern exists yet and the
   // caption is not rendered at all, so the pill is unchanged. `preselects:false`
   // is the NDA direction: shown, not armed.
@@ -118,7 +120,7 @@ const MeetingPrompt = ({
 
         <div style={{ flex: 1 }}/>
 
-        <LiveWaveform/>
+        <MicActivityPulse busy={micBusy}/>
 
         {/* CAL2 "Last time": ghost capsule, resting fill-less like the v chevron
             so the prompt keeps exactly one primary action. `aria-expanded`
@@ -257,27 +259,25 @@ const Row = ({ bullet, children }) => (
 );
 
 /* --------------------------------------------------------------------------
-   Live waveform - 4 bars in on-air (the DSN21 lit-LED capture accent). In Swift
-   this reads AVAudioRecorder.averagePower(forChannel:) every ~50ms. Here a
-   smoothed random walk gives the same visual fingerprint.                     */
-const LiveWaveform = () => {
-  const [levels, setLevels] = React.useState([0.4, 0.7, 0.5, 0.3]);
-  React.useEffect(() => {
-    let raf;
-    const tick = () => {
-      setLevels((prev) => prev.map((v) => {
-        const next = v + (Math.random() - 0.5) * 0.55;
-        return Math.max(0.18, Math.min(1, next));
-      }));
-      raf = setTimeout(() => requestAnimationFrame(tick), 90);
-    };
-    tick();
-    return () => clearTimeout(raf);
-  }, []);
+   Mic-activity pulse (REC18) - 4 still bars in on-air (the DSN21 lit-LED capture
+   accent) that breathe slowly (1.4 s each way) while another app holds the mic,
+   and rest dim at 30% when none does. Swift drives it from
+   MeetingDiscoveryWatcher's mic-busy signal and opens no device: it says the
+   meeting app holds the mic and carries no level. It replaced a live level
+   meter that opened the microphone while the consent question was on screen.
+   Under Reduce Motion a busy mic is lit and still.                           */
+const MicActivityPulse = ({ busy = true }) => {
+  const heights = [0.45, 0.8, 0.6, 0.35];
   return (
-    <div aria-hidden title="Listening for level" style={{ display: "flex", alignItems: "center", gap: 2, height: 16 }}>
-      {levels.map((lv, i) => (
-        <div key={i} style={{ width: 2, height: `${Math.round(lv * 100)}%`, background: "var(--mp-onair-600)", borderRadius: 1, transition: "height 90ms linear" }}/>
+    <div aria-hidden style={{ display: "flex", alignItems: "center", gap: 2, height: 16 }}>
+      <style>{`@keyframes mpMicBreathe { from { opacity: 0.45 } to { opacity: 1 } }
+        @media (prefers-reduced-motion: reduce) { .mp-mic-breathe { animation: none !important } }`}</style>
+      {heights.map((h, i) => (
+        <div key={i} className={busy ? "mp-mic-breathe" : undefined} style={{
+          width: 2, height: `${Math.round(h * 100)}%`, background: "var(--mp-onair-600)", borderRadius: 1,
+          opacity: busy ? 1 : 0.3,
+          animation: busy ? "mpMicBreathe 1.4s ease-in-out infinite alternate" : "none",
+        }}/>
       ))}
     </div>
   );
