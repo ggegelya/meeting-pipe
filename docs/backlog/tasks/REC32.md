@@ -2,9 +2,9 @@
 id: REC32
 title: The orphan sweep runs only after a successful non-retranscribe job or at launch, so a stop with no final file waits for an unrelated success, and stale orphans are re-reported after every job but never resolved or shown
 category: Recording
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). D074: the no-final banner promises automatic recovery but reapStorage(orphanSweep: .afterJob) runs only from onDone, which route() calls for a successful non-retranscribe job; field: three 2026-06-12 stems logged "skipping stale orphaned recording" 415 times each, 12.8% of daemon.log, never resolved. Request the sweep from the stop funnel and from onJobSettled, report a stale orphan once per process as an event, and give the owner recover or quarantine.
+comment: Items 1 to 3 shipped 2026-11-17 (sweep from onJobSettled and from a no-final stop, orphan_stale_found once per process). Item 4 (Recover / Discard surface) waits on the owner decision (a), (b) or (c), asked 2026-11-17.
 ---
 
 # REC32: The orphan sweep runs only after a successful non-retranscribe job or at launch, so a stop with no final file waits for an unrelated success, and stale orphans are re-reported after every job but never resolved or shown
@@ -55,3 +55,11 @@ Where Recover and Discard live: (a) a once-per-launch notification naming how ma
 
 1. [owner] Answer the owner decision above before the pickup builds item 4.
 2. [owner] On the work laptop, after a build with this change: confirm `orphan_stale_found` lists the three 2026-06-12 stems once in Diagnostics after launch, then recover or discard them (or move them by hand under (c)). Pass: the next day's `daemon.log` has no `skipping stale orphaned recording` line for them.
+
+## Progress (2026-11-17)
+
+Items 1 to 3 shipped. `Coordinator`'s `onJobSettled` (every completion: success, failure, cancel, re-transcribe, Library run) now requests the after-job reap and orphan sweep, and `onDone` no longer does, so a successful job still requests exactly one. A stop whose merge produced no usable final calls `SessionHost.requestOrphanSweep()` right after `recorder.stop` returns, so the kept intermediates recover with an empty queue; REC24's runner coalesces it with a settled job's request, and its attempt cap still ends a deterministic failure at `orphan_recovery_gave_up` (pinned by REC24's existing tests, unchanged). The banner copy ("will be recovered automatically") and the `reapStorage` comment are now true and were left as is, except that the comment names the new triggers. This closes HYG10's RECORDING-6 row (its comment is now true); that task file is HYG10's to update.
+
+A stale orphan is now `coordinator`/`orphan_stale_found` once per process (`StaleOrphanReport`), and the per-sweep `skipping stale orphaned recording` line is gone.
+
+**Owner question (asked 2026-11-17 through the parent session, not yet answered):** item 4's surface, (a) a once-per-launch notification with Recover and Discard, (b) the menu's failed-meetings row, or (c) the event only, with the three June stems resolved by hand. Nothing for item 4 is built; with (c) this task closes as is.

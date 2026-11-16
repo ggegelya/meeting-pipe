@@ -1251,6 +1251,10 @@ final class MeetingSessionController: @unchecked Sendable {
                 self.coordinator.notifications.notifyError(
                     "Could not finalize \(file.lastPathComponent). The raw recording was kept and will be recovered automatically."
                 )
+                // REC32: make "automatically" true with an empty queue too. `recorder.stop` has
+                // returned, so the stem is handed back (REC23) unless an abandoned drain still
+                // holds it, in which case this sweep skips it and the next settled job retries.
+                self.coordinator.requestOrphanSweep()
             }
             self.resetAfterStop(source: source)
         }

@@ -310,12 +310,8 @@ final class Coordinator: NSObject {
                 guard let self = self else { return }
                 // The row's live entry is not cleared here: `onProgressEnded`
                 // below is its one owner, because it fires on every completion
-                // path and this one does not (UX50).
-                // ADR 0016 / MIC13 / STOR1: keep the originals folder and the raw/
-                // library bounded through a long-running session, not only at
-                // launch. Runs on every completion path below (including the
-                // empty-skip early return).
-                self.reapStorage(orphanSweep: .afterJob)
+                // path and this one does not (UX50). The storage reap moved to
+                // `onJobSettled` for the same reason (REC32).
                 // A no-speech / suspect-transcript skip finishes with no summary
                 // and no page. The pipeline wrote <stem>.empty.json; post an
                 // honest terminal notice and skip the completion tone, rather
@@ -402,6 +398,12 @@ final class Coordinator: NSObject {
             // landing is what usually moves it.
             onJobSettled: { [weak self] in
                 self?.statusBar.refreshFailedMeetingCount()
+                // ADR 0016 / MIC13 / STOR1: keep the originals folder and the raw/ library bounded
+                // through a long-running session, not only at launch. REC32: here rather than in
+                // `onDone`, which only a successful non-retranscribe job reaches, so a failed,
+                // cancelled, re-transcribe or Library-run completion also runs the orphan sweep
+                // the stop-time "will be recovered automatically" banner promises.
+                self?.reapStorage(orphanSweep: .afterJob)
             },
             // PIPE41: the second trigger for the one automatic re-run, whichever comes first with the launch pass.
             onJobSucceeded: { [weak self] in
@@ -762,12 +764,13 @@ final class Coordinator: NSObject {
         // REC20: a meeting with no workflow follows the default's retention.
         let defaultWorkflowID = workflowStore.defaultWorkflow?.id
         // REC23: the stems the recorder owns, asked of the recorder itself. Both callers run
-        // on main (launch, and `onDone` under `SinkDispatcher`'s main-queue invariant).
+        // on main (launch, and `onJobSettled` under `SinkDispatcher`'s main-queue invariant).
         let ownedStems = MainActor.assumeIsolated { recorder.ownedStems }
         // REC6: recover any recording orphaned by a mid-recording termination now,
-        // not only at launch. This slot runs at launch and after every job
-        // completion, so a stop-time merge failure recovers on the next job instead
-        // of waiting for a relaunch (a launchd daemon can run for days). Every stem the
+        // not only at launch. This slot runs at launch and after every settled job,
+        // successful or not (REC32), and the stop funnel requests the sweep itself when
+        // a stop produced no final (`requestOrphanSweep`), so a stop-time merge failure
+        // recovers without waiting for a relaunch (a launchd daemon can run for days). Every stem the
         // recorder owns is excluded so its in-flight intermediates are untouched: one
         // that is starting (its `.mic.wav` exists before `start()` returns, which is
         // when the Library's live-row mirror learns of it), recording, stopping, or
@@ -782,6 +785,12 @@ final class Coordinator: NSObject {
             )
             LocalServerReaper.reapIfOrphaned()
         }
+    }
+
+    /// REC32 (`SessionHost`): one after-job orphan sweep, requested by the stop funnel when a stop
+    /// produced no usable final. Only the sweep: the rest of `reapStorage` follows jobs.
+    func requestOrphanSweep() {
+        MainActor.assumeIsolated { orphanRecovery.request(.afterJob) }
     }
 
     /// Re-enqueue recordings orphaned by a mid-recording termination

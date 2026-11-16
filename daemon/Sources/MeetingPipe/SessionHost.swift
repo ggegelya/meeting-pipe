@@ -79,6 +79,11 @@ protocol SessionHost: AnyObject {
     /// Deep-links Preferences to the Permissions tab. Called when a start is
     /// refused for a missing microphone permission, so the refusal is actionable.
     func menuPreferencesPermissions()
+
+    /// REC32: ask for one orphan sweep now. The stop funnel calls it when a stop produced no
+    /// usable final, so the kept intermediates recover without waiting for some later job or a
+    /// relaunch. The sweep's single-flight runner coalesces it with any other request.
+    func requestOrphanSweep()
 }
 
 // MARK: - Collaborator protocols

@@ -202,6 +202,28 @@ final class PipelineJobDispatcherTests: XCTestCase {
         _ = dispatcher
     }
 
+    /// REC32: the orphan sweep rides on `onJobSettled`, so a re-transcribe (which `route` returns
+    /// early for, and which never reaches `onDone`) has to settle too.
+    func test_a_retranscribe_settles_though_it_never_reaches_onDone() {
+        var settled = 0
+        var done = 0
+        let dispatcher = PipelineJobDispatcher(
+            sinkDispatcher: sink,
+            onDone: { _, _, _ in done += 1 },
+            onError: { _ in },
+            onQueueActivity: { _ in },
+            onJobSettled: { settled += 1 }
+        )
+        let retranscribe = ProcessingJob(
+            id: UUID(), file: URL(fileURLWithPath: "/tmp/recordings/r.wav"), summaryMode: .auto,
+            startedAt: Date(), kind: .retranscribe
+        )
+        sink.onJobCompleted?(retranscribe, .success(nil))
+        XCTAssertEqual(settled, 1)
+        XCTAssertEqual(done, 0)
+        _ = dispatcher
+    }
+
     // MARK: - PIPE37: quitting stops the supervised spawns
 
     private final class CountingDriver: PipelineDriver {

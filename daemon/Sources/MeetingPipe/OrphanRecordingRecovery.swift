@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Re-enqueues recordings orphaned by mid-recording termination (crash, kill,
 /// rebuild, reinstall). MeetingRecorder.stop() never ran, so .mic.wav / .system.wav
@@ -73,7 +74,8 @@ enum OrphanRecordingRecovery {
         in directory: URL,
         now: Date = Date(),
         excludingStems: Set<String> = [],
-        sweep: Sweep = .launch
+        sweep: Sweep = .launch,
+        staleReport: StaleOrphanReport = .process
     ) -> [String] {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
@@ -98,12 +100,39 @@ enum OrphanRecordingRecovery {
             if now.timeIntervalSince(modified) <= maxOrphanAge {
                 return true
             }
-            Log.writeLine(
-                "daemon",
-                "skipping stale orphaned recording \(stem) (no recovery marker, intermediates older than \(Int(maxOrphanAge / 3600))h)"
-            )
+            // REC32: once per process, as an event. This was a `writeLine` on every sweep, which
+            // on the owner's laptop logged three June stems 415 times each (12.8% of daemon.log)
+            // and reached no surface, since Diagnostics shows events only.
+            if staleReport.isFirstSighting(stem) {
+                reportStale(stem: stem, in: directory, ageSec: now.timeIntervalSince(modified))
+            }
             return false
         }
+    }
+
+    /// `coordinator`/`orphan_stale_found` for one stale stem, with what is on disk for it.
+    private static func reportStale(stem: String, in directory: URL, ageSec: TimeInterval) {
+        var present: [String] = []
+        var bytes: Int64 = 0
+        for suffix in [".mic.wav", ".system.wav"] {
+            let url = directory.appendingPathComponent("\(stem)\(suffix)")
+            guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber else {
+                continue
+            }
+            present.append(String(suffix.dropFirst()))
+            bytes += size.int64Value
+        }
+        let days = (ageSec / 86_400 * 10).rounded() / 10
+        Log.event(category: "coordinator", action: "orphan_stale_found", attributes: [
+            "stem": stem,
+            "age_days": days,
+            "intermediates": present,
+            "bytes": bytes,
+        ])
+        Log.writeLine(
+            "daemon",
+            "stale orphaned recording \(stem): no recovery marker, intermediates \(days) days old; not recovered automatically (reported once per launch)"
+        )
     }
 
     /// Whether a stem carries a deliberate recovery marker that exempts it from the
@@ -379,6 +408,20 @@ enum OrphanRecordingRecovery {
             Log.writeLine("daemon", "WARN: could not quarantine orphan \(url.lastPathComponent) (\(reason.rawValue)): \(error.localizedDescription); its markers and manifest are kept so a Retry stays held")
             return nil
         }
+    }
+}
+
+/// The stale orphans already reported in this process (REC32), so each is an event once per
+/// launch instead of a log line on every sweep. Not persisted on purpose: a relaunch reports
+/// them again, which is what keeps them in front of the owner until they are resolved.
+final class StaleOrphanReport: Sendable {
+    static let process = StaleOrphanReport()
+
+    private let reported = OSAllocatedUnfairLock<Set<String>>(initialState: [])
+
+    /// True the first time `stem` is seen in this report's life, false after.
+    func isFirstSighting(_ stem: String) -> Bool {
+        reported.withLock { $0.insert(stem).inserted }
     }
 }
 

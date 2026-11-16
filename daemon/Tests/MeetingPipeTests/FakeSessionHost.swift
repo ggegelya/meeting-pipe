@@ -73,6 +73,9 @@ final class FakeSessionHost: SessionHost {
 
     private(set) var menuPreferencesPermissionsCallCount = 0
     func menuPreferencesPermissions() { menuPreferencesPermissionsCallCount += 1 }
+    /// REC32: orphan sweeps the stop funnel asked for.
+    private(set) var orphanSweepRequests = 0
+    func requestOrphanSweep() { orphanSweepRequests += 1 }
 
     /// `tempDir` backs the output dir, the consent store, and the workflow store,
     /// so nothing here touches the owner's real library or `~/.config`.
