@@ -19,6 +19,9 @@ final class AppGlyphView: NSImageView {
     /// Process-wide glyph cache keyed by filename. Re-reading the same SVG from the bundle on every library scroll was the dominant per-row main-thread cost. Threading: all access is main-thread only (NSViewRepresentable.makeNSView + AppKit); swap to NSCache if a non-main caller is added.
     nonisolated(unsafe) private static var glyphCache: [String: NSImage] = [:]
 
+    /// The cached glyph image for a source, for SwiftUI rows that draw it as an `Image` (PERF9). Main only, like the cache.
+    static func cachedGlyph(for source: AppSource) -> NSImage? { loadGlyph(for: source) }
+
     /// Bundle-ID first (stable across localizations), display-name second (handles browsers), `_fallback.svg` last.
     private static func loadGlyph(for source: AppSource) -> NSImage? {
         let name = filename(for: source)

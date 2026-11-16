@@ -52,6 +52,7 @@ struct MeetingRow: View, Equatable {
     /// wash that replaces the macOS system-blue highlight (the app `.tint` can't
     /// recolor inset-list selection). Pre-computed by the list against the set.
     let isSelected: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Equates only value-typed fields; closures are excluded because they're re-allocated each render and would defeat `.equatable()`.
     static func == (lhs: MeetingRow, rhs: MeetingRow) -> Bool {
@@ -430,8 +431,13 @@ struct MeetingRow: View, Equatable {
                 .foregroundStyle(Color(MPColors.fgSubtle))
                 .frame(width: 22, height: 22)
         } else if let source = meeting.appSource {
-            AppGlyphRepresentable(source: source)
+            // PERF9: a plain SwiftUI image from the shared glyph cache; the NSViewRepresentable
+            // this replaced built an NSImageView per realised row.
+            Image(nsImage: AppGlyphView.cachedGlyph(for: source) ?? NSImage())
+                .resizable()
+                .scaledToFit()
                 .frame(width: 22, height: 22)
+                .clipShape(RoundedRectangle(cornerRadius: MPRadius.sm))
         } else {
             // Manual recordings (⌃⌥M) have no source; use the waveform ring to keep the column aligned.
             Image(systemName: "waveform.circle")
@@ -445,14 +451,16 @@ struct MeetingRow: View, Equatable {
     /// wash (replacing the macOS system-blue highlight) even while live-recording;
     /// the coral on-air cue still reads through the pulsing dot in the status pill.
     /// An unselected live row keeps its coral wash; resting rows stay on the canvas.
-    @ViewBuilder
     private var rowBackground: some View {
-        if isSelected {
+        ZStack {
+            if isLiveRecording && !isSelected {
+                Color(MPColors.pulse600).opacity(0.06)
+            }
+            // PERF9: the selection settles here, on the row (one of the three sanctioned DSN5
+            // animation moments), not as an animated update of the whole list.
             Color.mpSelectionWash
-        } else if isLiveRecording {
-            Color(MPColors.pulse600).opacity(0.06)
-        } else {
-            Color.clear
+                .opacity(isSelected ? 1 : 0)
+                .animation(reduceMotion ? nil : .easeOut(duration: MPMotion.durFast), value: isSelected)
         }
     }
 
@@ -663,19 +671,6 @@ struct DonePublishBadge: Equatable {
             return DonePublishBadge(kind: .ready, label: "Ready", help: nil)
         }
     }
-}
-
-// MARK: - AppGlyphView SwiftUI wrapper
-
-/// NSViewRepresentable bridge so the SwiftUI row can reuse `AppGlyphView`'s bundle-id-first glyph resolution.
-private struct AppGlyphRepresentable: NSViewRepresentable {
-    let source: AppSource
-
-    func makeNSView(context: Context) -> AppGlyphView {
-        AppGlyphView(source: source)
-    }
-
-    func updateNSView(_ nsView: AppGlyphView, context: Context) { }
 }
 
 // MARK: - Color hex helper

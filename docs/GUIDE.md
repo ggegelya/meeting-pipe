@@ -260,7 +260,7 @@ The transcript and the People rail resolve names every time you open them. The s
 
 ### The filter bar
 
-Above the meetings list: a search field plus chips for workflow, app, status, and date range. The search field covers **full transcripts**, not just titles and summaries, so a phrase somebody said finds the meeting. Several words are combined, partial words match (`bud` finds `budget`), and case and Cyrillic are handled. The list follows a moment after you stop typing rather than on every key, and a single letter searches titles and summaries only; transcripts join from the second letter. Right after an update the search box may say **Indexing transcripts…** the first time you open the Library, while it re-reads them once. The chips narrow within the results; **Clear** wipes everything.
+Above the meetings list: a search field plus chips for workflow, app, status, and date range. The search field covers **full transcripts**, not just titles and summaries, so a phrase somebody said finds the meeting. Several words are combined, partial words match (`bud` finds `budget`), and case and Cyrillic are handled. Titles and summaries narrow the list on every key; meetings that match only in the transcript join a moment after you stop typing. A single letter searches titles and summaries only; transcripts join from the second letter. Right after an update the search box may say **Indexing transcripts…** the first time you open the Library, while it re-reads them once. The chips narrow within the results; **Clear** wipes everything.
 
 ### Quick Find
 
@@ -432,7 +432,7 @@ Open a window and MeetingPipe puts a menu bar across the top of the screen, the 
 | Key | Does |
 | --- | --- |
 | `⌘C` | Copy what you have selected. Select transcript or summary text and this is how you get it out |
-| `⌘A` | Select everything in the field you are typing in |
+| `⌘A` | Select everything in the field you are typing in, or every meeting in the list when the list has the focus |
 | `⌘X` / `⌘V` | Cut and paste, in any field you can type in |
 | `⌘Z` / `⇧⌘Z` | Undo and redo, in any field you can type in |
 | `⌘,` | Open Preferences |
@@ -443,6 +443,7 @@ Open a window and MeetingPipe puts a menu bar across the top of the screen, the 
 | `Return` | Commit a title you are editing in the detail header |
 | `Esc` | Close a sheet without saving |
 | `⌘` or `⇧` click | Select several meetings in the list, or several lines in a transcript |
+| `↑` `↓` | Move the selection through the meeting list (add `⇧` to extend it); click a meeting first so the list has the focus |
 
 Close the last window and the menu bar goes back to whatever app is in front. The recording panel and the Quick Find box are not windows in this sense: they float over other apps deliberately, and the keys above do not reach them.
 

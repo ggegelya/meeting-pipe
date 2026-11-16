@@ -2,9 +2,9 @@
 id: PERF9
 title: Scrolling the Library meeting list lags, because the SwiftUI `List` measures and rebuilds every row on the main thread
 category: Performance
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-23 from the owner reporting 1-3 s scroll lag that worsens further down the list while Teams and Claude scroll smoothly. Traced the same day: idle main thread 99% asleep, but while scrolling about 60% busy, mostly NSTableView automatic row heights measuring each SwiftUI `MeetingRow` (about 5,400 samples), row rendering (about 5,700), and whole-list re-diffs (about 5,980). Scope: `LazyVStack` with app-owned selection (or fixed row heights), cheaper rows, no whole-list selection animation. [Spec](./PERF9.md)
+comment: Shipped 2026-11-16 - LibraryListView is a ScrollView over a LazyVStack with pinned headers; selection and keys owned by the pure MeetingListSelection (9 tests); sections built in recomputeDerived (key carries the pinned inputs); SwiftUI glyph Image; per-row selection settle (reduce-motion aware); whole-list animation removed; ci-local green. Remainder (owner only) - sample MeetingPipe 20 while scrolling top to bottom (target at most 25% main busy, no _uncachedAutomaticRowHeight frames), plus an eyeball and VoiceOver walk (headers, row look vs the DSN17 mockup, click/Cmd/Shift/arrows, focus ring, Cmd-A); a daemon UI cannot be screenshotted by tools. Check specifically - holding Up past the viewport top (selected row may hide under the pinned header), and clicking the 22 pt source glyph (the .draggable may swallow the click). Not done - precomputing the relative date and workflow chip colour once per derive (they now render only for realised rows), an offscreen timing test, Home/End/PageUp/PageDown, scroll-to-external-selection.
 ---
 
 # PERF9: scrolling the Library meeting list lags, because the SwiftUI `List` measures and rebuilds every row on the main thread

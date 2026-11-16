@@ -25,6 +25,9 @@ struct LibraryListView: View {
     /// PERF20: the free-text query the list currently reflects and the FTS answers computed for it
     /// (and for a selected folder's query). Written only by `resolveSearch`'s delivery.
     @State private var settled = SettledSearch()
+    /// PERF9: the list's own click/arrow selection rules (the `List` that supplied them is gone).
+    @State private var nav = MeetingListSelection()
+    @FocusState private var listFocused: Bool
 
     private struct SettledSearch {
         var query: String = ""
@@ -65,10 +68,18 @@ struct LibraryListView: View {
         // site in `LibraryWindow` (the single source of truth, TECH-UX11).
         .frame(minWidth: LibraryLayout.listMinWidth)
         .onAppear {
+            // The view is rebuilt on a trip through Ask or Digests; pick the selection up again so
+            // Shift-click and the arrows have their anchor.
+            nav.adopt(selection)
             recomputeDerived()
             resolveSearch(debounced: false)
         }
         .onChange(of: store.revision) { _, _ in recomputeDerived() }
+        // PERF9: the pinned "In progress" block is part of the derived sections, so what pins a
+        // meeting (the live recording, the active job, the queue) re-derives them.
+        .onChange(of: pinnedInputs) { _, _ in recomputeDerived() }
+        // A selection changed from outside (Quick Find, a recent-meeting click, the rail).
+        .onChange(of: selection) { _, new in nav.adopt(new) }
         .onChange(of: scope) { _, _ in recomputeDerived() }
         .onChange(of: workflows.count) { _, _ in recomputeDerived() }
         // PERF30: chips and typed text re-derive at once against the in-memory corpus; the FTS
@@ -167,7 +178,8 @@ struct LibraryListView: View {
             filter: effective,
             searchGeneration: settled.generation,
             savedSearch: savedSearch,
-            day: Calendar.current.startOfDay(for: Date())
+            day: Calendar.current.startOfDay(for: Date()),
+            pinned: pinnedInputs
         )
         if key == lastDerivedKey { return }
         lastDerivedKey = key
@@ -207,11 +219,19 @@ struct LibraryListView: View {
         )
         let facets = MeetingFacets.build(from: scoped)
         let groups = MeetingGroup.group(filtered, now: Date())
+        // PERF9: the rendered sections are built here, once per derive, not in `listBody` on every
+        // render: the pinned "In progress" rows lead, and a pinned meeting is dropped from its date
+        // group so it never renders in two places. Empty groups are omitted.
+        let sections = MeetingListSelection.sections(
+            pinned: inProgressMeetings(in: filtered), groups: groups
+        ).map { ListSection(title: $0.title, meetings: $0.meetings) }
         derived = DerivedList(
             scoped: scoped,
             filtered: filtered,
             facets: facets,
-            groups: groups
+            groups: groups,
+            sections: sections,
+            order: sections.flatMap { $0.meetings.map(\.id) }
         )
     }
 
@@ -220,10 +240,38 @@ struct LibraryListView: View {
         var filtered: [Meeting]
         var facets: MeetingFacets
         var groups: [MeetingGroup]
+        /// What the list renders, in order (PERF9); `order` is its flat id sequence, which the
+        /// selection rules (Shift ranges, arrows) walk.
+        var sections: [ListSection]
+        var order: [Meeting.ID]
         static let empty = DerivedList(
             scoped: [], filtered: [],
             facets: MeetingFacets(workflows: [], sources: []),
-            groups: []
+            groups: [], sections: [], order: []
+        )
+    }
+
+    private struct ListSection: Identifiable {
+        let title: String
+        let meetings: [Meeting]
+        var id: String { title }
+    }
+
+    /// What pins a meeting under "In progress": the live recording, the running job and the queue.
+    /// Part of the derive key, since the sections are no longer rebuilt on every render.
+    private struct PinnedInputs: Equatable {
+        var live: String?
+        var active: String?
+        var queued: Set<String>
+    }
+
+    private var pinnedInputs: PinnedInputs {
+        // Pinning only exists in All meetings, so other scopes do not re-derive on a queue change.
+        guard case .allMeetings = scope else { return PinnedInputs(live: nil, active: nil, queued: []) }
+        return PinnedInputs(
+            live: libraryModel.liveRecordingStem,
+            active: libraryModel.activeProcessing?.stem,
+            queued: Set(libraryModel.pendingProcessing.map(\.stem))
         )
     }
 
@@ -243,6 +291,8 @@ struct LibraryListView: View {
         /// the clock, and a rescan that found nothing new no longer bumps the store revision, so a
         /// re-open on a new day regroups on the day rather than waiting for a file to change.
         let day: Date
+        /// PERF9: what is pinned under "In progress" when the sections were built.
+        let pinned: PinnedInputs
         static let empty = DerivedKey(
             storeRevision: -1,
             scope: .allMeetings,
@@ -250,7 +300,8 @@ struct LibraryListView: View {
             filter: MeetingFilter(),
             searchGeneration: -1,
             savedSearch: nil,
-            day: .distantPast
+            day: .distantPast,
+            pinned: PinnedInputs(live: nil, active: nil, queued: [])
         )
     }
 
@@ -286,51 +337,109 @@ struct LibraryListView: View {
     /// Live-recording + actively-processing meetings, pinned above the
     /// chronological groups in the All-meetings scope only (TECH-DSN17). Driven
     /// off the model's live flags, not re-derived from on-disk status.
-    private var inProgressMeetings: [Meeting] {
+    private func inProgressMeetings(in filtered: [Meeting]) -> [Meeting] {
         guard case .allMeetings = scope else { return [] }
-        let queued = Set(libraryModel.pendingProcessing.map(\.stem))
-        return derived.filtered.filter {
-            $0.stem == libraryModel.liveRecordingStem
-                || $0.stem == libraryModel.activeProcessing?.stem
+        let inputs = pinnedInputs
+        return filtered.filter {
+            $0.stem == inputs.live
+                || $0.stem == inputs.active
                 // UX28: a queued meeting is in progress from the user's point of
                 // view; leaving it in its date group is what made a second
                 // Reprocess click look like nothing happened.
-                || queued.contains($0.stem)
+                || inputs.queued.contains($0.stem)
         }
     }
 
+    /// PERF9: a `LazyVStack`, so only the rows on screen are laid out. The `List` it replaced was
+    /// an `NSTableView` that measured every row it scrolled to through a full SwiftUI layout and
+    /// re-diffed the whole table on each selection or derive (the 2026-10-23 `sample` trace). The
+    /// app owns selection and keyboard now: `MeetingListSelection` holds the rules, this view turns
+    /// events into calls.
     private var listBody: some View {
-        // Pin live/processing rows once; drop their stems from the date groups so
-        // a meeting never renders in two places.
-        let pinned = inProgressMeetings
-        let pinnedStems = Set(pinned.map(\.stem))
-        return List(selection: $selection) {
-            if !pinned.isEmpty {
-                Section("In progress") {
-                    ForEach(pinned) { meeting in
-                        row(for: meeting)
-                    }
-                }
-            }
-            ForEach(derived.groups, id: \.title) { group in
-                let rows = group.meetings.filter { !pinnedStems.contains($0.stem) }
-                if !rows.isEmpty {
-                    Section(group.title) {
-                        ForEach(rows) { meeting in
-                            row(for: meeting)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    ForEach(derived.sections) { section in
+                        Section {
+                            ForEach(section.meetings) { meeting in
+                                selectableRow(for: meeting)
+                            }
+                        } header: {
+                            sectionHeader(section.title)
                         }
                     }
                 }
             }
+            .background(Color(MPColors.bg))
+            // The system focus ring is accent blue (No-System-Blue), so it is off; the focused row
+            // draws its own signal ring in `selectableRow`.
+            .focusable(interactions: .edit)
+            .focusEffectDisabled()
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Meetings")
+            .focused($listFocused)
+            .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in
+                moveSelection(.up, extend: press.modifiers.contains(.shift), proxy: proxy)
+            }
+            .onKeyPress(.downArrow, phases: [.down, .repeat]) { press in
+                moveSelection(.down, extend: press.modifiers.contains(.shift), proxy: proxy)
+            }
+            // Edit > Select All reaches the focused list through the responder chain (the menu's
+            // key equivalent runs before `onKeyPress`). A focused search field answers it first.
+            .onCommand(#selector(NSText.selectAll(_:))) {
+                nav.selectAll(order: derived.order)
+                selection = nav.selected
+            }
         }
-        .listStyle(.inset)
-        // No-System-Blue (DSN10): drop the native selection paint so only MeetingRow's
-        // teal wash reads; .listRowBackground alone does not suppress it.
-        .noNativeListSelection()
-        // TECH-DSN5: settle the selection rather than snapping it. One of the
-        // three sanctioned animation moments (with the HUD degraded grow/shrink
-        // and the prompt fade-in); restraint elsewhere is deliberate.
-        .animation(.easeOut(duration: MPMotion.durFast), value: selection)
+    }
+
+    /// Group heading: the design kit's `SLGroupHeader` (xs, semibold, fg-subtle, 10/16/4). Opaque,
+    /// since the header is pinned over the rows scrolling beneath it.
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.mpTextXS.weight(.semibold))
+            .foregroundStyle(Color(MPColors.fgSubtle))
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(MPColors.bg))
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private func moveSelection(_ step: MeetingListSelection.Step, extend: Bool, proxy: ScrollViewProxy) -> KeyPress.Result {
+        guard let target = nav.move(step, extend: extend, order: derived.order) else { return .ignored }
+        selection = nav.selected
+        proxy.scrollTo(target)
+        return .handled
+    }
+
+    /// One row plus its selection handling. A click from the keyboard-focused list takes focus so
+    /// the arrows act on it; the modifier keys held at the click pick the kind, as in the
+    /// transcript (`TranscriptRow.classifyClick`).
+    private func selectableRow(for meeting: Meeting) -> some View {
+        row(for: meeting)
+            .id(meeting.id)
+            .onTapGesture {
+                listFocused = true
+                let mods = NSEvent.modifierFlags
+                let kind: MeetingListSelection.Click = mods.contains(.command) ? .command : (mods.contains(.shift) ? .shift : .plain)
+                nav.click(meeting.id, kind: kind, order: derived.order)
+                selection = nav.selected
+            }
+            // The keyboard cursor, in the app's own colour, only while the list has the focus.
+            .overlay {
+                if listFocused && nav.cursor == meeting.id {
+                    Rectangle().strokeBorder(Color.mpSignal.opacity(0.6), lineWidth: 1.5).allowsHitTesting(false)
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(meeting.displayTitle)
+            .accessibilityAddTraits(selection.contains(meeting.id) ? .isSelected : [])
+            .accessibilityAction(named: "Select") {
+                nav.click(meeting.id, kind: .plain, order: derived.order)
+                selection = nav.selected
+            }
     }
 
     /// One list row. Factored so the pinned "In progress" section and the date
@@ -366,10 +475,6 @@ struct LibraryListView: View {
             isSelected: selection.contains(meeting.id)
         )
         .equatable()
-        .tag(meeting.id)
-        // Neutralize the native (system-blue) selection paint; MeetingRow's own
-        // rowBackground draws the teal selection wash instead (DESIGN No-System-Blue).
-        .listRowBackground(Color.clear)
     }
 
 }
