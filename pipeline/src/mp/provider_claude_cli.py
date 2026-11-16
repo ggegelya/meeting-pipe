@@ -3,7 +3,22 @@
 Spawns the Claude Code CLI non-interactively and parses its `--output-format
 json` result. Two motivations: a Claude subscription already pays for Claude
 Code, so this summarizes at zero marginal API cost and needs no API key (it rides
-the user's existing Claude Code auth).
+the user's existing Claude Code auth). The child therefore gets no managed token
+in its environment: a present `ANTHROPIC_API_KEY` would be preferred over that
+auth and bill the API instead (SEC20).
+
+Confined to a text turn (SEC20). A bare `claude -p` is a full agent session, and
+the prompt is a transcript or a set of meeting excerpts an attacker may have
+spoken into, so `_command` turns off everything a text turn does not need: the
+built-in tools (`--tools ""`; `--allowed-tools` only pre-approves, it removes
+nothing), the owner's MCP servers (an empty strict config), everything
+`--safe-mode` disables (the owner's CLAUDE.md, hooks, installed plugins, custom
+commands and agents, skills; auth, model selection and the owner's settings
+still work), and session persistence, so no transcript is left resumable on
+disk. `--bare` would do most of that but reads only `ANTHROPIC_API_KEY`, never
+the subscription's OAuth, which is the point of this backend. Every caller (summarize, `mp ask`, `mp digest`
+including `--publish`, diarization cleanup) goes through `ClaudeCLIClient._run`,
+so one place confines them all.
 
 Load-bearing security note: a CLI child egresses through a child process,
 OUTSIDE this process's in-process httpx egress guard, so it is fail-closed at the
@@ -20,6 +35,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -127,19 +143,24 @@ class ClaudeCLIClient:
                 "the `claude` CLI is not installed or not on PATH; install Claude Code "
                 "or choose a different summarization.backend"
             )
-        # No positional prompt -> claude reads it from stdin (avoids ARG_MAX on a
-        # long transcript). `--allowed-tools ""` disables tool use; a summary is a
-        # pure text turn.
-        cmd = [binary, "-p", "--output-format", "json", "--allowed-tools", ""]
         try:
-            proc = subprocess.run(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=self._timeout,
-                env=egress_guard.child_env(),
-            )
+            # A fresh empty directory per run, removed afterwards: the child has
+            # no project to read and nothing of ours in its cwd. (It used to
+            # inherit the pipeline's, which under launchd is `/`.)
+            # `ignore_cleanup_errors`: a leftover file must not turn a good
+            # reply into "could not spawn the claude CLI".
+            with tempfile.TemporaryDirectory(
+                prefix="mp-claude-cli-", ignore_cleanup_errors=True
+            ) as workdir:
+                proc = subprocess.run(
+                    _command(binary),
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    timeout=self._timeout,
+                    env=_child_env(),
+                    cwd=workdir,
+                )
         except subprocess.TimeoutExpired as e:
             raise ClaudeCLIError(f"claude CLI timed out after {self._timeout:.0f}s") from e
         except OSError as e:
@@ -149,6 +170,39 @@ class ClaudeCLIClient:
                 f"claude CLI exited {proc.returncode}: {(proc.stderr or '').strip()[:500]}"
             )
         return _extract_result(proc.stdout)
+
+
+def _command(binary: str) -> list[str]:
+    """The confined argv (SEC20). The prompt rides stdin, so there is no
+    positional argument for the variadic flags (`--tools`, `--mcp-config`) to
+    swallow; each is followed by another flag, and a test pins that.
+
+    `--safe-mode` is the flag that turns off the owner's own customizations
+    (CLAUDE.md, hooks, plugins, agents, MCP) while leaving auth, model selection
+    and the user's settings alone. `--setting-sources` is deliberately not used:
+    it would also drop `apiKeyHelper`, the model and the `env` block from the
+    owner's user settings, which a login that relies on them needs."""
+    return [
+        binary, "-p", "--output-format", "json",
+        "--tools", "",
+        "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+        "--safe-mode",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+    ]
+
+
+def _child_env() -> dict[str, str]:
+    """The child's environment: `egress_guard.child_env()` with every managed
+    token removed in every mode (SEC20). The backend rides the user's Claude Code
+    login, so it needs none, and `ANTHROPIC_API_KEY` in particular would be
+    preferred over that login and bill the API."""
+    from .config import MANAGED_SECRET_KEYS
+
+    env = egress_guard.child_env()
+    for key in MANAGED_SECRET_KEYS:
+        env.pop(key, None)
+    return env
 
 
 def _extract_result(stdout: str) -> str:

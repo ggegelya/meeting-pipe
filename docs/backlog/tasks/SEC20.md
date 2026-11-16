@@ -2,9 +2,9 @@
 id: SEC20
 title: The `claude_cli` summarization backend runs a full Claude Code agent session (built-in tools, the owner's MCP servers, hooks and memory, cwd `/`, saved sessions, the API key in its environment) for a pure text turn
 category: Security
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch S4, go-live PP-2): --allowed-tools "" only pre-approves, so built-in tools stay on; the spawn also loads the owner's MCP servers, hooks and memory, runs from cwd /, saves every summary as a session, and passes the API key. Spawn with --tools "", an empty strict MCP config, no session persistence, narrowed setting sources, an empty temp cwd and tokens stripped; fix both false comments. Amended 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md)): rationale stale: Ask, digest (incl. --publish) and diarization cleanup also reach ClaudeCLIClient; the fix already covers them, only the reasoning and the cleanup line change. [Spec](./SEC20.md)
+comment: Shipped 2026-11-16: claude -p confined (--tools "", empty strict MCP config, --safe-mode, --disable-slash-commands, --no-session-persistence, empty temp cwd, all managed tokens stripped); all four callers pinned by test. Owner remainder: one claude_cli summary on a re-authenticated Claude Code (the dev Mac's login had expired, so the confined argv was checked only against --help) and confirm ~/.claude/projects/ gains no session.
 ---
 
 # SEC20: the `claude_cli` summarization backend runs a full Claude Code agent session (built-in tools, the owner's MCP servers, hooks and memory, cwd `/`, saved sessions, the API key in its environment) for a pure text turn
@@ -65,3 +65,5 @@ From the [security review](../../audits/2026-11-12-security-review.md) (verified
 - `claude_cli` still refuses armed (NDA, regulated) runs, which holds.
 
 Added scope: rewrite the rationale and the cleanup line; extend the acceptance's spawn-argv test to one call through each of summarize, Ask, digest and cleanup.
+
+**Progress (2026-11-16):** implemented as specced, with `--safe-mode` as the narrowing (the review found it: it disables CLAUDE.md, hooks, plugins and agents while auth, model and user settings keep working, unlike `--setting-sources`, which would also drop `apiKeyHelper`) plus `--disable-slash-commands`. All managed tokens are stripped, `ANTHROPIC_API_KEY` included (decision: the backend rides the Claude Code login; a present key would override it and bill the API). The false `--allowed-tools` comment and the module docstring are rewritten; `SecretsStore`'s "claude_cli needs no key at all" stays true. Not verified live: the CLI's OAuth session on the dev Mac is expired, so the end-to-end run was not measured. The owner check in the spec (one summary succeeds, no new session under `~/.claude/projects/`, and no new per-run entry in `~/.claude.json`) is what remains; proposing `owner-verify` / `simple` is the owner's call.

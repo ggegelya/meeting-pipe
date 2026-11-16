@@ -135,3 +135,131 @@ def test_summarize_end_to_end_no_api_key(tmp_path, monkeypatch, _found_claude):
     assert out["backend"] == "claude_cli"
     assert (tmp_path / "20260101-1000.summary.json").exists()
     assert (tmp_path / "20260101-1000.summary.md").exists()
+
+
+# ----- SEC20: the child is confined to a text turn -----
+
+
+def _capturing_run(captured: list[dict], result_text: str):
+    """A `subprocess.run` stand-in that records argv, env, cwd, and whether the cwd
+    was an empty directory at the moment of the call."""
+    def run(cmd, **kwargs):
+        from pathlib import Path
+
+        cwd = Path(kwargs["cwd"])
+        captured.append({
+            "cmd": list(cmd), "env": kwargs["env"], "cwd": cwd,
+            "cwd_was_empty_dir": cwd.is_dir() and not any(cwd.iterdir()),
+        })
+        payload = {"type": "result", "is_error": False, "result": result_text}
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
+    return run
+
+
+def _assert_confined(call: dict) -> None:
+    cmd = call["cmd"]
+    # Built-in tools are off. `--allowed-tools` only pre-approves, so it must not
+    # be what we rely on (and must not be there pretending to).
+    assert cmd[cmd.index("--tools") + 1] == ""
+    assert "--allowed-tools" not in cmd
+    # The owner's MCP servers do not load: strict config over an empty server map.
+    assert "--strict-mcp-config" in cmd
+    assert json.loads(cmd[cmd.index("--mcp-config") + 1]) == {"mcpServers": {}}
+    assert "--no-session-persistence" in cmd
+    # The owner's CLAUDE.md, hooks, plugins and agents are off; auth still works.
+    assert "--safe-mode" in cmd
+    assert "--setting-sources" not in cmd             # would drop apiKeyHelper / model
+    assert "--disable-slash-commands" in cmd
+    # `--tools` and `--mcp-config` are variadic: each value must be followed by
+    # another flag (or end the argv), or the CLI swallows whatever comes next.
+    for flag in ("--tools", "--mcp-config"):
+        after = cmd[cmd.index(flag) + 2:cmd.index(flag) + 3]
+        assert after == [] or after[0].startswith("-"), flag
+    # `--bare` would drop the subscription auth this backend exists for.
+    assert "--bare" not in cmd
+    # An empty directory, gone again afterwards.
+    assert call["cwd_was_empty_dir"] and not call["cwd"].exists()
+
+
+def _secret_env(monkeypatch) -> None:
+    from mp.config import MANAGED_SECRET_KEYS
+
+    for key in MANAGED_SECRET_KEYS:
+        monkeypatch.setenv(key, "secret-value")
+    monkeypatch.setenv("UNRELATED_VAR", "kept")
+
+
+def _assert_env_clean(call: dict) -> None:
+    from mp.config import MANAGED_SECRET_KEYS
+
+    assert not any(k in call["env"] for k in MANAGED_SECRET_KEYS)
+    assert call["env"]["UNRELATED_VAR"] == "kept"      # only the credentials go
+
+
+def test_summarize_spawns_a_confined_child(monkeypatch, _found_claude):
+    _secret_env(monkeypatch)
+    calls: list[dict] = []
+    monkeypatch.setattr(cc.subprocess, "run", _capturing_run(calls, _summary_json()))
+    ClaudeCLIClient().summarize(system_prompt="s", transcript="t", model="x", max_tokens=10)
+    assert len(calls) == 1
+    _assert_confined(calls[0])
+    _assert_env_clean(calls[0])
+
+
+def test_every_caller_reaches_the_same_confined_spawn(monkeypatch, _found_claude):
+    """Ask and digest (`engine.complete_text`) and diarization cleanup (the
+    providers cleanup row) reach `ClaudeCLIClient` by their own routes; each one
+    must hit the confined argv, with the managed tokens stripped."""
+    from mp import engine, providers
+
+    _secret_env(monkeypatch)
+    cfg = Config.model_validate({"summarization": {"backend": "claude_cli"}})
+
+    calls: list[dict] = []
+    monkeypatch.setattr(cc.subprocess, "run", _capturing_run(calls, "an answer"))
+    engine.complete_text(cfg, system_prompt="s", user_message="q", max_tokens=10)  # ask / digest
+    assert len(calls) == 1
+    _assert_confined(calls[0])
+    _assert_env_clean(calls[0])
+
+    calls.clear()
+    monkeypatch.setattr(cc.subprocess, "run", _capturing_run(calls, '{"edits": []}'))
+    cleanup = providers.lookup("claude_cli").build_cleanup(cfg)  # diarization cleanup
+    cleanup.propose_edits(window_prompt="[0] A: hi", speakers=["A"])
+    assert len(calls) == 1
+    _assert_confined(calls[0])
+    _assert_env_clean(calls[0])
+
+
+def test_each_run_gets_its_own_workdir(monkeypatch, _found_claude):
+    calls: list[dict] = []
+    monkeypatch.setattr(cc.subprocess, "run", _capturing_run(calls, "ok"))
+    client = ClaudeCLIClient()
+    client.complete(system_prompt="s", user_message="q", max_tokens=10)
+    client.complete(system_prompt="s", user_message="q", max_tokens=10)
+    assert calls[0]["cwd"] != calls[1]["cwd"]
+
+
+def test_the_workdir_is_removed_even_when_the_child_fails(monkeypatch, _found_claude):
+    seen: list = []
+
+    def run(cmd, **kwargs):
+        seen.append(kwargs["cwd"])
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    monkeypatch.setattr(cc.subprocess, "run", run)
+    with pytest.raises(ClaudeCLIError, match="timed out"):
+        ClaudeCLIClient().complete(system_prompt="s", user_message="q", max_tokens=10)
+    from pathlib import Path
+
+    assert not Path(seen[0]).exists()
+
+
+def test_the_armed_refusal_still_fires_before_any_workdir_or_spawn(monkeypatch, _found_claude):
+    made: list[int] = []
+    monkeypatch.setattr(cc.tempfile, "TemporaryDirectory", lambda *a, **k: made.append(1))
+    monkeypatch.setattr(cc.subprocess, "run", lambda *a, **k: made.append(2))
+    monkeypatch.setattr(cc.egress_guard, "is_armed", lambda: True)
+    with pytest.raises(ClaudeCLIError, match="zero-egress"):
+        ClaudeCLIClient().complete(system_prompt="s", user_message="q", max_tokens=10)
+    assert made == []
