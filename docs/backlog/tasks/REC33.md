@@ -2,9 +2,9 @@
 id: REC33
 title: The system channel's head offset is stamped at the first callback, so the merge appears to over-delay the far side by 1.3 to 2.6 s
 category: Recording
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). Field: in 8 of the 28 recordings the merge delayed (head offset at or above 1.0 s), offset plus system audio exceeds mic audio by 1.26 to 2.59 s though the mic is not short and the system stream halts first, which fits a first callback carrying audio captured before systemFirstFrameUptime is stamped; inferred from durations, no audio in the pack. Verify on one affected recording first, then derive the offset from the first buffer's presentation timestamp.
+comment: Measurement shipped 2026-11-17 (intermediate_durations.system_capture_lag_sec), merge unchanged by the owner's choice to measure first. Remainder: a work-laptop recording with a delay above 1 s logs the lag, then a one-line flip of the merge to the capture stamp behind the same test.
 ---
 
 # REC33: The system channel's head offset is stamped at the first callback, so the merge appears to over-delay the far side by 1.3 to 2.6 s
@@ -54,3 +54,13 @@ Related: [REC30](./REC30.md) (filed in this band) adds per-channel first and las
 1. [owner] On the work laptop, find whether one of `20261016-163013`, `20261014-123248` or `20261021-103054` (or any recording with a `system_delay` above 1 s) still has its final WAV and was taken on speakers rather than headphones, so the far side bled into the mic. Hand that file, or the first five minutes of it, to a session. Cost: a few minutes; no meeting content needs to be read, only the waveform lag.
 2. [session] Cross-correlate left against right over a stretch of far-side speech, report the lag against the logged excess, and record the verdict in this file.
 3. [owner] If no affected recording is left, after a build with REC30's per-channel stamps: one call on speakers with a system delay above 1 s, then step 2 on it.
+
+## Progress (2026-11-17)
+
+**Step 1 could not run here.** This Mac's library has three recordings, all with `head_offset_sec` under 0.2 s, so no merge delay applied and none of the named stems is present; they are on the work laptop.
+
+**Shipped instead, no behaviour change:** a measurement that makes step 1 unnecessary on the next affected recording. `SystemAudioCapture` now passes each buffer's capture time with its PCM (`SystemCaptureClock.captureUptime`, the SCStream presentation timestamp on the host clock that `ProcessInfo.systemUptime` also reads), the channel records the first frame's capture-to-delivery lag once per file open (`SystemCaptureClock.lag`, nil when the timestamp is invalid or implausible), and `recorder`/`intermediate_durations` logs it as `system_capture_lag_sec` beside `head_offset_sec`. The head offset, and so the merge, still keys off delivery, pinned by a source test so the flip is a deliberate one-line change. 5 new tests (the conversion, the invalid cases, a 2 s lag, the plausibility bounds, the unchanged merge anchor); REC28's delivery fence was updated for the new callback shape.
+
+**Owner decision (2026-11-17): option (1), measure first.** The logging-only change above is what ships; the merge is unchanged.
+
+**Remainder:** a recording on the work laptop with `head_offset_sec` above 1 s logs `system_capture_lag_sec`. If the lag matches the 1.3 to 2.6 s excess the field showed, a session makes the one-line flip of the head offset to the capture stamp (`systemFirstFrameUptime - lag`) and updates `test_the_lag_is_logged_and_the_merge_offset_is_unchanged` to pin the new anchor; if it does not, this task closes on the measurement with the code left alone. Item 3 (the mic anchor) waits on the same measurement.

@@ -1281,6 +1281,9 @@ final class MeetingRecorder {
         let micFires: UInt64
         let systemFires: UInt64
         let systemHeadOffsetSec: Double
+        /// REC33: the system file's first frame, captured this long before it was delivered (nil
+        /// when its timestamp was unusable or no frame arrived). Logged, not yet applied.
+        let systemCaptureLagSec: Double?
         /// REC22: the mic file's byte rate, read before `snapshotMicCoverage` clears its format,
         /// for the backlog peak in seconds.
         let micBytesPerSecond: Double
@@ -1311,6 +1314,7 @@ final class MeetingRecorder {
             micFires: micFires,
             systemFires: systemChannel.systemFires,
             systemHeadOffsetSec: firstFrame > 0 ? max(0, firstFrame - startedAtUptime) : 0,
+            systemCaptureLagSec: firstFrame > 0 ? systemChannel.systemFirstFrameCaptureLagSec : nil,
             micBytesPerSecond: micFileFormat.map { MeetingRecorder.bytesPerSecond($0) } ?? 0
         )
 
@@ -1527,6 +1531,9 @@ final class MeetingRecorder {
             "delta_sec": deltaSec as Any,
             "wallclock_sec": wallclockSec as Any,
             "head_offset_sec": session.systemHeadOffsetSec,
+            // REC33: measured, not applied. With `head_offset_sec` at 1 s or more, a lag near the
+            // field's 1.3 to 2.6 s excess says the merge places the far side late by it.
+            "system_capture_lag_sec": session.systemCaptureLagSec as Any,
             "has_mic": hasMic,
             "has_system": hasSystem,
         ])

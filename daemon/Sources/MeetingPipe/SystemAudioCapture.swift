@@ -16,7 +16,9 @@ import ScreenCaptureKit
 /// the invariant the code already relies on (CONC4).
 final class SystemAudioCapture: NSObject, @unchecked Sendable {
     /// Called on a background queue with PCM samples (48 kHz stereo Float32).
-    private let onBuffer: (AVAudioPCMBuffer) -> Void
+    /// The PCM, and when its first frame was captured in `systemUptime` seconds (REC33), or nil
+    /// when the buffer's presentation timestamp is unusable.
+    private let onBuffer: (AVAudioPCMBuffer, Double?) -> Void
     /// Called (on the SCStream delegate queue) when the stream dies mid-capture
     /// (`didStopWithError`). The recorder surfaces the loss and re-enables retry from here
     /// (REC4 / AUD-13). The String is the failure reason.
@@ -135,7 +137,7 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
         NSWorkspace.shared.open(url)
     }
 
-    init(onBuffer: @escaping (AVAudioPCMBuffer) -> Void) {
+    init(onBuffer: @escaping (AVAudioPCMBuffer, Double?) -> Void) {
         self.onBuffer = onBuffer
         super.init()
     }
@@ -337,7 +339,9 @@ extension SystemAudioCapture: SCStreamOutput, SCStreamDelegate {
               let pcm = Self.pcmBuffer(from: sampleBuffer) else {
             return
         }
-        onBuffer(pcm)
+        onBuffer(pcm, SystemCaptureClock.captureUptime(
+            of: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        ))
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -377,5 +381,32 @@ extension SystemAudioCapture: SCStreamOutput, SCStreamDelegate {
             into: audioBufferList
         )
         return status == noErr ? buffer : nil
+    }
+}
+
+/// REC33: when a system buffer was captured, as opposed to when its callback ran. SCStream stamps
+/// each sample buffer with a presentation time on the host clock (`mach_absolute_time`), which is
+/// the clock `ProcessInfo.systemUptime` reads, so the seconds compare directly. The field evidence
+/// suggests the first callback can carry audio captured seconds earlier, which would place the far
+/// side late by that much; this is the measurement that settles it.
+enum SystemCaptureClock {
+    /// A capture this far before its delivery is not believed: the timestamp is on some other
+    /// clock or nonsense. Real queueing is milliseconds to a few seconds.
+    static let plausibleLagSec: Double = 30
+
+    /// The capture time of a buffer's first frame in `systemUptime` seconds, or nil when the
+    /// timestamp is invalid, indefinite or not numeric.
+    static func captureUptime(of presentation: CMTime) -> Double? {
+        guard presentation.isValid, presentation.isNumeric, !presentation.isIndefinite else { return nil }
+        let seconds = CMTimeGetSeconds(presentation)
+        return seconds.isFinite && seconds > 0 ? seconds : nil
+    }
+
+    /// Seconds between capture and delivery, or nil when the capture time is missing or not on
+    /// the host clock (after delivery, or implausibly long before it).
+    static func lag(captureUptime: Double?, deliveredAt: Double) -> Double? {
+        guard let captureUptime else { return nil }
+        let lag = deliveredAt - captureUptime
+        return lag >= 0 && lag < plausibleLagSec ? lag : nil
     }
 }

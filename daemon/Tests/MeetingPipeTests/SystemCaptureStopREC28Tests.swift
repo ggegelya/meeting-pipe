@@ -231,7 +231,7 @@ final class SystemCaptureStopREC28Tests: XCTestCase {
         let text = try daemonSource("Sources/MeetingPipe/SystemAudioCapture.swift")
         let body = try XCTUnwrap(Self.body(of: "didOutputSampleBuffer sampleBuffer: CMSampleBuffer", in: text))
         let gate = try XCTUnwrap(body.range(of: "guard deliversBuffers else { return }"))
-        let deliver = try XCTUnwrap(body.range(of: "onBuffer(pcm)"))
+        let deliver = try XCTUnwrap(body.range(of: "onBuffer(pcm, "))  // REC33: the capture time rides along
         XCTAssertLessThan(gate.lowerBound, deliver.lowerBound)
         // The host reads the pure ledger's answer, the one the tests above pin, under one lock.
         XCTAssertTrue(text.contains("private var deliversBuffers: Bool { withStartLock { attempt.deliversBuffers } }"))

@@ -89,6 +89,10 @@ final class SystemAudioChannel {
     /// REC30: the latest frame's arrival and the seconds delivered to the writer, for the file as
     /// it stands on disk. Reset with `systemFirstFrameUptime`; one aligned store per buffer.
     private(set) var systemLastFrameUptime: Double = 0
+    /// REC33: how long before its delivery the file's first frame was captured, from the buffer's
+    /// presentation timestamp, or nil when that timestamp was unusable. Logged only: the head
+    /// offset still uses the delivery stamp until a measurement confirms the lag is real.
+    private(set) var systemFirstFrameCaptureLagSec: Double?
     private(set) var systemDeliveredSeconds: Double = 0
 
     /// REC10: when the system channel's audio stopped, so a retry can pad the outage
@@ -184,6 +188,7 @@ final class SystemAudioChannel {
     func endRecording() {
         systemURL = nil
         systemFirstFrameUptime = 0
+        systemFirstFrameCaptureLagSec = nil
         systemLostAt = 0
     }
 
@@ -409,7 +414,7 @@ final class SystemAudioChannel {
         // touches no counter, no first-frame mark and no writer, whichever file is open by then.
         let generation = armCaptureGeneration()
 
-        let capture = SystemAudioCapture { [weak self] pcm in
+        let capture = SystemAudioCapture { [weak self] pcm, capturedAt in
             guard let self = self, self.acceptsBuffer(from: generation) else { return }
             self.systemFires &+= 1
             if self.systemFires == armBaseline &+ 1 {
@@ -422,6 +427,9 @@ final class SystemAudioChannel {
             let deliveredAt = ProcessInfo.processInfo.systemUptime
             if self.systemFirstFrameUptime == 0 {
                 self.systemFirstFrameUptime = deliveredAt
+                self.systemFirstFrameCaptureLagSec = SystemCaptureClock.lag(
+                    captureUptime: capturedAt, deliveredAt: deliveredAt
+                )
             }
             self.systemLastFrameUptime = deliveredAt
             if pcm.format.sampleRate > 0 {
@@ -549,6 +557,7 @@ final class SystemAudioChannel {
         // Cleared HERE and not on the resume branch, which keeps both the audio and
         // the offset that places it (REC10).
         self.systemFirstFrameUptime = 0
+        self.systemFirstFrameCaptureLagSec = nil
         self.systemLastFrameUptime = 0
         self.systemDeliveredSeconds = 0
         if let systemFile {
