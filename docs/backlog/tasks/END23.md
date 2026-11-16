@@ -2,9 +2,9 @@
 id: END23
 title: Stop a Teams-sourced recording 120 s after the Teams family releases the microphone, whatever the end engine believes
 category: Detection
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). Three Teams recordings ran 562 s, 63 s and about 380 s past a mic release that was in the log, and nothing at HEAD bounds a recording whose lifecycle verdict stays live or has gone terminal (END17 removed END13's 7200 s ceiling, the idle backstop stands down or never accrues). Scope: one independent stop on DET23's MicHolderMonitor, a Teams-sourced recording whose Teams family has stayed released for 120 s stops with cause mic_release_ceiling and the cut at the release; Zoom waits on DET24's bar Z1, Webex and Slack on a measured call each.
+comment: Shipped 2026-11-17 for Teams: pure MicReleaseCeiling (Core) on DET23's monitor, a per-recording 1 Hz host tick that stops a native Teams recording 120 s into a monitor-read release whatever the engine reads, releasing any hold unconcluded and cutting at the release (suggested under lossless, truncated under regulated/NDA), coordinator/mic_release_ceiling_stop. Remainder: the two-week field exit (owner walkthrough), the owner question on arming only after a held reading inside the recording, and Zoom (DET24 Z1), Webex and Slack (a measured call each).
 ---
 
 # END23: Stop a Teams-sourced recording 120 s after the Teams family releases the microphone, whatever the end engine believes
@@ -62,3 +62,16 @@ Lands after [DET23](./DET23.md) (the always-on 1 Hz `MicHolderMonitor`, log-only
 2. [owner] Two weeks of normal Teams use. Once, mid-call, switch the input device and switch it back; the recording must keep running. Cost: no extra calls.
 3. [session] For every Teams recording in those two weeks, report stop time minus the final monitor release, and list every `mic_release_ceiling_stop` with its stem and release time.
 4. [owner] Label each listed stop as right or wrong. One wrong stop fails the exit and holds Zoom's enablement.
+
+**Progress (2026-11-17): shipped for Teams; field exit, one owner question and the other apps remain.**
+
+What landed: `MicReleaseCeiling` (Core, pure) and `MeetingSessionController+MicReleaseCeiling.swift` (the host), reading DET23's `MicHolderMonitor` through `SessionHost.micHolderFeed.currentSnapshot()`. Armed at a recording's commit (prompt, explicit, resumed and split starts all commit there) when the source is native Teams (`com.microsoft.teams2` or `com.microsoft.teams`); disarmed in `stopRecording`. Decisions that were not in the spec, all from the Opus design review:
+
+- **The cut is the monitor's `leftHeldAt`** (the first non-held sample after a hold, newly published on `MicHolderMonitor.Reading`), the later of the two Teams families', not the host's first released read and not the reading's `since` (which moves on a vanish's 5 s unknown, and classic Teams usually reads released from launch). A `leftHeldAt` that moved means a hold too short for the 1 Hz host to see, and restarts the clock.
+- **The cut is fixed on the wall clock when the release is first seen**, because the monitor's clock (`systemUptime`) stops across sleep and the wall clock does not; converting at the stop put the cut late by the whole sleep.
+- **Each sample credits at most 2 s**, so a stalled main run loop never credits an unobserved gap.
+- **The open hold is released, not concluded.** END21's per-route `trimPoint` needs an open hold and, under its Stop rule, refuses a cut whenever the engine still reads the mic live; the 20261112-174606 shape has no hold at all. So `pendingEndTrimAt` is set to the monitor's cut directly, which is the spec's fallback path, and `held_end_trimmed` says `stop_route: mic_release_ceiling`.
+- **END29 reconciled:** the ceiling stops whether or not the Leave button reads live. END29 guards a return the engagement-bound `ProcessAudioSignal` can miss on a stale object; the monitor re-enumerates the list every second, the audit measured in-app mute never releasing the flag, and both era A overruns had the Leave button live. The row carries `live_signal` so a ceiling stop over a live call UI is findable at walkthrough step 4.
+- **Owner question (open, sent 2026-11-17):** the clock runs only for a release that began inside the recording (`leftHeldAt >= the arm time`), so a Teams recording started before the call opens the mic is not stopped at 120 s and the cut can never fall before the file's start (where `stopRecording` drops it silently). The cost is a resumed recording onto a call that is already dead and never re-held stays unbounded, as at HEAD. All three audit stems held the mic during the recording. The spec's unconditional rule is a one-line change in `MicReleaseCeiling.observe` if the owner prefers it.
+
+Not built: OBS5's stop cause (OBS5 has not landed, so `recording_stopped` carries no cause). Tests: 9 `MicReleaseCeilingTests`, 8 `MicReleaseCeilingHostTests` (an ended engine, an open hold released with no timer left, an open hold whose own END21 evidence would have moved the cut (red with the release line removed), regulated truncation, a sleep between release and stop, a tick after the stop, a 23 s gap, arming only for native Teams).

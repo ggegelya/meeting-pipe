@@ -1,17 +1,21 @@
 import CoreAudio
 import Foundation
 
-/// What the session feeds DET23's monitor about a recording: whether one runs, and its ~1 Hz levels.
-/// A protocol so `SessionHost` can carry it and `FakeSessionHost` can record it.
+/// What the session feeds DET23's monitor about a recording (whether one runs, and its ~1 Hz levels),
+/// and what it reads back for END23's ceiling. A protocol so `SessionHost` can carry it and
+/// `FakeSessionHost` can record it.
 public protocol MicHolderRecordingFeed: AnyObject {
     func setRecording(_ running: Bool)
     /// `systemDb` nil when the system channel is not delivering (down, or mic-only by permission).
     func noteLevels(micDb: Float, systemDb: Float?)
+    /// END23: what the monitor reads now, for the Teams release ceiling. A lock read; never waits.
+    func currentSnapshot() -> MicHolderMonitor.Snapshot
 }
 
 /// DET23: an always-on 1 Hz record of which process holds audio input, so a call the detector
-/// missed still leaves a row. Log only: nothing in this commit reads `snapshot` to start, prompt or
-/// end anything; END23, DET25, DET20, DET10, MIC22, END25 and DET19 are its consumers.
+/// missed still leaves a row. Its first consumer is END23's `MicReleaseCeiling` (a Teams recording
+/// stops 120 s after the Teams family releases the mic); DET25, DET20, DET10, MIC22, END25 and DET19
+/// are the others queued on it.
 ///
 /// Why it exists: the start-miss instrument (`AVCaptureDevice.isInUseByAnotherApplication` on the
 /// default input) read true zero times in 114,553 work-laptop events while
@@ -64,6 +68,29 @@ public final class MicHolderMonitor: MicHolderRecordingFeed {
         public let since: TimeInterval
         /// The sample this reading came from.
         public let readAt: TimeInterval
+        /// END23: the first non-held sample since the family last read held, nil while it reads
+        /// held or when it never has. A release cut, and it moves on every hold, including one too
+        /// short for a reader polling the snapshot to see.
+        public let leftHeldAt: TimeInterval?
+
+        public init(level: MicHolderLevel, since: TimeInterval, readAt: TimeInterval, leftHeldAt: TimeInterval? = nil) {
+            self.level = level
+            self.since = since
+            self.readAt = readAt
+            self.leftHeldAt = leftHeldAt
+        }
+    }
+
+    /// END23: a snapshot and the monitor clock's time it was taken at, so a reader can place the
+    /// readings' uptime stamps on the wall clock.
+    public struct Snapshot: Equatable {
+        public let at: TimeInterval
+        public let readings: [String: Reading]
+
+        public init(at: TimeInterval, readings: [String: Reading]) {
+            self.at = at
+            self.readings = readings
+        }
     }
 
     /// Schedules a repeating action; returns its cancellation.
@@ -202,7 +229,7 @@ public final class MicHolderMonitor: MicHolderRecordingFeed {
         return lock.withLock {
             published.mapValues { reading in
                 if publishedListFailed || t - reading.readAt > Self.staleAfter {
-                    return Reading(level: .unknown, since: reading.since, readAt: reading.readAt)
+                    return Reading(level: .unknown, since: reading.since, readAt: reading.readAt, leftHeldAt: reading.leftHeldAt)
                 }
                 return reading
             }
@@ -218,6 +245,12 @@ public final class MicHolderMonitor: MicHolderRecordingFeed {
             self.recording = running
             if !running { self.emitPacked(self.packer.finish()) }
         }
+    }
+
+    /// END23: the snapshot now, with the clock reading it was taken at.
+    public func currentSnapshot() -> Snapshot {
+        let now = clock()
+        return Snapshot(at: now, readings: snapshot(at: now))
     }
 
     public func noteLevels(micDb: Float, systemDb: Float?) {
@@ -403,7 +436,9 @@ public final class MicHolderMonitor: MicHolderRecordingFeed {
     }
 
     private func publish(at now: TimeInterval) {
-        let readings = ledger.families.mapValues { Reading(level: $0.level, since: $0.since, readAt: now) }
+        let readings = ledger.families.mapValues {
+            Reading(level: $0.level, since: $0.since, readAt: now, leftHeldAt: $0.leftHeldAt)
+        }
         let failed = ledger.listFailedSince != nil
         lock.withLock {
             if failed {

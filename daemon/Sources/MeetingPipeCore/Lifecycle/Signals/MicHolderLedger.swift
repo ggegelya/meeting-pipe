@@ -98,8 +98,8 @@ public struct MicHolderLedger {
         public var reason: String?
         var owners: Set<AudioObjectID> = []
         var vanishedAt: TimeInterval?
-        /// The first non-held sample after a hold, for the gap row.
-        var leftHeldAt: TimeInterval?
+        /// The first non-held sample after a hold, for the gap row and END23's cut.
+        public internal(set) var leftHeldAt: TimeInterval?
         var gapVia: MicHolderLevel?
         /// The current hold's first sample, until a sighting consumes it.
         var awaitingSightingSince: TimeInterval?

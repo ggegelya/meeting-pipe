@@ -78,6 +78,12 @@ final class MeetingSessionController: @unchecked Sendable {
     /// Read once by `stopRecording` and cleared there, so it can never leak into the next meeting.
     var pendingEndTrimAt: Date?
 
+    /// END23: the running Teams recording's mic-release ceiling, its 1 Hz timer, and the cut it
+    /// anchored on the wall clock. All nil outside a native Teams recording.
+    var micReleaseCeiling: MicReleaseCeiling?
+    var cancelMicReleaseCeilingTimer: (() -> Void)?
+    var micReleaseCutAt: Date?
+
     private(set) var startLatch = RecordingStartLatch()
 
     /// END19: the engage discovery's last winner left behind, and how many winnerless scans it has
@@ -921,6 +927,8 @@ final class MeetingSessionController: @unchecked Sendable {
                 self.coordinator.lifecycleCoord.confirmRecording()
                 // END28: from here on, a change of call splits this recording.
                 self.armCallIdentityWatch(file: file, source: source)
+                // END23: and a Teams recording stops 120 s into a mic release, whatever the engine says.
+                self.armMicReleaseCeiling(file: file, source: source)
             } catch {
                 self.startLatch.clear()
                 // END20: a start refused because a recording is already running must not touch
@@ -1038,6 +1046,7 @@ final class MeetingSessionController: @unchecked Sendable {
             concludeTeardownHold(conclusion: .stop)
         }
         disarmCallIdentityWatch()
+        disarmMicReleaseCeiling()
         micTierRecordingBundle = nil // DET1: this recording is ending; drop its mic-release tag
         // END13 item 5: hand the just-stopped source to the candidate slot at the instant of the
         // stop, so a Record pressed straight afterwards attaches to it instead of recording

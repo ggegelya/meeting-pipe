@@ -176,8 +176,11 @@ final class SpyNotifier: SessionNotifying {
 final class SpyMicHolderFeed: MicHolderRecordingFeed {
     private(set) var recordingCalls: [Bool] = []
     private(set) var levels: [(mic: Float, system: Float?)] = []
+    /// END23: what the ceiling reads; tests state it.
+    var snapshot = MicHolderMonitor.Snapshot(at: 0, readings: [:])
     func setRecording(_ running: Bool) { recordingCalls.append(running) }
     func noteLevels(micDb: Float, systemDb: Float?) { levels.append((micDb, systemDb)) }
+    func currentSnapshot() -> MicHolderMonitor.Snapshot { snapshot }
 }
 
 final class SpyRecorder: SessionRecording {
