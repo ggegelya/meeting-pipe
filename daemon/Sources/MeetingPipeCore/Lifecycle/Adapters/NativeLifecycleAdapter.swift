@@ -244,6 +244,8 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
         axLeaveButton.armIfNeeded(context: context, leaveButton: element)
     }
 
+    public var callWindow: CallWindowRead? { axLeaveButton.callWindow }
+
     public func rescueLeaveButton(_ element: AXUIElement) {
         guard let context = startedContext else { return }
         axLeaveButton.reassertOrArm(context: context, leaveButton: element)

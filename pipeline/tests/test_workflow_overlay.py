@@ -534,10 +534,22 @@ def test_contract_fixtures_carry_schema_version() -> None:
     for name in (
         "source-only-regulated", "workflow-full", "workflow-lan",
         "workflow-nda", "workflow-reassigned-to-nda", "held-end-trim",
-        "workflow-no-sinks",
+        "workflow-no-sinks", "split-from",
     ):
         data = json.loads((_CONTRACT / f"{name}.meta.json").read_text(encoding="utf-8"))
-        assert data["schema_version"] == 4
+        assert data["schema_version"] == 5
+
+
+def test_contract_fixture_split_from_is_informational() -> None:
+    # END28: a split links two meetings for the record; it changes nothing about where or how
+    # either is summarized and published.
+    cfg = Config()
+    fixture = _CONTRACT / "split-from.meta.json"
+    assert json.loads(fixture.read_text(encoding="utf-8"))["split_from"] == "20261112-172307"
+    result = apply_overrides(cfg, fixture)
+    assert result.summarization.backend == cfg.summarization.backend
+    assert result.output.sinks == cfg.output.sinks
+    assert result.modes.regulated_mode == cfg.modes.regulated_mode
 
 
 def test_contract_fixture_held_end_trim_is_informational() -> None:

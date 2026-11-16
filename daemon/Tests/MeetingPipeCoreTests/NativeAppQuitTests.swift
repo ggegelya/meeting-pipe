@@ -104,6 +104,31 @@ final class NativeAppQuitTests: XCTestCase {
         adapter.stop()
     }
 
+    /// END28's production wire: the real Leave signal's window read reaches the coordinator
+    /// through the native adapter, so a default nil cannot hide a broken link.
+    func test_the_call_window_reaches_the_coordinator_through_the_native_adapter_END28() throws {
+        let leave = AXLeaveButtonSignal(
+            axBus: AXObserverBus(), probe: { _ in .healthy },
+            windowReader: { _ in
+                AXLeaveButtonSignal.WindowSample(window: AXUIElementCreateApplication(4242), title: "Standup", subrole: nil)
+            },
+            scheduler: { _, _ in { } }
+        )
+        let adapter = NativeLifecycleAdapter(
+            config: .teams,
+            processAudio: nil,
+            shareableContent: ShareableContentSignal(probe: { [] }, scheduler: { _, _ in { } }),
+            axLeaveButton: leave,
+            workspace: quietWorkspace()
+        )
+        let coordinator = MeetingLifecycleCoordinator(adapters: [adapter], scheduler: { _, _ in { } })
+        XCTAssertNil(coordinator.callWindow, "nothing engaged")
+        try coordinator.engage(context: teams, handle: LifecycleAdapterHandle(leaveButton: AXUIElementCreateSystemWide()))
+        XCTAssertEqual(coordinator.callWindow?.title, "Standup")
+        coordinator.disengage()
+        XCTAssertNil(coordinator.callWindow)
+    }
+
     private func drain(_ coordinator: MeetingLifecycleCoordinator) {
         let done = expectation(description: "drain")
         coordinator.tick()

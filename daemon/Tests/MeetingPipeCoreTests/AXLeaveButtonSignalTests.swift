@@ -670,4 +670,55 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         signal.reassertOrArm(context: teamsContext, leaveButton: stubElement())
         XCTAssertEqual(observed, [.healthy, .healthy], "the rescue reaches the engine")
     }
+
+    // MARK: - END28: the call window behind the armed Leave button
+
+    final class Clock { var now = Date(timeIntervalSince1970: 0) }
+
+    func test_a_healthy_button_caches_its_window_throttled_and_an_invalid_one_clears_it_END28() {
+        let clock = Clock()
+        let health = LockedBox(AXLeaveButtonSignal.State.healthy)
+        let title = LockedBox<String?>("Standup")
+        let window = LockedBox(AXUIElementCreateApplication(101))
+        let reads = LockedBox(0)
+        var tick: (() -> Void)?
+        let signal = AXLeaveButtonSignal(
+            axBus: AXObserverBus(),
+            probe: { _ in health.get() },
+            windowReader: { _ in
+                reads.mutate { $0 += 1 }
+                return AXLeaveButtonSignal.WindowSample(window: window.get(), title: title.get(), subrole: nil)
+            },
+            scheduler: { _, action in tick = action; return { tick = nil } },
+            now: { clock.now }
+        )
+        let context = MeetingLifecycleContext(bundleID: "com.microsoft.teams2", kind: .native, pid: 1)
+        signal.start(context: context, leaveButton: AXUIElementCreateSystemWide(), resolveElement: nil)
+        XCTAssertEqual(signal.callWindow?.title, "Standup")
+        let firstWindow = signal.callWindow?.windowID
+        let firstSerial = signal.callWindow?.serial ?? 0
+
+        title.set("SSO sync")
+        clock.now = clock.now.addingTimeInterval(1)
+        tick?()
+        XCTAssertEqual(signal.callWindow?.title, "Standup", "throttled to one read per interval")
+        clock.now = clock.now.addingTimeInterval(AXLeaveButtonSignal.windowReadInterval)
+        tick?()
+        XCTAssertEqual(signal.callWindow?.title, "SSO sync")
+        XCTAssertEqual(signal.callWindow?.windowID, firstWindow, "the same element (CFEqual) keeps its window id")
+        XCTAssertGreaterThan(signal.callWindow?.serial ?? 0, firstSerial, "every read is numbered")
+
+        window.set(AXUIElementCreateApplication(202))
+        clock.now = clock.now.addingTimeInterval(AXLeaveButtonSignal.windowReadInterval)
+        tick?()
+        XCTAssertNotEqual(signal.callWindow?.windowID, firstWindow, "another element is another window")
+
+        health.set(.invalid)
+        clock.now = clock.now.addingTimeInterval(1)
+        tick?()
+        XCTAssertNil(signal.callWindow, "an invalid button speaks for no window")
+
+        signal.stop()
+        XCTAssertNil(signal.callWindow)
+    }
 }

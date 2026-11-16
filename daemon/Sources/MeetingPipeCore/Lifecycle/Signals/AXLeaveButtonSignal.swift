@@ -33,6 +33,26 @@ public final class AXLeaveButtonSignal {
 
     public typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
 
+    /// END28: the window holding a Leave element, with its title and subrole.
+    public struct WindowSample {
+        public let window: AXUIElement
+        public let title: String?
+        public let subrole: String?
+
+        public init(window: AXUIElement, title: String?, subrole: String?) {
+            self.window = window
+            self.title = title
+            self.subrole = subrole
+        }
+    }
+
+    /// END28: the window holding a Leave element, or nil when it cannot be read.
+    public typealias WindowReader = (AXUIElement) -> WindowSample?
+
+    /// END28: at most one window read per this long, so the extra AX messages ride the health poll
+    /// without adding to its cost at the fast cadence.
+    public static let windowReadInterval: TimeInterval = 2
+
     public var onChange: ((State) -> Void)?
     public private(set) var lastState: State?
 
@@ -47,6 +67,17 @@ public final class AXLeaveButtonSignal {
     private let axBus: AXObserverBus
     private let eventLog: EventLog
     private let probe: Probe
+    private let windowReader: WindowReader
+    /// END28: the last window read, written on the queue and read from main, so behind its own lock.
+    private let windowLock = NSLock()
+    private var _callWindow: CallWindowRead?
+    /// Queue-confined: when the window was last read, the last window element read (compared with
+    /// `CFEqual`, so identity never rests on a hash), the generation that element got, and a serial
+    /// per read.
+    private var lastWindowReadAt: Date?
+    private var lastWindowElement: AXUIElement?
+    private var windowGeneration: UInt = 0
+    private var windowReadSerial: UInt64 = 0
     private let scheduler: Scheduler
     private let pollInterval: TimeInterval
     private let slowPollInterval: TimeInterval
@@ -89,6 +120,7 @@ public final class AXLeaveButtonSignal {
         axBus: AXObserverBus,
         eventLog: EventLog = NoopEventLog(),
         probe: @escaping Probe = AXLeaveButtonSignal.defaultProbe,
+        windowReader: @escaping WindowReader = AXLeaveButtonSignal.defaultWindowReader,
         scheduler: Scheduler? = nil,
         pollInterval: TimeInterval = AXLeaveButtonSignal.defaultPollInterval,
         slowPollInterval: TimeInterval = AXLeaveButtonSignal.defaultSlowPollInterval,
@@ -97,6 +129,7 @@ public final class AXLeaveButtonSignal {
         self.axBus = axBus
         self.eventLog = eventLog
         self.probe = probe
+        self.windowReader = windowReader
         self.pollInterval = pollInterval
         self.slowPollInterval = slowPollInterval
         self.now = now
@@ -281,6 +314,46 @@ public final class AXLeaveButtonSignal {
         lastState = nil
         resolveElement = nil
         lastWalkAt = nil
+        lastWindowReadAt = nil
+        lastWindowElement = nil
+        setCallWindow(nil)
+    }
+
+    /// END28: the last read of the window holding the armed Leave element. Any thread.
+    public var callWindow: CallWindowRead? {
+        windowLock.lock(); defer { windowLock.unlock() }
+        return _callWindow
+    }
+
+    private func setCallWindow(_ read: CallWindowRead?) {
+        windowLock.lock(); _callWindow = read; windowLock.unlock()
+    }
+
+    /// END28: refresh the cached window read on a healthy element, throttled; an invalid element
+    /// has no window to speak for, so its read is nil at once. Queue-confined.
+    private func refreshCallWindow(element: AXUIElement, state: State) {
+        guard state == .healthy else {
+            lastWindowReadAt = nil
+            setCallWindow(nil)
+            return
+        }
+        let at = now()
+        if let last = lastWindowReadAt, at.timeIntervalSince(last) < Self.windowReadInterval { return }
+        lastWindowReadAt = at
+        guard let sample = windowReader(element) else {
+            setCallWindow(nil)
+            return
+        }
+        if let last = lastWindowElement, CFEqual(last, sample.window) {
+            // The same window as the last read: keep its generation.
+        } else {
+            windowGeneration &+= 1
+            lastWindowElement = sample.window
+        }
+        windowReadSerial &+= 1
+        setCallWindow(CallWindowRead(
+            windowID: windowGeneration, title: sample.title, subrole: sample.subrole, serial: windowReadSerial
+        ))
     }
 
     /// Returns what the read said against `lastState`, which the health poll hands to its
@@ -343,6 +416,8 @@ public final class AXLeaveButtonSignal {
         // PERF15: a walk above can outlast its session. Once `stop()` has returned nothing may
         // reach the engine, whatever the queue still has to run.
         guard isCurrentSession else { return .unknown }
+        // The re-arm above may have swapped the element; read the window of the one now armed.
+        refreshCallWindow(element: self.element ?? element, state: state)
         if lastState == state { return .steady }
         let previous = lastState
         lastState = state
@@ -448,6 +523,37 @@ public final class AXLeaveButtonSignal {
             element, kAXRoleAttribute as CFString, &value
         )
         return state(for: status)
+    }
+
+    /// END28: the element's window (`kAXWindowAttribute`, else the nearest `AXWindow` up the parent
+    /// chain, bounded), with its title and subrole. The window gets a short messaging timeout of its
+    /// own, as `AXMuteButtonProbe` does, so a hung window cannot hold the poll for the global 2 s.
+    public static let defaultWindowReader: WindowReader = { element in
+        func copy(_ el: AXUIElement, _ attribute: String) -> CFTypeRef? {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(el, attribute as CFString, &value) == .success else { return nil }
+            return value
+        }
+        func asElement(_ ref: CFTypeRef?) -> AXUIElement? {
+            guard let ref, CFGetTypeID(ref) == AXUIElementGetTypeID() else { return nil }
+            return (ref as! AXUIElement)
+        }
+        var window = asElement(copy(element, kAXWindowAttribute))
+        if window == nil {
+            var current = element
+            for _ in 0..<48 {
+                guard let parent = asElement(copy(current, kAXParentAttribute)) else { break }
+                if copy(parent, kAXRoleAttribute) as? String == (kAXWindowRole as String) { window = parent; break }
+                current = parent
+            }
+        }
+        guard let window else { return nil }
+        AXUIElementSetMessagingTimeout(window, 0.25)
+        return WindowSample(
+            window: window,
+            title: copy(window, kAXTitleAttribute) as? String,
+            subrole: copy(window, kAXSubroleAttribute) as? String
+        )
     }
 
     /// END18: what a read's status says about the element. Pure, so the mapping is pinned without AX.

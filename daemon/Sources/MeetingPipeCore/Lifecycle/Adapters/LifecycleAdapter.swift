@@ -58,6 +58,11 @@ public protocol LifecycleAdapter: AnyObject {
     /// END18: the hold's rescue. Re-assert an armed, healthy Leave button as a fresh live reading,
     /// or re-arm on `element`. Browser adapters have no Leave button; the default is a no-op.
     func rescueLeaveButton(_ element: AXUIElement)
+
+    /// END28: the last read of the window holding the call's Leave control, cached by the Leave
+    /// signal on its own queue and safe to read from any thread. Nil where there is no Leave
+    /// control (browser, an unarmed signal) or the last read found none.
+    var callWindow: CallWindowRead? { get }
 }
 
 public extension LifecycleAdapter {
@@ -70,6 +75,8 @@ public extension LifecycleAdapter {
     func armLeaveButton(_ element: AXUIElement) {}
 
     func rescueLeaveButton(_ element: AXUIElement) {}
+
+    var callWindow: CallWindowRead? { nil }
 }
 
 /// Locale-tolerant title matchers for all meeting vendors. Single source of truth; adapters compose these per platform.

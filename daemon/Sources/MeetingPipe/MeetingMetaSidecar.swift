@@ -3,8 +3,11 @@ import Foundation
 /// Pure builder for `<stem>.meta.json`. Canonical Swift-to-Python contract: the pipeline reads these keys via `mp.workflow.apply_overrides`. Unit-testable without a Coordinator.
 enum MeetingMetaSidecar {
 
-    /// Sidecar shape version. Bump when the key set or a key's semantics change so a future reader can migrate. The Python reader stays fail-open on it (an unknown key is ignored); the cross-language golden fixtures (CI2, `Fixtures/meta-contract/`) pin it on both sides. Bumped to 2 by MIC15 (added `mic_device_name` + `mic_silent`); to 3 by WF7 (added `workflow_extra_sections`); to 4 by END17 (added `held_end_trim_sec` and `resumed_from`).
-    static let schemaVersion = 4
+    /// Sidecar shape version. Bump when the key set or a key's semantics change so a future reader can migrate. The Python reader stays fail-open on it (an unknown key is ignored); the cross-language golden fixtures (CI2, `Fixtures/meta-contract/`) pin it on both sides. Bumped to 2 by MIC15 (added `mic_device_name` + `mic_silent`); to 3 by WF7 (added `workflow_extra_sections`); to 4 by END17 (added `held_end_trim_sec` and `resumed_from`); to 5 by END28 (added `split_from`).
+    static let schemaVersion = 5
+
+    /// END28: the `<stem>.meta.json` key linking a split's second stem to its first.
+    static let splitFromKey = "split_from"
 
     /// Build the JSON-serializable dictionary for a finished recording. Returns an empty dict when neither source nor workflow is available (and not regulated); caller skips the write so the pipeline's no-sidecar fallback (LLM-derived title, global config) stays intact.
     ///
@@ -22,6 +25,9 @@ enum MeetingMetaSidecar {
     /// out. Stamped only for a lossless capture, since regulated and NDA recordings are cut at stop.
     /// `resumedFrom` is END17's link from a recording that resumed after an end to the one that end
     /// stopped (`ResumeAfterEnd.metaKey`), which is what the Library's merge offer reads.
+    /// `splitFrom` is END28's link from a recording started after a change of call to the stem
+    /// that change ended (`splitFromKey`). Informational: two calls are two meetings, so the
+    /// Library offers no merge for it.
     static func build(
         source: AppSource?,
         workflow: Workflow?,
@@ -29,7 +35,8 @@ enum MeetingMetaSidecar {
         micDeviceName: String? = nil,
         micSilent: Bool = false,
         heldEndTrimSec: Double? = nil,
-        resumedFrom: String? = nil
+        resumedFrom: String? = nil,
+        splitFrom: String? = nil
     ) -> [String: Any] {
         var dict: [String: Any] = [:]
         // Global zero-egress state at record time. Top-level (not under the
@@ -92,6 +99,9 @@ enum MeetingMetaSidecar {
             }
             if let resumedFrom = resumedFrom, !resumedFrom.isEmpty {
                 dict[ResumeAfterEnd.metaKey] = resumedFrom
+            }
+            if let splitFrom = splitFrom, !splitFrom.isEmpty {
+                dict[splitFromKey] = splitFrom
             }
             dict["schema_version"] = schemaVersion
         }

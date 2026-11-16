@@ -157,11 +157,25 @@ final class MetaContractFixtureTests: XCTestCase {
         XCTAssertEqual(reassigned["meeting_title"] as? String, "Design review")
     }
 
-    func test_all_fixtures_carry_schema_version_four() throws {
-        for name in ["source-only-regulated", "workflow-full", "workflow-lan", "workflow-nda", "workflow-reassigned-to-nda", "held-end-trim", "workflow-no-sinks"] {
+    func test_all_fixtures_carry_schema_version_five() throws {
+        for name in ["source-only-regulated", "workflow-full", "workflow-lan", "workflow-nda", "workflow-reassigned-to-nda", "held-end-trim", "workflow-no-sinks", "split-from"] {
             let f = try fixture(name)
-            XCTAssertEqual(f["schema_version"] as? Int, 4, "\(name) must carry schema_version 4")
+            XCTAssertEqual(f["schema_version"] as? Int, 5, "\(name) must carry schema_version 5")
         }
+    }
+
+    /// END28: a split's second stem names the first. One fixture both sides read: this side pins
+    /// the key `build` writes, the Python side that the overlay treats it as informational.
+    func test_split_from_matches_fixture() throws {
+        let source = AppSource(
+            bundleID: "com.microsoft.teams2",
+            displayName: "Microsoft Teams",
+            kind: .native,
+            meetingTitle: "Release sync"
+        )
+        let dict = MeetingMetaSidecar.build(source: source, workflow: nil, splitFrom: "20261112-172307")
+        XCTAssertEqual(dict as NSDictionary, try fixture("split-from"))
+        XCTAssertNil(MeetingMetaSidecar.build(source: source, workflow: nil)[MeetingMetaSidecar.splitFromKey])
     }
 
     /// END17: the suggested trim a held end leaves under a lossless capture. One fixture both
@@ -220,7 +234,7 @@ final class MetaContractFixtureTests: XCTestCase {
         )
         XCTAssertEqual(withMic["mic_device_name"] as? String, "AirPods Pro")
         XCTAssertEqual(withMic["mic_silent"] as? Bool, true)
-        XCTAssertEqual(withMic["schema_version"] as? Int, 4)
+        XCTAssertEqual(withMic["schema_version"] as? Int, 5)
 
         let quietMic = MeetingMetaSidecar.build(source: source, workflow: nil, micDeviceName: "AirPods Pro")
         XCTAssertEqual(quietMic["mic_device_name"] as? String, "AirPods Pro")

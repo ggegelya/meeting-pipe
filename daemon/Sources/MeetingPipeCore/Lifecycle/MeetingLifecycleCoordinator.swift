@@ -168,6 +168,11 @@ public final class MeetingLifecycleCoordinator {
     }
 
     /// END21: what the engine's readings say about the open (or just concluded) hold. Main-safe.
+    /// END28: the engaged adapter's last call-window read (`LifecycleAdapter.callWindow`). Main
+    /// only, like `engage` and `disengage`, which own `activeAdapter`; the read itself is a cached
+    /// value behind the Leave signal's lock, so this never waits on an AX walk.
+    public var callWindow: CallWindowRead? { activeAdapter?.callWindow }
+
     public var holdEvidence: HoldEvidence? {
         lock.withLock { holdEvidenceState }
     }

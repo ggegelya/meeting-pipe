@@ -151,6 +151,8 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
         the tail so the owner can restore it.
       - `resumed_from` (END17), the stem a recording resumed from after an end
         the call outlived, for the Library's merge offer
+      - `split_from` (END28), the stem a recording was split from when the
+        call it recorded changed to another; two meetings, so no merge offer
 
     A sidecar that exists but cannot be read or parsed is not "no workflow"
     (SEC25): the run goes on-device, and `sidecar_unreadable` is emitted once.

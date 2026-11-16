@@ -100,6 +100,17 @@ final class MeetingSessionController: @unchecked Sendable {
     private var pendingResumedFrom: String?
     private var activeResumedFrom: String?
 
+    /// END28: which call the running recording is of (`CallIdentityTracker`), its 2 s read timer,
+    /// and a split waiting for the stop it triggered to finish. Main-queue only.
+    var callIdentity = CallIdentityTracker()
+    var cancelCallIdentityTimer: (() -> Void)?
+    var pendingSplit: PendingCallSplit?
+    /// END28: the stem a split's prompt links to, keyed to the prompt's source (SEC39's rule), so a
+    /// skipped split prompt cannot hand its link to the next start. Cleared on every prompt exit.
+    var pendingSplitFrom: (source: AppSource, stem: String)?
+    /// END28: the running recording's `split_from`, for its sidecar and recovery manifest.
+    var activeSplitFrom: String?
+
     /// Offsets (seconds from recording start) the user flagged mid-recording via
     /// the flag hotkey (FEAT8). Reset at start, written to `<stem>.markers.json`
     /// on every press (REC26) and once more at stop. Main-queue only, like every field here.
@@ -109,6 +120,8 @@ final class MeetingSessionController: @unchecked Sendable {
     /// stop. Main-queue only. The recorder holds the render-thread copy; this drives the HUD +
     /// the marker so the toggle is idempotent per press.
     private var offTheRecordOn = false
+    /// END28: read by the call-split tick, which must not end an off-the-record span by splitting.
+    var isOffTheRecord: Bool { offTheRecordOn }
 
     /// DET1: one-shot flag set by `handleMicInUseDwell` and consumed by the very next
     /// `handleMeetingStarted`, marking that prompt as mic-in-use-originated. A flag (not a bundle
@@ -396,10 +409,12 @@ final class MeetingSessionController: @unchecked Sendable {
             coordinator.stateMachine.clearSuppression(bundleID: src.bundleID)
             beginRecording(source: src, summaryMode: .auto)
         case .recording(let file, let src, let mode):
+            pendingSplit = nil  // END28: a Stop is a Stop, not the first half of a split
             stopRecording(file: file, source: src, summaryMode: mode, stopRoute: "toggle")
         case .stopping:
-            // Mid-flush; a new start would race the await.
-            break
+            // Mid-flush; a new start would race the await. END28: a toggle during a split's stop
+            // means stop, so the split's prompt is not raised once it finishes.
+            pendingSplit = nil
         }
     }
 
@@ -460,6 +475,8 @@ final class MeetingSessionController: @unchecked Sendable {
         // END20: a Stop during a start's bring-up cancels the start, which then stops the fresh
         // recording at commit. From `.idle` this used to do nothing at all.
         let cancelledStart = startLatch.cancel(by: reason)
+        // END28: a Stop pressed during a split's stop must not be followed by the split's prompt.
+        pendingSplit = nil
         Log.event(category: "coordinator", action: "force_stop", attributes: [
             "reason": reason,
             "state": DetectionStateMachine.label(coordinator.stateMachine.current),
@@ -585,6 +602,7 @@ final class MeetingSessionController: @unchecked Sendable {
         }
         pendingWorkflowOverride = nil
         preselectedRoutingHint = nil
+        pendingSplitFrom = nil
     }
 
     /// Workflow for the in-flight recording, for the HUD/status-bar chip.
@@ -621,6 +639,9 @@ final class MeetingSessionController: @unchecked Sendable {
         // attach to the start it was armed for and never to a later, unrelated one.
         let resumedFrom = pendingResumedFrom
         pendingResumedFrom = nil
+        // END28: the same, for a split's link, and only for the source its prompt was raised for.
+        let splitFrom = pendingSplitFrom.flatMap { $0.source == source ? $0.stem : nil }
+        pendingSplitFrom = nil
 
         // A start is async now (the engine bring-up is bounded off the main
         // thread), so the UI stays live while a wedged device is waited out.
@@ -767,7 +788,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 // keeps no suspension point; an end during this write lands in the latch.
                 await self.writeRecoveryManifest(
                     file: file, source: source, summaryMode: summaryMode,
-                    workflow: resolvedWorkflow, resumedFrom: resumedFrom
+                    workflow: resolvedWorkflow, resumedFrom: resumedFrom, splitFrom: splitFrom
                 )
                 // END20: read what happened during the bring-up before anything commits. No await
                 // from here to `setRecording`, so no verdict or Stop can interleave.
@@ -775,6 +796,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 self.activeWorkflow = resolvedWorkflow
                 self.activeCaptureMode = captureMode
                 self.activeResumedFrom = resumedFrom
+                self.activeSplitFrom = splitFrom
                 self.markerSeconds = []  // FEAT8: fresh marker batch per recording
                 self.coordinator.hud.resetFlagCount()  // UX73: and a fresh count on the control
                 // DET1: apply the tag decision captured synchronously before the await, so
@@ -866,6 +888,8 @@ final class MeetingSessionController: @unchecked Sendable {
                 // engine reaches `.starting` only after this, once its build lands; the
                 // lifecycle consumer promotes that one (`confirmLateStartIfRecording`).
                 self.coordinator.lifecycleCoord.confirmRecording()
+                // END28: from here on, a change of call splits this recording.
+                self.armCallIdentityWatch(file: file, source: source)
             } catch {
                 self.startLatch.clear()
                 // END20: a start refused because a recording is already running must not touch
@@ -982,6 +1006,7 @@ final class MeetingSessionController: @unchecked Sendable {
         if holdPolicy.isOpen {
             concludeTeardownHold(conclusion: .stop)
         }
+        disarmCallIdentityWatch()
         micTierRecordingBundle = nil // DET1: this recording is ending; drop its mic-release tag
         // END13 item 5: hand the just-stopped source to the candidate slot at the instant of the
         // stop, so a Record pressed straight afterwards attaches to it instead of recording
@@ -1203,6 +1228,7 @@ final class MeetingSessionController: @unchecked Sendable {
         activeWorkflow = nil
         activeCaptureMode = nil
         activeResumedFrom = nil
+        activeSplitFrom = nil
         markerSeconds = []
         coordinator.hud.resetFlagCount()  // UX73: paired with every markerSeconds reset
         offTheRecordOn = false
@@ -1213,6 +1239,8 @@ final class MeetingSessionController: @unchecked Sendable {
         }
         coordinator.stateMachine.setIdle()
         coordinator.statusUI.setIdle()
+        // END28: a split's stop is done; raise the new call's prompt now (both stop paths end here).
+        raisePendingSplitPrompt()
     }
 
     /// SEC25: a failed stop-time sidecar write reaches the daemon file log and the event log,
@@ -1256,7 +1284,8 @@ final class MeetingSessionController: @unchecked Sendable {
             micDeviceName: micDeviceName,
             micSilent: micSilent,
             heldEndTrimSec: heldEndTrimSec,
-            resumedFrom: activeResumedFrom
+            resumedFrom: activeResumedFrom,
+            splitFrom: activeSplitFrom
         )
         if dict.isEmpty { return }
         let stem = file.deletingPathExtension().lastPathComponent
@@ -1276,13 +1305,14 @@ final class MeetingSessionController: @unchecked Sendable {
     /// auto-egressing it. Removed on a clean stop that produced a final.
     func writeRecoveryManifest(
         file: URL, source: AppSource?, summaryMode: SummaryMode,
-        workflow: Workflow?, resumedFrom: String?
+        workflow: Workflow?, resumedFrom: String?, splitFrom: String? = nil
     ) async {
         let meta = MeetingMetaSidecar.build(
             source: source,
             workflow: workflow,
             regulatedMode: coordinator.configStore?.regulatedMode ?? false,
-            resumedFrom: resumedFrom
+            resumedFrom: resumedFrom,
+            splitFrom: splitFrom
         )
         let stem = file.deletingPathExtension().lastPathComponent
         await RecordingManifest.writeOffMain(
@@ -1300,11 +1330,14 @@ final class MeetingSessionController: @unchecked Sendable {
         ) { [weak self] in
             guard let self = self else { return }
             let configured = (self.coordinator.configStore?.defaultPromptAction ?? "skip").lowercased()
-            let action = MeetingSessionController.effectiveTimeoutAction(configured: configured, kind: source.kind)
+            // END28: a split's prompt never records on its own.
+            let isSplit = self.isSplitPrompt(for: source)
+            let action = isSplit ? "skip" : MeetingSessionController.effectiveTimeoutAction(configured: configured, kind: source.kind)
             Log.event(category: "coordinator", action: "prompt_timeout", attributes: [
                 "bundle_id": source.bundleID,
                 "default_action": configured,
                 "effective_action": action,
+                "split": isSplit,
             ])
             switch action {
             case "record":
@@ -1627,6 +1660,14 @@ final class MeetingSessionController: @unchecked Sendable {
             return
         }
 
+        presentPrompt(for: source)
+    }
+
+    /// Show the record prompt for `source`: the panel, its workflow chip and AI9's pre-selection,
+    /// and the timeout. Shared by a detected meeting and END28's split, which reaches it past the
+    /// guards above (the split's own stop armed the cooldown, and a split always asks, auto-consent
+    /// included: the owner's decision of 2026-11-16).
+    func presentPrompt(for source: AppSource) {
         // SEC39: a new prompt starts with no routing state of the last one's.
         clearPromptRouting(exit: "new_prompt")
         coordinator.stateMachine.setPrompting(source: source)
