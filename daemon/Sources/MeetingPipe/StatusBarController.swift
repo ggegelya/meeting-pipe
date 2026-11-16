@@ -449,15 +449,19 @@ final class StatusBarController {
     /// for a state it is about to enter. Since UX79 no caller passes anything but the state it
     /// also gave `titleState`; `setStopping` was the one exception and its `.idle` is gone.
     private func menuInputs(state: AppState, finishSetupTitle: String?) -> StatusBarModel.Inputs {
-        let center = PermissionsCenter.shared
+        // Main only (every caller is a menu open or a main-queue repopulate); the assertion makes `PermissionsCenter`'s isolation the checked fact (CONC12).
+        let (mic, screen, ax) = MainActor.assumeIsolated {
+            let center = PermissionsCenter.shared
+            return (center.microphone, center.screenRecording, center.accessibility)
+        }
         return StatusBarModel.Inputs(
             state: state,
             queue: queue,
             regulatedMode: regulatedMode,
             download: modelDownload,
-            microphone: center.microphone,
-            screenRecording: center.screenRecording,
-            accessibility: center.accessibility,
+            microphone: mic,
+            screenRecording: screen,
+            accessibility: ax,
             screenRecordingCaptureDenied: SystemAudioCapture.permissionState == .denied,
             failedMeetingCount: failedMeetingCount,
             staleRecordingCount: staleRecordingCount,
@@ -492,7 +496,8 @@ final class StatusBarController {
     /// spawns anything on main bar `finishSetupItems`' config, secrets and model-cache reads.
     fileprivate func refreshMenuBeforeDisplay(_ menu: NSMenu) {
         menuIsOpen = true
-        PermissionsCenter.shared.refreshMenuRelevantSync()
+        // The menu delegate runs on main; the assertion is the checked fact (CONC12).
+        MainActor.assumeIsolated { PermissionsCenter.shared.refreshMenuRelevantSync() }
         populateMenu(menu, state: lastMenuState)
         refreshLaunchAgentState()
         refreshFailedMeetingCount()

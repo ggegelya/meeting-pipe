@@ -2,9 +2,9 @@
 id: CONC12
 title: PermissionsCenter writes @Published state off the main thread, contrary to its own header
 category: Concurrency
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). PermissionsCenter's header says mutations run on main, but its async refresh and request methods are nonisolated, so under tools 5.9 they leave main and commit() writes the four @Published statuses and deferredToSettings from the cooperative pool, at launch (requestPermissionsAtStartup) and every 2 s while the Permissions pane is open, racing the menu's main-thread refreshMenuRelevantSync(). Make the class main-isolated so the compiler holds the invariant, with tests that every commit lands on main.
+comment: Shipped 2026-11-17 (ci-local green): PermissionsCenter is @MainActor, so every async refresh and request commits on main; the three nonisolated readers (StatusBarController.menuInputs and menu-open refresh, Coordinator.setupChecklistInputs, Coordinator.start's permissionGranted subscription) read it through MainActor.assumeIsolated; two detached-task tests pin it. Nothing owed; awaiting the owner to close it.
 ---
 
 # CONC12: PermissionsCenter writes @Published state off the main thread, contrary to its own header
@@ -51,3 +51,7 @@ No field symptom is attributed to this in the 2026-11-13 field pack; this is a d
 - The existing `PermissionsCenterTests` cases (initial-grant broadcast, no broadcast on a repeat grant) stay green unchanged in intent.
 - `cd daemon && swift test` green with the number of new tests in the commit body; `bash scripts/ci-local.sh` green.
 - `daemon/docs/gotchas.md` or the type's header (not both) states the rule: `PermissionsCenter` is main-actor isolated, and a new `async` probe added to it inherits that.
+
+## Progress (2026-11-17)
+
+Shipped as the class-level `@MainActor` shape, not the scope-3 fallback. Annotating `StatusBarController` itself (and its menu delegate) cascaded into about a dozen `Coordinator` call sites and every `DispatchQueue.main.async` closure that reaches `repopulateIfOpen`, so the three synchronous readers instead wrap the read in `MainActor.assumeIsolated` (scope item 2's own option); each is a menu open or `start()`, both main by contract. Tests: `PermissionsCenterTests` is `@MainActor` and gains two (a detached-task `refreshMic` and a detached-task simulated grant, each recording `Thread.isMainThread` on `objectWillChange` and `permissionGranted`). The rule is stated in the type's header, not gotchas. Nothing owed; the owner can close it.

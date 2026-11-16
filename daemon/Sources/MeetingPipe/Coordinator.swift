@@ -628,7 +628,8 @@ final class Coordinator: NSObject {
         // Re-evaluate detection the moment Mic/Accessibility flip on, so a
         // daemon restarted mid-meeting (the typical AX-grant flow) doesn't
         // wait for the next Workspace notification.
-        permissionGrantedCancellable = PermissionsCenter.shared.permissionGranted
+        // `start()` runs on main at launch.
+        permissionGrantedCancellable = MainActor.assumeIsolated { PermissionsCenter.shared.permissionGranted }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] kind in
                 guard let self = self else { return }

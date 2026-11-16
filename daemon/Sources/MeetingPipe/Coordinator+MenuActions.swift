@@ -280,7 +280,11 @@ extension Coordinator {
     /// (a bounded cache scan).
     /// Nil stores (headless/test) read as "configured", so no phantom items.
     func setupChecklistInputs() -> SetupChecklist.Inputs {
-        let center = PermissionsCenter.shared
+        // Called from the menu open, on main; the assertion makes `PermissionsCenter`'s isolation the checked fact (CONC12).
+        let (mic, screen, ax) = MainActor.assumeIsolated {
+            let center = PermissionsCenter.shared
+            return (center.microphone, center.screenRecording, center.accessibility)
+        }
         let globalBackend = configStore?.summarizationBackend ?? "anthropic"
         let workflows = workflowStore.workflows
         return SetupChecklist.Inputs(
@@ -296,9 +300,9 @@ extension Coordinator {
             notionDatabaseIdPresent: configStore.map { !$0.notionDatabaseId.isEmpty } ?? true,
             localModelMissing: localModelPreflight.isModelMissing(),
             hasPermissionIssue: StatusBarModel.hasPendingPermissionIssue(.init(
-                microphone: center.microphone,
-                screenRecording: center.screenRecording,
-                accessibility: center.accessibility
+                microphone: mic,
+                screenRecording: screen,
+                accessibility: ax
             ))
         )
     }

@@ -6,7 +6,8 @@ import CoreGraphics
 import Foundation
 import UserNotifications
 
-/// Published state for the four TCC permissions the daemon touches. Not `@MainActor` so the Coordinator (also not main-isolated) can read published state synchronously; mutations run on the main queue by convention.
+/// Published state for the four TCC permissions the daemon touches. Main-actor isolated (CONC12): under tools 5.9 a non-isolated `async` method runs on the generic executor, so before this every refresh and request committed its `@Published` writes from the cooperative pool. A new `async` probe added here inherits the isolation, so `commit` provably runs on main from every entry point.
+@MainActor
 final class PermissionsCenter: ObservableObject {
 
     /// Process-wide singleton shared by the Permissions tab and the Coordinator.

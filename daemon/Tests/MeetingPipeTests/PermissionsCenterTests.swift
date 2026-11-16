@@ -9,6 +9,7 @@ import XCTest
 /// observable shape: status mapping, kind metadata, and the
 /// permission-granted broadcast that the Coordinator depends on for
 /// auto-resume after restart.
+@MainActor
 final class PermissionsCenterTests: XCTestCase {
 
     func test_kind_metadata_is_present_for_every_case() {
@@ -64,5 +65,39 @@ final class PermissionsCenterTests: XCTestCase {
         XCTAssertEqual(center.status(.screenRecording), .denied)
         center.simulateStatusForTesting(.granted, kind: .screenRecording)
         XCTAssertEqual(center.status(.screenRecording), .granted)
+    }
+
+    // MARK: CONC12 - every commit lands on main
+
+    /// A call from a background task hops to main before `commit`, so the publishers fire there.
+    /// `refreshAll()` and `requestNotifications()` stay out: `UNUserNotificationCenter.current()`
+    /// needs an app bundle the test host does not have.
+    func test_refreshMic_from_a_detached_task_commits_on_main() async {
+        let center = PermissionsCenter.shared
+        var changeThreads: [Bool] = []
+        let cancel = center.objectWillChange.sink { _ in changeThreads.append(Thread.isMainThread) }
+        defer { cancel.cancel() }
+
+        await Task.detached { await center.refreshMic() }.value
+
+        XCTAssertFalse(changeThreads.isEmpty, "refreshMic must publish")
+        XCTAssertTrue(changeThreads.allSatisfy { $0 }, "objectWillChange fired off main: \(changeThreads)")
+    }
+
+    func test_simulated_grant_from_a_detached_task_publishes_on_main() async {
+        let center = PermissionsCenter.shared
+        center.simulateStatusForTesting(.denied, kind: .accessibility)
+        var changeThreads: [Bool] = []
+        var grantThreads: [Bool] = []
+        let c1 = center.objectWillChange.sink { _ in changeThreads.append(Thread.isMainThread) }
+        let c2 = center.permissionGranted.sink { _ in grantThreads.append(Thread.isMainThread) }
+        defer { c1.cancel(); c2.cancel() }
+
+        await Task.detached { await center.simulateStatusForTesting(.granted, kind: .accessibility) }.value
+
+        XCTAssertEqual(grantThreads.count, 1, "the denied-to-granted flip broadcasts once")
+        XCTAssertTrue(grantThreads.allSatisfy { $0 }, "permissionGranted fired off main: \(grantThreads)")
+        XCTAssertFalse(changeThreads.isEmpty)
+        XCTAssertTrue(changeThreads.allSatisfy { $0 }, "objectWillChange fired off main: \(changeThreads)")
     }
 }
