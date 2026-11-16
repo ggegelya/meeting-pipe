@@ -7,8 +7,10 @@ import XCTest
 /// layouts under a temp hub root and asserts the verdict.
 final class ModelDownloadSupervisorTests: XCTestCase {
 
-    private let modelId = "mlx-community/Qwen2.5-3B-Instruct-4bit"
-    private let sanitized = "models--mlx-community--Qwen2.5-3B-Instruct-4bit"
+    // A custom model: SEC27 pins the presets to one revision, and these tests are
+    // about structural completeness, which is the rule an unpinned model keeps.
+    private let modelId = "acme/Custom-3B-4bit"
+    private let sanitized = "models--acme--Custom-3B-4bit"
     private var hubRoot: URL!
 
     override func setUpWithError() throws {
@@ -87,6 +89,30 @@ final class ModelDownloadSupervisorTests: XCTestCase {
         try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
         try Data("config".utf8).write(to: snapshot.appendingPathComponent("config.json"))
         XCTAssertTrue(ModelDownloadSupervisor.isComplete(modelId: modelId, hubRoot: hubRoot))
+    }
+
+    // MARK: - SEC27 pinned revision
+
+    /// A whole snapshot of a preset at `revision`.
+    private func buildPresetCache(_ preset: String, revision: String) throws {
+        let dir = hubRoot.appendingPathComponent(
+            "models--" + preset.replacingOccurrences(of: "/", with: "--"), isDirectory: true)
+        let snapshot = dir.appendingPathComponent("snapshots/\(revision)", isDirectory: true)
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try Data("config".utf8).write(to: snapshot.appendingPathComponent("config.json"))
+    }
+
+    func test_a_preset_cached_at_another_revision_is_not_complete() throws {
+        let preset = "mlx-community/Qwen2.5-3B-Instruct-4bit"
+        try buildPresetCache(preset, revision: "deadbeef")
+        XCTAssertFalse(ModelDownloadSupervisor.isComplete(modelId: preset, hubRoot: hubRoot))
+    }
+
+    func test_a_preset_cached_at_its_pinned_revision_is_complete() throws {
+        let preset = "mlx-community/Qwen2.5-3B-Instruct-4bit"
+        let pin = try XCTUnwrap(ModelDownloadSupervisor.pinnedRevisions[preset])
+        try buildPresetCache(preset, revision: pin)
+        XCTAssertTrue(ModelDownloadSupervisor.isComplete(modelId: preset, hubRoot: hubRoot))
     }
 
     // MARK: - UX21 download-size estimate

@@ -206,6 +206,17 @@ class _EgressBlocker:
                 f"egress violation: {request.method} {request.url} "
                 "(only localhost is permitted in regulated+local mode)"
             )
+        if request.url.path == "/health":
+            # SEC27: the client verifies the server; answer as the real one does.
+            from mp import local_server
+
+            from .fake_health import TEST_TOKEN
+
+            nonce = request.url.params["nonce"]
+            return httpx.Response(
+                200, request=request,
+                json={"proof": local_server.health_proof(TEST_TOKEN, nonce)},
+            )
         # Pretend a local mlx_lm.server responded with a valid summary
         # so the call completes end-to-end without spinning a real
         # subprocess.

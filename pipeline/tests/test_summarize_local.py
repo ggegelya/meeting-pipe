@@ -12,6 +12,7 @@ The 3-layer extraction fallback is unit-tested directly via
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import signal
@@ -20,6 +21,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Callable
 
 import pytest
@@ -36,6 +38,8 @@ from mp.summarize_local import (
     repair_messages,
     scaled_request_timeout,
 )
+
+from .fake_health import answer_health
 
 
 @pytest.fixture(autouse=True)
@@ -78,11 +82,7 @@ class _FakeHandler(BaseHTTPRequestHandler):
             self.send_response(503)
             self.end_headers()
             return
-        if self.path == "/v1/models":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(b'{"data": [{"id": "fake"}]}')
+        if answer_health(self):
             return
         self.send_response(404)
         self.end_headers()
@@ -677,13 +677,21 @@ def _fake_spawn(monkeypatch: pytest.MonkeyPatch) -> dict:
         return _FakeProc()
 
     monkeypatch.setattr("mp.summarize_local.subprocess.Popen", _popen)
-    monkeypatch.setattr("mp.summarize_local.shutil.which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr("mp.summarize_local.model_is_cached", lambda repo: True)
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util, "find_spec",
+        lambda name, *a, **k: object() if name == "mlx_lm" else real_find_spec(name, *a, **k),
+    )
+    # SEC27: the server is started on a pinned snapshot directory; no cache here.
+    monkeypatch.setattr(
+        "mp.local_snapshot.resolve_for_serving",
+        lambda repo_id, home=None: Path(f"/snap/models--x/snapshots/{'a' * 40}"),
+    )
     return captured
 
 
 def test_spawn_hands_the_child_a_scrubbed_env_when_armed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The guard patches httpx in *this* process; `mlx_lm.server` is a separate
+    """The guard patches httpx in *this* process; the model server is a separate
     process with its own stack. Under a zero-egress run it must inherit no cloud
     token and must find huggingface_hub pinned offline."""
     for key in ("ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN"):
@@ -701,43 +709,86 @@ def test_spawn_hands_the_child_a_scrubbed_env_when_armed(monkeypatch: pytest.Mon
     assert env["HF_HUB_DISABLE_TELEMETRY"] == "1"
 
 
-def test_spawn_keeps_the_env_intact_when_disarmed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret-value")
+def test_spawn_strips_every_managed_token_even_when_disarmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SEC27 item 4: the model server serves a local snapshot and needs no
+    credential, so an unarmed spawn no longer hands it the whole environment
+    (it used to carry every managed token, `OPENAI_API_KEY` included)."""
+    from mp.config import MANAGED_SECRET_KEYS
+
+    for key in MANAGED_SECRET_KEYS:
+        monkeypatch.setenv(key, "secret-value")
+    monkeypatch.setenv("UNRELATED_VAR", "kept")
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     captured = _fake_spawn(monkeypatch)
 
     LocalSummaryClient(host="127.0.0.1", port=8765)._spawn()
 
     env = captured["kwargs"]["env"]
-    assert env["ANTHROPIC_API_KEY"] == "secret-value"
-    assert "HF_HUB_OFFLINE" not in env
+    assert not any(key in env for key in MANAGED_SECRET_KEYS)
+    assert env["UNRELATED_VAR"] == "kept"
+    assert env["HF_HUB_OFFLINE"] == "1"  # always offline: it never downloads
 
 
-def test_spawn_fails_closed_on_an_uncached_model_under_zero_egress(
+def test_spawn_serves_a_snapshot_directory_with_the_token_in_env_not_argv(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Fail-closed beats silent egress: an uncached model under regulated/NDA
-    would otherwise be downloaded from huggingface.co by the child."""
-    _fake_spawn(monkeypatch)
-    monkeypatch.setattr("mp.summarize_local.model_is_cached", lambda repo: False)
-    egress_guard.arm("test")
+    captured = _fake_spawn(monkeypatch)
+
+    client = LocalSummaryClient(host="127.0.0.1", port=8765)
+    client._spawn()
+
+    cmd = captured["cmd"]
+    assert cmd[1:3] == ["-m", "mp.local_model_server"]
+    snapshot = cmd[cmd.index("--model") + 1]
+    assert "/snapshots/" + "a" * 40 in snapshot            # a pinned dir, never a repo id
+    assert "mlx-community/" not in " ".join(cmd)
+    token = captured["kwargs"]["env"]["MP_LOCAL_SERVER_TOKEN"]
+    assert len(token) >= 32
+    assert token not in " ".join(cmd)                       # ps shows argv to every account
+    assert client._spawned_token == token
+
+
+@pytest.mark.parametrize("armed", [False, True])
+def test_spawn_refuses_a_model_with_no_pinned_snapshot_in_every_mode(
+    monkeypatch: pytest.MonkeyPatch, armed: bool
+) -> None:
+    """SEC27: no implicit download at spawn, armed or not. It used to be an
+    armed-only refusal, and an unarmed spawn let the server resolve `main` online."""
+    from mp import local_snapshot
+
+    captured = _fake_spawn(monkeypatch)
+
+    def _missing(repo_id: str, home: object = None) -> Path:
+        raise local_snapshot.SnapshotMissing(
+            f"Model {repo_id!r} is {local_snapshot.NOT_CACHED_PHRASE}.\n    mp prefetch-model {repo_id}"
+        )
+
+    monkeypatch.setattr("mp.local_snapshot.resolve_for_serving", _missing)
+    if armed:
+        egress_guard.arm("test")
 
     client = LocalSummaryClient(host="127.0.0.1", port=8765, model="mlx-community/Nope-4bit")
     with pytest.raises(LocalSummaryError) as exc:
         client._spawn()
     assert "mp prefetch-model mlx-community/Nope-4bit" in str(exc.value)
+    assert "not in the local HuggingFace cache" in str(exc.value)  # UX21's Swift marker
+    assert captured == {}
 
 
-def test_spawn_allows_an_uncached_model_when_egress_is_permitted(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The cache gate is a zero-egress rule, not a general one: a normal run may
-    still let mlx_lm.server pull the weights on first use."""
+def test_spawn_refuses_a_snapshot_that_carries_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mp import local_snapshot
+
     captured = _fake_spawn(monkeypatch)
-    monkeypatch.setattr("mp.summarize_local.model_is_cached", lambda repo: False)
 
-    LocalSummaryClient(host="127.0.0.1", port=8765)._spawn()
-    assert captured["cmd"][0].endswith("mlx_lm.server")
+    def _refused(repo_id: str, home: object = None) -> Path:
+        raise local_snapshot.SnapshotRefused("config.json names a model_file")
+
+    monkeypatch.setattr("mp.local_snapshot.resolve_for_serving", _refused)
+    with pytest.raises(LocalSummaryError, match="model_file"):
+        LocalSummaryClient(host="127.0.0.1", port=8765)._spawn()
+    assert captured == {}
 
 
 # ----- LOCAL16: the machine's memory budget is a spawn-time gate -----
@@ -774,7 +825,7 @@ def test_spawn_allows_a_model_within_tier(monkeypatch: pytest.MonkeyPatch) -> No
     LocalSummaryClient(
         host="127.0.0.1", port=8765, model="mlx-community/Qwen2.5-14B-Instruct-4bit"
     )._spawn()
-    assert captured["cmd"][0].endswith("mlx_lm.server")
+    assert captured["cmd"][1:3] == ["-m", "mp.local_model_server"]
 
 
 def test_ram_guard_override_bypasses_the_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -787,7 +838,7 @@ def test_ram_guard_override_bypasses_the_refusal(monkeypatch: pytest.MonkeyPatch
     LocalSummaryClient(
         host="127.0.0.1", port=8765, model="mlx-community/Qwen2.5-14B-Instruct-4bit"
     )._spawn()
-    assert captured["cmd"][0].endswith("mlx_lm.server")
+    assert captured["cmd"][1:3] == ["-m", "mp.local_model_server"]
 
 
 def test_spawn_does_not_judge_a_custom_model_id(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -799,7 +850,7 @@ def test_spawn_does_not_judge_a_custom_model_id(monkeypatch: pytest.MonkeyPatch)
     LocalSummaryClient(
         host="127.0.0.1", port=8765, model="mlx-community/some-instruct-4bit"
     )._spawn()
-    assert captured["cmd"][0].endswith("mlx_lm.server")
+    assert captured["cmd"][1:3] == ["-m", "mp.local_model_server"]
 
 
 def test_the_request_loop_aborts_when_free_ram_crosses_the_floor(
@@ -855,7 +906,10 @@ def test_a_failing_server_lands_its_stderr_in_the_log(
     """`stdout=DEVNULL` discarded exactly the message an OOM postmortem needs,
     and left the failure reading as a generic "exited during startup" guess."""
     monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(tmp_path))
-    monkeypatch.setattr("mp.summarize_local.model_is_cached", lambda repo: True)
+    monkeypatch.setattr(
+        "mp.local_snapshot.resolve_for_serving",
+        lambda repo_id, home=None: Path(f"/snap/models--x/snapshots/{'a' * 40}"),
+    )
     monkeypatch.setattr(
         "mp.summarize_local.build_server_command",
         lambda *a, **k: [
@@ -1033,18 +1087,43 @@ def test_mismatched_server_we_own_is_replaced(
     assert spawned == ["spawn"]
 
 
+def test_adapter_flip_on_a_server_we_own_replaces_it(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC27: the server only loads the adapter it was started with, so one we own
+    that serves a different adapter is restarted, as a model flip is (LOCAL11)."""
+    host, port, server = fake_server
+    _serve_valid_summary(server)
+    _fake_identity(monkeypatch, _identity("same/model", adapter="/adapters/old", pid=4242))
+    monkeypatch.setattr("mp.local_server.read_marker", lambda home=None: {"pid": 4242})
+    killed: list[int] = []
+    monkeypatch.setattr(
+        "mp.local_server.terminate_server",
+        lambda pid, home=None: killed.append(pid) or True,
+    )
+    spawned: list[str] = []
+    c = LocalSummaryClient(
+        host=host, port=port, model="same/model", adapter_path="/adapters/new"
+    )
+    monkeypatch.setattr(c, "_spawn", lambda: spawned.append("spawn"))
+    monkeypatch.setattr(c, "_wait_for_health", lambda _t: None)
+
+    c._ensure_running()
+    assert killed == [4242] and spawned == ["spawn"]
+
+
 def test_adapter_flip_alone_does_not_replace_a_server(
     fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Same model, different adapter: reuse it, do not pay a multi-GB reload.
+    """Same model, different adapter, a server that is not ours: leave it alone.
 
-    LOCAL11 respawned here, to stop a LOCAL9 A/B silently comparing the base model
-    against itself. LOCAL15 showed that respawn never delivered that: the fresh
-    server would have been started with the same `--adapter-path` mlx-lm ignores, so
-    it would have served the base model too. The adapter now rides in the request
-    body, which is what actually decides the loaded weights, so an adapter-only
-    difference is not a reason to restart anything. The guarantee the old test
-    wanted lives in `test_configured_adapter_rides_in_the_request_not_only_the_spawn_flag`.
+    The adapter rides in every request body (LOCAL15), but since SEC27 the shim
+    answers only the adapter it was started with, so a mismatch is now a real
+    difference. A server we spawned is restarted for it (next test); one we do not
+    own (the daemon's warm `mp serve-local`) is refreshed by the daemon on a config
+    save, so here the run proceeds and the server's own refusal names the cause.
+    The adapter still rides in the request:
+    `test_configured_adapter_rides_in_the_request_not_only_the_spawn_flag`.
     """
     host, port, server = fake_server
     _serve_valid_summary(server)
@@ -1115,6 +1194,8 @@ def _fake_lifecycle(
         server.healthy = False  # type: ignore[attr-defined]
 
     _fake_identity(monkeypatch, None)
+    # A stopped server refuses connections; the fake keeps listening, so say so here.
+    monkeypatch.setattr(client, "_probe", lambda: "ok" if server.healthy else "down")  # type: ignore[attr-defined]
     monkeypatch.setattr(client, "_spawn", spawn)
     monkeypatch.setattr(client, "_terminate_proc", terminate)
     return counts
@@ -1652,18 +1733,24 @@ def test_a_reused_server_is_restamped_to_this_client_and_handed_back(
 
 
 SIGTERM_FAKE_SERVER = """
-import os, sys, time
+import hashlib, hmac, json, os, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
     def do_GET(self):
+        # SEC27: prove we hold the per-spawn token the client put in our env.
+        nonce = (parse_qs(urlsplit(self.path).query).get("nonce") or [""])[0]
+        token = os.environ["MP_LOCAL_SERVER_TOKEN"]
+        proof = hmac.new(token.encode(), nonce.encode(), hashlib.sha256).hexdigest()
+        body = json.dumps({"proof": proof}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(b'{"data": []}')
+        self.wfile.write(body)
 
     def do_POST(self):
         with open(os.environ["MP_TEST_POSTED"], "w") as f:
@@ -1683,7 +1770,11 @@ FAKE = os.environ["MP_TEST_FAKE_SERVER"]
 sl.build_server_command = lambda model, host, port, adapter=None: [
     sys.executable, "-c", FAKE, "mlx_lm.server", str(port),
 ]
-sl.model_is_cached = lambda repo: True
+import mp.local_snapshot as ls
+ls.resolve_for_serving = lambda repo_id, home=None: __import__("pathlib").Path("/snap/models--x/snapshots/" + "a" * 40)
+import importlib.util
+_real_find_spec = importlib.util.find_spec
+importlib.util.find_spec = lambda name, *a, **k: object() if name == "mlx_lm" else _real_find_spec(name, *a, **k)
 
 def summarize_main(argv):
     s = socket.socket()

@@ -18,14 +18,11 @@ from mp.summarize_local import (
 
 
 def test_build_server_command_appends_model_host_port():
-    cmd = build_server_command("mlx-community/Qwen2.5-3B-Instruct-4bit", "127.0.0.1", 8765)
-    assert cmd[-6:] == [
-        "--model", "mlx-community/Qwen2.5-3B-Instruct-4bit",
-        "--host", "127.0.0.1",
-        "--port", "8765",
-    ]
-    # Either the standalone entry point or `python -m mlx_lm.server`.
-    assert "mlx_lm.server" in " ".join(cmd)
+    snapshot = "/hub/models--mlx-community--Qwen2.5-3B-Instruct-4bit/snapshots/" + "a" * 40
+    cmd = build_server_command(snapshot, "127.0.0.1", 8765)
+    assert cmd[-6:] == ["--model", snapshot, "--host", "127.0.0.1", "--port", "8765"]
+    # SEC27: the hardened shim around mlx-lm's server, under this interpreter.
+    assert cmd[1:3] == ["-m", "mp.local_model_server"]
 
 
 def test_loopback_clamp_keeps_loopback_and_rewrites_public():
@@ -37,6 +34,22 @@ def test_loopback_clamp_keeps_loopback_and_rewrites_public():
 
 class _ExecCalled(Exception):
     """Sentinel so the test can intercept execvpe without replacing the process."""
+
+
+def _pin_snapshot(monkeypatch, *, present: bool = True):
+    """SEC27: `serve-local` starts the server on a pinned snapshot directory."""
+    from pathlib import Path
+
+    from mp import local_snapshot
+
+    def _resolve(repo_id, home=None):
+        if not present:
+            raise local_snapshot.SnapshotMissing(
+                f"{repo_id} is {local_snapshot.NOT_CACHED_PHRASE}"
+            )
+        return Path("/hub/models--x/snapshots/" + "b" * 40)
+
+    monkeypatch.setattr("mp.local_snapshot.resolve_for_serving", _resolve)
 
 
 def _fake_cfg(*, regulated: bool = False, model: str = "mlx-community/Custom-7B-4bit",
@@ -63,6 +76,7 @@ def test_serve_local_execs_server_for_configured_model(monkeypatch):
 
     # A non-loopback host must be clamped before it reaches exec.
     monkeypatch.setattr(config_mod.Config, "load", classmethod(lambda cls: _fake_cfg()))
+    _pin_snapshot(monkeypatch)
 
     import mp.summarize_local as sl
     monkeypatch.setattr(sl.os, "execvpe", fake_execvpe)
@@ -72,44 +86,52 @@ def test_serve_local_execs_server_for_configured_model(monkeypatch):
 
     args = captured["args"]
     assert args[-6:] == [
-        "--model", "mlx-community/Custom-7B-4bit",
+        "--model", "/hub/models--x/snapshots/" + "b" * 40,   # a pinned dir, never a repo id
         "--host", DEFAULT_HOST,   # clamped from 0.0.0.0
         "--port", "9999",
     ]
     # LOCAL22: the warm server bounds its retained KV caches too.
     assert args[args.index("--prompt-cache-size") + 1] == "2"
     # SEC13: exec must go through execvpe with an explicit env (child_env()).
-    assert isinstance(captured["env"], dict)
+    env = captured["env"]
+    assert isinstance(env, dict)
+    # SEC27: the per-spawn token rides in the environment, never in argv.
+    token = env["MP_LOCAL_SERVER_TOKEN"]
+    assert len(token) >= 32 and token not in " ".join(args)
+    assert env["HF_HUB_OFFLINE"] == "1"
 
 
-def test_serve_local_refuses_uncached_model_under_regulated(monkeypatch):
-    """SEC13: a regulated run cannot download, so serve-local fails closed on an
-    uncached model instead of stranding mlx_lm.server's load. Exec never runs."""
+@pytest.mark.parametrize("regulated", [False, True])
+def test_serve_local_refuses_a_model_with_no_pinned_snapshot(monkeypatch, regulated):
+    """SEC13/SEC27: the server never downloads, in any mode, so serve-local fails
+    closed on a missing snapshot instead of stranding the load. Exec never runs."""
     monkeypatch.setattr(
         config_mod.Config, "load",
-        classmethod(lambda cls: _fake_cfg(regulated=True, model="mlx-community/Uncached-7B-4bit")),
+        classmethod(lambda cls: _fake_cfg(regulated=regulated, model="mlx-community/Uncached-7B-4bit")),
     )
     import mp.summarize_local as sl
-    monkeypatch.setattr(sl, "model_is_cached", lambda model: False)
+    _pin_snapshot(monkeypatch, present=False)
 
     def _boom(*a, **k):
-        raise AssertionError("execvpe must not run for an uncached model under a regulated run")
+        raise AssertionError("execvpe must not run for a model with no pinned snapshot")
 
     monkeypatch.setattr(sl.os, "execvpe", _boom)
     assert serve_local_main([]) == 1
 
 
-def test_serve_local_strips_cloud_tokens_from_child_under_regulated(monkeypatch):
-    """SEC13: under a zero-egress run the exec'd child inherits no cloud tokens and
-    is pinned offline, even for a cached model that does exec."""
+@pytest.mark.parametrize("regulated", [False, True])
+def test_serve_local_strips_cloud_tokens_from_child(monkeypatch, regulated):
+    """SEC13/SEC27: the exec'd child inherits no managed token and is pinned
+    offline, in every mode (the warm server used to carry `OPENAI_API_KEY`)."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-be-stripped")
     monkeypatch.setenv("NOTION_TOKEN", "ntn-should-be-stripped")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-also-stripped")
     monkeypatch.setattr(
         config_mod.Config, "load",
-        classmethod(lambda cls: _fake_cfg(regulated=True, endpoint="http://127.0.0.1:8765")),
+        classmethod(lambda cls: _fake_cfg(regulated=regulated, endpoint="http://127.0.0.1:8765")),
     )
     import mp.summarize_local as sl
-    monkeypatch.setattr(sl, "model_is_cached", lambda model: True)
+    _pin_snapshot(monkeypatch)
 
     captured: dict[str, object] = {}
 
@@ -124,6 +146,7 @@ def test_serve_local_strips_cloud_tokens_from_child_under_regulated(monkeypatch)
     env = captured["env"]
     assert "ANTHROPIC_API_KEY" not in env
     assert "NOTION_TOKEN" not in env
+    assert "OPENAI_API_KEY" not in env
     assert env.get("HF_HUB_OFFLINE") == "1"
 
 

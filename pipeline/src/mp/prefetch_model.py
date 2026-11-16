@@ -39,7 +39,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import events
+from . import events, local_snapshot
 
 log = logging.getLogger("mp.prefetch_model")
 
@@ -59,8 +59,7 @@ def _emit(event: str, repo_id: str, **attrs: Any) -> None:
 def hf_cache_dir(repo_id: str) -> Path:
     """HuggingFace caches at `~/.cache/huggingface/hub/models--<sanitized>/`.
     Sanitisation replaces `/` with `--` per huggingface_hub conventions."""
-    sanitized = "models--" + repo_id.replace("/", "--")
-    return Path.home() / ".cache" / "huggingface" / "hub" / sanitized
+    return local_snapshot.hf_cache_dir(repo_id)
 
 
 def model_is_cached(repo_id: str) -> bool:
@@ -113,8 +112,14 @@ def _incremental_bytes(path: Path, counted: dict[str, int]) -> int:
     return sum(counted.values())
 
 
-def _repo_metadata(repo_id: str) -> tuple[int | None, str | None]:
+def _repo_metadata(
+    repo_id: str, revision: str | None = None
+) -> tuple[int | None, str | None]:
     """Best-effort (expected_on_disk_bytes, resolved_commit_sha) via the HF API.
+
+    `revision` (SEC27) asks about that exact commit rather than the live `main`:
+    a pinned model is sized and downloaded at its pin, so the answer cannot
+    change under us.
 
     Both None when the call fails (no network, private repo without auth,
     huggingface_hub missing) so the caller falls back to a no-total progress
@@ -127,7 +132,7 @@ def _repo_metadata(repo_id: str) -> tuple[int | None, str | None]:
     except ImportError:
         return None, None
     try:
-        info = HfApi().repo_info(repo_id, files_metadata=True)
+        info = HfApi().repo_info(repo_id, revision=revision, files_metadata=True)
     except Exception as e:  # noqa: BLE001
         log.warning("HfApi().repo_info failed: %s", e)
         return None, None
@@ -142,6 +147,31 @@ def _repo_metadata(repo_id: str) -> tuple[int | None, str | None]:
     return (total or None), getattr(info, "sha", None)
 
 
+def _snapshot_in_place(repo_id: str, revision: str | None) -> bool:
+    """Is the snapshot this run is meant to leave behind already servable?
+
+    Bytes on disk alone (the old test) said "complete" for a cache holding some
+    other revision, which then failed the offline load (SEC27)."""
+    if revision is None:
+        return False
+    path = local_snapshot.hf_cache_dir(repo_id) / "snapshots" / revision
+    try:
+        local_snapshot.verify_snapshot(path)
+    except local_snapshot.SnapshotError:
+        return False
+    return True
+
+
+def _record_custom_pin(repo_id: str, pinned: str | None, revision: str | None) -> None:
+    """Remember the sha a custom model resolved to; a preset needs no record."""
+    if pinned is not None or revision is None:
+        return
+    try:
+        local_snapshot.record_pin(repo_id, revision)
+    except (OSError, ValueError) as e:
+        log.warning("could not record the revision pin for %s: %s", repo_id, e)
+
+
 def prefetch(repo_id: str) -> int:
     """Download `repo_id` to the HF cache, emitting JSONL progress.
 
@@ -149,7 +179,12 @@ def prefetch(repo_id: str) -> int:
     1 = failure (also emits a `failed` event before returning).
     """
     cache_dir = hf_cache_dir(repo_id)
-    total_bytes, revision = _repo_metadata(repo_id)
+    # SEC27: a preset downloads its reviewed pin, never whatever `main` is today.
+    # A custom model resolves `main` once, here, and the sha is recorded on
+    # success so serving never has to resolve it again.
+    pinned = local_snapshot.PINNED_REVISIONS.get(repo_id)
+    total_bytes, resolved = _repo_metadata(repo_id, revision=pinned)
+    revision = pinned or resolved
     cached_bytes = _bytes_on_disk(cache_dir)
 
     _emit(
@@ -163,7 +198,12 @@ def prefetch(repo_id: str) -> int:
     # Already fully cached: emit one progress (so the UI can show 100%)
     # then complete immediately. Repeat call after a successful prior
     # download is ~free.
-    if total_bytes is not None and cached_bytes >= total_bytes:
+    if (
+        total_bytes is not None
+        and cached_bytes >= total_bytes
+        and _snapshot_in_place(repo_id, revision)
+    ):
+        _record_custom_pin(repo_id, pinned, revision)
         _emit(
             "complete",
             repo_id,
@@ -196,7 +236,11 @@ def prefetch(repo_id: str) -> int:
         try:
             # revision pins to the sha resolved above; None falls back to the
             # library default (main) so an offline / metadata-less repo still works.
-            path = snapshot_download(repo_id, revision=revision, tqdm_class=None)
+            # `ignore_patterns` (SEC27): a model snapshot never needs Python, and
+            # mlx-lm would execute a `model_file` it found there.
+            path = snapshot_download(
+                repo_id, revision=revision, tqdm_class=None, ignore_patterns=["*.py"]
+            )
             result_holder["path"] = path
         except Exception as e:  # noqa: BLE001
             result_holder["error"] = str(e)
@@ -238,6 +282,19 @@ def prefetch(repo_id: str) -> int:
             error_type=result_holder["error_type"],
         )
         return 1
+
+    # SEC27: refuse to call a snapshot complete that the server would refuse to
+    # serve (code in the repo, no weights), instead of surfacing that later, at
+    # the first meeting, as an opaque startup failure.
+    snapshot_path = Path(str(result_holder["path"]))
+    try:
+        local_snapshot.verify_snapshot(snapshot_path)
+    except local_snapshot.SnapshotError as e:
+        _emit("failed", repo_id, error=str(e), error_type=type(e).__name__)
+        return 1
+    # No metadata (offline, private repo) means no sha up front; the snapshot
+    # directory the download landed in is named by the sha it resolved.
+    _record_custom_pin(repo_id, pinned, revision or snapshot_path.name)
 
     final_bytes = _bytes_on_disk(cache_dir)
     _emit(

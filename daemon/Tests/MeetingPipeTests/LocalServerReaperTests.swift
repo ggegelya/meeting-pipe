@@ -63,6 +63,10 @@ final class LocalServerReaperTests: XCTestCase {
         XCTAssertTrue(LocalServerReaper.isServerCommand(
             "/usr/bin/python3 -m mlx_lm.server --host 127.0.0.1 --port 8765"
         ))
+        // SEC27: the hardened shim that wraps mlx-lm's server.
+        XCTAssertTrue(LocalServerReaper.isServerCommand(
+            "/venv/bin/python -m mp.local_model_server --prompt-cache-size 2 --model /snap --port 8765"
+        ))
     }
 
     func testARecycledPidIsNeverTakenForTheServer() {

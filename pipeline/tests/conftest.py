@@ -70,3 +70,25 @@ def _private_server_marker(monkeypatch, tmp_path_factory):
     home = tmp_path_factory.mktemp("marker-home")
     real = local_server.marker_path
     monkeypatch.setattr(local_server, "marker_path", lambda h=None: real(h or home))
+
+
+@pytest.fixture(autouse=True)
+def _fixed_server_token(monkeypatch, tmp_path_factory):
+    """SEC27: the client verifies a model server with the per-spawn token, and
+    the real record of it lives in Application Support. Give every test the one
+    token the fake servers in `fake_health.py` answer with, so none reads or
+    writes the developer's live token file."""
+    from mp import local_server
+
+    from .fake_health import TEST_TOKEN
+
+    monkeypatch.setattr(local_server, "read_token", lambda port, home=None: TEST_TOKEN)
+    home = tmp_path_factory.mktemp("token-home")
+    real_path = local_server.token_path
+    monkeypatch.setattr(local_server, "token_path", lambda h=None: real_path(h or home))
+
+    # The fakes listen inside the pytest process, which `lsof` would (correctly)
+    # name as a foreign listener (SEC27). Default to "lsof could not say", the
+    # situation every fake-server test was written for; the tests of the foreign
+    # path and of `served_identity` itself patch their own answers over this.
+    monkeypatch.setattr(local_server, "listening_pid", lambda port: None)

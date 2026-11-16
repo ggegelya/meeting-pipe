@@ -339,14 +339,29 @@ def check_local_stack(cfg: Config | None, workflows_dir: Path | None = None) -> 
     _info(f"model = {model_id}")
     need_gb = resource_guard.estimate_model_gb(model_id)
 
+    from . import local_snapshot
     from .prefetch_model import _bytes_on_disk, hf_cache_dir
     cache_dir = hf_cache_dir(model_id)
     cached_gb = round(_bytes_on_disk(cache_dir) / (1024 ** 3), 1)
-    if cached_gb > 0:
-        _ok(f"model cache present (~{cached_gb} GB at {cache_dir})")
+    # SEC27: the server is started offline on one pinned snapshot, so "some bytes
+    # are cached" is no longer the question; "is the pinned snapshot servable" is.
+    try:
+        snapshot = local_snapshot.resolve_for_serving(model_id)
+    except local_snapshot.SnapshotRefused as e:
+        _fail(f"model snapshot refused: {e}")
+    except local_snapshot.SnapshotMissing:
+        wanted = local_snapshot.pin_for(model_id)
+        if cached_gb > 0:
+            _warn(
+                f"model cache present (~{cached_gb} GB) but not at the pinned revision "
+                f"{(wanted or 'unknown')[:12]}; the local server will refuse to start"
+            )
+            _info(f"fix: mp prefetch-model {model_id}")
+        else:
+            est = f"~{need_gb} GB" if need_gb else "several GB"
+            _info(f"model not cached yet; run `mp prefetch-model {model_id}` ({est}, resumable, normally done by the daemon)")
     else:
-        est = f"~{need_gb} GB" if need_gb else "several GB"
-        _info(f"model not cached yet; first local run downloads {est} (resumable, prefetched by the daemon)")
+        _ok(f"pinned model snapshot present (~{cached_gb} GB, revision {snapshot.name[:12]})")
 
     ram_gb = resource_guard.physical_ram_gb()
     if ram_gb is None:
@@ -481,6 +496,14 @@ def _report_local_server_identity(cfg: Config | None, home: Path | None) -> None
     identity = local_server.served_identity(port, home)
     if identity is None:
         _info(f"nothing is serving on port {port}; the next local run starts its own server")
+        return
+
+    if identity.is_foreign:
+        # SEC27: something that is not our model server holds the port, so local
+        # runs refuse to talk to it (and nothing is sent to it).
+        _fail(f"port {port} is held by pid {identity.pid} ({(identity.command or '?')[:120]}), "
+              "which is not the local model server; local summaries will refuse to run")
+        _info("stop that process, or point summarization.local_endpoint at a free port")
         return
 
     want_model = cfg.summarization.local_model

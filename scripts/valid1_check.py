@@ -702,9 +702,11 @@ def free_memory_pct() -> float | None:
 
 
 def endpoint_is_warm(endpoint: str, timeout: float = 2.0) -> bool:
-    """True when an mlx_lm.server is already serving on `endpoint`."""
+    """True when a local model server is already serving on `endpoint`. Asks
+    `/health` (SEC27: the shim leaves it unauthenticated, and `/v1/models` now needs
+    a bearer token this script does not hold)."""
     try:
-        with urllib.request.urlopen(f"{endpoint}/v1/models", timeout=timeout) as r:
+        with urllib.request.urlopen(f"{endpoint}/health?nonce={'x' * 16}", timeout=timeout) as r:
             return 200 <= r.status < 300
     except (urllib.error.URLError, OSError, ValueError):
         return False

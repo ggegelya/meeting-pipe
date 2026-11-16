@@ -19,6 +19,8 @@ from mp import engine
 from mp.config import Config
 from mp.engine import EngineError, EngineResult, complete_text
 
+from .fake_health import answer_health
+
 
 def _cfg(backend: str = "local", regulated: bool = False, nda: bool = False) -> Config:
     return Config.model_validate({
@@ -272,7 +274,9 @@ class _FakeMLXHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
-        self._respond(b'{"data": [{"id": "fake"}]}')
+        if not answer_health(self):
+            self.send_response(404)
+            self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802
         length = int(self.headers.get("Content-Length", "0"))

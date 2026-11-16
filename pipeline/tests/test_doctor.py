@@ -155,6 +155,71 @@ def test_check_local_stack_ok_when_ram_and_disk_ample(capsys, monkeypatch) -> No
     assert "comfortably fits" in out
 
 
+def _doctor_cfg(model: str) -> Config:
+    return Config.model_validate({"summarization": {"backend": "local", "local_model": model}})
+
+
+def test_check_local_stack_is_ok_for_a_pinned_snapshot(capsys, monkeypatch, tmp_path) -> None:
+    """SEC27: the question is whether the pinned snapshot is servable, not whether
+    some bytes are cached."""
+    from mp import local_snapshot
+
+    repo = "mlx-community/Qwen2.5-3B-Instruct-4bit"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: 64.0)
+    snap = local_snapshot.hf_cache_dir(repo, tmp_path) / "snapshots" / local_snapshot.PINNED_REVISIONS[repo]
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model.safetensors").write_bytes(b"w")
+    check_local_stack(_doctor_cfg(repo))
+    assert "pinned model snapshot present" in capsys.readouterr().out
+
+
+def test_check_local_stack_warns_when_the_cache_is_at_another_revision(
+    capsys, monkeypatch, tmp_path
+) -> None:
+    from mp import local_snapshot
+
+    repo = "mlx-community/Qwen2.5-3B-Instruct-4bit"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: 64.0)
+    monkeypatch.setattr("mp.prefetch_model._bytes_on_disk", lambda _p: 3 * 1024 ** 3)
+    snap = local_snapshot.hf_cache_dir(repo, tmp_path) / "snapshots" / ("f" * 40)
+    snap.mkdir(parents=True)
+    check_local_stack(_doctor_cfg(repo))
+    out = capsys.readouterr().out
+    assert "not at the pinned revision" in out and f"mp prefetch-model {repo}" in out
+
+
+def test_check_local_stack_fails_on_a_snapshot_that_carries_code(
+    capsys, monkeypatch, tmp_path
+) -> None:
+    from mp import local_snapshot
+
+    repo = "mlx-community/Qwen2.5-3B-Instruct-4bit"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: 64.0)
+    snap = local_snapshot.hf_cache_dir(repo, tmp_path) / "snapshots" / local_snapshot.PINNED_REVISIONS[repo]
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text(json.dumps({"model_file": "x.py"}))
+    check_local_stack(_doctor_cfg(repo))
+    assert "snapshot refused" in capsys.readouterr().out
+
+
+def test_identity_probe_fails_loudly_on_a_foreign_listener(capsys, monkeypatch) -> None:
+    from mp import local_server
+
+    ident = local_server.ServedIdentity(
+        pid=9, model=None, adapter_path=None, source="foreign", command="/usr/bin/socat"
+    )
+    monkeypatch.setattr("mp.local_server.served_identity", lambda _port, home=None: ident)
+    from mp.doctor import check_local_server
+
+    check_local_server(Config.model_validate({"summarization": {"backend": "local"}}))
+    out = capsys.readouterr().out
+    assert "not the local model server" in out and "socat" in out
+
+
 # ---------- storage (STOR1) --------------------------------------------------
 
 

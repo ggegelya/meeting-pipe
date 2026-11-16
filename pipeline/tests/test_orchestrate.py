@@ -39,6 +39,8 @@ from mp.roster import EMBEDDING_DIM, RosterStore
 from mp.schemas import MeetingSummary
 from mp.voiceprint import VoiceprintStore
 
+from .fake_health import answer_health
+
 
 def _write_fluidaudio_sidecar(
     tmp_path: Path,
@@ -746,10 +748,10 @@ class _FakeMlxHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
         up = self.server.up  # type: ignore[attr-defined]
-        self.send_response(200 if up and self.path == "/v1/models" else 503)
+        if up and answer_health(self):
+            return
+        self.send_response(503)
         self.end_headers()
-        if up:
-            self.wfile.write(b'{"data": [{"id": "fake"}]}')
 
     def do_POST(self) -> None:  # noqa: N802
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
@@ -809,6 +811,11 @@ def fake_mlx(monkeypatch):
     monkeypatch.setattr(LocalSummaryClient, "_terminate_proc", terminate)
     monkeypatch.setattr(LocalSummaryClient, "close", close)
     monkeypatch.setattr("mp.local_server.served_identity", lambda _port, home=None: None)
+    # The fake is "down" until the faked spawn raises it, as a real stopped server
+    # would be (connection refused); it keeps listening, so say so here.
+    monkeypatch.setattr(
+        LocalSummaryClient, "_probe", lambda self: "ok" if server.up else "down"  # type: ignore[attr-defined]
+    )
     yield server, counts
     server.shutdown()
     server.server_close()

@@ -96,6 +96,11 @@ final class ModelDownloadSupervisor {
     /// that needs the network manifest, so `mp prefetch-model` (spawned whenever
     /// this returns false) stays the authority; this check only has to be tight
     /// enough that an obviously-partial cache no longer reports ready forever.
+    ///
+    /// SEC27: the local server only ever serves the reviewed revision of a preset,
+    /// so for a pinned model "cached" means *that* snapshot is whole, not any one.
+    /// Without this a cache at another revision read as ready here, the supervisor
+    /// skipped the prefetch, and the server refused to start on every launch.
     static func isComplete(modelId: String, hubRoot: URL) -> Bool {
         let fm = FileManager.default
         let sanitized = "models--" + modelId.replacingOccurrences(of: "/", with: "--")
@@ -117,8 +122,20 @@ final class ModelDownloadSupervisor {
         ), !snapshotDirs.isEmpty else {
             return false
         }
+        if let pin = pinnedRevisions[modelId] {
+            return snapshotDirs.contains { $0.lastPathComponent == pin && snapshotIsWhole($0, fm: fm) }
+        }
         return snapshotDirs.contains { snapshotIsWhole($0, fm: fm) }
     }
+
+    /// Reviewed commit per curated preset. Mirrors `PINNED_REVISIONS` in
+    /// `pipeline/src/mp/local_snapshot.py`; `test_local_snapshot.py` fails when the
+    /// two drift. A custom model has no entry and keeps the any-whole-snapshot rule.
+    static let pinnedRevisions: [String: String] = [
+        "mlx-community/Qwen2.5-3B-Instruct-4bit": "4f83f8f146fdf28b512a06562b671d7af4fab457",
+        "mlx-community/Qwen2.5-7B-Instruct-4bit": "c26a38f6a37d0a51b4e9a1eb3026530fa35d9fed",
+        "mlx-community/Qwen2.5-14B-Instruct-4bit": "dad510143ae5cdb1466778bde3161460f9e9f604",
+    ]
 
     /// A snapshot dir is whole when it is non-empty and every entry resolves to
     /// an existing file (no dangling symlinks). Recurses into real subdirs.

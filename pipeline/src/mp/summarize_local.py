@@ -47,28 +47,29 @@ amortize the load across calls and shut it down on idle.
 """
 from __future__ import annotations
 
+import hmac
+import importlib.util
 import json
 import logging
 import math
 import os
 import re
-import shutil
+import secrets
 import signal
 import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 from pydantic import ValidationError
 
-from . import egress_guard, local_server, resource_guard, summarize_staged
+from . import local_server, local_snapshot, resource_guard, summarize_staged
 from .chunking import chunked_windows
 from .config import SAMPLING_TEMPERATURE
 from .json_extract import largest_balanced_json_object, repair_missing_commas
-from .prefetch_model import model_is_cached
 from .prompt_safety import wrap_untrusted
 from .schemas import MeetingSummary, SUMMARY_TOOL
 from .summary_language import (
@@ -81,6 +82,12 @@ from .summary_language import (
 log = logging.getLogger("mp.summarize_local")
 
 DEFAULT_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+# SEC27: the model name a request sends, and the shim's health path. Both mirror
+# `local_model_server` (`DEFAULT_MODEL_ALIAS`, `HEALTH_PATH`), which is not imported
+# here so the client never pulls in the server module.
+_SERVER_MODEL_ALIAS = "default_model"
+_HEALTH_PATH = "/health"
+_PROBE_READ_RETRIES = 3
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_STARTUP_TIMEOUT_SEC = 120.0
@@ -356,13 +363,20 @@ SERVER_PROMPT_CACHE_SIZE = 2
 def build_server_command(
     model: str, host: str, port: int, adapter_path: str | None = None
 ) -> list[str]:
-    """Argv for an ``mlx_lm.server`` bound to (host, port) serving ``model``.
+    """Argv for the model server bound to (host, port) serving ``model``.
 
     Shared by ``LocalSummaryClient`` (its lazy per-call spawn) and ``mp
     serve-local`` (the daemon's optional launch-time warm process), so both
     start the identical server and the warm one is reused by the health check.
-    Prefers the standalone entry point; falls back to ``python -m`` so the user
-    does not have to manage which interpreter has mlx-lm installed.
+
+    SEC27: this launches ``mp.local_model_server``, the hardened entry that wraps
+    mlx-lm's own server, under this interpreter (the venv that has both ``mp``
+    and mlx-lm, so no PATH lookup decides which server runs). ``model`` is the
+    resolved ``snapshots/<sha>`` directory (``local_snapshot.resolve_for_serving``),
+    never a repo id, so nothing the server does can reach the Hugging Face
+    downloader. The per-spawn bearer token is deliberately NOT here: argv is
+    visible to every account through ``ps``; it travels in the environment
+    (``local_server.server_env``).
 
     ``adapter_path`` (LOCAL9), when set, serves a locally-trained LoRA adapter on
     top of the base model; empty/None serves the base model unchanged.
@@ -370,10 +384,7 @@ def build_server_command(
     ``--prompt-cache-size`` (LOCAL22) bounds the server's retained KV caches; see
     ``SERVER_PROMPT_CACHE_SIZE``.
     """
-    if shutil.which("mlx_lm.server") is not None:
-        cmd = ["mlx_lm.server"]
-    else:
-        cmd = [sys.executable, "-m", "mlx_lm.server"]
+    cmd = [sys.executable, "-m", "mp.local_model_server"]
     cmd = cmd + ["--prompt-cache-size", str(SERVER_PROMPT_CACHE_SIZE)]
     cmd = cmd + ["--model", model, "--host", host, "--port", str(port)]
     if adapter_path:
@@ -448,6 +459,13 @@ class LocalSummaryClient:
         self._ceiling_gap_logged = False
 
         self._proc: subprocess.Popen[bytes] | None = None
+        # SEC27: the bearer token of the server THIS client spawned. A server it
+        # merely reuses is authenticated with the token its spawner recorded in
+        # `local_server.read_token`.
+        self._spawned_token: str | None = None
+        # The token the last successful `_probe` verified; the POST that follows
+        # signs with exactly this one, never a file re-read in between.
+        self._proved_token: str | None = None
         self._lock = threading.Lock()
         self._idle_timer: threading.Timer | None = None
         # PERF25: when the last request finished (monotonic). The idle timer is
@@ -895,9 +913,15 @@ class LocalSummaryClient:
         return f"http://{self._host}:{self._port}"
 
     def _ensure_running(self) -> None:
-        if self._is_healthy() and self._reuse_is_safe():
+        state = self._probe()
+        if state == "ok" and self._reuse_is_safe():
             self._adopt()
             return
+        if state == "foreign":
+            # SEC27: something holds the port and did not accept our token. Fail
+            # closed, in every mode: it is either ours to replace or it never
+            # receives a transcript.
+            self._refuse_foreign_listener()
         if not self._manage_subprocess:
             raise LocalSummaryError(
                 f"No server reachable at {self.base_url} and manage_subprocess=False"
@@ -905,6 +929,31 @@ class LocalSummaryClient:
         self._spawn()
         self._wait_for_health(self._startup_timeout_sec)
         self._served = local_server.served_identity(self._port)
+
+    def _refuse_foreign_listener(self) -> NoReturn:
+        """SEC27: the port is held by a listener that did not prove it is the
+        server our token belongs to. Send it nothing. Never kill it either: a
+        server whose record was replaced may be mid-request for another live
+        `mp` (PIPE22's failure, by a new road); an orphan is the reaper's job.
+        A listener we cannot even identify is refused too, since reusing
+        "unknown" was the fail-open."""
+        identity = local_server.served_identity(self._port)
+        who = "an unidentified process"
+        hint = ""
+        if identity is not None:
+            command = identity.command or local_server.pid_command(identity.pid) or "?"
+            who = f"pid {identity.pid} ({command[:200]})"
+            if local_server.is_server_command(command):
+                hint = (
+                    " It looks like a model server this run has no token for (one started "
+                    "by an older MeetingPipe, or whose token record was replaced); quit "
+                    "MeetingPipe and stop that process, then retry."
+                )
+        raise LocalSummaryError(
+            f"{who} is listening on {self.base_url} but did not prove it is this "
+            f"machine's local model server, so nothing was sent to it.{hint} "
+            f"Stop that process, or point summarization.local_endpoint at a free port."
+        )
 
     def _reuse_is_safe(self) -> bool:
         """LOCAL11: is the warm server on this port serving what we configured?
@@ -929,14 +978,17 @@ class LocalSummaryClient:
           not evidence of a mismatch and a needless respawn costs a model reload.
         """
         identity = local_server.served_identity(self._port)
+        if identity is not None and identity.is_foreign:
+            # The proof said "ours" but lsof names another program: refuse.
+            self._refuse_foreign_listener()
         self._served = identity
-        # Model only, deliberately: since LOCAL15 the adapter rides in every request,
-        # which overrides whatever the server was started with (mlx-lm ignores its own
-        # `--adapter-path` entirely), so a warm server started for a different adapter,
-        # or for none, still serves ours correctly. Respawning a multi-GB server over
-        # an adapter difference would cost a full model load and change nothing.
+        # Model AND adapter since SEC27. The adapter still rides in every request
+        # (LOCAL15), but the server now answers only the adapter it was started
+        # with, so a warm server for a different one would refuse our requests;
+        # an owned one is restarted, a daemon-owned one is refreshed by the
+        # daemon on a config save (`LocalModelPreloader.refresh`).
         if identity is None or identity.matches(
-            model=self._model, adapter_path=identity.adapter_path
+            model=self._model, adapter_path=self._adapter_path
         ):
             return True
 
@@ -1009,36 +1061,36 @@ class LocalSummaryClient:
         return marker is not None and marker.get("pid") == identity.pid
 
     def _spawn(self) -> None:
-        if shutil.which("mlx_lm.server") is None and shutil.which("python3") is None:
+        if importlib.util.find_spec("mlx_lm") is None:
             raise LocalSummaryError(
-                "Neither 'mlx_lm.server' nor 'python3' found on PATH. "
-                "Install mlx-lm (`pip install mlx-lm`) before using the local backend."
+                "mlx-lm is not installed in this environment. "
+                "Install it (`pip install mlx-lm`) before using the local backend."
             )
-        # SEC13: under a zero-egress run the child gets HF_HUB_OFFLINE=1, so an
-        # uncached model would strand its load inside a subprocess whose stdout
-        # we throw away, surfacing as an opaque "exited during startup". Fail
-        # closed here instead, and say what to do about it. Downloading the
-        # model from inside a regulated / NDA run is exactly what the guard
-        # exists to prevent, so this is a refusal, not a fallback.
-        if egress_guard.is_armed() and not model_is_cached(self._model):
-            # UX21: keep the phrase "not in the local HuggingFace cache" here. It
-            # is the marker Swift's `Meeting.failureSuggestsModelDownload` matches
-            # (this message becomes the failed row's reason), so the Library can
-            # offer an in-app "Download model" instead of the terminal command.
-            raise LocalSummaryError(
-                f"Model {self._model!r} is not in the local HuggingFace cache, and this "
-                f"is a regulated/NDA run, so it cannot be downloaded now. Fetch it "
-                f"outside a zero-egress meeting first:\n"
-                f"    mp prefetch-model {self._model}"
-            )
+        # SEC27: the server never downloads and never resolves a revision. It is
+        # started on a pinned snapshot directory, offline, in every mode; a
+        # missing or code-carrying snapshot is a refusal here, not a surprise
+        # inside a child whose output nobody reads.
+        # UX21: the missing-snapshot message keeps the phrase "not in the local
+        # HuggingFace cache". It is the marker Swift's
+        # `Meeting.failureSuggestsModelDownload` matches (this message becomes the
+        # failed row's reason), so the Library can offer an in-app "Download
+        # model" instead of the terminal command.
+        try:
+            snapshot = local_snapshot.resolve_for_serving(self._model)
+        except local_snapshot.SnapshotError as e:
+            raise LocalSummaryError(str(e)) from e
         # LOCAL16: refuse a model this Mac cannot hold, before a multi-GB load
-        # starts. Same shape and the same seam as the SEC13 refusal above: the
+        # starts. Same shape and the same seam as the refusal above: the
         # machine is the thing that cannot satisfy the request, so say so and
         # name the preset to pick instead. Fails open when the size or the RAM
-        # cannot be read; the watchdog covers what the table cannot see.
+        # cannot be read; the watchdog covers what the table cannot.
         resource_guard.require_model_fits(self._model)
-        cmd = build_server_command(self._model, self._host, self._port, self._adapter_path)
-        log.info("spawning mlx_lm.server: %s", " ".join(cmd))
+        cmd = build_server_command(str(snapshot), self._host, self._port, self._adapter_path)
+        log.info("spawning local model server: %s", " ".join(cmd))
+        # SEC27: a fresh bearer token for this server. It travels in the child's
+        # environment, never its argv; the server records it on disk (0600) once
+        # it is listening, for any later `mp` that reuses it.
+        token = local_server.new_token()
         # LOCAL16: the server's own output goes to a rotated log rather than
         # DEVNULL. Discarding it is what made every OOM read as an opaque
         # "exited during startup", and left the postmortem with nothing.
@@ -1047,17 +1099,18 @@ class LocalSummaryClient:
             cmd,
             stdout=server_log or subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
-            # SEC13: the guard patches httpx in *this* process; the child speaks
-            # its own stack. Hand it an environment with the cloud tokens gone
-            # and huggingface_hub pinned offline, so a zero-egress run cannot
-            # egress from inside the model server either.
-            env=egress_guard.child_env(),
+            # SEC13/SEC27: the guard patches httpx in *this* process; the child
+            # speaks its own stack. Hand it an environment with every cloud
+            # token gone (in any mode: it never needs one), huggingface_hub
+            # pinned offline, and this spawn's bearer token.
+            env=local_server.server_env(token),
             # Detach into a new process group so a Ctrl-C in the daemon does
             # not also terminate the model server before we get to clean it up.
             # None is Popen's default, so a non-POSIX host just skips it.
             preexec_fn=os.setsid if hasattr(os, "setsid") else None,
         )
         self._proc = proc
+        self._spawned_token = token
         # LOCAL10: that same setsid means a SIGKILL of this process (the daemon's
         # pipeline watchdog does exactly that to a wedged run) leaves the server
         # running with no one who knows about it. Record who it is, so `mp doctor`
@@ -1083,6 +1136,13 @@ class LocalSummaryClient:
                 # guessing at them. Before the log capture this message was a
                 # two-cause guess ("the model name, or RAM"), which is exactly
                 # what a postmortem cannot work with.
+                # SEC27: two `mp` starting at once both spawn; the loser exits on
+                # "address in use" while the winner serves. Attach to a server that
+                # proves the recorded token rather than failing the run.
+                self._spawned_token = None
+                if self._probe() == "ok":
+                    log.info("another run's local model server won the port; using it")
+                    return
                 tail = local_server.tail_server_log()
                 raise LocalSummaryError(
                     f"mlx_lm.server exited during startup (rc={rc})."
@@ -1099,18 +1159,68 @@ class LocalSummaryClient:
             + (f": {last_err}" if last_err else "")
         )
 
-    def _is_healthy(self) -> bool:
+    def _token(self) -> str | None:
+        """The token of the server this client spawned, else the one its spawner
+        recorded for this port."""
+        return self._spawned_token or local_server.read_token(self._port)
+
+    def _auth_headers(self) -> dict[str, str]:
+        """`Authorization` for a request to the server: a one-way derivation of the
+        token `_probe` just verified (`local_server.bearer_for`), so the proof key
+        itself never crosses the wire. Sent only on the POST, after the probe: the
+        credential is never handed to a listener that has not proved it is ours."""
+        token = self._proved_token or self._token()
+        return {"Authorization": f"Bearer {local_server.bearer_for(token)}"} if token else {}
+
+    def _probe(self) -> str:
+        """`down` (nothing listening), `ok` (a server that proved it holds our
+        token), or `foreign` (something answered and could not: another program,
+        a server from before SEC27, one whose token record was replaced).
+
+        Mutual on purpose. A bare HTTP 200 is how any process on an idle port
+        used to be taken for our server; here the client sends a random nonce
+        and the server must return `local_server.health_proof(token, nonce)`,
+        which a program that cannot read the 0600 token file cannot compute.
+        A busy server (a model load, swapping) may miss the 2 s window, so a read
+        timeout is retried rather than read as a stranger."""
+        token = self._token()
+        nonce = secrets.token_urlsafe(24)
+        r: httpx.Response | None = None
+        for _attempt in range(_PROBE_READ_RETRIES):
+            try:
+                r = self._http.get(
+                    f"{self.base_url}{_HEALTH_PATH}", params={"nonce": nonce}, timeout=2.0
+                )
+                break
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                return "down"
+            except httpx.ReadTimeout:
+                continue
+            except httpx.HTTPError:
+                return "foreign"
+        if r is None or r.status_code != 200 or token is None:
+            return "foreign"
         try:
-            r = self._http.get(f"{self.base_url}/v1/models", timeout=2.0)
-            return r.status_code == 200
-        except Exception:
-            return False
+            proof = r.json().get("proof")
+        except (ValueError, AttributeError):
+            return "foreign"
+        if isinstance(proof, str) and hmac.compare_digest(
+            proof, local_server.health_proof(token, nonce)
+        ):
+            self._proved_token = token
+            return "ok"
+        return "foreign"
+
+    def _is_healthy(self) -> bool:
+        return self._probe() == "ok"
 
     def _terminate_proc(self) -> bool:
         """Stop the server this client spawned. True when none of ours is left
         running, False when it survived the whole ladder (PIPE22)."""
         proc = self._proc
         self._proc = None
+        self._spawned_token = None
+        self._proved_token = None
         # The identity we read belonged to the server we are about to stop; a
         # later call re-reads it rather than reporting the dead one (LOCAL11).
         self._served = None
@@ -1144,8 +1254,11 @@ class LocalSummaryClient:
                 local_server.note_survived_kill(proc.pid, last_signal)
                 return False
         # LOCAL10: gone, whether we killed it or it had already exited, so its
-        # marker goes too. One outliving its server would make `doctor` lie.
+        # marker goes too. One outliving its server would make `doctor` lie. The
+        # token record goes with it (SEC27): nothing should still be able to
+        # "prove" a server that no longer exists.
         local_server.clear_marker()
+        local_server.clear_token(proc.pid)
         return True
 
     def _reset_idle_timer(self, delay_sec: float | None = None) -> None:
@@ -1208,6 +1321,18 @@ class LocalSummaryClient:
         # afterwards. Throttled internally, so the map loop does not pay for a
         # `vm_stat` per window.
         self.watchdog.check(stage="local summarize")
+        # SEC27: verify the server again for every request, not once per run. The
+        # lifetime of a run is minutes of map windows and repairs; a server that
+        # died mid-run (an idle timer, the RAM watchdog, an OOM) leaves its port
+        # free for anything to take, and the next window must not be sent to it.
+        state = self._probe()
+        if state != "ok":
+            raise LocalSummaryError(
+                f"the local model server at {self.base_url} "
+                + ("is no longer running" if state == "down"
+                   else "did not prove it is this machine's local model server")
+                + "; nothing was sent"
+            )
         if response_format is None:
             # Default to the MeetingSummary schema so the existing
             # summarize() call site (which passes no response_format) is
@@ -1221,7 +1346,10 @@ class LocalSummaryClient:
                 },
             }
         payload: dict[str, Any] = {
-            "model": self._model,
+            # SEC27: the alias for the one model the server was started on (a
+            # snapshot directory). Sending the repo id made the server treat it
+            # as a different model and resolve it through the Hub.
+            "model": _SERVER_MODEL_ALIAS,
             "messages": messages,
             "max_tokens": max_tokens,
             # Low temperature: structured output is the priority, not
@@ -1261,6 +1389,7 @@ class LocalSummaryClient:
             r = self._http.post(
                 f"{self.base_url}/v1/chat/completions",
                 json=payload,
+                headers=self._auth_headers(),
                 timeout=httpx.Timeout(read_timeout, connect=5.0),
             )
         except httpx.HTTPError as e:
@@ -1273,6 +1402,12 @@ class LocalSummaryClient:
             self._last_activity = time.monotonic()
         if r.status_code != 200:
             detail = f"local backend returned {r.status_code}: {r.text[:500]}"
+            if r.status_code == 403:
+                detail += (
+                    ". The local model server answers only the model and adapter it was "
+                    "started with (SEC27); a warm server started before a config change "
+                    "must be restarted (quit and reopen MeetingPipe)."
+                )
             if r.status_code == 404 and self._adapter_path:
                 # mlx_lm.server answers a bare 404, no body, when it cannot load the
                 # adapter a request asked for (LOCAL15). The endpoint itself is fixed
@@ -1411,16 +1546,13 @@ def main(argv: list[str]) -> int:
     host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
     host = _loopback_only(host)
     model = cfg.summarization.local_model
-    # SEC13: an armed run cannot download a model, so an uncached one would strand
-    # mlx_lm.server's load inside a child whose stdout we discard. Fail closed with
-    # the same guidance `_spawn` gives, pointing at the prefetch escape hatch.
-    if egress_guard.is_armed() and not model_is_cached(model):
-        log.error(
-            "serve-local: model %r is not in the local HuggingFace cache, and this "
-            "is a regulated/NDA run, so it cannot be downloaded now. Fetch it "
-            "outside a zero-egress meeting first:\n    mp prefetch-model %s",
-            model, model,
-        )
+    # SEC27: the server is started on a pinned snapshot directory, offline, in every
+    # mode (this used to be an armed-only check). Fail closed with the same
+    # guidance `_spawn` gives, pointing at the prefetch escape hatch.
+    try:
+        snapshot = local_snapshot.resolve_for_serving(model)
+    except local_snapshot.SnapshotError as e:
+        log.error("serve-local: %s", e)
         return 1
     # LOCAL16: the warm path refuses an over-tier model for the same reason the
     # lazy spawn does, and one step earlier in the day: a preloaded server holds
@@ -1433,8 +1565,13 @@ def main(argv: list[str]) -> int:
         return 1
     # LOCAL9: the warm server serves the configured adapter too, so it matches the
     # lazy per-call spawn (LocalSummaryClient) and the daemon reuses one server.
-    cmd = build_server_command(model, host, port, cfg.summarization.local_adapter_path or None)
+    cmd = build_server_command(
+        str(snapshot), host, port, cfg.summarization.local_adapter_path or None
+    )
     log.info("serve-local: exec %s", " ".join(cmd))
+    # SEC27: this warm server's bearer token, handed over through the environment
+    # (never argv). The server records it for later clients once it is listening.
+    token = local_server.new_token()
     # LOCAL16: point the exec'd server's own stdout/stderr at the same rotated
     # log the lazy spawn uses. `execvpe` replaces this process, so the redirect
     # has to happen here, on the fds the child inherits (dup2's result is
@@ -1442,9 +1579,9 @@ def main(argv: list[str]) -> int:
     _redirect_output_to_server_log()
     try:
         # execvpe (not execvp): hand the child a token-stripped, offline-pinned
-        # environment under a zero-egress run so it cannot egress even though it
-        # speaks its own (non-httpx) stack. child_env() is a no-op copy otherwise.
-        os.execvpe(cmd[0], cmd, egress_guard.child_env())
+        # environment in every mode (SEC27) so it cannot egress or leak a managed
+        # credential, plus its own bearer token.
+        os.execvpe(cmd[0], cmd, local_server.server_env(token))
     except OSError as e:
         log.error(
             "serve-local could not exec %s: %s. Install mlx-lm "

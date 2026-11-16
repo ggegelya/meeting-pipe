@@ -56,9 +56,12 @@ unavailable, and carries the same two fields for that reason.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import os
+import secrets
 import signal
 import subprocess
 import time
@@ -66,7 +69,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
 
-from . import events
+from . import events, local_snapshot
 
 log = logging.getLogger("mp.local_server")
 
@@ -79,10 +82,18 @@ MARKER_NAME = "mlx-server.json"
 # rotated by the same helper as the event log, so it self-bounds.
 SERVER_LOG_NAME = "mlx-server.log"
 
-# Substring that identifies an `mlx_lm.server` in a `ps` command line. Guards
+# Substrings that identify our model server in a `ps` command line. Guards
 # against pid reuse: a recycled pid pointing at some unrelated process must
-# never be signalled.
-_SERVER_COMMAND_MARK = "mlx_lm.server"
+# never be signalled. Since SEC27 the server is launched through the hardened
+# `mp.local_model_server` shim (which then runs mlx-lm's own `main`), so its argv
+# names the shim; a server a pre-SEC27 build left running still names
+# `mlx_lm.server`. Mirrored by Swift's `LocalServerReaper.isServerCommand`.
+_SERVER_COMMAND_MARKS = ("mlx_lm.server", "mp.local_model_server")
+
+
+def is_server_command(command: str | None) -> bool:
+    """Does this `ps` command line belong to our model server?"""
+    return command is not None and any(mark in command for mark in _SERVER_COMMAND_MARKS)
 
 # The two identity-bearing flags `summarize_local.build_server_command` emits.
 _MODEL_FLAG = "--model"
@@ -130,6 +141,113 @@ def tail_server_log(max_chars: int = 800) -> str:
     except OSError:
         return ""
     return text[-max_chars:].strip()
+
+
+# SEC27: the per-spawn bearer token the model server demands on every request.
+# The spawner (`LocalSummaryClient._spawn` or `mp serve-local`) generates it and
+# hands it to the server through the environment, never argv (`ps` shows argv to
+# every account). The *server* records it here once it is bound and listening
+# (`local_model_server`), so a spawn that loses a port race never replaces the
+# record of the server that won it, and any later `mp` that reuses the warm
+# server reads it from this file. 0600, in Application Support (a log folder
+# travels in diagnostic bundles); a process that can read it already runs as the
+# owner. Clients also use it to *verify* the server: see `health_proof`.
+TOKEN_NAME = "mlx-server.token"
+TOKEN_ENV = "MP_LOCAL_SERVER_TOKEN"  # == local_model_server.TOKEN_ENV, which cannot be imported here
+HEALTH_PATH = "/health"
+
+
+def token_path(home: Path | None = None) -> Path:
+    from . import storage
+
+    return storage.app_support_dir(home) / TOKEN_NAME
+
+
+def new_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def health_proof(token: str, nonce: str) -> str:
+    """What a server that knows `token` answers `GET /health?nonce=<nonce>` with.
+
+    The bearer token authenticates the client to the server; this is the other
+    direction. Anything can bind an idle loopback port and answer 200, so a
+    client that sent a transcript to "whatever answers /health" was handing it to
+    whichever local program got there first. A squatter cannot read the 0600
+    token file, so it cannot compute this."""
+    return hmac.new(token.encode("utf-8"), nonce.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def bearer_for(token: str) -> str:
+    """The credential a client puts on the wire, derived one-way from `token`.
+
+    `token` itself is the key of `health_proof`, so it must never leave the two
+    processes that hold the file: if the bearer *were* the token, a listener that
+    captured one request could pass every later health probe. A captured bearer
+    proves nothing about `token`."""
+    return hmac.new(token.encode("utf-8"), b"mp-local-server-bearer-v1", hashlib.sha256).hexdigest()
+
+
+def clear_token(pid: int | None = None, home: Path | None = None) -> None:
+    """Remove the token record when its server is gone. With `pid`, only a record
+    that names that pid (a newer server's record is not ours to delete)."""
+    path = token_path(home)
+    try:
+        if pid is not None:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or data.get("pid") != pid:
+                return
+        path.unlink(missing_ok=True)
+    except (OSError, ValueError):
+        pass
+
+
+def write_token(port: int, token: str, pid: int, home: Path | None = None) -> None:
+    """Atomic 0600 write of `{port, pid, token}`. Raises `OSError`: a server we
+    cannot authenticate to is useless, so the caller must stop."""
+    path = token_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A per-pid temp name, created fresh: two servers writing at once cannot
+    # interleave, and a stale file with looser permissions is never reused.
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"port": port, "pid": pid, "token": token}))
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
+def read_token(port: int, home: Path | None = None) -> str | None:
+    """The token of the server recorded for `port`, or None when there is no
+    readable record for that port (so there is nothing to verify or sign with)."""
+    try:
+        data = json.loads(token_path(home).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("port") != port:
+        return None
+    token = data.get("token")
+    return token if isinstance(token, str) and token else None
+
+
+def server_env(token: str, base: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment for the model-server child (SEC27, SEC13).
+
+    Starts from `egress_guard.child_env` (scrubbed and offline when armed) and
+    then removes every managed token in EVERY mode: the server serves a local
+    snapshot and needs no credential, and until now an unarmed child inherited
+    the lot. Always offline, and carries this spawn's bearer token."""
+    from . import egress_guard
+    from .config import MANAGED_SECRET_KEYS
+
+    env = egress_guard.child_env(base)
+    for key in MANAGED_SECRET_KEYS:
+        env.pop(key, None)
+    env["HF_HUB_OFFLINE"] = "1"
+    env["TRANSFORMERS_OFFLINE"] = "1"
+    env[TOKEN_ENV] = token
+    return env
 
 
 def write_marker(
@@ -272,8 +390,7 @@ def pid_command(pid: int) -> str | None:
 
 def is_server_pid(pid: int) -> bool:
     """True when `pid` is alive and is actually an `mlx_lm.server`."""
-    cmd = pid_command(pid)
-    return cmd is not None and _SERVER_COMMAND_MARK in cmd
+    return is_server_command(pid_command(pid))
 
 
 def is_owner_command(command: str | None) -> bool:
@@ -357,7 +474,12 @@ def parse_identity(command: str) -> tuple[str | None, str | None]:
     no `--model` means an argv we do not recognise (a server someone started by
     hand), which callers must treat as unknown rather than as a mismatch.
     """
-    return _flag_value(command, _MODEL_FLAG), _flag_value(command, _ADAPTER_FLAG)
+    model = _flag_value(command, _MODEL_FLAG)
+    if model is not None:
+        # SEC27: the server is started on a `snapshots/<sha>` directory; the rest
+        # of the system (config, the run sidecar, `matches`) speaks repo ids.
+        model = local_snapshot.repo_id_from_snapshot(model) or model
+    return model, _flag_value(command, _ADAPTER_FLAG)
 
 
 @dataclass(frozen=True)
@@ -373,14 +495,23 @@ class ServedIdentity:
     model: str | None
     adapter_path: str | None
     source: str
+    #: SEC27: the listener's argv when `source == "foreign"`, for the refusal.
+    command: str | None = None
+
+    @property
+    def is_foreign(self) -> bool:
+        """`lsof` named the listener and it is not our model server."""
+        return self.source == "foreign"
 
     def matches(self, *, model: str, adapter_path: str | None) -> bool:
         """Does this server serve the configured identity?
 
-        Fails open: an identity we could not read (`model is None`) never reports
-        a mismatch, so an argv we cannot parse costs a warm reuse, never a
-        needless respawn of a multi-GB server.
+        Fails open on an identity we could not read (`model is None`): an argv we
+        cannot parse costs a warm reuse, never a needless respawn of a multi-GB
+        server. A foreign listener never matches (SEC27).
         """
+        if self.is_foreign:
+            return False
         if self.model is None:
             return True
         if self.model != model:
@@ -402,17 +533,24 @@ def served_identity(port: int, home: Path | None = None) -> ServedIdentity | Non
     server's). Falls back to the LOCAL10 marker when `lsof` cannot name the pid,
     which only covers `mp`-spawned servers but is better than nothing.
 
-    None means "no answer", never "no mismatch": something non-mlx holding the
-    port, an unreadable `ps` line, and an absent marker all land here, and every
-    caller treats it as unknown.
+    A listener that `lsof` and `ps` identified as something else (SEC27) is
+    returned as a `foreign` identity, which is a positive mismatch, not "no
+    answer": it used to land in None and be reused like an unknown. None still
+    means "could not tell" (no `lsof`, an unreadable `ps` line, an absent
+    marker), and a caller treats it as unknown; the bearer-token probe is what
+    covers that case.
     """
     pid = listening_pid(port)
     if pid is not None:
         cmd = pid_command(pid)
-        if cmd is not None and _SERVER_COMMAND_MARK in cmd:
+        if cmd is None:
+            return None
+        if is_server_command(cmd):
             model, adapter = parse_identity(cmd)
             return ServedIdentity(pid=pid, model=model, adapter_path=adapter, source="argv")
-        return None
+        return ServedIdentity(
+            pid=pid, model=None, adapter_path=None, source="foreign", command=cmd
+        )
 
     marker = read_marker(home)
     if marker is None or marker.get("port") != port:
@@ -454,6 +592,7 @@ def terminate_server(pid: int, home: Path | None = None) -> bool:
     """
     if not is_server_pid(pid):
         clear_marker(home)
+        clear_token(pid)
         return False
     last_signal = "SIGTERM"
     try:
@@ -479,6 +618,7 @@ def terminate_server(pid: int, home: Path | None = None) -> bool:
         note_survived_kill(pid, last_signal)
         return False
     clear_marker(home)
+    clear_token(pid)
     return True
 
 

@@ -2,9 +2,9 @@
 id: SEC27
 title: The local mlx_lm.server loads and executes whatever model a request names, floats Hugging Face `main` on every start, and is reused when anything else holds its port
 category: Security
-status: new
+status: partial
 priority: P1
-comment: Filed 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md) findings 1, 2, 7): unauthenticated server on 127.0.0.1:8765 with CORS * loads the body's model/draft_model/adapters and exec_module's a config.json model_file, so a sandboxed app, another account or a browser page gets code execution while it runs; every online start re-resolves HF main; a non-mlx listener is reused. Serve a pinned local snapshot offline, pin the three fields behind a per-spawn token, fail closed on a foreign listener. P1 as a broken local-first safety promise; owner may re-band. [Spec](./SEC27.md)
+comment: Shipped 2026-11-16 (all four scope items): pinned offline snapshot per preset (`local_snapshot`), hardened `mp.local_model_server` shim (per-spawn bearer token in env, no Origin/foreign Host, one model/adapter, server-side health proof), foreign listener refused in every mode, no managed token in the child. Verified by 140+ new/updated pytest cases and a real mlx-lm 0.31.3 smoke on a spare port. Owner remainder: run `mp prefetch-model` for the 7B/14B (only the 3B is in the cache and matches its pin), then the acceptance curl against the warm server.
 ---
 
 # SEC27: the local mlx_lm.server loads and executes whatever model a request names, floats Hugging Face `main` on every start, and is reused when anything else holds its port
@@ -54,3 +54,5 @@ Exposure window: the lazy spawn idles 300 s (`DEFAULT_IDLE_TIMEOUT_SEC`) after a
 - `served_identity` / `_reuse_is_safe` tests: an `lsof` result naming a non-mlx command refuses reuse; an unidentifiable listener keeps today's behaviour only if item 2's token check also passes.
 - `cd pipeline && uv run --extra dev pytest -q`, ruff and pyright green with the new test count in the commit body; `swift test` green if `LocalModelPreloader` changes; `bash scripts/ci-local.sh` green.
 - Owner check (confirms): with the warm server up, `curl -s -X POST -H 'Content-Type: text/plain' --data '{"model":"x/y","messages":[{"role":"user","content":"hi"}]}' http://127.0.0.1:8765/v1/chat/completions` is refused without reaching the downloader, and a normal local summary still completes.
+
+**Progress (2026-11-16):** shipped as specced, plus two deviations the design review forced. (1) The client authenticates the *server*, not only the other way round: `GET /health?nonce=` must return `HMAC(token, nonce)`, because "anything that answers 200" is what let a squatter receive transcripts. (2) The token record (`~/Library/Application Support/MeetingPipe/mlx-server.token`) is written by the server after it binds, not by the spawner, so a spawn that loses a port race cannot overwrite the winner's record. Behaviour changes to know: serving never downloads (a model cached at another revision reads as missing until `mp prefetch-model` fetches the pin; the Library's "Download model" fires on the same phrase), and an adapter difference now restarts an owned server because the shim answers only its own adapter. Swift change: `LocalServerReaper.isServerCommand` also accepts `mp.local_model_server`. The Preferences "Preload local model" path needs no change (it spawns `mp serve-local`, which now execs the shim).

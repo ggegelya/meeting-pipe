@@ -108,8 +108,13 @@ enum LocalServerReaper {
     // will disagree about the same marker.
 
     /// A recycled pid must never be signalled, so identity, not liveness, is the gate.
+    ///
+    /// SEC27: the server now runs behind the hardened `mp.local_model_server` shim,
+    /// so its argv names that; a server an older build left running still names
+    /// `mlx_lm.server`. Both count. Mirrors `local_server.is_server_command`.
     static func isServerCommand(_ command: String?) -> Bool {
-        command?.contains("mlx_lm.server") ?? false
+        guard let command else { return false }
+        return command.contains("mlx_lm.server") || command.contains("mp.local_model_server")
     }
 
     /// A pid whose command is not a Python `mp` invocation reads as a dead owner,

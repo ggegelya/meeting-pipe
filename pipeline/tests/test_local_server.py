@@ -432,11 +432,23 @@ def test_served_identity_ignores_a_marker_for_another_port(
     assert local_server.served_identity(8765, tmp_path) is None
 
 
-def test_served_identity_is_none_when_a_non_server_holds_the_port(
+def test_served_identity_names_a_non_server_holding_the_port_as_foreign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC27 item 3: identified-and-not-ours is a mismatch, not "unknown"."""
+    _fake_listener(monkeypatch, 4242)
+    _fake_process_table(monkeypatch, {4242: "/usr/bin/python3 -m http.server 8765"})
+    identity = local_server.served_identity(8765, tmp_path)
+    assert identity is not None and identity.is_foreign
+    assert identity.pid == 4242 and "http.server" in (identity.command or "")
+    assert not identity.matches(model="a/b", adapter_path=None)
+
+
+def test_served_identity_is_none_when_the_listener_cannot_be_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _fake_listener(monkeypatch, 4242)
-    _fake_process_table(monkeypatch, {4242: "/usr/bin/python3 -m http.server 8765"})
+    _fake_process_table(monkeypatch, {})
     assert local_server.served_identity(8765, tmp_path) is None
 
 
