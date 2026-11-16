@@ -159,9 +159,9 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
                 context: context
             ))
         }
-        shareableContent.start(context: context) { title in
+        shareableContent.start(context: context, titleMatch: { title in
             matchers.contains { $0(title) }
-        }
+        })
 
         // PRIMARY: process termination. For a PWA, closing the meeting window quits the process - definitive
         // end, no TCC needed, and the only signal left when Screen Recording is denied.

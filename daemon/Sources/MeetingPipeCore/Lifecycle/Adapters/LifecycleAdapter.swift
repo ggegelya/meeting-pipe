@@ -69,14 +69,66 @@ public extension LifecycleAdapter {
 /// Locale-tolerant title matchers for all meeting vendors. Single source of truth; adapters compose these per platform.
 public enum MeetingTitlePatterns {
 
-    /// Teams: localised "meeting" stem or the universal " | Microsoft Teams" window-title suffix.
-    public static let teams: (String?) -> Bool = { title in
-        guard let lowered = title?.lowercased() else { return false }
-        for token in teamsTokens where lowered.contains(token) {
+    /// Native Teams window recognizer, the ONE predicate both sides use (END24). The start side
+    /// (`MeetingSourceScanner.isActiveMeetingWindow`) and the end side (`NativeLifecycleConfig.teams`,
+    /// which uses it only to pick the call window to follow at engage) both call this, so they cannot
+    /// drift again. They did: the end side kept a localised-"meeting"-token vocabulary while the
+    /// start side went permissive, and from 2026-10-08 Teams' titles carried no token at all, so the
+    /// end side read every call window gone (1,264 `shareable_content_no_match` rows, 4 chopped
+    /// recordings before END14's veto).
+    ///
+    /// Permissive by design: Teams (May 2026) dropped the "Meeting in/with <X>" prefix, so a call
+    /// window's title is just the topic ("Echo | Microsoft Teams", or bare "Echo"). Only well-known
+    /// chrome surfaces are rejected, in both the bare and the "| Microsoft Teams" forms. A
+    /// false positive here costs a recording into a stale thread, a false negative a call cut short.
+    public static let teamsWindow: (String?) -> Bool = { title in
+        guard let title else { return false }
+        let lowered = title.lowercased().trimmingCharacters(in: .whitespaces)
+        if teamsChrome.contains(lowered) { return false }
+        if lowered.hasSuffix(teamsSuffix) {
+            let lead = String(lowered.dropLast(teamsSuffix.count)).trimmingCharacters(in: .whitespaces)
+            if lead.isEmpty { return false }                     // bare app chrome
+            if teamsChrome.contains(lead) { return false }
             return true
         }
-        return false
+        // No suffix: Teams sometimes spawns the call window with just the topic. It cannot be told
+        // from chrome by title alone; the chrome list filters the known surfaces, and an empty title
+        // is inconclusive (the caller ORs across windows, so it contributes nothing).
+        return !lowered.isEmpty
     }
+
+    /// The shape class of a Teams window title, never the title itself (END24). Used to log what was
+    /// locked and to rank the lock: `bare_single_segment` (no `|`, the call window's usual shape since
+    /// 2026-10-08), `pipe_microsoft_teams_suffix` ("<x> | Microsoft Teams"), `chat_pipe_segment` (any
+    /// other piped title, which is mostly the main window's "Chat | ..."), `chrome`, `empty`.
+    public static func teamsWindowShape(_ title: String?) -> String {
+        let lowered = (title ?? "").lowercased().trimmingCharacters(in: .whitespaces)
+        if lowered.isEmpty { return "empty" }
+        if !teamsWindow(title) { return "chrome" }
+        if lowered.hasSuffix(teamsSuffix) { return "pipe_microsoft_teams_suffix" }
+        if lowered.contains("|") { return "chat_pipe_segment" }
+        return "bare_single_segment"
+    }
+
+    /// How the end side ranks the windows `teamsWindow` accepts when locking the call window (END24),
+    /// lowest first: a bare single segment (the call window since 2026-10-08), then the older
+    /// "<topic> | Microsoft Teams" call shape, then anything else. The main window's "Chat | ..." also
+    /// passes the predicate, and locking it would keep the reading present for as long as Teams is
+    /// open, so it is locked only when nothing better is on screen.
+    public static let teamsLockRank: (String?) -> Int = { title in
+        switch teamsWindowShape(title) {
+        case "bare_single_segment": return 0
+        case "pipe_microsoft_teams_suffix": return 1
+        default: return 2
+        }
+    }
+
+    private static let teamsSuffix = "| microsoft teams"
+
+    private static let teamsChrome: Set<String> = [
+        "microsoft teams", "teams", "calendar", "settings", "activity", "chat",
+        "files", "apps", "store", "join meeting", "schedule meeting",
+    ]
 
     /// Zoom: "Zoom Meeting", "Zoom -", localised "Reunion Zoom", or plain "Zoom" (older builds).
     public static let zoom: (String?) -> Bool = { title in

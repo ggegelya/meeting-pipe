@@ -66,9 +66,9 @@ final class ShareableContentSignalTests: XCTestCase {
         )
         signal.onChange = { observed.append($0) }
 
-        signal.start(context: teamsContext) { title in
+        signal.start(context: teamsContext, titleMatch: { title in
             (title ?? "").lowercased().contains("meeting")
-        }
+        })
         XCTAssertEqual(observed, [false])
     }
 
@@ -162,9 +162,9 @@ final class ShareableContentSignalTests: XCTestCase {
             scheduler: manualScheduler(scheduler)
         )
 
-        signal.start(context: teamsContext) { title in
+        signal.start(context: teamsContext, titleMatch: { title in
             (title ?? "").lowercased().contains("meeting")
-        }
+        })
 
         XCTAssertTrue(
             log.entries.contains { $0.action == "shareable_content_no_match" },
@@ -371,5 +371,186 @@ final class ShareableContentSignalTests: XCTestCase {
         let probe = ShareableContentSignal.makeProbe(fetch: held.fetch, preflight: { false }, timeout: 0.05)
         XCTAssertNil(probe())
         XCTAssertEqual(held.requests, 0)
+    }
+
+    // MARK: - END24: identity, not vocabulary
+
+    private let teams2 = "com.microsoft.teams2"
+    /// Held for the test's duration: the signal's tick closure captures it weakly.
+    private var retained: [ShareableContentSignal] = []
+
+    /// A started identity-mode signal over a mutable window list, with Teams' production predicates.
+    private func identitySignal(
+        _ windows: LockedBox<[Summary]>,
+        log: RecordingEventLog = RecordingEventLog(),
+        observed: LockedBox<[Bool]>
+    ) -> (ShareableContentSignal, ManualScheduler) {
+        let scheduler = ManualScheduler()
+        let signal = ShareableContentSignal(
+            eventLog: log,
+            probe: { windows.get() },
+            scheduler: manualScheduler(scheduler)
+        )
+        signal.onChange = { value in observed.mutate { $0.append(value) } }
+        retained.append(signal)
+        signal.start(
+            context: teamsContext,
+            lockRank: NativeLifecycleConfig.teams.windowLockRank,
+            titleMatch: NativeLifecycleConfig.teams.titleMatch
+        )
+        return (signal, scheduler)
+    }
+
+    func test_a_tokenless_call_window_present_at_engage_stays_present() {
+        // The 2026-10-08 shape: a bare topic with no "meeting" token, which the old end-side
+        // vocabulary rejected on every poll.
+        let windows = LockedBox([Summary(bundleIdentifier: teams2, title: "Weekly sync", windowID: 41, pid: 7)])
+        let observed = LockedBox<[Bool]>([])
+        let (_, scheduler) = identitySignal(windows, observed: observed)
+        scheduler.tick?()
+        windows.set([Summary(bundleIdentifier: teams2, title: "Weekly sync (2 people)", windowID: 41, pid: 7)])
+        scheduler.tick?()
+        XCTAssertEqual(observed.get(), [true], "the locked call window must read present whatever its title becomes")
+    }
+
+    func test_the_locked_window_removed_reads_gone_even_as_a_chat_window_appears() {
+        let windows = LockedBox([
+            Summary(bundleIdentifier: teams2, title: "Weekly sync", windowID: 41, pid: 7),
+            Summary(bundleIdentifier: teams2, title: "Chat | Acme", windowID: 12, pid: 7)
+        ])
+        let observed = LockedBox<[Bool]>([])
+        let log = RecordingEventLog()
+        let (_, scheduler) = identitySignal(windows, log: log, observed: observed)
+        // The call window closes and a popped-out chat (also a bare segment) appears in the same poll.
+        windows.set([
+            Summary(bundleIdentifier: teams2, title: "Chat | Acme", windowID: 12, pid: 7),
+            Summary(bundleIdentifier: teams2, title: "Jane Doe", windowID: 99, pid: 7)
+        ])
+        scheduler.tick?()
+        XCTAssertEqual(observed.get(), [true, false])
+        let locked = log.entries.first { $0.action == "shareable_content_window_locked" }
+        XCTAssertEqual(locked?.attributes["count"], "1", "the main window's Chat | shape must not be locked beside a call window")
+        let gone = log.entries.last { $0.action == "shareable_content_window_present" }
+        XCTAssertEqual(gone?.attributes["appeared_matching"], "1")
+        XCTAssertEqual(gone?.attributes["locked_windows"], "1")
+    }
+
+    func test_a_window_opened_after_the_lock_never_reads_present_for_the_call() {
+        let windows = LockedBox([Summary(bundleIdentifier: teams2, title: "Weekly sync", windowID: 41, pid: 7)])
+        let observed = LockedBox<[Bool]>([])
+        let (_, scheduler) = identitySignal(windows, observed: observed)
+        windows.set([])
+        scheduler.tick?()
+        windows.set([Summary(bundleIdentifier: teams2, title: "Weekly sync", windowID: 42, pid: 7)])
+        scheduler.tick?()
+        XCTAssertEqual(observed.get(), [true, false], "no re-lock: a returning reading would revert a real end")
+    }
+
+    func test_an_off_screen_call_window_reads_gone_then_present_when_it_returns() {
+        // `onScreenWindowsOnly`: a minimised or other-Space call window drops out of the list. Kept
+        // visible on purpose (the spec's "do not fix"), and the same id coming back reads present.
+        let call = Summary(bundleIdentifier: teams2, title: "Weekly sync", windowID: 41, pid: 7)
+        let windows = LockedBox([call])
+        let observed = LockedBox<[Bool]>([])
+        let (_, scheduler) = identitySignal(windows, observed: observed)
+        windows.set([])
+        scheduler.tick?()
+        windows.set([call])
+        scheduler.tick?()
+        XCTAssertEqual(observed.get(), [true, false, true])
+    }
+
+    func test_windows_without_an_id_never_lock_and_keep_the_title_rule() {
+        let windows = LockedBox([Summary(bundleIdentifier: teams2, title: "Weekly sync")])
+        let observed = LockedBox<[Bool]>([])
+        let log = RecordingEventLog()
+        let (_, scheduler) = identitySignal(windows, log: log, observed: observed)
+        windows.set([Summary(bundleIdentifier: teams2, title: "Calendar")])
+        scheduler.tick?()
+        XCTAssertEqual(observed.get(), [true, false])
+        XCTAssertFalse(log.entries.contains { $0.action == "shareable_content_window_locked" })
+    }
+
+    func test_only_a_chat_pipe_window_is_locked_when_no_bare_segment_exists() {
+        let windows = LockedBox([Summary(bundleIdentifier: teams2, title: "Chat | Acme", windowID: 12, pid: 7)])
+        let observed = LockedBox<[Bool]>([])
+        let log = RecordingEventLog()
+        _ = identitySignal(windows, log: log, observed: observed)
+        let locked = log.entries.first { $0.action == "shareable_content_window_locked" }
+        XCTAssertEqual(locked?.attributes["rank"], "2")
+        XCTAssertEqual(observed.get(), [true])
+    }
+
+    func test_stop_clears_the_lock() {
+        let windows = LockedBox([Summary(bundleIdentifier: teams2, title: "Weekly sync", windowID: 41, pid: 7)])
+        let observed = LockedBox<[Bool]>([])
+        let (signal, _) = identitySignal(windows, observed: observed)
+        signal.stop()
+        windows.set([Summary(bundleIdentifier: teams2, title: "Standup", windowID: 50, pid: 7)])
+        signal.start(
+            context: teamsContext,
+            lockRank: NativeLifecycleConfig.teams.windowLockRank,
+            titleMatch: NativeLifecycleConfig.teams.titleMatch
+        )
+        XCTAssertEqual(observed.get(), [true, true], "the new session locked its own window rather than reading the old lock as gone")
+    }
+
+    func test_an_older_suffix_call_window_is_locked_before_the_main_window() {
+        let windows = LockedBox([
+            Summary(bundleIdentifier: teams2, title: "Chat | Acme", windowID: 12, pid: 7),
+            Summary(bundleIdentifier: teams2, title: "Standup | Microsoft Teams", windowID: 41, pid: 7)
+        ])
+        let observed = LockedBox<[Bool]>([])
+        let log = RecordingEventLog()
+        let (_, scheduler) = identitySignal(windows, log: log, observed: observed)
+        windows.set([Summary(bundleIdentifier: teams2, title: "Chat | Acme", windowID: 12, pid: 7)])
+        scheduler.tick?()
+        XCTAssertEqual(observed.get(), [true, false], "the main window was locked beside the call window")
+        XCTAssertEqual(log.entries.first { $0.action == "shareable_content_window_locked" }?.attributes["rank"], "1")
+    }
+
+    /// Era A through the engine: the same tokenless call window, read by the old end-side vocabulary
+    /// and by identity. The old reading leads an end (vetoed by live process audio, or held without
+    /// it); identity leads none, so nothing depends on the veto.
+    func test_era_a_window_reading_leads_no_end_under_identity() {
+        let oldVocabulary: ShareableContentSignal.TitleMatch = { title in
+            let lowered = (title ?? "").lowercased()
+            return ["meeting", "microsoft teams"].contains { lowered.contains($0) }
+        }
+        for identity in [false, true] {
+            for processAudioLive in [false, true] {
+                let call = Summary(bundleIdentifier: teams2, title: "Weekly sync", windowID: 41, pid: 7)
+                let scheduler = ManualScheduler()
+                let signal = ShareableContentSignal(probe: { [call] }, scheduler: manualScheduler(scheduler))
+                retained.append(signal)
+                let readings = LockedBox<[Bool]>([])
+                signal.onChange = { value in readings.mutate { $0.append(value) } }
+                if identity {
+                    signal.start(context: teamsContext, lockRank: NativeLifecycleConfig.teams.windowLockRank,
+                                 titleMatch: NativeLifecycleConfig.teams.titleMatch)
+                } else {
+                    signal.start(context: teamsContext, titleMatch: oldVocabulary)
+                }
+
+                let engine = PromotionEngine()
+                let start = Date()
+                let opener: PrimarySignalKind = processAudioLive ? .processAudioIsRunningInput : .axLeaveButton
+                _ = engine.ingest(PrimarySignalEvent(kind: opener, state: .live, timestamp: start, context: teamsContext))
+                _ = engine.confirmRecording()
+                var last: PromotionEngine.Decision?
+                for value in readings.get() {
+                    last = engine.ingest(PrimarySignalEvent(
+                        kind: .shareableContentWindow, state: value ? .live : .ended,
+                        timestamp: start.addingTimeInterval(1), context: teamsContext
+                    )) ?? last
+                }
+                let led = engine.takeVeto() != nil || {
+                    if case .endingProvisional = last?.verdict { return true }
+                    return false
+                }()
+                let label = "identity=\(identity) processAudioLive=\(processAudioLive) readings=\(readings.get())"
+                XCTAssertEqual(led, !identity, label)
+            }
+        }
     }
 }

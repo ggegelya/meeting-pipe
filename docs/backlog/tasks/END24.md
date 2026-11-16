@@ -2,9 +2,9 @@
 id: END24
 title: The end-side Teams window matcher has rejected every Teams call window since 2026-10-08 while the start side accepts the same titles, so window-gone is a false reading on almost every call
 category: Detection
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). Since 2026-10-08T14:31:18Z `MeetingTitlePatterns.teams` rejects the titles `MeetingSourceScanner.isActiveMeetingWindow` accepts (1,264 shareable_content_no_match rows, 4 chops in era A, 136 end_vetoed since END14), so a false window-gone spends one of the two evidence classes an end needs and wins whenever the first-reading race goes wrong. Scope: stop treating a title substring as proof the call window exists (window identity, one shared recognizer, or no Teams window-gone end vote), pinned by captured title shapes in the recognizer fixture. P2 while END14's veto absorbs it; promote if a Teams chop recurs.
+comment: Shipped 2026-11-16 (option 1 plus option 2's shared recognizer): MeetingTitlePatterns.teamsWindow is the one Teams predicate for the scanner and NativeLifecycleConfig.teams, and the Teams window signal locks the call window's SCWindow id at the first present reading (preferring a bare single segment over the main window's Chat | shape) and reads gone only when that id leaves the list; window_titles.json gained kind and shape columns and a cross-side test that is red on the old vocabulary. Remainder: the two-week field read (end_vetoed led by window-gone to 0) and the owner's approval to close; PERF6 reconciles the scanner predicate if it lands second.
 ---
 
 # END24: The end-side Teams window matcher has rejected every Teams call window since 2026-10-08 while the start side accepts the same titles, so window-gone is a false reading on almost every call
@@ -61,3 +61,14 @@ In every option, add the fixture half: a `kind` column in `window_titles.json` (
 - A replay through `PromotionEngine` of the era A order (window gone first, process audio live) yields no end without relying on the veto.
 - `cd daemon && swift test` green with the number of tests added in the commit body; `bash scripts/ci-local.sh` green.
 - Field: over the next two weeks of Teams calls on the landing build, `end_vetoed` rows led by `shareable_content_window_gone` fall from 7 in era C's 6 recordings to 0, and no Teams `confirmed_by` lists `shareable_content_window_gone` while a call window was on screen.
+
+**Progress (2026-11-16): what shipped, and the choices inside option 1.**
+
+- Option 1 (identity), with option 2's single recognizer used for the one pick, because "the same predicate the scanner uses" had to live in `MeetingPipeCore` for the end side to call it: `MeetingTitlePatterns.teamsWindow`, which `MeetingSourceScanner.isActiveMeetingWindow`'s Teams branch now calls. `MeetingTitlePatterns.teams` (the token vocabulary) is gone; `teamsTokens` stays for Webex.
+- The lock is ranked (`teamsLockRank`): bare single segments first, then the older `| Microsoft Teams` call shape, then anything else, because 1,201 of the 2,511 rejected candidates were the main window's `Chat | ...` shape, which the permissive recognizer accepts; locking it would have turned this into option 3 on most calls. The shared predicate itself was not narrowed (a 1:1 call window may carry a chat-style title).
+- Never re-locked within a session (a returning live reading reverts a held end); a mid-call recreation is logged as `appeared_matching` on the gone row instead of acted on. Windows without an id never lock and keep the title rule. Only Teams uses identity (`NativeLifecycleConfig.windowLockPreference`).
+- Off-screen windows still read gone and come back present on the same id, pinned in a test as the spec asked.
+- Fixture: `kind` (required; an unknown value fails), `shape` on Teams rows, three stand-in shape rows, and `test_teams_start_and_end_sides_agree_on_every_row` driving `NativeLifecycleConfig.teams.titleMatch`, red on five rows with the old vocabulary.
+- Replay: `test_era_a_window_reading_leads_no_end_under_identity` reads the same tokenless call window through the old vocabulary and through identity into `PromotionEngine`, with and without live process audio: the old reading leads an end (vetoed, or held), identity leads none.
+- Design and diff each reviewed by an independent reviewer before landing; their required changes (lock ranking, the fixture driving the wired end side, the replay contrast, the lock taken under the session check, `titleMatch:` passed by label since a trailing closure would bind to `lockRank` under Swift 6) are in.
+

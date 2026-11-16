@@ -612,32 +612,8 @@ final class MeetingSourceScanner {
             return lowered.contains("zoom meeting")
 
         case ("com.microsoft.teams2", .native), ("com.microsoft.teams", .native):
-            // Teams (May 2026) dropped the "Meeting in/with <X>" prefix - title is now just the topic (e.g. "Echo | Microsoft Teams", "Standup | Microsoft Teams", or bare "Echo").
-            // Old prefix-based recognizer was too strict and killed recordings mid-call. New contract prefers false-positives (recording into a stale thread; silence detector catches it at 5 min) over false-negatives (audio lost).
-            // Reject only well-known chrome surfaces; both the bare and "| Microsoft Teams" forms share the same blacklist.
-            let chrome: Set<String> = [
-                "microsoft teams",
-                "teams",
-                "calendar",
-                "settings",
-                "activity",
-                "chat",
-                "files",
-                "apps",
-                "store",
-                "join meeting",
-                "schedule meeting",
-            ]
-            if chrome.contains(lowered) { return false }
-            if lowered.hasSuffix("| microsoft teams") {
-                let lead = String(lowered.dropLast("| microsoft teams".count))
-                    .trimmingCharacters(in: .whitespaces)
-                if lead.isEmpty { return false }                     // bare app chrome
-                if chrome.contains(lead) { return false }
-                return true
-            }
-            // No suffix - Teams sometimes spawns the meeting window with just the topic. Can't distinguish from chrome by title alone; blacklist above filters known chrome; empty title is inconclusive (upstream ORs across windows so it contributes nothing).
-            return !lowered.isEmpty
+            // END24: the shared recognizer, so the end side's window pick cannot drift from this.
+            return MeetingTitlePatterns.teamsWindow(title)
 
         case ("com.cisco.webexmeetingsapp", _), ("com.cisco.spark", _):
             // Reject the idle launcher ("Webex" / "Cisco Webex") first: the scanner (start-side)

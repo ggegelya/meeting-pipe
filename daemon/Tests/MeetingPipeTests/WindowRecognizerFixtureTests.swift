@@ -1,5 +1,6 @@
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeCore
 
 /// Audit `MeetingSourceScanner.isActiveMeetingWindow` against a title fixture.
 /// Each entry pins a (bundle_id, state, expected outcome) triple to one or more
@@ -26,14 +27,26 @@ final class WindowRecognizerFixtureTests: XCTestCase {
 
     private struct Entry: Decodable {
         let bundleID: String
+        /// END24: `native` or `browser`, passed to the recognizer. Required.
+        let kind: String
         let state: String
         let expected: String
         let seeded: Bool
+        /// END24: the Teams title's shape class (`MeetingTitlePatterns.teamsWindowShape`).
+        let shape: String?
         let titles: [String]
 
         enum CodingKeys: String, CodingKey {
             case bundleID = "bundle_id"
-            case state, expected, seeded, titles
+            case kind, state, expected, seeded, shape, titles
+        }
+
+        var sourceKind: AppSourceKind? {
+            switch kind {
+            case "native": return .native
+            case "browser": return .browser
+            default: return nil
+            }
         }
     }
 
@@ -83,11 +96,14 @@ final class WindowRecognizerFixtureTests: XCTestCase {
         XCTAssertFalse(fixture.entries.isEmpty, "fixture must contain at least one entry")
 
         for entry in fixture.entries {
-            // Native kind for all current entries; the fixture format
-            // can grow a `kind` column when browser captures land.
+            guard let kind = entry.sourceKind else {
+                XCTFail("fixture row has an unreadable `kind` \"\(entry.kind)\": bundle=\(entry.bundleID) "
+                            + "state=\(entry.state); use native or browser")
+                continue
+            }
             let recognized = entry.titles.contains { title in
                 MeetingSourceScanner.isActiveMeetingWindow(
-                    bundleID: entry.bundleID, kind: .native, title: title)
+                    bundleID: entry.bundleID, kind: kind, title: title)
             }
             let actual = recognized ? "recognize" : "reject"
             let context =
@@ -115,6 +131,43 @@ final class WindowRecognizerFixtureTests: XCTestCase {
                 )
             }
         }
+    }
+
+    /// END24: the start side and the end side as it is actually wired must agree on every native
+    /// Teams row, title by title. They did not: the end side kept a token vocabulary while the start
+    /// side went permissive, and from 2026-10-08 the end side read every call window gone. Both now
+    /// call `teamsWindow`, so this fences a later rewiring of either side; with the old token
+    /// vocabulary wired back in it fails on five rows (measured 2026-11-16). Each Teams row's
+    /// `shape` must also be what `teamsWindowShape` says, so a captured shape class cannot drift
+    /// from the classifier that logs it.
+    func test_teams_start_and_end_sides_agree_on_every_row() throws {
+        let fixture = try loadFixture()
+        let teamsRows = fixture.entries.filter {
+            NativeLifecycleConfig.teams.bundleIDs.contains($0.bundleID) && $0.kind == "native"
+        }
+        XCTAssertFalse(teamsRows.isEmpty)
+        for entry in teamsRows {
+            for title in entry.titles {
+                let start = MeetingSourceScanner.isActiveMeetingWindow(
+                    bundleID: entry.bundleID, kind: .native, title: title)
+                let end = NativeLifecycleConfig.teams.titleMatch(title)
+                XCTAssertEqual(start, end, "start=\(start) end=\(end) on state=\(entry.state) shape=\(entry.shape ?? "-")")
+                if let shape = entry.shape {
+                    XCTAssertEqual(MeetingTitlePatterns.teamsWindowShape(title), shape, "state=\(entry.state)")
+                }
+            }
+            XCTAssertNotNil(entry.shape, "a Teams row needs its shape class (state=\(entry.state))")
+        }
+        XCTAssertTrue(teamsRows.contains { $0.shape == "bare_single_segment" },
+                      "the 2026-10-08 shape must stay pinned")
+    }
+
+    func test_an_unknown_kind_is_malformed() throws {
+        let row = #"{"bundle_id":"x","kind":"pwa","state":"s","expected":"reject","seeded":true,"titles":["t"]}"#
+        let entry = try JSONDecoder().decode(Entry.self, from: Data(row.utf8))
+        XCTAssertNil(entry.sourceKind)
+        let missing = #"{"bundle_id":"x","state":"s","expected":"reject","seeded":true,"titles":["t"]}"#
+        XCTAssertThrowsError(try JSONDecoder().decode(Entry.self, from: Data(missing.utf8)))
     }
 
     /// Pin the rule itself, since the fixture holds no `unknown` row today and a

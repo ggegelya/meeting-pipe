@@ -23,9 +23,16 @@ public final class ShareableContentSignal {
     public struct ShareableWindowSummary: Equatable {
         public let bundleIdentifier: String?
         public let title: String?
-        public init(bundleIdentifier: String?, title: String?) {
+        /// `SCWindow.windowID`, unique system-wide for the window's lifetime (END24). Nil when the
+        /// source has none; such a window can make a title-rule reading but is never locked.
+        public let windowID: UInt32?
+        /// The owning process, for diagnostics only; identity is the window id.
+        public let pid: Int32?
+        public init(bundleIdentifier: String?, title: String?, windowID: UInt32? = nil, pid: Int32? = nil) {
             self.bundleIdentifier = bundleIdentifier
             self.title = title
+            self.windowID = windowID
+            self.pid = pid
         }
     }
 
@@ -44,6 +51,9 @@ public final class ShareableContentSignal {
     /// Predicate applied to window title to distinguish call windows from chat threads.
     public typealias TitleMatch = (String?) -> Bool
 
+    /// END24: ranks a title-matching window for the identity lock; the lowest rank present is locked.
+    public typealias LockRank = (String?) -> Int
+
     private let eventLog: EventLog
     private let probe: Probe
     private let scheduler: Scheduler
@@ -60,6 +70,14 @@ public final class ShareableContentSignal {
     private struct State {
         var context: MeetingLifecycleContext?
         var titleMatch: TitleMatch?
+        /// END24 identity mode when non-nil: ranks the title-matching windows for the lock.
+        var lockRank: LockRank?
+        /// END24: the call window(s) locked at the first present reading. Once non-empty the
+        /// reading is "is any of these still listed", whatever their titles; never re-locked
+        /// within a session, so a window appearing later cannot turn a real gone back to present.
+        var lockedWindowIDs: Set<UInt32> = []
+        /// The bundle's window ids at the previous successful poll, for the recreation diagnostic.
+        var previousBundleWindowIDs: Set<UInt32> = []
         var cancelTick: (() -> Void)?
         var currentInterval: TimeInterval = 0
         var lastUnmatchedCandidates: [String]?
@@ -102,14 +120,20 @@ public final class ShareableContentSignal {
         self.idleInterval = idleInterval
     }
 
+    /// `lockRank` non-nil selects END24's identity mode: `titleMatch` picks the call window at the
+    /// first present reading (the matching windows of the lowest rank), and from then on the window
+    /// reads present while one of those window ids is still listed. Callers pass `titleMatch:` by
+    /// label: a trailing closure would bind to `lockRank` under Swift 6's forward-scan rule.
     public func start(
         context: MeetingLifecycleContext,
+        lockRank: LockRank? = nil,
         titleMatch: @escaping TitleMatch = { _ in true }
     ) {
         stop()
         lock.withLock {
             state.context = context
             state.titleMatch = titleMatch
+            state.lockRank = lockRank
         }
         // The initial evaluate arms the first timer via `adjustCadence` (currentInterval
         // starts at 0, so the first call always (re)schedules). Arming inside the initial
@@ -134,11 +158,13 @@ public final class ShareableContentSignal {
     }
 
     func evaluate(reason: String) {
-        let snapshot: (MeetingLifecycleContext, TitleMatch, Int)? = lock.withLock {
+        typealias Snapshot = (MeetingLifecycleContext, TitleMatch, LockRank?, Set<UInt32>, Set<UInt32>, Int)
+        let snapshot: Snapshot? = lock.withLock {
             guard let context = state.context, let titleMatch = state.titleMatch else { return nil }
-            return (context, titleMatch, generation)
+            return (context, titleMatch, state.lockRank, state.lockedWindowIDs,
+                    state.previousBundleWindowIDs, generation)
         }
-        guard let (context, titleMatch, session) = snapshot else { return }
+        guard let (context, titleMatch, lockRank, locked, previousIDs, session) = snapshot else { return }
 
         // Probe OFF the lock: the production probe blocks on ScreenCaptureKit, and the
         // lock also guards stop()/start() on main.
@@ -146,18 +172,42 @@ public final class ShareableContentSignal {
             noteUnavailable(context: context, reason: reason, session: session)
             return
         }
-        let present = summaries.contains { summary in
-            summary.bundleIdentifier == context.bundleID && titleMatch(summary.title)
+        let bundleWindows = summaries.filter { $0.bundleIdentifier == context.bundleID }
+        let titleMatched = bundleWindows.filter { titleMatch($0.title) }
+        let bundleIDs = Set(bundleWindows.compactMap(\.windowID))
+        // END24: with a lock, presence is identity; before one (and always outside identity mode),
+        // it is the title rule. A new lock is computed here and taken below, under the session check.
+        var toLock: [ShareableWindowSummary] = []
+        let present: Bool
+        if lockRank != nil, !locked.isEmpty {
+            present = !locked.isDisjoint(with: bundleIDs)
+        } else {
+            present = !titleMatched.isEmpty
+            if let lockRank {
+                let lockable = titleMatched.filter { $0.windowID != nil }
+                if let best = lockable.map({ lockRank($0.title) }).min() {
+                    toLock = lockable.filter { lockRank($0.title) == best }
+                }
+            }
         }
         adjustCadence(forActive: present, session: session)
 
         // Transition + candidate-diagnosis bookkeeping under the lock; emit + onChange after.
         var candidatesToLog: [String]?
         var transition: (previous: Bool?, value: Bool)?
+        var lockTaken = false
+        var lockedCount = 0
         let isCurrent: Bool = lock.withLock {
             // The session stopped while the probe ran: its reading belongs to nobody.
             guard generation == session else { return false }
             state.unavailableLogged = false
+            // Only an empty set locks, so an evaluate racing another cannot widen a taken lock.
+            if !toLock.isEmpty, state.lockedWindowIDs.isEmpty {
+                state.lockedWindowIDs = Set(toLock.compactMap(\.windowID))
+                lockTaken = true
+            }
+            lockedCount = state.lockedWindowIDs.count
+            state.previousBundleWindowIDs = bundleIDs
             if present {
                 state.lastUnmatchedCandidates = nil
             } else {
@@ -178,6 +228,19 @@ public final class ShareableContentSignal {
         }
         guard isCurrent else { return }
 
+        if lockTaken {
+            // Teams' shape classes: identity mode is Teams-only today (`NativeLifecycleConfig.teams`).
+            // A second identity-mode app would pass its own classifier in with its rank.
+            var shapes: [String: Int] = [:]
+            for window in toLock { shapes[MeetingTitlePatterns.teamsWindowShape(window.title), default: 0] += 1 }
+            eventLog.emit(category: "signal", action: "shareable_content_window_locked", attributes: [
+                "bundle_id": context.bundleID,
+                "count": toLock.count,
+                "shapes": shapes,
+                "rank": toLock.first.map { lockRank?($0.title) ?? 0 } ?? 0,
+                "reason": reason
+            ])
+        }
         if let candidatesToLog {
             eventLog.emit(category: "signal", action: "shareable_content_no_match", attributes: [
                 "bundle_id": context.bundleID,
@@ -186,12 +249,25 @@ public final class ShareableContentSignal {
             ])
         }
         if let transition {
-            eventLog.emit(category: "signal", action: "shareable_content_window_present", attributes: [
+            var attributes: [String: Any] = [
                 "bundle_id": context.bundleID,
                 "value": transition.value,
                 "reason": reason,
                 "previous": transition.previous as Any
-            ])
+            ]
+            if lockRank != nil {
+                attributes["locked_windows"] = lockedCount
+                if !transition.value, !locked.isEmpty {
+                    // END24 recreation diagnostic: title-matching windows of this app that first
+                    // appeared in this same poll. Non-zero on a real end is a popped-out chat; on a
+                    // mid-call gone it is Teams recreating its call window. Logged, never acted on:
+                    // re-locking would revert a real end.
+                    attributes["appeared_matching"] = titleMatched
+                        .filter { $0.windowID.map { !previousIDs.contains($0) } ?? false }
+                        .count
+                }
+            }
+            eventLog.emit(category: "signal", action: "shareable_content_window_present", attributes: attributes)
             onChange?(transition.value)
         }
     }
@@ -284,7 +360,9 @@ public final class ShareableContentSignal {
             completion(content?.windows.map { window in
                 ShareableWindowSummary(
                     bundleIdentifier: window.owningApplication?.bundleIdentifier,
-                    title: window.title
+                    title: window.title,
+                    windowID: window.windowID,
+                    pid: window.owningApplication?.processID
                 )
             })
         }

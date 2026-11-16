@@ -109,7 +109,7 @@ final class MeetingAppRegistryFenceTests: XCTestCase {
         // any live title the adapter accepts. This pins that agreement.
         let cases: [(bundle: String, title: String, adapter: (String?) -> Bool)] = [
             ("us.zoom.xos", "Zoom Meeting", MeetingTitlePatterns.zoom),
-            ("com.microsoft.teams2", "Standup | Microsoft Teams", MeetingTitlePatterns.teams),
+            ("com.microsoft.teams2", "Standup | Microsoft Teams", NativeLifecycleConfig.teams.titleMatch),
             ("com.cisco.webexmeetingsapp", "Webex Meeting", MeetingTitlePatterns.webex),
             ("com.cisco.spark", "Webex Meeting", MeetingTitlePatterns.webex),
             ("com.tinyspeck.slackmacgap", "Huddle - #engineering", MeetingTitlePatterns.slackHuddle),

@@ -43,11 +43,21 @@
     "`test_fixture_is_backed_by_real_captures` rather than passing it",
     "(CI6): with every row seeded, the rows above pin this repo's model",
     "of a window title rather than a window title, and a skip is the",
-    "runner's word for that. The first real capture clears the skip."
+    "runner's word for that. The first real capture clears the skip.",
+    "",
+    "`kind` (END24) is `native` or `browser` and is passed to the recognizer; any other value",
+    "fails the suite as malformed.",
+    "`shape` (END24, Teams rows) is the title's shape class from",
+    "`MeetingTitlePatterns.teamsWindowShape`: bare_single_segment, chat_pipe_segment,",
+    "pipe_microsoft_teams_suffix, chrome. Every Teams row is also run through the end side as",
+    "it is wired (`NativeLifecycleConfig.teams.titleMatch`), and the two sides must agree.",
+    "A captured Teams row carries its shape class and a stand-in title of that shape, never",
+    "the captured title itself."
   ],
   "entries": [
     {
       "bundle_id": "us.zoom.xos",
+      "kind": "native",
       "state": "in_call_with_topic",
       "expected": "recognize",
       "seeded": true,
@@ -55,6 +65,7 @@
     },
     {
       "bundle_id": "us.zoom.xos",
+      "kind": "native",
       "state": "in_call_no_topic",
       "expected": "recognize",
       "seeded": true,
@@ -62,6 +73,7 @@
     },
     {
       "bundle_id": "us.zoom.xos",
+      "kind": "native",
       "state": "idle_launcher",
       "expected": "reject",
       "seeded": true,
@@ -69,6 +81,7 @@
     },
     {
       "bundle_id": "us.zoom.xos",
+      "kind": "native",
       "state": "schedule_dialog",
       "expected": "reject",
       "seeded": true,
@@ -76,6 +89,7 @@
     },
     {
       "bundle_id": "us.zoom.xos",
+      "kind": "native",
       "state": "join_dialog",
       "expected": "reject",
       "seeded": true,
@@ -83,83 +97,106 @@
     },
     {
       "bundle_id": "com.microsoft.teams2",
+      "kind": "native",
       "state": "in_meeting_bare",
       "expected": "recognize",
       "seeded": true,
-      "titles": ["Meeting | Microsoft Teams"]
+      "titles": ["Meeting | Microsoft Teams"],
+      "shape": "pipe_microsoft_teams_suffix"
     },
     {
       "bundle_id": "com.microsoft.teams2",
+      "kind": "native",
       "state": "in_meeting_in_channel",
       "expected": "recognize",
       "seeded": true,
-      "titles": ["Meeting in General | Microsoft Teams"]
+      "titles": ["Meeting in General | Microsoft Teams"],
+      "shape": "pipe_microsoft_teams_suffix"
     },
     {
       "bundle_id": "com.microsoft.teams2",
+      "kind": "native",
       "state": "in_meeting_with_person",
       "expected": "recognize",
       "seeded": true,
-      "titles": ["Meeting with Jane Doe | Microsoft Teams"]
+      "titles": ["Meeting with Jane Doe | Microsoft Teams"],
+      "shape": "pipe_microsoft_teams_suffix"
     },
     {
       "bundle_id": "com.microsoft.teams2",
+      "kind": "native",
       "state": "in_call_one_on_one",
       "expected": "recognize",
       "seeded": true,
-      "titles": ["Call with John Doe | Microsoft Teams"]
+      "titles": ["Call with John Doe | Microsoft Teams"],
+      "shape": "pipe_microsoft_teams_suffix"
     },
     {
       "bundle_id": "com.microsoft.teams2",
+      "kind": "native",
       "state": "in_breakout_room",
       "expected": "recognize",
       "seeded": true,
-      "titles": ["Breakout room 2 | Microsoft Teams"]
+      "titles": ["Breakout room 2 | Microsoft Teams"],
+      "shape": "pipe_microsoft_teams_suffix"
     },
     {
       "bundle_id": "com.microsoft.teams2",
+      "kind": "native",
       "state": "idle_app_chrome",
       "expected": "reject",
       "seeded": true,
-      "titles": ["Microsoft Teams"]
+      "titles": ["Microsoft Teams"],
+      "shape": "chrome"
     },
     {
       "bundle_id": "com.microsoft.teams2",
+      "kind": "native",
       "state": "idle_calendar_tab",
       "expected": "reject",
       "seeded": true,
-      "titles": ["Calendar"]
+      "titles": ["Calendar"],
+      "shape": "chrome"
     },
     {
       "bundle_id": "com.microsoft.teams2",
+      "kind": "native",
       "state": "idle_settings_tab",
       "expected": "reject",
       "seeded": true,
-      "titles": ["Settings"]
+      "titles": ["Settings"],
+      "shape": "chrome"
     },
     {
       "bundle_id": "com.microsoft.teams2",
+      "kind": "native",
       "state": "in_meeting_topic_only",
       "expected": "recognize",
       "seeded": true,
-      "titles": ["Echo | Microsoft Teams"]
+      "titles": ["Echo | Microsoft Teams"],
+      "shape": "pipe_microsoft_teams_suffix"
     },
     {
       "bundle_id": "com.microsoft.teams2",
+      "kind": "native",
       "state": "in_meeting_bare_topic_no_suffix",
       "expected": "recognize",
       "seeded": true,
-      "titles": ["Echo"]
+      "titles": ["Echo"],
+      "shape": "bare_single_segment"
     },
     {
       "bundle_id": "com.microsoft.teams",
+      "kind": "native",
       "state": "in_meeting_legacy_bundle",
       "expected": "recognize",
       "seeded": true,
-      "titles": ["Meeting | Microsoft Teams"]
+      "titles": ["Meeting | Microsoft Teams"],
+      "shape": "pipe_microsoft_teams_suffix"
     },
     {
       "bundle_id": "com.cisco.webexmeetingsapp",
+      "kind": "native",
       "state": "in_call",
       "expected": "recognize",
       "seeded": true,
@@ -167,6 +204,7 @@
     },
     {
       "bundle_id": "com.cisco.webexmeetingsapp",
+      "kind": "native",
       "state": "idle",
       "expected": "reject",
       "seeded": true,
@@ -174,6 +212,7 @@
     },
     {
       "bundle_id": "com.tinyspeck.slackmacgap",
+      "kind": "native",
       "state": "in_huddle",
       "expected": "recognize",
       "seeded": true,
@@ -181,6 +220,7 @@
     },
     {
       "bundle_id": "com.tinyspeck.slackmacgap",
+      "kind": "native",
       "state": "channel_named_huddles_plural",
       "expected": "reject",
       "seeded": true,
@@ -188,10 +228,38 @@
     },
     {
       "bundle_id": "com.tinyspeck.slackmacgap",
+      "kind": "native",
       "state": "regular_chat",
       "expected": "reject",
       "seeded": true,
       "titles": ["general - Acme - Slack"]
+    },
+    {
+      "bundle_id": "com.microsoft.teams2",
+      "kind": "native",
+      "state": "in_call_bare_topic_since_2026_10_08",
+      "expected": "recognize",
+      "seeded": true,
+      "shape": "bare_single_segment",
+      "titles": ["Weekly sync"]
+    },
+    {
+      "bundle_id": "com.microsoft.teams2",
+      "kind": "native",
+      "state": "main_window_chat_pipe",
+      "expected": "recognize",
+      "seeded": true,
+      "shape": "chat_pipe_segment",
+      "titles": ["Chat | Jane Doe"]
+    },
+    {
+      "bundle_id": "com.microsoft.teams2",
+      "kind": "native",
+      "state": "idle_chat_tab_with_suffix",
+      "expected": "reject",
+      "seeded": true,
+      "shape": "chrome",
+      "titles": ["Chat | Microsoft Teams"]
     }
   ]
 }

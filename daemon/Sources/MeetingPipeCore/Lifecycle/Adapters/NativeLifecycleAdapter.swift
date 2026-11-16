@@ -27,24 +27,35 @@ public struct NativeLifecycleConfig {
     /// probe either (Teams only), and `Coordinator` builds both without a `halBus`, which the
     /// initializer below requires for a true flag. Flipping either needs its own measurement first.
     public let usesProcessAudio: Bool
+    /// END24: when set, the window signal follows window identity rather than title vocabulary.
+    /// `titleMatch` then only picks the call window at the first present reading (the matching
+    /// windows this ranks lowest); afterwards the reading is whether a locked window still exists.
+    /// Nil keeps the title rule (Zoom, Webex, Slack: unmeasured, left as they were).
+    public let windowLockRank: ((String?) -> Int)?
 
     public init(
         bundleIDs: Set<String>,
         titleMatch: @escaping (String?) -> Bool,
-        usesProcessAudio: Bool
+        usesProcessAudio: Bool,
+        windowLockRank: ((String?) -> Int)? = nil
     ) {
         self.bundleIDs = bundleIDs
         self.titleMatch = titleMatch
         self.usesProcessAudio = usesProcessAudio
+        self.windowLockRank = windowLockRank
     }
 }
 
 public extension NativeLifecycleConfig {
     /// ShareableContent + AXLeaveButton + ProcessAudio (re-enabled by DET8; the only provider its probe measured).
+    /// END24: the window signal follows the call window's identity, picked once through the same
+    /// recognizer the scanner uses, because Teams' titles stopped carrying any vocabulary token on
+    /// 2026-10-08 and the end side read every call window gone from then on.
     static let teams = NativeLifecycleConfig(
         bundleIDs: ["com.microsoft.teams2", "com.microsoft.teams"],
-        titleMatch: MeetingTitlePatterns.teams,
-        usesProcessAudio: true
+        titleMatch: MeetingTitlePatterns.teamsWindow,
+        usesProcessAudio: true,
+        windowLockRank: MeetingTitlePatterns.teamsLockRank
     )
 
     /// ShareableContent + AXLeaveButton + ProcessAudio (same set as Teams). Zoom was not covered by
@@ -166,7 +177,11 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
         if let processAudio {
             try processAudio.start(context: context)
         }
-        shareableContent.start(context: context, titleMatch: config.titleMatch)
+        shareableContent.start(
+            context: context,
+            lockRank: config.windowLockRank,
+            titleMatch: config.titleMatch
+        )
         // Start the Leave-button signal whenever we have a button OR a resolver. The
         // resolver lets the signal self-arm when the record-start walk missed the
         // button (Teams compact view exposes Mute but not Leave). Without this, a

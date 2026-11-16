@@ -143,15 +143,37 @@ final class LifecycleAdapterTests: XCTestCase {
         XCTAssertFalse(teams.handles(bundleID: "us.zoom.xos"))
     }
 
-    func test_teams_title_pattern_recognises_localised_meeting_token() {
-        XCTAssertTrue(MeetingTitlePatterns.teams("Microsoft Teams Meeting | Standup"))
-        XCTAssertTrue(MeetingTitlePatterns.teams("Besprechung in Microsoft Teams"))
-        XCTAssertFalse(MeetingTitlePatterns.teams("Chat | Acme"))
+    func test_teams_window_recognizer_accepts_call_shapes_and_rejects_chrome() {
+        // END24: one recognizer for both sides. The 2026-10-08 shape (a bare topic, no token) is
+        // accepted, so the end side no longer reads every call window gone.
+        XCTAssertTrue(MeetingTitlePatterns.teamsWindow("Weekly sync"))
+        XCTAssertTrue(MeetingTitlePatterns.teamsWindow("Architecture priorities - Weekly sync | Microsoft Teams"))
+        XCTAssertTrue(MeetingTitlePatterns.teamsWindow("Microsoft Teams Meeting | Standup"))
+        for chrome in ["Chat", "Calendar", "Activity", "Microsoft Teams", "Chat | Microsoft Teams",
+                       "| Microsoft Teams", "Settings", ""] {
+            XCTAssertFalse(MeetingTitlePatterns.teamsWindow(chrome), "accepted chrome '\(chrome)'")
+        }
+        XCTAssertFalse(MeetingTitlePatterns.teamsWindow(nil))
     }
 
-    func test_teams_title_pattern_matches_subject_titled_meeting_window() {
-        // New-Teams meeting windows are "<subject> | Microsoft Teams" with no literal "meeting" token (the 8m47s false-stop regression).
-        XCTAssertTrue(MeetingTitlePatterns.teams("Architecture priorities - Weekly sync | Microsoft Teams"))
+    func test_a_chat_pipe_title_passes_the_recognizer_but_is_not_preferred_for_the_lock() {
+        // "Chat | Acme" is the main window's shape. The permissive recognizer accepts it (a 1:1 call
+        // window may carry a chat-style title, and no verifier read titles), but the end side's
+        // lock prefers a bare segment, so the main window is not followed when a call window exists.
+        XCTAssertTrue(MeetingTitlePatterns.teamsWindow("Chat | Acme"))
+        XCTAssertEqual(MeetingTitlePatterns.teamsWindowShape("Chat | Acme"), "chat_pipe_segment")
+        XCTAssertEqual(MeetingTitlePatterns.teamsLockRank("Weekly sync"), 0)
+        XCTAssertEqual(MeetingTitlePatterns.teamsLockRank("Standup | Microsoft Teams"), 1)
+        XCTAssertEqual(MeetingTitlePatterns.teamsLockRank("Chat | Acme"), 2)
+        XCTAssertEqual(MeetingTitlePatterns.teamsWindowShape("Standup | Microsoft Teams"), "pipe_microsoft_teams_suffix")
+        XCTAssertEqual(MeetingTitlePatterns.teamsWindowShape("Chat"), "chrome")
+    }
+
+    func test_teams_config_follows_window_identity() {
+        XCTAssertNotNil(NativeLifecycleConfig.teams.windowLockRank)
+        XCTAssertNil(NativeLifecycleConfig.zoom.windowLockRank)
+        XCTAssertNil(NativeLifecycleConfig.webex.windowLockRank)
+        XCTAssertNil(NativeLifecycleConfig.slack.windowLockRank)
     }
 
     func test_zoom_title_pattern_matches_zoom_meeting_strings() {
