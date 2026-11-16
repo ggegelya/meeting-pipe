@@ -136,7 +136,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
         let host = FakeSessionHost(tempDir: tempDir, workflows: [workflow])
         host.recorderSpy.lastSystemFires = 1
         let controller = MeetingSessionController(coordinator: host)
-        controller.pendingWorkflowOverride = workflow.id
+        controller.pendingWorkflowOverride = (source: zoom, workflowID: workflow.id)
         let file = tempDir.appendingPathComponent("\(stem).wav")
         host.recorderSpy.fileToReturn = file
         try? FileManager.default.createDirectory(at: metaURL(stem), withIntermediateDirectories: true)

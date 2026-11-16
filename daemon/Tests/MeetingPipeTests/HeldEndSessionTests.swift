@@ -92,7 +92,7 @@ final class HeldEndSessionTests: XCTestCase {
         var nda = Workflow(name: "Client NDA")
         nda.flags.ndaMode = true
         let (controller, host) = makeController(workflows: [nda])
-        controller.pendingWorkflowOverride = nda.id
+        controller.pendingWorkflowOverride = (source: teams, workflowID: nda.id)
         let file = tempDir.appendingPathComponent("20261024-110000.wav")
 
         await recordAndStopAfterAHeldEnd(controller, host, file: file)

@@ -74,7 +74,7 @@ final class HeldEndStopRouteTests: XCTestCase {
         host.lifecycleCoord = MeetingLifecycleCoordinator(adapters: [adapter])
         let controller = MeetingSessionController(coordinator: host)
         controller.engageSeams.buildHandles = { _, _ in nil }
-        controller.pendingWorkflowOverride = override
+        controller.pendingWorkflowOverride = override.map { (source: teams, workflowID: $0) }
         controller.startConsumers()
         controller.beginRecording(source: teams, summaryMode: .auto)
         await waitUntil({ if case .recording = host.stateMachine.current { return true }; return false }, "the recording")

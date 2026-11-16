@@ -37,10 +37,16 @@ final class MeetingSessionController: @unchecked Sendable {
     /// side-talk); there the owner-owed re-scope (part 1) is the fix, not a VAD heuristic.
     var activeCaptureMode: CaptureMode?
 
-    /// User's explicit workflow pick from the prompt chevron (TECH-B5),
-    /// consumed by the next `beginRecording`. Highest matcher precedence,
-    /// so it wins over rule matches.
-    var pendingWorkflowOverride: UUID?
+    /// User's explicit workflow pick from the prompt's workflow chip (TECH-B5), keyed to the
+    /// prompt's source (SEC39). Consumed by `beginRecording` only for that source, and cleared on
+    /// every prompt exit (`clearPromptRouting`), so a pick made for a meeting that was not recorded
+    /// can no longer decide the next one. Highest matcher precedence for its own meeting.
+    var pendingWorkflowOverride: (source: AppSource, workflowID: UUID)?
+
+    /// SEC39: the workflow a resume decided (`WorkflowMatcher.resumeWorkflow`), for the resumed
+    /// source only. Separate from the chip pick on purpose: it is a decision already made, not a
+    /// user's override.
+    private var pendingResumeWorkflow: (source: AppSource, workflowID: UUID)?
 
     /// AI9: the workflow the prompt currently shows pre-selected from repeated WF8
     /// corrections, and the source it was computed for. Consumed by
@@ -466,6 +472,7 @@ final class MeetingSessionController: @unchecked Sendable {
             // Same as Skip: don't record, return to idle, and hold this call's prompt off for its
             // span (DET18) so the next discovery poll doesn't immediately re-prompt this meeting.
             notePromptDismissed(src, reason: .skipped, extra: ["route": reason])
+            clearPromptRouting(exit: "force_stop")
             coordinator.prompt.dismiss()
             coordinator.stateMachine.abandonPrompt(source: src, liveness: holdLiveness(for: src), tabKey: holdTabKey(for: src))
             coordinator.statusUI.setIdle()
@@ -533,10 +540,25 @@ final class MeetingSessionController: @unchecked Sendable {
         Log.writeLine("recorder", "off the record \(on ? "started" : "stopped") for \(file.lastPathComponent)")
     }
 
-    /// Pin the next recording to a workflow (prompt chevron, TECH-B5).
-    /// Consumed by the next `beginRecording`.
+    /// Pin the prompt's meeting to a workflow (the prompt's chip, TECH-B5). SEC39: keyed to the
+    /// source of the prompt that is up; ignored when none is.
     func setPendingWorkflowOverride(_ id: UUID?) {
-        pendingWorkflowOverride = id
+        guard case .prompting(let source) = coordinator.stateMachine.current else { return }
+        pendingWorkflowOverride = id.map { (source: source, workflowID: $0) }
+    }
+
+    /// SEC39: drop the prompt's routing state (the chip pick and AI9's pre-selection) on every way
+    /// a prompt ends without recording, and before a new prompt resolves its chip. A pick that was
+    /// never recorded is logged, so a discarded routing choice leaves a trace.
+    func clearPromptRouting(exit: String) {
+        if let pick = pendingWorkflowOverride {
+            Log.event(category: "workflow", action: "override_discarded", attributes: [
+                "bundle_id": pick.source.bundleID,
+                "exit": exit,
+            ])
+        }
+        pendingWorkflowOverride = nil
+        preselectedRoutingHint = nil
     }
 
     /// Workflow for the in-flight recording, for the HUD/status-bar chip.
@@ -547,7 +569,7 @@ final class MeetingSessionController: @unchecked Sendable {
     func workflowForPrompt(source: AppSource?) -> Workflow? {
         return WorkflowMatcher.resolve(
             source: source,
-            overrideID: pendingWorkflowOverride,
+            overrideID: pendingWorkflowOverride.flatMap { $0.source == source ? $0.workflowID : nil },
             workflows: coordinator.workflowStore.workflows
         )
     }
@@ -638,11 +660,16 @@ final class MeetingSessionController: @unchecked Sendable {
             return
         }
 
-        // Resolve the workflow controlling context/backend/sinks (TECH-B3):
-        // override, then the AI9 pre-selection, then rule matches, then default.
-        // Both are cleared so neither can leak into the next meeting.
-        var overrideID = pendingWorkflowOverride
-        if overrideID == nil, let hint = preselectedRoutingHint, hint.source == source {
+        // Resolve the workflow controlling context/backend/sinks (TECH-B3): the chip pick, then a
+        // resume's decided workflow, then the AI9 pre-selection, then rule matches, then default.
+        // Each is keyed to the source it was made for (SEC39), so a start for another meeting, or
+        // a manual start with no source, consumes none of them; all are cleared here either way.
+        var overrideID: UUID?
+        if let pick = pendingWorkflowOverride, pick.source == source {
+            overrideID = pick.workflowID
+        } else if let resumed = pendingResumeWorkflow, resumed.source == source {
+            overrideID = resumed.workflowID
+        } else if let hint = preselectedRoutingHint, hint.source == source {
             overrideID = hint.workflowID
         }
         let resolvedWorkflow = WorkflowMatcher.resolve(
@@ -651,6 +678,7 @@ final class MeetingSessionController: @unchecked Sendable {
             workflows: coordinator.workflowStore.workflows
         )
         pendingWorkflowOverride = nil
+        pendingResumeWorkflow = nil
         preselectedRoutingHint = nil
 
         // Resolve the capture mode (TECH-MIC4): regulated (global) or NDA
@@ -1250,6 +1278,7 @@ final class MeetingSessionController: @unchecked Sendable {
             default:
                 Log.writeLine("daemon", "prompt timed out → one-click offer (\(source.bundleID))")
                 self.notePromptDismissed(source, reason: .timedOutToOffer)
+                self.clearPromptRouting(exit: "timeout")
                 self.coordinator.prompt.dismiss()
                 // DET18 item 1: a timeout is not a skip. On the work laptop all 32 timeouts became
                 // skips and 19 Teams calls went wholly unrecorded while the app stayed on screen.
@@ -1315,6 +1344,7 @@ final class MeetingSessionController: @unchecked Sendable {
     func skipPrompt(source: AppSource) {
         guard case .prompting(let pending) = coordinator.stateMachine.current, pending == source else { return }
         notePromptDismissed(source, reason: .skipped)
+        clearPromptRouting(exit: "skip")
         coordinator.prompt.dismiss()
         coordinator.stateMachine.abandonPrompt(
             source: source, liveness: holdLiveness(for: source), tabKey: holdTabKey(for: source)
@@ -1495,12 +1525,21 @@ final class MeetingSessionController: @unchecked Sendable {
             resumeCandidate = nil
             micTierPromptBundle = nil
             coordinator.stateMachine.clearSuppression(bundleID: source.bundleID)
-            pendingWorkflowOverride = candidate.workflowID
+            // SEC39: the resumed call runs the matcher. A rule match wins, the previous workflow
+            // carries over otherwise, and never into a weaker privacy posture than the fallback.
+            let workflows = coordinator.workflowStore.workflows
+            let matched = WorkflowMatcher.resolveWithReason(source: source, workflows: workflows)
+            let previous = candidate.workflowID.flatMap { id in workflows.first { $0.id == id } }
+            let routing = WorkflowMatcher.resumeWorkflow(matched: matched.workflow, reason: matched.reason, previous: previous)
+            clearPromptRouting(exit: "resume")
+            pendingResumeWorkflow = routing.workflow.map { (source: source, workflowID: $0.id) }
             pendingResumedFrom = candidate.stem
             Log.event(category: "coordinator", action: "recording_resumed_after_end", attributes: [
                 "bundle_id": source.bundleID,
                 "resumed_from": candidate.stem,
                 "since_end_sec": Date().timeIntervalSince(candidate.endedAt),
+                "workflow_source": routing.source,
+                "workflow_changed": routing.workflow?.id != candidate.workflowID,
             ])
             Log.writeLine("daemon", "\(source.bundleID) is back inside the resume window → resuming (\(candidate.stem))")
             beginRecording(source: source, summaryMode: candidate.summaryMode)
@@ -1550,6 +1589,8 @@ final class MeetingSessionController: @unchecked Sendable {
             return
         }
 
+        // SEC39: a new prompt starts with no routing state of the last one's.
+        clearPromptRouting(exit: "new_prompt")
         coordinator.stateMachine.setPrompting(source: source)
         coordinator.statusUI.setPrompting(source)
         // The on-screen panel is the primary surface (not suppressed under
@@ -1723,6 +1764,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 reason: definitive ? .withdrawnDefinitive : .withdrawnMicReleased,
                 extra: ["leading_signal": reason.leadingSignal, "backoff_sec": backoffSec]
             )
+            clearPromptRouting(exit: "ended")
             coordinator.stateMachine.cancelPromptTimeout()
             coordinator.prompt.dismiss()
             promptBackoff = (bundleID: src.bundleID, until: Date().addingTimeInterval(backoffSec))

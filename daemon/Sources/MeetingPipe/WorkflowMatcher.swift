@@ -3,17 +3,34 @@ import Foundation
 /// Pure, deterministic resolver for the active workflow. Precedence (highest wins, ties by `order` asc): 1) explicit overrideID (set by the chevron menu before Record), 2) best rule match (bundle+title = 3, bundle-only = 2, title-only = 1), 3) the `isDefault` workflow. Returns nil only when the store is empty, which should be impossible after `WorkflowMigrator.runIfNeeded`.
 enum WorkflowMatcher {
 
+    /// Why the matcher chose (SEC39, in the shape SEC21 plans to extend): an explicit override, a
+    /// rule match and its score, or the fallback to the default.
+    enum Reason: Equatable {
+        case override
+        case matched(score: Int)
+        case fallback
+    }
+
     /// Resolve the workflow for a (source, override) pair. Takes a plain array so tests can drive it without a WorkflowStore.
     static func resolve(
         source: AppSource?,
         overrideID: UUID? = nil,
         workflows: [Workflow]
     ) -> Workflow? {
-        if workflows.isEmpty { return nil }
+        resolveWithReason(source: source, overrideID: overrideID, workflows: workflows).workflow
+    }
+
+    /// `resolve`, plus why. Pure.
+    static func resolveWithReason(
+        source: AppSource?,
+        overrideID: UUID? = nil,
+        workflows: [Workflow]
+    ) -> (workflow: Workflow?, reason: Reason) {
+        if workflows.isEmpty { return (nil, .fallback) }
 
         // 1. Explicit override.
         if let id = overrideID, let wf = workflows.first(where: { $0.id == id }) {
-            return wf
+            return (wf, .override)
         }
 
         // 2. Score by best rule match; 0 means no match.
@@ -32,18 +49,34 @@ enum WorkflowMatcher {
             }
         }
         if let pick = best {
-            return pick.workflow
+            return (pick.workflow, .matched(score: pick.score))
         }
 
         // 3. Default fallback.
         if let def = workflows.first(where: { $0.isDefault }) {
-            return def
+            return (def, .fallback)
         }
         // Last resort: no default flagged; return the lowest-ordered workflow so behaviour stays defined.
-        return workflows.sorted { lhs, rhs in
+        return (workflows.sorted { lhs, rhs in
             if lhs.order != rhs.order { return lhs.order < rhs.order }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-        }.first
+        }.first, .fallback)
+    }
+
+    /// SEC39: which workflow a resumed recording records under. END17's resume used to pin the
+    /// previous recording's workflow as an override, outranking the new call's own rule match with
+    /// no NDA floor. Now a rule match wins; otherwise the previous workflow carries over, unless the
+    /// fallback is NDA and the previous is not; a deleted previous workflow falls to the matcher.
+    /// `source` names why, for `recording_resumed_after_end`. Pure.
+    static func resumeWorkflow(
+        matched: Workflow?,
+        reason: Reason,
+        previous: Workflow?
+    ) -> (workflow: Workflow?, source: String) {
+        if case .matched = reason { return (matched, "rule") }
+        guard let previous else { return (matched, "default") }
+        if (matched?.flags.ndaMode ?? false) && !previous.flags.ndaMode { return (matched, "nda_floor") }
+        return (previous, "previous")
     }
 
     /// Best score across the workflow's rules. 0 = no match; 1 = title only; 2 = bundle only; 3 = bundle + title.

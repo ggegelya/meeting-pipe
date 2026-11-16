@@ -2,9 +2,10 @@
 id: SEC39
 title: A workflow picked for one meeting outranks the next meeting's rule match: a skipped prompt's pick stays armed, and resume-after-end pins the previous recording's workflow
 category: Security
-status: new
+status: done
+closed: 2026-11-16
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). pendingWorkflowOverride is cleared only by a committed start, so a prompt's chip pick survives Skip, timeout, an end during the prompt and force-stop and wins the next start's matcher over its rule and NDA flag (F005); resume-after-end sets the same override from the previous recording (F046), seen once in the field on 2026-11-12 (stem 20261112-174606, 38.6 s after the previous end, no prompt) with no routing harm only because one workflow exists; promote before enabling regulated or NDA. Clear the pick on every prompt exit and key it to the prompt's source; on resume let a rule match win and never resume into a weaker privacy posture.
+comment: Shipped 2026-11-16. The chip pick is keyed to its prompt's source and cleared on every prompt exit (skip, timeout, end, force stop, new prompt, resume) with workflow/override_discarded; a resume re-runs the matcher (rule wins, previous otherwise, NDA floor) and logs workflow_source and workflow_changed. PromptRoutingTests (12) plus the updated override sites; ci-local green.
 ---
 
 # SEC39: A workflow picked for one meeting outranks the next meeting's rule match: a skipped prompt's pick stays armed, and resume-after-end pins the previous recording's workflow
@@ -51,3 +52,14 @@ Sources: F005 (high, confirmed by both verifiers) and F046 (high, partially conf
 - `HeldEndSessionTests`: a resume where a rule maps the new call to an NDA workflow records under the NDA workflow with `.regulatedGate` capture and `workflow_nda_mode` true in the sidecar; a resume with no rule match keeps the previous workflow; a resume after an NDA recording where the default is not NDA keeps NDA; `recording_resumed_after_end` carries `workflow_source`. The existing resume tests keep passing.
 - `cd daemon && swift test` green with the number of new tests in the commit body; `python3 scripts/truth_fences.py events` green for `override_discarded`; `bash scripts/ci-local.sh` green.
 - Same commit: `docs/GUIDE.md`'s back-to-back paragraph (today "starts recording again straight away, without asking, under the same workflow") and its list of how a workflow is chosen ("You picked one from the chip on the prompt panel") state that a pick applies only to the meeting it was made for and that a resumed call follows its own rule first; README's "A doubtful end keeps recording" bullet gains the same clause if it names the workflow.
+
+**Progress (2026-11-16): shipped.** Notes the diff does not show:
+
+- `WorkflowMatcher.resolveWithReason` returns `.override`, `.matched(score:)` or `.fallback`, the shape SEC21 plans; SEC21 extends `.fallback` with its undecided list. `resolve` delegates to it.
+- `WorkflowMatcher.resumeWorkflow` is the pure resume rule. A deleted previous workflow falls to the matcher with `workflow_source: "default"`, a fourth value beside the spec's three, so the row says which case it was.
+- The resume's decision rides a separate `pendingResumeWorkflow` keyed to the resumed source, consumed in `beginRecording` after the chip pick and before AI9's pre-selection; it is not written into `pendingWorkflowOverride`.
+- `clearPromptRouting(exit:)` also runs on the resume path (`exit: "resume"`), so a pick armed on a prompt cannot ride into a resume.
+- `setPendingWorkflowOverride` is ignored with no prompt up. A pick made after the timeout collapsed the panel is dropped with the prompt (the timeout clears routing), so the offer records under the rules.
+- DET17's owner decision (a browser resume prompts) landed before this, so the resume routing only applies to native resumes.
+- README's "A doubtful end keeps recording" bullet does not name the workflow, so it is unchanged; GUIDE's chip-pick and back-to-back paragraphs are updated.
+

@@ -195,7 +195,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         other.contextPrompt = "standup"
         let (controller, host) = makeController(workflows: [other, chosen])
 
-        controller.pendingWorkflowOverride = chosen.id
+        controller.pendingWorkflowOverride = (source: source(), workflowID: chosen.id)
         controller.beginRecording(source: source(), summaryMode: .auto)
         await waitUntil({ !host.statusBarSpy.recordings.isEmpty }, "the recording to be announced")
 
