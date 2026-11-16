@@ -2,9 +2,9 @@
 id: SEC23
 title: Every Preferences token edit rewrites all three API tokens through `security ... -w `<value>``, putting them in `ps` output, and the daemon `setenv`s them into its own environment for every child to inherit
 category: Security
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch S9, go-live DI-17 and PP-11): SecretsStore.persist writes all three tokens on each debounce via security add-generic-password -w, visible in ps, and the daemon setenvs them so doctor and MCP status spawns inherit them. Write only changed accounts, feed security -i on stdin, stop setenv and build tokens into runMP's env only, read the Notion token from SecretsStore, fix stale comments. [Spec](./SEC23.md) Amended 2026-10-25 (observability band): SW-6, PY-9 Keychain half. Both trees read every `security` failure as absent (so the user is told a key is not set), remove's status is ignored, and both secrets.env migrations delete the file after a failed set; install.sh omits OPENAI_API_KEY. Typed reads, checked remove, delete only after every set. Amended 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md)): install.sh's kc_set also passes tokens as -w argv; same security -i stdin treatment.
+comment: Shipped 2026-11-16 (ci-local green, 4 new Swift test files/groups, pytest, stub-based shell test): security -i stdin in daemon and install.sh, typed reads, checked remove, changed-only saves, no token setenv, migrations delete only after every set. Owed - the owner check (ps loop while typing in the Notion field, Notion publish and picker still work); a distinct keychain_unreadable failure cause (still presents as missing_key); load_secrets records an unreadable key and require_env raises it, deviating from the spec text.
 ---
 
 # SEC23: every Preferences token edit rewrites all three API tokens through `security ... -w <value>`, putting them in `ps` output, and the daemon `setenv`s them into its own environment for every child to inherit
@@ -73,3 +73,10 @@ Two findings from the [observability audit](../../audits/2026-10-25-observabilit
 From the [security review](../../audits/2026-11-12-security-review.md) (verified, informational). `scripts/install.sh`'s `kc_set` is `security add-generic-password -U -s "$KEYCHAIN_SERVICE" -a "$1" -w "$2"`, used for the interactive token prompt and the `secrets.env` migration, so the token is in `ps` for the call's duration. The 2026-10-25 amendment covers `kc_set`'s delete-after-failed-write and the missing `OPENAI_API_KEY`, not the argv exposure.
 
 Added to scope item 2: `kc_set` feeds `security -i` on stdin the same way `KeychainBackend.set` will. Added acceptance: the item-7 shell test also asserts the token never appears in the spawned argv (an injected `security` stub that records its arguments).
+
+**Progress (2026-11-16):** shipped, with these decisions the spec did not make.
+
+- **`load_secrets` defers the raise.** It records a `KeychainUnreadableError` per key and `require_env` raises it for the token a stage actually asks for. Raising in `load_secrets` would fail every run that needs no token on a locked keychain (it runs from `entry.prepare` and `doctor`), and now that the daemon no longer passes `HF_TOKEN` every spawn reads it itself. The error subclasses `MissingSecretError`, so every PIPE16 handler still catches it. The acceptance line "raises from `load_secrets`" is met through `require_env`; the owner should confirm that reading.
+- **`HF_TOKEN` stays seeded.** FluidAudio's model downloader reads it from the daemon's own environment, so `Secrets.seedModelDownloadToken` keeps that one `setenv` at launch. Every child built through `freshEnvironment` / `scrubbedEnvironment` has it stripped; a spawn that sets no environment of its own still inherits it, as before. The `security` calls now stop after 10 s (Python's own ceiling), so an owner slower than that on a Keychain dialog sees a failed save and the next edit retries.
+- **`security -i` verified on this Mac:** backslash escapes inside double quotes, no `$` expansion, exit status is the single command's (44 not found), a 3000-character value stores whole. A value with a control or non-ASCII byte is refused rather than guessed at.
+- **Owed, not done:** a distinct `keychain_unreadable` cause (it needs a `FailureMetadata` golden-fixture change on both sides, so it presents as `missing_key` for now); the OpenAI key has no SEC5 strip (as before this task); the setup checklist and the Notion picker still show an unreadable token as "not set".

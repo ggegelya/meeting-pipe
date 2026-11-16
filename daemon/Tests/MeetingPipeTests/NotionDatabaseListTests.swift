@@ -88,4 +88,14 @@ final class NotionDatabaseListTests: XCTestCase {
                       "the blocked message should explain the regulated-mode gate")
         XCTAssertTrue(list.entries.isEmpty, "no databases should be fetched under regulated mode")
     }
+
+    /// SEC23: the token comes from the injected source (the live `SecretsStore`), not the process environment.
+    func test_refresh_without_a_token_asks_for_one_and_never_reads_the_process_environment() {
+        setenv("NOTION_TOKEN", "from-the-environment", 1)
+        defer { unsetenv("NOTION_TOKEN") }
+        let cache = FileManager.default.temporaryDirectory.appendingPathComponent("notion-\(UUID().uuidString).json")
+        let list = NotionDatabaseList(cacheURL: cache, isRegulated: { false }, tokenSource: { [:] })
+        list.refresh()
+        XCTAssertEqual(list.state, .failed("Set NOTION_TOKEN in Preferences -> Integrations first."))
+    }
 }

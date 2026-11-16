@@ -29,15 +29,18 @@ final class NotionDatabaseList: ObservableObject {
     /// file at refresh time through a `ConfigStore`, which reads a file that does
     /// not parse as regulated (ARCH9); tests inject a constant. (TECH-SEC4)
     private let isRegulated: () -> Bool
+    private let tokenSource: () -> [String: String]
 
     init(
         cacheURL: URL = NotionDatabaseList.defaultCacheURL,
         session: URLSession = .shared,
-        isRegulated: @escaping () -> Bool = { ConfigStore().regulatedMode }
+        isRegulated: @escaping () -> Bool = { ConfigStore().regulatedMode },
+        tokenSource: @escaping () -> [String: String] = { SecretsStore.liveTokens() }
     ) {
         self.cacheURL = cacheURL
         self.session = session
         self.isRegulated = isRegulated
+        self.tokenSource = tokenSource
         loadCache()
     }
 
@@ -46,7 +49,7 @@ final class NotionDatabaseList: ObservableObject {
             .appendingPathComponent("Library/Caches/MeetingPipe/notion-databases.json")
     }()
 
-    /// Re-fetch from Notion using the token in the process environment. Preferences "Apply" keeps the env in sync with `secrets.env`, so no need to reach into SecretsStore.
+    /// Re-fetch from Notion using the token `SecretsStore` last persisted (the process environment carries none since SEC23).
     ///
     /// Gated on global regulated mode (TECH-SEC4): the daemon's own POST to
     /// api.notion.com is outside the pipeline's egress firewall, so under
@@ -63,7 +66,7 @@ final class NotionDatabaseList: ObservableObject {
             state = .failed("Regulated mode is on: the database list is not fetched over the network. Pick from the cached list or paste a database id.")
             return
         }
-        let token = ProcessInfo.processInfo.environment["NOTION_TOKEN"] ?? ""
+        let token = tokenSource()["NOTION_TOKEN"] ?? ""
         guard !token.isEmpty else {
             state = .failed("Set NOTION_TOKEN in Preferences -> Integrations first.")
             return

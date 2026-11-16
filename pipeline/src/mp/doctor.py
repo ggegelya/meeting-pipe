@@ -78,6 +78,7 @@ def check_secrets() -> dict[str, bool]:
         "OPENAI_API_KEY": "only used when summarization.backend = openai",
     }
     load_secrets()
+    from . import config
     presence: dict[str, bool] = {}
     for key in required + optional:
         val = os.environ.get(key, "")
@@ -86,6 +87,9 @@ def check_secrets() -> dict[str, bool]:
         if present:
             prefix = val[:7] + "…" if len(val) > 8 else "(short)"
             _ok(f"{key} present ({prefix})")
+        elif key in config._UNREADABLE_SECRETS:
+            # SEC23: could not be read, which is not the same as not set.
+            (_fail if key in required else _info)(str(config._UNREADABLE_SECRETS[key]))
         elif key in required:
             _fail(f"{key} not in Keychain; set it in the daemon's Preferences or re-run scripts/install.sh")
         else:

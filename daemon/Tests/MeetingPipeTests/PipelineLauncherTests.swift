@@ -85,35 +85,76 @@ final class PipelineLauncherTests: XCTestCase {
     // MARK: - TECH-SEC5: fail-closed subprocess env (SEC8: tokens come from the inherited daemon env)
 
     func testFreshEnvironmentStripsAnthropicKeyOnly() {
-        let base = ["ANTHROPIC_API_KEY": "sk-x", "NOTION_TOKEN": "nt-y"]
+        let tokens = ["ANTHROPIC_API_KEY": "sk-x", "NOTION_TOKEN": "nt-y"]
         let env = PipelineLauncher.freshEnvironment(
-            baseEnvironment: base, stripAnthropicKey: true, stripNotionToken: false
+            baseEnvironment: [:], tokens: tokens, stripAnthropicKey: true, stripNotionToken: false
         )
         XCTAssertNil(env["ANTHROPIC_API_KEY"])
         XCTAssertEqual(env["NOTION_TOKEN"], "nt-y")
     }
 
     func testFreshEnvironmentStripsBothTokens() {
-        let base = ["ANTHROPIC_API_KEY": "sk-x", "NOTION_TOKEN": "nt-y"]
+        let tokens = ["ANTHROPIC_API_KEY": "sk-x", "NOTION_TOKEN": "nt-y"]
         let env = PipelineLauncher.freshEnvironment(
-            baseEnvironment: base, stripAnthropicKey: true, stripNotionToken: true
+            baseEnvironment: [:], tokens: tokens, stripAnthropicKey: true, stripNotionToken: true
         )
         XCTAssertNil(env["ANTHROPIC_API_KEY"])
         XCTAssertNil(env["NOTION_TOKEN"])
     }
 
-    func testFreshEnvironmentKeepsTokensByDefault() {
-        let base = ["ANTHROPIC_API_KEY": "sk-x", "NOTION_TOKEN": "nt-y"]
-        let env = PipelineLauncher.freshEnvironment(baseEnvironment: base)
+    func testFreshEnvironmentCarriesTheTokensItIsGiven() {
+        let tokens = ["ANTHROPIC_API_KEY": "sk-x", "NOTION_TOKEN": "nt-y", "OPENAI_API_KEY": "sk-o"]
+        let env = PipelineLauncher.freshEnvironment(baseEnvironment: [:], tokens: tokens)
         XCTAssertEqual(env["ANTHROPIC_API_KEY"], "sk-x")
         XCTAssertEqual(env["NOTION_TOKEN"], "nt-y")
+        XCTAssertEqual(env["OPENAI_API_KEY"], "sk-o")
+    }
+
+    /// SEC23: the four spawns that call `freshEnvironment()` bare (doctor, MCP status, ...) get no token,
+    /// even from a base that carries them (a shell export the daemon was launched under).
+    func testFreshEnvironmentWithNoTokensCarriesNoManagedKeyEvenFromTheBase() {
+        let base = ["PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-x", "NOTION_TOKEN": "nt-y",
+                    "OPENAI_API_KEY": "sk-o", "HF_TOKEN": "hf-z"]
+        let env = PipelineLauncher.freshEnvironment(baseEnvironment: base)
+        for key in KeychainSecrets.managedKeys { XCTAssertNil(env[key], key) }
+        XCTAssertEqual(env["PATH"], "/usr/bin")
     }
 
     func testFreshEnvironmentPassesUnrelatedKeysThrough() {
         let base = ["PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-x"]
-        let env = PipelineLauncher.freshEnvironment(baseEnvironment: base, stripAnthropicKey: true)
+        let env = PipelineLauncher.freshEnvironment(
+            baseEnvironment: base, tokens: ["ANTHROPIC_API_KEY": "sk-x"], stripAnthropicKey: true)
         XCTAssertEqual(env["PATH"], "/usr/bin")
         XCTAssertNil(env["ANTHROPIC_API_KEY"])
+    }
+
+    /// SEC23: a spawn's environment carries exactly the tokens the SEC5 policy keeps, taken from the token
+    /// source, with a base environment that carries none.
+    func test_runMP_environment_carries_exactly_the_tokens_the_policy_keeps() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dump = dir.appendingPathComponent("env.txt")
+        let launcher = PipelineLauncher(
+            invocation: { .init(shell: "/bin/sh", args: ["-c", "env > '\(dump.path)'"]) },
+            environment: ["PATH": "/usr/bin:/bin"],
+            tokenSource: { ["ANTHROPIC_API_KEY": "sk-a", "NOTION_TOKEN": "ntn-n", "OPENAI_API_KEY": "sk-o"] },
+            reapOrphanedServer: {}
+        )
+        let done = expectation(description: "spawn ended")
+        launcher.backup(dir: dir, libraryBytes: 0) { _ in done.fulfill() }
+        wait(for: [done], timeout: 10)
+
+        let policy = PipelineLauncher.cloudSecretPolicy(for: nil)
+        let env = Dictionary(
+            uniqueKeysWithValues: try String(contentsOf: dump, encoding: .utf8).split(separator: "\n").compactMap { line -> (String, String)? in
+                guard let eq = line.firstIndex(of: "=") else { return nil }
+                return (String(line[..<eq]), String(line[line.index(after: eq)...]))
+            })
+        XCTAssertEqual(env["ANTHROPIC_API_KEY"], policy.stripAnthropic ? nil : "sk-a")
+        XCTAssertEqual(env["NOTION_TOKEN"], policy.stripNotion ? nil : "ntn-n")
+        XCTAssertEqual(env["OPENAI_API_KEY"], "sk-o")
+        XCTAssertNil(env["HF_TOKEN"])
     }
 
     // MARK: - TECH-SEC5: cloudSecretPolicy

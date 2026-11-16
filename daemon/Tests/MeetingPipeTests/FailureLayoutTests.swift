@@ -318,13 +318,9 @@ final class FailureLayoutTests: XCTestCase {
         configuration.protocolClasses = [FailingNotionProtocol.self]
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
-        let oldToken = getenv("NOTION_TOKEN").map { String(cString: $0) }
-        setenv("NOTION_TOKEN", "synthetic-token", 1)
-        defer {
-            if let oldToken { setenv("NOTION_TOKEN", oldToken, 1) } else { unsetenv("NOTION_TOKEN") }
-        }
         let list = NotionDatabaseList(cacheURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
-                                     session: session, isRegulated: { false })
+                                     session: session, isRegulated: { false },
+                                     tokenSource: { ["NOTION_TOKEN": "synthetic-token"] })
         list.refresh()
         while list.state == .loading { await Task.yield() }
         guard case .failed(let diagnostic) = list.state else { return XCTFail("Expected the synthetic failure") }

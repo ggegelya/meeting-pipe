@@ -93,19 +93,21 @@ Don't add packages without asking. The dependency surface is deliberately small.
 
 Four managed API tokens live in the macOS login Keychain, not a file: `ANTHROPIC_API_KEY`, `NOTION_TOKEN`, `HF_TOKEN`, and `OPENAI_API_KEY` (the last joined with the `openai` backend in PROV1). Only the ones your configured backends and sinks need are ever set; the list is one source of truth on each side (`KeychainSecrets.managedKeys`, `mp.config.MANAGED_SECRET_KEYS`) and both the backup manifest and the SEC14 env scrub iterate it, so adding a fifth means editing those two constants and nothing else. Three trees touch the same items and must agree on the naming:
 
-- Swift daemon: `KeychainSecrets` / `SecretsStore` (reads at startup + on each Preferences save).
+- Swift daemon: `KeychainSecrets` / `SecretsStore` (reads at startup; each Preferences save writes only the accounts that changed).
 - Python pipeline: `mp.config.load_secrets` / `_keychain_get`.
 - `scripts/install.sh` (prompt + migrate a legacy `secrets.env`) and `scripts/uninstall.sh --purge` (delete).
 
 Contract: generic-password items, **service `com.meetingpipe.daemon`**, **account = the env-var name**. Every tree shells out to `/usr/bin/security` (never the native `SecItem` API), so a single stable accessor owns the item ACL: no per-access Keychain prompt, no per-rebuild cdhash churn.
 
 ```sh
-security add-generic-password -U -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY -w <value>
+security add-generic-password -U -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY -w <value>   # the manual form; the daemon and install.sh send it on `security -i` stdin
 security find-generic-password    -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY -w
 security delete-generic-password  -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY
 ```
 
-The daemon seeds the tokens into its process env at launch + on each Preferences save, so pipeline subprocesses inherit them with no per-spawn secret read; a hand-run `mp` reads the Keychain directly. Under a zero-egress run the daemon's SEC5 strip is no longer undone: `load_secrets()` declines to refill once `egress_guard.is_armed()`, and `arm()` pops any token that did arrive (SEC13). The httpx transport patch remains the network-layer backstop underneath that.
+**The token never rides an argv (SEC23).** The daemon (`KeychainBackend.set`) and `scripts/lib/keychain.sh` (`kc_set`) start `security -i` and write the one `add-generic-password` line to its stdin, so `ps` shows only `security -i`. Inside double quotes `security -i` honours a backslash escape and expands nothing; only `\` and `"` are escaped, and a value with a newline, control byte or non-ASCII byte is refused rather than guessed at. A read is typed on every side: found, not found (status 44), or unreadable (any other status: locked, ACL denied, `security` not runnable). An unreadable account is never written or removed on the strength of an empty field, a remove that fails is an error, and a `secrets.env` migration (daemon and `install.sh` alike) deletes the file only once every managed key in it is stored. The daemon logs `keychain_read_failed` (`main` category, `account` and `status`, never the value) for an account it could not read at launch.
+
+**The daemon's own environment carries no API token (SEC23), `HF_TOKEN` excepted** (the model downloader reads it from there). `SecretsStore` holds them; `PipelineLauncher.runMP` hands a spawn the persisted ones its SEC5 policy keeps, and the spawns that call `freshEnvironment()` bare (doctor, MCP status, the local-model check) get none, as do the ffmpeg spawns (`Secrets.scrubbedEnvironment`). A Python child that needs a token reads it from the Keychain itself (`load_secrets`); a hand-run `mp` does the same. Under a zero-egress run the daemon's SEC5 strip is no longer undone: `load_secrets()` declines to refill once `egress_guard.is_armed()`, and `arm()` pops any token that did arrive (SEC13). The httpx transport patch remains the network-layer backstop underneath that.
 
 ---
 

@@ -88,21 +88,24 @@ struct Config {
     }
 }
 
-/// Seeds the process env with the managed Keychain tokens (`KeychainSecrets.managedKeys`: ANTHROPIC_API_KEY / NOTION_TOKEN / HF_TOKEN / OPENAI_API_KEY) so
-/// pipeline subprocesses inherit them and the in-daemon Notion database picker can read NOTION_TOKEN (SEC8).
-/// Reads through the same `/usr/bin/security` path every tree uses.
+/// Environment hygiene for the managed Keychain tokens (`KeychainSecrets.managedKeys`: ANTHROPIC_API_KEY /
+/// NOTION_TOKEN / HF_TOKEN / OPENAI_API_KEY). Since SEC23 the daemon no longer seeds them into its own
+/// process environment, where every child it spawned inherited them: `SecretsStore` holds them, and
+/// `PipelineLauncher.runMP` hands a spawn only those its SEC5 policy keeps.
 enum Secrets {
-    static func loadIfPresent(backend: SecretsBackend = KeychainBackend()) {
-        for key in KeychainSecrets.managedKeys {
-            if let value = backend.value(for: key), !value.isEmpty {
-                setenv(key, value, 1)
-            }
+    /// The one token the daemon still puts in its own environment: `HF_TOKEN`, which FluidAudio's model
+    /// downloader reads from the process env (`DownloadUtils`) for authenticated downloads. It is optional,
+    /// not in `SecretsStore`, and every child built through `freshEnvironment` / `scrubbedEnvironment`
+    /// has it stripped (a spawn that sets no environment of its own inherits it, as before). An unreadable Keychain seeds nothing (SEC23).
+    static func seedModelDownloadToken(backend: SecretsBackend = KeychainBackend()) {
+        if case .found(let value) = backend.value(for: "HF_TOKEN") {
+            setenv("HF_TOKEN", value, 1)
         }
     }
 
-    /// The daemon seeds the managed API tokens into its own env (`loadIfPresent`) so pipeline
-    /// subprocesses can inherit them. A child that needs none of them, like ffmpeg, should not
-    /// see them (SEC14); this returns the process env with every managed token stripped.
+    /// The process env with every managed token stripped. The daemon's own env carries none since SEC23, but
+    /// a token exported into the shell that launched it would still be inherited, and a child that needs
+    /// none of them, like ffmpeg, should not see it (SEC14).
     static func scrubbedEnvironment(from base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
         var env = base
         for key in KeychainSecrets.managedKeys {

@@ -499,6 +499,9 @@ final class PipelineLauncher: PipelineDriver {
     private let maxRuntime: TimeInterval
     private let invocation: (() -> MPInvocation?)
     private let environment: [String: String]?
+    /// The API tokens a spawn may be handed, keyed by env-var name (SEC23). The daemon's own environment
+    /// carries none, so `runMP` is the one place a child gets tokens, and only those its SEC5 policy keeps.
+    private let tokenSource: () -> [String: String]
     /// Runs after a spawn this app stopped (watchdog or Cancel), off the termination
     /// queue. `LocalServerReaper.reapIfOrphaned` in production; a test counts calls.
     private let reapOrphanedServer: @Sendable () -> Void
@@ -523,11 +526,13 @@ final class PipelineLauncher: PipelineDriver {
     init(maxRuntime: TimeInterval = PipelineLauncher.defaultMaxRuntime,
          invocation: @escaping () -> MPInvocation? = PipelineLauncher.findMP,
          environment: [String: String]? = nil,
+         tokenSource: @escaping () -> [String: String] = { SecretsStore.liveTokens() },
          reapOrphanedServer: @escaping @Sendable () -> Void = { LocalServerReaper.reapIfOrphaned() },
          appleSummarize: @escaping AppleSummarize = PipelineLauncher.onDeviceSummarize) {
         self.maxRuntime = maxRuntime
         self.invocation = invocation
         self.environment = environment
+        self.tokenSource = tokenSource
         self.reapOrphanedServer = reapOrphanedServer
         self.appleSummarize = appleSummarize
     }
@@ -1402,14 +1407,15 @@ final class PipelineLauncher: PipelineDriver {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: mpPath.shell)
         p.arguments = mpPath.args + args
-        // Inherit the daemon env (which carries the Keychain-sourced tokens, refreshed on each Preferences
-        // save). TECH-SEC5: withhold cloud tokens this run is not allowed to use.
+        // The daemon env carries no tokens (SEC23); this spawn is handed the persisted ones from the store,
+        // minus what TECH-SEC5 withholds because this run is not allowed to use them.
         // PIPE6: a one-shot backend override wins over the meeting's persisted
         // backend when deciding which token to keep, so "Re-summarize with Anthropic"
         // on an Apple-pinned meeting is not stripped of its key.
         let policy = Self.cloudSecretPolicy(for: meeting, backendOverride: backendOverride)
         var env = Self.freshEnvironment(
             baseEnvironment: environment,
+            tokens: tokenSource(),
             stripAnthropicKey: policy.stripAnthropic, stripNotionToken: policy.stripNotion
         )
         for (k, v) in extraEnv { env[k] = v }
@@ -1526,14 +1532,20 @@ final class PipelineLauncher: PipelineDriver {
     }
 
     /// Build a pipeline subprocess environment from the daemon's current env and apply the SEC5 strip policy.
-    /// The daemon's env already carries the managed tokens (SEC8: seeded from the Keychain at startup and on
-    /// each Preferences save), so there is no per-spawn secrets read anymore. Exposed for tests.
+    /// The daemon's env carries no managed token since SEC23, and any a base environment does carry is
+    /// dropped here: a caller gets exactly the `tokens` it passes (only `runMP` passes any) and the four
+    /// that spawn `mp` for a status read, a doctor or a model check get none. A Python child that needs one
+    /// reads it from the Keychain itself (`config.load_secrets`). Exposed for tests.
     static func freshEnvironment(
         baseEnvironment: [String: String]? = nil,
+        tokens: [String: String] = [:],
         stripAnthropicKey: Bool = false,
         stripNotionToken: Bool = false
     ) -> [String: String] {
-        var env = baseEnvironment ?? ProcessInfo.processInfo.environment
+        var env = Secrets.scrubbedEnvironment(from: baseEnvironment ?? ProcessInfo.processInfo.environment)
+        for key in KeychainSecrets.managedKeys {
+            if let value = tokens[key], !value.isEmpty { env[key] = value }
+        }
         // TECH-SEC5: withhold cloud tokens the resolved run must not use, so a consumer that reads only the
         // process env fails closed (missing credential) instead of egressing. NOTE: the Python child re-reads
         // the token from the Keychain via load_secrets(), so a stripped token reappears in its os.environ; the

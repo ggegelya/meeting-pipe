@@ -32,7 +32,10 @@ struct IntegrationsSectionView: View {
 
             SettingsGroup("Anthropic") {
                 SettingsStackRow("API key", showsDivider: false) {
-                    SettingsSecretField(text: $secrets.anthropicAPIKey, placeholder: "sk-ant-…")
+                    VStack(alignment: .leading, spacing: 4) {
+                        SettingsSecretField(text: $secrets.anthropicAPIKey, placeholder: "sk-ant-…")
+                        secretSaveError("ANTHROPIC_API_KEY")
+                    }
                 }
                 SettingsRow("Status") {
                     if !secrets.anthropicAPIKey.isEmpty {
@@ -47,7 +50,10 @@ struct IntegrationsSectionView: View {
 
             SettingsGroup("OpenAI") {
                 SettingsStackRow("API key", showsDivider: false) {
-                    SettingsSecretField(text: $secrets.openaiAPIKey, placeholder: "sk-…")
+                    VStack(alignment: .leading, spacing: 4) {
+                        SettingsSecretField(text: $secrets.openaiAPIKey, placeholder: "sk-…")
+                        secretSaveError("OPENAI_API_KEY")
+                    }
                 }
                 SettingsRow("Status") {
                     if !secrets.openaiAPIKey.isEmpty {
@@ -62,7 +68,10 @@ struct IntegrationsSectionView: View {
 
             SettingsGroup("Notion") {
                 SettingsStackRow("Integration token", showsDivider: false) {
-                    SettingsSecretField(text: $secrets.notionToken, placeholder: "ntn_…")
+                    VStack(alignment: .leading, spacing: 4) {
+                        SettingsSecretField(text: $secrets.notionToken, placeholder: "ntn_…")
+                        secretSaveError("NOTION_TOKEN")
+                    }
                 }
                 SettingsStackRow("Database") {
                     NotionDatabasePicker(
@@ -111,6 +120,17 @@ struct IntegrationsSectionView: View {
     /// switch: a fail-closed filter is only trustworthy if the number it
     /// withholds is a number you can read, and it comes from `mp.visibility`,
     /// the same function the server enforces, rather than a Swift recount.
+    /// Why this token could not be saved (SEC23), under its field, or nothing.
+    @ViewBuilder
+    private func secretSaveError(_ account: String) -> some View {
+        if let message = secrets.saveErrors[account] {
+            Text(message)
+                .font(.mpTextSM)
+                .foregroundStyle(.mpDanger)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var mcpGroup: some View {
         SettingsGroup("Model Context Protocol") {
             SettingsToggleRow(

@@ -469,38 +469,38 @@ fi
 # items through /usr/bin/security, so a single stable accessor means no
 # per-access Keychain prompt. Migrate a legacy secrets.env if one exists,
 # then prompt for any required token still missing.
-KEYCHAIN_SERVICE="com.meetingpipe.daemon"
-kc_get() { security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$1" -w 2>/dev/null; }
-kc_set() { security add-generic-password -U -s "$KEYCHAIN_SERVICE" -a "$1" -w "$2" >/dev/null 2>&1; }
+# kc_get / kc_set / kc_migrate_secrets_env live in scripts/lib/keychain.sh (SEC23): the token goes to
+# `security -i` on stdin, never argv, and a read that fails is not read as "absent".
+# shellcheck source=scripts/lib/keychain.sh
+source "$REPO_ROOT/scripts/lib/keychain.sh"
 
 LEGACY_SECRETS="$CONFIG_DIR/secrets.env"
 if [[ -f "$LEGACY_SECRETS" ]]; then
     say "Migrating $LEGACY_SECRETS into the Keychain"
-    while IFS='=' read -r raw_key raw_val; do
-        key="${raw_key//[[:space:]]/}"
-        [[ -z "$key" || "$key" == \#* ]] && continue
-        val="${raw_val#\"}"; val="${val%\"}"
-        case "$key" in
-            ANTHROPIC_API_KEY|NOTION_TOKEN|HF_TOKEN)
-                if [[ -n "$val" && -z "$(kc_get "$key")" ]]; then
-                    kc_set "$key" "$val" && say "  migrated $key"
-                fi
-                ;;
-        esac
-    done < "$LEGACY_SECRETS"
-    rm -f "$LEGACY_SECRETS"
-    say "Removed $LEGACY_SECRETS (tokens now in the Keychain)."
+    if kc_migrate_secrets_env "$LEGACY_SECRETS"; then
+        say "Removed $LEGACY_SECRETS (tokens now in the Keychain)."
+    else
+        warn "Kept $LEGACY_SECRETS: not every token reached the Keychain. Fix the cause (unlock the login keychain) and re-run install.sh."
+    fi
 fi
 
 for key in ANTHROPIC_API_KEY NOTION_TOKEN; do
-    if [[ -n "$(kc_get "$key")" ]]; then
+    kc_status=0
+    kc_get "$key" >/dev/null || kc_status=$?
+    if [[ $kc_status -eq 0 ]]; then
         say "$key already in the Keychain."
+    elif [[ $kc_status -ne 44 ]]; then
+        warn "$key could not be read from the Keychain (status $kc_status); not prompting over a token that may be set. Unlock the login keychain and re-run install.sh."
     elif [[ -t 0 ]]; then
         printf '   Enter %s (blank to skip, set later in Preferences): ' "$key"
         read -rs val || val=""
         echo
         if [[ -n "$val" ]]; then
-            kc_set "$key" "$val" && say "Stored $key in the Keychain."
+            if kc_set "$key" "$val"; then
+                say "Stored $key in the Keychain."
+            else
+                warn "Could not store $key in the Keychain; set it in Preferences -> Integrations."
+            fi
         else
             warn "$key left unset; add it in Preferences -> Integrations or re-run install.sh."
         fi

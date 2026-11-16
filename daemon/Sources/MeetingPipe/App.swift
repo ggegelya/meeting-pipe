@@ -7,8 +7,7 @@ final class App {
     static func main() {
         let args = CommandLine.arguments
         // The long-lived daemon (not the one-shot CLI subcommands) refuses to be a second copy (UX54)
-        // and migrates a legacy plaintext secrets.env into the Keychain once (SEC8), before seeding the
-        // process env from it. `doctor` and `prefetch-models` are diagnostics that must keep running
+        // and migrates a legacy plaintext secrets.env into the Keychain once (SEC8). `doctor` and `prefetch-models` are diagnostics that must keep running
         // alongside a live daemon, so both only apply here.
         let isDaemon = !(args.count > 1 && (args[1] == "doctor" || args[1] == "prefetch-models"))
         if isDaemon {
@@ -19,7 +18,7 @@ final class App {
             SingleInstanceGuard.standDownIfPeerIsRunning()
             SecretsStore.migrateEnvFileIfPresent()
         }
-        Secrets.loadIfPresent()
+        Secrets.seedModelDownloadToken()
         // CLI subcommands intercept before NSApplication boots so the menu-bar path stays separate from one-shot diagnostic runs.
         if args.count > 1, args[1] == "doctor" {
             exit(DoctorCommand.run())
@@ -42,7 +41,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var coordinator: Coordinator!
     private var configStore: ConfigStore?
     private var secretsStore: SecretsStore?
-    private var secretsCancellable: AnyCancellable?
     private var localModelCancellable: AnyCancellable?
     private let localModelPreloader = LocalModelPreloader()
 
@@ -146,17 +144,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let config = store.config
         self.configStore = store
 
-        // SecretsStore is unfailing: a missing secrets.env is normal on first run; the file is created (mode 0600) on the first Preferences save.
+        // SecretsStore is unfailing: it reads the tokens from the Keychain (a missing item is normal on first run) and writes only the accounts a Preferences edit changed. The tokens are not put into the process environment (SEC23): `PipelineLauncher.runMP` and `NotionDatabaseList` read them from `SecretsStore.live`.
         let secrets = SecretsStore()
         self.secretsStore = secrets
-
-        // Mirror secrets into process env on each Preferences save so future spawns pick them up immediately. PipelineLauncher.freshEnvironment also re-reads at spawn time; the env mirror keeps the contract explicit.
-        self.secretsCancellable = secrets.didPersist.sink { [weak secrets] in
-            guard let s = secrets else { return }
-            setenv("ANTHROPIC_API_KEY", s.anthropicAPIKey, 1)
-            setenv("NOTION_TOKEN", s.notionToken, 1)
-            setenv("OPENAI_API_KEY", s.openaiAPIKey, 1)
-        }
+        SecretsStore.live = secrets
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusBar = StatusBarController(item: statusItem)

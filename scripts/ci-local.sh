@@ -102,6 +102,10 @@ truth_fences() {
     python3 scripts/truth_fences.py
     end
 
+    begin "Keychain helper gates (SEC23)"
+    bash scripts/test-keychain-migration.sh
+    end
+
     begin "macOS floor parity (DOC16)"
     # The floor is written three times: Package.swift's platforms, install.sh's
     # version check, and the LSMinimumSystemVersion install.sh writes into the

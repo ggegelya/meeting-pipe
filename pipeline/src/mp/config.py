@@ -499,8 +499,18 @@ def parse_local_endpoint(endpoint: str) -> tuple[str, int]:
     return (s or default_host, default_port)
 
 
+KEYCHAIN_ITEM_NOT_FOUND = 44
+"""`security`'s exit status for `errSecItemNotFound`, the only status that means "no such token"."""
+
+
 def _keychain_get(account: str, service: str = KEYCHAIN_SERVICE) -> str | None:
-    """Read a token from the macOS login Keychain via /usr/bin/security. None if absent/unreadable."""
+    """Read a token from the macOS login Keychain via /usr/bin/security.
+
+    None means there is no such token (status 44, or an empty value). Any other outcome (a locked
+    keychain, a denied ACL, `security` not runnable, a timeout) raises `KeychainUnreadableError`
+    instead of reading as absent (SEC23).
+    """
+    import logging
     import subprocess
     try:
         out = subprocess.run(
@@ -509,19 +519,29 @@ def _keychain_get(account: str, service: str = KEYCHAIN_SERVICE) -> str | None:
             text=True,
             timeout=10,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        logging.getLogger(__name__).warning("keychain read of %s failed to run: %s", account, type(error).__name__)
+        raise KeychainUnreadableError(account, -1, type(error).__name__) from error
+    if out.returncode == KEYCHAIN_ITEM_NOT_FOUND:
         return None
     if out.returncode != 0:
-        return None
+        logging.getLogger(__name__).warning(
+            "keychain read of %s failed with security status %s", account, out.returncode
+        )
+        raise KeychainUnreadableError(account, out.returncode, (out.stderr or "").strip()[:200])
     val = out.stdout.strip()
     return val or None
+
+
+_UNREADABLE_SECRETS: dict[str, "KeychainUnreadableError"] = {}
+"""Managed tokens the last `load_secrets` could not read, by name (SEC23)."""
 
 
 def load_secrets(reader=_keychain_get) -> None:
     """Populate os.environ with the managed API tokens from the macOS Keychain (SEC8).
 
-    Daemon does this in Swift and injects the tokens into the subprocess env; Python fills any that are
-    still missing or empty (a hand-run `mp` without the daemon, or a shell that exported an empty string,
+    The daemon hands a spawn the tokens its SEC5 policy keeps (SEC23: its own env carries none); Python
+    fills any that are still missing or empty (a hand-run `mp` without the daemon, or a shell that exported an empty string,
     which Claude Code does) from the Keychain, treating "" as absent so the real value wins.
 
     SEC13: a zero-egress run refills nothing. Refilling used to undo the daemon's SEC5 strip, collapsing
@@ -534,8 +554,17 @@ def load_secrets(reader=_keychain_get) -> None:
         return
     for key in MANAGED_SECRET_KEYS:
         if os.environ.get(key):
+            _UNREADABLE_SECRETS.pop(key, None)
             continue
-        val = reader(key)
+        try:
+            val = reader(key)
+        except KeychainUnreadableError as error:
+            # SEC23: not raised here, because a run that never needs this token (a local summary, no
+            # sinks) must not fail on a locked keychain. `require_env` raises it for the token a stage
+            # actually asks for, so the message says "could not be read", not "not set".
+            _UNREADABLE_SECRETS[key] = error
+            continue
+        _UNREADABLE_SECRETS.pop(key, None)
         if val:
             os.environ[key] = val
 
@@ -566,6 +595,28 @@ class MissingSecretError(Exception):
         )
 
 
+class KeychainUnreadableError(MissingSecretError):
+    """A token could not be read from the Keychain, which is not the same as it being unset (SEC23).
+
+    A locked login keychain, a denied ACL and a `security` that never ran all used to read as "absent",
+    so the user was told to set a key that may already be set and the advice could not fix it. This
+    subclasses `MissingSecretError` so every PIPE16 handler treats it the same way, and carries the
+    status so the log can tell the two apart.
+    """
+
+    def __init__(self, name: str, status: int, detail: str = "") -> None:
+        self.name = name
+        self.status = status
+        self.detail = detail
+        Exception.__init__(
+            self,
+            f"${name} could not be read from the macOS Keychain (security status {status}"
+            f"{': ' + detail if detail else ''}). The token may be set; the login keychain is "
+            f"probably locked. Unlock it (`security unlock-keychain`) or open Keychain Access once, "
+            f"then run this again."
+        )
+
+
 def require_env(name: str) -> str:
     """Fail fast with an actionable message if a secret is missing.
 
@@ -576,5 +627,6 @@ def require_env(name: str) -> str:
     """
     val = os.environ.get(name)
     if not val:
-        raise MissingSecretError(name)
+        # SEC23: a token the Keychain would not give up is "could not be read", not "not set".
+        raise _UNREADABLE_SECRETS.get(name) or MissingSecretError(name)
     return val
