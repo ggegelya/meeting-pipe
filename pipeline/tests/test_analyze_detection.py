@@ -22,6 +22,8 @@ from mp.analyze_detection import (
     collect_correlation_markers,
     collect_mic_input_faults,
     iter_events,
+    judge_sessions,
+    judgement_rows,
     main,
     mic_input_status,
     pair_mic_spans,
@@ -76,18 +78,26 @@ def test_iter_events_missing_file_returns_empty(tmp_path: Path) -> None:
 
 
 def test_pair_sessions_classifies_detector_triggered_stop() -> None:
+    """DET19: a detector stop says what stopped the recording; whether it was right is the
+    judgement's, against the call span. Here the span ended before the end, so it is a correct end
+    with its overrun, not a success by being there."""
     events = [
         _event("2026-05-01T10:00:00Z", "coordinator", "recording_started",
                file="meet.wav", bundle_id="us.zoom.xos"),
+        _event("2026-05-01T10:29:50Z", "signal", "process_audio_is_running_input",
+               bundle_id="us.zoom.xos", value=False),
         _event("2026-05-01T10:30:00Z", "lifecycle", "ended", bundle_id="us.zoom.xos"),
         _event("2026-05-01T10:30:02Z", "coordinator", "recording_stopped",
                file="meet.wav", bundle_id="us.zoom.xos"),
     ]
     sessions = [classify_session(s) for s in pair_sessions(events)]
+    judge_sessions(sessions, events)
     assert len(sessions) == 1
     assert sessions[0].stop_kind == "detector"
     assert sessions[0].delta_sec == 2.0
     assert sessions[0].bundle_id == "us.zoom.xos"
+    assert sessions[0].false_end is False
+    assert sessions[0].overrun_sec == 12.0
 
 
 def test_pair_sessions_classifies_manual_stop() -> None:
@@ -589,3 +599,155 @@ def test_json_mode_distinguishes_zero_misses_from_zero_spans(tmp_path: Path, cap
         "chat.unknown.app", "2026-05-01T10:00:00Z", "2026-05-01T10:45:00Z", "Unknown Chat"))
     assert main(["--source", str(live), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["mic_busy"]["input_status"] == MIC_INPUT_OBSERVED
+
+
+# --- DET19: the end judgement --------------------------------------------------------------------
+
+TEAMS = "com.microsoft.teams2"
+
+
+def _judged(events: list[dict], **kwargs) -> tuple[list, object]:
+    sessions = [classify_session(s) for s in pair_sessions(events)]
+    return sessions, judge_sessions(sessions, events, **kwargs)
+
+
+def test_an_end_followed_by_the_same_app_returning_is_a_false_end() -> None:
+    """(a) The 2026-10-22 mic-switch shape: Teams' end stopped the recording, the call was still up,
+    and the owner was prompted and recording again 23 s later. A false end with its seconds lost,
+    never a detector success."""
+    events = [
+        _event("2026-10-22T12:00:00Z", "coordinator", "recording_started", file="a.wav", bundle_id=TEAMS),
+        _event("2026-10-22T12:14:53Z", "lifecycle", "ended", bundle_id=TEAMS, confirmed_by=[]),
+        _event("2026-10-22T12:14:54Z", "coordinator", "recording_stopped", file="a.wav", bundle_id=TEAMS),
+        _event("2026-10-22T12:15:10Z", "coordinator", "prompt_shown", bundle_id=TEAMS),
+        _event("2026-10-22T12:15:17Z", "coordinator", "recording_started", file="b.wav", bundle_id=TEAMS),
+        _event("2026-10-22T12:40:00Z", "coordinator", "recording_stopped", file="b.wav", bundle_id=TEAMS),
+    ]
+    sessions, judgement = _judged(events)
+    first = sessions[0]
+    assert first.stop_kind == "detector"
+    assert first.false_end is True
+    assert first.seconds_lost == 23.0
+    rows = judgement_rows(sessions)
+    assert rows[TEAMS]["false_ends"] == 1
+    assert judgement.fragmented_calls == 1 and judgement.extra_stems == 1
+
+
+def test_a_live_process_audio_reading_at_the_end_is_a_false_end_without_a_resighting() -> None:
+    events = [
+        _event("2026-10-22T12:00:00Z", "coordinator", "recording_started", file="a.wav", bundle_id=TEAMS),
+        _event("2026-10-22T12:00:05Z", "signal", "process_audio_is_running_input", bundle_id=TEAMS, value=True),
+        _event("2026-10-22T12:10:00Z", "lifecycle", "ended", bundle_id=TEAMS),
+        _event("2026-10-22T12:10:01Z", "coordinator", "recording_stopped", file="a.wav", bundle_id=TEAMS),
+    ]
+    sessions, _ = _judged(events)
+    assert sessions[0].call_up_at_end is True
+    assert sessions[0].false_end is True
+    assert sessions[0].seconds_lost is None, "no restart inside the window: the loss is not measurable"
+
+
+def test_another_apps_end_inside_a_sourceless_session_is_a_foreign_end() -> None:
+    """(b) The 2026-11-11 shape: a Chrome engage's end stopped a source-less recording."""
+    events = [
+        _event("2026-11-11T15:59:51Z", "coordinator", "recording_started", file="m.wav", bundle_id="manual"),
+        _event("2026-11-11T16:20:00Z", "lifecycle", "ended", bundle_id="com.google.Chrome"),
+        _event("2026-11-11T16:20:01Z", "coordinator", "recording_stopped", file="m.wav", bundle_id="manual"),
+    ]
+    sessions, _ = _judged(events)
+    assert sessions[0].stop_kind == "foreign_end"
+    assert sessions[0].stop_kind != "detector"
+    out = render_report(sessions, aggregate(sessions), judgement=judge_sessions(sessions, events))
+    assert "another app's lifecycle end" in out
+    assert "m.wav" not in out.split("## Detector misses")[1], "a foreign end is not a manual miss"
+
+
+def test_a_held_end_reports_its_overrun_and_trim_error() -> None:
+    """(c) Era 3's shape: the mic released, the pair dwell confirmed 60 s later, and the held tail
+    was cut at the hold's start, 2 s after the span ended."""
+    events = [
+        _event("2026-11-12T14:00:00Z", "coordinator", "recording_started", file="t.wav", bundle_id=TEAMS),
+        _event("2026-11-12T14:32:36Z", "signal", "process_audio_is_running_input", bundle_id=TEAMS, value=False),
+        _event("2026-11-12T14:32:38Z", "coordinator", "lifecycle_end_held", bundle_id=TEAMS),
+        _event("2026-11-12T14:33:36Z", "lifecycle", "ended", bundle_id=TEAMS,
+               confirmed_by=["process_audio_is_running_input_false"]),
+        _event("2026-11-12T14:33:36.100Z", "recorder", "held_end_trimmed", file="t.wav", limit_sec=1958.0,
+               mode="suggested"),
+        _event("2026-11-12T14:33:36.500Z", "coordinator", "recording_stopped", file="t.wav", bundle_id=TEAMS),
+    ]
+    sessions, judgement = _judged(events)
+    s = sessions[0]
+    assert s.false_end is False
+    assert s.overrun_sec == 60.5
+    assert s.trim_error_sec == 2.0
+    assert judgement_rows(sessions)[TEAMS]["late_ends"] == 1
+    assert judgement.holds[TEAMS].opened == 1
+    assert judgement.holds[TEAMS].confirmed_pair == 1
+
+
+def test_mic_release_and_start_time_ends_are_not_manual_misses() -> None:
+    """(d) Neither writes a lifecycle.ended, so both used to count as the user stopping by hand."""
+    events = [
+        _event("2026-11-01T10:00:00Z", "coordinator", "recording_started", file="x.wav", bundle_id="us.zoom.xos"),
+        _event("2026-11-01T10:20:00Z", "coordinator", "mic_in_use_stop", bundle_id="us.zoom.xos"),
+        _event("2026-11-01T10:20:01Z", "coordinator", "recording_stopped", file="x.wav", bundle_id="us.zoom.xos"),
+        _event("2026-11-01T11:00:00Z", "coordinator", "recording_started", file="y.wav", bundle_id=TEAMS),
+        _event("2026-11-01T11:00:04Z", "coordinator", "recording_ended_during_start", file="y.wav",
+               leading_signal="ax_leave_button_invalid"),
+        _event("2026-11-01T11:00:05Z", "coordinator", "recording_stopped", file="y.wav", bundle_id=TEAMS),
+    ]
+    sessions, _ = _judged(events)
+    assert [s.stop_kind for s in sessions] == ["mic_in_use_stop", "ended_during_start"]
+    out = render_report(sessions, aggregate(sessions))
+    assert "## Detector misses (0)" in out
+
+
+def test_a_reverted_hold_and_every_route_are_counted() -> None:
+    """(e) Hold accounting by route, including the hold the call came back inside."""
+    events = [
+        _event("2026-11-12T09:00:00Z", "coordinator", "lifecycle_end_held", bundle_id=TEAMS),
+        _event("2026-11-12T09:00:20Z", "coordinator", "lifecycle_end_hold_released", bundle_id=TEAMS, held_sec=20.0),
+        _event("2026-11-12T10:00:00Z", "lifecycle", "end_vetoed", bundle_id=TEAMS,
+               leading_signal="shareable_content_window_gone", vetoed_by="process_audio_is_running_input"),
+        _event("2026-11-12T11:00:00Z", "lifecycle", "ended", bundle_id=TEAMS, confirmed_by=["lone_dwell"]),
+        _event("2026-11-12T12:00:00Z", "lifecycle", "ended", bundle_id=TEAMS, confirmed_by=["call_teardown_observed"]),
+        _event("2026-11-12T13:00:00Z", "coordinator", "auto_stop_silence_skipped", bundle_id=TEAMS,
+               reason="lifecycle_still_in_meeting"),
+    ]
+    _, judgement = _judged(events)
+    h = judgement.holds[TEAMS]
+    assert (h.opened, h.released, h.vetoed, h.confirmed_lone_dwell, h.confirmed_teardown,
+            h.backstop_stood_down) == (1, 1, 1, 1, 1, 1)
+
+
+def test_the_judgement_section_names_its_truth_source_and_keeps_det10s_line() -> None:
+    """(f) A window with no mic-busy spans still says start detection was not audited, beside the
+    new section, which names the rows its call span came from."""
+    events = [
+        _event("2026-11-01T10:00:00Z", "coordinator", "recording_started", file="x.wav", bundle_id=TEAMS),
+        _event("2026-11-01T10:30:00Z", "lifecycle", "ended", bundle_id=TEAMS),
+        _event("2026-11-01T10:30:01Z", "coordinator", "recording_stopped", file="x.wav", bundle_id=TEAMS),
+    ]
+    sessions, judgement = _judged(events)
+    out = render_report(sessions, aggregate(sessions), judgement=judgement)
+    assert "## End judgement" in out
+    assert "process_audio_is_running_input" in out
+    assert "## Mic-busy misses (not audited)" in out
+    assert judgement_rows(sessions)[TEAMS]["unjudged"] == 1, "no span and no re-sighting: unjudged, not right"
+
+
+def test_main_json_carries_the_end_judgement(tmp_path: Path, capsys) -> None:
+    events = [
+        _event("2026-10-22T12:00:00Z", "coordinator", "recording_started", file="a.wav", bundle_id=TEAMS),
+        _event("2026-10-22T12:14:53Z", "lifecycle", "ended", bundle_id=TEAMS),
+        _event("2026-10-22T12:14:54Z", "coordinator", "recording_stopped", file="a.wav", bundle_id=TEAMS),
+        _event("2026-10-22T12:15:17Z", "coordinator", "recording_started", file="b.wav", bundle_id=TEAMS),
+        _event("2026-10-22T12:40:00Z", "coordinator", "recording_stopped", file="b.wav", bundle_id=TEAMS),
+    ]
+    source = _write_events(tmp_path / "events.jsonl", events)
+    assert main(["--source", str(source), "--json", "--watch-window-sec", "60"]) == 0
+    payload = json.loads(capsys.readouterr().out)["end_judgement"]
+    assert payload["truth_source"] == "process_audio_is_running_input"
+    assert payload["watch_window_sec"] == 60
+    assert payload["per_app"][TEAMS]["false_ends"] == 1
+    assert payload["stops"][0]["seconds_lost"] == 23.0
+

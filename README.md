@@ -246,6 +246,11 @@ mp logs --since 1h --category detector
 # (default 30) filters out brief dictation / voice-memo blips. A window in which the
 # mic was never once observed held reads as "not audited" rather than as zero misses:
 # nothing was measured, which is a different thing from nothing being wrong.
+# Every automatic stop is judged too (DET19): a false end when the app's process
+# audio still read live or the same app prompted / recorded / resumed within
+# --watch-window-sec (default 600) after it, a late end when the call had ended more
+# than --late-after-sec (default 30) before the stop, with overrun minutes, trim
+# error, holds by route and another app's end reported as foreign, never a success.
 mp analyze-detection --since 7d
 
 # Compare Anthropic vs the local backend on one transcript; writes a

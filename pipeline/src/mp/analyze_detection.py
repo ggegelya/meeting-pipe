@@ -1,7 +1,18 @@
 """`mp analyze-detection`: audit meeting detection from both ends.
 
-Two dimensions. **End detection** (the original): pairs each recording session with its
-`lifecycle.ended` event and flags the sessions the user had to stop manually. **Start detection**
+Two dimensions. **End detection** pairs each recording session with what stopped it, and since
+DET19 judges every automatic stop against evidence the end decider does not produce. A
+`lifecycle.ended` is no longer a success by being there: it is the recording's own end only when it
+names the recording's own bundle (another app's end is a `foreign_end`), and it is a **false end**
+when that bundle's process audio still read live at the end or the same bundle prompted, recorded
+or resumed within the watch window after the stop (default 10 minutes). A stop whose call span had
+already ended is judged for **overrun** (stop minus the span's end) and, when a held tail was cut,
+**trim error** (the cut against the span's end). The span comes from DET23's microphone-holder
+ledger once it exists; until then from the per-process `signal.process_audio_is_running_input`
+rows, and the report names the source it used. Held ends are accounted by route (opened, released,
+confirmed by pair, lone dwell or teardown, vetoed), DET1's `mic_in_use_stop` and
+`recording_ended_during_start` are their own stop kinds rather than manual misses, and stood-down
+silence backstops (`auto_stop_silence_skipped`) are counted. **Start detection**
 (DET3): correlates mic-busy spans (`detector.mic_busy_started` / `mic_busy_ended`, the frontmost
 app the daemon stamped at grab time) against prompts, recordings, and `candidate_dropped` events,
 so a call the whitelist never saw shows up as a "mic was busy, nothing fired" miss. A miss with a
@@ -66,9 +77,23 @@ DEFAULT_EVENTS_PATH = Path(os.path.expanduser("~/Library/Logs/MeetingPipe/events
 # Stop kinds, in classification priority order. A genuine `manual` stop is
 # the only one that counts as a detector miss.
 STOP_DETECTOR = "detector"
+# DET19: a lifecycle end that named another app (the 2026-11-11 Chrome engage that stopped a
+# source-less recording mid-conversation). Never the recording's own detector success.
+STOP_FOREIGN_END = "foreign_end"
+STOP_MIC_IN_USE = "mic_in_use_stop"
+STOP_ENDED_DURING_START = "ended_during_start"
 STOP_SILENCE_BACKSTOP = "silence_backstop"
 STOP_FORCE_STOP = "force_stop"
 STOP_MANUAL = "manual"
+# The stops the daemon made on its own, which the end judgement scores.
+AUTOMATIC_STOPS = {STOP_DETECTOR, STOP_FOREIGN_END, STOP_MIC_IN_USE, STOP_ENDED_DURING_START}
+
+# DET19 defaults: how long after a stop a same-app prompt, recording or resume still means the
+# stop cut a live call, and how long after the call span ended a stop counts as late.
+DEFAULT_WATCH_WINDOW_SEC = 600.0
+DEFAULT_LATE_AFTER_SEC = 30.0
+# Which rows the call span was built from (DET19 item 1). The ledger is DET23's, not yet emitted.
+TRUTH_PROCESS_AUDIO = "process_audio_is_running_input"
 
 
 def _is_silence_reason(reason: str | None) -> bool:
@@ -84,7 +109,18 @@ class Session:
     stopped_ts: datetime
     bundle_id: str  # "manual" for hotkey-only sessions (no AppSource)
     file: str
+    # The latest `lifecycle.ended` naming this recording's bundle (or naming none, as old rows do).
     detector_ended_ts: datetime | None = None
+    # DET19: the latest `lifecycle.ended` naming a different bundle, and the own end's route.
+    foreign_ended_ts: datetime | None = None
+    confirmed_by: list[str] = field(default_factory=list)
+    mic_in_use_stopped: bool = False
+    ended_during_start: bool = False
+    # OBS5's stop cause on `recording_stopped`, when the daemon writes one; recorded, not trusted
+    # over the rows above until its vocabulary lands.
+    stop_cause: str | None = None
+    # `held_end_trimmed.limit_sec`: where the held tail was cut, in seconds from the start.
+    trim_limit_sec: float | None = None
     # Non-detector stop causes observed inside the [started, stopped] window.
     auto_stopped: bool = False  # coordinator.auto_stop_silence fired
     force_stop_reason: str | None = None  # coordinator.force_stop reason attr
@@ -92,6 +128,14 @@ class Session:
     # "detector" | "silence_backstop" | "force_stop" | "manual" | "unknown"
     stop_kind: str = "unknown"
     delta_sec: float | None = None  # stopped - detector.ended, only when detector-triggered
+    # Filled by judge_sessions (DET19). None means the evidence to judge was absent.
+    call_up_at_end: bool | None = None
+    span_ended_ts: datetime | None = None
+    resighted_ts: datetime | None = None
+    false_end: bool = False
+    seconds_lost: float | None = None  # stop -> the same app's next recording, for a false end
+    overrun_sec: float | None = None  # stop - span end, when the span had ended first
+    trim_error_sec: float | None = None  # cut point - span end
 
     @property
     def duration_sec(self) -> float:
@@ -142,6 +186,13 @@ def _parse_ts(s: str) -> datetime:
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
+def _sort_key(ev: dict) -> datetime:
+    try:
+        return _parse_ts(str(ev["ts"]))
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
 def iter_events(path: Path, skipped: events.SkipCounter | None = None) -> Iterator[dict]:
     """Yield every well-formed JSON event from ``path``.
 
@@ -174,10 +225,9 @@ def pair_sessions(events: Iterable[dict], *, since: datetime | None = None) -> l
 
     ``since`` filters by ``recording_started`` timestamp.
     """
-    ordered = sorted(
-        (e for e in events if "ts" in e),
-        key=lambda e: e["ts"],
-    )
+    # Sorted on the parsed instant, not the string: "…:36.500Z" sorts before "…:36Z" as text,
+    # which put a stop ahead of the end that caused it whenever precisions were mixed.
+    ordered = sorted((e for e in events if "ts" in e), key=_sort_key)
 
     sessions: list[Session] = []
     open_session: Session | None = None
@@ -202,10 +252,25 @@ def pair_sessions(events: Iterable[dict], *, since: datetime | None = None) -> l
         elif open_session is None:
             continue
         elif cat == "lifecycle" and action == "ended":
-            # Record the latest lifecycle.ended inside the open window.
-            # If multiple fire (debounce flutter), the last one is what
-            # actually drove the stop.
-            open_session.detector_ended_ts = ts
+            # Record the latest lifecycle.ended inside the open window. If multiple fire
+            # (debounce flutter), the last one is what actually drove the stop. DET19: only an
+            # end naming this recording's bundle is its own; another app's end is foreign. A row
+            # naming no bundle (older logs) is taken as the recording's own.
+            ended_bundle = ev.get("bundle_id")
+            if ended_bundle and ended_bundle != open_session.bundle_id:
+                open_session.foreign_ended_ts = ts
+            else:
+                open_session.detector_ended_ts = ts
+                confirmed = ev.get("confirmed_by")
+                open_session.confirmed_by = [str(c) for c in confirmed] if isinstance(confirmed, list) else []
+        elif cat == "coordinator" and action == "mic_in_use_stop":
+            open_session.mic_in_use_stopped = True
+        elif cat == "coordinator" and action == "recording_ended_during_start":
+            open_session.ended_during_start = True
+        elif cat == "recorder" and action == "held_end_trimmed":
+            limit = ev.get("limit_sec")
+            if isinstance(limit, (int, float)):
+                open_session.trim_limit_sec = float(limit)
         elif cat == "coordinator" and action == "auto_stop_silence":
             open_session.auto_stopped = True
         elif cat == "coordinator" and action == "force_stop":
@@ -218,6 +283,9 @@ def pair_sessions(events: Iterable[dict], *, since: datetime | None = None) -> l
             file_attr = ev.get("file")
             if file_attr:
                 open_session.file = str(file_attr)
+            cause = ev.get("cause") or ev.get("stop_cause")
+            if cause:
+                open_session.stop_cause = str(cause)
             sessions.append(open_session)
             open_session = None
 
@@ -227,10 +295,14 @@ def pair_sessions(events: Iterable[dict], *, since: datetime | None = None) -> l
 def classify_session(session: Session) -> Session:
     """Set ``stop_kind`` and ``delta_sec``. Pure; returns the same object.
 
-    Priority: a detector end wins (it drove the stop); else a silence
-    backstop (the auto-stop event, or a force-stop whose reason names
-    silence); else a user force-stop hotkey; else a genuine manual stop,
-    the only kind that counts as a miss.
+    Priority: the recording's own detector end wins (it drove the stop); else
+    a start-time end (`recording_ended_during_start`) or DET1's mic-release stop
+    (`mic_in_use_stop`), neither of which writes a `lifecycle.ended`; else
+    another app's lifecycle end (`foreign_end`); else a silence backstop (the
+    auto-stop event, or a force-stop whose reason names silence); else a user
+    force-stop hotkey; else a genuine manual stop, the only kind that counts
+    as a miss. Being a detector stop says what stopped the recording, not that
+    it was right: `judge_sessions` says that (DET19).
     """
     if session.detector_ended_ts is not None:
         session.stop_kind = STOP_DETECTOR
@@ -238,7 +310,13 @@ def classify_session(session: Session) -> Session:
         return session
 
     session.delta_sec = None
-    if session.auto_stopped or _is_silence_reason(session.force_stop_reason):
+    if session.ended_during_start:
+        session.stop_kind = STOP_ENDED_DURING_START
+    elif session.mic_in_use_stopped:
+        session.stop_kind = STOP_MIC_IN_USE
+    elif session.foreign_ended_ts is not None:
+        session.stop_kind = STOP_FOREIGN_END
+    elif session.auto_stopped or _is_silence_reason(session.force_stop_reason):
         session.stop_kind = STOP_SILENCE_BACKSTOP
     elif session.force_stop_reason is not None:
         session.stop_kind = STOP_FORCE_STOP
@@ -264,6 +342,200 @@ def aggregate(sessions: Iterable[Session]) -> dict[str, AppStats]:
         elif s.stop_kind == STOP_MANUAL:
             bucket.manual += 1
     return stats
+
+
+# --- DET19: judging each automatic stop against an independent call span ------------------------
+
+
+@dataclass
+class HoldAccounting:
+    """What the end-hold machinery did, by route (END9 to END17's rows, per app)."""
+    opened: int = 0  # coordinator.lifecycle_end_held
+    released: int = 0  # coordinator.lifecycle_end_hold_released: the call came back
+    confirmed_pair: int = 0  # lifecycle.ended confirmed by two evidence classes
+    confirmed_lone_dwell: int = 0  # ... by the lone dwell
+    confirmed_teardown: int = 0  # ... by Teams' teardown line
+    vetoed: int = 0  # lifecycle.end_vetoed
+    backstop_stood_down: int = 0  # coordinator.auto_stop_silence_skipped
+
+
+@dataclass
+class EndJudgement:
+    """The end dimension's verdict over a window (DET19)."""
+    truth_source: str
+    watch_window_sec: float
+    late_after_sec: float
+    holds: dict[str, HoldAccounting] = field(default_factory=dict)
+    fragmented_calls: int = 0  # calls recorded as two or more stems
+    extra_stems: int = 0
+
+
+def _bundle_timeline(events: Iterable[dict], action: str, category: str) -> dict[str, list[tuple[datetime, dict]]]:
+    out: dict[str, list[tuple[datetime, dict]]] = {}
+    for ev in events:
+        if ev.get("category") != category or ev.get("action") != action:
+            continue
+        try:
+            ts = _parse_ts(str(ev["ts"]))
+        except (TypeError, ValueError, KeyError):
+            continue
+        out.setdefault(str(ev.get("bundle_id") or ""), []).append((ts, ev))
+    for rows in out.values():
+        rows.sort(key=lambda pair: pair[0])
+    return out
+
+
+def _confirm_route(confirmed_by: list[str]) -> str | None:
+    if "call_teardown_observed" in confirmed_by or "ax_leave_rewalk" in confirmed_by:
+        return "teardown"
+    if "lone_dwell" in confirmed_by:
+        return "lone_dwell"
+    if confirmed_by:
+        return "pair"
+    return None
+
+
+def judge_sessions(
+    sessions: list[Session],
+    events: Iterable[dict],
+    *,
+    watch_window_sec: float = DEFAULT_WATCH_WINDOW_SEC,
+    late_after_sec: float = DEFAULT_LATE_AFTER_SEC,
+    since: datetime | None = None,
+) -> EndJudgement:
+    """Judge every automatic stop against rows the end decider does not produce. Pure; fills the
+    sessions' judgement fields and returns the window's hold accounting and fragmentation.
+
+    The call span is the recording bundle's `process_audio_is_running_input` readings (DET23's
+    ledger replaces them once it exists): the last reading at or before the end decides whether
+    the call was still up, and a `false` reading is the span's end. A re-sighting of the same
+    bundle (a prompt, a recording start, a resume) within `watch_window_sec` after the stop is the
+    other proof of a false end, and the only one when the span has no readings. Every end is scored
+    against the recording's own bundle only."""
+    rows = list(events)
+    audio = _bundle_timeline(rows, "process_audio_is_running_input", "signal")
+    sightings: dict[str, list[datetime]] = {}
+    for action in ("prompt_shown", "recording_started", "recording_resumed_after_end"):
+        for bundle, pairs in _bundle_timeline(rows, action, "coordinator").items():
+            sightings.setdefault(bundle, []).extend(ts for ts, _ in pairs)
+    for bundle in sightings:
+        sightings[bundle].sort()
+    window = timedelta(seconds=watch_window_sec)
+
+    for s in sessions:
+        if s.stop_kind not in AUTOMATIC_STOPS or s.bundle_id == "manual":
+            continue
+        end_ts = s.detector_ended_ts or s.foreign_ended_ts or s.stopped_ts
+        readings = [(ts, ev) for ts, ev in audio.get(s.bundle_id, []) if s.started_ts <= ts <= end_ts]
+        if readings:
+            last_ts, last = readings[-1]
+            s.call_up_at_end = bool(last.get("value"))
+            if not s.call_up_at_end:
+                s.span_ended_ts = last_ts
+        after = [ts for ts in sightings.get(s.bundle_id, []) if s.stopped_ts < ts <= s.stopped_ts + window]
+        s.resighted_ts = after[0] if after else None
+        s.false_end = bool(s.call_up_at_end) or s.resighted_ts is not None
+        if s.false_end:
+            restarts = [ts for ts, _ in _bundle_timeline(rows, "recording_started", "coordinator").get(s.bundle_id, [])
+                        if s.stopped_ts < ts <= s.stopped_ts + window]
+            s.seconds_lost = (restarts[0] - s.stopped_ts).total_seconds() if restarts else None
+        elif s.span_ended_ts is not None:
+            s.overrun_sec = (s.stopped_ts - s.span_ended_ts).total_seconds()
+        if s.trim_limit_sec is not None and s.span_ended_ts is not None:
+            cut = s.started_ts + timedelta(seconds=s.trim_limit_sec)
+            s.trim_error_sec = (cut - s.span_ended_ts).total_seconds()
+
+    judgement = EndJudgement(TRUTH_PROCESS_AUDIO, watch_window_sec, late_after_sec)
+    for ev in rows:
+        try:
+            ts = _parse_ts(str(ev["ts"]))
+        except (TypeError, ValueError, KeyError):
+            continue
+        if since is not None and ts < since:
+            continue
+        cat, action = ev.get("category"), ev.get("action")
+        bucket = judgement.holds.setdefault(str(ev.get("bundle_id") or "manual"), HoldAccounting())
+        if cat == "coordinator" and action == "lifecycle_end_held":
+            bucket.opened += 1
+        elif cat == "coordinator" and action == "lifecycle_end_hold_released":
+            bucket.released += 1
+        elif cat == "coordinator" and action == "auto_stop_silence_skipped":
+            bucket.backstop_stood_down += 1
+        elif cat == "lifecycle" and action == "end_vetoed":
+            bucket.vetoed += 1
+        elif cat == "lifecycle" and action == "ended":
+            confirmed = ev.get("confirmed_by")
+            route = _confirm_route([str(c) for c in confirmed] if isinstance(confirmed, list) else [])
+            if route == "pair":
+                bucket.confirmed_pair += 1
+            elif route == "lone_dwell":
+                bucket.confirmed_lone_dwell += 1
+            elif route == "teardown":
+                bucket.confirmed_teardown += 1
+    judgement.holds = {k: v for k, v in judgement.holds.items() if v != HoldAccounting()}
+
+    # Fragments: one call recorded as several stems, chained by a same-app restart inside the window.
+    by_bundle: dict[str, list[Session]] = {}
+    for s in sessions:
+        if s.bundle_id != "manual":
+            by_bundle.setdefault(s.bundle_id, []).append(s)
+    for runs in by_bundle.values():
+        runs.sort(key=lambda r: r.started_ts)
+        chain = 1
+        for prev, nxt in zip(runs, runs[1:]):
+            if nxt.started_ts - prev.stopped_ts <= window:
+                chain += 1
+                continue
+            if chain > 1:
+                judgement.fragmented_calls += 1
+                judgement.extra_stems += chain - 1
+            chain = 1
+        if chain > 1:
+            judgement.fragmented_calls += 1
+            judgement.extra_stems += chain - 1
+    return judgement
+
+
+def judgement_rows(sessions: list[Session], late_after_sec: float = DEFAULT_LATE_AFTER_SEC) -> dict[str, dict]:
+    """Per-app end-judgement figures: false ends and their seconds lost, late ends and overrun."""
+    out: dict[str, dict] = {}
+    for s in sessions:
+        if s.stop_kind not in AUTOMATIC_STOPS:
+            continue
+        row = out.setdefault(s.bundle_id, {
+            "automatic_stops": 0, "false_ends": 0, "foreign_ends": 0, "seconds_lost": 0.0,
+            "late_ends": 0, "overrun_min": 0.0, "unjudged": 0,
+        })
+        row["automatic_stops"] += 1
+        if s.stop_kind == STOP_FOREIGN_END:
+            row["foreign_ends"] += 1
+        if s.false_end:
+            row["false_ends"] += 1
+            row["seconds_lost"] += s.seconds_lost or 0.0
+        if s.overrun_sec is not None and s.overrun_sec > late_after_sec:
+            row["late_ends"] += 1
+        if s.overrun_sec is not None and s.overrun_sec > 0:
+            row["overrun_min"] += s.overrun_sec / 60.0
+        if s.call_up_at_end is None and s.resighted_ts is None:
+            row["unjudged"] += 1
+    return out
+
+
+def weekly_rows(sessions: list[Session]) -> dict[str, dict]:
+    """The same figures per ISO week of the recording's start, so a build's effect reads over time.
+    Per build era waits on OBS5's launch row."""
+    out: dict[str, dict] = {}
+    for s in sessions:
+        year, week, _ = s.started_ts.isocalendar()
+        row = out.setdefault(f"{year}-W{week:02d}", {"sessions": 0, "false_ends": 0, "seconds_lost": 0.0,
+                                                      "overrun_min": 0.0})
+        row["sessions"] += 1
+        if s.false_end:
+            row["false_ends"] += 1
+            row["seconds_lost"] += s.seconds_lost or 0.0
+        if s.overrun_sec is not None and s.overrun_sec > 0:
+            row["overrun_min"] += s.overrun_sec / 60.0
+    return dict(sorted(out.items()))
 
 
 # DET3: how far outside a mic-busy span a prompt / recording / candidate event may fall and
@@ -464,6 +736,7 @@ def render_report(
     mic_spans: list[MicBusySpan] | None = None,
     min_miss_sec: float = 30.0,
     mic_input_faults: list[datetime] | None = None,
+    judgement: EndJudgement | None = None,
 ) -> str:
     """Render a markdown audit report. Empty input still produces a
     valid skeleton so the caller can pipe it without branching."""
@@ -492,12 +765,21 @@ def render_report(
         backstop_count = sum(1 for s in sessions if s.stop_kind == STOP_SILENCE_BACKSTOP)
         force_count = sum(1 for s in sessions if s.stop_kind == STOP_FORCE_STOP)
         manual_count = sum(1 for s in sessions if s.stop_kind == STOP_MANUAL)
+        other_auto = {kind: sum(1 for s in sessions if s.stop_kind == kind)
+                      for kind in (STOP_FOREIGN_END, STOP_MIC_IN_USE, STOP_ENDED_DURING_START)}
         all_deltas = [s.delta_sec for s in sessions if s.delta_sec is not None]
 
         lines.append("## Summary")
         lines.append("")
         lines.append(f"- Detector-triggered stops: **{detector_count}** "
-                     f"({detector_count / total * 100:.0f}%)")
+                     f"({detector_count / total * 100:.0f}%) - what stopped the recording, not "
+                     f"whether it was right; the end judgement below says that")
+        labels = {STOP_FOREIGN_END: "Stopped by another app's lifecycle end",
+                  STOP_MIC_IN_USE: "Stopped on mic release (`mic_in_use_stop`)",
+                  STOP_ENDED_DURING_START: "Ended while the recording was starting"}
+        for kind, n in other_auto.items():
+            if n:
+                lines.append(f"- {labels[kind]}: **{n}** ({n / total * 100:.0f}%)")
         if backstop_count:
             lines.append(f"- Auto-stopped by silence backstop: **{backstop_count}** "
                          f"({backstop_count / total * 100:.0f}%) "
@@ -531,12 +813,15 @@ def render_report(
             )
         lines.append("")
 
+        if judgement is not None:
+            lines.extend(_render_judgement(sessions, judgement))
+
         misses = [s for s in sessions if s.stop_kind == STOP_MANUAL]
         lines.append(f"## Detector misses ({len(misses)})")
         lines.append("")
         if not misses:
             lines.append("_None: every session was ended by the detector, the silence "
-                         "backstop, a force-stop, or crash recovery._")
+                         "backstop, a force-stop, or another automatic stop._")
             lines.append("")
         else:
             lines.append("Sessions stopped without a preceding `lifecycle.ended` and "
@@ -620,6 +905,66 @@ def render_report(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _render_judgement(sessions: list[Session], judgement: EndJudgement) -> list[str]:
+    """The DET19 section: every automatic stop judged against the call span and the watch window."""
+    lines = ["## End judgement", ""]
+    lines.append(f"Call span from `{judgement.truth_source}` rows (DET23's microphone-holder ledger is not "
+                 f"in this log); a stop is a false end when the call still read live at the end or the "
+                 f"same app prompted, recorded or resumed within {judgement.watch_window_sec / 60:.0f} min "
+                 f"after it, and late when the span had ended more than {judgement.late_after_sec:.0f}s "
+                 f"before the stop.")
+    lines.append("")
+    rows = judgement_rows(sessions, judgement.late_after_sec)
+    if rows:
+        lines.append("| Source app | Automatic stops | False ends | Foreign | Seconds lost | Late ends "
+                     "| Overrun | Unjudged |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+        for app, r in sorted(rows.items(), key=lambda kv: kv[1]["automatic_stops"], reverse=True):
+            lines.append(f"| `{app}` | {r['automatic_stops']} | {r['false_ends']} | {r['foreign_ends']} "
+                         f"| {r['seconds_lost']:.0f}s | {r['late_ends']} | {r['overrun_min']:.1f} min "
+                         f"| {r['unjudged']} |")
+        lines.append("")
+    else:
+        lines.append("_No automatic stop in this window._")
+        lines.append("")
+    if judgement.fragmented_calls:
+        lines.append(f"- Calls recorded as several stems: **{judgement.fragmented_calls}** "
+                     f"({judgement.extra_stems} extra stem(s))")
+    trims = [s.trim_error_sec for s in sessions if s.trim_error_sec is not None]
+    if trims:
+        lines.append(f"- Held-tail trim error against the span end: median {statistics.median(trims):.1f}s, "
+                     f"worst {max(trims, key=abs):.1f}s over {len(trims)} trim(s)")
+    if judgement.holds:
+        lines.append("")
+        lines.append("| Source app | Holds opened | Released | Pair | Lone dwell | Teardown | Vetoed "
+                     "| Backstop stood down |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+        for app, h in sorted(judgement.holds.items()):
+            lines.append(f"| `{app}` | {h.opened} | {h.released} | {h.confirmed_pair} | "
+                         f"{h.confirmed_lone_dwell} | {h.confirmed_teardown} | {h.vetoed} | "
+                         f"{h.backstop_stood_down} |")
+    weeks = weekly_rows(sessions)
+    if len(weeks) > 1:
+        lines.append("")
+        lines.append("| Week | Sessions | False ends | Seconds lost | Overrun |")
+        lines.append("|---|---:|---:|---:|---:|")
+        for week, w in weeks.items():
+            lines.append(f"| {week} | {w['sessions']} | {w['false_ends']} | {w['seconds_lost']:.0f}s "
+                         f"| {w['overrun_min']:.1f} min |")
+    false_ends = [s for s in sessions if s.false_end]
+    if false_ends:
+        lines.append("")
+        lines.append("False ends:")
+        lines.append("")
+        for s in false_ends:
+            why = "call still live at the end" if s.call_up_at_end else "same app back within the window"
+            lost = f", {s.seconds_lost:.0f}s lost" if s.seconds_lost is not None else ""
+            lines.append(f"- `{s.started_ts.isoformat(timespec='seconds')}` `{s.bundle_id}` "
+                         f"({s.stop_kind}): {why}{lost} · `{s.file or '(unknown)'}`")
+    lines.append("")
+    return lines
+
+
 def _parse_since(s: str) -> datetime:
     s = s.strip()
     if s and s[-1] in "smhd" and s[:-1].isdigit():
@@ -665,6 +1010,19 @@ def main(argv: list[str]) -> int:
         help="Minimum mic-busy span duration (seconds) to count as a miss (default 30), so brief "
              "dictation / voice-memo blips are not reported as missed meetings.",
     )
+    p.add_argument(
+        "--watch-window-sec",
+        type=float,
+        default=DEFAULT_WATCH_WINDOW_SEC,
+        help="After an automatic stop, how long a same-app prompt, recording or resume still marks it "
+             "a false end (default 600).",
+    )
+    p.add_argument(
+        "--late-after-sec",
+        type=float,
+        default=DEFAULT_LATE_AFTER_SEC,
+        help="A stop this long after the call span ended counts as a late end (default 30).",
+    )
     args = p.parse_args(argv)
 
     source = Path(args.source)
@@ -684,6 +1042,8 @@ def main(argv: list[str]) -> int:
     skipped.report()
     sessions = [classify_session(s) for s in pair_sessions(raw, since=since)]
     stats = aggregate(sessions)
+    judgement = judge_sessions(sessions, raw, watch_window_sec=args.watch_window_sec,
+                               late_after_sec=args.late_after_sec, since=since)
 
     # DET3: correlate mic-busy spans against prompts / recordings / candidate drops, and (DET11)
     # against the natives an untrusted Accessibility grant made unreadable.
@@ -721,6 +1081,31 @@ def main(argv: list[str]) -> int:
                 }
                 for s in sessions if s.stop_kind == STOP_MANUAL
             ],
+            "end_judgement": {
+                "truth_source": judgement.truth_source,
+                "watch_window_sec": judgement.watch_window_sec,
+                "late_after_sec": judgement.late_after_sec,
+                "per_app": judgement_rows(sessions, judgement.late_after_sec),
+                "per_week": weekly_rows(sessions),
+                "fragmented_calls": judgement.fragmented_calls,
+                "extra_stems": judgement.extra_stems,
+                "holds": {bid: vars(h) for bid, h in judgement.holds.items()},
+                "stops": [
+                    {
+                        "started_ts": s.started_ts.isoformat(),
+                        "bundle_id": s.bundle_id,
+                        "file": s.file,
+                        "stop_kind": s.stop_kind,
+                        "stop_cause": s.stop_cause,
+                        "call_up_at_end": s.call_up_at_end,
+                        "false_end": s.false_end,
+                        "seconds_lost": s.seconds_lost,
+                        "overrun_sec": s.overrun_sec,
+                        "trim_error_sec": s.trim_error_sec,
+                    }
+                    for s in sessions if s.stop_kind in AUTOMATIC_STOPS
+                ],
+            },
             "mic_busy": {
                 # DET10: `spans_observed: 0` with `misses: []` used to be the only thing a machine
                 # reader saw, and it reads identically to a clean week. `input_status` is the
@@ -748,6 +1133,7 @@ def main(argv: list[str]) -> int:
     report = render_report(
         sessions, stats,
         mic_spans=mic_spans, min_miss_sec=args.min_miss_sec, mic_input_faults=mic_faults,
+        judgement=judgement,
     )
     if args.output:
         Path(args.output).write_text(report, encoding="utf-8")

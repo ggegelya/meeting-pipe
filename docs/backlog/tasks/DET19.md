@@ -2,9 +2,9 @@
 id: DET19
 title: mp analyze-detection counts every lifecycle end as a detector success and ignores every event END9 to END17 added, so false ends, overruns and holds never show as minutes
 category: Detection
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). The only detection reliability report labels a stop a detector success whenever any lifecycle.ended falls inside the session, with no truth source, so the 6 field false ends among 63 lifecycle-ended stops all read as successes, and pair_sessions reads five actions, none of the hold, veto, trim, rescue, resume or stand-down rows. Scope: rewrite the end dimension over the mic-holder ledger and OBS5's stop cause, judge each stop against an independent call span plus a post-end watch window, and report false ends, fragments, seconds lost, overrun minutes, hold accounting, trim error and stood-down backstops, keeping DET10's no_spans distinction, pinned by fixtures from redacted pack rows. [Spec](./DET19.md)
+comment: Shipped 2026-11-16: the end dimension judges every automatic stop against the recording bundle's process_audio_is_running_input rows plus a same-app re-sighting inside --watch-window-sec, reporting false ends with seconds lost, foreign ends, late ends and overrun minutes, trim error, fragments, holds by route and stood-down backstops per app and per week, with mic_in_use_stop and recording_ended_during_start as their own stop kinds; 8 new tests. Remainder: switch the span to DET23's ledger and the stop kind to OBS5's cause, and add the per-era split, once those land; owner approval to close.
 ---
 
 # DET19: mp analyze-detection counts every lifecycle end as a detector success and ignores every event END9 to END17 added, so false ends, overruns and holds never show as minutes
@@ -47,3 +47,12 @@ Depends on DET23 (the ledger) and OBS5's stop cause; until DET23 lands, item 1's
 - `test_pair_sessions_classifies_detector_triggered_stop` is rewritten to the new contract rather than deleted, and the docstring at the top of the module states the new rule.
 - `cd pipeline && uv run --extra dev ruff check src tests`, `uv run --extra dev --extra mcp pyright` and `uv run --extra dev pytest -q` green, N new tests named in the commit body; `bash scripts/ci-local.sh pipeline` green.
 - README's `mp analyze-detection` section and `ARCHITECTURE.md`'s `analyze_detection.py` row describe the new end judgement in the same commit.
+
+**Progress (2026-11-16): shipped on the fallback rows, as the spec allows until DET23 and OBS5 land.**
+
+- The call span is the recording bundle's `signal/process_audio_is_running_input` rows (the last reading at or before the end decides; a `false` reading is the span's end), and the report and `--json` name that source. The scanner sightings the spec lists as a second fallback were not used for the span: a `discovery_shadow_pick` or `candidate_dropped` says an app was seen, not that a call was up, so they would read an idle Teams as a live call; a same-app `prompt_shown`, `recording_started` or `recording_resumed_after_end` inside the watch window is used instead, as the spec's item 2 asks.
+- `recording_stopped`'s OBS5 stop cause is read when present (`cause` or `stop_cause`) and carried into `--json`, but it does not override the inferred stop kind until OBS5 fixes its vocabulary.
+- Per build era is not reported (it needs OBS5's launch row); per week is.
+- A `lifecycle.ended` with no `bundle_id` (older rows) is still taken as the recording's own end. `pair_sessions` now sorts on the parsed instant, since a string sort put a `...36.500Z` stop ahead of a `...36Z` end.
+- Remainder for a later session: replace the span source with DET23's ledger and the inferred stop kind with OBS5's cause once each exists, and add the era split.
+
