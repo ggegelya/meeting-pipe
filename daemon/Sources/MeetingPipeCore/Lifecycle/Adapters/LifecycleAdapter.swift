@@ -54,6 +54,10 @@ public protocol LifecycleAdapter: AnyObject {
     /// Discovery-time walk usually misses the button because the call UI hasn't rendered yet.
     /// No-op when already armed; browser adapter's default is a no-op.
     func armLeaveButton(_ element: AXUIElement)
+
+    /// END18: the hold's rescue. Re-assert an armed, healthy Leave button as a fresh live reading,
+    /// or re-arm on `element`. Browser adapters have no Leave button; the default is a no-op.
+    func rescueLeaveButton(_ element: AXUIElement)
 }
 
 public extension LifecycleAdapter {
@@ -64,6 +68,8 @@ public extension LifecycleAdapter {
     var publishesProcessAudio: Bool { false }
 
     func armLeaveButton(_ element: AXUIElement) {}
+
+    func rescueLeaveButton(_ element: AXUIElement) {}
 }
 
 /// Locale-tolerant title matchers for all meeting vendors. Single source of truth; adapters compose these per platform.

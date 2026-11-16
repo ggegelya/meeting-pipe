@@ -624,4 +624,50 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         scheduler.tick?()
         XCTAssertEqual(scheduler.armed.last, AXLeaveButtonSignal.defaultPollInterval)
     }
+
+    // MARK: - END18
+
+    func test_defaultProbe_mapping_isThreeValued_END18() {
+        XCTAssertEqual(AXLeaveButtonSignal.state(for: .success), .healthy)
+        XCTAssertEqual(AXLeaveButtonSignal.state(for: .invalidUIElement), .invalid)
+        XCTAssertEqual(AXLeaveButtonSignal.state(for: .cannotComplete), .unknown)
+        XCTAssertEqual(AXLeaveButtonSignal.state(for: .apiDisabled), .unknown)
+    }
+
+    func test_anUnknownRead_keepsTheLastState_andEmitsNothing_fromEitherSide_END18() {
+        for start in [AXLeaveButtonSignal.State.healthy, .invalid] {
+            let scheduler = ManualScheduler()
+            var probeReturn = start
+            var observed: [AXLeaveButtonSignal.State] = []
+            let signal = AXLeaveButtonSignal(
+                axBus: AXObserverBus(), probe: { _ in probeReturn }, scheduler: manualScheduler(scheduler)
+            )
+            signal.onChange = { observed.append($0) }
+            signal.start(context: teamsContext, leaveButton: stubElement())
+            probeReturn = .unknown
+            scheduler.tick?()
+            scheduler.tick?()
+            XCTAssertEqual(observed, [start], "from \(start): nothing emitted on an unknown read")
+            XCTAssertEqual(signal.lastState, start)
+            probeReturn = start
+            scheduler.tick?()
+            XCTAssertEqual(observed, [start], "and the same state afterwards is no edge")
+        }
+    }
+
+    /// The rescue entry re-asserts an armed healthy button as a fresh `.healthy`, which the late-arm
+    /// path (`armIfNeeded`, pinned silent above) deliberately does not.
+    func test_reassertOrArm_reEmitsAHealthyArmedButton_END18() {
+        let scheduler = ManualScheduler()
+        var observed: [AXLeaveButtonSignal.State] = []
+        let signal = AXLeaveButtonSignal(
+            axBus: AXObserverBus(), probe: { _ in .healthy }, scheduler: manualScheduler(scheduler)
+        )
+        signal.onChange = { observed.append($0) }
+        signal.start(context: teamsContext, leaveButton: stubElement())
+        signal.armIfNeeded(context: teamsContext, leaveButton: stubElement())
+        XCTAssertEqual(observed, [.healthy], "late-arm on a healthy button stays silent")
+        signal.reassertOrArm(context: teamsContext, leaveButton: stubElement())
+        XCTAssertEqual(observed, [.healthy, .healthy], "the rescue reaches the engine")
+    }
 }

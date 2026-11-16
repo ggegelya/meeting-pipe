@@ -21,9 +21,14 @@ public final class AXLeaveButtonSignal {
     public enum State: Equatable {
         case healthy
         case invalid
+        /// END18: the read said neither. Never emitted and never stored: `_evaluate` treats it as
+        /// no reading at all, so a TCC hiccup from healthy does not end a meeting and a read against
+        /// a window that is tearing down does not pass as a healthy return.
+        case unknown
     }
 
-    /// Returns element health. Maps `kAXErrorInvalidUIElement` to `.invalid`; transient errors stay `.healthy` so a TCC hiccup doesn't promote.
+    /// Returns element health: `.healthy` only on a successful read, `.invalid` on
+    /// `kAXErrorInvalidUIElement`, `.unknown` on anything else (END18).
     public typealias Probe = (AXUIElement) -> State
 
     public typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
@@ -234,6 +239,32 @@ public final class AXLeaveButtonSignal {
         _start(context: context, leaveButton: leaveButton, resolveElement: resolver, generation: currentGeneration())
     }
 
+    /// END18 (F002, G006): the hold's rescue. `armIfNeeded` deliberately does nothing when the armed
+    /// element still probes healthy (right for the late-arm race it was written for), so END8's
+    /// rescue of a window-gone hold never reached the engine: no edge, no `.live`, no revert. This
+    /// re-asserts a healthy armed element as a fresh `.healthy` so the engine can act on it, and
+    /// otherwise re-arms on `leaveButton` exactly as `armIfNeeded` would, whose fresh initial read
+    /// emits on its own. Returns without waiting; dropped after a `stop`.
+    public func reassertOrArm(
+        context: MeetingLifecycleContext,
+        leaveButton: AXUIElement
+    ) {
+        let generation = currentGeneration()
+        runAsync { [self] in
+            guard generation == currentGeneration() else { return }
+            if let current = element, probe(current) == .healthy {
+                lastState = .healthy
+                eventLog.emit(category: "signal", action: "ax_leave_button_reasserted", attributes: [
+                    "bundle_id": context.bundleID,
+                    "pid": Int(context.pid),
+                ])
+                onChange?(.healthy)
+                return
+            }
+            _armIfNeeded(context: context, leaveButton: leaveButton)
+        }
+    }
+
     /// Returns without waiting (PERF15). The generation moves here, on the caller's thread, so a
     /// walk still running on the queue emits nothing once this returns; `_stop` runs after it.
     public func stop() {
@@ -280,6 +311,10 @@ public final class AXLeaveButtonSignal {
         }
         guard let element = element else { return .unknown }
         var state = probe(element)
+        // END18: an unreadable element is no reading. It keeps `lastState`, emits nothing, and is
+        // never a return: before END18 every status but `invalidUIElement` read healthy, so a read
+        // against a call window tearing down reverted a hold the mic and window had confirmed.
+        if state == .unknown { return .unknown }
         // TECH-END2: before treating the Leave control as gone (which ends the meeting),
         // re-walk for a live one. A Teams call-UI re-render (screen-share start/stop, layout
         // switch) transiently invalidates the cached element while the real Leave button still
@@ -405,12 +440,22 @@ public final class AXLeaveButtonSignal {
         }
     }
 
-    /// Read `kAXRoleAttribute`; map `kAXErrorInvalidUIElement` to `.invalid`, all other statuses to `.healthy` (TCC hiccup guard).
+    /// Read `kAXRoleAttribute`: `.success` is healthy, `kAXErrorInvalidUIElement` invalid, anything else
+    /// unknown (END18; it used to read healthy, which let a teardown read pass as a live Leave button).
     public static let defaultProbe: Probe = { element in
         var value: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(
             element, kAXRoleAttribute as CFString, &value
         )
-        return status == .invalidUIElement ? .invalid : .healthy
+        return state(for: status)
+    }
+
+    /// END18: what a read's status says about the element. Pure, so the mapping is pinned without AX.
+    public static func state(for status: AXError) -> State {
+        switch status {
+        case .success: return .healthy
+        case .invalidUIElement: return .invalid
+        default: return .unknown
+        }
     }
 }

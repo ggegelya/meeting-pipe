@@ -142,6 +142,20 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
         }
     }
 
+    /// END18: the same adapter over signals a test built, so the real `AXLeaveButtonSignal` and
+    /// `ShareableContentSignal` (fake probes and schedulers) run under it end to end.
+    init(
+        config: NativeLifecycleConfig,
+        processAudio: ProcessAudioSignal?,
+        shareableContent: ShareableContentSignal,
+        axLeaveButton: AXLeaveButtonSignal
+    ) {
+        self.config = config
+        self.processAudio = processAudio
+        self.shareableContent = shareableContent
+        self.axLeaveButton = axLeaveButton
+    }
+
     public func start(
         context: MeetingLifecycleContext,
         handle: LifecycleAdapterHandle,
@@ -200,6 +214,11 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
     public func armLeaveButton(_ element: AXUIElement) {
         guard let context = startedContext else { return }
         axLeaveButton.armIfNeeded(context: context, leaveButton: element)
+    }
+
+    public func rescueLeaveButton(_ element: AXUIElement) {
+        guard let context = startedContext else { return }
+        axLeaveButton.reassertOrArm(context: context, leaveButton: element)
     }
 
     public func stop() {

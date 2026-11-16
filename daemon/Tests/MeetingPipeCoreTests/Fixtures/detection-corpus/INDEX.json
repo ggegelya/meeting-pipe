@@ -43,6 +43,8 @@
     "teams_native_lifecycle_end9_empty_rewalk.json",
     "teams_native_lifecycle_end12_quiet_log.json",
     "safari_browser_raw_tab_left_held.json",
-    "teams_native_lifecycle_end27_resume_race.json"
+    "teams_native_lifecycle_end27_resume_race.json",
+    "zoom_native_lifecycle_end18_leave_return_declined.json",
+    "teams_native_lifecycle_end18_rescue_reverts.json"
   ]
 }

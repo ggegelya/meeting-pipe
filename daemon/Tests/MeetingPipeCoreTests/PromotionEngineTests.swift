@@ -837,4 +837,147 @@ final class PromotionEngineTests: XCTestCase {
             )
         )
     }
+
+    // MARK: - END18: levels, not edges
+
+    /// The 2026-11-12 Zoom order (`20261112-170131`): Leave invalid under a live mic opens a hold,
+    /// the mic releases 4.1 s later, the window goes 1.6 s after that, and a teardown read of the
+    /// Leave button passes as healthy 2.4 s after that. Before END18 that reading reverted the hold
+    /// and nothing reopened it; now the revert is declined and the pair confirms on its dwell.
+    func test_a_returning_leave_after_the_mic_and_window_ended_does_not_revert_END18() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: -100))
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: -100))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: -99))
+        XCTAssertEqual(
+            engine.ingest(event(.axLeaveButton, .ended, at: 0))?.verdict,
+            .endingProvisional(context: teamsContext, reason: EndingReason(leadingSignal: "ax_leave_button_invalid"))
+        )
+        XCTAssertNil(engine.ingest(event(.processAudioIsRunningInput, .ended, at: 4.136)))
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 5.781)))
+        XCTAssertNil(engine.ingest(event(.axLeaveButton, .live, at: 8.158)), "the revert is declined")
+        XCTAssertEqual(
+            engine.takeDeclinedRevert(),
+            PromotionEngine.DeclinedRevert(
+                leading: .axLeaveButton, reading: .axLeaveButton, endedClasses: [.processAudioIsRunningInput]
+            )
+        )
+        XCTAssertTrue(engine.hasPendingEndDeadline, "the hold is still open")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 5.781 + PromotionEngine.defaultConfirmDwell - 0.1)))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 5.781 + PromotionEngine.defaultConfirmDwell))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "ax_leave_button_invalid",
+                    confirmedBy: ["process_audio_is_running_input_false", "shareable_content_window_gone"]
+                )
+            )
+        )
+    }
+
+    /// A vetoer reading live still reverts unconditionally (END14), whatever else ended.
+    func test_a_vetoer_returning_still_reverts_whatever_else_ended_END18() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 10))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 12))
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 13))
+        XCTAssertEqual(
+            engine.ingest(event(.processAudioIsRunningInput, .live, at: 15))?.verdict,
+            .inMeeting(context: teamsContext)
+        )
+        XCTAssertNil(engine.takeDeclinedRevert())
+    }
+
+    /// END8 still holds where nothing else ended: the Leave button reading live reverts a
+    /// window-gone hold on an app with no process audio.
+    func test_a_same_class_reading_reverts_when_nothing_else_ended_END18() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 10))
+        XCTAssertEqual(engine.ingest(event(.axLeaveButton, .live, at: 10.5))?.verdict, .inMeeting(context: teamsContext))
+        XCTAssertNil(engine.takeDeclinedRevert())
+    }
+
+    /// D029: a Leave-led hold that sat past the lone dwell under a live mic survives a 2 s mic blip.
+    func test_a_long_hold_under_a_live_mic_survives_a_mic_blip_END18() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 0))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 800)), "the live mic vetoes")
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 800))
+        for t in stride(from: 800.25, through: 802, by: 0.25) {
+            XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: t)), "no end at \(t) inside the blip")
+        }
+        XCTAssertEqual(
+            engine.ingest(event(.processAudioIsRunningInput, .live, at: 802))?.verdict,
+            .inMeeting(context: teamsContext)
+        )
+    }
+
+    /// A mic released and kept released ends the hold on the pair, a dwell after the release, not
+    /// the instant the lone dwell (counted from the first doubt) would have allowed.
+    func test_a_released_mic_confirms_a_dwell_after_the_release_not_at_once_END18() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 800))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 800.25)), "the pre-END18 lone dwell ended here")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 859.9)))
+        XCTAssertNotNil(engine.tick(at: Date(timeIntervalSince1970: 860)))
+    }
+
+    /// A declined revert restarts the lone dwell: with no pair possible it runs from that reading.
+    func test_a_declined_revert_restarts_the_lone_dwell_END18() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: -1))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 0))
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 1))
+        XCTAssertNil(engine.ingest(event(.axLeaveButton, .live, at: 300)))
+        XCTAssertNotNil(engine.takeDeclinedRevert())
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: PromotionEngine.defaultLoneDwell + 1)), "anchored at 300 now")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 300 + PromotionEngine.defaultLoneDwell - 0.1)))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 300 + PromotionEngine.defaultLoneDwell))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "process_audio_is_running_input_false", confirmedBy: ["lone_dwell"])
+            )
+        )
+    }
+
+    /// F002's engine half: a window-gone hold whose Leave button reads live in `states` (the rescue's
+    /// emit never came) does not confirm on the lone dwell while nothing of another class ended.
+    func test_a_hold_contradicted_by_its_own_class_does_not_lone_confirm_END18() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 10))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 10 + PromotionEngine.defaultLoneDwell * 2)))
+        XCTAssertTrue(engine.hasPendingEndDeadline)
+    }
+
+    /// The other direction is not a contradiction: a window still matching after the Leave button
+    /// went invalid (Webex's title matcher keeps matching its main window after a call) does not
+    /// hold a real end past the lone dwell.
+    func test_a_window_still_matching_does_not_hold_a_leave_led_end_END18() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 10))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 10 + PromotionEngine.defaultLoneDwell))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "ax_leave_button_invalid", confirmedBy: ["lone_dwell"])
+            )
+        )
+    }
 }

@@ -1,0 +1,26 @@
+{
+  "scenario": "teams_native_lifecycle_end18_rescue_reverts",
+  "description": "END18, synthetic from the three era-1 orders the spec quotes (2026-10-08T14:38:37Z, 2026-10-09T09:17:28Z, 2026-10-09T14:31:32Z): the call window reads gone with the Leave button armed and healthy, and the rescue's re-asserted healthy Leave arrives 0.3, 1.0 and 1.8 s later. The era-1 engine never received that reading (armIfNeeded emitted nothing on a healthy button) and ended each recording 2 s in. Process audio is absent here, the case END14's veto cannot cover. Each hold reverts; the call never ends.",
+  "engine": "lifecycle",
+  "origin": "synthetic",
+  "expected_outcome": "no_end",
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "until": 1500.0,
+  "events": [
+    {"t": 0.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": 0.0, "kind": "shareable_content_window", "state": "live"},
+    {"t": 1.0, "kind": "recording_started"},
+    {"t": 87.0, "kind": "shareable_content_window", "state": "ended"},
+    {"t": 87.3, "kind": "ax_leave_button", "state": "live"},
+    {"t": 150.0, "kind": "shareable_content_window", "state": "live"},
+    {"t": 300.0, "kind": "shareable_content_window", "state": "ended"},
+    {"t": 301.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": 350.0, "kind": "shareable_content_window", "state": "live"},
+    {"t": 500.0, "kind": "shareable_content_window", "state": "ended"},
+    {"t": 501.8, "kind": "ax_leave_button", "state": "live"}
+  ]
+}

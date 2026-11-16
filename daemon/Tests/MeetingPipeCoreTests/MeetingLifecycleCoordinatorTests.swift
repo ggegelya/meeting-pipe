@@ -542,6 +542,38 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.current, .starting(context: teamsContext), "and hears its signals again")
     }
 
+    /// END18: a declined revert leaves the verdict alone, so the drained row is its only trace.
+    func test_declined_revert_emits_end_revert_declined_END18() throws {
+        let fake = FakeAdapter()
+        let log = RecordingEventLog()
+        let coordinator = MeetingLifecycleCoordinator(
+            eventLog: log, adapters: [fake], scheduler: ManualScheduler().scheduler(),
+            clock: { Date(timeIntervalSince1970: 0) }
+        )
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+        func emit(_ kind: PrimarySignalKind, _ state: PrimarySignalState, _ t: TimeInterval) {
+            fake.emit(.init(kind: kind, state: state, timestamp: Date(timeIntervalSince1970: t), context: teamsContext))
+        }
+        emit(.axLeaveButton, .live, 0)
+        flushEngine(coordinator)
+        coordinator.confirmRecording()
+        flushEngine(coordinator)
+        emit(.axLeaveButton, .ended, 10)
+        emit(.processAudioIsRunningInput, .ended, 14)
+        emit(.axLeaveButton, .live, 18)
+        flushEngine(coordinator)
+
+        XCTAssertEqual(
+            coordinator.current,
+            .endingProvisional(context: teamsContext, reason: EndingReason(leadingSignal: "ax_leave_button_invalid"))
+        )
+        let rows = log.entries.filter { $0.category == "lifecycle" && $0.action == "end_revert_declined" }
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.attributes["leading_signal"], "ax_leave_button_invalid")
+        XCTAssertEqual(rows.first?.attributes["reading"], "ax_leave_button_invalid")
+        XCTAssertNotNil(rows.first?.attributes["ended_classes"])
+    }
+
     private func flushEngine(_ coordinator: MeetingLifecycleCoordinator) {
         let expectation = expectation(description: "engine drain")
         coordinator.tick()

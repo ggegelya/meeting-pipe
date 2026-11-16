@@ -1981,9 +1981,11 @@ final class MeetingSessionController: @unchecked Sendable {
 
     /// Rescue a provisional end caused by the Teams 2 compact-view swap,
     /// which destroys the Leave button while the call continues. If a Leave
-    /// button still exists (moved to the compact panel), re-arm on it so its
-    /// healthy baseline reverts the hold to `.inMeeting` (END8). A genuine end
-    /// finds none and the hold carries on.
+    /// button still exists (moved to the compact panel), hand it to the signal's rescue entry
+    /// (`rescueLeaveButton`), which re-asserts an armed healthy button as a fresh live reading or
+    /// re-arms on the new one, so the healthy baseline reaches the engine and reverts the hold to
+    /// `.inMeeting` (END8). Until END18 this went through the late-arm, a no-op on an armed healthy
+    /// button, so the revert never fired (F002). A genuine end finds none and the hold carries on.
     func rescueProvisionalEnd(context: MeetingLifecycleContext) {
         guard context.kind == .native else { return }
         // The Leave-button search is a cross-process AX DFS over every window; run it OFF
@@ -2010,7 +2012,9 @@ final class MeetingSessionController: @unchecked Sendable {
                     "bundle_id": context.bundleID,
                     "leave_buttons_found": leaveButtons.count,
                 ])
-                self.coordinator.lifecycleCoord.armLeaveButton(leaveButton)
+                // END18: the rescue entry, not the late-arm. `armLeaveButton` is a no-op on an
+                // armed healthy button, so END8's revert never reached the engine (F002).
+                self.coordinator.lifecycleCoord.rescueLeaveButton(leaveButton)
             }
         }
     }

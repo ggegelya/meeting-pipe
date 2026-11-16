@@ -1,0 +1,25 @@
+{
+  "scenario": "zoom_native_lifecycle_end18_leave_return_declined",
+  "description": "END18, synthetic from the rows the spec quotes for Zoom stem 20261112-170131 (2026-11-12T15:19:45.186Z = t 0): the Leave button reads invalid under a live mic and opens a hold, the mic releases 4.136 s later, the call window goes at 5.781 s, and a teardown read of the Leave button passes as healthy at 8.158 s. Before END18 that reading reverted the hold, nothing reopened it and the owner stopped by hand; now the revert is declined and the pair (window since 5.781, mic since 4.136) confirms 60 s after the later of the two. Zoom has no teardown oracle, so nothing confirms sooner. The trim point is the hold's start until END21 moves it.",
+  "engine": "lifecycle",
+  "origin": "synthetic",
+  "expected_outcome": "ended",
+  "ended_at": 65.781,
+  "trim_at": 0.0,
+  "context": {
+    "bundle_id": "us.zoom.xos",
+    "kind": "native",
+    "pid": 1234
+  },
+  "until": 200.0,
+  "events": [
+    {"t": -300.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": -300.0, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": -300.0, "kind": "shareable_content_window", "state": "live"},
+    {"t": -299.0, "kind": "recording_started"},
+    {"t": 0.0, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 4.136, "kind": "process_audio_is_running_input_false", "state": "ended"},
+    {"t": 5.781, "kind": "shareable_content_window", "state": "ended"},
+    {"t": 8.158, "kind": "ax_leave_button", "state": "live"}
+  ]
+}

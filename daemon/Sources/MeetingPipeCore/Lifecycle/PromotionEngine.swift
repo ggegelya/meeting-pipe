@@ -177,10 +177,16 @@ public final class PromotionEngine {
         case idle
         case starting(context: MeetingLifecycleContext, observed: Set<PrimarySignalKind>, states: SignalStates)
         case inMeeting(context: MeetingLifecycleContext, observed: Set<PrimarySignalKind>, states: SignalStates)
+        /// `startedAt` is where the held tail starts (the trim point, END21's to move) and never
+        /// changes inside a hold. `loneSince` is what the lone dwell counts from (END18): the hold's
+        /// start, moved to the moment a vetoer stopped reading live inside it and to every
+        /// declined revert, so the lone dwell needs the doubt to have stood unbroken for
+        /// `loneDwell`, not merely to have begun that long ago.
         case endingProvisional(
             context: MeetingLifecycleContext,
             leading: PrimarySignalKind,
             startedAt: Date,
+            loneSince: Date,
             observed: Set<PrimarySignalKind>,
             states: SignalStates
         )
@@ -206,6 +212,14 @@ public final class PromotionEngine {
     public struct EndVeto: Equatable {
         public let leading: PrimarySignalKind
         public let vetoedBy: PrimarySignalKind
+    }
+
+    /// END18: a revert the engine declined because another evidence class had ended inside the
+    /// hold. Drained by the coordinator after each ingest and logged as `lifecycle`/`end_revert_declined`.
+    public struct DeclinedRevert: Equatable {
+        public let leading: PrimarySignalKind
+        public let reading: PrimarySignalKind
+        public let endedClasses: [PrimarySignalKind]
     }
 
     public let confirmDwell: TimeInterval
@@ -246,12 +260,14 @@ public final class PromotionEngine {
     }
 
     private var pendingVeto: EndVeto?
+    private var pendingDeclinedRevert: DeclinedRevert?
 
     /// Back to `.idle` for a new engagement. `awaitingVetoer` says whether the adapter about to
     /// start publishes process audio (`LifecycleAdapter.publishesProcessAudio`), END27.
     public func reset(awaitingVetoer: Bool = false) {
         phase = .idle
         pendingVeto = nil
+        pendingDeclinedRevert = nil
         awaitsVetoer = awaitingVetoer
     }
 
@@ -259,6 +275,24 @@ public final class PromotionEngine {
     public func takeVeto() -> EndVeto? {
         defer { pendingVeto = nil }
         return pendingVeto
+    }
+
+    /// END18: the revert most recently declined, cleared on read so each is reported once.
+    public func takeDeclinedRevert() -> DeclinedRevert? {
+        defer { pendingDeclinedRevert = nil }
+        return pendingDeclinedRevert
+    }
+
+    /// END18: the signals of evidence classes other than `kind`'s that read `.ended` and went so
+    /// inside the hold that opened at `startedAt`. The lead itself counts when it is of another
+    /// class: a mic-led hold is not undone by the Leave button reading healthy.
+    private static func otherClassesEndedInside(
+        _ states: SignalStates, excluding kind: PrimarySignalKind, since startedAt: Date
+    ) -> [PrimarySignalKind] {
+        states
+            .filter { $0.value.state == .ended && $0.value.at >= startedAt && $0.key.evidenceClass != kind.evidenceClass }
+            .map(\.key)
+            .sorted { $0.rawValue < $1.rawValue }
     }
 
     /// END14: the live signal that vetoes an end led by `kind`, if any.
@@ -315,10 +349,10 @@ public final class PromotionEngine {
             return handleStarting(event, context: context, observed: &observed, states: &states)
         case .inMeeting(let context, var observed, var states):
             return handleInMeeting(event, context: context, observed: &observed, states: &states)
-        case .endingProvisional(let context, let leading, let startedAt, var observed, var states):
+        case .endingProvisional(let context, let leading, let startedAt, let loneSince, var observed, var states):
             return handleEndingProvisional(
                 event, context: context, leading: leading,
-                startedAt: startedAt, observed: &observed, states: &states
+                startedAt: startedAt, loneSince: loneSince, observed: &observed, states: &states
             )
         case .ended:
             return nil
@@ -343,7 +377,7 @@ public final class PromotionEngine {
             }
             return endStarting(context: context, lead: held.kind, states: states)
         }
-        guard case .endingProvisional(let context, let leading, let startedAt, _, let states) = phase else {
+        guard case .endingProvisional(let context, let leading, let startedAt, let loneSince, _, let states) = phase else {
             return nil
         }
         if states.contains(where: { $0.key.vetoesLoneEnd && $0.value.state == .live }) { return nil }
@@ -354,7 +388,18 @@ public final class PromotionEngine {
         }
         let dwelled = endedSince.values.filter { now.timeIntervalSince($0) >= confirmDwell }
         let pairHeld = dwelled.count >= 2
-        let loneHeld = now.timeIntervalSince(startedAt) >= loneDwell
+        // END18: the lone dwell counts from the last liveness reading, not the first doubt (D029),
+        // and it does not run at all while the Leave button reads live against a window-gone lead
+        // and nothing of another class has ended inside the hold: that is a hold whose revert never
+        // reached the engine (F002, the healthy Leave button the rescue re-armed without an emit),
+        // not a lone end. Only the Leave button, never the window, contradicts its class-mate: the
+        // window reading is a title match, and Webex's matches its main window after every call,
+        // so a window "present" under a Leave-invalid lead would hold a real end for ever.
+        let leadClassContradicted = leading != .axLeaveButton
+            && leading.evidenceClass == PrimarySignalKind.axLeaveButton.evidenceClass
+            && states[.axLeaveButton]?.state == .live
+            && Self.otherClassesEndedInside(states, excluding: leading, since: startedAt).isEmpty
+        let loneHeld = !leadClassContradicted && now.timeIntervalSince(loneSince) >= loneDwell
         guard pairHeld || loneHeld else { return nil }
 
         var confirmedBy = states
@@ -373,7 +418,7 @@ public final class PromotionEngine {
     /// Before END9 the host called this on an empty AX re-walk, which was one sample of a blank
     /// accessibility tree rather than evidence; END17 leaves the teardown as its only caller.
     public func confirmProvisionalEnd(evidence: String = PromotionEngine.teardownEvidence) -> Decision? {
-        guard case .endingProvisional(let context, let leading, _, let observed, _) = phase else {
+        guard case .endingProvisional(let context, let leading, _, _, let observed, _) = phase else {
             return nil
         }
         var confirmedBy = observed.subtracting([leading]).map { $0.rawValue }
@@ -495,6 +540,7 @@ public final class PromotionEngine {
                 context: context,
                 leading: event.kind,
                 startedAt: event.timestamp,
+                loneSince: event.timestamp,
                 observed: [event.kind],
                 states: states
             )
@@ -507,6 +553,7 @@ public final class PromotionEngine {
         context: MeetingLifecycleContext,
         leading: PrimarySignalKind,
         startedAt: Date,
+        loneSince: Date,
         observed: inout Set<PrimarySignalKind>,
         states: inout SignalStates
     ) -> Decision? {
@@ -515,6 +562,10 @@ public final class PromotionEngine {
         switch event.state {
         case .ended:
             observed.insert(event.kind)
+            // END18 (D029): a vetoer that stops reading live inside the hold restarts the lone
+            // dwell, so a hold that sat 12 minutes under a live mic cannot confirm on the first
+            // tick of a 2 s mic blip.
+            let anchor = (event.kind.vetoesLoneEnd && previous?.state == .live) ? event.timestamp : loneSince
             // END17: only a definitive signal ends a hold on arrival. A weak second signal used to
             // confirm here at once when it was cross-class (END6), and that is the path END15's
             // mic switch took on 2026-10-22: Teams released its input for a few seconds while the
@@ -528,7 +579,7 @@ public final class PromotionEngine {
             }
             phase = .endingProvisional(
                 context: context, leading: leading,
-                startedAt: startedAt, observed: observed, states: states
+                startedAt: startedAt, loneSince: anchor, observed: observed, states: states
             )
             return nil
         case .live:
@@ -538,14 +589,33 @@ public final class PromotionEngine {
             // ended and now returns, whatever its class: END15's mic switch, in either order, is
             // exactly a process-audio drop that comes back. And a vetoer reporting the call is up
             // (END14). A cross-class `.live` from a signal that never went ended says nothing new
-            // and leaves the hold alone.
+            // and leaves the hold alone. Since END18 the first two count only while no other evidence
+            // class has ended inside the hold (below), and the rescue's healthy Leave reaches here
+            // as a real reading (`AXLeaveButtonSignal.reassertOrArm`).
             let returning = previous?.state == .ended
             guard event.kind.evidenceClass == leading.evidenceClass || returning || event.kind.vetoesLoneEnd else {
                 phase = .endingProvisional(
                     context: context, leading: leading,
-                    startedAt: startedAt, observed: observed, states: states
+                    startedAt: startedAt, loneSince: loneSince, observed: observed, states: states
                 )
                 return nil
+            }
+            // END18 (D104): a vetoer reading live still reverts unconditionally (END14). Any other
+            // returning or same-class reading reverts only if no other evidence class ended inside
+            // the hold: the 2026-11-12 Zoom hold (Leave invalid, then the mic released and the
+            // window gone, then a teardown read of the Leave button passing as healthy) reverted
+            // on that last reading and nothing reopened it, because the readings already ended are
+            // never sent again. Declined, the hold stays and the reading restarts the lone dwell.
+            if !event.kind.vetoesLoneEnd {
+                let ended = Self.otherClassesEndedInside(states, excluding: event.kind, since: startedAt)
+                if !ended.isEmpty {
+                    pendingDeclinedRevert = DeclinedRevert(leading: leading, reading: event.kind, endedClasses: ended)
+                    phase = .endingProvisional(
+                        context: context, leading: leading,
+                        startedAt: startedAt, loneSince: event.timestamp, observed: observed, states: states
+                    )
+                    return nil
+                }
             }
             if event.kind.vetoesLoneEnd {
                 pendingVeto = EndVeto(leading: leading, vetoedBy: event.kind)

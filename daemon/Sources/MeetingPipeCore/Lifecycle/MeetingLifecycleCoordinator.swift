@@ -186,6 +186,15 @@ public final class MeetingLifecycleCoordinator {
             if let decision = self.engine.ingest(event) {
                 self.publish(decision.verdict)
             }
+            // END18: so does a declined revert.
+            if let declined = self.engine.takeDeclinedRevert() {
+                self.eventLog.emit(category: "lifecycle", action: "end_revert_declined", attributes: [
+                    "bundle_id": event.context.bundleID,
+                    "leading_signal": declined.leading.rawValue,
+                    "reading": declined.reading.rawValue,
+                    "ended_classes": declined.endedClasses.map(\.rawValue),
+                ])
+            }
             // END14: a vetoed end leaves the verdict alone, so this row is the only trace of it.
             if let veto = self.engine.takeVeto() {
                 self.eventLog.emit(category: "lifecycle", action: "end_vetoed", attributes: [
@@ -290,6 +299,20 @@ public final class MeetingLifecycleCoordinator {
         guard isEngaged else { return false }
         if case .ended = current { return true }
         return false
+    }
+
+    /// END18: the hold's rescue, routed to the engaged adapter (`LifecycleAdapter.rescueLeaveButton`).
+    /// A healthy armed Leave button is re-asserted as a fresh live reading so the engine can revert
+    /// a same-class hold; END8's rescue went through `armLeaveButton`, which emits nothing then.
+    public func rescueLeaveButton(_ element: AXUIElement) {
+        guard let activeAdapter = activeAdapter else {
+            eventLog.emit(
+                category: "lifecycle", action: "arm_leave_button_dropped",
+                attributes: ["reason": "no_active_adapter", "via": "rescue"]
+            )
+            return
+        }
+        activeAdapter.rescueLeaveButton(element)
     }
 
     public func armLeaveButton(_ element: AXUIElement) {
