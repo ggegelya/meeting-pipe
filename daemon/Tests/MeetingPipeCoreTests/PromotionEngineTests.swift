@@ -702,4 +702,139 @@ final class PromotionEngineTests: XCTestCase {
             )
         )
     }
+
+    // MARK: - END27: a reliable `.starting` end waits for the vetoer's first reading
+
+    /// An engine for an adapter that publishes process audio, as the coordinator configures one.
+    private func engineAwaitingVetoer() -> PromotionEngine {
+        let engine = PromotionEngine()
+        engine.reset(awaitingVetoer: true)
+        return engine
+    }
+
+    /// The 2026-11-12 15:46:06 order: Leave healthy, the window's `initial` false 2 ms ahead of
+    /// process audio's `initial` true. Before END27 the window-gone ended `.starting` with
+    /// `confirmed_by` empty and the resume recorded on a terminal engine.
+    func test_window_gone_before_process_audio_reports_does_not_end_starting_END27() {
+        let engine = engineAwaitingVetoer()
+        XCTAssertEqual(engine.ingest(event(.axLeaveButton, .live, at: 0.597))?.verdict, .starting(context: teamsContext))
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 0.614)), "held for process audio")
+        XCTAssertTrue(engine.hasPendingEndDeadline, "the grace is a deadline, so the coordinator arms the tick")
+        XCTAssertNil(engine.ingest(event(.processAudioIsRunningInput, .live, at: 0.616)))
+        XCTAssertEqual(
+            engine.takeVeto(),
+            PromotionEngine.EndVeto(leading: .shareableContentWindow, vetoedBy: .processAudioIsRunningInput),
+            "logged as the END14 veto it is, naming a reading that did read live"
+        )
+        XCTAssertFalse(engine.hasPendingEndDeadline)
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 100)), "a vetoed end has no deadline")
+        XCTAssertEqual(engine.confirmRecording()?.verdict, .inMeeting(context: teamsContext))
+    }
+
+    /// The hang-up before the start finished (END14's case) still ends: process audio's first
+    /// reading is a release, which lifts the held window-gone, and it leads.
+    func test_window_gone_then_a_first_mic_release_ends_starting_END27() {
+        let engine = engineAwaitingVetoer()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 1)))
+        XCTAssertEqual(
+            engine.ingest(event(.processAudioIsRunningInput, .ended, at: 1.1))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "shareable_content_window_gone",
+                    confirmedBy: ["process_audio_is_running_input_false"]
+                )
+            )
+        )
+        XCTAssertNil(engine.takeVeto(), "nothing vetoed it")
+    }
+
+    /// A process audio that never reports (an unresolved object emits nothing, DET8) does not keep
+    /// the end waiting for ever: past the grace the window-gone ends `.starting` as it used to.
+    func test_window_gone_ends_starting_once_the_grace_passes_without_a_vetoer_END27() {
+        let engine = engineAwaitingVetoer()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 1)))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 1 + PromotionEngine.defaultVetoerGrace - 0.1)))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 1 + PromotionEngine.defaultVetoerGrace))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "shareable_content_window_gone", confirmedBy: [])
+            )
+        )
+    }
+
+    /// An ax-leave `.ended` arriving while the window-gone waits must not make it lead: the lead
+    /// search re-checks the held ends, and the vetoer still has not reported.
+    func test_ax_leave_does_not_lift_a_window_gone_held_for_the_vetoer_END27() {
+        let engine = engineAwaitingVetoer()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .ended, at: 0.1)))
+        XCTAssertNil(engine.ingest(event(.axLeaveButton, .ended, at: 0.2)), "the vetoer has not reported yet")
+        XCTAssertNil(engine.ingest(event(.processAudioIsRunningInput, .live, at: 0.3)))
+        XCTAssertEqual(engine.confirmRecording()?.verdict, .inMeeting(context: teamsContext))
+    }
+
+    /// An adapter with no process audio (the browser tab-title path, Webex, Slack) is not awaited:
+    /// its reliable end still ends `.starting` on arrival.
+    func test_an_adapter_without_process_audio_still_ends_starting_on_its_own_lead_END27() {
+        let engine = PromotionEngine()
+        engine.reset(awaitingVetoer: false)
+        _ = engine.ingest(browserEvent(.browserTabTitle, .live, at: 0))
+        XCTAssertEqual(
+            engine.ingest(browserEvent(.browserTabTitle, .ended, at: 1))?.verdict,
+            .ended(
+                context: browserContext,
+                reason: EndingReason(leadingSignal: "browser_tab_title_left_meet_pattern", confirmedBy: [])
+            )
+        )
+    }
+
+    /// A definitive app quit is never held for the vetoer.
+    func test_an_app_quit_in_starting_is_not_held_for_the_vetoer_END27() {
+        let engine = engineAwaitingVetoer()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        XCTAssertEqual(
+            engine.ingest(event(.workspaceAppTerminated, .ended, at: 1))?.verdict,
+            .ended(context: teamsContext, reason: EndingReason(leadingSignal: "workspace_app_terminated", confirmedBy: []))
+        )
+    }
+
+    /// The flag belongs to one engagement: a plain `reset()` (the coordinator's disengage) clears it.
+    func test_reset_clears_the_vetoer_wait_END27() {
+        let engine = engineAwaitingVetoer()
+        engine.reset()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        XCTAssertNotNil(engine.ingest(event(.shareableContentWindow, .ended, at: 1)))
+    }
+
+    /// The resumed recording's whole life, `20261112-174606`: the start race, the recorder arming,
+    /// then the 15:50:34 leave opening a hold that the remembered window-gone pairs with.
+    func test_the_resume_race_then_the_leave_opens_a_hold_END27() {
+        let engine = engineAwaitingVetoer()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0.597))
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 0.614))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0.616))
+        _ = engine.confirmRecording()
+        XCTAssertEqual(
+            engine.ingest(event(.processAudioIsRunningInput, .ended, at: 268.737))?.verdict,
+            .endingProvisional(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "process_audio_is_running_input_false", confirmedBy: [])
+            )
+        )
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 268.823))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 268.823 + PromotionEngine.defaultConfirmDwell))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(
+                    leadingSignal: "process_audio_is_running_input_false",
+                    confirmedBy: ["ax_leave_button_invalid", "shareable_content_window_gone"]
+                )
+            )
+        )
+    }
 }

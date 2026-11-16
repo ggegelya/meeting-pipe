@@ -30,7 +30,7 @@ point, and the host halves of END9 and END12 that the engine-only traces could n
 express) and one raw trace from the owner's personal Mac
 (`safari_browser_raw_tab_left_held`, 2026-10-16, a browser hold the owner stopped
 by hand 20 s in). The END incident windows themselves are in the work laptop's log,
-not that one, so they are still owed. The seeds lock in the format and the
+not that one, so they are still owed. END27 added `teams_native_lifecycle_end27_resume_race` the same way, synthetic from the rows its spec quotes (the 2026-11-12T15:46:06Z resume race, the work laptop's log), expected to end on the pair dwell after the 268.737 mic release; its raw extraction is owed with the rest. The seeds lock in the format and the
 cross-app scenarios (Zoom / Webex / Meet / PWA); the real traces cover the
 endings actually observed in dogfood. Real traces are derived from live meetings,
 which means the source carries meeting subjects, customer names, and other PII,

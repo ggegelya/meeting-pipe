@@ -1652,8 +1652,25 @@ final class MeetingSessionController: @unchecked Sendable {
     ///
     /// PERF15: takes the record start's one build rather than walking again, and runs when that
     /// build lands, so it is no longer synchronous with the start.
+    ///
+    /// END27: "engaged" is not "working". An engine that has published `.ended` ignores every
+    /// later signal, so a recording that keeps it has no end detection at all; on 2026-11-12 the
+    /// resume `20261112-174606` started on one (a first-reading window-gone had ended it 63 ms
+    /// before the recording committed) and ran 380 s past the leave. A terminal engine is
+    /// re-engaged on the start's own handles instead, and the guard keeps protecting every live one.
     func engageLifecycleIfNeeded(source: AppSource?, handles: MeetingAXHandleBuilder.Handles?) {
         guard let source = source else { return }
+        if coordinator.lifecycleCoord.isTerminal {
+            Log.event(category: "coordinator", action: "lifecycle_reengaged", attributes: [
+                "bundle_id": source.bundleID,
+                "reason": "terminal_at_start",
+                // With no handles the engage below logs `no_pid` and the terminal engine stays;
+                // this says which of the two the row was.
+                "has_handles": handles != nil,
+            ])
+            engageLifecycle(source: source, handles: handles)
+            return
+        }
         guard !coordinator.lifecycleCoord.isEngaged else {
             Log.event(category: "coordinator", action: "lifecycle_engage_skipped", attributes: [
                 "bundle_id": source.bundleID,

@@ -127,7 +127,8 @@ public struct PrimarySignalEvent: Equatable {
 /// Fuses PRIMARY signal events from per-app adapters into `MeetingLifecycleVerdict` transitions.
 /// Promotion rules: `.idle` -> `.starting` on first PRIMARY `.live`; `.starting` -> `.inMeeting`
 /// only via `confirmRecording()` (so `.inMeeting` means "recorder armed", not just "signal fired");
-/// `.starting` -> `.ended` directly when PRIMARY `.ended` arrives before the recorder arms.
+/// `.starting` -> `.ended` directly when PRIMARY `.ended` arrives before the recorder arms, unless
+/// END14's veto absorbs it or, since END27, the adapter's vetoer has not reported yet.
 ///
 /// Once recording, END17's tiers decide (ADR 0017). A definitive end (`isDefinitive`, or the host's
 /// `confirmProvisionalEnd`) moves to `.ended` at once. A weak end opens `.endingProvisional`, which
@@ -162,6 +163,15 @@ public final class PromotionEngine {
 
     /// The pseudo-signal the host records when Teams' own teardown line confirmed the hold.
     public static let teardownEvidence = "call_teardown_observed"
+
+    /// END27: how long a `.starting` holds a reliable end for a vetoer's first reading before it
+    /// gives up waiting and ends as it did before END27. The signals start on their own queues
+    /// (CONC9, PERF15), so nothing orders the window's first reading against process audio's: on
+    /// 2026-11-12 the window's `initial` false landed 2 ms first and ended the resume it was racing.
+    /// Process audio normally reports within milliseconds of the window, so this only bounds the
+    /// case where it never does (an unresolved process object, DET8, emits nothing at all), which
+    /// would otherwise keep a hang-up before the prompt is answered from ever ending `.starting`.
+    public static let defaultVetoerGrace: TimeInterval = 2
 
     private enum Phase {
         case idle
@@ -200,29 +210,49 @@ public final class PromotionEngine {
 
     public let confirmDwell: TimeInterval
     public let loneDwell: TimeInterval
+    public let vetoerGrace: TimeInterval
     private var phase: Phase = .idle
+
+    /// END27: whether this engagement's adapter publishes a vetoer (process audio) at all. Set per
+    /// engagement by `reset(awaitingVetoer:)`, because the engine stays pure and only the host knows
+    /// which adapter it started. False for every adapter without process audio (browser, Webex,
+    /// Slack), whose reliable ends keep ending `.starting` on arrival exactly as before.
+    private var awaitsVetoer = false
 
     public init(
         confirmDwell: TimeInterval = PromotionEngine.defaultConfirmDwell,
-        loneDwell: TimeInterval = PromotionEngine.defaultLoneDwell
+        loneDwell: TimeInterval = PromotionEngine.defaultLoneDwell,
+        vetoerGrace: TimeInterval = PromotionEngine.defaultVetoerGrace
     ) {
         self.confirmDwell = confirmDwell
         self.loneDwell = loneDwell
+        self.vetoerGrace = vetoerGrace
     }
 
-    /// True while the engine holds a provisional end awaiting a dwell (or a definitive signal):
-    /// the only phase in which `tick(at:)` can do work. The lifecycle coordinator reads this to arm
-    /// the periodic tick only when it can matter, instead of running it for the whole meeting (PERF5).
+    /// True while the engine holds an end it may yet confirm on a deadline: a provisional end
+    /// awaiting a dwell (or a definitive signal), or since END27 a `.starting` holding a reliable
+    /// end for a vetoer's first reading. These are the only states in which `tick(at:)` can do
+    /// work. The lifecycle coordinator reads this to arm the periodic tick only when it can matter,
+    /// instead of running it for the whole meeting (PERF5).
     public var hasPendingEndDeadline: Bool {
-        if case .endingProvisional = phase { return true }
-        return false
+        switch phase {
+        case .endingProvisional:
+            return true
+        case .starting(_, _, let states):
+            return heldForVetoer(in: states) != nil
+        default:
+            return false
+        }
     }
 
     private var pendingVeto: EndVeto?
 
-    public func reset() {
+    /// Back to `.idle` for a new engagement. `awaitingVetoer` says whether the adapter about to
+    /// start publishes process audio (`LifecycleAdapter.publishesProcessAudio`), END27.
+    public func reset(awaitingVetoer: Bool = false) {
         phase = .idle
         pendingVeto = nil
+        awaitsVetoer = awaitingVetoer
     }
 
     /// END14: the end most recently vetoed, cleared on read so each veto is reported once.
@@ -235,6 +265,34 @@ public final class PromotionEngine {
     private func veto(for kind: PrimarySignalKind, in states: SignalStates) -> PrimarySignalKind? {
         guard kind.yieldsToLiveVeto else { return nil }
         return states.first { $0.value.state == .live && $0.key.vetoesLoneEnd && $0.key.evidenceClass != kind.evidenceClass }?.key
+    }
+
+    /// END27: whether an end led by `kind` waits in `.starting` for a vetoer that has not reported
+    /// yet. Only for the ends END14's veto can absorb, only when this engagement's adapter publishes
+    /// a vetoer at all, and only until that vetoer's first reading, which then either lifts the end
+    /// (a release, the hang-up before the start finished) or vetoes it (the call is up).
+    private func awaitsVetoerReading(for kind: PrimarySignalKind, in states: SignalStates) -> Bool {
+        awaitsVetoer && kind.yieldsToLiveVeto && !states.keys.contains { $0.vetoesLoneEnd }
+    }
+
+    /// END27: the reliable end `.starting` is holding for a vetoer's first reading, with the moment
+    /// it went ended, if there is one. The earliest such end leads.
+    private func heldForVetoer(in states: SignalStates) -> (kind: PrimarySignalKind, since: Date)? {
+        states
+            .filter { $0.value.state == .ended && awaitsVetoerReading(for: $0.key, in: states) }
+            .min { ($0.value.at, $0.key.rawValue) < ($1.value.at, $1.key.rawValue) }
+            .map { ($0.key, $0.value.at) }
+    }
+
+    /// The `.starting` end decision shared by an arriving signal and the END27 deadline.
+    private func endStarting(context: MeetingLifecycleContext, lead: PrimarySignalKind, states: SignalStates) -> Decision {
+        let confirmedBy = states
+            .filter { $0.value.state == .ended && $0.key.evidenceClass != lead.evidenceClass }
+            .map { $0.key.rawValue }
+            .sorted()
+        let reason = EndingReason(leadingSignal: lead.rawValue, confirmedBy: confirmedBy)
+        phase = .ended(context: context)
+        return Decision(verdict: .ended(context: context, reason: reason))
     }
 
     /// Record `event` in `states`, keeping the first stamp of an unchanged state (END17), and
@@ -277,6 +335,14 @@ public final class PromotionEngine {
     /// holding the mic is the one reading that says the call is up whatever the window or the
     /// accessibility tree claims (END13, END14).
     public func tick(at now: Date) -> Decision? {
+        // END27: a `.starting` that held a reliable end for a vetoer which never reported ends
+        // once the grace has run, as it would have on arrival before END27.
+        if case .starting(let context, _, let states) = phase {
+            guard let held = heldForVetoer(in: states), now.timeIntervalSince(held.since) >= vetoerGrace else {
+                return nil
+            }
+            return endStarting(context: context, lead: held.kind, states: states)
+        }
         guard case .endingProvisional(let context, let leading, let startedAt, _, let states) = phase else {
             return nil
         }
@@ -339,12 +405,20 @@ public final class PromotionEngine {
         states: inout SignalStates
     ) -> Decision? {
         guard event.context == context else { return nil }
+        // END27: read before the event is recorded, since recording a vetoer's first reading is
+        // exactly what stops the end waiting for it.
+        let heldBefore = heldForVetoer(in: states)
         Self.record(event, in: &states)
         switch event.state {
         case .live:
             // Absorb; promotion to `.inMeeting` is `confirmRecording()`'s job so `.inMeeting` tracks the recorder, not signals.
             observed.insert(event.kind)
             phase = .starting(context: context, observed: observed, states: states)
+            // END27: the vetoer's first reading says the call is up, so the end held for it is
+            // vetoed now, and logged as the END14 veto it is, naming a reading that did read live.
+            if let heldBefore, event.kind.vetoesLoneEnd {
+                pendingVeto = EndVeto(leading: heldBefore.kind, vetoedBy: event.kind)
+            }
             return nil
         case .ended:
             phase = .starting(context: context, observed: observed, states: states)
@@ -366,22 +440,21 @@ public final class PromotionEngine {
                 pendingVeto = EndVeto(leading: event.kind, vetoedBy: vetoedBy)
                 return nil
             }
+            // END27: nor does one end before the vetoer has reported at all. Its first reading
+            // decides (a release lifts the end below, a live reading vetoes it above), and `tick`
+            // ends it after `vetoerGrace` if that reading never comes.
+            if awaitsVetoerReading(for: event.kind, in: states) { return nil }
             // A staleness-prone signal never leads here (START1), but it may be what lifts the veto
-            // on a held reliable end, which then leads.
+            // on a held reliable end, which then leads. The vetoer's own first release is that case.
             let lead = event.kind.requiresCorroboration
                 ? PrimarySignalKind.allCases.first {
-                    states[$0]?.state == .ended && !$0.requiresCorroboration && veto(for: $0, in: states) == nil
+                    states[$0]?.state == .ended && !$0.requiresCorroboration
+                        && veto(for: $0, in: states) == nil && !awaitsVetoerReading(for: $0, in: states)
                 }
                 : event.kind
             guard let lead else { return nil }
             // Meeting ended before the recorder armed (slow prompt, stale discovery scan). End directly.
-            let confirmedBy = states
-                .filter { $0.value.state == .ended && $0.key.evidenceClass != lead.evidenceClass }
-                .map { $0.key.rawValue }
-                .sorted()
-            let reason = EndingReason(leadingSignal: lead.rawValue, confirmedBy: confirmedBy)
-            phase = .ended(context: context)
-            return Decision(verdict: .ended(context: context, reason: reason))
+            return endStarting(context: context, lead: lead, states: states)
         }
     }
 

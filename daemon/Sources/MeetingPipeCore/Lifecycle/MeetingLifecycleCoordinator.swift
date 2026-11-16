@@ -94,6 +94,11 @@ public final class MeetingLifecycleCoordinator {
             return
         }
         activeAdapter = adapter
+        // END27: tell the engine whether this adapter has a vetoer to wait for. Queued behind the
+        // reset `disengage()` just queued and ahead of every ingest the adapter's start can queue,
+        // so the first reading is judged with the right flag and nothing in between clears it.
+        let awaitingVetoer = adapter.publishesProcessAudio
+        engineQueue.async { [weak self] in self?.engine.reset(awaitingVetoer: awaitingVetoer) }
         // Tag this session's signal + tick work with the current generation (set by the
         // `disengage()` above) so a later disengage drops anything still in flight (AUD-29).
         let generation = currentGeneration()
@@ -276,6 +281,16 @@ public final class MeetingLifecycleCoordinator {
     /// engage, and the guard is load-bearing rather than an optimisation, because `engage()` opens
     /// with `disengage()` and would reset a healthy discovery-engaged session to `.idle`.
     public var isEngaged: Bool { activeAdapter != nil }
+
+    /// END27: engaged, and the engine has already published its terminal `.ended`. Such an engine
+    /// ignores every later signal, so for a recording it is engaged and not working: a record
+    /// start that finds one re-engages rather than keeping it. Read off the published verdict, so
+    /// it never reaches across to `engineQueue`.
+    public var isTerminal: Bool {
+        guard isEngaged else { return false }
+        if case .ended = current { return true }
+        return false
+    }
 
     public func armLeaveButton(_ element: AXUIElement) {
         guard let activeAdapter = activeAdapter else {

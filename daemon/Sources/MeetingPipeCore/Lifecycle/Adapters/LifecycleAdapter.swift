@@ -32,6 +32,11 @@ public protocol LifecycleAdapter: AnyObject {
     /// `.native` or `.browser`. Used by the coordinator to route contexts.
     var kind: MeetingLifecycleContext.Kind { get }
 
+    /// END27: whether this adapter emits `processAudioIsRunningInput`, the one vetoer. The engine
+    /// holds a reliable `.starting` end for that signal's first reading only when this is true, so
+    /// an adapter that never emits it (browser, Webex, Slack) keeps ending `.starting` on arrival.
+    var publishesProcessAudio: Bool { get }
+
     /// Whether this adapter handles `bundleID`. Default is exact match; browser adapter overrides to also accept
     /// Chromium PWA IDs whose `<browser>.app.<hash>` form can't be enumerated.
     func handles(bundleID: String) -> Bool
@@ -55,6 +60,8 @@ public extension LifecycleAdapter {
     func handles(bundleID: String) -> Bool {
         bundleIDs.contains(bundleID)
     }
+
+    var publishesProcessAudio: Bool { false }
 
     func armLeaveButton(_ element: AXUIElement) {}
 }

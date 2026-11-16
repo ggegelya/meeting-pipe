@@ -488,6 +488,60 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         XCTAssertEqual(vetoes.first?.attributes["vetoed_by"], "process_audio_is_running_input_false")
     }
 
+    // MARK: - END27
+
+    /// The engage tells the engine whether its adapter has a vetoer, so a window-gone that wins
+    /// the first-reading race against process audio waits for it, arms the grace tick, and is
+    /// logged as vetoed once process audio reads live.
+    func test_a_first_window_gone_waits_for_process_audio_END27() throws {
+        let fake = FakeAdapter()
+        fake.publishesProcessAudio = true
+        let log = RecordingEventLog()
+        let scheduler = ManualScheduler()
+        let now = Date(timeIntervalSince1970: 0)
+        let coordinator = MeetingLifecycleCoordinator(
+            eventLog: log, adapters: [fake], scheduler: scheduler.scheduler(), clock: { now }
+        )
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+        fake.emit(.init(kind: .axLeaveButton, state: .live, timestamp: now, context: teamsContext))
+        fake.emit(.init(kind: .shareableContentWindow, state: .ended, timestamp: now, context: teamsContext))
+        flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .starting(context: teamsContext))
+        XCTAssertNotNil(scheduler.tick, "the grace is a deadline, so the tick arms")
+        XCTAssertFalse(coordinator.isTerminal)
+
+        fake.emit(.init(kind: .processAudioIsRunningInput, state: .live, timestamp: now, context: teamsContext))
+        flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .starting(context: teamsContext))
+        XCTAssertNil(scheduler.tick)
+        let vetoes = log.entries.filter { $0.action == "end_vetoed" }
+        XCTAssertEqual(vetoes.count, 1)
+        XCTAssertEqual(vetoes.first?.attributes["vetoed_by"], "process_audio_is_running_input_false")
+    }
+
+    /// The same order on an adapter with no process audio ends at once, and the coordinator then
+    /// reads as terminal until it is engaged again.
+    func test_isTerminal_isAnEngagedEngineThatHasEnded_END27() throws {
+        let fake = FakeAdapter()
+        let now = Date(timeIntervalSince1970: 0)
+        let coordinator = MeetingLifecycleCoordinator(
+            adapters: [fake], scheduler: ManualScheduler().scheduler(), clock: { now }
+        )
+        XCTAssertFalse(coordinator.isTerminal, "nothing engaged is not terminal")
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+        fake.emit(.init(kind: .axLeaveButton, state: .live, timestamp: now, context: teamsContext))
+        fake.emit(.init(kind: .shareableContentWindow, state: .ended, timestamp: now, context: teamsContext))
+        flushEngine(coordinator)
+        XCTAssertTrue(coordinator.isTerminal)
+
+        try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
+        flushEngine(coordinator)
+        XCTAssertFalse(coordinator.isTerminal, "a fresh engagement starts from idle")
+        fake.emit(.init(kind: .axLeaveButton, state: .live, timestamp: now, context: teamsContext))
+        flushEngine(coordinator)
+        XCTAssertEqual(coordinator.current, .starting(context: teamsContext), "and hears its signals again")
+    }
+
     private func flushEngine(_ coordinator: MeetingLifecycleCoordinator) {
         let expectation = expectation(description: "engine drain")
         coordinator.tick()
@@ -504,6 +558,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
 private final class FakeAdapter: LifecycleAdapter {
     let bundleIDs: Set<String>
     let kind: MeetingLifecycleContext.Kind
+    var publishesProcessAudio = false
     private(set) var didStop = false
     private(set) var armedLeaveButtons: [AXUIElement] = []
     private var sink: ((PrimarySignalEvent) -> Void)?

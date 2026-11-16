@@ -67,6 +67,7 @@ final class DetectionCorpusTests: XCTestCase {
         let context = try makeContext(contextJson)
 
         let engine = PromotionEngine()
+        engine.reset(awaitingVetoer: LifecycleTraceReplay.publishesProcessAudio(context))
         var observed: [(eventIndex: Int, verdict: MeetingLifecycleVerdict)] = []
 
         for (index, event) in events.enumerated() {

@@ -100,6 +100,7 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
 
     public var bundleIDs: Set<String> { config.bundleIDs }
     public let kind: MeetingLifecycleContext.Kind = .native
+    public var publishesProcessAudio: Bool { processAudio != nil }
 
     private let config: NativeLifecycleConfig
     private let processAudio: ProcessAudioSignal?

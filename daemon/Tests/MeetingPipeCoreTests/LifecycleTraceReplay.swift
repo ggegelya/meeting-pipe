@@ -57,6 +57,9 @@ struct LifecycleTraceReplay {
     var consultInterval: TimeInterval = 1.0
 
     func run(engine: PromotionEngine = PromotionEngine()) -> Outcome {
+        // END27: configured as the coordinator configures it at engage, from the adapter that
+        // context would start (a native config with process audio waits for its first reading).
+        engine.reset(awaitingVetoer: Self.publishesProcessAudio(context))
         var state = State(context: context, engine: engine)
         for (at, event) in events.enumerated().sorted(by: { ($0.element.at, $0.offset) < ($1.element.at, $1.offset) }).map(\.element) {
             state.advance(to: at, tickInterval: tickInterval, consultInterval: consultInterval)
@@ -68,6 +71,11 @@ struct LifecycleTraceReplay {
             state.advance(to: until, tickInterval: tickInterval, consultInterval: consultInterval)
         }
         return state.outcome
+    }
+
+    /// Whether the adapter the coordinator would engage for `context` publishes process audio.
+    static func publishesProcessAudio(_ context: MeetingLifecycleContext) -> Bool {
+        context.kind == .native && NativeLifecycleConfig.usesProcessAudio(bundleID: context.bundleID)
     }
 
     private struct State {

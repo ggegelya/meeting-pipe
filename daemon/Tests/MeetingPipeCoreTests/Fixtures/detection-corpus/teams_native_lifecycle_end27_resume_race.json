@@ -1,0 +1,23 @@
+{
+  "scenario": "teams_native_lifecycle_end27_resume_race",
+  "description": "END27, synthetic until the raw 2026-11-12T15:46:06Z window (stem 20261112-174606, the work laptop's log) is extracted: a resume 38.6 s after an end, whose signals started on their own queues. The window's initial false landed 2 ms ahead of process audio's initial true, so the pre-END27 engine ended .starting at 0.614 with confirmed_by empty and the recording ran on a terminal engine until a hand stop at 648.5. The engine now holds that window-gone for process audio's first reading, which vetoes it; the 268.737 mic release opens a hold and the remembered window-gone pairs with it once both have dwelled. t=0 is 15:46:06.000Z.",
+  "engine": "lifecycle",
+  "origin": "synthetic",
+  "expected_outcome": "ended",
+  "ended_at": 328.737,
+  "trim_at": 268.737,
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "until": 648.5,
+  "events": [
+    {"t": 0.597, "kind": "ax_leave_button", "state": "live"},
+    {"t": 0.614, "kind": "shareable_content_window", "state": "ended"},
+    {"t": 0.616, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 0.743, "kind": "recording_started"},
+    {"t": 268.737, "kind": "process_audio_is_running_input_false", "state": "ended"},
+    {"t": 268.823, "kind": "ax_leave_button", "state": "ended"}
+  ]
+}
