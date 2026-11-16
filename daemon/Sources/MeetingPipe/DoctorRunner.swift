@@ -110,37 +110,39 @@ final class DoctorRunner: ObservableObject {
         p.standardError = errPipe
 
         // Merge stdout and stderr into the same output so FAIL/WARN lines appear in context.
-        // `@Sendable` because the two `readabilityHandler` closures below are `@Sendable`
-        // and capture it; it only touches a `@MainActor` DoctorRunner via `weak self`.
-        let appender: @Sendable (Data) -> Void = { [weak self] data in
-            guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
-            Task { @MainActor [weak self] in
-                self?.output.append(chunk)
+        // CONC7: the drain delivers every chunk, then the exit, on one serial queue, and each hop to main
+        // is a FIFO `DispatchQueue.main.async`, so the last line is in `output` before the badge changes.
+        // The badge is set only from `onFinished`, which waits for both pipes to reach EOF.
+        let drain = ProcessOutputDrain(
+            process: p, stdout: outPipe, stderr: errPipe, label: "doctor",
+            onChunk: { _, data in
+                guard let chunk = String(data: data, encoding: .utf8) else { return }
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated { self?.output.append(chunk) }
+                }
+            },
+            onFinished: { status, _ in
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated { self?.processFinished(p, status: status) }
+                }
             }
-        }
-        outPipe.fileHandleForReading.readabilityHandler = { handle in
-            appender(handle.availableData)
-        }
-        errPipe.fileHandleForReading.readabilityHandler = { handle in
-            appender(handle.availableData)
-        }
-
-        p.terminationHandler = { [weak self] proc in
-            outPipe.fileHandleForReading.readabilityHandler = nil
-            errPipe.fileHandleForReading.readabilityHandler = nil
-            Task { @MainActor [weak self] in
-                self?.state = .finished(exitCode: proc.terminationStatus)
-                self?.process = nil
-            }
-        }
+        )
 
         do {
-            try p.run()
+            try drain.run()
             self.process = p
         } catch {
             output = "Failed to spawn `mp doctor`: \(error.localizedDescription)\n"
             state = .finished(exitCode: -1)
         }
+    }
+
+    /// The `mp doctor` child has exited and both its pipes are drained. A run `cancel()` already
+    /// stood down (its `process` is nil by now) leaves the state `cancel()` set.
+    private func processFinished(_ p: Process, status: Int32) {
+        guard process === p else { return }
+        state = .finished(exitCode: status)
+        process = nil
     }
 
     /// Cancel an in-flight run (called when the user closes the sheet before the doctor finishes).

@@ -2,9 +2,9 @@
 id: CONC7
 title: PipelineLauncher.runMP and DoctorRunner drop the last stderr chunk on exit and share an unlocked stderr buffer across threads
 category: Concurrency
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (code-quality audit SW1, SW12): both nil their readabilityHandlers inside terminationHandler with no final drain, so the last stderr chunk (the failure text the user sees) can be lost, and runMP's stderrTail is an unlocked var raced across two queues (5 complete-mode diagnostics). One ProcessOutputDrain that finishes on exit plus EOF, and the 130-line runMP split into named steps. Amended 2026-10-25 (performance review): runMP's spawn-failure branch leaks the log handle, both pipes and the slot through a terminationHandler cycle that never fires, and ModelDownloadSupervisor's stderr handler is never cleared, so its 'correct enough today' exclusion is wrong; both join the scope. [Spec](./CONC7.md)
+comment: Shipped 2026-11-17 (ci-local green): ProcessOutputDrain finishes runMP and DoctorRunner on exit plus EOF on both pipes (one serial queue, bounded locked stderr tail, 2 s post-exit ceiling), runMP split to 58 lines, a failed spawn leaks no descriptors or slot, ModelDownloadSupervisor clears its stderr handler. Nothing owed; awaiting the owner to close it.
 ---
 
 # CONC7: PipelineLauncher.runMP and DoctorRunner drop the last stderr chunk on exit and share an unlocked stderr buffer across threads
@@ -62,3 +62,13 @@ Findings PERSISTENCE-13 and MAINTHREAD-8 from the 2026-10-25 performance review 
 
 - A `PipelineLauncherTests` case whose invocation names a file that is not executable: 20 spawns each fail, the count of open descriptors (a `/dev/fd` listing) is the same before and after, and `cancelActiveRun()` afterwards finds no handle in the `.run` slot.
 - A `ModelDownloadSupervisor` test with an injected invocation (a new init parameter defaulting to `PipelineLauncher.findMP`, as this task adds to `DoctorRunner`) running a `/bin/sh` child that writes to stderr and exits: after termination both handlers are nil (keep the stderr handle as a property beside `stdoutHandle` so the test can read it), and a counting stderr handler records at most one empty-data callback.
+
+## Progress (2026-11-17)
+
+Shipped as specced, plus the two amendments. `ProcessOutputDrain` (new file) owns the readers, the exit and a locked 4096-byte stderr tail; `runMP` is 58 lines at brace depth 4 (`makeSpawn`, `startWatchdog`, `reportProgress`, `reapServerAfterStop` are the named steps; `stderrTail` no longer exists, so no complete-mode diagnostic can name it), and `DoctorRunner` sets `.finished` only from `onFinished`, behind its chunks, with an identity guard so a cancelled run's late exit cannot overwrite a newer run's state. `DoctorRunner.init`'s `invocation:` parameter already existed from PERF24.
+
+Decisions not in the spec: (1) the spawn-failure leak was one descriptor per failed spawn and it was NOT the log handle (PERF13 had already moved to per-chunk `Log.append`) but the PIPE37 supervisor stdin's read end, found by the 20-spawn descriptor test and closed by `ProcessOutputDrain.detach()`. (2) `ModelDownloadSupervisor` took the cheaper of the two options (self-clearing stderr handler, handlers nilled before the final stdout read, in `handleTermination` and `cancel()`) instead of moving onto the drain; its stdout flush still reads `availableData` on main, the REC11-shaped blocking read the spec warns about, unchanged. (3) `PipelineLauncher.slots` went from private to internal so a test can see the `.run` slot empty. (4) The 50-run baseline on pre-fix `main` dropped 0 of 50: the race is real by construction but does not reproduce with a short `sh` child, so the new tests pin the contract, not a reproduced defect. (5) No `daemon/CLAUDE.md` line: it sits at the 24,000-byte fence, so the rule lives in gotchas ("A termination handler is not an EOF"); the next session that frees budget there should add a one-liner linking to it.
+
+Acceptance not met as written: the supervisor test asserts both handlers are nil after termination and after `cancel()` but has no counting stderr handler (the spin it guards is the nil handler); the scratch `-strict-concurrency=complete` build was not run (the `stderrTail` var is gone, which covers the five old diagnostics, but the new `@Sendable` drain closures were not re-measured under complete mode). Known rare edge: the run slot is now released at drain finish, up to 2 s after exit when a grandchild holds a pipe; `summarize_local` points the `mlx_lm.server` child's stdout and stderr at a log file or DEVNULL, so `mp` itself never hits it.
+
+Nothing is owed by the owner; the task can be closed.

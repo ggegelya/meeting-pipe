@@ -120,4 +120,23 @@ final class DoctorRunnerTests: XCTestCase {
         XCTAssertEqual(runner.output, "== Daemon self-check ==\n")
         XCTAssertEqual(looked.withLock { $0 }, 0, "no mp doctor lookup after a cancel")
     }
+
+    // MARK: CONC7 - the last line is in `output` before the badge changes
+
+    func test_the_last_child_line_is_in_output_when_the_state_first_reads_finished() {
+        let runner = DoctorRunner(
+            probes: [],
+            invocation: {
+                .init(shell: "/bin/sh", args: ["-c", "echo first; echo last-line; exit 1", "sh"])
+            }
+        )
+        for round in 0..<20 {
+            runner.run()
+            waitUntilFinished(runner)
+            XCTAssertEqual(runner.state, .finished(exitCode: 1), "round \(round)")
+            // Read at the first moment the state is finished: no later main-queue turn gets to help.
+            XCTAssertTrue(runner.output.contains("first\n"), "round \(round)")
+            XCTAssertTrue(runner.output.hasSuffix("last-line\n"), "round \(round) lost its last line: \(runner.output)")
+        }
+    }
 }

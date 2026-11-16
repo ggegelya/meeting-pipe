@@ -138,4 +138,43 @@ final class ModelDownloadSupervisorTests: XCTestCase {
         XCTAssertNil(ModelDownloadSupervisor.estimatedDownloadGB(forModelId: "org/mystery-model"))
         XCTAssertEqual(ModelDownloadSupervisor.downloadSizeLabel(forModelId: "org/mystery-model"), "several GB")
     }
+
+    // MARK: CONC7 - the prefetch's pipe handlers do not outlive it
+
+    /// The stderr handler used to stay installed after EOF and again after termination, so it re-fired on
+    /// the closed pipe from the child's exit until the main-queue hop released the `Pipe`.
+    func test_both_pipe_handlers_are_cleared_when_the_prefetch_terminates() throws {
+        let supervisor = ModelDownloadSupervisor(invocation: {
+            .init(shell: "/bin/sh", args: ["-c", "echo noise >&2; exit 1", "sh"])
+        })
+        let failed = expectation(description: "failed")
+        supervisor.onStateChange = { state in
+            if case .failed = state { failed.fulfill() }
+        }
+
+        supervisor.ensure(modelId: "conc7/Never-Cached-3B-4bit")
+        let out = try XCTUnwrap(supervisor.stdoutHandle)
+        let err = try XCTUnwrap(supervisor.stderrHandle)
+        wait(for: [failed], timeout: 10)
+
+        XCTAssertNil(out.readabilityHandler, "the stdout handler outlived the prefetch")
+        XCTAssertNil(err.readabilityHandler, "the stderr handler outlived the prefetch")
+        XCTAssertNil(supervisor.stderrHandle)
+    }
+
+    func test_cancel_clears_both_pipe_handlers() throws {
+        let supervisor = ModelDownloadSupervisor(invocation: {
+            .init(shell: "/bin/sh", args: ["-c", "sleep 30", "sh"])
+        })
+        supervisor.ensure(modelId: "conc7/Never-Cached-3B-4bit")
+        let out = try XCTUnwrap(supervisor.stdoutHandle)
+        let err = try XCTUnwrap(supervisor.stderrHandle)
+        XCTAssertNotNil(out.readabilityHandler)
+        XCTAssertNotNil(err.readabilityHandler)
+
+        supervisor.cancel()
+
+        XCTAssertNil(out.readabilityHandler)
+        XCTAssertNil(err.readabilityHandler)
+    }
 }

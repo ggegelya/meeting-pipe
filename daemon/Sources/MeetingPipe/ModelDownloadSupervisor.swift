@@ -61,12 +61,20 @@ final class ModelDownloadSupervisor {
 
     /// The starting state is injectable (LOCAL20) so a test can begin from a `.failed` that a real
     /// run needs a network failure to reach. Defaulted, so no call site changes.
-    init(state: State = .idle) {
+    /// Where `mp` is, injected (CONC7) so a test can hand it `/bin/sh`, as `PipelineLauncher.init` and
+    /// `DoctorRunner.init` do.
+    private let invocation: () -> PipelineLauncher.MPInvocation?
+
+    init(state: State = .idle, invocation: @escaping () -> PipelineLauncher.MPInvocation? = { PipelineLauncher.findMP() }) {
         self.state = state
+        self.invocation = invocation
     }
 
     private var process: Process?
-    private var stdoutHandle: FileHandle?
+    /// The read ends of the running prefetch's pipes. Internal so a test can see that termination and
+    /// `cancel()` cleared their handlers.
+    private(set) var stdoutHandle: FileHandle?
+    private(set) var stderrHandle: FileHandle?
     private var stdoutBuffer = Data()
     private var currentModelId: String?
 
@@ -199,7 +207,9 @@ final class ModelDownloadSupervisor {
             p.terminate()
         }
         process = nil
+        clearHandlers()
         stdoutHandle = nil
+        stderrHandle = nil
         stdoutBuffer.removeAll()
         currentModelId = nil
         // LOCAL20: a cancelled download is not a download, and it is not a failed one either.
@@ -219,7 +229,7 @@ final class ModelDownloadSupervisor {
     }
 
     private func spawn(modelId: String) {
-        guard let mp = PipelineLauncher.findMP() else {
+        guard let mp = invocation() else {
             Log.main.warning("model prefetch: no `mp` binary found; skipping")
             state = .failed(modelId: modelId, error: "mp binary not found")
             return
@@ -237,10 +247,18 @@ final class ModelDownloadSupervisor {
         p.standardOutput = stdoutPipe
         p.standardError = stderrPipe
 
-        // Drain stderr to the daemon log (best-effort).
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+        // Drain stderr to the daemon log (best-effort). CONC7: the handler clears itself at EOF, as the
+        // stdout one does. Left installed it re-fired on the closed pipe (measured near 650,000 a second,
+        // a full core) from the child's exit until the main-queue hop released the `Pipe`.
+        let errHandle = stderrPipe.fileHandleForReading
+        stderrHandle = errHandle
+        errHandle.readabilityHandler = { handle in
             let data = handle.availableData
-            if !data.isEmpty, let text = String(data: data, encoding: .utf8) {
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                return
+            }
+            if let text = String(data: data, encoding: .utf8) {
                 Log.writeLine("daemon", "[prefetch:stderr] \(text.trimmingCharacters(in: .whitespacesAndNewlines))")
             }
         }
@@ -275,6 +293,11 @@ final class ModelDownloadSupervisor {
             state = .failed(modelId: modelId, error: error.localizedDescription)
             currentModelId = nil
         }
+    }
+
+    private func clearHandlers() {
+        stdoutHandle?.readabilityHandler = nil
+        stderrHandle?.readabilityHandler = nil
     }
 
     private func consumeStdout(chunk: Data) {
@@ -336,15 +359,17 @@ final class ModelDownloadSupervisor {
             return
         }
 
-        // Flush any remaining buffered bytes before clearing the handle.
+        // Clear both handlers first (CONC7), so the read below is the only reader of stdout and the
+        // stderr source stops, then flush what is left in the stdout pipe.
+        clearHandlers()
         if let h = stdoutHandle {
             let remaining = h.availableData
             if !remaining.isEmpty {
                 consumeStdout(chunk: remaining)
             }
-            h.readabilityHandler = nil
         }
         stdoutHandle = nil
+        stderrHandle = nil
         process = nil
 
         // Non-zero exit without a prior "failed" event - synthesize the failure state.

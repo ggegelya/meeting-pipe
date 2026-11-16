@@ -716,7 +716,8 @@ final class PipelineLauncher: PipelineDriver {
     private static let progressSentinel = "__MP_PROGRESS__"
 
     /// The two Cancel slots and the cancel intent aimed at whatever is in them.
-    private let slots = PipelineRunSlots()
+    /// Internal so `PipelineLauncherDrainTests` can see that a failed spawn left no handle behind (CONC7).
+    let slots = PipelineRunSlots()
 
     /// Terminate the in-flight run-all (TECH-UX5 Cancel). The termination handler
     /// then completes the job as `LaunchError.cancelled`, so the row is still
@@ -1422,6 +1423,69 @@ final class PipelineLauncher: PipelineDriver {
             completion(.failure(LaunchError.mpNotFound))
             return
         }
+        let spawn = makeSpawn(mpPath, args: args, meeting: meeting, retain: retain,
+                              extraEnv: extraEnv, backendOverride: backendOverride)
+        let p = spawn.process
+        // TECH-UX5 / UX37: retained so Cancel can terminate it. UX50: the handle carries the cancel flag
+        // with it, so the finish step reads this run's intent and not a later run's. PIPE37: and the
+        // supervisor's write end, which `release` closes.
+        let handle = slots.retain(p, in: retain, supervisor: spawn.supervisor)
+        // PERF13: every chunk is its own locked `O_APPEND` `Log.append`; the file is created 0600 up front (SEC14).
+        let logURL = Log.logsDir.appendingPathComponent("pipeline.log")
+        Log.append(Data(), to: logURL)
+
+        let timedOut = OneWayFlag()
+        let watchdog = Self.startWatchdog(for: p, args: args, timeout: timeout, timedOut: timedOut)
+        let drain = ProcessOutputDrain(
+            process: p, stdout: spawn.outPipe, stderr: spawn.errPipe, label: "mp",
+            onChunk: { stream, data in
+                Log.append(data, to: logURL)
+                if stream == .stdout, let onProgress { Self.reportProgress(in: data, to: onProgress) }
+            },
+            onFinished: { [self] status, stderrTail in
+                defer { try? FileManager.default.removeItem(at: spawn.failureURL) }
+                watchdog.cancel()
+                slots.release(handle, from: retain)   // TECH-UX5 / UX37: run finished/killed
+                if timedOut.isSet || handle.isCancelled { reapServerAfterStop() }
+                if timedOut.isSet { return completion(.failure(LaunchError.timeout(timeout))) }
+                // UX50: the cancel flag is read here, not at the call sites.
+                completion(Self.outcome(
+                    status: status,
+                    cancelled: handle.isCancelled,
+                    stderr: String(decoding: stderrTail, as: UTF8.self),
+                    metadata: (try? Data(contentsOf: spawn.failureURL)).flatMap(FailureMetadata.decode)
+                ))
+            }
+        )
+        do {
+            try drain.run()
+        } catch {
+            // CONC7: the drain has already detached its handlers and closed both pipes; what is left is
+            // the watchdog timer and the slot, which only a finish step would have released.
+            watchdog.cancel()
+            slots.release(handle, from: retain)
+            completion(.failure(error))
+        }
+    }
+
+    /// What `runMP` builds before it spawns: the process with its environment, both pipes, the failure
+    /// file `mp` is told to write, and the PIPE37 supervisor's write end when the run is supervised.
+    private struct MPSpawn {
+        let process: Process
+        let outPipe: Pipe
+        let errPipe: Pipe
+        let failureURL: URL
+        let supervisor: FileHandle?
+    }
+
+    private func makeSpawn(
+        _ mpPath: MPInvocation,
+        args: [String],
+        meeting: URL?,
+        retain: PipelineRunSlots.Slot,
+        extraEnv: [String: String],
+        backendOverride: String?
+    ) -> MPSpawn {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: mpPath.shell)
         p.arguments = mpPath.args + args
@@ -1439,63 +1503,26 @@ final class PipelineLauncher: PipelineDriver {
         for (k, v) in extraEnv { env[k] = v }
         let failureURL = FileManager.default.temporaryDirectory.appendingPathComponent("mp-failure-\(UUID().uuidString).json")
         env["MP_FAILURE_PATH"] = failureURL.path
-        // PERF13: this process copies the child's stderr into `pipeline.log` below, so it is
-        // that file's one writer. The flag tells `_configure_logging` to skip its own
-        // FileHandler, which used to put every run-all record into the file twice.
+        // PERF13: this process copies the child's stderr into `pipeline.log`, so it is that file's one
+        // writer. The flag tells `_configure_logging` to skip its own FileHandler, which used to put
+        // every run-all record into the file twice.
         env[Self.pipelineLogOwnerKey] = Self.pipelineLogOwnerDaemon
         // PIPE37: a supervised spawn ends with this app however it ends.
         let supervisor = Self.isSupervised(args: args, meeting: meeting, retain: retain)
             ? Self.attachSupervisor(to: p, environment: &env) : nil
         p.environment = env
-        // TECH-UX5 / UX37: retained so Cancel can terminate it. UX50: the handle
-        // carries the cancel flag with it, so the termination handler below reads
-        // this run's intent and not a later run's. PIPE37: and the supervisor's
-        // write end, which `release` closes.
-        let handle = slots.retain(p, in: retain, supervisor: supervisor)
-
         let outPipe = Pipe()
         let errPipe = Pipe()
         p.standardOutput = outPipe
         p.standardError = errPipe
+        return MPSpawn(process: p, outPipe: outPipe, errPipe: errPipe, failureURL: failureURL, supervisor: supervisor)
+    }
 
-        // Pipeline log co-located with daemon logs so the user can tail one place.
-        // Created 0600 (SEC14): it carries pipeline output, matching the SEC11 log posture,
-        // rather than landing 0644 until the next-launch sweep tightens it.
-        // PERF13: every chunk is its own `Log.append`, a locked `O_APPEND` write that rotates
-        // first, rather than a long-lived handle sought to the end once at spawn. That handle
-        // wrote at a stale offset over whatever else had appended since (Python's own
-        // FileHandler, a second spawn), and after a rotation it kept writing into the renamed
-        // generation. Appending nothing creates the file up front.
-        let logURL = Log.logsDir.appendingPathComponent("pipeline.log")
-        Log.append(Data(), to: logURL)
-
-        var stderrTail = Data()
-        let stderrLimit = 4096
-        outPipe.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData; if d.isEmpty { return }
-            Log.append(d, to: logURL)
-            // TECH-UX5: scan for the progress heartbeat sentinel without
-            // disturbing the log stream. Each heartbeat is a single flushed
-            // line, so a chunk-split miss just drops one beat (harmless).
-            if let onProgress = onProgress, let s = String(data: d, encoding: .utf8) {
-                for line in s.split(separator: "\n") where line.hasPrefix(Self.progressSentinel) {
-                    if let parsed = Self.parseProgress(String(line)) {
-                        DispatchQueue.main.async { onProgress(parsed) }
-                    }
-                }
-            }
-        }
-        errPipe.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData; if d.isEmpty { return }
-            Log.append(d, to: logURL)
-            stderrTail.append(d)
-            if stderrTail.count > stderrLimit {
-                stderrTail.removeFirst(stderrTail.count - stderrLimit)
-            }
-        }
-
-        // Watchdog: on overrun SIGTERM then SIGKILL after a grace period; terminationHandler routes killed status to LaunchError.timeout.
-        let timedOut = OneWayFlag()
+    /// Watchdog: on overrun SIGTERM, then SIGKILL after a grace period; the finish step routes a killed
+    /// run to `LaunchError.timeout` through `timedOut`.
+    private static func startWatchdog(
+        for p: Process, args: [String], timeout: TimeInterval, timedOut: OneWayFlag
+    ) -> DispatchSourceTimer {
         let watchdog = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         watchdog.schedule(deadline: .now() + timeout)
         watchdog.setEventHandler {
@@ -1508,45 +1535,28 @@ final class PipelineLauncher: PipelineDriver {
             }
         }
         watchdog.resume()
+        return watchdog
+    }
 
-        p.terminationHandler = { proc in
-            defer { try? FileManager.default.removeItem(at: failureURL) }
-            watchdog.cancel()
-            outPipe.fileHandleForReading.readabilityHandler = nil
-            errPipe.fileHandleForReading.readabilityHandler = nil
-            self.slots.release(handle, from: retain)   // TECH-UX5 / UX37: run finished/killed
-            if timedOut.isSet || handle.isCancelled {
-                // LOCAL10 / PIPE22: we just stopped an `mp` that may have been
-                // mid-summarize on the local backend, on the watchdog or on the owner's
-                // Cancel. Its SIGTERM handler unwinds through `close()`, which kills the
-                // detached `mlx_lm.server`, so this is usually a no-op; it is the
-                // backstop for the SIGKILL that follows when that unwind outruns the
-                // grace, which no `finally` survives. Off this queue: the reap waits on
-                // a graceful exit and must not stall the termination handler.
-                let reap = self.reapOrphanedServer
-                DispatchQueue.global(qos: .utility).async { reap() }
+    /// TECH-UX5: scan a stdout chunk for the progress heartbeat sentinel without disturbing the log
+    /// stream. Each heartbeat is a single flushed line, so a chunk-split miss just drops one beat.
+    private static func reportProgress(in data: Data, to onProgress: @escaping (PipelineProgress) -> Void) {
+        guard let s = String(data: data, encoding: .utf8) else { return }
+        for line in s.split(separator: "\n") where line.hasPrefix(progressSentinel) {
+            if let parsed = parseProgress(String(line)) {
+                DispatchQueue.main.async { onProgress(parsed) }
             }
-            if timedOut.isSet {
-                completion(.failure(LaunchError.timeout(timeout)))
-                return
-            }
-            // UX50: the cancel flag is consulted here rather than at the call
-            // sites, so every spawn answering to a Cancel gets the same answer.
-            completion(Self.outcome(
-                status: proc.terminationStatus,
-                cancelled: handle.isCancelled,
-                stderr: String(decoding: stderrTail, as: UTF8.self),
-                metadata: (try? Data(contentsOf: failureURL)).flatMap(FailureMetadata.decode)
-            ))
         }
+    }
 
-        do {
-            try p.run()
-        } catch {
-            watchdog.cancel()
-            slots.release(handle, from: retain)
-            completion(.failure(error))
-        }
+    /// LOCAL10 / PIPE22: we just stopped an `mp` that may have been mid-summarize on the local backend,
+    /// on the watchdog or on the owner's Cancel. Its SIGTERM handler unwinds through `close()`, which
+    /// kills the detached `mlx_lm.server`, so this is usually a no-op; it is the backstop for the
+    /// SIGKILL that follows when that unwind outruns the grace, which no `finally` survives. Off the
+    /// drain's queue: the reap waits on a graceful exit and must not stall the finish.
+    private func reapServerAfterStop() {
+        let reap = reapOrphanedServer
+        DispatchQueue.global(qos: .utility).async { reap() }
     }
 
     /// Build a pipeline subprocess environment from the daemon's current env and apply the strip policy (SEC5, SEC18).
