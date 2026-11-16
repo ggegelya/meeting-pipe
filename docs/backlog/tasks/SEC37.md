@@ -2,9 +2,10 @@
 id: SEC37
 title: HeldEndTrim.trimSeconds reads meta.json with try?, so an unreadable sidecar transcribes the post-call tail the trim was meant to drop
 category: Security
-status: partial
+status: done
+closed: 2026-11-16
 priority: P2
-comment: Shipped 2026-11-16. `HeldEndTrim.trimSeconds(forAudio:)` returns a three-way `Lookup` read through `MeetingMetaRead`; `SinkDispatcher` reads it before the ASR pass and on unreadable logs `transcription`/`held_end_trim_unreadable` and fails the job through the existing catch (a `.full` job writes a transcribe-stage failure sidecar, a `.retranscribe` leaves `<stem>.json` untouched and reports the failure), so no transcript is written. 2 `HeldEndTrimTests` + 4 `SinkDispatcherTests`; `bash scripts/ci-local.sh` green. Status left `partial` only because closing needs the owner's approval; nothing is owed.
+comment: Shipped 2026-11-16 (3c6b0efe), closed with the owner's approval the same day. `HeldEndTrim.trimSeconds(forAudio:)` returns a three-way `Lookup` read through `MeetingMetaRead`; the transcription pass reads it before ASR and on unreadable logs `transcription`/`held_end_trim_unreadable` and fails the job with no transcript written (`.full`: transcribe-stage failure sidecar; `.retranscribe`: `<stem>.json` untouched, failure reported). 2 `HeldEndTrimTests` + 4 `SinkDispatcherTests`; `bash scripts/ci-local.sh` green.
 ---
 
 # SEC37: HeldEndTrim.trimSeconds reads meta.json with try?, so an unreadable sidecar transcribes the post-call tail the trim was meant to drop
