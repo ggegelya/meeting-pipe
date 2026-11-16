@@ -2,9 +2,10 @@
 id: CONC11
 title: MeetingRecorder sends AVAudioFormat across isolation on a Sendable conformance that exists only on macOS 26 and later, while the floor is 14
 category: Concurrency
-status: new
+status: done
+closed: 2026-11-16
 priority: P2
-comment: Filed 2026-11-12 (upgrade review, owner approved): the SDK 27 build warns twice in MeetingRecorder that "conformance of 'AVAudioFormat' to 'Sendable' is only available in macOS 26.0 or newer", where engineCall returns inputNode.outputFormat from the engine queue to the main actor, so on macOS 14 and 15 the capture path relies on a guarantee those OSes do not make. Return the format's plain values instead.
+comment: Shipped 2026-11-16 - both bounded format reads (`start_format_read`, `input_format_read`) return `InputFormatValues` and the main actor rebuilds the `AVAudioFormat`; a fresh `swift build --scratch-path` on SDK 27.2 prints no AVAudioFormat Sendable warning; 6 new tests (InputFormatValuesCONC11Tests), ci-local green.
 ---
 
 # CONC11: MeetingRecorder sends AVAudioFormat across isolation on a Sendable conformance that exists only on macOS 26 and later, while the floor is 14

@@ -764,12 +764,22 @@ final class MeetingRecorder {
             }
         }
 
-        // Mic via AVAudioEngine.inputNode (self-pumping).
-        guard let micFormat = await engineCall(site: "start_format_read", { engine in
-            engine.inputNode.outputFormat(forBus: 0)
+        // Mic via AVAudioEngine.inputNode (self-pumping). CONC11: the read hands back the format's
+        // plain values, not the `AVAudioFormat` (Sendable only from macOS 26), and the format is
+        // rebuilt here on main.
+        guard let micValues = await engineCall(site: "start_format_read", { engine in
+            InputFormatValues(engine.inputNode.outputFormat(forBus: 0))
         }) else { throw failStartOnWedge() }
-        guard micFormat.sampleRate > 0 else {
+        guard micValues.sampleRate > 0 else {
             throw RecorderError.fileCreateFailed("inputNode reports zero sample rate - Microphone permission likely not granted")
+        }
+        // Values AVFoundation will not rebuild into a format are values no tap could carry, so they
+        // fail with the message `GuardedTapInstall`'s refusal gives. A 0-channel read does rebuild
+        // and still reaches that guard, as it always did.
+        guard let micFormat = micValues.makeFormat() else {
+            throw RecorderError.engineStartFailed(
+                "the input format cannot carry a tap (\(micValues.sampleRate) Hz, \(micValues.channelCount) ch)"
+            )
         }
 
         // MIC15(a): record which input device the OS bound us to. We capture the system default
@@ -1738,10 +1748,12 @@ extension MeetingRecorder: InputDeviceRecoveryHost {
 
     @MainActor
     func liveInputFormat() async -> LiveInputFormatRead {
-        guard let format = await engineCall(site: "input_format_read", { engine in
-            engine.inputNode.outputFormat(forBus: 0)
+        // CONC11: plain values across isolation, the format rebuilt on main.
+        guard let values = await engineCall(site: "input_format_read", { engine in
+            InputFormatValues(engine.inputNode.outputFormat(forBus: 0))
         }) else { return .timedOut }
-        return format.sampleRate > 0 ? .usable(format) : .unusable
+        guard values.sampleRate > 0, let format = values.makeFormat() else { return .unusable }
+        return .usable(format)
     }
 
     func setMicConverter(_ converter: AVAudioConverter?) {

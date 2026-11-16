@@ -47,7 +47,7 @@ protocol InputDeviceRecoveryHost: AnyObject {
 /// it again only strands another thread.
 enum LiveInputFormatRead {
     case usable(AVAudioFormat)
-    /// The read returned a 0 Hz format: no usable input yet.
+    /// The read returned a 0 Hz format, or values no format rebuilds (CONC11): no usable input yet.
     case unusable
     /// The read did not return within its budget and was abandoned.
     case timedOut
