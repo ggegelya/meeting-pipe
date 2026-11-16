@@ -82,6 +82,7 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
     /// board, a "Meeting notes" doc) raised an uncorroborated Record prompt (the 2026-06-30 false positive).
     public static let defaultTitleMatchers: [(String?) -> Bool] = [
         MeetingTitlePatterns.googleMeet,
+        MeetingTitlePatterns.googleMeetNamed,
         MeetingTitlePatterns.browserTeams,
         MeetingTitlePatterns.browserWebex,
         MeetingTitlePatterns.slackHuddle
@@ -94,8 +95,13 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
     /// admission on one of those alone must be corroborated by live process audio (the scanner
     /// gates it). END detection still uses every matcher: a late end is only ever caught by the
     /// idle backstop, so looseness there is safe, but a false START raises an unwanted prompt.
+    ///
+    /// DET17 added the scheduled-Meet shape ("Meet: <name>"), measured rather than guessed: it is
+    /// anchored on the brand plus a colon, and the captured shape classes it must accept and refuse
+    /// are fenced by `browser_meet_title_shapes.json`.
     public static let strongTitleMatchers: [(String?) -> Bool] = [
-        MeetingTitlePatterns.googleMeet
+        MeetingTitlePatterns.googleMeet,
+        MeetingTitlePatterns.googleMeetNamed
     ]
 
     private let shareableContent: ShareableContentSignal

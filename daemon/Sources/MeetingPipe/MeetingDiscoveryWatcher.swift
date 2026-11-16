@@ -262,6 +262,13 @@ final class MeetingDiscoveryWatcher {
             // DET6: and the plain-browser tabs refused at the admission gate, which neither line
             // above can see: a refused tab is not a candidate, and it is not a native.
             self.emitRejectedBrowserTabs(result.rejectedBrowserTabs)
+            // DET17: and the Meet-brand titles the gate did not admit, as shape classes only.
+            let identity = MeetingDiscoveryWatcher.browserIdentityRows(
+                result.unadmittedBrandSightings,
+                lastSignature: self.lastBrowserIdentitySignature
+            )
+            self.lastBrowserIdentitySignature = identity.signature
+            MeetingDiscoveryWatcher.logBrowserIdentity(identity.rows)
             if let winner = result.winner, result.winnerChanged {
                 Log.event(category: "detector", action: "discovery_shadow_pick", attributes: [
                     "winner_bundle_id": winner.source.bundleID,
@@ -425,6 +432,35 @@ final class MeetingDiscoveryWatcher {
         guard signature != lastRejectedBrowserSignature else { return }
         lastRejectedBrowserSignature = signature
         MeetingDiscoveryWatcher.logRejectedBrowserTabs(rejected)
+    }
+
+    /// Signature of the last `browser_identity` batch. Touched only on `scanQueue`.
+    private var lastBrowserIdentitySignature: String?
+
+    /// DET17 item 5: which `browser_identity` rows to emit for this scan, throttled on the
+    /// (bundle, shape) set as `browser_tab_rejected` is throttled on its batch: an unchanged set
+    /// logs nothing, a changed one logs its rows once, and an empty one resets. Pure.
+    static func browserIdentityRows(
+        _ sightings: [MeetingSourceScanner.BrowserBrandSighting],
+        lastSignature: String?
+    ) -> (rows: [MeetingSourceScanner.BrowserBrandSighting], signature: String?) {
+        guard !sightings.isEmpty else { return ([], nil) }
+        let unique = Array(Set(sightings)).sorted { ($0.bundleID, $0.shape) < ($1.bundleID, $1.shape) }
+        let signature = unique.map { "\($0.bundleID)|\($0.shape)" }.joined(separator: ",")
+        guard signature != lastSignature else { return ([], signature) }
+        return (unique, signature)
+    }
+
+    /// `detector`/`browser_identity`: a listed browser showed the Meet brand in a window title and
+    /// the admission gate did not admit it. Carries a fixed shape class, never the title (DET17).
+    static func logBrowserIdentity(_ rows: [MeetingSourceScanner.BrowserBrandSighting]) {
+        for row in rows {
+            Log.event(category: "detector", action: "browser_identity", attributes: [
+                "bundle_id": row.bundleID,
+                "shape": row.shape,
+                "admitted": false,
+            ])
+        }
     }
 
     /// The event itself, lifted out of the throttle so a test can assert the line that ships rather

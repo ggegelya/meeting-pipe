@@ -34,7 +34,7 @@ final class PermissionsCenter: ObservableObject {
             case .microphone:
                 return "Required. The daemon writes your voice into the recording's left channel."
             case .screenRecording:
-                return "Required for the other side of the call. Without it, recordings are mic-only."
+                return "Required for the other side of the call, and to notice a meeting in a browser tab. Without it, recordings are mic-only and a meeting in a browser tab never prompts."
             case .accessibility:
                 return "Required to notice a meeting at all: it reads the meeting app's windows and call controls. Without it, nothing is detected and nothing auto-stops."
             case .notifications:

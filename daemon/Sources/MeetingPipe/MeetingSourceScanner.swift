@@ -39,6 +39,25 @@ final class MeetingSourceScanner {
         /// zero-signal natives `droppedCandidates` filters out. A running native is always
         /// enumerated, so a bundle missing here is not running. Feeds the prompt hold.
         let spanReadings: [String: SkippedMeetingLatch.Reading]
+        /// DET17 item 5: listed browsers showing the Meet brand in a window title that the admission
+        /// gate did not admit, as a shape class only (never a title). Feeds `browser_identity`.
+        var unadmittedBrandSightings: [BrowserBrandSighting] = []
+    }
+
+    /// DET17 item 5: one unadmitted Meet-brand sighting, carried as a fixed shape class.
+    struct BrowserBrandSighting: Equatable, Hashable {
+        let bundleID: String
+        let shape: String
+    }
+
+    /// The shape class of a window title that carries the Meet brand as a whole word, or nil when it
+    /// carries none. Pure; the title itself never leaves this function.
+    static func meetBrandShape(_ title: String) -> String? {
+        let lowered = title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard lowered.range(of: #"\bmeet\b"#, options: .regularExpression) != nil else { return nil }
+        if lowered == "meet" { return "meet_bare" }
+        if lowered == "google meet" || lowered.hasPrefix("google meet -") { return "meet_landing" }
+        return "meet_other"
     }
 
     /// DET6: one plain-browser tab refused at the admission gate, carried out of the scan so the
@@ -116,11 +135,13 @@ final class MeetingSourceScanner {
     func scan() -> Result {
         let axTrusted = AXIsProcessTrusted()
         let enumerated = enumerateCandidates(axTrusted: axTrusted)
-        return scan(
+        var result = scan(
             candidates: enumerated.candidates,
             axTrusted: axTrusted,
             rejectedBrowserTabs: enumerated.rejectedBrowserTabs
         )
+        result.unadmittedBrandSightings = enumerated.brandSightings
+        return result
     }
 
     /// Score an already-enumerated candidate list and return the winner. Split out of `scan` so the
@@ -211,6 +232,7 @@ final class MeetingSourceScanner {
     struct Enumeration {
         let candidates: [MeetingSourceCandidate]
         let rejectedBrowserTabs: [RejectedBrowserTab]
+        var brandSightings: [BrowserBrandSighting] = []
     }
 
     /// Produce one candidate per concurrent meeting-app contender. Native bundles are always included (scorer rejects those with zero signals, and DET11's `unreadableNatives` names the ones a denied Accessibility grant left with none). Browsers only qualify when at least one window matches a meeting-pattern title.
@@ -229,6 +251,7 @@ final class MeetingSourceScanner {
         } == 1
         var candidates: [MeetingSourceCandidate] = []
         var rejectedBrowserTabs: [RejectedBrowserTab] = []
+        var brandSightings: [BrowserBrandSighting] = []
 
         for app in apps {
             guard let bid = app.bundleIdentifier else { continue }
@@ -293,7 +316,8 @@ final class MeetingSourceScanner {
                 // below is therefore still live today: a plain browser tab running Teams, Webex or
                 // a Slack huddle never becomes a candidate, and Zoom-in-browser never reaches here
                 // at all (no Zoom title matcher). Only Google Meet clears the strong gate, because
-                // `strongTitleMatchers` holds only the Meet room-code pattern and the URL-fragment
+                // `strongTitleMatchers` holds only the Meet patterns (the room code or host, and since
+                // DET17 the scheduled "Meet: <name>" shape) and the URL-fragment
                 // disjunct reads the window title, which browsers fill with the page title and not
                 // the URL.
                 //
@@ -303,10 +327,20 @@ final class MeetingSourceScanner {
                 // is what makes the miss rate countable. Native apps and Chromium PWAs remain
                 // unaffected (the PWA branch below has no such gate).
                 //
-                // Do not "fix" this by widening `strongTitleMatchers`: an unmeasured widening
-                // reopens the doc-title false start END5 closed. The measurement is DET6's probe
-                // (`daemon/scripts/det6-browser-url-probe.swift`) and its pre-registered verdict
-                // tree in `docs/spikes/det6-browser-url-readability.md`.
+                // Widen `strongTitleMatchers` only on a measurement: an unmeasured widening reopens
+                // the doc-title false start END5 closed. DET17 widened it once, for the scheduled
+                // Meet shape ("Meet: <name>", anchored on the brand plus a colon), on 79 captured
+                // field titles the code matcher missed; the shape classes it must accept and refuse
+                // are fenced by `browser_meet_title_shapes.json`. The non-Meet products are still
+                // DET6's to decide, by its probe (`daemon/scripts/det6-browser-url-probe.swift`) and
+                // the verdict tree in `docs/spikes/det6-browser-url-readability.md`.
+                if admission != .admit {
+                    // DET17 item 5: a Meet-brand title the gate did not admit is counted as a shape
+                    // class, so a scheduled-Meet shape the matcher still misses leaves a row.
+                    for shape in Set(windowTitles.compactMap(MeetingSourceScanner.meetBrandShape)) {
+                        brandSightings.append(BrowserBrandSighting(bundleID: bid, shape: shape))
+                    }
+                }
                 switch admission {
                 case .noMeetingSignal:
                     // Not a meeting window at all. Every browser on the machine is in this state
@@ -323,10 +357,15 @@ final class MeetingSourceScanner {
                 case .admit:
                     break
                 }
+                // DET17 guard 2: key the tab by the title that admitted it.
+                let admittingTitle = windowTitles.first {
+                    MeetingSourceScanner.browserWindowIndicatesStrongMeeting(title: $0)
+                } ?? windowTitles.first ?? ""
                 let source = AppSource(
                     bundleID: bid,
                     displayName: displayName,
-                    kind: .browser
+                    kind: .browser,
+                    tabKey: AppSource.browserTabKey(bundleID: bid, title: admittingTitle)
                 )
                 let signals = collectSignals(
                     bundleID: bid,
@@ -373,7 +412,7 @@ final class MeetingSourceScanner {
             }
         }
 
-        return Enumeration(candidates: candidates, rejectedBrowserTabs: rejectedBrowserTabs)
+        return Enumeration(candidates: candidates, rejectedBrowserTabs: rejectedBrowserTabs, brandSightings: brandSightings)
     }
 
     /// Cisco Webex keeps the mic open after a call for ultrasound device discovery. That is why it

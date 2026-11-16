@@ -101,8 +101,11 @@ final class DetectionStateMachine {
     }
 
     /// An explicit Skip holds the prompt off. Only `abandonPrompt` should need this.
-    func armSkipLatch(source: AppSource, liveness: SkippedMeetingLatch.Liveness? = nil) {
-        skipLatch.arm(source: source, mode: .skipped, liveness: liveness ?? Self.spanLiveness(for: source), at: clock())
+    func armSkipLatch(source: AppSource, liveness: SkippedMeetingLatch.Liveness? = nil, tabKey: Int? = nil) {
+        skipLatch.arm(
+            source: source, mode: .skipped, liveness: liveness ?? Self.spanLiveness(for: source),
+            tabKey: tabKey ?? source.tabKey, at: clock()
+        )
     }
 
     /// An explicit Skip is in force for this bundle (DET18: not a timeout's offer).
@@ -116,8 +119,13 @@ final class DetectionStateMachine {
     }
 
     /// Either hold: a skip or an offer keeps the prompt from re-opening over the same call.
-    func isPromptHeld(bundleID: String) -> Bool {
-        skipLatch.isHeld(bundleID: bundleID)
+    func isPromptHeld(bundleID: String, tabKey: Int? = nil) -> Bool {
+        skipLatch.isHeld(bundleID: bundleID, tabKey: tabKey)
+    }
+
+    /// The tab a browser hold was made for (DET17 guard 2), if any.
+    func heldTabKey(bundleID: String) -> Int? {
+        skipLatch.entry(bundleID: bundleID)?.tabKey
     }
 
     /// What keeps this bundle's hold alive, if it has one.
@@ -345,10 +353,15 @@ final class DetectionStateMachine {
     /// the default workflow and no automatic end (20261021-103054 began 10 s after a skip and ran
     /// 315 s past the last speech). The timeout's offer seeds it the same way (`offerPrompt`); a
     /// prompt withdrawn because the meeting ended does not (DET14's rule).
-    func abandonPrompt(source: AppSource, liveness: SkippedMeetingLatch.Liveness? = nil) {
+    ///
+    /// DET17 guard 2: a skip made for one browser tab (a known tab key) is remembered per tab, so it
+    /// arms no bundle-wide cooldown (a second Meet title in the same browser must still prompt) and
+    /// its hold carries the tab's key. With no key (a PWA, a DET1 mic-tier source) it stays
+    /// bundle-wide, cooldown included.
+    func abandonPrompt(source: AppSource, liveness: SkippedMeetingLatch.Liveness? = nil, tabKey: Int? = nil) {
         cancelPromptTimeout()
-        recordCooldownEnd(bundleID: source.bundleID)
-        armSkipLatch(source: source, liveness: liveness)
+        if (tabKey ?? source.tabKey) == nil { recordCooldownEnd(bundleID: source.bundleID) }
+        armSkipLatch(source: source, liveness: liveness, tabKey: tabKey)
         noteSuppressedCandidate(source, origin: .skipLatch, at: clock())
         setIdle()
     }
@@ -359,9 +372,12 @@ final class DetectionStateMachine {
     /// source and arms end detection. The offer holds the prompt off for that span (re-raising a
     /// panel the owner let lapse every 42 s would be the popup storm the quiet register forbids),
     /// and nothing else.
-    func offerPrompt(source: AppSource, liveness: SkippedMeetingLatch.Liveness? = nil) {
+    func offerPrompt(source: AppSource, liveness: SkippedMeetingLatch.Liveness? = nil, tabKey: Int? = nil) {
         cancelPromptTimeout()
-        skipLatch.arm(source: source, mode: .offered, liveness: liveness ?? Self.spanLiveness(for: source), at: clock())
+        skipLatch.arm(
+            source: source, mode: .offered, liveness: liveness ?? Self.spanLiveness(for: source),
+            tabKey: tabKey ?? source.tabKey, at: clock()
+        )
         noteSuppressedCandidate(source, origin: .skipLatch, at: clock())
         setIdle()
     }

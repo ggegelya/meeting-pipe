@@ -1,0 +1,33 @@
+{
+  "_README": [
+    "DET17: Google Meet browser-tab title SHAPE classes, never real titles.",
+    "Meeting names are synthetic placeholders. Each class is a shape the",
+    "work-laptop field pack recorded (named, named plus Chrome's speaker",
+    "glyph, room code, host) or one the matcher must refuse (the doc-title",
+    "false starts END5 closed, the landing page, the bare word).",
+    "`admit: true` means googleMeet or googleMeetNamed must match and",
+    "decideBrowserAdmission must admit; `admit: false` means neither may",
+    "match and the gate must not admit. `pwa: true` rows are the code-less",
+    "Chromium PWA shape (D013), matched by the same matchers."
+  ],
+  "shapes": [
+    { "class": "named", "title": "Meet: \"Placeholder sync\"", "admit": true },
+    { "class": "named_glyph", "title": "Meet: \"Placeholder sync\" 🔊", "admit": true },
+    { "class": "named_unquoted", "title": "Meet: Placeholder planning", "admit": true },
+    { "class": "code_brand_first", "title": "Meet - abc-defg-hij", "admit": true },
+    { "class": "code_brand_last", "title": "abc-defg-hij - Google Meet", "admit": true },
+    { "class": "host", "title": "meet.google.com/abc-defg-hij", "admit": true },
+    { "class": "pwa_named", "title": "Meet: \"Placeholder review\"", "admit": true, "pwa": true },
+    { "class": "bare", "title": "Meet", "admit": false },
+    { "class": "bare_colon", "title": "Meet:", "admit": false },
+    { "class": "colon_glyph_only", "title": "Meet: 🔊", "admit": false },
+    { "class": "landing", "title": "Google Meet", "admit": false },
+    { "class": "doc_meeting_notes", "title": "Meeting notes - Google Docs", "admit": false },
+    { "class": "jira_level_10", "title": "Level 10 Meeting - Jira", "admit": false },
+    { "class": "meet_the_team", "title": "Meet the team - Placeholder Corp", "admit": false },
+    { "class": "meeting_colon", "title": "Meeting: Placeholder retro", "admit": false },
+    { "class": "webex_comparison", "title": "Webex vs Zoom Comparison", "admit": false },
+    { "class": "doc_named_google_docs", "title": "Meet: Placeholder sync notes - Google Docs", "admit": false },
+    { "class": "doc_named_notion", "title": "Meet: Placeholder agenda - Notion", "admit": false }
+  ]
+}

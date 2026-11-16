@@ -74,6 +74,9 @@ struct SkippedMeetingLatch {
         var unseenSec: TimeInterval = 0
         /// Consecutive positive-absent reads (microphone off, no confident winner).
         var absentStreak = 0
+        /// DET17 guard 2: for a browser source, the tab the hold was made for. A sighting of a
+        /// different tab in the same browser is not held. Nil holds the whole bundle.
+        var tabKey: Int? = nil
         var lastFedAt: Date
     }
 
@@ -96,14 +99,20 @@ struct SkippedMeetingLatch {
 
     /// Arm (or re-arm) the hold for `source`. A Skip after a timeout turns an offer into a skip and
     /// keeps its span.
-    mutating func arm(source: AppSource, mode: Mode, liveness: Liveness, at: Date = Date()) {
-        entries[source.bundleID] = Entry(source: source, mode: mode, liveness: liveness, lastFedAt: at)
+    mutating func arm(source: AppSource, mode: Mode, liveness: Liveness, tabKey: Int? = nil, at: Date = Date()) {
+        entries[source.bundleID] = Entry(source: source, mode: mode, liveness: liveness, absentStreak: 0, tabKey: tabKey, lastFedAt: at)
     }
 
     func entry(bundleID: String) -> Entry? { entries[bundleID] }
 
-    /// Either hold: the prompt stays away for this bundle.
-    func isHeld(bundleID: String) -> Bool { entries[bundleID] != nil }
+    /// Either hold: the prompt stays away for this bundle. With a `tabKey` (DET17, a browser
+    /// sighting), a hold made for a different tab does not apply; an unknown tab on either side is
+    /// treated as the same one.
+    func isHeld(bundleID: String, tabKey: Int? = nil) -> Bool {
+        guard let entry = entries[bundleID] else { return false }
+        guard let held = entry.tabKey, let tabKey else { return true }
+        return held == tabKey
+    }
 
     /// An explicit Skip only.
     func isSkipped(bundleID: String) -> Bool { entries[bundleID]?.mode == .skipped }

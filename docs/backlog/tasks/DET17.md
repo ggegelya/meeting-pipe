@@ -2,9 +2,9 @@
 id: DET17
 title: A scheduled Google Meet whose tab is titled by the meeting name instead of a room code is never admitted, so browser Meet prompts in about 1 call of 6
 category: Detection
-status: new
+status: partial
 priority: P1
-comment: Filed 2026-11-13 (audit band 2026-11-13). P1, broken promise: START2's "a plain-tab Meet call prompts" does not hold for a scheduled Meet, whose Chrome tab reads Meet, colon, quoted name with no room code, so MeetingTitlePatterns.googleMeet rejects it at the scanner and at the adapter's ShareableContentSignal; 5 of 6 counted Chrome Meet episodes on the work laptop were missed (owner may re-band). Admit the code-less brand-first shape as a prompt-only opener with three guards (no auto-record for a browser source, a tab-scoped skip memory, a captured-shape fixture), log a shape-only browser_identity row on an unadmitted brand sighting, and fix the Screen Recording copy.
+comment: Items 1 to 6 shipped 2026-11-16: googleMeetNamed (Meet, colon, name) in the strong and default browser matchers, a shape-class fixture, guard 1 (a browser source never records without a click: record/byo timeouts act as skip with effective_action logged, an auto-consented browser prompts), guard 2 (skip and timeout held per tab, no bundle cooldown), throttled shape-only detector/browser_identity, and the Screen Recording copy. ci-local green. Remaining: the owner walkthrough's field bar on the next Meet calls, and an owner question (should a browser resume-after-end prompt).
 ---
 
 # DET17: A scheduled Google Meet whose tab is titled by the meeting name instead of a room code is never admitted, so browser Meet prompts in about 1 call of 6
@@ -78,3 +78,17 @@ Sources: D001, D084 and D083 in the [recording reliability audit](../../audits/2
 1. [session] Confirm the installed build on the work laptop is newer than the landing commit.
 2. [owner] Over the following Meet calls in Chrome, keep the Meet tab selected in an on-screen window and note for each whether a prompt appeared and roughly how soon. Do not answer one prompt and confirm nothing records when it times out. Cost: no extra calls, one ignored prompt.
 3. [session] Grep that period's `events.jsonl` for Chrome `lifecycle/starting`, `prompt_shown`, `prompt_timeout` (`effective_action`) and `browser_identity` rows. Report per call the seconds from the first named-shape sighting to `prompt_shown`, and per week the Chrome prompts that matched no call the owner had. Pass: the field bar above.
+
+**Progress (2026-11-16): items 1 to 6 shipped.** Notes the diff does not show:
+
+- Guard 2 sits on DET18's span-bound hold rather than on `abandonPrompt`'s old bundle-wide pair: a browser hold carries the tab key of the title that admitted it (`AppSource.tabKey`, a process-seeded hash of bundle and title, never logged or persisted), and a sighting with a different key is not held. A timeout already arms no cooldown or latch since DET18; a browser Skip now arms no bundle cooldown either. A prompt is raised from a lifecycle `.starting`, whose source carries no tab, so the session remembers each browser's last sighted tab key and the hold reads it from there. The window identity the spec names is not part of the key: the scanner's AX title read returns strings only, so two windows showing the same Meet title share a key.
+- `meetBrandShape` classes a title as `meet_bare`, `meet_landing` or `meet_other` when "meet" is a whole word; `browser_identity` fires for any unadmitted listed browser carrying one, including a refused weak-title tab.
+- The fixture is `daemon/Tests/MeetingPipeTests/Fixtures/browser_meet_title_shapes.json` (synthetic names only), driven by `MeetTitleShapeFixtureTests`.
+- Tests: `MeetTitleShapeFixtureTests` (5), `BrowserPromptGuardTests` (7), `LifecycleAdapterTests` (+1, on-screen named shape live, absent window not), `SkippedMeetingLatchTests` (+1).
+
+Review fixes before landing (opus diff review): the tab key hashes a normalized title (letters and digits only), because Chrome's speaker glyph comes and goes mid-call and a raw-title key re-prompted a skipped call; `googleMeetNamed` refuses a title ending in a document app's suffix ("Meet: <name> - Google Docs", Notion, Confluence, Jira and the like), which matters on the end side too; a skip without a tab key (a PWA, a DET1 mic-tier source) stays bundle-wide with its cooldown; "Always for <app>" is not offered on a browser prompt. Known limit: the key takes the first strong-matching AX window title, so two Meet-shaped windows in one browser share one hold slot.
+
+**Open owner question (2026-11-16): should a browser resume prompt?** END17's resume-after-end (and END19 item 4, which keys a source-less recording's resume to the browser whose engage ended it) records a same-browser sighting inside 120 s with no prompt. For a browser that is any admitted tab, a scheduled Meet or a doc page named "Meet: ..." included, so it is the one path left where a browser source records without a click this time. It is consent continued from a recording the owner started, and `StaleEngageSessionTests.test_anEngageTheHandStartPromoted_endsIt_andTheCallResumes` pins END19's choice, so this task leaves it and asks: keep it, or make a browser resume prompt (the prompt now times out into DET18's offer, not a skip, which was END19's reason for avoiding it)?
+
+Owner-only remainder: walkthrough steps 2 and 3 (the next Meet calls in Chrome, then the read-back against the field bar).
+

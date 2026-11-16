@@ -116,4 +116,14 @@ final class SkippedMeetingLatchTests: XCTestCase {
         l.clear(bundleID: Self.zoom.bundleID)
         XCTAssertFalse(l.isHeld(bundleID: Self.zoom.bundleID))
     }
+
+    /// DET17 guard 2: a browser hold is for one tab; an unknown tab on either side counts as it.
+    func test_a_browser_hold_is_scoped_to_its_tab() {
+        var l = latch()
+        let chrome = AppSource(bundleID: "com.google.Chrome", displayName: "Chrome", kind: .browser)
+        l.arm(source: chrome, mode: .skipped, liveness: .title, tabKey: 7, at: Self.t0)
+        XCTAssertTrue(l.isHeld(bundleID: chrome.bundleID, tabKey: 7))
+        XCTAssertFalse(l.isHeld(bundleID: chrome.bundleID, tabKey: 8))
+        XCTAssertTrue(l.isHeld(bundleID: chrome.bundleID))
+    }
 }

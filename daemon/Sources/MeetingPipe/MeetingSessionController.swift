@@ -124,6 +124,18 @@ final class MeetingSessionController: @unchecked Sendable {
     /// were withdrawn by a weak end and re-raised within 15 s, on screen for 15 to 30 ms each.
     var promptBackoff: (bundleID: String, until: Date)?
 
+    /// DET17 guard 2: the tab key of each browser's latest discovery sighting. A prompt is raised
+    /// from a lifecycle `.starting`, whose source carries no tab key, so a skip or a timeout reads
+    /// the tab it was for from here. In memory only.
+    private var lastBrowserTabKey: [String: Int] = [:]
+
+    /// The tab a hold on `source` is for: its own key, else the browser's last sighted tab. Nil for
+    /// a native source, whose hold covers the whole bundle.
+    func holdTabKey(for source: AppSource) -> Int? {
+        guard source.kind == .browser, micTierPromptBundle != source.bundleID else { return nil }
+        return source.tabKey ?? lastBrowserTabKey[source.bundleID]
+    }
+
     /// Latest system-audio dBFS (from `recorder.onSystemLevel`), read by
     /// the silence backstop. `-120` is the "no audio observed yet" sentinel.
     var latestSystemLevelDb: Float = -120
@@ -455,7 +467,7 @@ final class MeetingSessionController: @unchecked Sendable {
             // span (DET18) so the next discovery poll doesn't immediately re-prompt this meeting.
             notePromptDismissed(src, reason: .skipped, extra: ["route": reason])
             coordinator.prompt.dismiss()
-            coordinator.stateMachine.abandonPrompt(source: src, liveness: holdLiveness(for: src))
+            coordinator.stateMachine.abandonPrompt(source: src, liveness: holdLiveness(for: src), tabKey: holdTabKey(for: src))
             coordinator.statusUI.setIdle()
         case .idle, .suppressed, .stopping:
             break
@@ -1221,10 +1233,12 @@ final class MeetingSessionController: @unchecked Sendable {
             timeoutSec: coordinator.livePromptTimeoutSec
         ) { [weak self] in
             guard let self = self else { return }
-            let action = (self.coordinator.configStore?.defaultPromptAction ?? "skip").lowercased()
+            let configured = (self.coordinator.configStore?.defaultPromptAction ?? "skip").lowercased()
+            let action = MeetingSessionController.effectiveTimeoutAction(configured: configured, kind: source.kind)
             Log.event(category: "coordinator", action: "prompt_timeout", attributes: [
                 "bundle_id": source.bundleID,
-                "default_action": action,
+                "default_action": configured,
+                "effective_action": action,
             ])
             switch action {
             case "record":
@@ -1242,7 +1256,9 @@ final class MeetingSessionController: @unchecked Sendable {
                 // No cooldown and no latch: the panel collapses into a one-click offer holding the
                 // prompt's own source, live for the call's span (item 2), so a click attaches with
                 // the source and arms end detection.
-                self.coordinator.stateMachine.offerPrompt(source: source, liveness: self.holdLiveness(for: source))
+                self.coordinator.stateMachine.offerPrompt(
+                    source: source, liveness: self.holdLiveness(for: source), tabKey: self.holdTabKey(for: source)
+                )
                 // UX10's two surfaces stay, reworded: the menu bar reads "Detected <app>" with the
                 // "Record this <app> meeting" row for as long as the offer lives, and the banner
                 // carries the same one click.
@@ -1253,6 +1269,14 @@ final class MeetingSessionController: @unchecked Sendable {
                 self.coordinator.notifications.notifySkippedMeeting(source: source, origin: .timedOut)
             }
         }
+    }
+
+    /// DET17 guard 1: a browser source is never recorded without a click. Every plain browser
+    /// source is title-only today (no microphone read), so a `record` or `byo` default acts as
+    /// `skip` for it until DET20 adds audio evidence. Pure.
+    static func effectiveTimeoutAction(configured: String, kind: AppSourceKind) -> String {
+        guard kind == .browser, configured == "record" || configured == "byo" else { return configured }
+        return "skip"
     }
 
     // MARK: - DET18: the prompt's exits, its offer and its pause
@@ -1292,7 +1316,9 @@ final class MeetingSessionController: @unchecked Sendable {
         guard case .prompting(let pending) = coordinator.stateMachine.current, pending == source else { return }
         notePromptDismissed(source, reason: .skipped)
         coordinator.prompt.dismiss()
-        coordinator.stateMachine.abandonPrompt(source: source, liveness: holdLiveness(for: source))
+        coordinator.stateMachine.abandonPrompt(
+            source: source, liveness: holdLiveness(for: source), tabKey: holdTabKey(for: source)
+        )
         noteSkipped(source)
     }
 
@@ -1349,7 +1375,8 @@ final class MeetingSessionController: @unchecked Sendable {
                 // The offer becomes a skip, keeping the span it was already bound to.
                 coordinator.stateMachine.armSkipLatch(
                     source: held,
-                    liveness: coordinator.stateMachine.heldLiveness(bundleID: held.bundleID)
+                    liveness: coordinator.stateMachine.heldLiveness(bundleID: held.bundleID),
+                    tabKey: coordinator.stateMachine.heldTabKey(bundleID: held.bundleID)
                 )
                 noteSkipped(held)
             }
@@ -1450,6 +1477,9 @@ final class MeetingSessionController: @unchecked Sendable {
         // END17 item 5: the same app's call is back inside the window after an end, so the end was
         // probably wrong. Resume without a prompt, under the workflow and mode the stopped
         // recording had, ahead of the cooldown and the skip latch that would otherwise hold it off.
+        // DET17 leaves this for browsers as END19 item 4 built it (a recording the owner started is
+        // the consent being resumed); whether a browser resume should prompt is an open owner
+        // question recorded in DET17's task file.
         if let candidate = resumeCandidate, candidate.applies(to: source.bundleID, at: Date()) {
             resumeCandidate = nil
             micTierPromptBundle = nil
@@ -1471,7 +1501,7 @@ final class MeetingSessionController: @unchecked Sendable {
         // cooldown, so a `.starting` re-published mid-call can't re-open the prompt. Safety
         // net only - after a skip the lifecycle is disengaged, so this rarely fires - but it
         // closes the race where a `.starting` was queued just before disengage.
-        if coordinator.stateMachine.isPromptHeld(bundleID: source.bundleID) {
+        if coordinator.stateMachine.isPromptHeld(bundleID: source.bundleID, tabKey: holdTabKey(for: source)) {
             return
         }
         // DET18 item 4: a prompt just withdrawn for this app is not re-raised inside its backoff.
@@ -1496,7 +1526,10 @@ final class MeetingSessionController: @unchecked Sendable {
         micTierPromptBundle = isMicTier ? source.bundleID : nil
 
         // Auto-consent (config or persisted "Always").
-        if coordinator.liveAutoConsentApps.contains(source.bundleID) ||
+        // DET17 guard 1: a browser source carries no audio evidence today, so an auto-consented
+        // browser prompts rather than recording without a click.
+        if source.kind != .browser,
+           coordinator.liveAutoConsentApps.contains(source.bundleID) ||
            coordinator.consent.isAutoConsented(bundleID: source.bundleID) {
             Log.writeLine("daemon", "auto-consent → recording (\(source.bundleID))")
             Log.event(category: "coordinator", action: "auto_consent", attributes: [
@@ -1914,6 +1947,7 @@ final class MeetingSessionController: @unchecked Sendable {
         guard coordinator.stateMachine.isAcceptingPrompts else { return }
         // END19: every winner is a sighting of its bundle, whichever branch below handles it.
         staleEngage.sighted(bundleID: source.bundleID, at: Date())
+        if source.kind == .browser, let tabKey = source.tabKey { lastBrowserTabKey[source.bundleID] = tabKey }
 
         // A held prompt (an explicit skip, or the offer a timeout left behind) stays out. DET18 bound
         // the hold to the call's span, which `handleScanReadings` feeds from this same scan before
@@ -1921,7 +1955,7 @@ final class MeetingSessionController: @unchecked Sendable {
         // which was both too long (a second call in the same app inherited it: no prompt for 25.6
         // minutes on 2026-10-21) and too short (it lapsed mid-call, D016 and D067). We do NOT
         // re-engage the lifecycle, so there's no Leave-button poll to leak.
-        if coordinator.stateMachine.isPromptHeld(bundleID: source.bundleID) {
+        if coordinator.stateMachine.isPromptHeld(bundleID: source.bundleID, tabKey: source.tabKey) {
             // DET7: this sighting is also proof of *what* is running, and it is the only
             // live handle on it once the prompt is gone. Keep it so a manual start (menu
             // row, hotkey, `meetingpipe://record`) can attach to the meeting the user

@@ -70,6 +70,8 @@ prompt_timeout_sec = 30
 #              cooldown is armed, so the next call still prompts.
 #   "record" : auto-start an auto-summary recording.
 #   "byo"    : auto-start a BYO (manual-paste) recording, no Anthropic call.
+#   A browser tab (Google Meet) never records without a click: for it
+#   "record" and "byo" act as "skip" (DET17).
 # Also a segmented control in Preferences -> Prompt.
 default_prompt_action = "skip"
 # After a recording for a bundle ends (or its prompt is skipped; a

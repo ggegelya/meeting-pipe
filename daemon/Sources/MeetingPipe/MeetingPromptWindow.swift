@@ -552,9 +552,13 @@ final class MeetingPromptWindow {
         byo.toolTip = "Record, but skip the summarization step. You'll summarize the transcript yourself."
         menu.addItem(byo)
 
-        let always = NSMenuItem(title: "Always for \(source.displayName)", action: #selector(menuPickAlways), keyEquivalent: "")
-        always.target = self
-        menu.addItem(always)
+        // DET17 guard 1: a browser source never records without a click, so "Always" would save a
+        // consent that does nothing for it. Not offered there.
+        if source.kind != .browser {
+            let always = NSMenuItem(title: "Always for \(source.displayName)", action: #selector(menuPickAlways), keyEquivalent: "")
+            always.target = self
+            menu.addItem(always)
+        }
 
         menu.addItem(.separator())
 

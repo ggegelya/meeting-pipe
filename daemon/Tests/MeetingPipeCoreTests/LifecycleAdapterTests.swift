@@ -299,6 +299,28 @@ final class LifecycleAdapterTests: XCTestCase {
         )
     }
 
+    /// DET17: the scheduled-Meet shape ("Meet: <name>") reads live on an on-screen window, and the
+    /// same title on a window absent from the on-screen list reads not-live (the SCK read is the
+    /// on-screen half of the opener).
+    func test_browser_adapter_reads_the_named_meet_shape_live_only_on_screen() throws {
+        typealias Summary = ShareableContentSignal.ShareableWindowSummary
+        let named = "Meet: \"Placeholder sync\""
+        for (onScreen, expected) in [([Summary(bundleIdentifier: "com.google.Chrome", title: named)], PrimarySignalState.live),
+                                     ([Summary(bundleIdentifier: "com.google.Chrome", title: "Inbox")], .ended)] {
+            let adapter = BrowserMeetingLifecycleAdapter(
+                shareableContent: ShareableContentSignal(probe: { onScreen }, scheduler: { _, _ in {} }),
+                workspace: WorkspaceSignal(probe: { _ in nil }),
+                windowTitle: WindowTitleSignal(axBus: AXObserverBus(), probe: { _ in nil }),
+                titleMatchers: BrowserMeetingLifecycleAdapter.defaultTitleMatchers,
+                eventLog: NoopEventLog()
+            )
+            var events: [PrimarySignalEvent] = []
+            try adapter.start(context: chromeContext, handle: LifecycleAdapterHandle()) { events.append($0) }
+            adapter.stop()
+            XCTAssertEqual(events.first { $0.kind == .browserTabTitle }?.state, expected)
+        }
+    }
+
     func test_browser_adapter_emits_ended_on_meeting_app_termination() throws {
         let workspace = WorkspaceSignal(probe: { _ in nil })
         let adapter = makeBrowserAdapter(

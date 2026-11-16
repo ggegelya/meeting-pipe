@@ -12,17 +12,42 @@ struct AppSource: Hashable {
     let displayName: String
     let kind: AppSourceKind
     let meetingTitle: String?
+    /// DET17 guard 2: an in-memory key for the browser tab a discovery sighting admitted (the bundle
+    /// and a hash of the admitting title), so a skipped or timed-out browser prompt is remembered per
+    /// tab rather than per browser. Never logged, never persisted, and not part of the source's
+    /// identity (`==` and `hash` ignore it). Nil for natives and for lifecycle-built sources.
+    let tabKey: Int?
 
     init(
         bundleID: String,
         displayName: String,
         kind: AppSourceKind = .native,
-        meetingTitle: String? = nil
+        meetingTitle: String? = nil,
+        tabKey: Int? = nil
     ) {
         self.bundleID = bundleID
         self.displayName = displayName
         self.kind = kind
         self.meetingTitle = meetingTitle
+        self.tabKey = tabKey
+    }
+
+    /// DET17: the tab key for a browser window title. Process-seeded `Hasher`, so it is stable for
+    /// this run only, which is all an in-memory skip memory needs.
+    ///
+    /// The title is normalized first: letters and digits only, lowercased, whitespace collapsed.
+    /// Chrome's speaker glyph comes and goes on a Meet tab as people talk, so a key over the raw
+    /// title changed mid-call and a skipped call re-prompted on the next scan.
+    static func browserTabKey(bundleID: String, title: String) -> Int {
+        var hasher = Hasher()
+        hasher.combine(bundleID)
+        hasher.combine(normalizedTabTitle(title))
+        return hasher.finalize()
+    }
+
+    static func normalizedTabTitle(_ title: String) -> String {
+        let kept = title.lowercased().map { $0.isLetter || $0.isNumber ? $0 : " " }
+        return String(kept).split(separator: " ").joined(separator: " ")
     }
 
     static func == (lhs: AppSource, rhs: AppSource) -> Bool {

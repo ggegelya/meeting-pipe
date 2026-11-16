@@ -163,9 +163,11 @@ public enum MeetingTitlePatterns {
         guard let lowered = title?.lowercased() else { return false }
         if lowered.contains("meet.google.com") { return true }
         // END5: the bare 3-4-3 code alone over-admitted unrelated slugs ("one-more-day" is a
-        // valid 3-4-3), so require the Meet brand alongside it. A real in-call tab title always
-        // carries "Meet" ("Meet - abc-defg-hij", "abc-defg-hij - Google Meet"); a random hyphenated
-        // slug does not. This makes `googleMeet` a strong, stands-alone start matcher (the
+        // valid 3-4-3), so require the Meet brand alongside it. An ad-hoc room's tab title carries
+        // "Meet" beside the code ("Meet - abc-defg-hij", "abc-defg-hij - Google Meet"); a random
+        // hyphenated slug does not. A scheduled Meet carries no code at all, which this matcher
+        // misses by construction: that shape is `googleMeetNamed` below (DET17), measured on the
+        // captured shape classes in `browser_meet_title_shapes.json`. This makes `googleMeet` a strong, stands-alone start matcher (the
         // brand-token matchers below still need a live-audio corroborator at start).
         guard lowered.contains("meet") else { return false }
         return lowered.range(
@@ -173,6 +175,35 @@ public enum MeetingTitlePatterns {
             options: .regularExpression
         ) != nil
     }
+
+    /// Google Meet, the scheduled-meeting shape (DET17): the brand word, a colon, then the meeting's
+    /// name ("Meet: <name>", sometimes with Chrome's trailing speaker glyph), and no room code or host.
+    /// On the work laptop this was the stable in-call title of 5 of 6 Chrome Meet calls, and
+    /// `googleMeet` matched none of the 79 such titles captured on the four miss days.
+    ///
+    /// Anchored and whole-word on purpose: the title must START with the brand and its colon, so
+    /// "Level 10 Meeting - Jira" (the 2026-06-30 false prompt), "Meeting notes", "Meet the team" and
+    /// the bare word "Meet" cannot match, and the rest must carry a letter or digit, so a lone glyph
+    /// after the colon does not either. A false prompt here costs a dismissal and never a recording:
+    /// a browser source is never recorded without a click (DET17 guard 1).
+    ///
+    /// "Starts with Meet:" is not unique to Meet: a document titled after a meeting carries its
+    /// app's suffix ("Meet: <name> - Google Docs", "... - Notion"), so a title ending in a known
+    /// document app's suffix is refused. On the end side that matters more than on the start side,
+    /// since this matcher is in `defaultTitleMatchers` too and a doc page on screen would otherwise
+    /// keep a browser recording live until END17's lone dwell.
+    public static let googleMeetNamed: (String?) -> Bool = { title in
+        guard let lowered = title?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines),
+              lowered.hasPrefix("meet:") else { return false }
+        if documentAppSuffixes.contains(where: { lowered.hasSuffix($0) }) { return false }
+        return lowered.dropFirst("meet:".count).contains { $0.isLetter || $0.isNumber }
+    }
+
+    /// The page-title suffixes of document and tracker apps whose pages can be named "Meet: ...".
+    private static let documentAppSuffixes: [String] = [
+        " - google docs", " - google sheets", " - google slides", " - google drive",
+        " - notion", " - confluence", " - jira", " - dropbox paper", " - quip", " - coda",
+    ]
 
     /// Slack huddles: title contains "huddle" as a whole word, so a "team-huddles" channel name
     /// does not match (the trailing `s` is alphanumeric and fails the boundary). DET5 made this
