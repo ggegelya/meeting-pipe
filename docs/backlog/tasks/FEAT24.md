@@ -4,7 +4,7 @@ title: Undo naming and Un-name in one meeting run a whole-person roster forget, 
 category: Feature
 status: partial
 priority: P1
-comment: Shipped 2026-11-16 (ci-local fences and daemon lanes green; pipeline lane 1752 passed with test_real_sigint_prints_no_traceback failing under load, passing alone and in a quiet full pytest run of 1753): roster.json `sources` provenance (stem, label, sample fingerprint), `RosterStore.unenroll` + `mp roster unenroll` + `roster_unenrolled`, `PipelineLauncher.rosterUnenroll`; Undo naming and rename unenroll this meeting's sample only (never `forget`), GUIDE and CONVENTIONS updated. Owed - the owner's approval to close (no owner walkthrough written).
+comment: Shipped 2026-11-16 (ci-local fences and daemon lanes green; pipeline lane 1752 passed with test_real_sigint_prints_no_traceback failing when the lane ran as a backgrounded job and passing in the foreground, 1753 passed): roster.json `sources` provenance (stem, label, sample fingerprint), `RosterStore.unenroll` + `mp roster unenroll` + `roster_unenrolled`, `PipelineLauncher.rosterUnenroll`; Undo naming and rename unenroll this meeting's sample only (never `forget`), GUIDE and CONVENTIONS updated. Owed - the owner's approval to close (no owner walkthrough written).
 ---
 
 # FEAT24: Undo naming and Un-name in one meeting run a whole-person roster forget, deleting that person's voice samples from every other meeting
