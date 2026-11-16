@@ -33,6 +33,17 @@ final class StatusMenuReadsTests: XCTestCase {
         func count(_ dir: URL) -> Int { log.record(); return answer.withLock { $0 } }
     }
 
+    /// PERF31: the Recent meetings listing: what it answers, and who asked.
+    private final class RecentLister: Sendable {
+        let log = CallLog()
+        private let answer = OSAllocatedUnfairLock(initialState: [String]())
+        func set(_ stems: [String]) { answer.withLock { $0 = stems } }
+        func list(_ dir: URL) -> [RecentMeeting] {
+            log.record()
+            return answer.withLock { $0 }.map { (stem: $0, displayName: $0) }
+        }
+    }
+
     /// `launchctl`, answering `print-disabled` with the agent disabled or not.
     private final class FakeLaunchctl: LaunchctlRunning {
         let printDisabled = CallLog()
@@ -55,6 +66,7 @@ final class StatusMenuReadsTests: XCTestCase {
     private var item: NSStatusItem!
     private var controller: StatusBarController!
     private var counter: FailedCounter!
+    private var recents: RecentLister!
     private var launchctl: FakeLaunchctl!
     private var countQueue: DispatchQueue!
     private var launchAgentQueue: DispatchQueue!
@@ -62,15 +74,18 @@ final class StatusMenuReadsTests: XCTestCase {
     override func setUp() {
         super.setUp()
         counter = FailedCounter()
+        recents = RecentLister()
         launchctl = FakeLaunchctl()
         countQueue = DispatchQueue(label: "perf24.test.count")
         launchAgentQueue = DispatchQueue(label: "perf24.test.launchAgent")
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let counter = self.counter!
+        let recents = self.recents!
         controller = StatusBarController(
             item: item,
             launchAtLogin: service(launchctl),
             countFailedMeetings: { counter.count($0) },
+            listRecentMeetings: { recents.list($0) },
             countQueue: countQueue,
             launchAgentQueue: launchAgentQueue
         )
@@ -109,6 +124,67 @@ final class StatusMenuReadsTests: XCTestCase {
 
     private func failedRow(_ count: Int) -> String {
         StatusBarModel.failedMeetingsTitle(count: count)!
+    }
+
+    // MARK: - PERF31: the Recent meetings list is a cached off-main read
+
+    private var recentSubmenu: NSMenu {
+        menu.items.first { $0.title == "Recent meetings…" }!.submenu!
+    }
+
+    private func openRecent() {
+        let sub = recentSubmenu
+        sub.delegate?.menuNeedsUpdate?(sub)
+    }
+
+    private var recentTitles: [String] { recentSubmenu.items.map(\.title) }
+
+    /// One listing per open, never on main, and the submenu's own open lists nothing.
+    func test_an_open_lists_recent_meetings_once_off_main_and_the_submenu_reads_the_cache() {
+        recents.set(["b", "a"])
+        open()
+        drain()
+        XCTAssertEqual(recents.log.calls, 1)
+        XCTAssertEqual(recents.log.onMain, 0)
+
+        openRecent()
+        openRecent()
+        XCTAssertEqual(recents.log.calls, 1, "opening the submenu must not touch the provider")
+        XCTAssertEqual(recentTitles, ["b", "a"])
+    }
+
+    func test_an_empty_list_renders_the_disabled_row() {
+        open()
+        drain()
+        openRecent()
+        XCTAssertEqual(recentTitles, ["No recent meetings"])
+        XCTAssertFalse(recentSubmenu.items[0].isEnabled)
+    }
+
+    /// A listing that lands after the open and differs refills the open submenu in place.
+    func test_a_changed_list_refills_the_open_submenu() {
+        recents.set(["a"])
+        open()
+        drain()
+        openRecent()
+        XCTAssertEqual(recentTitles, ["a"])
+
+        recents.set(["c", "a"])
+        controller.refreshRecentMeetings()
+        drain()
+        XCTAssertEqual(recentTitles, ["c", "a"])
+    }
+
+    /// With the menu closed, a changed list is only cached: nothing is rebuilt.
+    func test_a_changed_list_with_the_menu_closed_is_cached_without_touching_the_submenu() {
+        open()
+        drain()
+        close()
+        recents.set(["z"])
+        controller.refreshRecentMeetings()
+        drain()
+        XCTAssertEqual(controller.recentMeetings.map(\.stem), ["z"])
+        XCTAssertEqual(recentTitles, ["Loading…"], "the open submenu was not refilled while closed")
     }
 
     // MARK: - Item 1: rebuilds stop building

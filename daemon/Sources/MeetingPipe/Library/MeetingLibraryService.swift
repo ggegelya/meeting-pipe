@@ -1346,27 +1346,31 @@ final class MeetingLibraryService {
 
     /// Last `limit` meetings with a run sidecar (summarize completed), sorted newest-first by mtime.
     func recentCorrectableMeetings(limit: Int = 10) -> [(stem: String, displayName: String)] {
-        let dir = outputDir()
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(
+        Self.recentCorrectableMeetings(in: outputDir(), limit: limit)
+    }
+
+    /// The listing behind it, taking the directory so the status menu can run it off main
+    /// (PERF31: it lists the whole of `raw/`, in a folder that may sync to iCloud, so never on
+    /// the main thread). Each sidecar's mtime is read once, from the prefetched key, and the sort
+    /// compares the stored values.
+    static func recentCorrectableMeetings(in dir: URL, limit: Int = 10) -> [(stem: String, displayName: String)] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
             at: dir,
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else {
             return []
         }
-        let sidecars = entries.filter { $0.lastPathComponent.hasSuffix(".run.json") }
-        let sorted = sidecars.sorted { lhs, rhs in
-            let lDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate) ?? .distantPast
-            let rDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate) ?? .distantPast
-            return lDate > rDate
-        }
-        return sorted.prefix(limit).map { url in
-            let name = url.lastPathComponent
+        let dated: [(url: URL, date: Date)] = entries
+            .filter { $0.lastPathComponent.hasSuffix(".run.json") }
+            .map { url in
+                let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey])
+                    .contentModificationDate) ?? .distantPast
+                return (url, date)
+            }
+        return dated.sorted { $0.date > $1.date }.prefix(limit).map { entry in
             // Strip ".run.json" suffix.
-            let stem = String(name.dropLast(".run.json".count))
+            let stem = String(entry.url.lastPathComponent.dropLast(".run.json".count))
             return (stem: stem, displayName: stem)
         }
     }

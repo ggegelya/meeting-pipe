@@ -126,10 +126,8 @@ extension Coordinator {
     // middle man, not a boundary. What survives below is what is genuinely the
     // Coordinator's: the job dispatcher and the config store.
     //
-    // `recentCorrectableMeetings` further down stays, because `StatusBarController`
-    // (not the Library window) is its caller and it holds a Coordinator, not a service.
-    // The failed count left in PERF24: the menu counts off main itself, through
-    // `MeetingLibraryService.failedMeetingCount(in:)`.
+    // The failed count left in PERF24 and the Recent meetings list in PERF31: the status menu
+    // reads both off main itself, through `MeetingLibraryService`'s directory-taking statics.
 
     /// Cancel the active pipeline subprocess (TECH-UX5). Offered for any running
     /// job since UX28, not only a stalled one.
@@ -248,10 +246,6 @@ extension Coordinator {
     @objc func menuRecentMeeting(_ sender: NSMenuItem) {
         guard let stem = sender.representedObject as? String else { return }
         CorrectionWindow.present(stem: stem, recordingsDir: liveOutputDir)
-    }
-
-    func recentCorrectableMeetings(limit: Int = 10) -> [(stem: String, displayName: String)] {
-        library.recentCorrectableMeetings(limit: limit)
     }
 
     /// Assemble the "Finish setup" checklist snapshot (UX22) from the same

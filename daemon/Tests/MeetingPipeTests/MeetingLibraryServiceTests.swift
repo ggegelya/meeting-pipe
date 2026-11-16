@@ -1166,6 +1166,11 @@ final class MeetingLibraryServiceTests: XCTestCase {
 
         let capped = service.recentCorrectableMeetings(limit: 1)
         XCTAssertEqual(capped.map { $0.stem }, ["new"])
+
+        // PERF31: the directory-taking form the status menu runs off main.
+        let direct = MeetingLibraryService.recentCorrectableMeetings(in: dir, limit: 10)
+        XCTAssertEqual(direct.map { $0.stem }, ["new", "old"], "suffix stripped, newest first")
+        XCTAssertEqual(MeetingLibraryService.recentCorrectableMeetings(in: dir, limit: 1).map { $0.stem }, ["new"])
     }
 
     func test_failedMeetingCount_empty_dir_is_zero() {

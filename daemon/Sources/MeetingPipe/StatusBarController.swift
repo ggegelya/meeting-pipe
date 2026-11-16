@@ -100,6 +100,12 @@ final class StatusBarController {
     /// every open and every rebuild, including every 2 s download tick.
     private var failedMeetingCount = 0
     private let countFailedMeetings: @Sendable (URL) -> Int
+    /// PERF31: the Recent meetings list, read on `countQueue` on each open and at launch like the
+    /// failed count. The submenu builds its rows from this cache and touches no disk; a read that
+    /// changes it refills an open submenu in place.
+    private(set) var recentMeetings: [RecentMeeting] = []
+    private let listRecentMeetings: @Sendable (URL) -> [RecentMeeting]
+    private weak var recentSubmenu: NSMenu?
     /// Serial, so recounts land in the order they were asked for and the last one wins.
     private let countQueue: DispatchQueue
     /// Where to count. Resolved on main, since the live output directory reads `ConfigStore`;
@@ -113,12 +119,16 @@ final class StatusBarController {
         item: NSStatusItem,
         launchAtLogin: LaunchAtLoginService = LaunchAtLoginService(),
         countFailedMeetings: @escaping @Sendable (URL) -> Int = { MeetingLibraryService.failedMeetingCount(in: $0) },
+        listRecentMeetings: @escaping @Sendable (URL) -> [RecentMeeting] = {
+            MeetingLibraryService.recentCorrectableMeetings(in: $0, limit: 10)
+        },
         countQueue: DispatchQueue = DispatchQueue(label: "MeetingPipe.StatusMenu.failedCount", qos: .utility),
         launchAgentQueue: DispatchQueue = DispatchQueue(label: "MeetingPipe.StatusMenu.launchAgent", qos: .utility)
     ) {
         self.item = item
         self.launchAtLogin = launchAtLogin
         self.countFailedMeetings = countFailedMeetings
+        self.listRecentMeetings = listRecentMeetings
         self.countQueue = countQueue
         self.launchAgentQueue = launchAgentQueue
         if let button = item.button {
@@ -463,6 +473,7 @@ final class StatusBarController {
         populateMenu(menu, state: lastMenuState)
         refreshLaunchAgentState()
         refreshFailedMeetingCount()
+        refreshRecentMeetings()
     }
 
     fileprivate func menuDidClose() {
@@ -476,6 +487,23 @@ final class StatusBarController {
     func primeCachedReads() {
         refreshLaunchAgentState()
         refreshFailedMeetingCount()
+        refreshRecentMeetings()
+    }
+
+    /// PERF31: re-list the recent meetings on `countQueue`. The list lands on main; a changed one
+    /// refills the open submenu in place, and a closed menu picks it up on its next open.
+    func refreshRecentMeetings() {
+        guard let dir = recordingsDir() else { return }
+        let list = listRecentMeetings
+        countQueue.async {
+            let found = list(dir)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, found.map(\.stem) != self.recentMeetings.map(\.stem) else { return }
+                self.recentMeetings = found
+                guard self.menuIsOpen, let submenu = self.recentSubmenu else { return }
+                self.recentMeetingsDelegate?.fill(submenu)
+            }
+        }
     }
 
     /// Recount the failed meetings on `countQueue`. The count lands on main, and a changed one
@@ -593,10 +621,7 @@ final class StatusBarController {
         manageWorkflows.target = coordinator
         menu.addItem(manageWorkflows)
 
-        if let coordinator = coordinator,
-           let recentItem = recentMeetingsMenuItem(coordinator: coordinator) {
-            menu.addItem(recentItem)
-        }
+        menu.addItem(recentMeetingsMenuItem(coordinator: coordinator))
 
         let openLogs = NSMenuItem(title: "Open Logs Folder", action: #selector(Coordinator.menuOpenLogs), keyEquivalent: "")
         openLogs.target = coordinator
@@ -805,16 +830,19 @@ final class StatusBarController {
         return row
     }
 
-    /// "Recent meetings" submenu, populated lazily via `menuNeedsUpdate` so
-    /// the dir scan is paid on open, not on every state change. Nil only
-    /// without a Coordinator; the empty case renders a disabled row.
-    private func recentMeetingsMenuItem(coordinator: Coordinator) -> NSMenuItem? {
+    /// "Recent meetings" submenu. `menuNeedsUpdate` fills it from `recentMeetings`, the cache
+    /// `refreshRecentMeetings` keeps off main (PERF31), so opening it touches no disk. The empty
+    /// case renders a disabled row.
+    private func recentMeetingsMenuItem(coordinator: Coordinator?) -> NSMenuItem {
         let parent = NSMenuItem(title: "Recent meetings…", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
-        let delegate = recentMeetingsDelegate ?? RecentMeetingsMenuDelegate(coordinator: coordinator)
-        delegate.coordinator = coordinator
+        let delegate = recentMeetingsDelegate ?? RecentMeetingsMenuDelegate(entries: { [weak self] in
+            self?.recentMeetings ?? []
+        })
+        delegate.target = coordinator
         submenu.delegate = delegate
         recentMeetingsDelegate = delegate
+        recentSubmenu = submenu
         // A child so the submenu isn't empty before `menuNeedsUpdate` fires.
         let placeholder = NSMenuItem(title: "Loading…", action: nil, keyEquivalent: "")
         placeholder.isEnabled = false
@@ -897,37 +925,40 @@ private final class StatusMenuDelegate: NSObject, NSMenuDelegate {
     }
 }
 
-/// Populates the "Recent meetings" submenu on open (re-scans the dir, paid
-/// per click not per rebuild). Rebuilt in place so stale items don't linger.
-private final class RecentMeetingsMenuDelegate: NSObject, NSMenuDelegate {
-    weak var coordinator: Coordinator?
+typealias RecentMeeting = (stem: String, displayName: String)
 
-    init(coordinator: Coordinator) {
-        self.coordinator = coordinator
+/// Fills the "Recent meetings" submenu from the controller's cached list (PERF31): on open, and
+/// again in place when a read that finished while the menu was up changed the list. It reads no
+/// disk. Rebuilt in place so stale items don't linger.
+final class RecentMeetingsMenuDelegate: NSObject, NSMenuDelegate {
+    private let entries: () -> [RecentMeeting]
+    /// The `Coordinator` the rows' action runs on; nil in tests that only read the rows.
+    weak var target: AnyObject?
+
+    init(entries: @escaping () -> [RecentMeeting]) {
+        self.entries = entries
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        fill(menu)
+    }
+
+    func fill(_ menu: NSMenu) {
         menu.removeAllItems()
-        guard let coordinator = coordinator else {
-            let row = NSMenuItem(title: "Coordinator unavailable", action: nil, keyEquivalent: "")
-            row.isEnabled = false
-            menu.addItem(row)
-            return
-        }
-        let entries = coordinator.recentCorrectableMeetings(limit: 10)
-        if entries.isEmpty {
+        let list = entries()
+        if list.isEmpty {
             let row = NSMenuItem(title: "No recent meetings", action: nil, keyEquivalent: "")
             row.isEnabled = false
             menu.addItem(row)
             return
         }
-        for entry in entries {
+        for entry in list {
             let item = NSMenuItem(
                 title: entry.displayName,
                 action: #selector(Coordinator.menuRecentMeeting(_:)),
                 keyEquivalent: ""
             )
-            item.target = coordinator
+            item.target = target
             item.representedObject = entry.stem
             menu.addItem(item)
         }

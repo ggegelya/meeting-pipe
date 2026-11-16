@@ -2,9 +2,10 @@
 id: PERF31
 title: Opening the Recent meetings submenu lists and mtime-sorts the whole recordings directory on the main thread
 category: Performance
-status: new
+status: done
+closed: 2026-11-16
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). `RecentMeetingsMenuDelegate.menuNeedsUpdate` calls `MeetingLibraryService.recentCorrectableMeetings(limit: 10)`, which runs `contentsOfDirectory` over the whole of `raw/` and sorts every `.run.json` by mtime on main each time the submenu opens, in a folder that syncs to iCloud on the owner's machines; PERF24 left it on main by design. Scope: compute the list off main on the status menu's open with PERF24's cached-read pattern, show the cached list in the submenu, and repopulate it if the answer changes while open. [Spec](./PERF31.md)
+comment: Shipped 2026-11-16 - the status menu lists recent meetings on countQueue per open and at launch (MeetingLibraryService.recentCorrectableMeetings(in:), one mtime read per sidecar), the submenu fills from the cache and refills in place when the list changes; 5 new tests (4 StatusMenuReads, 1 service); ci-local green. Not done - folding the failed count and recent list into one listing (optional). Owner check (confirms) - hover Recent meetings in a large library, no hitch.
 ---
 
 # PERF31: Opening the Recent meetings submenu lists and mtime-sorts the whole recordings directory on the main thread

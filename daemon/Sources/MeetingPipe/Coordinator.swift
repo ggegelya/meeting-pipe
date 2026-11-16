@@ -863,8 +863,7 @@ final class Coordinator: NSObject {
 
     /// Post-recording meeting operations (TECH-H1-FINISH). Handed to
     /// `libraryModel` in `init` so the Library window calls it directly (ARCH4);
-    /// the Coordinator keeps only `recentCorrectableMeetings` for the status-bar menu
-    /// (the failed count is the menu's own off-main read since PERF24). `enqueue` reads `jobDispatcher` inside the closure,
+    /// the status bar reads its failed count and Recent list itself, off main (PERF24, PERF31). `enqueue` reads `jobDispatcher` inside the closure,
     /// not at construction, so forcing this lazy var in `init` is safe while that
     /// IUO is still nil.
     lazy var library = MeetingLibraryService(
