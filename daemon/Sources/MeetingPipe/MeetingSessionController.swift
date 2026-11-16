@@ -547,6 +547,32 @@ final class MeetingSessionController: @unchecked Sendable {
         pendingWorkflowOverride = id.map { (source: source, workflowID: $0) }
     }
 
+    /// SEC21: make the routing's blind spots countable at record start, changing nothing.
+    ///
+    /// A source with no meeting title is `meeting_title_unresolved` (F040: 155 of 155 recordings
+    /// since 2026-09-01 had none, and nothing said so). A fallback that could not rule out an NDA
+    /// workflow, because an NDA rule's bundle matched but its title rule could not be evaluated or
+    /// a workflow file did not load, is `nda_classification_undecided`. By the owner's decision
+    /// (2026-11-16) neither changes the capture posture while titles are unknown; revisit after
+    /// CAL3. Neither row carries a title.
+    private func noteRoutingUncertainty(source: AppSource?, reason: WorkflowMatcher.Reason) {
+        if let source, (source.meetingTitle ?? "").isEmpty {
+            Log.event(category: "coordinator", action: "meeting_title_unresolved", attributes: [
+                "bundle_id": source.bundleID,
+                "kind": source.kind == .browser ? "browser" : "native",
+            ])
+        }
+        guard case .fallback(let undecided) = reason else { return }
+        let brokenFiles = coordinator.workflowStore.broken.count
+        guard !undecided.isEmpty || brokenFiles > 0 else { return }
+        Log.event(category: "workflow", action: "nda_classification_undecided", attributes: [
+            "bundle_id": source?.bundleID ?? "manual",
+            "undecided_workflow_ids": undecided.map(\.id.uuidString),
+            "broken_workflow_files": brokenFiles,
+            "posture_changed": false,
+        ])
+    }
+
     /// SEC39: drop the prompt's routing state (the chip pick and AI9's pre-selection) on every way
     /// a prompt ends without recording, and before a new prompt resolves its chip. A pick that was
     /// never recorded is logged, so a discarded routing choice leaves a trace.
@@ -672,11 +698,13 @@ final class MeetingSessionController: @unchecked Sendable {
         } else if let hint = preselectedRoutingHint, hint.source == source {
             overrideID = hint.workflowID
         }
-        let resolvedWorkflow = WorkflowMatcher.resolve(
+        let resolution = WorkflowMatcher.resolveWithReason(
             source: source,
             overrideID: overrideID,
             workflows: coordinator.workflowStore.workflows
         )
+        let resolvedWorkflow = resolution.workflow
+        noteRoutingUncertainty(source: source, reason: resolution.reason)
         pendingWorkflowOverride = nil
         pendingResumeWorkflow = nil
         preselectedRoutingHint = nil

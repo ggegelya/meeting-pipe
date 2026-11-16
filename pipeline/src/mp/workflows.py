@@ -11,6 +11,7 @@ Read-only. The daemon is the sole writer.
 from __future__ import annotations
 
 import tomllib
+import uuid
 from pathlib import Path
 
 from .config import CONFIG_PATH
@@ -18,25 +19,78 @@ from .config import CONFIG_PATH
 WORKFLOWS_DIR = CONFIG_PATH.parent / "workflows"
 
 
-def _load_workflow_docs(directory: Path | None) -> list[dict]:
-    """Parse every workflow TOML in `directory`, skipping unreadable / malformed
-    ones (matching `WorkflowStore.load` on the Swift side: one bad file must not
-    hide the others). Empty when the directory is absent.
+# Every `WorkflowBackend` raw value on the Swift side (`Workflow.swift`).
+KNOWN_BACKENDS = frozenset({"anthropic", "local", "auto", "apple_intelligence", "claude_cli", "openai"})
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
+def strict_problem(doc: dict, path: Path) -> str | None:
+    """The reason a parsed workflow file is refused, or None (SEC21 item 6).
+
+    The same rule as Swift's `WorkflowStore.decode`: a present `nda_mode` that is not
+    a TOML bool, a present `backend` that is not a known backend, or an `id` that is
+    invalid, or missing while the file name is not itself a UUID. Only a present,
+    wrong value is refused; a file with no `[flags]` and no `backend` still loads.
+    """
+    flags = doc.get("flags")
+    if isinstance(flags, dict) and "nda_mode" in flags and not isinstance(flags["nda_mode"], bool):
+        return "nda_mode is not true or false"
+    if "backend" in doc and doc["backend"] not in KNOWN_BACKENDS:
+        return f"backend {doc['backend']!r} is not a known backend"
+    if "id" in doc:
+        if not isinstance(doc["id"], str) or not _is_uuid(doc["id"]):
+            return "id is not a valid UUID"
+    elif not _is_uuid(path.stem):
+        return "id is missing and the file name is not a UUID"
+    return None
+
+
+def load_workflows(directory: Path | None = None) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Every workflow TOML in `directory`: the docs that load, and the (file name,
+    reason) of each that does not, by the daemon's own rule (SEC21 items 5 to 7).
+
+    A broken file is reported rather than skipped in silence: the daemon refuses it
+    too, so its rules (perhaps an NDA workflow's) are not applied. Empty when the
+    directory is absent.
     """
     directory = directory or WORKFLOWS_DIR
     if not directory.is_dir():
-        return []
+        return [], []
     docs: list[dict] = []
+    broken: list[tuple[str, str]] = []
     for path in sorted(directory.glob("*.toml")):
         try:
             doc = tomllib.loads(path.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+            broken.append((path.name, type(exc).__name__))
+            continue
+        problem = strict_problem(doc, path)
+        if problem is not None:
+            broken.append((path.name, problem))
             continue
         # An empty or absent name falls back to the filename, matching the prior
         # per-caller `doc.get("name") or path.stem`, so callers read `doc["name"]`.
         doc["name"] = str(doc.get("name") or path.stem)
         docs.append(doc)
-    return docs
+    return docs, broken
+
+
+def broken_workflow_files(directory: Path | None = None) -> list[tuple[str, str]]:
+    """The workflow files the daemon refuses, as (file name, reason) (SEC21 item 7)."""
+    return load_workflows(directory)[1]
+
+
+def _load_workflow_docs(directory: Path | None) -> list[dict]:
+    """The workflow docs that load (one bad file must not hide the others, matching
+    `WorkflowStore.load`). Broken ones are `broken_workflow_files`' to report."""
+    return load_workflows(directory)[0]
 
 
 def nda_workflow_names(directory: Path | None = None) -> list[str]:

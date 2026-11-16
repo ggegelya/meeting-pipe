@@ -747,6 +747,21 @@ def _synced_roots(
     return found
 
 
+def check_workflow_files(workflows_dir: Path | None = None) -> None:
+    """Every workflow file the daemon refuses, one `[FAIL]` each (SEC21 item 7).
+
+    A refused file's rules are not applied, so its meetings take the default
+    workflow's routing; if it is the NDA workflow, they leave the Mac. Before SEC21
+    an unparseable file vanished from the app and from here with no trace at all.
+    """
+    broken = workflows.broken_workflow_files(workflows_dir)
+    if not broken:
+        return
+    for name, reason in broken:
+        _fail(f"workflow file {name} did not load ({reason}); its rules are not applied")
+    _info(f"fix: correct or remove it in {workflows_dir or workflows.WORKFLOWS_DIR}")
+
+
 def check_library_sync(
     cfg: Config,
     home: Path | None = None,
@@ -773,7 +788,10 @@ def check_library_sync(
         return
 
     nda_workflows = workflows.nda_workflow_names(workflows_dir)
-    zero_egress_promised = cfg.modes.regulated_mode or bool(nda_workflows)
+    # SEC21 item 7: a workflow file the daemon refuses may be the NDA one, so while any
+    # exists zero egress counts as promised.
+    broken_workflows = workflows.broken_workflow_files(workflows_dir)
+    zero_egress_promised = cfg.modes.regulated_mode or bool(nda_workflows) or bool(broken_workflows)
 
     for label, provider, strict in synced:
         if zero_egress_promised and strict:
@@ -787,6 +805,8 @@ def check_library_sync(
             _info("regulated_mode is ON")
         if nda_workflows:
             _info(f"NDA workflows: {', '.join(nda_workflows)}")
+        if broken_workflows:
+            _info("a workflow file did not load, so it may be an NDA workflow")
         _info("summarization stays on-device, but the recording is uploaded after it is written")
 
     _info("fix: Preferences > Storage > Move library..., and pick a folder outside the synced tree")
@@ -968,6 +988,7 @@ def main(argv: list[str]) -> int:
     print("mp doctor — preflight check\n")
     presence = check_secrets()
     cfg = check_config()
+    check_workflow_files()
     check_ml_runtimes()
     check_local_stack(cfg)
     check_local_server()

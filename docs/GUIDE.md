@@ -131,8 +131,10 @@ Highest priority first:
 
 1. **You picked one** from the chip on the prompt panel. A pick applies only to the meeting it was made for: skip that meeting, let its prompt time out, or let it end before you answer, and the pick is forgotten rather than carried to the next one.
 2. **A learned suggestion.** If you have moved three meetings from the same app to the same workflow, the next prompt arrives with that workflow already chosen and a quiet `Suggested · Undo` under it. Nothing is written to any rule; it is a count with a threshold, and Undo puts the original back.
-3. **The workflow's own rules**, matching the app and, optionally, the meeting title.
+3. **The workflow's own rules**, matching the app and, optionally, the meeting title. A rule with both fields empty matches nothing, and the editor drops it when you save; a title pattern that is not a valid regular expression cannot be saved. The meeting's title is usually not known yet when recording starts, so a title rule often matches nothing; in an NDA workflow the editor says so under the rule, and a meeting it misses records under the default workflow.
 4. **The default workflow**, which always exists. A recording you start by hand always lands here.
+
+If a workflow file in the workflows folder cannot be read (edited by hand into something invalid, say), it is not dropped in silence: it stays in the rail under **Workflows** with a warning sign and the reason, its rules are not applied until you fix or remove the file, and **Run doctor…** reports it as a failure.
 
 To fix a meeting that went to the wrong place, open it in the Library and pick **Change workflow…** from the `...` menu in the detail header. That rewrites its destinations and background for you, then offers to regenerate the summary or just republish it. Neither happens unless you choose it.
 

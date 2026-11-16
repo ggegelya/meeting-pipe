@@ -2,9 +2,9 @@
 id: SEC21
 title: NDA workflow classification fails open: a meeting whose title is not known yet, or whose rule regex does not compile, silently falls through to the default (non-NDA) workflow, and turning NDA on later does not cover past meetings
 category: Security
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch S7): WorkflowMatcher scores an NDA rule 0 when the title is not known at record start or its regex fails to compile, so the default workflow wins with no trace, and workflow_nda_mode is stamped only at record time. Matcher returns a reason, an undecided NDA fallback records as NDA, the editor rejects bad regexes, turning NDA on offers a re-stamp of that workflow's past meetings. [Spec](./SEC21.md) Amended 2026-10-25 (observability band): SW-9, FB-6, PY-13 add the load step. An unparseable workflow file vanishes from the app (os.Logger only) and from doctor (no log), `nda_mode = "true"` or a backend typo decodes toward cloud, a missing id is a new UUID each launch. Keep broken files as blocking rail entries, strict decode, doctor FAIL. Amended 2026-11-13 by the audit band: title=(none) on 155 of 155 recordings since 2026-09-01 makes the unknown-title case the normal one, the browser branch reads any window's title, and the inspector shows a blank-rule workflow as Any meeting while it scores 0; matched-window title, a no-title event, an owner call on title-only rules, Trigger row from the matcher (F040, G013).
+comment: Partial 2026-11-16. Shipped: the matcher's reason (override, matched score, fallback with undecided NDA workflows), regex validation in the editor and inspector, broken and mistyped workflow files kept visible (rail row, load_skipped, strict decode, doctor FAIL), meeting_title_unresolved and nda_classification_undecided events, blank rules dropped and read as matching nothing, the NDA title-rule caveat in the editor. Owner decided 2026-11-16 NOT to fail closed (item 2): an undecided NDA classification is logged and changes no posture, because titles are unknown on 155 of 155 recordings and the owner runs one workflow with no NDA rule; revisit after CAL3. Also open: item 4 (re-stamp on NDA turn-on) and item 8 (title from the matched browser window).
 ---
 
 # SEC21: NDA workflow classification fails open: a meeting whose title is not known yet, or whose rule regex does not compile, silently falls through to the default (non-NDA) workflow, and turning NDA on later does not cover past meetings
@@ -107,3 +107,22 @@ Two causes in `MeetingTitleResolver.rawMeetingTitle`:
 
 1. [owner] Decide item 10: does a title-only NDA rule with an unknown title count as undecided, and does item 2 ship before CAL3's Teams extractor fix?
 2. [owner] After landing, rebuild and record one browser meeting with two browser windows open, then confirm that the meeting's sidecar carries the meeting tab's title, and that `meeting_title_unresolved` appears for a native Teams call while CAL3 is open.
+
+## Owner decision (2026-11-16)
+
+Asked through the group session: (a) does an NDA rule whose bundle matched but whose title rule cannot be evaluated (unknown title or a regex that does not compile) put the meeting under the NDA posture? **No**: the meeting keeps the normal workflow. (b) Is a title-only NDA rule undecided? **No**, and the editor flags it as matching nothing while titles are unknown. (c) Ship now rather than wait for CAL3. Reason: meeting titles are unknown on 155 of 155 recordings since 2026-09-01, so a fail-closed posture would gate nearly every call from an app named by an NDA rule, and the owner runs one workflow with no NDA rule today. Item 2's posture change is therefore declined for now, and a log row saying the classification was undecided is all that ships. **Revisit after CAL3** restores titles.
+
+**Progress (2026-11-16): everything but items 2, 4 and 8 shipped.**
+
+- Item 1: `WorkflowMatcher.resolveWithReason` returns `.override`, `.matched(score:)` or `.fallback(undecided:)`; `undecided` lists the NDA workflows with a rule whose bundle id matched and whose title regex could not be evaluated. A title-only rule is never undecided (decision (b)). The function stays pure, and SEC39's `resumeWorkflow` reads it.
+- Item 2: declined (above). `beginRecording` logs `workflow`/`nda_classification_undecided` with `posture_changed: false` when the fallback has undecided NDA workflows or any workflow file is broken; the capture mode, backend and sinks are the default workflow's.
+- Item 3: `WorkflowRuleValidation.prepareForSave` refuses a regex that does not compile (the editor's save error names it), the editor shows it inline under the field, and the inspector's Trigger row flags a stored rule whose regex does not compile.
+- Items 5 and 6: `WorkflowStore.broken` keeps each refused file (unparseable; a present `nda_mode` that is not a bool; a present `backend` that is not a known backend; an invalid `id`, or a missing one in a file not named `<uuid>.toml`, which now takes the UUID from the name instead of a fresh one per load) with its reason; the rail shows it under Workflows with a warning sign; `workflow`/`load_skipped` is logged. While any exists, a fallback routing is logged as undecided (no posture change, per the decision).
+- Item 7: `mp.workflows.load_workflows` / `broken_workflow_files` apply the same strict rule; `mp doctor` prints one `[FAIL]` per broken file (`check_workflow_files`), and SEC12's cloud-sync check treats zero egress as promised while one exists. Test fixtures that wrote a workflow with no `id` in a non-UUID-named file now carry an id, since that shape is refused by both sides.
+- Item 9: `coordinator`/`meeting_title_unresolved` (`bundle_id`, `kind`) at a start with a source and no title. The count of window titles read is not carried: the title is resolved off main at prompt time and the count is not kept, and an extra AX walk on main at record start would cost what PERF15 removed.
+- Item 11: `WorkflowMatcher.canEverMatch` / `ruleCanMatch`; the inspector reads a blank rule set as no rules ("Nothing matches this automatically"), replacing UX33's "Any meeting" (its test is rewritten to pin the matcher's answer); the editor drops a rule with both fields blank at save; in an NDA workflow a title rule carries the caption that it may match nothing while titles are unknown.
+
+Open: item 2 (owner, after CAL3), item 4 (offer to re-stamp past meetings when a workflow turns NDA), item 8 (take the title from the matched browser window; DET17 added a per-tab key from the admitting title, which is the scanner half of that seam, but the lifecycle context still carries no window).
+
+Tests: `WorkflowFailClosedTests` (11) and `RoutingUncertaintySessionTests` (1), `WorkflowInspectorTests` (+2, 1 rewritten), `test_workflows.py` (+2), `test_doctor.py` (+3).
+

@@ -339,6 +339,14 @@ struct WorkflowEditor: View {
                 TextField("title regex (optional)", text: ruleBinding(id, \.titleRegex))
                     .textFieldStyle(.roundedBorder)
                     .font(.mpTextBase.monospaced())
+                // SEC21: an invalid regex, or a title rule an NDA workflow leans on, says so here.
+                if let rule = matchingRules.first(where: { $0.id == id }),
+                   let caption = WorkflowRuleValidation.caption(for: rule, ndaMode: ndaMode) {
+                    Text(caption)
+                        .font(.mpTextXS)
+                        .foregroundStyle(Color(WorkflowMatcher.regexCompiles(rule.titleRegex) ? MPColors.fgMuted : MPColors.pulse500))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
             Button(role: .destructive) {
                 matchingRules.removeAll { $0.id == id }
@@ -772,7 +780,13 @@ struct WorkflowEditor: View {
         clone.emoji = emoji.isEmpty ? nil : emoji
         clone.contextPrompt = contextPrompt
         clone.isDefault = isDefault
-        clone.matchingRules = matchingRules
+        switch WorkflowRuleValidation.prepareForSave(matchingRules) {
+        case .success(let rules):
+            clone.matchingRules = rules
+        case .failure(let problem):
+            saveError = problem.message
+            return
+        }
         clone.extraSections = extraSections.filter {
             !$0.name.trimmingCharacters(in: .whitespaces).isEmpty
                 || !$0.instruction.trimmingCharacters(in: .whitespaces).isEmpty

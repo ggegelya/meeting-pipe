@@ -100,6 +100,27 @@ struct LibrarySidebar: View {
                         workflowRowSwipeActions(for: wf)
                     }
                 }
+                // SEC21 item 5: a workflow file that did not load stays on the rail, named, rather
+                // than vanishing with its rules (it may be the NDA one).
+                ForEach(workflowStore.broken) { file in
+                    Label {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(file.fileName)
+                                .foregroundStyle(Color(MPColors.fg))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text("Not loaded: \(file.reason)")
+                                .font(.mpTextXS)
+                                .foregroundStyle(Color(MPColors.fgMuted))
+                                .lineLimit(2)
+                        }
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(Color(MPColors.pulse500))
+                    }
+                    .help("This workflow file could not be read, so its rules are not applied. Fix or remove it in the workflows folder.")
+                    .selectionDisabled()
+                }
                 Button(action: onCreateWorkflow) {
                     Label {
                         Text("New workflow")

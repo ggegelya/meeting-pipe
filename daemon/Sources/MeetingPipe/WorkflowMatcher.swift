@@ -8,7 +8,13 @@ enum WorkflowMatcher {
     enum Reason: Equatable {
         case override
         case matched(score: Int)
-        case fallback
+        /// SEC21: `undecided` lists the NDA workflows that had a rule whose bundle id matched but
+        /// whose title regex could not be evaluated (no title known, or a regex that does not
+        /// compile). By the owner's decision (2026-11-16) this changes no capture posture: it is
+        /// logged, not acted on, while meeting titles are unknown on nearly every recording.
+        case fallback(undecided: [Workflow])
+
+        static let fallback = Reason.fallback(undecided: [])
     }
 
     /// Resolve the workflow for a (source, override) pair. Takes a plain array so tests can drive it without a WorkflowStore.
@@ -52,15 +58,46 @@ enum WorkflowMatcher {
             return (pick.workflow, .matched(score: pick.score))
         }
 
-        // 3. Default fallback.
+        // 3. Default fallback, naming the NDA workflows that could not be ruled out.
+        let undecided = workflows.filter { $0.flags.ndaMode && hasUndecidedRule($0.matchingRules, source: source) }
         if let def = workflows.first(where: { $0.isDefault }) {
-            return (def, .fallback)
+            return (def, .fallback(undecided: undecided))
         }
         // Last resort: no default flagged; return the lowest-ordered workflow so behaviour stays defined.
         return (workflows.sorted { lhs, rhs in
             if lhs.order != rhs.order { return lhs.order < rhs.order }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-        }.first, .fallback)
+        }.first, .fallback(undecided: undecided))
+    }
+
+    /// SEC21: a rule whose bundle id matched this source but whose title regex could not be
+    /// evaluated, because no title is known or the regex does not compile. A title-only rule
+    /// (blank bundle) is never undecided, by the owner's decision: with titles unknown on nearly
+    /// every recording it would put every meeting with a source in that state.
+    static func hasUndecidedRule(_ rules: [WorkflowMatchingRule], source: AppSource?) -> Bool {
+        guard let source else { return false }
+        return rules.contains { rule in
+            guard !rule.bundleID.isEmpty, rule.bundleID == source.bundleID, !rule.titleRegex.isEmpty else { return false }
+            let titleUnknown = (source.meetingTitle ?? "").isEmpty
+            return titleUnknown || !regexCompiles(rule.titleRegex)
+        }
+    }
+
+    /// Whether a title regex compiles under the matcher's own options. The editor refuses a save
+    /// that fails this, and the inspector flags a stored rule that fails it.
+    static func regexCompiles(_ pattern: String) -> Bool {
+        (try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])) != nil
+    }
+
+    /// SEC21 item 11: whether a rule can ever score above 0. A rule with both fields blank cannot.
+    static func ruleCanMatch(_ rule: WorkflowMatchingRule) -> Bool {
+        !rule.bundleID.isEmpty || !rule.titleRegex.isEmpty
+    }
+
+    /// SEC21 item 11: whether any of a workflow's rules can ever match, which is what the
+    /// inspector's Trigger row and the editor's save read, so they cannot disagree with the matcher.
+    static func canEverMatch(_ workflow: Workflow) -> Bool {
+        workflow.matchingRules.contains(where: ruleCanMatch)
     }
 
     /// SEC39: which workflow a resumed recording records under. END17's resume used to pin the

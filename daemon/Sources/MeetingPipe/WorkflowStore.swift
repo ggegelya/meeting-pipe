@@ -60,6 +60,34 @@ final class WorkflowStore: ObservableObject {
 
     @Published private(set) var workflows: [Workflow] = []
 
+    /// SEC21 item 5: workflow files that did not load, kept visible instead of vanishing. A broken
+    /// file may be the NDA workflow, so while any exists a fallback routing is logged as undecided.
+    struct BrokenFile: Equatable, Identifiable {
+        let fileName: String
+        let reason: String
+        var id: String { fileName }
+    }
+
+    @Published private(set) var broken: [BrokenFile] = []
+
+    /// SEC21 item 6: a present routing field with the wrong type or value. The file is refused
+    /// rather than defaulted toward the cloud.
+    enum StrictDecodeError: Error, LocalizedError, Equatable {
+        case ndaModeNotBool
+        case unknownBackend(String)
+        case invalidID
+        case missingID
+
+        var errorDescription: String? {
+            switch self {
+            case .ndaModeNotBool: return "nda_mode is not true or false"
+            case .unknownBackend(let value): return "backend \"\(value)\" is not a known backend"
+            case .invalidID: return "id is not a valid UUID"
+            case .missingID: return "id is missing and the file name is not a UUID"
+            }
+        }
+    }
+
     /// Default workflows directory, sibling to `config.toml`.
     static let defaultDirectory: URL = {
         FileManager.default.homeDirectoryForCurrentUser
@@ -80,19 +108,32 @@ final class WorkflowStore: ObservableObject {
             options: [.skipsHiddenFiles]
         ) else {
             workflows = []
+            broken = []
             return
         }
         var loaded: [Workflow] = []
+        var refused: [BrokenFile] = []
         for url in entries where url.pathExtension == "toml" {
             do {
                 let wf = try Self.decode(url: url)
                 loaded.append(wf)
             } catch {
-                Log.main.warning("WorkflowStore: skipping unreadable \(url.lastPathComponent): \(error.localizedDescription)")
+                // SEC21 item 5: an os.Logger line was the whole trace before, and it is redacted
+                // as <private>; the file now stays visible and leaves an event.
+                let nsError = error as NSError
+                Log.writeLine("daemon", "WorkflowStore: refusing \(url.lastPathComponent): \(error.localizedDescription)")
+                Log.event(category: "workflow", action: "load_skipped", attributes: [
+                    "file": url.lastPathComponent,
+                    "error_domain": nsError.domain,
+                    "error_code": nsError.code,
+                    "reason": error.localizedDescription,
+                ])
+                refused.append(BrokenFile(fileName: url.lastPathComponent, reason: error.localizedDescription))
             }
         }
         loaded.sort(by: Self.orderComparator)
         workflows = loaded
+        broken = refused.sorted { $0.fileName < $1.fileName }
         reportDuplicateNames(loaded)
     }
 
@@ -295,21 +336,43 @@ final class WorkflowStore: ObservableObject {
         let raw = try String(contentsOf: url, encoding: .utf8)
         let doc = try TOMLTable(string: raw)
 
-        let idString = doc["id"]?.string ?? UUID().uuidString
-        let id = UUID(uuidString: idString) ?? UUID()
+        // SEC21 item 6: a missing id used to be a fresh UUID on every load, so meetings stamped with
+        // the previous id stopped matching and `persistAll` wrote a second copy. `persistAll` names
+        // every file `<id>.toml`, so a missing id is recovered from the name; otherwise refused.
+        let id: UUID
+        if let idValue = doc["id"] {
+            guard let parsed = idValue.string.flatMap(UUID.init(uuidString:)) else { throw StrictDecodeError.invalidID }
+            id = parsed
+        } else if let fromName = UUID(uuidString: url.deletingPathExtension().lastPathComponent) {
+            id = fromName
+        } else {
+            throw StrictDecodeError.missingID
+        }
         let name = doc["name"]?.string ?? "Untitled"
         let color = doc["color"]?.string ?? MPColors.defaultWorkflowHex
         let emoji = doc["emoji"]?.string
         let contextPrompt = doc["context_prompt"]?.string ?? ""
         // Missing or unrecognized backend decodes to nil (inherit the global
         // default); a valid value stays pinned. (TECH-WF1)
-        let backend = doc["backend"]?.string.flatMap(WorkflowBackend.init(rawValue:))
+        // SEC21 item 6: a present value that is not a known backend refuses the file rather than
+        // inheriting the global (cloud) default, which is what a typo like "locl" used to do.
+        var backend: WorkflowBackend?
+        if let raw = doc["backend"] {
+            guard let value = raw.string, let known = WorkflowBackend(rawValue: value) else {
+                throw StrictDecodeError.unknownBackend(raw.string ?? "\(raw)")
+            }
+            backend = known
+        }
         let isDefault = doc["is_default"]?.bool ?? false
         let order = doc["order"]?.int ?? 0
 
         var flags = WorkflowFlags()
         if let f = doc["flags"]?.table {
-            flags.ndaMode = f["nda_mode"]?.bool ?? false
+            // SEC21 item 6: `nda_mode = "true"` (a string) used to decode as not NDA.
+            if let nda = f["nda_mode"] {
+                guard let value = nda.bool else { throw StrictDecodeError.ndaModeNotBool }
+                flags.ndaMode = value
+            }
             flags.redactMutedSpans = f["redact_muted_spans"]?.bool ?? false
         }
 

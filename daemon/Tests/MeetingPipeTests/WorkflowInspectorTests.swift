@@ -57,11 +57,40 @@ final class WorkflowInspectorTests: XCTestCase {
         XCTAssertEqual(pane.row("Trigger")?.detail, "Title must match \"1:1\"")
     }
 
-    /// A rule with both fields blank matches everything. Calling that "no
-    /// matching rules", the way the old pane's empty branch would have, is a lie.
-    func test_a_blank_rule_matches_everything() {
+    /// SEC21 item 11 (G013): a rule with both fields blank matches nothing in the matcher
+    /// (`ruleScore` returns 0), so the pane reads it as no rule at all. UX33 rendered it
+    /// "Any meeting", which claimed the opposite of what routing does.
+    func test_a_blank_rule_reads_like_no_rule() {
         let pane = make(workflow(rules: [WorkflowMatchingRule()]))
-        XCTAssertEqual(pane.row("Trigger")?.value, "Any meeting")
+        XCTAssertFalse(WorkflowMatcher.canEverMatch(workflow(rules: [WorkflowMatchingRule()])))
+        XCTAssertEqual(pane.row("Trigger")?.value, "Nothing matches this automatically")
+    }
+
+    /// The Trigger row's "matches" claim agrees with the matcher over synthetic sources.
+    func test_the_trigger_row_agrees_with_the_matcher() {
+        let fallback = Workflow(name: "Default", isDefault: true)
+        let sources: [AppSource?] = [
+            AppSource(bundleID: "com.microsoft.teams2", displayName: "Teams"),
+            AppSource(bundleID: "com.microsoft.teams2", displayName: "Teams", meetingTitle: "Weekly 1:1"),
+            AppSource(bundleID: "com.google.Chrome", displayName: "Chrome", kind: .browser),
+            nil,
+        ]
+        let ruleSets: [[WorkflowMatchingRule]] = [
+            [], [WorkflowMatchingRule()],
+            [WorkflowMatchingRule(bundleID: "com.microsoft.teams2")],
+            [WorkflowMatchingRule(titleRegex: "1:1")],
+        ]
+        for rules in ruleSets {
+            let wf = workflow(rules: rules)
+            let claimsNothing = make(wf).row("Trigger")?.value == "Nothing matches this automatically"
+            let everPicked = sources.contains { WorkflowMatcher.resolve(source: $0, workflows: [fallback, wf])?.id == wf.id }
+            XCTAssertEqual(claimsNothing, !everPicked, "rules \(rules.map { ($0.bundleID, $0.titleRegex) })")
+        }
+    }
+
+    func test_an_invalid_title_regex_is_flagged() {
+        let pane = make(workflow(rules: [WorkflowMatchingRule(bundleID: "us.zoom.xos", titleRegex: "([unclosed")]))
+        XCTAssertTrue(pane.row("Trigger")?.detail?.contains("not a valid regular expression") ?? false)
     }
 
     func test_an_unknown_bundle_id_falls_back_to_the_id_rather_than_inventing_a_name() {

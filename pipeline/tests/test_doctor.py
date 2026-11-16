@@ -22,6 +22,7 @@ from mp.doctor import (
     check_library_sync,
     check_local_stack,
     check_storage,
+    check_workflow_files,
 )
 from mp.doctor import main as doctor_main
 
@@ -110,7 +111,7 @@ def test_check_local_stack_runs_when_a_workflow_forces_local(capsys, tmp_path, m
     workflows_dir = tmp_path / "workflows"
     workflows_dir.mkdir()
     (workflows_dir / "client.toml").write_text(
-        'name = "Client"\nbackend = "local"\n\n[flags]\nnda_mode = false\n', encoding="utf-8"
+        'id = "aaaaaaaa-0000-0000-0000-000000000001"\nname = "Client"\nbackend = "local"\n\n[flags]\nnda_mode = false\n', encoding="utf-8"
     )
     cfg = Config.model_validate({
         "summarization": {"backend": "anthropic", "local_model": "mlx-community/Qwen2.5-7B-Instruct-4bit"},
@@ -340,7 +341,7 @@ def _nda_workflows(tmp_path: Path) -> Path:
     directory = tmp_path / "workflows"
     directory.mkdir()
     (directory / "secret.toml").write_text(
-        'name = "Client X"\n\n[flags]\nnda_mode = true\n', encoding="utf-8"
+        'id = "aaaaaaaa-0000-0000-0000-000000000002"\nname = "Client X"\n\n[flags]\nnda_mode = true\n', encoding="utf-8"
     )
     return directory
 
@@ -685,7 +686,7 @@ def _sink_workflow(tmp_path: Path, sink: str) -> Path:
     directory = tmp_path / "workflows"
     directory.mkdir(exist_ok=True)
     (directory / f"{sink}.toml").write_text(
-        f'name = "uses {sink}"\n\n[[sinks]]\ntype = "{sink}"\n', encoding="utf-8")
+        f'id = "aaaaaaaa-0000-0000-0000-{abs(hash(sink)) % 10**12:012d}"\nname = "uses {sink}"\n\n[[sinks]]\ntype = "{sink}"\n', encoding="utf-8")
     return directory
 
 
@@ -802,3 +803,35 @@ def test_a_synced_lan_mount_named_by_a_workflow_is_a_warn(capsys, tmp_path) -> N
     cfg = _sec35_cfg(tmp_path, lan={"mount_path": str(mount)})
     check_library_sync(cfg, home=tmp_path, workflows_dir=_sink_workflow(tmp_path, "lan"))
     assert "[WARN] LAN share is synced to Dropbox" in capsys.readouterr().out
+
+
+# --- SEC21 item 7: a workflow file the daemon refuses ------------------------
+
+def _broken_workflows(tmp_path: Path) -> Path:
+    directory = tmp_path / "workflows"
+    directory.mkdir(exist_ok=True)
+    (directory / "stringly.toml").write_text(
+        'id = "aaaaaaaa-0000-0000-0000-000000000009"\nname = "S"\n[flags]\nnda_mode = "true"\n',
+        encoding="utf-8",
+    )
+    return directory
+
+
+def test_check_workflow_files_fails_once_per_broken_file(capsys, tmp_path) -> None:
+    check_workflow_files(_broken_workflows(tmp_path))
+    out = capsys.readouterr().out
+    assert "[FAIL] workflow file stringly.toml did not load" in out
+
+
+def test_check_workflow_files_is_silent_with_none_broken(capsys, tmp_path) -> None:
+    check_workflow_files(tmp_path / "none")
+    assert capsys.readouterr().out == ""
+
+
+def test_a_broken_workflow_file_makes_a_synced_library_a_fail(capsys, tmp_path) -> None:
+    check_library_sync(
+        _storage_cfg(_synced_library(tmp_path)), home=tmp_path, workflows_dir=_broken_workflows(tmp_path)
+    )
+    out = capsys.readouterr().out
+    assert "[FAIL] library is synced to Dropbox" in out
+    assert "may be an NDA workflow" in out

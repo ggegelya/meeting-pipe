@@ -141,17 +141,15 @@ struct WorkflowInspectorPresentation: Equatable {
         var detail: String?
 
         if apps.isEmpty && titles.isEmpty {
-            if rules.isEmpty {
-                if workflow.isDefault {
-                    value = "Any meeting no other workflow claims"
-                } else {
-                    value = "Nothing matches this automatically"
-                    detail = "Pick it by hand on the prompt panel when a meeting starts."
-                }
+            // SEC21 item 11: read from the matcher, which scores a rule with both fields blank 0.
+            // UX33's copy said such a rule "matches everything" and rendered "Any meeting" for a
+            // workflow the matcher never picks; a blank rule set now reads like no rules at all.
+            // With no app and no title in any rule, `WorkflowMatcher.canEverMatch` is false.
+            if workflow.isDefault {
+                value = "Any meeting no other workflow claims"
             } else {
-                // A rule with both fields blank is a real thing to author, and it
-                // matches everything; saying "no matching rules" for it would lie.
-                value = "Any meeting"
+                value = "Nothing matches this automatically"
+                detail = "Pick it by hand on the prompt panel when a meeting starts."
             }
         } else if apps.isEmpty {
             // Every rule leaves the bundle blank, which matches any app.
@@ -169,6 +167,12 @@ struct WorkflowInspectorPresentation: Equatable {
             } else {
                 detail = "Some rules also match the title: \(quoted.joined(separator: ", "))"
             }
+        }
+
+        // SEC21 item 3: a stored title rule that does not compile scores 0 in the matcher.
+        if let bad = titles.first(where: { !WorkflowMatcher.regexCompiles($0) }) {
+            let warning = "The title rule \"\(bad)\" is not a valid regular expression, so it matches nothing."
+            detail = detail.map { "\($0). \(warning)" } ?? warning
         }
 
         return Row(label: "Trigger", value: value, detail: detail)
