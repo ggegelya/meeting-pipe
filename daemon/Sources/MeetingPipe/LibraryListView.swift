@@ -71,8 +71,8 @@ struct LibraryListView: View {
         .onChange(of: store.revision) { _, _ in recomputeDerived() }
         .onChange(of: scope) { _, _ in recomputeDerived() }
         .onChange(of: workflows.count) { _, _ in recomputeDerived() }
-        // The chips re-derive at once; the free-text half of `filter` is folded in through
-        // `settled`, so a keystroke alone leaves the derived key unchanged.
+        // PERF30: chips and typed text re-derive at once against the in-memory corpus; the FTS
+        // answer for the typed text joins when `settled.generation` bumps.
         .onChange(of: filter) { _, _ in recomputeDerived() }
         .onChange(of: filter.query) { _, _ in resolveSearch(debounced: true) }
         .onChange(of: libraryModel.searchIndexRevision) { _, _ in resolveSearch(debounced: false) }
@@ -86,8 +86,9 @@ struct LibraryListView: View {
 
     /// PERF20: look up the typed query (and the selected folder's own query) in the FTS index off
     /// main, debounced while typing, and re-derive when the answer lands. Until then the list shows
-    /// the previously settled query, so it lags the field by the debounce rather than issuing a
-    /// lookup per keystroke. An empty or one-character query needs no lookup and settles at once.
+    /// the typed text's in-memory matches (PERF30) and the transcript-depth rows join on delivery,
+    /// so the lookup is issued once per pause rather than per keystroke. An empty or
+    /// one-character query needs no lookup and settles at once.
     private func resolveSearch(debounced: Bool) {
         let typed = filter.query
         var queries = [typed]
@@ -156,9 +157,9 @@ struct LibraryListView: View {
 
     /// Recompute the derived list state, guarded by the fingerprint so unrelated re-renders don't run the filter/group chain.
     private func recomputeDerived() {
-        // The chips as they are now, the free text as it last settled (PERF20).
-        var effective = filter
-        effective.query = settled.query
+        // PERF30: the chips and the free text as typed. Only the FTS answer lags (below): it is
+        // merged once the lookup for exactly this text lands.
+        let effective = filter
         let key = DerivedKey(
             storeRevision: store.revision,
             scope: scope,
@@ -197,7 +198,13 @@ struct LibraryListView: View {
         // UX16: the free-text field runs through the FTS index (transcript + summary depth); the
         // chips stay in-memory equality filters inside `apply`. nil = no index / empty or
         // one-character query, so it falls back to the in-memory corpus and search never regresses.
-        let filtered = MeetingFilterEngine.apply(effective, to: scoped, ftsMatches: settled.matches[settled.query])
+        let filtered = MeetingFilterEngine.apply(
+            effective,
+            to: scoped,
+            ftsMatches: LibrarySearchState.ftsMatches(
+                typed: effective.query, settledQuery: settled.query, settledMatches: settled.matches
+            )
+        )
         let facets = MeetingFacets.build(from: scoped)
         let groups = MeetingGroup.group(filtered, now: Date())
         derived = DerivedList(

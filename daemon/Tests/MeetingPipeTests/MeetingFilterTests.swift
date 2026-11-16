@@ -40,6 +40,48 @@ final class MeetingFilterTests: XCTestCase {
         XCTAssertEqual(text, "quick chat")
     }
 
+    // MARK: PERF30 typed-versus-settled
+
+    func test_fts_matches_pass_only_when_settled_for_the_typed_text() {
+        let results: FTSLookup.Results = ["budget": ["a"]]
+        XCTAssertEqual(LibrarySearchState.ftsMatches(typed: "budget", settledQuery: "budget", settledMatches: results), ["a"])
+        XCTAssertNil(LibrarySearchState.ftsMatches(typed: "budgets", settledQuery: "budget", settledMatches: results))
+        XCTAssertNil(LibrarySearchState.ftsMatches(typed: "", settledQuery: "", settledMatches: ["": ["a"]]))
+    }
+
+    /// The list narrows on the typed text before the lookup lands, the transcript-only match joins
+    /// when it does, and a delivery for a superseded query adds nothing.
+    func test_typed_text_narrows_in_memory_then_the_lookup_merges_transcript_rows() {
+        var pending: [() -> Void] = []
+        let answers: [String: Set<String>] = ["roadmap": ["transcript-only"]]
+        let lookup = FTSLookup(
+            schedule: { _, action in pending.append(action); return {} },
+            runOffMain: { work in work() },
+            deliverOnMain: { work in work() },
+            lookup: { answers[$0] ?? [] }
+        )
+        let meetings = [
+            m("title-hit", searchable: "roadmap review"),
+            m("transcript-only", searchable: "weekly sync"),
+            m("other", searchable: "standup"),
+        ]
+        var settledQuery = ""
+        var settled: FTSLookup.Results = [:]
+        func derive(_ typed: String) -> [String] {
+            var f = MeetingFilter(); f.query = typed
+            let fts = LibrarySearchState.ftsMatches(typed: typed, settledQuery: settledQuery, settledMatches: settled)
+            return MeetingFilterEngine.apply(f, to: meetings, ftsMatches: fts).map(\.stem)
+        }
+        // Typed, lookup not delivered: the in-memory match is there at once.
+        XCTAssertEqual(derive("roadmap"), ["title-hit"])
+        lookup.resolve(["roadmap"], debounced: true) { settledQuery = "roadmap"; settled = $0 }
+        XCTAssertEqual(derive("roadmap"), ["title-hit"], "still undelivered")
+        pending.forEach { $0() }
+        XCTAssertEqual(derive("roadmap"), ["title-hit", "transcript-only"], "the transcript row joins")
+        // The user kept typing: the settled answer is for another query and adds nothing.
+        XCTAssertEqual(derive("roadmaps"), [])
+    }
+
     // MARK: apply()
 
     func test_apply_returns_input_when_filter_empty() {

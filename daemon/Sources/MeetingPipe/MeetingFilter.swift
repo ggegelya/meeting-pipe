@@ -78,6 +78,22 @@ extension MeetingFilter.DateRange: Codable {
     }
 }
 
+/// PERF30: which query and which FTS answer the Library list derives from. The query is always
+/// the typed text, so title, app and summary matches narrow the list on every keystroke; the FTS
+/// answer is used only when it was computed for exactly that text, because an answer for another
+/// query would OR that query's transcript hits onto this list. When the lookup for the typed
+/// text lands, `settled` matches it and the transcript-depth rows merge in.
+enum LibrarySearchState {
+    static func ftsMatches(
+        typed: String,
+        settledQuery: String,
+        settledMatches: FTSLookup.Results
+    ) -> Set<String>? {
+        guard !typed.isEmpty, settledQuery == typed else { return nil }
+        return settledMatches[typed]
+    }
+}
+
 /// Pure filter applier, split out so tests can drive it without SwiftUI.
 enum MeetingFilterEngine {
     /// `ftsMatches` (UX16): the stems the FTS5 index matched for `filter.query`, or nil to search
