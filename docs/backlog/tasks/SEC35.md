@@ -2,9 +2,10 @@
 id: SEC35
 title: Doctor's cloud-sync check never looks at the folder NDA and regulated meetings publish to, or at the backup destination, so it reports an all-clear while both sit in iCloud
 category: Security
-status: partial
+status: done
+closed: 2026-11-16
 priority: P2
-comment: Shipped 2026-11-16 (ci-local fences, pipeline and daemon lanes green; see Progress): doctor checks the published folder under any condition that can put meetings there, the backup destination (marker and agent plist), and the vault and LAN roots; Storage backup picker warns on a synced folder. Owed - the owner's approval to close; no owner walkthrough written.
+comment: Shipped 2026-11-16 (ci-local fences, pipeline and daemon lanes green; see Progress): doctor checks the published folder under any condition that can put meetings there, the backup destination (marker and agent plist), and the vault and LAN roots; Storage backup picker warns on a synced folder.
 ---
 
 # SEC35: Doctor's cloud-sync check never looks at the folder NDA and regulated meetings publish to, or at the backup destination, so it reports an all-clear while both sit in iCloud

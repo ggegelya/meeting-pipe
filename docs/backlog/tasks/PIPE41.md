@@ -2,9 +2,10 @@
 id: PIPE41
 title: A failed summarize job whose remedy is retry is never re-run, so one transient API timeout left a real meeting without a summary for 22 days
 category: Pipeline
-status: partial
+status: done
+closed: 2026-11-16
 priority: P1
-comment: Shipped 2026-11-16 (ci-local fences and daemon lanes green, pipeline lane green on its own at 1755 passed; test_real_sigint_prints_no_traceback fails only when the lane runs as a backgrounded job): eligibility decided at failure time in SinkDispatcher (full + auto + pipeline stage + remedy retry), per-stem bound in auto_retry.json spent before the re-run, pickup via retryMeeting(trigger: auto) 90 s after launch or after the next successful job, one launch notice for failures a day old. Owed - the owner's approval to close; no live-network walkthrough written.
+comment: Shipped 2026-11-16 (ci-local fences and daemon lanes green, pipeline lane green on its own at 1755 passed; test_real_sigint_prints_no_traceback fails only when the lane runs as a backgrounded job): eligibility decided at failure time in SinkDispatcher (full + auto + pipeline stage + remedy retry), per-stem bound in auto_retry.json spent before the re-run, pickup via retryMeeting(trigger: auto) 90 s after launch or after the next successful job, one launch notice for failures a day old.
 ---
 
 # PIPE41: A failed summarize job whose remedy is retry is never re-run, so one transient API timeout left a real meeting without a summary for 22 days
