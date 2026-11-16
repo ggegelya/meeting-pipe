@@ -2,9 +2,9 @@
 id: PERF11
 title: A main-thread stall is invisible unless someone runs `sample` at the right moment, so app-or-OS cannot be answered from the logs
 category: Performance
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-23: diagnosing the owner's lag took three live traces, two of them mistimed, and macOS writes no hang report for a 1-3 s stutter. Scope: a background watchdog that emits a rate-limited `main_thread_stall` event with its duration and context, the way `StopStallWatchdog` does for stops. [Spec](./PERF11.md) Amended 2026-11-13 by the audit band: a 3,078 ms capture-file create on main (stem 20261112-163040) went unlogged; log stalls at 100 ms, flag 250 ms as over budget, and carry OBS7's last ui_action seq.
+comment: Shipped 2026-11-16 (MainThreadStallWatchdog + pure StallDetector, perf/main_thread_stall at 100 ms, over_budget at 250 ms, 10 s rate limit with suppressed; 6 tests, ci-local green). Remainder - last_ui_seq and since_ui_action_ms wait on OBS7; owner check after install - scroll the Library and confirm mp logs shows main_thread_stall rows. No stack capture (optional).
 ---
 
 # PERF11: a main-thread stall is invisible unless someone runs `sample` at the right moment, so "is it the app or the OS" cannot be answered from the logs

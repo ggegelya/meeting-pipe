@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var statusBar: StatusBarController!
     private var coordinator: Coordinator!
+    private var mainThreadStallWatchdog: MainThreadStallWatchdog?
     private var configStore: ConfigStore?
     private var secretsStore: SecretsStore?
     private var localModelCancellable: AnyCancellable?
@@ -162,6 +163,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBar.coordinator = coordinator
         statusBar.setIdle()
         coordinator.start()  // requests notification authorization via Notifier
+
+        // PERF11: on from launch, so a main-thread stall is a `perf` / `main_thread_stall` row instead of a mistimed live `sample`. The context closure runs on main.
+        let stallWatchdog = MainThreadStallWatchdog(context: { [weak self] in
+            [
+                "recording": self?.coordinator?.recorder.isRecording ?? false,
+                "key_window": NSApp.keyWindow?.identifier?.rawValue ?? NSApp.keyWindow?.title ?? NSNull(),
+            ]
+        })
+        stallWatchdog.start()
+        self.mainThreadStallWatchdog = stallWatchdog
 
         // TECH-UX1: on a fresh install, show the framed onboarding flow (which
         // requests each TCC one at a time) instead of letting the startup
