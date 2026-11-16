@@ -1477,10 +1477,21 @@ final class MeetingSessionController: @unchecked Sendable {
         // END17 item 5: the same app's call is back inside the window after an end, so the end was
         // probably wrong. Resume without a prompt, under the workflow and mode the stopped
         // recording had, ahead of the cooldown and the skip latch that would otherwise hold it off.
-        // DET17 leaves this for browsers as END19 item 4 built it (a recording the owner started is
-        // the consent being resumed); whether a browser resume should prompt is an open owner
-        // question recorded in DET17's task file.
-        if let candidate = resumeCandidate, candidate.applies(to: source.bundleID, at: Date()) {
+        // Owner's decision (2026-11-16, DET17): a browser resume prompts. A browser sighting inside
+        // the window is any admitted tab (a scheduled Meet, a doc page named "Meet: ..."), so it
+        // gets the record prompt, and if ignored, DET18's span-bound offer; it never records
+        // without a click. A native app's silent resume is untouched. The browser case also passes
+        // the re-prompt cooldown below, which the end it resumes from armed: the owner asked for
+        // a prompt here, not for silence.
+        let browserResume = source.kind == .browser
+            && resumeCandidate?.applies(to: source.bundleID, at: Date()) == true
+        if browserResume {
+            resumeCandidate = nil
+            Log.event(category: "coordinator", action: "browser_resume_prompted", attributes: [
+                "bundle_id": source.bundleID,
+            ])
+        }
+        if source.kind != .browser, let candidate = resumeCandidate, candidate.applies(to: source.bundleID, at: Date()) {
             resumeCandidate = nil
             micTierPromptBundle = nil
             coordinator.stateMachine.clearSuppression(bundleID: source.bundleID)
@@ -1513,7 +1524,7 @@ final class MeetingSessionController: @unchecked Sendable {
         // after a skip/timeout we go to .idle immediately, so a lifecycle `.starting`
         // published from a signal queued just before disengage (or a fast re-scan)
         // must not re-prompt the meeting the user just skipped within its cooldown.
-        if coordinator.stateMachine.isCoolingDown(
+        if !browserResume, coordinator.stateMachine.isCoolingDown(
             bundleID: source.bundleID,
             cooldownSec: coordinator.liveRepromptCooldownSec
         ) {

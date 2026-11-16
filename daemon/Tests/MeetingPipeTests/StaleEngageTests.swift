@@ -199,7 +199,8 @@ final class StaleEngageSessionTests: XCTestCase {
     }
 
     /// An engage the hand start promoted is the recording's own, so its end is honoured, and the
-    /// same call sighted again resumes rather than prompting (item 4).
+    /// same browser sighted again inside the window is offered back (item 4). Owner's decision
+    /// 2026-11-16 (DET17): a browser resume prompts rather than recording without a click.
     func test_anEngageTheHandStartPromoted_endsIt_andTheCallResumes() async throws {
         let (controller, host, adapter) = makeController()
         controller.handleDiscovery(chrome)
@@ -223,8 +224,11 @@ final class StaleEngageSessionTests: XCTestCase {
 
         host.recorderSpy.fileToReturn = tempDir.appendingPathComponent("20261111-161500.wav")
         controller.handleMeetingStarted(source: chrome)
-        await waitUntil({ self.isRecording(host) }, "the resume")
-        XCTAssertEqual(host.promptSpy.presentCount, 0, "resumed, not prompted into a skip")
+        XCTAssertEqual(host.promptSpy.presentCount, 1, "prompted, inside the cooldown the end armed")
+        XCTAssertEqual(host.recorderSpy.startCallCount, 1, "no recording without a click")
+        XCTAssertEqual(rows("browser_resume_prompted").count, 1)
+        controller.resolvePromptPick(.record, source: chrome)
+        await waitUntil({ self.isRecording(host) }, "the clicked resume")
         controller.forceStop(reason: "test")
         await waitUntil({ host.stateMachine.current == .idle }, "the second flush")
     }
