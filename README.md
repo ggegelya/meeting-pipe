@@ -738,6 +738,8 @@ Either way the Library row is marked failed at the `memory` stage, so the reason
 mp prefetch-model mlx-community/Qwen2.5-7B-Instruct-4bit
 ```
 
+**A regulated or NDA meeting fails with "Speech models are not downloaded".** The daemon's speech models (Parakeet and the diarizer, fetched by FluidAudio from huggingface.co) are not in `~/Library/Application Support/FluidAudio`, and a zero-egress meeting is not allowed to fetch them (SEC36), because even a model-file request would be a request from a meeting that promised not to make any. Normal meetings download them as needed. Run one ordinary meeting, or `MeetingPipe prefetch-models`, then use **Retry** on the failed meeting. A cache that exists but is corrupt is still re-fetched inside FluidAudio under a zero-egress job, which is a known residual (`daemon/docs/gotchas.md`).
+
 This bites after changing `summarization.local_model` and then recording an NDA meeting before any ordinary one has warmed the cache.
 
 **I uninstalled and reinstalled but macOS still says "permission denied" and won't re-prompt.** With the self-signed "MeetingPipe Dev" signing cert (the default), Screen Recording grants survive rebuilds, so this is now rare. If it still happens:

@@ -2,9 +2,9 @@
 id: SEC36
 title: The in-daemon FluidAudio model download has no zero-egress gate, so a missing speech-model cache makes the daemon fetch from huggingface.co mid-job under regulated or NDA mode
 category: Security
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). F124: `FluidAudioRunner.ensureAsr` and `ensureDiarizer` call `AsrModels.downloadAndLoad` and `DiarizerModels.downloadIfNeeded` with no policy input, so a missing or corrupt cache makes the daemon request model files from huggingface.co during a regulated or NDA job (model files only, no audio); SEC13 gated only the pipeline's fetch and HYG10 proposes sanctioning this one, so the owner picks the rule first. Preflight the cache at the `SinkDispatcher` transcribe step and fail a zero-egress job with a download-models-first notice. Promote before enabling regulated or NDA. [Spec](./SEC36.md)
+comment: Shipped 2026-11-16 (owner rule: NO, a zero-egress job may not fetch speech models). `SpeechModelGate` (pure), `TranscriptionRunner.missingSpeechModels()` (FluidAudio cache check, empty once managers are loaded), and the `SinkDispatcher` preflight before the trim read and `transcribe`: a regulated, NDA or unreadable-sidecar job with a missing model fails with the download-first notice and `models_missing_zero_egress`; normal jobs download as before. 11 new Swift tests green, README/GUIDE/CONVENTIONS/gotchas/HYG10 updated. Left for the owner: walkthrough step 2 (move the FluidAudio folder aside, run an NDA meeting, confirm the row and event, then prefetch and retry). Corrupt-cache residual stays written in gotchas.md. [Spec](./SEC36.md)
 ---
 
 # SEC36: The in-daemon FluidAudio model download has no zero-egress gate, so a missing speech-model cache makes the daemon fetch from huggingface.co mid-job under regulated or NDA mode
@@ -40,6 +40,8 @@ Source: [independent audit](../../audits/2026-11-12-independent-audit.md) findin
 - Swift tests, offline, with no FluidAudio call: the pure decision refuses for zero-egress with either model missing, proceeds for zero-egress with both present, proceeds for normal mode with models missing, and proceeds when managers are already loaded.
 - `SinkDispatcherTests`, with a fake runner and an injected presence check: an NDA sidecar plus missing models fails the job with the validation reason, never calls `transcribe`, and emits `models_missing_zero_egress`; an unreadable sidecar behaves as NDA; a normal-mode job calls `transcribe` as today.
 - `swift test` green with the new test count in the commit body; `python3 scripts/truth_fences.py events` green for the new action; `bash scripts/ci-local.sh` green. README's troubleshooting entry for zero-egress model refusals names the speech models too, and [docs/GUIDE.md](../../GUIDE.md) if it covers regulated mode, in the same commit.
+
+**Progress (2026-11-16):** owner decided no (step 1 of the walkthrough). Shipped the scope: the gate is `daemon/Sources/MeetingPipe/Transcription/SpeechModelGate.swift`; the diarizer presence check is `FluidAudioRunner.diarizerModelsPresent(in:)` over `ModelNames.Diarizer.requiredModels`; the seam sits ahead of the SEC37 trim read so an unreadable sidecar refuses here as NDA. The global posture is read live (`ConfigStore`) only when a model is missing. Decision recorded in HYG10's table and `daemon/docs/gotchas.md`. Scope item 3 (the `ModelRegistry.baseURL` loopback pin) was not built: it needs the owner's yes and a test, so it stays the written residual. Nothing is owed by a session; only walkthrough step 2 remains, and the owner closes the task.
 
 ## Owner walkthrough
 

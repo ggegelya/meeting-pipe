@@ -84,10 +84,16 @@ protocol TranscriptionRunner: AnyObject {
     /// world for that pass (`FluidAudioRunner`'s REC20 memory row) is settled here instead of
     /// on a return that may never come or may come during the next job. Called on main.
     func abandonInFlightPass()
+
+    /// SEC36: the speech models this runner would have to fetch from the network to run a pass
+    /// now (empty once it holds them loaded). `SinkDispatcher` asks before `transcribe` and refuses
+    /// a zero-egress job when this is non-empty. A runner that never fetches keeps the default.
+    func missingSpeechModels() -> [SpeechModel]
 }
 
 extension TranscriptionRunner {
     func abandonInFlightPass() {}
+    func missingSpeechModels() -> [SpeechModel] { [] }
 }
 
 enum TranscriptionError: Error, LocalizedError {

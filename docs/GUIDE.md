@@ -154,6 +154,8 @@ A single switch in the editor with one meaning: meetings in this workflow are su
 
 Two things to know. It applies from the moment you turn it on; it cannot un-publish a meeting that already went out. And moving a meeting into or out of an NDA workflow asks you to confirm, because it changes where that meeting can go.
 
+One more: an NDA meeting, or any meeting with regulated mode on, never downloads anything, not even the speech models the app uses to write the transcript. On a Mac that has not yet transcribed a meeting the ordinary way, such a meeting fails with "Speech models are not downloaded". Record or retry any ordinary meeting once, so the app fetches them, and then retry the confidential one.
+
 ---
 
 ## 3. Vocabulary: teaching it your words

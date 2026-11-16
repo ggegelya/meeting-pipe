@@ -179,6 +179,32 @@ final class FluidAudioRunner: TranscriptionRunner {
 
     // MARK: - Model lifecycle
 
+    /// SEC36: which models a pass started now would fetch. Reads the on-disk cache only, never the
+    /// network: FluidAudio's `AsrModels.modelsExist` and a file-presence check of the diarizer's
+    /// two models (`DiarizerModels` has no `modelsExist` at 0.14.8). Residual: a cache that exists
+    /// but fails to load is wiped and re-fetched inside FluidAudio's own `DownloadUtils.loadModels`,
+    /// which this preflight cannot see (daemon/docs/gotchas.md, SEC36).
+    func missingSpeechModels() -> [SpeechModel] {
+        var present: Set<SpeechModel> = []
+        if AsrModels.modelsExist(at: AsrModels.defaultCacheDirectory(for: asrVersion), version: asrVersion) {
+            present.insert(.asr)
+        }
+        if Self.diarizerModelsPresent(in: DiarizerModels.defaultModelsDirectory()) {
+            present.insert(.diarizer)
+        }
+        var loaded: Set<SpeechModel> = []
+        if asrManager != nil { loaded.insert(.asr) }
+        if diarizer != nil { loaded.insert(.diarizer) }
+        return SpeechModelGate.missing(loaded: loaded, present: present)
+    }
+
+    /// Both diarizer model bundles exist under `directory`.
+    static func diarizerModelsPresent(in directory: URL) -> Bool {
+        ModelNames.Diarizer.requiredModels.allSatisfy {
+            FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path)
+        }
+    }
+
     private func ensureAsr() async throws -> AsrManager {
         if let asr = asrManager { return asr }
         do {

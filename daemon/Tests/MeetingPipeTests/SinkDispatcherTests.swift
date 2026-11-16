@@ -315,6 +315,9 @@ final class SinkDispatcherTests: XCTestCase {
 
         private(set) var calls: [URL] = []
         var shouldThrow = false
+        /// SEC36: what the runner reports it would have to download (the injected presence check).
+        var missingModels: [SpeechModel] = []
+        func missingSpeechModels() -> [SpeechModel] { missingModels }
 
         func transcribe(wavURL: URL, languageHint: String?) async throws -> TranscriptSidecar {
             calls.append(wavURL)
@@ -682,6 +685,81 @@ final class SinkDispatcherTests: XCTestCase {
             TranscriptSidecar.self, from: Data(contentsOf: wav.deletingPathExtension().appendingPathExtension("json"))
         )
         XCTAssertEqual(decoded.segments.first?.end, 1.0)
+    }
+
+    // MARK: - SEC36: a zero-egress job never fetches speech models
+
+    private func sec36Run(
+        missing: [SpeechModel], meta: String?, globalRegulated: Bool = false, refused: Bool = true
+    ) throws -> (runner: FakeRunner, driver: FakeDriver, dir: URL, logs: URL, completed: Int) {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        runner.missingModels = missing
+        let dispatcher = SinkDispatcher(
+            launcher: driver, makeTranscriptionRunner: { runner },
+            globalRegulatedMode: { globalRegulated }
+        )
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        let logs = try withLogs(dir)
+        if let meta {
+            if meta == "unreadable" {
+                try FileManager.default.createDirectory(
+                    at: dir.appendingPathComponent("clip.meta.json"), withIntermediateDirectories: true)
+            } else {
+                try Data(meta.utf8).write(to: dir.appendingPathComponent("clip.meta.json"))
+            }
+        }
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        if refused { waitForJobCompletion { completed.count } } else { waitForPipelineStart(driver) }
+        return (runner, driver, dir, logs, completed.count)
+    }
+
+    private func assertRefused(_ r: (runner: FakeRunner, driver: FakeDriver, dir: URL, logs: URL, completed: Int)) {
+        XCTAssertTrue(r.runner.calls.isEmpty, "a refused job never reaches transcribe")
+        XCTAssertTrue(r.driver.startedFiles.isEmpty, "the pipeline is not invoked")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: r.dir.appendingPathComponent("clip.json").path))
+        let failure = PipelineFailureSidecar.read(stem: "clip", in: r.dir)
+        XCTAssertEqual(failure?.stage, .transcribe)
+        XCTAssertEqual(failure?.reason, SpeechModelGate.reason)
+        XCTAssertTrue(failure?.reason.hasPrefix("Speech models are not downloaded") ?? false)
+        let rows = eventRows(r.logs).filter { $0["action"] as? String == "models_missing_zero_egress" }
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?["stem"] as? String, "clip")
+        XCTAssertEqual(rows.first?["missing"] as? [String], ["asr", "diarizer"])
+    }
+
+    func test_an_nda_job_with_missing_models_fails_without_transcribing_SEC36() throws {
+        let r = try sec36Run(missing: [.asr, .diarizer], meta: #"{"workflow_nda_mode": true}"#)
+        defer { try? FileManager.default.removeItem(at: r.dir); unsetenv("MEETINGPIPE_LOGS_DIR") }
+        assertRefused(r)
+    }
+
+    func test_an_unreadable_sidecar_behaves_as_nda_for_missing_models_SEC36() throws {
+        let r = try sec36Run(missing: [.asr, .diarizer], meta: "unreadable")
+        defer { try? FileManager.default.removeItem(at: r.dir); unsetenv("MEETINGPIPE_LOGS_DIR") }
+        assertRefused(r)
+    }
+
+    func test_global_regulated_mode_refuses_missing_models_without_a_sidecar_SEC36() throws {
+        let r = try sec36Run(missing: [.asr, .diarizer], meta: nil, globalRegulated: true)
+        defer { try? FileManager.default.removeItem(at: r.dir); unsetenv("MEETINGPIPE_LOGS_DIR") }
+        assertRefused(r)
+    }
+
+    func test_a_normal_job_with_missing_models_still_transcribes_SEC36() throws {
+        let r = try sec36Run(missing: [.asr, .diarizer], meta: nil, refused: false)
+        defer { try? FileManager.default.removeItem(at: r.dir); unsetenv("MEETINGPIPE_LOGS_DIR") }
+        XCTAssertEqual(r.runner.calls.count, 1, "normal mode downloads as needed")
+        XCTAssertTrue(eventRows(r.logs).filter { $0["action"] as? String == "models_missing_zero_egress" }.isEmpty)
+    }
+
+    func test_an_nda_job_with_models_present_still_transcribes_SEC36() throws {
+        let r = try sec36Run(missing: [], meta: #"{"workflow_nda_mode": true}"#, refused: false)
+        defer { try? FileManager.default.removeItem(at: r.dir); unsetenv("MEETINGPIPE_LOGS_DIR") }
+        XCTAssertEqual(r.runner.calls.count, 1)
     }
 
     // MARK: - SEC16: a failed redaction holds the meeting back

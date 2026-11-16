@@ -142,14 +142,21 @@ final class SinkDispatcher: @unchecked Sendable {
     /// of `runDaemonTranscription` asks this first so a late return writes nothing.
     private var abandonedJobs: Set<UUID> = []
 
+    /// SEC36: the live global `modes.regulated_mode`, read only when a runner reports a missing
+    /// speech model (the one moment the answer changes anything), so a warm cache never touches
+    /// `config.toml` here. Injected so tests never read the real file.
+    private let globalRegulatedMode: () -> Bool
+
     init(
         launcher: PipelineDriver,
         makeTranscriptionRunner: @escaping () -> TranscriptionRunner = { TranscriptionService.makeRunner() },
         languageHint: String = "auto",
         redactor: @escaping @Sendable (URL) async -> MuteRedactor.Outcome = { await MuteRedactor.redactIfNeeded(wav: $0) },
         originalsDir: URL? = nil,
-        transcriptionDeadline: @escaping (Double?, Bool) -> TimeInterval = { SinkDispatcher.transcriptionDeadline(audioSeconds: $0, runnerWarm: $1) }
+        transcriptionDeadline: @escaping (Double?, Bool) -> TimeInterval = { SinkDispatcher.transcriptionDeadline(audioSeconds: $0, runnerWarm: $1) },
+        globalRegulatedMode: @escaping () -> Bool = { ConfigStore(configURL: Config.defaultPath).regulatedMode }
     ) {
+        self.globalRegulatedMode = globalRegulatedMode
         self.launcher = launcher
         self.makeTranscriptionRunner = makeTranscriptionRunner
         self.transcriptionRunner = makeTranscriptionRunner()
@@ -503,6 +510,22 @@ final class SinkDispatcher: @unchecked Sendable {
             "engine": runner.backendName,
         ])
         do {
+            // SEC36: a zero-egress job never lets FluidAudio fetch a speech model. Asked before the
+            // trim read, so an unreadable sidecar (which is zero-egress) refuses here too, and before
+            // the pass, so a refused job loads and downloads nothing.
+            let missingModels = runner.missingSpeechModels()
+            if !missingModels.isEmpty {
+                let zeroEgress = MeetingMetaRead.load(stem: loc.stem, in: loc.dir).isZeroEgress
+                    || globalRegulatedMode()
+                if case .refuse(let missing) = SpeechModelGate.decide(zeroEgress: zeroEgress, missing: missingModels) {
+                    Log.event(category: "transcription", action: "models_missing_zero_egress", attributes: [
+                        "stem": loc.stem,
+                        "missing": missing.map(\.rawValue),
+                        "kind": job.kind == .retranscribe ? "retranscribe" : "full",
+                    ])
+                    throw SpeechModelGate.Refused(missing: missing)
+                }
+            }
             // SEC37: read the trim before the pass, so a dataless sidecar costs no ASR run and the
             // job fails through the catch below with no `<stem>.json` written. Unreadable is never
             // "no trim": that would put the post-call tail in the transcript every later
