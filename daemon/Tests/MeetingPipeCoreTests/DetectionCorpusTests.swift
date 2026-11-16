@@ -180,7 +180,9 @@ final class DetectionCorpusTests: XCTestCase {
         let early = replay.run(engine: PromotionEngine(loneDwell: 30))
         let endedAt = try XCTUnwrap(early.endedAt, "a 30 s lone dwell ends the live call")
         XCTAssertEqual(endedAt.timeIntervalSince1970, 330, accuracy: 0.5)
-        XCTAssertEqual(early.trimAt?.timeIntervalSince1970 ?? .nan, 300, accuracy: 0.01, "cut where the hold opened")
+        // END21: this trace carries no process audio, so a lone-dwell end is no evidence of when
+        // the call ended and cuts nothing (the owner's decision of 2026-11-16, F032).
+        XCTAssertNil(early.trimAt, "a lone-dwell end without process audio trims nothing")
     }
 
     private func makeLifecycleReplay(traceName: String, json: [String: Any]) throws -> LifecycleTraceReplay {

@@ -42,6 +42,11 @@ public final class MeetingLifecycleCoordinator {
     /// arbitrary later moment is the same value this cache holds anyway.
     private var liveCallSignalState: CallTeardownOracle.LiveCallSignal = .unknown
 
+    /// END21: the engine's `holdEvidence`, cached under `lock` after every engine mutation and before
+    /// the verdict it went with is published, so the host's `.ended` handler on main reads the
+    /// evidence of the hold that verdict concluded. Cleared with the session on `disengage`.
+    private var holdEvidenceState: HoldEvidence?
+
     private let engine: PromotionEngine
     private let adapters: [LifecycleAdapter]
     private let scheduler: Scheduler
@@ -118,7 +123,7 @@ public final class MeetingLifecycleCoordinator {
         activeAdapter = nil
         // END13: the reading belongs to the session that produced it. Cleared before the generation
         // bump so nothing can observe a previous call's veto against the next one.
-        lock.lock(); liveCallSignalState = .unknown; lock.unlock()
+        lock.lock(); liveCallSignalState = .unknown; holdEvidenceState = nil; lock.unlock()
         // Supersede any in-flight / zombie events from the adapter just stopped: they
         // captured the prior generation, so the gen guard in `ingest` / `tick` drops them
         // instead of re-mutating the engine we are about to reset (AUD-29).
@@ -162,6 +167,18 @@ public final class MeetingLifecycleCoordinator {
         lock.withLock { liveCallSignalState }
     }
 
+    /// END21: what the engine's readings say about the open (or just concluded) hold. Main-safe.
+    public var holdEvidence: HoldEvidence? {
+        lock.withLock { holdEvidenceState }
+    }
+
+    /// Cache the engine's hold evidence, then publish. Runs on `engineQueue`.
+    private func cacheEvidenceThenPublish(_ decision: PromotionEngine.Decision?) {
+        let evidence = engine.holdEvidence
+        lock.withLock { holdEvidenceState = evidence }
+        if let decision { publish(decision.verdict) }
+    }
+
     /// Finish the verdict stream and reset both buses. Called at daemon shutdown.
     public func shutdown() {
         disengage()
@@ -183,9 +200,7 @@ public final class MeetingLifecycleCoordinator {
         noteLiveCallSignal(event, generation: generation)
         engineQueue.async { [weak self] in
             guard let self = self, self.currentGeneration() == generation else { return }
-            if let decision = self.engine.ingest(event) {
-                self.publish(decision.verdict)
-            }
+            self.cacheEvidenceThenPublish(self.engine.ingest(event))
             // END18: so does a declined revert.
             if let declined = self.engine.takeDeclinedRevert() {
                 self.eventLog.emit(category: "lifecycle", action: "end_revert_declined", attributes: [
@@ -210,9 +225,7 @@ public final class MeetingLifecycleCoordinator {
     func tick(generation: Int) {
         engineQueue.async { [weak self] in
             guard let self = self, self.currentGeneration() == generation else { return }
-            if let decision = self.engine.tick(at: self.clock()) {
-                self.publish(decision.verdict)
-            }
+            self.cacheEvidenceThenPublish(self.engine.tick(at: self.clock()))
             self.reconcileTick(generation: generation)
         }
     }
@@ -277,9 +290,7 @@ public final class MeetingLifecycleCoordinator {
     public func confirmProvisionalEnd(evidence: String = PromotionEngine.teardownEvidence) {
         engineQueue.async { [weak self] in
             guard let self = self else { return }
-            if let decision = self.engine.confirmProvisionalEnd(evidence: evidence) {
-                self.publish(decision.verdict)
-            }
+            self.cacheEvidenceThenPublish(self.engine.confirmProvisionalEnd(evidence: evidence))
             self.reconcileTick(generation: self.currentGeneration())
         }
     }

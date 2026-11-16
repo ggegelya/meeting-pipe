@@ -1,11 +1,11 @@
 {
   "scenario": "zoom_native_lifecycle_pair_dwell_trim",
-  "description": "A genuine Zoom leave, synthetic: no teardown oracle reads Zoom. The window goes while Zoom still holds the mic (vetoed, no hold), the Leave button reads invalid and opens the hold, Zoom releases the mic, and the pair confirms once both evidence classes have stayed ended for the 60 s dwell. The held minute is the trim point.",
+  "description": "A genuine Zoom leave, synthetic: no teardown oracle reads Zoom. The window goes while Zoom still holds the mic (vetoed, no hold), the Leave button reads invalid and opens the hold, Zoom releases the mic, and the pair confirms once both evidence classes have stayed ended for the 60 s dwell. Since END21 the trim point is the mic release (1803.0), not the hold's first stamp (1801.5): the Leave button going 1.5 s before the release was the first doubt, the release is when the call ended.",
   "engine": "lifecycle",
   "origin": "synthetic",
   "expected_outcome": "ended",
   "ended_at": 1863.0,
-  "trim_at": 1801.5,
+  "trim_at": 1803.0,
   "context": {
     "bundle_id": "us.zoom.xos",
     "kind": "native",

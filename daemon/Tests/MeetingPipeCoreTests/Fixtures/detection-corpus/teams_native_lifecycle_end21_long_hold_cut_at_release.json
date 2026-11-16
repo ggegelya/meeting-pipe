@@ -1,0 +1,24 @@
+{
+  "scenario": "teams_native_lifecycle_end21_long_hold_cut_at_release",
+  "description": "END21, synthetic in G001's shape: Teams' compact view hides the Leave control 10 minutes in, which opens a hold under a live mic that sits there for 40 minutes (the veto keeps it from confirming); the call then ends for real, the mic releases at 3000 and the window goes at 3005, and the pair confirms 60 s after the release (the Leave button and the window are one evidence class, ended since 600). The teardown log is unreadable here, so nothing confirms sooner. Before END21 the cut was the hold's first stamp (600), dropping 40 minutes of the call from the notes; it is now the mic release.",
+  "engine": "lifecycle",
+  "origin": "synthetic",
+  "expected_outcome": "ended",
+  "ended_at": 3060.0,
+  "trim_at": 3000.0,
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "until": 3200.0,
+  "events": [
+    {"t": 0.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": 0.1, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 0.2, "kind": "shareable_content_window", "state": "live"},
+    {"t": 1.0, "kind": "recording_started"},
+    {"t": 600.0, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 3000.0, "kind": "process_audio_is_running_input_false", "state": "ended"},
+    {"t": 3005.0, "kind": "shareable_content_window", "state": "ended"}
+  ]
+}

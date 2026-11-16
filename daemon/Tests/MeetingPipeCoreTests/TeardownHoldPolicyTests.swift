@@ -80,20 +80,84 @@ final class TeardownHoldPolicyTests: XCTestCase {
     func test_a_hold_under_one_second_yields_no_trim_point() {
         var policy = TeardownHoldPolicy()
         policy.open(context: teams, at: at(100))
-        XCTAssertNil(policy.trimPoint(concludingAt: at(100.99)))
+        XCTAssertNil(policy.trimPoint(concludingAt: at(100.99), evidence: nil, conclusion: .engineEnd))
     }
 
-    func test_a_hold_of_one_second_or_more_trims_at_its_stamp() {
+    /// With no process audio (browser, Webex, Slack, an unresolved mic) a pair, teardown or
+    /// definitive end still cuts at the hold's first stamp, and re-entry does not move it.
+    func test_without_process_audio_a_pair_end_trims_at_the_holds_stamp() {
         var policy = TeardownHoldPolicy()
         policy.open(context: teams, at: at(100))
         policy.open(context: teams, at: at(200))
 
-        XCTAssertEqual(policy.trimPoint(concludingAt: at(101)), at(100))
-        XCTAssertEqual(policy.trimPoint(concludingAt: at(820)), at(100), "re-entry did not move the cut")
+        XCTAssertEqual(policy.trimPoint(concludingAt: at(101), evidence: nil, conclusion: .engineEnd), at(100))
+        XCTAssertEqual(policy.trimPoint(concludingAt: at(820), evidence: nil, conclusion: .teardown), at(100), "re-entry did not move the cut")
     }
 
     func test_no_hold_has_no_trim_point() {
-        XCTAssertNil(TeardownHoldPolicy().trimPoint(concludingAt: at(100)))
+        XCTAssertNil(TeardownHoldPolicy().trimPoint(concludingAt: at(100), evidence: nil, conclusion: .engineEnd))
+    }
+
+    // MARK: - END21
+
+    private func released(at release: TimeInterval, liveSince: Bool = false, windowSince: Bool = true) -> HoldEvidence {
+        HoldEvidence(
+            processAudio: .ended, releasedAt: at(release),
+            liveSinceRelease: liveSince, callWindowEndedSinceRelease: windowSince
+        )
+    }
+
+    /// G001: a Leave-invalid hold opened 31 minutes in under a live mic, the mic released at 60
+    /// minutes, ended by the pair. The cut is the release, not the first doubt.
+    func test_the_cut_is_the_mic_release_not_the_first_doubt() {
+        var policy = TeardownHoldPolicy()
+        policy.open(context: teams, at: at(31 * 60))
+        XCTAssertEqual(
+            policy.trimPoint(concludingAt: at(61 * 60), evidence: released(at: 60 * 60), conclusion: .engineEnd),
+            at(60 * 60)
+        )
+    }
+
+    func test_a_hold_concluding_while_the_mic_reads_live_trims_nothing() {
+        var policy = TeardownHoldPolicy()
+        policy.open(context: teams, at: at(100))
+        let live = HoldEvidence(processAudio: .live, releasedAt: nil, liveSinceRelease: false, callWindowEndedSinceRelease: false)
+        for conclusion in [TeardownHoldPolicy.Conclusion.engineEnd, .teardown, .loneDwell, .stop] {
+            XCTAssertNil(policy.trimPoint(concludingAt: at(900), evidence: live, conclusion: conclusion), "\(conclusion)")
+        }
+    }
+
+    /// F032, the owner's item 2: with no process audio a lone-dwell end trims nothing.
+    func test_without_process_audio_a_lone_dwell_end_trims_nothing() {
+        var policy = TeardownHoldPolicy()
+        policy.open(context: teams, at: at(100))
+        XCTAssertNil(policy.trimPoint(concludingAt: at(820), evidence: nil, conclusion: .loneDwell))
+        let unresolved = HoldEvidence(processAudio: nil, releasedAt: nil, liveSinceRelease: false, callWindowEndedSinceRelease: false)
+        XCTAssertNil(policy.trimPoint(concludingAt: at(820), evidence: unresolved, conclusion: .loneDwell))
+    }
+
+    /// The owner's item 3 rule for a stop inside a hold: the release, only when the mic still reads
+    /// released, nothing read live since, and the Leave button or the window went after it.
+    func test_a_stop_cuts_at_the_release_only_when_a_second_signal_backs_it() {
+        var policy = TeardownHoldPolicy()
+        policy.open(context: teams, at: at(100))
+        XCTAssertEqual(policy.trimPoint(concludingAt: at(140), evidence: released(at: 104), conclusion: .stop), at(104), "a real end")
+        XCTAssertNil(
+            policy.trimPoint(concludingAt: at(106), evidence: released(at: 104, windowSince: false), conclusion: .stop),
+            "a headphone switch drops only the mic"
+        )
+        XCTAssertNil(
+            policy.trimPoint(concludingAt: at(140), evidence: released(at: 104, liveSince: true), conclusion: .stop),
+            "something read live again after the release"
+        )
+        XCTAssertNil(policy.trimPoint(concludingAt: at(140), evidence: nil, conclusion: .stop), "no mic, no cut on a stop")
+    }
+
+    /// The cut is never earlier than the hold's own start.
+    func test_a_release_before_the_hold_cuts_at_the_hold() {
+        var policy = TeardownHoldPolicy()
+        policy.open(context: teams, at: at(100))
+        XCTAssertEqual(policy.trimPoint(concludingAt: at(200), evidence: released(at: 90), conclusion: .engineEnd), at(100))
     }
 
     func test_release_clears_all_state_and_returns_what_it_dropped() {
@@ -104,7 +168,7 @@ final class TeardownHoldPolicyTests: XCTestCase {
 
         XCTAssertFalse(policy.isOpen)
         XCTAssertNil(policy.hold)
-        XCTAssertNil(policy.trimPoint(concludingAt: at(900)))
+        XCTAssertNil(policy.trimPoint(concludingAt: at(900), evidence: nil, conclusion: .engineEnd))
         XCTAssertNil(policy.consult(now: at(900), lastTeardownAt: at(900), recordingStartedAt: at(0)))
         XCTAssertNil(policy.release(), "a second release has nothing to drop")
     }

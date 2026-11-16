@@ -307,8 +307,8 @@ final class CallTeardownHoldTests: XCTestCase {
         controller.releaseTeardownHold()
     }
 
-    /// Whatever route confirms a held end (a dwell in the engine, an app quit), concluding it marks
-    /// where the hold began as the trim point and clears the HUD.
+    /// A held end the engine confirmed on its pair or a definitive signal marks where the hold began
+    /// as the trim point when no process audio reported (END21), and clears the HUD.
     func test_concluding_a_hold_marks_its_start_as_the_trim_point_END17() throws {
         let (controller, host) = try makeController(logLines: nil)
         defer { withExtendedLifetime(host) {} }
@@ -317,7 +317,9 @@ final class CallTeardownHoldTests: XCTestCase {
             return XCTFail("the provisional must open a hold")
         }
 
-        controller.concludeTeardownHold(now: openedAt.addingTimeInterval(PromotionEngine.defaultLoneDwell))
+        controller.concludeTeardownHold(
+            now: openedAt.addingTimeInterval(PromotionEngine.defaultConfirmDwell), conclusion: .engineEnd
+        )
 
         XCTAssertNil(controller.holdPolicy.hold)
         XCTAssertEqual(controller.pendingEndTrimAt, openedAt)

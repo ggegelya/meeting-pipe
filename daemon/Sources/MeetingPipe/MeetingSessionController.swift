@@ -308,8 +308,11 @@ final class MeetingSessionController: @unchecked Sendable {
         switch verdict {
         case .endingProvisional:
             break
-        case .ended:
-            concludeTeardownHold()
+        case .ended(_, let reason):
+            // END21: a lone-dwell end is no evidence of when the call ended (F032).
+            concludeTeardownHold(
+                conclusion: reason.confirmedBy.contains(PromotionEngine.loneDwellEvidence) ? .loneDwell : .engineEnd
+            )
         default:
             releaseTeardownHold(rescued: verdict.isLive)
             // A teardown confirm that lost the race to a revert never produced an `.ended`, so its
@@ -370,7 +373,7 @@ final class MeetingSessionController: @unchecked Sendable {
             coordinator.stateMachine.clearSuppression(bundleID: src.bundleID)
             beginRecording(source: src, summaryMode: .auto)
         case .recording(let file, let src, let mode):
-            stopRecording(file: file, source: src, summaryMode: mode)
+            stopRecording(file: file, source: src, summaryMode: mode, stopRoute: "toggle")
         case .stopping:
             // Mid-flush; a new start would race the await.
             break
@@ -441,7 +444,7 @@ final class MeetingSessionController: @unchecked Sendable {
         ])
         switch coordinator.stateMachine.current {
         case .recording(let file, let src, let mode):
-            stopRecording(file: file, source: src, summaryMode: mode)
+            stopRecording(file: file, source: src, summaryMode: mode, stopRoute: reason)
         case .prompting(let src):
             // Same as Skip: don't record, return to idle, and cool down the bundle
             // so the next discovery poll doesn't immediately re-prompt this meeting.
@@ -863,7 +866,21 @@ final class MeetingSessionController: @unchecked Sendable {
     /// bring-up: it is finalized and enqueued like any recording, but the coverage warnings below
     /// (no remote audio, short, silent mic) say nothing true about a capture a second long that
     /// nobody asked for.
-    func stopRecording(file: URL, source: AppSource?, summaryMode: SummaryMode, committed: Bool = true) {
+    /// `stopRoute` names who stopped it, for `held_end_trimmed` (END21); nil is a lifecycle end.
+    func stopRecording(
+        file: URL, source: AppSource?, summaryMode: SummaryMode,
+        committed: Bool = true, stopRoute: String? = nil
+    ) {
+        // END21 item 3: a stop inside an open hold concludes it here, under the owner's rule of
+        // 2026-11-16 (`TeardownHoldPolicy.trimPoint` with `.stop`): cut at the mic release only
+        // while the mic still reads released, nothing read live again since, and the Leave button
+        // or the call window went after it; otherwise nothing is cut. Before END21 every stop but a
+        // lifecycle end reached here with no trim at all, so a Stop during Confirming end kept and
+        // transcribed the post-call tail. A lifecycle end has already concluded and released its
+        // hold before it reaches here.
+        if holdPolicy.isOpen {
+            concludeTeardownHold(conclusion: .stop)
+        }
         micTierRecordingBundle = nil // DET1: this recording is ending; drop its mic-release tag
         // END13 item 5: hand the just-stopped source to the candidate slot at the instant of the
         // stop, so a Record pressed straight afterwards attaches to it instead of recording
@@ -918,7 +935,8 @@ final class MeetingSessionController: @unchecked Sendable {
                 StopStallWatchdog.stallMessage(elapsed: elapsed)
             )
         }
-        // END9: everything captured after the held end opened is post-call audio. Measured from
+        // END9: the cut a concluded hold left (since END21 the mic release, not the hold's start,
+        // see `TeardownHoldPolicy.trimPoint`). Measured from
         // the recorder's own start rather than from the controller's clock, because that is the
         // origin the produced file's timeline actually has. Read here rather than inside the Task
         // below because this is main-confined controller state and that closure is `[weak self]`;
@@ -941,6 +959,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 "file": file.lastPathComponent,
                 "limit_sec": trimSeconds,
                 "mode": keepsHeldTail ? "suggested" : "truncated",
+                "stop_route": stopRoute ?? "lifecycle_end",
             ])
         }
         Task { @MainActor [weak self] in
@@ -1236,7 +1255,7 @@ final class MeetingSessionController: @unchecked Sendable {
               src?.bundleID == recBundle else { return }
         Log.event(category: "coordinator", action: "mic_in_use_stop", attributes: ["bundle_id": recBundle])
         Log.writeLine("daemon", "mic-in-use recording stopped: mic released (\(recBundle))")
-        stopRecording(file: file, source: src, summaryMode: mode)
+        stopRecording(file: file, source: src, summaryMode: mode, stopRoute: "mic_released")
     }
 
     func handleMeetingStarted(source: AppSource) {
@@ -1566,7 +1585,7 @@ final class MeetingSessionController: @unchecked Sendable {
             "bundle_id": src?.bundleID ?? "manual",
             "file": file.lastPathComponent,
         ])
-        stopRecording(file: file, source: src, summaryMode: mode)
+        stopRecording(file: file, source: src, summaryMode: mode, stopRoute: "idle_backstop")
     }
 
     /// User tapped "Keep recording" on the idle nudge: restart the countdown so the
@@ -2088,7 +2107,7 @@ final class MeetingSessionController: @unchecked Sendable {
             recordingStartedAt: coordinator.audioRecorder.startedAt
         )
         guard case .confirm(let reason)? = verdict else { return }
-        concludeTeardownHold(now: now)
+        concludeTeardownHold(now: now, conclusion: .teardown)
         Log.event(category: "coordinator", action: "lifecycle_provisional_end_confirmed", attributes: [
             "bundle_id": hold.context.bundleID,
             "oracle": reason.rawValue,
@@ -2102,9 +2121,15 @@ final class MeetingSessionController: @unchecked Sendable {
     /// The hold ended in an end, by whichever route. Its trim point becomes the cut `stopRecording`
     /// acts on: cut at stop under the regulated and NDA postures, suggested and kept everywhere else
     /// (END17). `TeardownHoldPolicy.trimPoint` leaves sub-second holds, the normal Teams path, alone.
-    func concludeTeardownHold(now: Date = Date()) {
+    func concludeTeardownHold(now: Date = Date(), conclusion: TeardownHoldPolicy.Conclusion) {
         guard holdPolicy.isOpen else { return }
-        if let trimAt = holdPolicy.trimPoint(concludingAt: now) { pendingEndTrimAt = trimAt }
+        if let trimAt = holdPolicy.trimPoint(
+            concludingAt: now,
+            evidence: coordinator.lifecycleCoord.holdEvidence,
+            conclusion: conclusion
+        ) {
+            pendingEndTrimAt = trimAt
+        }
         releaseTeardownHold()
     }
 

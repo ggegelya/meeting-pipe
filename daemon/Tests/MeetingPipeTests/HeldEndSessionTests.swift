@@ -52,8 +52,9 @@ final class HeldEndSessionTests: XCTestCase {
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
-    /// Record, open a hold ten minutes in, conclude it a lone dwell later, and stop: the shape of a
-    /// weak-only leave confirmed by the engine.
+    /// Record, open a hold ten minutes in, conclude it later as the engine's pair end, and stop: the
+    /// shape of a weak leave the engine confirmed. No process audio is engaged here, so the cut is the
+    /// hold's start (END21); a lone-dwell end without process audio would cut nothing.
     private func recordAndStopAfterAHeldEnd(
         _ controller: MeetingSessionController,
         _ host: FakeSessionHost,
@@ -65,7 +66,9 @@ final class HeldEndSessionTests: XCTestCase {
         host.recorderSpy.startedAt = Date().addingTimeInterval(-600)
         controller.beginTeardownHold(context: context)
         let openedAt = controller.holdPolicy.hold?.startedAt ?? Date()
-        controller.concludeTeardownHold(now: openedAt.addingTimeInterval(PromotionEngine.defaultLoneDwell))
+        controller.concludeTeardownHold(
+            now: openedAt.addingTimeInterval(PromotionEngine.defaultConfirmDwell), conclusion: .engineEnd
+        )
         controller.stopRecording(file: file, source: teams, summaryMode: .auto)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
     }

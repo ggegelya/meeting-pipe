@@ -159,15 +159,17 @@ struct LifecycleTraceReplay {
                 recordingStartedAt: recordingStartedAt
             )
             guard case .confirm? = verdict else { return }
-            conclude(at: time)
+            conclude(at: time, conclusion: .teardown)
             if let decision = engine.confirmProvisionalEnd(evidence: PromotionEngine.teardownEvidence) {
                 handle(decision.verdict, at: time, consultInterval: consultInterval)
             }
         }
 
-        mutating func conclude(at time: Date) {
+        mutating func conclude(at time: Date, conclusion: TeardownHoldPolicy.Conclusion) {
             guard policy.isOpen else { return }
-            if let trimAt = policy.trimPoint(concludingAt: time) { pendingTrimAt = trimAt }
+            if let trimAt = policy.trimPoint(concludingAt: time, evidence: engine.holdEvidence, conclusion: conclusion) {
+                pendingTrimAt = trimAt
+            }
             policy.release()
             nextConsult = nil
         }
@@ -179,8 +181,11 @@ struct LifecycleTraceReplay {
                 let opened = policy.open(context: ctx, at: time)
                 consult(at: time, consultInterval: consultInterval)
                 if opened, policy.isOpen { nextConsult = time.addingTimeInterval(consultInterval) }
-            case .ended:
-                conclude(at: time)
+            case .ended(_, let reason):
+                conclude(
+                    at: time,
+                    conclusion: reason.confirmedBy.contains(PromotionEngine.loneDwellEvidence) ? .loneDwell : .engineEnd
+                )
                 outcome.endedAt = time
                 outcome.trimAt = pendingTrimAt
             default:

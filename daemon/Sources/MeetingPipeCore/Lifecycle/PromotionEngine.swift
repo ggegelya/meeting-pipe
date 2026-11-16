@@ -177,8 +177,8 @@ public final class PromotionEngine {
         case idle
         case starting(context: MeetingLifecycleContext, observed: Set<PrimarySignalKind>, states: SignalStates)
         case inMeeting(context: MeetingLifecycleContext, observed: Set<PrimarySignalKind>, states: SignalStates)
-        /// `startedAt` is where the held tail starts (the trim point, END21's to move) and never
-        /// changes inside a hold. `loneSince` is what the lone dwell counts from (END18): the hold's
+        /// `startedAt` is the hold's first doubt and never changes inside it; the host's cut is the
+        /// mic release where process audio reported, the hold's start only where it did not (END21). `loneSince` is what the lone dwell counts from (END18): the hold's
         /// start, moved to the moment a vetoer stopped reading live inside it and to every
         /// declined revert, so the lone dwell needs the doubt to have stood unbroken for
         /// `loneDwell`, not merely to have begun that long ago.
@@ -261,6 +261,39 @@ public final class PromotionEngine {
 
     private var pendingVeto: EndVeto?
     private var pendingDeclinedRevert: DeclinedRevert?
+    /// END21: the hold's evidence as it stood when it concluded, kept while the engine sits in
+    /// `.ended` so the host can still read where to cut.
+    private var concludedEvidence: HoldEvidence?
+
+    /// END21: what the readings say about the open hold, or about the hold that just concluded.
+    /// Nil when there is no hold (an end straight from `.starting` or an app quit in `.inMeeting`).
+    public var holdEvidence: HoldEvidence? {
+        switch phase {
+        case .endingProvisional(_, _, _, _, _, let states):
+            return Self.evidence(from: states)
+        case .ended:
+            return concludedEvidence
+        default:
+            return nil
+        }
+    }
+
+    static func evidence(from states: SignalStates) -> HoldEvidence {
+        let mic = states[.processAudioIsRunningInput]
+        let releasedAt = mic?.state == .ended ? mic?.at : nil
+        return HoldEvidence(
+            processAudio: mic?.state,
+            releasedAt: releasedAt,
+            liveSinceRelease: releasedAt.map { release in
+                states.contains { $0.value.state == .live && $0.value.at >= release }
+            } ?? false,
+            callWindowEndedSinceRelease: releasedAt.map { release in
+                states.contains {
+                    $0.key.evidenceClass == .callWindowOrControl && $0.value.state == .ended && $0.value.at >= release
+                }
+            } ?? false
+        )
+    }
 
     /// Back to `.idle` for a new engagement. `awaitingVetoer` says whether the adapter about to
     /// start publishes process audio (`LifecycleAdapter.publishesProcessAudio`), END27.
@@ -268,6 +301,7 @@ public final class PromotionEngine {
         phase = .idle
         pendingVeto = nil
         pendingDeclinedRevert = nil
+        concludedEvidence = nil
         awaitsVetoer = awaitingVetoer
     }
 
@@ -407,6 +441,7 @@ public final class PromotionEngine {
             .map { $0.key.rawValue }
         if !pairHeld { confirmedBy.append(Self.loneDwellEvidence) }
         let reason = EndingReason(leadingSignal: leading.rawValue, confirmedBy: confirmedBy.sorted())
+        concludedEvidence = Self.evidence(from: states)
         phase = .ended(context: context)
         return Decision(verdict: .ended(context: context, reason: reason))
     }
@@ -418,12 +453,13 @@ public final class PromotionEngine {
     /// Before END9 the host called this on an empty AX re-walk, which was one sample of a blank
     /// accessibility tree rather than evidence; END17 leaves the teardown as its only caller.
     public func confirmProvisionalEnd(evidence: String = PromotionEngine.teardownEvidence) -> Decision? {
-        guard case .endingProvisional(let context, let leading, _, _, let observed, _) = phase else {
+        guard case .endingProvisional(let context, let leading, _, _, let observed, let states) = phase else {
             return nil
         }
         var confirmedBy = observed.subtracting([leading]).map { $0.rawValue }
         confirmedBy.append(evidence)
         let reason = EndingReason(leadingSignal: leading.rawValue, confirmedBy: confirmedBy.sorted())
+        concludedEvidence = Self.evidence(from: states)
         phase = .ended(context: context)
         return Decision(verdict: .ended(context: context, reason: reason))
     }
@@ -574,6 +610,7 @@ public final class PromotionEngine {
             if event.kind.isDefinitive {
                 let confirmedBy = Array(observed.subtracting([leading]).map { $0.rawValue }).sorted()
                 let reason = EndingReason(leadingSignal: leading.rawValue, confirmedBy: confirmedBy)
+                concludedEvidence = Self.evidence(from: states)
                 phase = .ended(context: context)
                 return Decision(verdict: .ended(context: context, reason: reason))
             }
