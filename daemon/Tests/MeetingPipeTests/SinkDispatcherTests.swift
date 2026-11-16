@@ -576,6 +576,114 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertTrue(driver.startedFiles.isEmpty, "pipeline must not run when ASR fails")
     }
 
+    // MARK: - SEC37: the held-end trim reads the sidecar fail-closed
+
+    private func eventRows(_ logs: URL) -> [[String: Any]] {
+        ((try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? "")
+            .split(separator: "\n")
+            .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+    }
+
+    private func withLogs(_ dir: URL) throws -> URL {
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        return logs
+    }
+
+    /// A `.full` job over an unreadable sidecar (a directory at the path, the dataless-iCloud
+    /// shape) writes no transcript, never transcribes, fails at the transcribe stage and says why.
+    func test_an_unreadable_sidecar_fails_a_full_job_with_no_transcript_SEC37() throws {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let logs = try withLogs(dir)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("clip.meta.json"), withIntermediateDirectories: true)
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForJobCompletion { completed.count }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("clip.json").path))
+        XCTAssertTrue(runner.calls.isEmpty, "the sidecar is read before the pass")
+        XCTAssertTrue(driver.startedFiles.isEmpty, "the pipeline is not invoked")
+        let failure = PipelineFailureSidecar.read(stem: "clip", in: dir)
+        XCTAssertEqual(failure?.stage, .transcribe)
+        XCTAssertTrue(failure?.reason.hasPrefix("Transcription did not finish") ?? false)
+        let row = eventRows(logs).first { $0["action"] as? String == "held_end_trim_unreadable" }
+        XCTAssertEqual(row?["kind"] as? String, "io")
+        XCTAssertNotNil(row?["code"])
+        XCTAssertEqual(eventRows(logs).filter { $0["action"] as? String == "held_end_trim_unreadable" }.count, 1)
+    }
+
+    /// A `.retranscribe` over an unreadable sidecar leaves the transcript it had byte for byte and
+    /// tells its caller it failed.
+    func test_an_unreadable_sidecar_fails_a_retranscribe_and_keeps_the_transcript_SEC37() throws {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let existing = Data(#"{"segments": [], "kept": true}"#.utf8)
+        try existing.write(to: dir.appendingPathComponent("clip.json"))
+        try Data("not json".utf8).write(to: dir.appendingPathComponent("clip.meta.json"))
+
+        var landed: Result<Void, Error>?
+        dispatcher.enqueueRetranscribe(file: wav) { landed = $0 }
+        waitForJobCompletion { landed == nil ? 0 : 1 }
+
+        guard case .failure(let error)? = landed else { return XCTFail("expected a failure") }
+        XCTAssertEqual((error as? HeldEndTrim.UnreadableSidecar)?.kind, .parse)
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("clip.json")), existing)
+        XCTAssertTrue(driver.finalizedFiles.isEmpty)
+        XCTAssertNil(PipelineFailureSidecar.read(stem: "clip", in: dir), "a failed re-transcribe marks nothing")
+    }
+
+    /// A readable trim still cuts the transcript and logs the exclusion.
+    func test_a_readable_trim_still_cuts_the_transcript_SEC37() throws {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let logs = try withLogs(dir)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+        try Data(#"{"held_end_trim_sec": 0.5}"#.utf8).write(to: dir.appendingPathComponent("clip.meta.json"))
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+
+        let decoded = try JSONDecoder().decode(
+            TranscriptSidecar.self, from: Data(contentsOf: dir.appendingPathComponent("clip.json"))
+        )
+        XCTAssertEqual(decoded.segments.first?.end, 0.5)
+        XCTAssertTrue(eventRows(logs).contains { $0["action"] as? String == "held_end_excluded" })
+    }
+
+    /// No sidecar at all is no trim: the whole transcript is written.
+    func test_no_sidecar_writes_the_full_transcript_SEC37() throws {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+
+        let decoded = try JSONDecoder().decode(
+            TranscriptSidecar.self, from: Data(contentsOf: wav.deletingPathExtension().appendingPathExtension("json"))
+        )
+        XCTAssertEqual(decoded.segments.first?.end, 1.0)
+    }
+
     // MARK: - SEC16: a failed redaction holds the meeting back
 
     private func makeHeldBackDispatcher(

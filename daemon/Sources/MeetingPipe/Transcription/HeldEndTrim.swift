@@ -13,14 +13,39 @@ enum HeldEndTrim {
     /// The `<stem>.meta.json` key. Python reads it as informational (`mp.workflow`).
     static let metaKey = "held_end_trim_sec"
 
-    /// The suggested trim recorded beside `audio`, or nil when there is none.
-    static func trimSeconds(forAudio audio: URL) -> Double? {
-        let stem = MeetingStore.stem(of: audio)
-        let meta = audio.deletingLastPathComponent().appendingPathComponent("\(stem).meta.json")
-        guard let data = try? Data(contentsOf: meta),
-              let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        else { return nil }
-        return trimSeconds(meta: dict)
+    /// What `<stem>.meta.json` says about a trim, in the three outcomes SEC25 gave the sidecar.
+    enum Lookup: Equatable {
+        /// No sidecar, or one with no trim: transcribe every word.
+        case none
+        case trim(Double)
+        /// The sidecar is there and could not be read or parsed. Never "no trim" (SEC37): a
+        /// dataless iCloud sidecar would otherwise put the post-call tail into `<stem>.json`.
+        case unreadable(kind: MeetingMetaRead.FailureKind, domain: String, code: Int)
+    }
+
+    /// The suggested trim recorded beside `audio`, read through `MeetingMetaRead` like every
+    /// other sidecar reader that decides what leaves the machine or the transcript.
+    static func trimSeconds(forAudio audio: URL) -> Lookup {
+        switch MeetingMetaRead.load(stem: MeetingStore.stem(of: audio), in: audio.deletingLastPathComponent()) {
+        case .absent:
+            return .none
+        case .loaded(let meta):
+            return trimSeconds(meta: meta).map(Lookup.trim) ?? .none
+        case .unreadable(let kind, let domain, let code):
+            return .unreadable(kind: kind, domain: domain, code: code)
+        }
+    }
+
+    /// SEC37: the job failure for an unreadable sidecar. Opens with a prefix
+    /// `FailurePresentation.isValidation` already knows, so the Library row shows this text.
+    struct UnreadableSidecar: LocalizedError, Equatable {
+        let kind: MeetingMetaRead.FailureKind
+        let domain: String
+        let code: Int
+
+        var errorDescription: String? {
+            "Transcription did not finish: this meeting's settings file could not be read, so the end of the call could not be left out. Retry once it is available; it may still be downloading from iCloud."
+        }
     }
 
     static func trimSeconds(meta: [String: Any]) -> Double? {

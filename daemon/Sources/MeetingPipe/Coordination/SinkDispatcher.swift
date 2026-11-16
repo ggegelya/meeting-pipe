@@ -503,6 +503,20 @@ final class SinkDispatcher: @unchecked Sendable {
             "engine": runner.backendName,
         ])
         do {
+            // SEC37: read the trim before the pass, so a dataless sidecar costs no ASR run and the
+            // job fails through the catch below with no `<stem>.json` written. Unreadable is never
+            // "no trim": that would put the post-call tail in the transcript every later
+            // summarize reads.
+            let trim = HeldEndTrim.trimSeconds(forAudio: job.file)
+            if case .unreadable(let kind, let domain, let code) = trim {
+                Log.event(category: "transcription", action: "held_end_trim_unreadable", attributes: [
+                    "file": job.file.lastPathComponent,
+                    "kind": kind.rawValue,
+                    "domain": domain,
+                    "code": code,
+                ])
+                throw HeldEndTrim.UnreadableSidecar(kind: kind, domain: domain, code: code)
+            }
             var sidecar = try await runner.transcribe(wavURL: job.file, languageHint: languageHint)
             // UX69: the pass can also finish in the moments after the click, with
             // nothing left to throw from. Checking here, before anything is
@@ -527,7 +541,7 @@ final class SinkDispatcher: @unchecked Sendable {
             // began, so the summary and every sink see the meeting and not the minutes after it.
             // A re-transcribe honours it too until the owner restores the tail. Below the commit
             // point so an abandoned pass's late return logs no `held_end_excluded` row.
-            if let trimAt = HeldEndTrim.trimSeconds(forAudio: job.file) {
+            if case .trim(let trimAt) = trim {
                 sidecar = HeldEndTrim.apply(sidecar, at: trimAt)
                 Log.event(category: "transcription", action: "held_end_excluded", attributes: [
                     "file": job.file.lastPathComponent,

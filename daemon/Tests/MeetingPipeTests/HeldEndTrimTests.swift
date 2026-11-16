@@ -62,8 +62,32 @@ final class HeldEndTrimTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         try #"{"held_end_trim_sec": 61}"#.write(to: dir.appendingPathComponent("20261024-1000.meta.json"), atomically: true, encoding: .utf8)
-        XCTAssertEqual(HeldEndTrim.trimSeconds(forAudio: dir.appendingPathComponent("20261024-1000.wav")), 61)
-        XCTAssertNil(HeldEndTrim.trimSeconds(forAudio: dir.appendingPathComponent("20261024-1100.wav")))
+        XCTAssertEqual(HeldEndTrim.trimSeconds(forAudio: dir.appendingPathComponent("20261024-1000.wav")), .trim(61))
+        XCTAssertEqual(HeldEndTrim.trimSeconds(forAudio: dir.appendingPathComponent("20261024-1100.wav")), HeldEndTrim.Lookup.none)
+    }
+
+    /// SEC37: garbage bytes are unreadable, never "no trim".
+    func test_an_unparseable_sidecar_is_unreadable_not_no_trim_SEC37() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("held-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data([0xFF, 0x00, 0x7B]).write(to: dir.appendingPathComponent("20261024-1000.meta.json"))
+        guard case .unreadable(let kind, _, _) = HeldEndTrim.trimSeconds(forAudio: dir.appendingPathComponent("20261024-1000.wav")) else {
+            return XCTFail("expected unreadable")
+        }
+        XCTAssertEqual(kind, .parse)
+    }
+
+    /// SEC37: an I/O failure with the path present (a directory standing in for the file) is
+    /// unreadable, the shape of a dataless iCloud sidecar.
+    func test_an_io_unreadable_sidecar_is_unreadable_not_no_trim_SEC37() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("held-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("20261024-1000.meta.json"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        guard case .unreadable(let kind, _, _) = HeldEndTrim.trimSeconds(forAudio: dir.appendingPathComponent("20261024-1000.wav")) else {
+            return XCTFail("expected unreadable")
+        }
+        XCTAssertEqual(kind, .io)
     }
 
     func test_the_caption_counts_the_trimmed_minutes_rounding_up() {
