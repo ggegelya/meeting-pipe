@@ -1573,43 +1573,18 @@ final class MeetingRecorder {
     @MainActor
     private func persistAfterMerge(final: URL, producedUsableFinal: Bool, spanSec: Double) {
         // Persist the muted-span timeline for the offline redactor (TECH-MIC4). Close any open
-        // span first (an off-record span still active at stop auto-closes here). `.captureFirstRedact`
-        // writes the whole timeline; default `.captureFirst` keeps the full mic with no redaction
-        // (TECH-MIC9) EXCEPT that a manual off-record span is explicit intent, so a manual-only
-        // timeline is written for it (MIC14); the regulated gate removed muted audio in real time,
-        // so it writes nothing. Skipped when no final was produced.
+        // span first (an off-record span still active at stop auto-closes here). Which spans a
+        // mode keeps is `MuteTimelinePersistence`'s one rule, shared with the termination flush.
+        // REC34: written whether or not the merge produced a final. The file is keyed by stem, so
+        // a failed or wedged merge leaves it beside the kept intermediates and the orphan sweep
+        // recovers the stem as redact-then-process instead of quarantining it.
+        // SEC16: a failed write keeps the capture-mode marker below, so the redactor sees a
+        // redaction-opt-in recording with no timeline and fails closed instead of reading it as
+        // one with nothing to cut.
         muteTimeline.finalize()
-        let hasFinal = FileManager.default.fileExists(atPath: final.path)
-        // SEC16: only a timeline that landed is logged as written. A failed write keeps the
-        // capture-mode marker below, so the redactor sees a redaction-opt-in recording with no
-        // timeline and fails closed instead of reading it as one with nothing to cut.
-        var timelineWriteFailed = false
-        if captureMode == .captureFirstRedact, hasFinal {
-            if MuteTimelineFile.write(spans: muteTimeline.spans, forFinal: final) {
-                Log.event(category: "recorder", action: "mute_timeline_written", attributes: [
-                    "file": final.lastPathComponent,
-                    "muted_spans": muteTimeline.spans.count,
-                ])
-            } else {
-                timelineWriteFailed = true
-            }
-        } else if captureMode == .captureFirst, hasFinal, muteTimeline.hasManualSpan {
-            let manualSpans = muteTimeline.spans.filter { $0.source == .manual }
-            if MuteTimelineFile.write(spans: manualSpans, forFinal: final) {
-                Log.event(category: "recorder", action: "mute_timeline_written", attributes: [
-                    "file": final.lastPathComponent,
-                    "manual_spans": manualSpans.count,
-                    "source": "manual",
-                ])
-            } else {
-                timelineWriteFailed = true
-            }
-        }
-        if timelineWriteFailed {
-            Log.event(category: "recorder", action: "mute_timeline_write_failed", attributes: [
-                "file": final.lastPathComponent,
-            ])
-        }
+        let timelineWriteFailed = MuteTimelinePersistence.persist(
+            muteTimeline, mode: captureMode, forFinal: final, path: .stop
+        ) == .failed
         // Clean finish only: drop the start-time capture-mode marker (orphan
         // recovery needs it to quarantine a redaction-opt-in recording whose
         // merge failed, so keep it when no usable final was produced, and the
@@ -1714,6 +1689,9 @@ final class MeetingRecorder {
         // cap for the same reason: the threads go with the process inside the 9 s ceiling.
         let revertVoiceProcessing = voiceProcessingEnabledForSession
         voiceProcessingEnabledForSession = false
+        // REC34: the mute timeline may be read only once the tap that feeds it on the render
+        // thread is known to be gone, which is a teardown that ran and came back clean.
+        var tapIsGone = false
         if abandonedCalls.isExhausted {
             Log.writeLine("recorder", "WARN: skipping the audio engine teardown at termination: past the abandoned-call cap")
         } else {
@@ -1724,6 +1702,10 @@ final class MeetingRecorder {
                     _ = try? engine.inputNode.setVoiceProcessingEnabled(false)
                 } as @Sendable () -> Void) : nil
             )
+            // A device recovery already running is not drained here (only `stop()` awaits it), and
+            // it re-installs the tap on a background thread, so its being in flight means the tap
+            // may come back after this clean teardown.
+            tapIsGone = teardown.isClean && deviceRecovery.recoveryTask == nil
             if !teardown.isClean {
                 Log.writeLine("recorder", "WARN: audio engine teardown timed out at termination (\(teardown.timedOutSteps.joined(separator: ","))) - draining the writers anyway")
                 Log.event(category: "recorder", action: "engine_teardown_timed_out", attributes: [
@@ -1731,6 +1713,23 @@ final class MeetingRecorder {
                     "steps": teardown.timedOutSteps,
                 ])
             }
+        }
+
+        // REC34: persist the mute timeline before the writer drains, so a slow drain inside the
+        // quit ceiling cannot starve it. It used to be dropped here, so a quit during an
+        // off-the-record recording was quarantined at the next launch rather than redacted. A
+        // teardown that timed out or was skipped, or a device recovery still in flight, may leave
+        // the tap writing to the timeline on the render thread, so on those branches nothing is
+        // read and recovery fails closed.
+        if tapIsGone {
+            muteTimeline.finalize()
+            _ = MuteTimelinePersistence.persist(muteTimeline, mode: captureMode, forFinal: final, path: .termination)
+        } else if captureMode.capturesLosslessly {
+            Log.writeLine("recorder", "WARN: mute timeline not written at termination: the engine teardown did not finish cleanly, so the tap may still be feeding it")
+            Log.event(category: "recorder", action: "mute_timeline_write_skipped", attributes: [
+                "file": final.lastPathComponent,
+                "path": MuteTimelinePersistence.Path.termination.rawValue,
+            ])
         }
 
         // Drain pending buffers to disk, then close the files so their headers

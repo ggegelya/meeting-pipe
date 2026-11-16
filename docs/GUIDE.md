@@ -103,7 +103,7 @@ Otherwise, press `⌃⌥M` again, click **Stop recording** on the recording pane
 
 After Stop, the Mac transcribes the audio, writes the summary, and publishes it. You get a notification when it is done, and the Library row moves through Processing to Ready on its own. While it works, the row says which part it is on (**Transcribing** while the Mac is turning the audio into words, then **Summarizing** and **Publishing**) and carries a **Cancel** beside it the whole time, from the moment it starts rather than a minute in. Stopping it is safe at any point: nothing is reported as an error, and the meeting stays one click from running again.
 
-Finishing a recording takes a second or two. If it ever takes much longer, you get a notification saying so rather than a row that quietly sits there; the recording itself is safe on disk either way, and quitting the app is always allowed, including mid-recording. Whatever was captured is picked up and finished the next time the app starts.
+Finishing a recording takes a second or two. If it ever takes much longer, you get a notification saying so rather than a row that quietly sits there; the recording itself is safe on disk either way, and quitting the app is always allowed, including mid-recording. Whatever was captured is picked up and finished the next time the app starts. That usually includes the off-the-record stretches, which are still cut out. When MeetingPipe cannot be sure they will be, for example after a crash or a force quit, or a quit that could not finish cleanly or came while the recording was still being finished, a recording with an off-the-record moment is kept aside in MeetingPipe's originals folder instead of being processed, and a notification says so.
 
 ---
 

@@ -2,9 +2,9 @@
 id: REC34
 title: The mute timeline is written only after a successful stop-time merge, so a quit or a failed merge quarantines any off-the-record recording instead of redacting it
 category: Recording
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). The in-memory mute timeline reaches disk only from persistAfterMerge when a final exists, so a menu Quit, a SIGTERM or a failed or wedged stop-time merge leaves redaction intent with no timeline and orphan recovery quarantines the whole recording, contrary to GUIDE's quit promise; not seen in the field (1 off-the-record recording in six weeks, no launch inside a recording). Write the timeline keyed by stem in the termination flush and on a failed merge, and pin quit-then-recover as redact-and-enqueue.
+comment: All four items shipped 2026-11-17: MuteTimelinePersistence is the one span rule, the termination flush writes the timeline after a clean teardown (mute_timeline_write_skipped otherwise), the stop path writes it with or without a final, path attribute on the events, GUIDE quit copy. Owner walkthrough below is optional; owner to close or keep it.
 ---
 
 # REC34: The mute timeline is written only after a successful stop-time merge, so a quit or a failed merge quarantines any off-the-record recording instead of redacting it
@@ -61,3 +61,13 @@ Also seen at filing: `restoreMetaSidecar` still runs before the move, so a `<ste
 1. [session] Confirm the installed build is newer than the landing commit.
 2. [owner] Start a short test recording, press the off-the-record hotkey for about ten seconds and press it again, then pick Quit MeetingPipe from the menu bar while still recording. Reopen the app if launch at login did not.
 3. [session] Check `events.jsonl` for `intermediates_flushed_for_termination`, then on relaunch `mute_timeline_written` with `path` `termination`, `orphan_recording_recovered` for the stem, `mute_redacted`, and no `orphan_quarantined`. Pass: the meeting appears in the Library and its transcript has nothing in the off-the-record span.
+
+## Progress (2026-11-17)
+
+Shipped in one commit. Not set to `owner-verify`: a session may not, and the walkthrough above is a live quit during a real recording, which only the owner can choose to run.
+
+Deviation from the acceptance list: `MeetingRecorder` needs a live audio engine to run `flushIntermediatesForTermination` or `stop()`, and no test in the suite drives either. So the two call sites are pinned by source fences in `MuteTimelineAtQuitREC34Tests` (the flush writes only inside `if tapIsGone`, set from `teardown.isClean`, before the writer drain, and reads the timeline nowhere else; `persistAfterMerge` has no final-exists gate and still keeps `.capturemode` on a failed merge), and the rule they share (`MuteTimelinePersistence`) is driven directly for every mode, the failed write and the path attribute. The quit-then-recover case runs for real: the termination write, `OrphanRecordingRecovery.recover` landing the stem in `ready` with no `orphan_quarantined`, and `MuteRedactor` zero-filling the manual span on the mic channel through ffmpeg.
+
+Not fixed, as the spec allows: `stop()` still reads `muteTimeline` after a `teardownEngine` that timed out. The helper does not make it trivial, because `stop()`'s teardown does not report cleanliness back to `persistAfterMerge`; it is the same render-thread read the termination path now avoids.
+
+An Opus review found one fail-open the spec's gate missed: the termination flush cancels queued device recoveries but does not await one already running, and that recovery re-installs the tap on a background thread, so a clean teardown alone did not prove the tap was gone. The write now also requires `deviceRecovery.recoveryTask == nil`; otherwise it is skipped and the recording recovers fail-closed as before. The GUIDE's quit sentence was tightened to say a quit that cannot finish cleanly, or lands during Stopping, still keeps such a recording aside.

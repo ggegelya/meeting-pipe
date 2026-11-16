@@ -89,6 +89,71 @@ struct MuteTimeline: Equatable {
     }
 }
 
+/// The one rule for which spans a recording persists, and the write that follows it (REC34).
+/// `MeetingRecorder` calls it from both exits that can still read the timeline safely: the stop
+/// path (after the merge, whether or not the merge produced a final) and the termination flush
+/// (after a clean engine teardown). Before REC34 only a stop whose merge produced a final wrote
+/// it, so a quit or a failed merge left an off-the-record recording with no timeline and orphan
+/// recovery quarantined it instead of redacting it. The file is keyed by stem, so the final need
+/// not exist yet.
+enum MuteTimelinePersistence {
+    /// Which exit wrote it: the `path` attribute on `mute_timeline_written`,
+    /// `mute_timeline_write_failed` and `mute_timeline_write_skipped`.
+    enum Path: String {
+        case stop
+        case termination
+    }
+
+    enum Result: Equatable {
+        /// The mode keeps nothing: the regulated gate cut at capture, or default capture-first
+        /// with no off-the-record span.
+        case nothingToWrite
+        case written
+        /// The write failed. The caller keeps the start markers, so the redactor and orphan
+        /// recovery fail closed (SEC16).
+        case failed
+    }
+
+    /// The spans `mode` persists from a finalized timeline, or nil when it persists none.
+    /// `.captureFirstRedact` keeps every span; default `.captureFirst` keeps the full mic with no
+    /// redaction (TECH-MIC9) except a manual off-record span, which is explicit intent (MIC14);
+    /// `.regulatedGate` removed muted audio in real time.
+    static func spans(for mode: CaptureMode, from timeline: MuteTimeline) -> [MuteTimeline.Span]? {
+        switch mode {
+        case .captureFirstRedact:
+            return timeline.spans
+        case .captureFirst:
+            let manual = timeline.spans.filter { $0.source == .manual }
+            return manual.isEmpty ? nil : manual
+        case .regulatedGate:
+            return nil
+        }
+    }
+
+    /// Write what `mode` persists from `timeline` (already finalized) for `final`, and log it.
+    static func persist(
+        _ timeline: MuteTimeline, mode: CaptureMode, forFinal final: URL, path: Path
+    ) -> Result {
+        guard let spans = spans(for: mode, from: timeline) else { return .nothingToWrite }
+        guard MuteTimelineFile.write(spans: spans, forFinal: final) else {
+            Log.event(category: "recorder", action: "mute_timeline_write_failed", attributes: [
+                "file": final.lastPathComponent,
+                "path": path.rawValue,
+            ])
+            return .failed
+        }
+        var attributes: [String: Any] = ["file": final.lastPathComponent, "path": path.rawValue]
+        if mode == .captureFirstRedact {
+            attributes["muted_spans"] = spans.count
+        } else {
+            attributes["manual_spans"] = spans.count
+            attributes["source"] = "manual"
+        }
+        Log.event(category: "recorder", action: "mute_timeline_written", attributes: attributes)
+        return .written
+    }
+}
+
 /// On-disk `<stem>.mute-timeline.json`: the muted spans recorded under
 /// capture-first mode (TECH-MIC4), read by the offline redactor (TECH-MIC5).
 /// Daemon-internal (the daemon both writes and reads it); not part of the
