@@ -20,7 +20,7 @@ Usage:
   scripts/valid1_check.py --diar          # only DIAR1: ASR+diarization latency (exit 1 on fail)
   scripts/valid1_check.py --attribution   # only the speaker-attribution coverage read
   scripts/valid1_check.py --der           # DIAR1 DER lower bound, from in-app corrections
-  scripts/valid1_check.py --der --reviewed 20260716-113206 ...   # a real DER over meetings you reviewed fully
+  scripts/valid1_check.py --der --reviewed 20260101-120000 ...   # a DER over meetings you reviewed fully
   scripts/valid1_check.py --cleanup       # DIAR5: what the LLM speaker-cleanup pass changed, per segment
   scripts/valid1_check.py --owner-cluster --owner-name NAME   # DIAR11: the owner-cluster bar, before
   scripts/valid1_check.py --owner-cluster --owner-name NAME --reselect   # ... and after the new pick

@@ -52,8 +52,8 @@ def _seg(speaker, start, end, text="x"):
 
 def test_channel_user_speaker_gets_the_enrolled_name():
     segs = [_seg(USER_SPEAKER, 0, 2), _seg(OTHER_SPEAKER, 2, 4), _seg(USER_SPEAKER, 4, 5)]
-    out = label_me_speaker(segs, "Heorhii")
-    assert [s["speaker"] for s in out] == ["Heorhii", OTHER_SPEAKER, "Heorhii"]
+    out = label_me_speaker(segs, "Avery")
+    assert [s["speaker"] for s in out] == ["Avery", OTHER_SPEAKER, "Avery"]
 
 
 def test_channel_user_wins_even_when_talking_less():

@@ -56,6 +56,7 @@ script is the mechanical reader.
     python3 scripts/truth_fences.py links      # doc links + run-on entries only
     python3 scripts/truth_fences.py backlog    # task headers + INDEX.md freshness only
     python3 scripts/truth_fences.py blockers   # OBS7: main-thread blockers in view/controller files only
+    python3 scripts/truth_fences.py personal   # HYG21: roster names / library stems in tests and scripts (owner machine)
 
 Stdlib only (tomllib, ast, re), so CI can run it without installing anything.
 
@@ -1055,8 +1056,120 @@ def check_blockers(
     return fence.report()
 
 
+# --------------------------------------------------------------------------
+# Fence 7 (HYG21): the owner's people and meetings stay out of tests and scripts
+# --------------------------------------------------------------------------
+
+# Where a roster name or the owner's label may not appear (as a whole word). One constant, so
+# widening the fence to `daemon/` or the docs is a one-line change.
+PERSONAL_NAME_PATHS = ("pipeline/", "scripts/")
+# Where a library stem may not appear. Narrower: docs cite real stems as measurements on purpose.
+PERSONAL_STEM_PATHS = ("pipeline/tests/", "scripts/")
+STEM = re.compile(r"\b20\d{6}-\d{6}\b")
+DEFAULT_ROSTER = Path("~/.config/meeting-pipe/roster.json").expanduser()
+DEFAULT_CONFIG = Path("~/.config/meeting-pipe/config.toml").expanduser()
+DEFAULT_LIBRARY = Path("~/Documents/Meetings/raw").expanduser()
+
+
+def personal_sources(
+    roster: Path, config: Path, library: Path | None
+) -> tuple[list[tuple[str, str]], set[str], bool]:
+    """(labelled name tokens, library stems, any source present). Read from the owner's own
+    files, never from the repo: a committed denylist of names would commit the names."""
+    import json
+
+    found = False
+    raw: list[tuple[str, str]] = []
+    if roster.is_file():
+        found = True
+        try:
+            people = json.loads(roster.read_text(encoding="utf-8")).get("people") or []
+        except (OSError, ValueError, AttributeError):
+            people = []
+        for k, person in enumerate(people, 1):
+            if isinstance(person, dict) and isinstance(person.get("name"), str):
+                raw.append((f"roster name #{k}", person["name"]))
+    output_dir: Path | None = None
+    if config.is_file():
+        found = True
+        try:
+            cfg = tomllib.loads(config.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            cfg = {}
+        label = (cfg.get("summarization") or {}).get("user_label")
+        if isinstance(label, str):
+            raw.append(("user label", label))
+        configured = (cfg.get("recording") or {}).get("output_dir")
+        if isinstance(configured, str) and configured:
+            output_dir = Path(configured).expanduser()
+    lib = library or output_dir or DEFAULT_LIBRARY
+    stems: set[str] = set()
+    if lib.is_dir():
+        found = True
+        stems = {m.group(0) for p in lib.iterdir() if (m := STEM.match(p.name))}
+    # Whole words of three letters or more: a first name alone is how the leak looked.
+    names = [(tag, tok) for tag, full in raw for tok in re.findall(r"[^\W\d_]{3,}", full)]
+    return names, stems, found
+
+
+def personal_hits(
+    root: Path, files: list[str], names: list[tuple[str, str]], stems: set[str]
+) -> list[str]:
+    """`file:line: <which source>` for every hit. Never the matched text, so the fence's own
+    output carries no name. Pure over the given file list."""
+    patterns = [(tag, re.compile(r"(?<![^\W_])" + re.escape(tok) + r"(?![^\W_])", re.IGNORECASE))
+                for tag, tok in names]
+    out: list[str] = []
+    for rel in files:
+        in_names = rel.startswith(PERSONAL_NAME_PATHS)
+        in_stems = rel.startswith(PERSONAL_STEM_PATHS)
+        if not (in_names or in_stems):
+            continue
+        try:
+            text = (root / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            if in_names:
+                for tag, pat in patterns:
+                    if pat.search(line):
+                        out.append(f"{rel}:{n}: {tag}")
+            if in_stems and stems:
+                if any(m.group(0) in stems for m in STEM.finditer(line)):
+                    out.append(f"{rel}:{n}: library stem")
+    return out
+
+
+def _tracked_files(root: Path) -> list[str]:
+    import subprocess
+
+    try:
+        res = subprocess.run(["git", "-C", str(root), "ls-files"], capture_output=True, text=True, check=True)
+        return res.stdout.splitlines()
+    except (OSError, subprocess.CalledProcessError):
+        return [str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()]
+
+
+def check_personal(
+    root: Path = REPO,
+    roster: Path = DEFAULT_ROSTER,
+    config: Path = DEFAULT_CONFIG,
+    library: Path | None = None,
+) -> bool:
+    """An owner-machine check by design: CI has no roster, config or library and skips."""
+    fence = Fence("personal names and stems")
+    names, stems, found = personal_sources(roster, config, library)
+    if not found:
+        print("  SKIP: personal names and stems (no roster, config or library on this machine)")
+        return True
+    for hit in personal_hits(root, _tracked_files(root), names, stems):
+        fence.fail(f"{hit}: use a synthetic name or stem in fixtures and examples (HYG21)")
+    return fence.report()
+
+
 def main(argv: list[str]) -> int:
-    which = argv[0] if argv else "both"
+    which = argv[0] if argv and not argv[0].startswith("--") else "both"
+    flags = dict(zip(argv[1::2], argv[2::2])) if argv and not argv[0].startswith("--") else dict(zip(argv[::2], argv[1::2]))
     print(f"CI5 truth fences ({which})")
     ok = True
     if which in ("both", "config"):
@@ -1071,8 +1184,15 @@ def main(argv: list[str]) -> int:
         ok &= check_backlog()
     if which in ("both", "blockers"):
         ok &= check_blockers()
-    if which not in ("both", "config", "events", "claude", "links", "backlog", "blockers"):
-        print("usage: truth_fences.py [both|config|events|claude|links|backlog|blockers]", file=sys.stderr)
+    if which in ("both", "personal"):
+        ok &= check_personal(
+            roster=Path(flags.get("--roster", DEFAULT_ROSTER)).expanduser(),
+            config=Path(flags.get("--config", DEFAULT_CONFIG)).expanduser(),
+            library=Path(flags["--library"]).expanduser() if "--library" in flags else None,
+        )
+    if which not in ("both", "config", "events", "claude", "links", "backlog", "blockers", "personal"):
+        print("usage: truth_fences.py [both|config|events|claude|links|backlog|blockers|personal]"
+              " [--roster F] [--config F] [--library D]", file=sys.stderr)
         return 2
     return 0 if ok else 1
 

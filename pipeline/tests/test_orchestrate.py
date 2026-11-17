@@ -319,13 +319,13 @@ def test_finalize_names_nobody_me_when_the_user_stayed_silent(tmp_path: Path, mo
         lambda segments, w: [{**s, "speaker": "speaker_other"} for s in segments],
     )
     out = finalize_streamed_transcript(
-        wav, streamed, user_label="Heorhii",
+        wav, streamed, user_label="Avery",
         voiceprint_store=store, roster_store=RosterStore(tmp_path / "roster.json"),
     )
 
     data = json.loads(out["json"].read_text(encoding="utf-8"))
     speakers = [s["speaker"] for s in data["segments"]]
-    assert "Heorhii" not in speakers
+    assert "Avery" not in speakers
     assert speakers == ["THEM-A", "THEM-B"]
     # An absent owner must not have their voiceprint updated from a stranger.
     assert store.meetings() == 1

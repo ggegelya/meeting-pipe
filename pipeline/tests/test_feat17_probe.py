@@ -35,7 +35,7 @@ probe = _load()
 # --- binning -----------------------------------------------------------------
 
 def test_a_named_voice_is_not_a_decline():
-    assert probe.classify(MatchResult("Anisha", None, 0.91)) == "named"
+    assert probe.classify(MatchResult("Casey", None, 0.91)) == "named"
 
 
 def test_no_candidates_is_its_own_bin():
@@ -62,9 +62,9 @@ def test_a_decline_over_the_floor_with_no_suggestion_is_margin_blocked():
 
 def test_the_bins_are_exhaustive_and_exclusive():
     cases = [
-        MatchResult("Rana", None, 0.9),
+        MatchResult("Emery", None, 0.9),
         MatchResult(None, None, None),
-        MatchResult(None, "Yash", 0.55),
+        MatchResult(None, "Drew", 0.55),
         MatchResult(None, None, 0.2),
         MatchResult(None, None, 0.7),
     ]

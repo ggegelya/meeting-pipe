@@ -2,9 +2,9 @@
 id: HYG21
 title: Committed pipeline tests and docs name the people in meetings they describe as real, and nothing stops the next one
 category: Hygiene
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). test_valid1_check.py fixtures carry four participant first names beside a stem the docstring calls "the real ... failure", plus the owner's first name in three pipeline tests and three names with measured voice similarities in pipeline/docs/gotchas.md (G052; the same names reach 43 tracked files repo-wide). Synthetic names and stems under pipeline/ and scripts/, and an owner-machine truth fence that reads the names from the roster and config, never from the repo. [Spec](./HYG21.md)
+comment: Shipped 2026-11-18 - synthetic names and stems in the pipeline tests, scripts/valid1_check.py and pipeline/docs/gotchas.md, plus the owner-machine `truth_fences.py personal` fence (6 tests; passes on this Mac, failed on a planted library stem and was reverted). The roster file is absent on this Mac, so the name half has only run against injected rosters; the owner owes one run on the Mac that holds roster.json. The rest of the repo (daemon, CONVENTIONS, README) stays the owner's call per the spec.
 ---
 
 # HYG21: Committed pipeline tests and docs name the people in meetings they describe as real, and nothing stops the next one
