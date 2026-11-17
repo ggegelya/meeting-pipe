@@ -23,6 +23,7 @@ check() { if eval "$2"; then ok "$1"; else fail "$1"; fi; }
 ROOT="$(mktemp -d)"
 LISTS_BEFORE="$(security list-keychains -d user 2>/dev/null)"
 cleanup() {
+    [[ -n "${GITHUB_ACTIONS:-}" ]] && eval "security list-keychains -d user -s $LISTS_BEFORE" 2>/dev/null
     for kc in "$ROOT"/*.keychain-db; do
         [[ -e "$kc" ]] && security delete-keychain "$kc" >/dev/null 2>&1
     done
@@ -51,11 +52,21 @@ check "the key is not open to any application" \
 check "its ACL lists an application list for sign, not <null>" \
     'security dump-keychain -a "$KC_T" 2>/dev/null | awk "/class: 0x00000010/{f=1} f&&/applications \\([1-9]/{n=1} END{exit !n}"'
 cp /usr/bin/true "$ROOT/t"
+# macOS 15's codesign (the CI runner's) resolves the identity through the user's search list
+# even with --keychain, and reports "could not be found in the keychain" otherwise; this Mac's
+# does not. The runner is thrown away after the job, so there alone the scratch keychain joins
+# the list for the two signing checks and the list is put back straight after. Locally it is never touched.
+if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    eval "security list-keychains -d user -s \"\$KC_T\" $LISTS_BEFORE"
+fi
 check "codesign signs with it from the scratch keychain, prompt-free" \
     'codesign --force --sign "MeetingPipe Dev" --keychain "$KC_T" "$ROOT/t" >"$ROOT/codesign.out" 2>&1 \
         || { sed "s/^/        codesign: /" "$ROOT/codesign.out"; false; }'
 check "and the signature's leaf is the scratch certificate, not some other identity" \
     '[[ -n "$(cert_fp "$KC_T")" ]] && codesign -dvv "$ROOT/t" 2>&1 | grep -q "Authority=MeetingPipe Dev"'
+if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    eval "security list-keychains -d user -s $LISTS_BEFORE"
+fi
 acl "$KC_T"; rc=$?
 check "signing-key-acl.sh reports it as fine (exit 0)" '[[ $rc == 0 ]]'
 
