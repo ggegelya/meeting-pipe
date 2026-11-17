@@ -2528,4 +2528,170 @@ extension SinkDispatcherTests {
         XCTAssertTrue(rig.stalledPhases().isEmpty)
         XCTAssertFalse(rig.progress.contains { $0.stalled })
     }
+
+    // MARK: - PIPE46: a late return is an event, and the passes still out are counted
+
+    /// A temp wav under its own name. The events carry only the file name, and an earlier test's gate
+    /// opened at its tearDown can land a late return in whatever logs directory is current, so every
+    /// PIPE46 assertion filters on names no other test uses.
+    private func makeNamedWav(_ name: String) throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mp-sink-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let wav = dir.appendingPathComponent(name)
+        try Data().write(to: wav)
+        return wav
+    }
+
+    private func events(named action: String, in logs: URL, files: Set<String>) -> [[String: Any]] {
+        let url = logs.appendingPathComponent("events.jsonl")
+        return ((try? String(contentsOf: url, encoding: .utf8)) ?? "")
+            .split(separator: "\n")
+            .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            .filter { $0["action"] as? String == action && files.contains($0["file"] as? String ?? "") }
+    }
+
+    func test_a_stuck_pass_that_returns_late_is_recorded_and_changes_nothing_else() throws {
+        let driver = FakeDriver()
+        let stuckRunner = StuckRunner()
+        openAtTearDown.append(stuckRunner.gate)
+        let freshRunner = FakeRunner()
+        var built = 0
+        let stuck = try makeNamedWav("late-a.wav")
+        let second = try makeNamedWav("late-b.wav")
+        let mine: Set<String> = ["late-a.wav", "late-b.wav"]
+        defer {
+            for wav in [stuck, second] { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+            unsetenv("MEETINGPIPE_LOGS_DIR")
+        }
+        let logs = try isolatedLogs(stuck.deletingLastPathComponent())
+        let dispatcher = SinkDispatcher(
+            launcher: driver,
+            makeTranscriptionRunner: { built += 1; return built == 1 ? stuckRunner : freshRunner },
+            transcriptionDeadline: Self.shortDeadline
+        )
+        dispatcher.enqueue(file: stuck, summaryMode: .auto)
+        dispatcher.enqueue(file: second, summaryMode: .auto)
+        wait(for: [stuckRunner.started], timeout: 2)
+        waitForPipelineStart(driver)
+        XCTAssertTrue(events(named: "transcription_late_return", in: logs, files: mine).isEmpty, "nothing has returned yet")
+
+        // Long enough after the expiry that `seconds_after_deadline` survives its one-decimal rounding.
+        let aged = expectation(description: "the pass ages past its deadline")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { aged.fulfill() }
+        wait(for: [aged], timeout: 2)
+        stuckRunner.gate.open()
+        waitUntil { !self.events(named: "transcription_late_return", in: logs, files: mine).isEmpty }
+
+        let late = events(named: "transcription_late_return", in: logs, files: mine)
+        XCTAssertEqual(late.count, 1)
+        XCTAssertEqual(late.first?["phase"] as? String, "transcribe")
+        XCTAssertEqual(late.first?["file"] as? String, "late-a.wav")
+        XCTAssertGreaterThan(try XCTUnwrap(late.first?["seconds_after_deadline"] as? Double), 0)
+        XCTAssertEqual(driver.startedFiles, [second], "the late return starts no pipeline")
+        let transcript = stuck.deletingPathExtension().appendingPathExtension("json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: transcript.path), "and writes no <stem>.json")
+    }
+
+    func test_a_redaction_that_returns_late_is_recorded_with_the_redact_phase() throws {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        let stuck = try makeNamedWav("late-redact.wav")
+        let mine: Set<String> = ["late-redact.wav"]
+        defer {
+            try? FileManager.default.removeItem(at: stuck.deletingLastPathComponent())
+            unsetenv("MEETINGPIPE_LOGS_DIR")
+        }
+        let logs = try isolatedLogs(stuck.deletingLastPathComponent())
+        let gate = Gate()
+        openAtTearDown.append(gate)
+        let dispatcher = SinkDispatcher(
+            launcher: driver,
+            makeTranscriptionRunner: { runner },
+            redactor: { _, _ in await gate.wait(); return .notNeeded },
+            transcriptionDeadline: Self.shortDeadline
+        )
+        dispatcher.enqueue(file: stuck, summaryMode: .auto)
+        waitUntil { !self.events(named: "transcription_timed_out", in: logs, files: mine).isEmpty }
+
+        gate.open()
+        waitUntil { !self.events(named: "transcription_late_return", in: logs, files: mine).isEmpty }
+        XCTAssertEqual(events(named: "transcription_late_return", in: logs, files: mine).first?["phase"] as? String, "redact")
+        XCTAssertTrue(runner.calls.isEmpty, "a late redaction never reaches transcription")
+    }
+
+    func test_the_timeout_event_counts_the_abandoned_passes_still_out() throws {
+        let driver = FakeDriver()
+        let runners = [StuckRunner(), StuckRunner(), StuckRunner()]
+        runners.forEach { openAtTearDown.append($0.gate) }
+        var built = 0
+        let wavs = [try makeNamedWav("count-1.wav"), try makeNamedWav("count-2.wav"), try makeNamedWav("count-3.wav")]
+        let mine: Set<String> = ["count-1.wav", "count-2.wav", "count-3.wav"]
+        defer {
+            wavs.forEach { try? FileManager.default.removeItem(at: $0.deletingLastPathComponent()) }
+            unsetenv("MEETINGPIPE_LOGS_DIR")
+        }
+        let logs = try isolatedLogs(wavs[0].deletingLastPathComponent())
+        let dispatcher = SinkDispatcher(
+            launcher: driver,
+            makeTranscriptionRunner: { defer { built += 1 }; return runners[min(built, 2)] },
+            transcriptionDeadline: Self.shortDeadline
+        )
+        dispatcher.enqueue(file: wavs[0], summaryMode: .auto)
+        dispatcher.enqueue(file: wavs[1], summaryMode: .auto)
+        waitUntil(6) { self.events(named: "transcription_timed_out", in: logs, files: mine).count == 2 }
+        XCTAssertEqual(events(named: "transcription_timed_out", in: logs, files: mine).map { $0["abandoned_outstanding"] as? Int },
+                       [0, 1], "the second expiry finds the first pass still out")
+
+        // The first pass returns; a third expiry finds only the second still out, not both.
+        runners[0].gate.open()
+        waitUntil { !self.events(named: "transcription_late_return", in: logs, files: mine).isEmpty }
+        dispatcher.enqueue(file: wavs[2], summaryMode: .auto)
+        waitUntil(6) { self.events(named: "transcription_timed_out", in: logs, files: mine).count == 3 }
+        XCTAssertEqual(events(named: "transcription_timed_out", in: logs, files: mine).last?["abandoned_outstanding"] as? Int, 1)
+    }
+
+    /// Regression pin for what *can* be released: once an abandoned pass does return, nothing in the
+    /// dispatcher keeps the runner it replaced alive. (A pass that never returns keeps it, which is
+    /// the accepted cost the comment in `deadlineExpired` now spells out.)
+    func test_a_replaced_runner_is_released_once_its_abandoned_pass_returns() throws {
+        let driver = FakeDriver()
+        weak var first: StuckRunner?
+        var firstGate: Gate?
+        var firstStarted: XCTestExpectation?
+        let freshRunner = FakeRunner()
+        var built = 0
+        let stuck = try makeNamedWav("weak-a.wav")
+        let second = try makeNamedWav("weak-b.wav")
+        let mine: Set<String> = ["weak-a.wav", "weak-b.wav"]
+        defer {
+            for wav in [stuck, second] { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+            unsetenv("MEETINGPIPE_LOGS_DIR")
+        }
+        let logs = try isolatedLogs(stuck.deletingLastPathComponent())
+        let dispatcher = SinkDispatcher(
+            launcher: driver,
+            makeTranscriptionRunner: {
+                built += 1
+                guard built == 1 else { return freshRunner }
+                let runner = StuckRunner()
+                first = runner
+                firstGate = runner.gate
+                firstStarted = runner.started
+                return runner
+            },
+            transcriptionDeadline: Self.shortDeadline
+        )
+        if let gate = firstGate { openAtTearDown.append(gate) }
+        dispatcher.enqueue(file: stuck, summaryMode: .auto)
+        dispatcher.enqueue(file: second, summaryMode: .auto)
+        wait(for: [try XCTUnwrap(firstStarted)], timeout: 2)
+        waitForPipelineStart(driver)
+        openAtTearDown.append(try XCTUnwrap(firstGate))
+
+        try XCTUnwrap(firstGate).open()
+        waitUntil { !self.events(named: "transcription_late_return", in: logs, files: mine).isEmpty }
+        waitUntil { first == nil }
+        XCTAssertNil(first, "the replaced runner is released when its pass returns")
+    }
 }

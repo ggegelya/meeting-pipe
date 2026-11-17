@@ -157,7 +157,15 @@ def _on_sigterm(_signum: int, _frame: FrameType | None) -> NoReturn:
     which a re-raising handler would do the moment it landed inside `close()`'s
     wait on the server. Swapped for a Python no-op rather than `SIG_IGN`, because
     an ignored disposition is inherited across `exec` by every `ps`/`lsof` child
-    the unwind spawns. The daemon's SIGKILL after its grace stays the backstop.
+    the unwind spawns.
+
+    Which backstop applies depends on who is alive to enforce it (PIPE46). A SIGTERM
+    from the daemon while the app lives has the daemon's own SIGKILL 10 s (Cancel) or
+    30 s (the `runMP` watchdog) behind it. A SIGTERM that mp sends itself, from the
+    supervisor-EOF watcher or from the deadline timer, has nobody behind it, because
+    the app those two cover is gone, so `_terminate_self` arms `os._exit` first: a
+    `finally` that blocks, or a main thread inside a native call that never returns to
+    the eval loop, then ends at the grace instead of running forever.
     """
     signal.signal(signal.SIGTERM, _ignore_repeat_sigterm)
     raise SystemExit(EXIT_TERMINATED)
@@ -175,6 +183,36 @@ def _install_sigterm_handler() -> None:
 # Set by the daemon on the spawns it supervises (PIPE37): their stdin is a pipe
 # whose only write end the daemon holds, so EOF on it means the daemon is gone.
 SUPERVISED_ENV = "MP_SUPERVISED"
+
+# Set by the daemon on every spawn (PIPE46): the `runMP` timeout, in seconds. mp
+# arms its own timer for it plus `DEADLINE_SLACK_SEC`, so a spawn that outlives the
+# app keeps the ceiling the app's watchdog would have enforced.
+DEADLINE_ENV = "MP_DEADLINE_SEC"
+
+# How long an unwind gets once mp has signalled itself, before `os._exit`. The
+# 30 s the daemon's `runMP` watchdog allows between its SIGTERM and its SIGKILL,
+# so a self-signalled run is bounded the way a daemon-signalled one always was.
+# Module attributes, not literals at the use sites, so a test can shorten them.
+SELF_TERMINATE_GRACE_SEC = 30.0
+
+# Added to the daemon's timeout before mp's own deadline fires, so while the app
+# lives its watchdog is always first and this only ever acts on an orphan.
+DEADLINE_SLACK_SEC = 60.0
+
+
+def _terminate_self() -> None:
+    """SIGTERM the main thread, with a hard exit behind it (PIPE46).
+
+    The signal goes to the main thread so its blocking call is interrupted and
+    PIPE22's handler unwinds through every `finally`. The timer is the backstop the
+    daemon used to be: a daemon thread, so a clean unwind exits without waiting on
+    it, and `os._exit` skips whatever is blocking the interpreter."""
+    timer = threading.Timer(SELF_TERMINATE_GRACE_SEC, os._exit, args=(EXIT_TERMINATED,))
+    timer.daemon = True
+    timer.start()
+    main_ident = threading.main_thread().ident
+    if main_ident is not None:
+        signal.pthread_kill(main_ident, signal.SIGTERM)
 
 
 def _watch_supervisor_stdin() -> None:
@@ -195,15 +233,37 @@ def _watch_supervisor_stdin() -> None:
 
     Fails open: an unreadable stdin (`OSError`) means this run cannot be
     supervised, which is no reason to stop it.
+
+    PIPE46: the SIGTERM has a hard exit behind it (`_terminate_self`). The daemon's
+    own SIGKILL is the backstop for every other SIGTERM, and this is the one case
+    where the daemon is gone and cannot send it.
     """
     try:
         while os.read(0, 4096):
             pass
     except OSError:
         return
-    main_ident = threading.main_thread().ident
-    if main_ident is not None:
-        signal.pthread_kill(main_ident, signal.SIGTERM)
+    _terminate_self()
+
+
+def _start_deadline() -> None:
+    """Arm mp's own ceiling from the daemon's `runMP` timeout (PIPE46).
+
+    The daemon's watchdog is a timer inside the app, so it dies with the app, and
+    backup, restore, digest, actions and roster spawns are deliberately not
+    supervised (PIPE37): once the app is gone they had no bound at all. Popped, so
+    nothing this run spawns inherits it. A manual CLI run sets no key and is
+    unchanged, and an unreadable or non-positive value arms nothing."""
+    raw = os.environ.pop(DEADLINE_ENV, None)
+    try:
+        timeout = float(raw) if raw else 0.0
+    except ValueError:
+        return
+    if timeout <= 0:
+        return
+    timer = threading.Timer(timeout + DEADLINE_SLACK_SEC, _terminate_self)
+    timer.daemon = True
+    timer.start()
 
 
 def _start_supervision() -> None:
@@ -327,6 +387,7 @@ def main() -> int:
     _install_sigterm_handler()
     # After the handler, so the watcher's SIGTERM lands on it (PIPE37).
     _start_supervision()
+    _start_deadline()
     # OBS6: the daemon's Verbose logging toggle, before any subcommand logs.
     from .verbose import configure as _configure_verbose
     _configure_verbose()

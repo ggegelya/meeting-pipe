@@ -2,9 +2,9 @@
 id: PIPE46
 title: After PIPE36 and PIPE37: an abandoned transcription pass keeps its runner, models and audio resident, and quit signals supervised runs once with no backstop while other spawns go unsignalled
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). Code-derived, never seen in the field. An abandoned FluidAudio pass keeps its runner, its models and the meeting's whole sample array resident indefinitely if it never returns, and nothing records whether it does. In mp, `_on_sigterm` says "The daemon's SIGKILL after its grace stays the backstop", which is false once the daemon has quit. So a wedged unwind, or an unsupervised digest, actions, roster, backup or restore spawn, has no bound once the app is gone. Fix: a late-return event plus an outstanding-pass count, a hard exit after the supervisor EOF grace, and an mp-side deadline taken from runMP's timeout. The relaunch check stays rejected, as PIPE37 decided.
+comment: Shipped 2026-11-18, transcription_late_return and abandoned_outstanding events, mp hard-exits 30 s after a self-sent SIGTERM (supervisor EOF or deadline), and every spawn exports its runMP timeout so mp keeps its own ceiling when the app is gone. Owner still owes nothing a harness can check; a real wedged pass was never seen in the field.
 ---
 
 # PIPE46: After PIPE36 and PIPE37: an abandoned transcription pass keeps its runner, models and audio resident, and quit signals supervised runs once with no backstop while other spawns go unsignalled

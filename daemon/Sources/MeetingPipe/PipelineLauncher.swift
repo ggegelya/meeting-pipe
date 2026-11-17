@@ -791,6 +791,14 @@ final class PipelineLauncher: PipelineDriver {
     /// The environment variable that tells `mp` to watch its stdin (PIPE37).
     static let supervisedEnvKey = "MP_SUPERVISED"
 
+    /// The `runMP` timeout, in seconds, exported to every spawn (PIPE46). `mp` arms its own ceiling from
+    /// it (plus 60 s, so this app's watchdog is always first while the app lives), because that watchdog
+    /// is a timer in this process and dies with it: a backup, restore, digest, actions or roster spawn,
+    /// which PIPE37 deliberately leaves unsupervised, would otherwise have no bound once the app is gone.
+    /// Exported to the supervised spawns too, which a Quit signals once and a crash only closes the stdin
+    /// of; both are then bounded by the same hard exit in `mp`.
+    static let deadlineEnvKey = "MP_DEADLINE_SEC"
+
     /// Give `process` a stdin whose only write end this app holds, and tell
     /// `mp` to watch it (PIPE37). Returns that write end; keep it open for the
     /// child's lifetime. However this app ends (Quit, crash, SIGKILL, the
@@ -1438,7 +1446,7 @@ final class PipelineLauncher: PipelineDriver {
             return
         }
         let spawn = makeSpawn(mpPath, args: args, meeting: meeting, retain: retain,
-                              extraEnv: extraEnv, backendOverride: backendOverride)
+                              extraEnv: extraEnv, backendOverride: backendOverride, timeout: timeout)
         let p = spawn.process
         // TECH-UX5 / UX37: retained so Cancel can terminate it. UX50: the handle carries the cancel flag
         // with it, so the finish step reads this run's intent and not a later run's. PIPE37: and the
@@ -1511,7 +1519,8 @@ final class PipelineLauncher: PipelineDriver {
         meeting: URL?,
         retain: PipelineRunSlots.Slot,
         extraEnv: [String: String],
-        backendOverride: String?
+        backendOverride: String?,
+        timeout: TimeInterval
     ) -> MPSpawn {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: mpPath.shell)
@@ -1534,6 +1543,8 @@ final class PipelineLauncher: PipelineDriver {
         // writer. The flag tells `_configure_logging` to skip its own FileHandler, which used to put
         // every run-all record into the file twice.
         env[Self.pipelineLogOwnerKey] = Self.pipelineLogOwnerDaemon
+        // PIPE46: the ceiling `mp` keeps if this app is gone before the watchdog below fires.
+        env[Self.deadlineEnvKey] = String(Int(timeout.rounded(.up)))
         // PIPE37: a supervised spawn ends with this app however it ends.
         let supervisor = Self.isSupervised(args: args, meeting: meeting, retain: retain)
             ? Self.attachSupervisor(to: p, environment: &env) : nil

@@ -178,7 +178,22 @@ final class SinkDispatcher: @unchecked Sendable {
     private var activePhase: TranscriptionPhase = .redact
     /// Jobs the deadline gave up on (PIPE36). Their pass may still return, and every exit
     /// of `runDaemonTranscription` asks this first so a late return writes nothing.
-    private var abandonedJobs: Set<UUID> = []
+    private var abandonedJobs: [UUID: AbandonedPass] = [:]
+
+    /// What the deadline gave up on (PIPE46): when, in which phase, and whether the pass has since
+    /// come back. The only memory of an abandoned pass, since the pass itself holds the runner.
+    private struct AbandonedPass {
+        let at: DispatchTime
+        let phase: TranscriptionPhase
+        var returned = false
+    }
+
+    /// Transcribe-phase passes the deadline abandoned that have not returned (PIPE46). Each still holds
+    /// its runner, loaded models and the meeting's whole sample array; there is no cap and no refusal,
+    /// the failed job's own reason already tells the owner to quit and reopen if it repeats.
+    private var abandonedOutstanding: Int {
+        abandonedJobs.values.filter { $0.phase == .transcribe && !$0.returned }.count
+    }
 
     /// SEC36: the live global `modes.regulated_mode`, read only when a runner reports a missing
     /// speech model (the one moment the answer changes anything), so a warm cache never touches
@@ -971,7 +986,7 @@ final class SinkDispatcher: @unchecked Sendable {
 
     /// Whether `job` is still the active job and the deadline has not given up on it.
     private func isLive(_ job: ProcessingJob) -> Bool {
-        activeJob?.id == job.id && !abandonedJobs.contains(job.id)
+        activeJob?.id == job.id && abandonedJobs[job.id] == nil
     }
 
     /// The pass is about to record its outcome: if the job is still live, disarm its
@@ -987,6 +1002,19 @@ final class SinkDispatcher: @unchecked Sendable {
 
     private func logLateReturn(_ job: ProcessingJob) {
         Log.writeLine("daemon", "transcription returned after its deadline; discarded -> \(job.file.lastPathComponent)")
+        // PIPE46: a pass the deadline abandoned that comes back becomes an event, so "returned late"
+        // is distinguishable from "never returned" (the file-log line above is all there used to be),
+        // and the outstanding count drops. Every call site passes through here, the redaction path
+        // (PIPE45) included. A job that was merely cancelled or superseded is not an abandoned pass.
+        guard var pass = abandonedJobs[job.id], !pass.returned else { return }
+        pass.returned = true
+        abandonedJobs[job.id] = pass
+        let late = Double(DispatchTime.now().uptimeNanoseconds &- pass.at.uptimeNanoseconds) / 1_000_000_000
+        Log.event(category: "transcription", action: "transcription_late_return", attributes: [
+            "file": job.file.lastPathComponent,
+            "phase": pass.phase.rawValue,
+            "seconds_after_deadline": (late * 10).rounded() / 10,
+        ])
     }
 
     /// The deadline fired: fail the job, replace the runner if its pass was the stuck phase,
@@ -997,8 +1025,10 @@ final class SinkDispatcher: @unchecked Sendable {
             Double(DispatchTime.now().uptimeNanoseconds &- $0.uptimeNanoseconds) / 1_000_000_000
         } ?? 0
         disarmDeadline()
-        abandonedJobs.insert(job.id)
         let phase = activePhase
+        // Counted before this pass joins them: how many earlier ones are still out (PIPE46).
+        let outstanding = abandonedOutstanding
+        abandonedJobs[job.id] = AbandonedPass(at: DispatchTime.now(), phase: phase)
         let warm = runnerWarm
         let loc = SinkDispatcher.sidecarLocation(for: job)
         Log.writeLine("daemon", "transcription timed out (\(phase.rawValue)) -> \(job.file.lastPathComponent)")
@@ -1009,6 +1039,7 @@ final class SinkDispatcher: @unchecked Sendable {
             "elapsed_sec": (elapsed * 10).rounded() / 10,
             "phase": phase.rawValue,
             "runner_warm": warm,
+            "abandoned_outstanding": outstanding,
         ])
         // Best effort: a pass that honours cancellation stops; one wedged in CoreML or the
         // synchronous diarizer does not, which is why the runner is replaced below rather
@@ -1017,6 +1048,14 @@ final class SinkDispatcher: @unchecked Sendable {
         // Only a runner whose pass was in flight is suspect. A redact-phase expiry never
         // reached it, and rebuilding a healthy warm runner would only cost the next meeting
         // a cold model load.
+        //
+        // What the abandoned pass keeps (PIPE46, correcting PIPE36's "briefly doubled"): its
+        // runner, the `AsrManager` and `DiarizerManager` with their loaded models, and `samples`,
+        // the meeting's whole mono array (about 422 MB for 110 minutes, 690 MB for 3 hours,
+        // larger than the models), plus a cooperative-pool thread if it is wedged in the
+        // synchronous diarizer. None of it is freed until the pass returns, which a wedged CoreML
+        // call may never do, so it lasts until then or until the app exits. `abandonedOutstanding`
+        // counts the passes still out and `transcription_late_return` marks one coming back.
         if phase == .transcribe {
             transcriptionRunner.abandonInFlightPass()
             transcriptionRunner = makeTranscriptionRunner()

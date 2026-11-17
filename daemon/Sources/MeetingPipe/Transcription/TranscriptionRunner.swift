@@ -83,6 +83,12 @@ protocol TranscriptionRunner: AnyObject {
     /// return, because a wedged CoreML call cannot be stopped, so anything the runner owes the
     /// world for that pass (`FluidAudioRunner`'s REC20 memory row) is settled here instead of
     /// on a return that may never come or may come during the next job. Called on main.
+    ///
+    /// This releases nothing else (PIPE46). The stuck pass's frame still holds this runner, its
+    /// loaded models and the meeting's whole sample array (about 422 MB for 110 minutes), and for a
+    /// synchronous wedge a cooperative-pool thread, until the pass returns or the app exits. That is
+    /// the accepted cost of not being able to stop a CoreML call; `SinkDispatcher` counts the passes
+    /// still out (`abandoned_outstanding`) and records one coming back (`transcription_late_return`).
     func abandonInFlightPass()
 
     /// SEC36: the speech models this runner would have to fetch from the network to run a pass

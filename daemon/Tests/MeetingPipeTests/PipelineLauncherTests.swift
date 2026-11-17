@@ -1271,4 +1271,49 @@ extension PipelineLauncherTests {
         XCTAssertEqual(parsed, PipelineProgress(stage: "publish", elapsedSec: 7))
         XCTAssertNil(parsed?.stageElapsedSec)
     }
+
+    // MARK: - PIPE46: every spawn carries the deadline mp keeps if the app is gone
+
+    /// The environment a spawn started by `start` actually saw: a `/bin/sh` that dumps it and exits.
+    private func spawnedEnvironment(
+        _ start: (PipelineLauncher, @escaping (Result<Void, Error>) -> Void) -> Void
+    ) throws -> [String: String] {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dump = dir.appendingPathComponent("env.txt")
+        let launcher = PipelineLauncher(
+            invocation: { .init(shell: "/bin/sh", args: ["-c", "env > '\(dump.path)'"]) },
+            environment: ["PATH": "/usr/bin:/bin"],
+            reapOrphanedServer: {}
+        )
+        let done = expectation(description: "spawn ended")
+        start(launcher) { _ in done.fulfill() }
+        wait(for: [done], timeout: 10)
+        return Dictionary(
+            uniqueKeysWithValues: try String(contentsOf: dump, encoding: .utf8).split(separator: "\n").compactMap { line -> (String, String)? in
+                guard let eq = line.firstIndex(of: "=") else { return nil }
+                return (String(line[..<eq]), String(line[line.index(after: eq)...]))
+            })
+    }
+
+    func test_a_supervised_spawn_exports_the_deadline_beside_the_supervisor_flag() throws {
+        let wav = FileManager.default.temporaryDirectory.appendingPathComponent("m-\(UUID().uuidString).wav")
+        let env = try spawnedEnvironment { launcher, done in launcher.finalize(wav: wav, completion: done) }
+        XCTAssertEqual(env["MP_SUPERVISED"], "1")
+        XCTAssertEqual(env[PipelineLauncher.deadlineEnvKey], "300", "finalize's runMP timeout is 5 minutes")
+    }
+
+    func test_an_unsupervised_spawn_exports_the_deadline_and_still_gets_no_stdin_pipe() throws {
+        let digest = try spawnedEnvironment { launcher, done in launcher.digest(completion: done) }
+        XCTAssertEqual(digest[PipelineLauncher.deadlineEnvKey], "600")
+        XCTAssertNil(digest["MP_SUPERVISED"], "an unsupervised spawn is not given the stdin watch")
+
+        let backup = try spawnedEnvironment { launcher, done in
+            launcher.backup(dir: FileManager.default.temporaryDirectory, libraryBytes: 0, completion: done)
+        }
+        XCTAssertEqual(backup[PipelineLauncher.deadlineEnvKey],
+                       String(Int(PipelineLauncher.storageJobTimeout(bytes: 0).rounded(.up))))
+        XCTAssertNil(backup["MP_SUPERVISED"])
+    }
 }

@@ -482,3 +482,107 @@ def test_a_supervised_run_that_finishes_exits_cleanly(tmp_path: Path) -> None:
     assert proc.returncode == 0
     assert err == ""
     assert sentinel.read_text(encoding="utf-8") == "None"
+
+
+# --- the backstop mp owns once the daemon is gone (PIPE46) --------------------
+#
+# `_on_sigterm`'s docstring used to say "The daemon's SIGKILL after its grace stays
+# the backstop". On the supervisor-EOF path and on mp's own deadline there is no
+# daemon left to send it, so a `finally` that never returns ran forever.
+
+STUCK_FINALLY_CHILD = """
+import os, sys, time
+import mp.__main__ as entry
+import mp.logs_cmd
+
+entry.SELF_TERMINATE_GRACE_SEC = 0.5
+
+def stuck_main(argv):
+    try:
+        print("READY", flush=True)
+        time.sleep(300)
+    finally:
+        time.sleep(300)  # an unwind that never finishes
+    return 0
+
+mp.logs_cmd.main = stuck_main
+sys.argv = ["mp", "logs"]
+sys.exit(entry.main())
+"""
+
+
+def test_a_stuck_unwind_after_the_supervisor_leaves_is_ended_at_the_grace() -> None:
+    import time
+
+    proc = _start_child(STUCK_FINALLY_CHILD, SUPERVISED)
+    try:
+        started = time.monotonic()
+        _close_stdin(proc)
+        proc.wait(timeout=10)
+        elapsed = time.monotonic() - started
+    except BaseException:
+        proc.kill()
+        raise
+
+    assert proc.returncode == 143
+    assert elapsed < 5, "the hard exit is the grace plus a small margin, not the finally's 300 s"
+
+
+def test_a_spawn_with_a_deadline_ends_on_its_own_when_it_outlives_it() -> None:
+    import time
+
+    proc = _start_child(STUCK_FINALLY_CHILD.replace("entry.SELF_TERMINATE_GRACE_SEC = 0.5",
+                        "entry.SELF_TERMINATE_GRACE_SEC = 0.5\nentry.DEADLINE_SLACK_SEC = 0.0"),
+                        {"MP_DEADLINE_SEC": "1"})
+    try:
+        started = time.monotonic()
+        proc.wait(timeout=10)
+        elapsed = time.monotonic() - started
+    except BaseException:
+        proc.kill()
+        raise
+
+    assert proc.returncode == 143
+    assert 0.9 < elapsed < 6, "the 1 s timeout, then the unwind's grace"
+
+
+def test_without_the_deadline_key_no_timer_is_armed(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    import mp.__main__ as entry
+
+    armed: list[float] = []
+    real = threading.Timer
+    monkeypatch.setattr(entry.threading, "Timer", lambda *a, **k: armed.append(a[0]) or real(*a, **k))
+    monkeypatch.delenv("MP_DEADLINE_SEC", raising=False)
+    entry._start_deadline()
+    assert armed == []
+    for bad in ("", "soon", "0", "-5"):
+        monkeypatch.setenv("MP_DEADLINE_SEC", bad)
+        entry._start_deadline()
+    assert armed == []
+
+
+def test_the_deadline_is_the_daemons_timeout_plus_the_slack_and_is_consumed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    import mp.__main__ as entry
+
+    armed: list[float] = []
+
+    class _Timer:
+        def __init__(self, interval: float, _fn) -> None:
+            armed.append(interval)
+            self.daemon = False
+
+        def start(self) -> None:
+            pass
+
+    monkeypatch.setattr(entry.threading, "Timer", _Timer)
+    monkeypatch.setenv("MP_DEADLINE_SEC", "600")
+    entry._start_deadline()
+    assert armed == [600 + entry.DEADLINE_SLACK_SEC]
+    assert "MP_DEADLINE_SEC" not in os.environ, "a grandchild must not inherit the ceiling"
+
