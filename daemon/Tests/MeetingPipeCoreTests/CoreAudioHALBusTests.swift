@@ -201,6 +201,28 @@ final class CoreAudioHALBusTests: XCTestCase {
         XCTAssertEqual(backend.registrations.count, 1, "a failed removal must not lead to a second HAL registration")
     }
 
+    /// DET21 amendment: a block left over from an earlier registration still reaches the bus, which
+    /// drops it at the epoch guard. That drop is the leak the field check looks for, so it counts.
+    func test_a_delivery_from_a_superseded_registration_counts_as_stale() throws {
+        let backend = RecordingBackend()
+        let log = RecordingEventLog()
+        let bus = CoreAudioHALBus(backend: backend, eventLog: log)
+        let fired = LockedBox(0)
+
+        let token = try bus.subscribe(address()) {}
+        bus.unsubscribe(token)
+        _ = try bus.subscribe(address()) { fired.mutate { $0 += 1 } }
+        XCTAssertEqual(backend.registrations.count, 2, "re-registered under a new epoch")
+
+        backend.registrations[0].fire()   // the removed block, still called by the HAL
+        drain(bus)
+
+        XCTAssertEqual(fired.get(), 0, "the current handler does not run for the stale block")
+        let rows = log.entries.filter { $0.action == "stale_delivery_count" }
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.attributes["bus_epoch"], "1")
+    }
+
     func test_a_successful_removal_logs_unsubscribed() throws {
         let backend = RecordingBackend()
         let log = RecordingEventLog()

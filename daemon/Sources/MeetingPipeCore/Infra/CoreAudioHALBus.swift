@@ -151,8 +151,16 @@ public final class CoreAudioHALBus {
     /// On `queue`. Fans one backend delivery out to the handlers current at delivery time. A handler
     /// may re-enter `subscribe` / `unsubscribe`, so membership is re-checked before each call: one
     /// removed by an earlier handler in this same delivery does not run.
+    ///
+    /// A delivery from a block whose registration is gone (removed, or replaced under a newer
+    /// epoch) is the leak D057 describes, which a `noErr` removal cannot rule out. It used to return
+    /// here uncounted, so `stale_delivery_count` read zero with the leak present; it now counts as
+    /// `bus_epoch` (DET21 amendment, 2026-11-17).
     private func deliver(_ address: Address, epoch: UInt64) {
-        guard let listener = listeners[address], listener.epoch == epoch else { return }
+        guard let listener = listeners[address], listener.epoch == epoch else {
+            noteStaleDelivery(source: "bus_epoch")
+            return
+        }
         for (token, handler) in listener.handlers.sorted(by: { $0.key.id < $1.key.id }) {
             guard listeners[address]?.epoch == epoch, listeners[address]?.handlers[token] != nil else { continue }
             handler()
