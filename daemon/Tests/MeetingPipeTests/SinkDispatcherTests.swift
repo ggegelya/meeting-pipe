@@ -2248,3 +2248,71 @@ final class SinkDispatcherTests: XCTestCase {
         }
     }
 }
+
+// MARK: - OBS10: what the pass cost
+
+extension SinkDispatcherTests {
+
+    /// Steps through fixed readings, then repeats the last.
+    private final class Readings {
+        private let lock = NSLock()
+        private var values: [Double]
+        init(_ values: [Double]) { self.values = values }
+        func next() -> Double {
+            lock.lock(); defer { lock.unlock() }
+            return values.count > 1 ? values.removeFirst() : values[0]
+        }
+    }
+
+    func test_engineSucceeded_carriesTheCostAndTheMachineState_fromInjectedProviders_OBS10() throws {
+        let driver = FakeDriver()
+        let runner = FakeRunner()
+        let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
+        let uptime = Readings([100, 110.5])
+        let cpu = Readings([1000, 3000])
+        let machine = Readings([0, 1])
+        dispatcher.resourceProbe = ResourceProbe(
+            selfCPUMs: { cpu.next() },
+            childrenCPUMs: { 0 },
+            uptime: { uptime.next() },
+            machine: {
+                machine.next() == 0
+                    ? MachineState(thermalState: "nominal", lowPower: false, memoryPressure: "normal")
+                    : MachineState(thermalState: "fair", lowPower: true, memoryPressure: "warning")
+            }
+        )
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let logs = try withLogs(dir)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        let deadline = Date().addingTimeInterval(3)
+        var row: [String: Any]?
+        while row == nil, Date() < deadline {
+            row = eventRows(logs).first { $0["action"] as? String == "engine_succeeded" }
+            if row == nil { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        }
+        let r = try XCTUnwrap(row)
+        XCTAssertEqual(r["wall_ms"] as? Double, 10_500)
+        XCTAssertEqual(r["cpu_ms"] as? Double, 2_000)
+        XCTAssertEqual(r["rtf"] as? Double, 0.1, "1 s of audio in 10.5 s")
+        XCTAssertEqual(r["thermal_state"] as? String, "fair")
+        XCTAssertEqual(r["low_power"] as? Bool, true)
+        XCTAssertEqual(r["memory_pressure"] as? String, "warning")
+        XCTAssertEqual(r["thermal_state_at_start"] as? String, "nominal")
+        XCTAssertEqual(r["compute_units"] as? String, MachineState.computeUnits)
+        XCTAssertEqual(r["runner_warm"] as? Bool, false, "a first pass carries the model load")
+        XCTAssertNotNil(r["involuntary_switches"] as? Double)
+        // The spawn that follows can now say how long the daemon took to get to it. Noted just after
+        // the row, so polled.
+        var handoff: Double?
+        let noteDeadline = Date().addingTimeInterval(2)
+        while handoff == nil, Date() < noteDeadline {
+            handoff = EngineHandoff.shared.take(file: wav, now: 110.5)
+            if handoff == nil { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        }
+        XCTAssertNotNil(handoff)
+    }
+}

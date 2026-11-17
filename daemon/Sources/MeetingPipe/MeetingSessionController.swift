@@ -214,6 +214,9 @@ final class MeetingSessionController: @unchecked Sendable {
     /// `stopRecording`, disarmed when `recorder.stop()` returns.
     let stopStallWatchdog = StopStallWatchdog()
 
+    /// OBS10: the clock `stop_began`'s delay is measured on (`systemUptime`); a test steps it.
+    var stopClock: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+
     /// PERF15: the parts of an engage that reach the system, behind seams so a test can gate a build
     /// on a semaphore, count builds, and see MicGate engage without touching the HAL. Production
     /// never sets them. `buildHandles` and `resolveContext` are read on main and the closure is
@@ -1162,6 +1165,8 @@ final class MeetingSessionController: @unchecked Sendable {
             ])
         }
         coordinator.stateMachine.setStopping(file: file, source: source, summaryMode: summaryMode)
+        // OBS10: the stop decision, for `stop_began`'s delay (the main-thread stretch below).
+        let stopDecidedAt = stopClock()
         coordinator.statusUI.setStopping(file: file, source: source, summaryMode: summaryMode)
         coordinator.hud.dismiss()
         // OBS7: the HUD fade is a Stop's first visible state. Read on the next main turn, so the
@@ -1223,7 +1228,18 @@ final class MeetingSessionController: @unchecked Sendable {
                 "stop_route": stopRoute ?? "lifecycle_end",
             ])
         }
+        let stopClock = self.stopClock
+        // OBS10: the synchronous stretch ends here; the rest of `delay_ms` is the Task waiting for main.
+        let stopQueuedAt = stopClock()
         Task { @MainActor [weak self] in
+            // OBS10: the recorder's stop is called right after this row. In five field recordings it
+            // began 5 to 24 s after the decision with the mic still capturing. `sync_ms` is
+            // `stopRecording`'s own synchronous work (PERF14 wants it apart from the queue wait).
+            Log.event(category: "recorder", action: "stop_began", attributes: [
+                "file": file.lastPathComponent,
+                "delay_ms": max(0, (stopClock() - stopDecidedAt) * 1000).rounded(),
+                "sync_ms": max(0, (stopQueuedAt - stopDecidedAt) * 1000).rounded(),
+            ])
             let producedUsableFinal = await recorder.stop(limitSeconds: keepsHeldTail ? nil : trimSeconds)
             self?.stopStallWatchdog.disarm()
             guard let self = self else { return }

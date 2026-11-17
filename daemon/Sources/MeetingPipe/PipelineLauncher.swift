@@ -1419,6 +1419,8 @@ final class PipelineLauncher: PipelineDriver {
         backendOverride: String? = nil,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
+        // OBS10: taken before anything can fail, so a spawn that never happens still consumes it.
+        let msSinceEngine = meeting.flatMap { EngineHandoff.shared.take(file: $0, now: ResourceProbe.live.uptime()) }
         guard let mpPath = invocation() else {
             completion(.failure(LaunchError.mpNotFound))
             return
@@ -1459,6 +1461,9 @@ final class PipelineLauncher: PipelineDriver {
         )
         do {
             try drain.run()
+            Log.event(category: "coordinator", action: "pipeline_spawned", attributes: Self.spawnAttributes(
+                args: args, msSinceEngine: msSinceEngine, machine: ResourceProbe.live.machine()
+            ))
         } catch {
             // CONC7: the drain has already detached its handlers and closed both pipes; what is left is
             // the watchdog timer and the slot, which only a finish step would have released.
@@ -1466,6 +1471,16 @@ final class PipelineLauncher: PipelineDriver {
             slots.release(handle, from: retain)
             completion(.failure(error))
         }
+    }
+
+    /// OBS10: the `pipeline_spawned` row, written once `mp` is running: the subcommand, the machine's
+    /// state, and `ms_since_engine` when this spawn follows a transcription of the same recording, so
+    /// `engine_succeeded` to Python's `run_started` splits into the daemon's delay and Python's start.
+    static func spawnAttributes(args: [String], msSinceEngine: Double?, machine: MachineState) -> [String: Any] {
+        var attrs: [String: Any] = ["subcommand": args.first ?? "(none)"]
+        if let msSinceEngine { attrs["ms_since_engine"] = msSinceEngine }
+        attrs.merge(machine.attributes()) { _, new in new }
+        return attrs
     }
 
     /// What `runMP` builds before it spawns: the process with its environment, both pipes, the failure

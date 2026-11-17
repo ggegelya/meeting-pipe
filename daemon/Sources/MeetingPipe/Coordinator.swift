@@ -247,6 +247,8 @@ final class Coordinator: NSObject {
             // and a user-set dwell below the mic-switch gap would re-create END15.
             engine: PromotionEngine()
         )
+        // OBS10: the memory-pressure watch starts with the daemon, not with the first job that reads it.
+        _ = MemoryPressureWatch.shared
         self.micGate = MicGate(
             catalogue: muteLabels,
             halBus: halBus,

@@ -1,3 +1,4 @@
+import os
 import XCTest
 @testable import MeetingPipe
 @testable import MeetingPipeCore
@@ -243,5 +244,39 @@ private extension AppState {
     var isRecording: Bool {
         if case .recording = self { return true }
         return false
+    }
+}
+
+// MARK: - OBS10: when the recorder's stop began
+
+extension HeldEndSessionTests {
+
+    /// `stop_began.delay_ms` is the time between the stop decision and the recorder's stop, and
+    /// `sync_ms` the synchronous stretch of `stopRecording` inside it, on the controller's clock read
+    /// three times in order (decision, Task queued, Task running): 0.5 s of work, 1.25 s of waiting.
+    func test_stopBegan_reportsTheDelaySinceTheDecision_OBS10() async throws {
+        let (controller, host) = makeController()
+        let logs = tempDir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+        let file = tempDir.appendingPathComponent("20261117-210000.wav")
+        host.recorderSpy.fileToReturn = file
+        controller.beginRecording(source: teams, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current.isRecording }, "the meeting to record")
+
+        let ticks = OSAllocatedUnfairLock(initialState: [1_000.0, 1_000.5, 1_001.75])
+        controller.stopClock = { ticks.withLock { $0.count > 1 ? $0.removeFirst() : $0[0] } }
+        controller.stopRecording(file: file, source: teams, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
+
+        let rows = ((try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? "")
+            .split(separator: "\n")
+            .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            .filter { $0["action"] as? String == "stop_began" }
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?["delay_ms"] as? Double, 1_750)
+        XCTAssertEqual(rows.first?["sync_ms"] as? Double, 500)
+        XCTAssertEqual(rows.first?["file"] as? String, file.lastPathComponent)
     }
 }

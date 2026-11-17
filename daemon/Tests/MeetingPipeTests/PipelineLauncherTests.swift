@@ -1201,3 +1201,49 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertTrue(diagnostics.contains(line), diagnostics)
     }
 }
+
+// MARK: - OBS10: a row at every mp spawn
+
+extension PipelineLauncherTests {
+
+    private func spawnedRows(_ logs: URL) -> [[String: Any]] {
+        ((try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? "")
+            .split(separator: "\n")
+            .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            .filter { $0["action"] as? String == "pipeline_spawned" }
+    }
+
+    /// A run-all that follows a transcription says how long after `engine_succeeded` it spawned; a
+    /// library re-run spawn of the same meeting says nothing of the kind.
+    func test_aRunAllAfterATranscription_carriesMsSinceEngine_andALibraryReRunDoesNot_OBS10() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("obs10-\(UUID().uuidString)")
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR"); try? FileManager.default.removeItem(at: dir) }
+        let wav = dir.appendingPathComponent("20261117-190000.wav")
+        let launcher = PipelineLauncher(
+            invocation: { .init(shell: "/bin/sh", args: ["-c", "exit 0"]) },
+            environment: ["PATH": "/usr/bin:/bin"],
+            tokenSource: { [:] },
+            reapOrphanedServer: {}
+        )
+        EngineHandoff.shared.note(file: wav, at: ProcessInfo.processInfo.systemUptime - 1.5)
+
+        let first = expectation(description: "run-all ended")
+        launcher.runAll(wav: wav, summaryMode: .auto, onProgress: nil) { _ in first.fulfill() }
+        wait(for: [first], timeout: 10)
+        let second = expectation(description: "re-run ended")
+        launcher.summarize(transcriptMD: dir.appendingPathComponent("20261117-190000.md")) { _ in second.fulfill() }
+        wait(for: [second], timeout: 10)
+
+        let rows = spawnedRows(logs)
+        XCTAssertEqual(rows.map { $0["subcommand"] as? String }, ["run-all", "summarize"])
+        let ms = try XCTUnwrap(rows.first?["ms_since_engine"] as? Double)
+        XCTAssertGreaterThanOrEqual(ms, 1_500)
+        XCTAssertLessThan(ms, 10_000)
+        XCTAssertNil(rows.last?["ms_since_engine"])
+        XCTAssertNotNil(rows.first?["thermal_state"])
+        XCTAssertNotNil(rows.first?["memory_pressure"])
+    }
+}

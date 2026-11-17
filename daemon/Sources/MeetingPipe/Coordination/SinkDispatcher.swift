@@ -171,6 +171,10 @@ final class SinkDispatcher: @unchecked Sendable {
     /// The current runner's engine name, for `Coordinator`'s `engine_resolved` row.
     var transcriptionBackendName: String { transcriptionRunner.backendName }
 
+    /// OBS10: the CPU, clock and machine-state reads behind `engine_succeeded`'s cost attributes.
+    /// A test injects them.
+    var resourceProbe = ResourceProbe.live
+
     // MARK: - Pipeline-job queue
 
     /// Append a freshly-flushed recording to the pipeline queue and
@@ -543,7 +547,15 @@ final class SinkDispatcher: @unchecked Sendable {
                 ])
                 throw HeldEndTrim.UnreadableSidecar(kind: kind, domain: domain, code: code)
             }
+            // OBS10: the pass's own wall and CPU time. `RUSAGE_SELF` covers every daemon thread, so
+            // the CPU figure is the process's while the pass ran, not the pass's alone.
+            let probe = resourceProbe
+            // A cold pass includes the model load (and a first download), which reads as a slow pass
+            // with a nominal machine; `runner_warm` tells them apart.
+            let warm = await MainActor.run { self.runnerWarm }
+            let span = probe.begin(cpu: probe.selfCPUMs, switches: probe.selfInvoluntarySwitches)
             var sidecar = try await runner.transcribe(wavURL: job.file, languageHint: languageHint)
+            let cost = span.finish()
             // UX69: the pass can also finish in the moments after the click, with
             // nothing left to throw from. Checking here, before anything is
             // written, is what stops that click being silently swallowed and the
@@ -579,13 +591,13 @@ final class SinkDispatcher: @unchecked Sendable {
                 .deletingPathExtension()
                 .appendingPathExtension("json")
             try sidecar.write(to: jsonURL)
-            Log.event(category: "transcription", action: "engine_succeeded", attributes: [
-                "file": job.file.lastPathComponent,
-                "engine": runner.backendName,
-                "segments": sidecar.segments.count,
-                "audio_seconds": sidecar.audioSeconds,
-                "kind": job.kind == .retranscribe ? "retranscribe" : "full",
-            ])
+            Log.event(category: "transcription", action: "engine_succeeded", attributes: Self.engineSucceededAttributes(
+                file: job.file, engine: runner.backendName, segments: sidecar.segments.count,
+                audioSeconds: sidecar.audioSeconds, kind: job.kind == .retranscribe ? "retranscribe" : "full",
+                runnerWarm: warm, cost: cost
+            ))
+            // OBS10: the spawn that follows says how long the daemon took to get to it.
+            EngineHandoff.shared.note(file: job.file, at: probe.uptime())
             await MainActor.run {
                 switch job.kind {
                 case .full: self.invokePipeline(for: job)
@@ -1152,5 +1164,29 @@ final class SinkDispatcher: @unchecked Sendable {
             }
             return .pipeline
         }
+    }
+}
+
+extension SinkDispatcher {
+    /// OBS10: `engine_succeeded`, with what the pass cost and the machine's state at its start and
+    /// end. `rtf` is seconds of audio per second of wall time.
+    static func engineSucceededAttributes(
+        file: URL, engine: String, segments: Int, audioSeconds: Double, kind: String, runnerWarm: Bool,
+        cost: (sample: ResourceSample, machineAtStart: MachineState, machine: MachineState)
+    ) -> [String: Any] {
+        var attrs: [String: Any] = [
+            "file": file.lastPathComponent,
+            "engine": engine,
+            "segments": segments,
+            "audio_seconds": audioSeconds,
+            "kind": kind,
+            "compute_units": MachineState.computeUnits,
+            "runner_warm": runnerWarm,
+        ]
+        attrs.merge(cost.sample.attributes) { _, new in new }
+        if let rtf = cost.sample.rtf(audioSeconds: audioSeconds) { attrs["rtf"] = (rtf * 10).rounded() / 10 }
+        attrs.merge(cost.machine.attributes()) { _, new in new }
+        attrs.merge(cost.machineAtStart.attributes(suffix: "_at_start")) { _, new in new }
+        return attrs
     }
 }

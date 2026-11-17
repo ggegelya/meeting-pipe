@@ -262,6 +262,7 @@ One hop to the right file. Moved here from `daemon/CLAUDE.md` by DOC15: that fil
 | Window activation | `WindowActivationManager.swift` (UX39/UX56) - owns the policy flip, and installs/removes `MainMenu` with it |
 | Permissions | `PermissionsCenter.swift` |
 | Pipeline subprocess | `PipelineLauncher.swift`, `ProcessOutputDrain.swift`, `ProcessRunner.swift`, `StorageJanitor.swift`, `LocalServerReaper.swift`, `LocalModelPreloader.swift`, `LocalModelTier.swift` |
+| Post-stop cost and machine state (OBS10, measure only) | `ResourceProbe.swift` (`ResourceSample`, `MachineState`, `MemoryPressureWatch`, `EngineHandoff`) |
 | Failure presentation (UX80) | `FailurePresentation.swift` (pure cause, copy, report allowlist), `FailureNotice.swift` (bounded notice, Details, local copy, dialogs), `PipelineFailureSidecar.swift` (durable daemon-owned evidence); Python `failure_details.py` classifies native errors into an optional process-scoped result |
 | Scheduled `mp` jobs | `LaunchAgentScheduler.swift`, `DigestSchedulerService.swift` (AI4), `BackupSchedulerService.swift` (STOR4) - a new job adds a thin service here, not a second plist writer |
 | Launch at login | `LaunchAtLoginService.swift` (UX42) - the agent that installs the app, distinct from the one-shots above |

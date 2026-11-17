@@ -405,6 +405,9 @@ enum RecordingPostProcessor {
                 writePostProcessFailure(final: final, retained: [mic, system])
                 return false
             }
+            // OBS10: what the merge cost, beside the machine's state; written once the result is
+            // promoted, so a refused merge writes its refusal row and no completion.
+            let span = ResourceProbe.live.begin(cpu: ResourceProbe.live.childrenCPUMs)
             let attempt = await mergeToTempViaFFmpeg(
                 ffmpeg: ffmpeg, mic: mic, system: system, tmp: tmp, lengths: lengths, ceilingSeconds: ceilingSeconds
             )
@@ -415,6 +418,7 @@ enum RecordingPostProcessor {
                 return abandonKilledPostProcess(final: final, tmp: tmp, retained: [mic, system], reaped: reaped)
             }
             if promoteMerged(tmp: tmp, to: final, expectedDurationSec: lengths.expectedDurationSec) {
+                logMergeCompleted(span, kind: "merge", final: final)
                 try? FileManager.default.removeItem(at: mic)
                 try? FileManager.default.removeItem(at: system)
                 return true
@@ -431,6 +435,7 @@ enum RecordingPostProcessor {
         // Single source: resample the one present side to 16 kHz mono.
         let source = hasMic ? mic : system
         let sourceDurationSec = audioDurationSec(of: source)
+        let span = ResourceProbe.live.begin(cpu: ResourceProbe.live.childrenCPUMs)
         let attempt = await convertToTempViaFFmpeg(
             ffmpegPath: ffmpegPath, input: source, tmp: tmp, expectedDurationSec: sourceDurationSec,
             ceilingSeconds: ceilingSeconds
@@ -439,6 +444,7 @@ enum RecordingPostProcessor {
             return abandonKilledPostProcess(final: final, tmp: tmp, retained: [source], reaped: reaped)
         }
         if promoteMerged(tmp: tmp, to: final, expectedDurationSec: sourceDurationSec) {
+            logMergeCompleted(span, kind: "convert", final: final)
             try? FileManager.default.removeItem(at: mic)
             try? FileManager.default.removeItem(at: system)
             return true
@@ -585,6 +591,28 @@ enum RecordingPostProcessor {
         )
         let outcome = await runFFmpeg(ffmpeg: ffmpeg, args: args, label: "merge", ceilingSeconds: ceilingSeconds)
         return attempt(outcome, plausible: { producedPlausibleOutput(at: tmp, expectedDurationSec: lengths.expectedDurationSec) })
+    }
+
+    /// OBS10: write `merge_completed` for a promoted final, its `audio_seconds` measured on the file.
+    private static func logMergeCompleted(_ span: ResourceProbe.Span, kind: String, final: URL) {
+        let (sample, atStart, atEnd) = span.finish()
+        Log.event(category: "recorder", action: "merge_completed", attributes: mergeCompletedAttributes(
+            kind: kind, file: final, audioSeconds: audioDurationSec(of: final), sample: sample, atStart: atStart, atEnd: atEnd
+        ))
+    }
+
+    /// OBS10: the `recorder` / `merge_completed` row: `kind` (`merge` for the two-channel merge,
+    /// `convert` for a single source), the final's name as `file`, the produced length.
+    static func mergeCompletedAttributes(
+        kind: String, file: URL, audioSeconds: Double?, sample: ResourceSample, atStart: MachineState, atEnd: MachineState
+    ) -> [String: Any] {
+        var attrs = sample.attributes
+        attrs["kind"] = kind
+        attrs["file"] = file.lastPathComponent
+        if let audioSeconds { attrs["audio_seconds"] = audioSeconds }
+        attrs.merge(atEnd.attributes()) { _, new in new }
+        attrs.merge(atStart.attributes(suffix: "_at_start")) { _, new in new }
+        return attrs
     }
 
     /// Convert a single-source recording to 16 kHz mono Int16 written to `tmp`.

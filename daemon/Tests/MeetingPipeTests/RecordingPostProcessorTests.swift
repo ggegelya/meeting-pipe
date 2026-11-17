@@ -520,3 +520,60 @@ extension RecordingPostProcessorTests {
         }
     }
 }
+
+// MARK: - OBS10: the merge says what it cost
+
+extension RecordingPostProcessorTests {
+
+    func test_aSuccessfulMerge_emitsMergeCompleted_withWallCPUAndAudioSeconds_OBS10() async throws {
+        try requireFFmpeg()
+        let dir = try makeTempDir()
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+        let mic = dir.appendingPathComponent("20261117-200000.mic.wav")
+        let system = dir.appendingPathComponent("20261117-200000.system.wav")
+        let final = dir.appendingPathComponent("20261117-200000.wav")
+        try makeWavData(seconds: 4, amplitude: 8000).write(to: mic)
+        try makeWavData(seconds: 4, channels: 2, amplitude: 8000).write(to: system)
+
+        let ok = await RecordingPostProcessor.produceFinal(mic: mic, system: system, final: final, hasMic: true, hasSystem: true)
+        XCTAssertTrue(ok)
+
+        let rows = ((try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? "")
+            .split(separator: "\n")
+            .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            .filter { $0["action"] as? String == "merge_completed" }
+        XCTAssertEqual(rows.count, 1)
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(row["file"] as? String, "20261117-200000.wav")
+        XCTAssertEqual(row["kind"] as? String, "merge")
+        XCTAssertGreaterThan(row["wall_ms"] as? Double ?? -1, 0)
+        XCTAssertGreaterThan(row["cpu_ms"] as? Double ?? -1, 0, "ffmpeg's own CPU, from the reaped child's rusage")
+        XCTAssertEqual(row["audio_seconds"] as? Double ?? 0, 4, accuracy: 0.1, "measured on the final")
+        XCTAssertNotNil(row["thermal_state"] as? String)
+    }
+
+    /// A single-source recording's convert is the same kind of ffmpeg run and gets the same row.
+    func test_aSingleSourceConvert_emitsMergeCompleted_asAConvert_OBS10() async throws {
+        try requireFFmpeg()
+        let dir = try makeTempDir()
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+        let mic = dir.appendingPathComponent("20261117-201000.mic.wav")
+        let system = dir.appendingPathComponent("20261117-201000.system.wav")
+        let final = dir.appendingPathComponent("20261117-201000.wav")
+        try makeWavData(seconds: 3, amplitude: 8000).write(to: mic)
+
+        let ok = await RecordingPostProcessor.produceFinal(mic: mic, system: system, final: final, hasMic: true, hasSystem: false)
+        XCTAssertTrue(ok)
+        let rows = ((try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? "")
+            .split(separator: "\n")
+            .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            .filter { $0["action"] as? String == "merge_completed" }
+        XCTAssertEqual(rows.map { $0["kind"] as? String }, ["convert"])
+    }
+}
