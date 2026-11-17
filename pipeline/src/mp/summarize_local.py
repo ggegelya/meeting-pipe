@@ -483,7 +483,12 @@ class LocalSummaryClient:
         self._adopted: tuple[int, int] | None = None
         # Base client timeout; the chat-completion POST overrides the read leg
         # per call, scaled to max_tokens (LOCAL2). Health checks override to 2s.
-        self._http = httpx.Client(timeout=httpx.Timeout(request_timeout_sec, connect=5.0))
+        # SEC19: trust_env=False, because httpx honours HTTP_PROXY and the macOS web
+        # proxy without exempting 127.0.0.1, which would route the transcript POST
+        # through a proxy even outside regulated mode.
+        self._http = httpx.Client(
+            timeout=httpx.Timeout(request_timeout_sec, connect=5.0), trust_env=False
+        )
 
     @property
     def model(self) -> str:

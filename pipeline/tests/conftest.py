@@ -34,10 +34,18 @@ def _reset_egress_guard():
     out of `os.environ` and forces the HF offline flags in. Snapshot and restore
     those too, or one armed test strips the developer's exported
     ANTHROPIC_API_KEY for every test that runs after it.
+
+    SEC19 added a third: it drops every `*_proxy` variable and sets `NO_PROXY=*`,
+    so those are snapshotted by pattern (the names present differ per machine).
     """
-    watched = (*MANAGED_SECRET_KEYS, "HF_HUB_OFFLINE", "HF_HUB_DISABLE_TELEMETRY")
+    def proxy_keys() -> set[str]:
+        return {k for k in os.environ if k.lower().endswith("_proxy")}
+
+    watched = {*MANAGED_SECRET_KEYS, "HF_HUB_OFFLINE", "HF_HUB_DISABLE_TELEMETRY", *proxy_keys()}
     before = {k: os.environ.get(k) for k in watched}
     yield
+    for key in proxy_keys() - watched:
+        os.environ.pop(key, None)
     egress_guard.disarm()
     for key, value in before.items():
         if value is None:

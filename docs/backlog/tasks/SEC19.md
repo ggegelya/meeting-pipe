@@ -2,9 +2,9 @@
 id: SEC19
 title: The pipeline's egress guard is a monkeypatch on httpx's transport classes, so any network path that is not httpx bypasses regulated and NDA mode
 category: Security
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch S3, go-live PP-1 structural half): egress_guard patches only httpx transports, kept valid by the anthropic<1 and httpx<1 caps CI8 added; a urllib, requests or httpx2 path would egress under regulated mode silently. Add a socket.connect loopback-only layer in arm(), keep the httpx patch for the error message, fix the docstring; caps lifted later in a separate lock bump. Amended 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md)): the loopback client honours HTTP_PROXY and macOS web proxies and the guard checks only the URL host; trust_env=False on loopback clients, refuse proxied transports. [Spec](./SEC19.md) Amended 2026-11-12 (upgrade review): huggingface-hub 2.x also moves to httpx2 and a plain lock refresh crosses it unflagged (SEC31 holds it below 2 meanwhile); the anthropic 2.x lift also sends API version 2026-10-21, which 400s the temperature PIPE12 sends.
+comment: Shipped 2026-11-17 (awaiting owner close): socket.connect/connect_ex loopback-only layer in arm(), httpx layer refuses proxied transports, arm()/child_env drop *_proxy and set NO_PROXY=*, LocalSummaryClient trust_env=False, huggingface_hub fences; pipeline pytest 1871 passed. Remainder is the separate lock bump the spec names: lift anthropic<1/httpx<1 and huggingface-hub<2 (new packages httpx2/httpcore2/truststore, PIPE12 temperature trap). [Spec](./SEC19.md)
 ---
 
 # SEC19: the pipeline's egress guard is a monkeypatch on httpx's transport classes, so any network path that is not httpx bypasses regulated and NDA mode
@@ -72,3 +72,5 @@ Added scope:
 - **anthropic 2.x (2.8.0 on 2026-11-12) sends `anthropic-version: 2026-10-21`.** That version returns a 400 for `temperature`, `top_p` or `top_k` on every model, even at default values. `AnthropicSummaryClient` sends `temperature=SAMPLING_TEMPERATURE` through `anthropic_sampling` (PIPE12's repeatability decision), so a 2.x lift fails every cloud summary unless that decision is revisited in the same change.
 
 Added acceptance: the cap-lift commit carries a test that the summarize request body has no sampling parameters when the SDK sends `2026-10-21`, and no `httpx` object crosses into the SDK.
+
+**Progress (2026-11-17):** Items 1 to 4 and the security-review amendment shipped. Beyond the spec: `arm()` and `child_env()` also drop every `*_proxy` variable and set `NO_PROXY=*`, because a forwarder listening on 127.0.0.1 passes the socket check (that connect really is loopback) and urllib would route through it; `NO_PROXY=*` was verified on 2026-11-17 to stop both urllib and httpx reading the macOS system proxy. A hostname connect is resolved once and goes to the checked address, so a second resolution cannot answer differently. The `huggingface-hub<2` lift is held, not done: hub 1.33.0 already speaks httpx, so the socket layer can only be proven against it with the httpx check taken out of the path (`test_huggingface_hub_is_stopped_by_the_socket_layer_alone`), and lifting pulls httpx2, httpcore2 and truststore into the lock, which is the separate bump's call. The upgrade review's interim fence (`test_huggingface_hub_still_speaks_the_patched_httpx`) shipped instead.

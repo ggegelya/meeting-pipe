@@ -13,11 +13,12 @@ authors = [{ name = "meeting-pipe contributors" }]
 
 dependencies = [
     # CI8: capped, not floor-only. anthropic 1.0.0 (2026-08-20) swapped httpx for
-    # httpx2, and `egress_guard` patches httpx's transports and nothing else, so an
-    # SDK on httpx2 sends around the regulated-mode firewall. Lifting this cap means
-    # teaching the guard httpx2 first, and a fence in tests/test_egress_guard.py
-    # fails if a resolve ever crosses it. httpx is capped with it for the same
-    # reason: the guard is written against its 0.x transport classes.
+    # httpx2. Since SEC19 the guard no longer depends on this cap for its block: its
+    # socket layer refuses a non-loopback connect from any client, httpx2 included.
+    # The cap stays until a separate lock bump, because what it still buys is the
+    # httpx layer (the host-naming error and the proxied-transport refusal), and 2.x
+    # sends an API version that 400s on PIPE12's temperature. The CI8 fence in
+    # tests/test_egress_guard.py fails if a resolve crosses it.
     "anthropic>=0.40.0,<1",
     "httpx>=0.27.0,<1",
     "pydantic>=2.7.0",
@@ -135,8 +136,10 @@ testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 # SEC31. Holds huggingface-hub on 1.x. 2.x moves its HTTP onto httpx2/httpcore2 and
-# truststore, a transport `egress_guard`'s httpx patch never sees, and nothing in
-# the suite would fail (the CI8 fence checks only the Anthropic client). SEC19 owns
-# the structural fix; lift this when it lands.
+# truststore. SEC19's socket layer now refuses those connects under regulated mode
+# (proven against hub 1.x with the httpx layer taken out of the path), and a fence
+# in tests/test_egress_guard.py fails if hub stops speaking httpx. Lifting this
+# pulls three new packages into the lock, so it waits for the same separate lock
+# bump as the anthropic cap rather than riding on SEC19.
 [tool.uv]
 constraint-dependencies = ["huggingface-hub<2"]
