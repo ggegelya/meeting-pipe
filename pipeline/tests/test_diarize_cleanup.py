@@ -763,3 +763,97 @@ def test_the_cli_says_when_it_skipped(tmp_path: Path, capsys: pytest.CaptureFixt
     assert diarize_cleanup.main([str(p)]) == 0
     assert "--force" in capsys.readouterr().out
 
+
+
+# ----- PIPE24: the pass has an overall deadline -----
+
+
+class _TickingClient:
+    """Each window relabels the first segment it shows to the other speaker, and
+    advances the fake clock by `step` seconds as the model "thinks"."""
+
+    def __init__(self, clock: list[float], step: float) -> None:
+        self.clock = clock
+        self.step = step
+        self.calls = 0
+        self.flipped: list[int] = []
+
+    def propose_edits(self, *, window_prompt: str, speakers: list[str]) -> list[SpeakerEdit]:
+        import re
+
+        self.calls += 1
+        self.clock[0] += self.step
+        m = re.search(r"\[(\d+)\] (SPEAKER_0[01]):", window_prompt)
+        assert m
+        idx = int(m.group(1))
+        self.flipped.append(idx)
+        other = "SPEAKER_00" if m.group(2) == "SPEAKER_01" else "SPEAKER_01"
+        return [SpeakerEdit(idx, other, "reattribute")]
+
+
+def _five_windows() -> list[dict[str, Any]]:
+    # 40 segments of ~50 chars is ~2k chars: five windows at window_chars=450.
+    return _long_transcript(40)
+
+
+def _event_capture(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    emitted: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "mp.diarize_cleanup.events.emit",
+        lambda *a, **k: emitted.append(k) if a[:2] == ("pipeline", "diarize_cleanup") else None,
+    )
+    return emitted
+
+
+def test_a_pass_past_its_deadline_applies_what_it_has_and_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mp.chunking import chunked_windows
+
+    segs = _five_windows()
+    n_windows = len(list(chunked_windows(_render_indexed(segs), max_chars=450, overlap_chars=0)))
+    assert n_windows >= 5
+    p = _write_transcript(tmp_path, segments=segs)
+    emitted = _event_capture(monkeypatch)
+    clock = [0.0]
+    # 60 s per window against a 100 s budget: window 1 starts at 0 s, window 2 at
+    # 60 s, and the clock passes the deadline during window 2 (120 s), so window 3
+    # is never issued.
+    client = _TickingClient(clock, 60.0)
+    result = cleanup_transcript(
+        p, cfg=Config(), client=client, window_chars=450, overlap_chars=0,
+        deadline_sec=100.0, clock=lambda: clock[0],
+    )
+    assert client.calls == 2
+    assert emitted[0]["windows_done"] == 2
+    assert emitted[0]["windows_total"] == n_windows
+    assert emitted[0]["deadline_hit"] is True
+    data = json.loads(p.read_text(encoding="utf-8"))
+    for idx in client.flipped:  # exactly the two windows' edits landed
+        assert data["segments"][idx]["speaker"] != segs[idx]["speaker"]
+    changed = [i for i, s in enumerate(data["segments"]) if s["speaker"] != segs[i]["speaker"]]
+    assert sorted(changed) == sorted(client.flipped)
+    assert result["json"] == p
+
+
+def test_a_pass_under_its_deadline_reports_it_was_not_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mp.chunking import chunked_windows
+
+    segs = _five_windows()
+    n_windows = len(list(chunked_windows(_render_indexed(segs), max_chars=450, overlap_chars=0)))
+    p = _write_transcript(tmp_path, segments=segs)
+    emitted = _event_capture(monkeypatch)
+    clock = [0.0]
+    client = _TickingClient(clock, 1.0)
+    cleanup_transcript(
+        p, cfg=Config(), client=client, window_chars=450, overlap_chars=0,
+        deadline_sec=600.0, clock=lambda: clock[0],
+    )
+    assert client.calls == n_windows
+    assert emitted[0]["windows_done"] == emitted[0]["windows_total"] == n_windows
+    assert emitted[0]["deadline_hit"] is False
+    data = json.loads(p.read_text(encoding="utf-8"))
+    changed = [i for i, s in enumerate(data["segments"]) if s["speaker"] != segs[i]["speaker"]]
+    assert sorted(changed) == sorted(client.flipped) and len(changed) == n_windows

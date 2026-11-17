@@ -38,9 +38,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
-
-import anthropic
+from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from . import entry, events, providers, storage
 from .chunking import chunked_windows
@@ -57,6 +55,15 @@ log = logging.getLogger("mp.diarize_cleanup")
 
 DEFAULT_WINDOW_CHARS = 8000
 DEFAULT_OVERLAP_CHARS = 200
+
+# PIPE24: the whole pass gets this long, then it applies the edits gathered so
+# far and returns. The pass is optional polish that runs before summarize, and a
+# stall in it never raises in time: windows run back to back (a two-hour meeting
+# is about 14), each can wait ~120 s, so a degraded network could spend half an
+# hour here and then run into run-all's 90-minute watchdog, which SIGKILLs the
+# summary and the publish with it. Ten minutes leaves that cap room for
+# summarize's own worst case.
+CLEANUP_DEADLINE_SEC = 600.0
 _UNKNOWN_SPEAKER = "Speaker?"
 _VALID_KINDS = ("merge", "reattribute")
 
@@ -204,6 +211,8 @@ def cleanup_transcript(
     window_chars: int = DEFAULT_WINDOW_CHARS,
     overlap_chars: int = DEFAULT_OVERLAP_CHARS,
     force: bool = False,
+    deadline_sec: float = CLEANUP_DEADLINE_SEC,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Run the cleanup pass over a finalized `<stem>.json` transcript.
 
@@ -221,6 +230,11 @@ def cleanup_transcript(
     replace the one that can undo the first. The daemon never meets a cleaned
     transcript (it re-transcribes before every full run); a manual `mp run-all`
     over an existing `<stem>.json` and a repeated `mp cleanup-diarization` do.
+
+    PIPE24: past `deadline_sec` no further window is issued; the edits gathered
+    so far are applied and the pass returns normally (the event says how far it
+    got), so run-all's non-fatal contract holds and a stall cannot run into its
+    watchdog. `clock` is injectable for the same reason `valid1_check`'s is.
     """
     cfg = entry.prepare(cfg, transcript_json)  # SEC13: overlay, arm, secrets
 
@@ -247,19 +261,25 @@ def cleanup_transcript(
     started = time.monotonic()
     applied: list[EditRecord] = []
     refused: list[EditRecord] = []
+    windows_done = windows_total = 0
+    deadline_hit = False
     if segments and len(speakers) >= 2:
         owns_client = client is None
         if client is None:
             client = _select_cleanup_backend(cfg)
         try:
-            edits_by_index, outside = _gather_edits(
-                segments, speakers, client, window_chars, overlap_chars
+            gathered = _gather_edits(
+                segments, speakers, client, window_chars, overlap_chars,
+                deadline_sec=deadline_sec, clock=clock,
             )
         finally:
             if owns_client:
                 close = getattr(client, "close", None)
                 if callable(close):
                     close()
+        edits_by_index, outside = gathered.by_index, gathered.outside
+        windows_done, windows_total = gathered.windows_done, gathered.windows_total
+        deadline_hit = gathered.deadline_hit
         proposed = _effective_edits(segments, edits_by_index, speakers)
         embeddings = _load_embeddings(transcript_json)
         applied, refused = _refuse_unsupported_merges(segments, proposed, embeddings)
@@ -313,6 +333,9 @@ def cleanup_transcript(
         latency_ms=latency_ms,
         segments=len(segments),
         speakers=len(speakers),
+        windows_done=windows_done,
+        windows_total=windows_total,
+        deadline_hit=deadline_hit,
     )
     return {
         "json": transcript_json,
@@ -351,14 +374,29 @@ def _render_indexed(segments: list[dict[str, Any]]) -> str:
     return "\n".join(_render_lines(segments))
 
 
+class _Gathered(NamedTuple):
+    by_index: dict[int, SpeakerEdit]
+    outside: dict[tuple[int, str], SpeakerEdit]
+    windows_done: int
+    windows_total: int
+    deadline_hit: bool
+
+
 def _gather_edits(
     segments: list[dict[str, Any]],
     speakers: list[str],
     client: CleanupClient,
     window_chars: int,
     overlap_chars: int,
-) -> tuple[dict[int, SpeakerEdit], dict[tuple[int, str], SpeakerEdit]]:
-    """Every window's proposals: (shown, outside).
+    *,
+    deadline_sec: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> _Gathered:
+    """Every window's proposals: `by_index` (shown) and `outside`.
+
+    PIPE24: before each window, a clock past `deadline_sec` from the first one
+    stops the loop; what was gathered stands. `windows_total` is counted from the
+    whole window list so the event can say how much was skipped.
 
     DIAR9 (F097): a window may only relabel a segment whose `[n] speaker:` prefix
     it showed; a line it caught only the tail of is not one the model could have
@@ -379,7 +417,18 @@ def _gather_edits(
         offset += len(line) + 1
     by_index: dict[int, SpeakerEdit] = {}
     outside: dict[tuple[int, str], SpeakerEdit] = {}
-    for window in chunked_windows(rendered, max_chars=window_chars, overlap_chars=overlap_chars):
+    windows = list(chunked_windows(rendered, max_chars=window_chars, overlap_chars=overlap_chars))
+    cutoff = None if deadline_sec is None else clock() + deadline_sec
+    done = 0
+    deadline_hit = False
+    for window in windows:
+        if cutoff is not None and clock() >= cutoff:
+            deadline_hit = True
+            log.warning(
+                "diarize cleanup: %.0fs deadline passed after %d of %d windows; "
+                "applying the edits gathered so far", deadline_sec, done, len(windows),
+            )
+            break
         lo, hi = window.offset, window.offset + len(window.text)
         shown = {i for i, (a, b) in enumerate(starts) if a >= lo and b <= hi}
         # Fence each window as untrusted content (TECH-SEC6); the segment numbers
@@ -389,7 +438,8 @@ def _gather_edits(
                 by_index[edit.segment_index] = edit  # overlapping windows: last wins
             else:
                 outside[(edit.segment_index, edit.speaker)] = edit
-    return by_index, outside
+        done += 1
+    return _Gathered(by_index, outside, done, len(windows), deadline_hit)
 
 
 def _effective_edits(
@@ -642,7 +692,7 @@ class AnthropicCleanupClient:
     """`CleanupClient` backed by Anthropic tool-use (schema forced)."""
 
     def __init__(self, *, api_key: str, model: str, max_tokens: int) -> None:
-        self._client = anthropic.Anthropic(api_key=api_key)
+        self._client = providers.make_anthropic_client(api_key)
         self._model = model
         self._max_tokens = max_tokens
 

@@ -37,7 +37,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import anthropic
-import httpx
 from pydantic import ValidationError
 from tenacity import (
     before_sleep_log,
@@ -98,6 +97,10 @@ _RETRYABLE_ANTHROPIC = (
     anthropic.APIConnectionError,
     anthropic.APITimeoutError,
     anthropic.InternalServerError,
+    # PIPE24: HTTP 529 ("Anthropic is overloaded") is `OverloadedError`, a sibling
+    # of InternalServerError rather than a subclass, so it escaped this list and
+    # the auto fallback both. The same "transient, cloud unwilling" class.
+    anthropic.OverloadedError,
 )
 
 
@@ -120,15 +123,6 @@ def _should_retry_anthropic(exc: BaseException) -> bool:
     return isinstance(exc, _RETRYABLE_ANTHROPIC)
 
 
-# Bound every request so a stalled connection fails in ~2 min and falls back to
-# local, instead of the SDK's ~10-minute default (a real 8.8k-char summary hung
-# the pipeline for the full 10 minutes). Chunked summarization bounds each call's
-# output, so 120 s is generous for legitimate generation while still catching a
-# stall. Paired with max_retries=0 on the client so the SDK does not internally
-# re-try a timeout before this layer's fallback sees it.
-_REQUEST_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
-
-
 # How far wall-clock elapsed has to exceed monotonic elapsed before we read a
 # timeout as "the Mac slept through the request" rather than "the connection
 # stalled". httpx's read timeout rides the monotonic clock, which freezes while
@@ -137,6 +131,14 @@ _REQUEST_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 # scheduler noise on a machine that stayed awake, so 60 s is far above any
 # false-positive margin while still catching the shortest nap that could matter.
 _SLEEP_DIVERGENCE_SEC = 60.0
+
+# PIPE24 (2026-11-13 amendment): a workflow pinned to `anthropic` has no local
+# fallback, so a timeout there is terminal and cost one meeting its summary (stem
+# 20261022-103101, one 124 s stall). Such a client re-issues a timed-out request
+# once after this pause. Short, because the stall that timed out is a transient
+# network condition and the pause only keeps the re-issue off the same dead
+# socket; `auto` keeps dropping to local on the first timeout.
+_TIMEOUT_REISSUE_PAUSE_SEC = 3.0
 
 
 @retry(
@@ -150,7 +152,9 @@ _SLEEP_DIVERGENCE_SEC = 60.0
     retry=retry_if_exception(_should_retry_anthropic),
     before_sleep=before_sleep_log(log, logging.WARNING),
 )
-def _create_message(client: anthropic.Anthropic, **kwargs: Any) -> Any:
+def _create_message(
+    client: anthropic.Anthropic, *, retry_timeout_once: bool = False, **kwargs: Any
+) -> Any:
     """Anthropic call with tenacity retry on rate limits / 5xx / connection errors.
 
     PIPE10: a timeout is normally terminal here (`_should_retry_anthropic`
@@ -164,6 +168,13 @@ def _create_message(client: anthropic.Anthropic, **kwargs: Any) -> Any:
     Deliberately inside the tenacity-wrapped function, not around it: the retry
     predicate and the transient-error backoff classes stay exactly as they were.
     `diarize_cleanup` calls this same seam, so it inherits the fix.
+
+    PIPE24: `retry_timeout_once` is the caller saying "there is no fallback to
+    drop to" (a workflow pinned to `anthropic`), so an awake timeout is re-issued
+    once after a short pause too. At most one re-issue per call whatever the
+    cause: a request already re-issued for a sleep is not re-issued again, and
+    the second timeout fails like any other. Off by default, so the cleanup pass
+    and the `auto` rung keep failing fast.
     """
     wall_start = time.time()
     mono_start = time.monotonic()
@@ -172,15 +183,23 @@ def _create_message(client: anthropic.Anthropic, **kwargs: Any) -> Any:
     except anthropic.APITimeoutError:
         wall = time.time() - wall_start
         mono = time.monotonic() - mono_start
-        if wall - mono < _SLEEP_DIVERGENCE_SEC:
+        if wall - mono >= _SLEEP_DIVERGENCE_SEC:
+            log.warning(
+                "Anthropic request timed out across a system sleep "
+                "(wall %.0fs vs monotonic %.0fs, divergence %.0fs); retrying once",
+                wall,
+                mono,
+                wall - mono,
+            )
+        elif retry_timeout_once:
+            log.warning(
+                "Anthropic request timed out and the backend is pinned to anthropic "
+                "(no local fallback); re-issuing once after %.0fs",
+                _TIMEOUT_REISSUE_PAUSE_SEC,
+            )
+            time.sleep(_TIMEOUT_REISSUE_PAUSE_SEC)
+        else:
             raise
-        log.warning(
-            "Anthropic request timed out across a system sleep "
-            "(wall %.0fs vs monotonic %.0fs, divergence %.0fs); retrying once",
-            wall,
-            mono,
-            wall - mono,
-        )
 
     return client.messages.create(**kwargs)
 
@@ -421,12 +440,11 @@ class AnthropicSummaryClient:
 
     backend_id = "anthropic"
 
-    def __init__(self, *, api_key: str) -> None:
-        self._client = anthropic.Anthropic(
-            api_key=api_key,
-            timeout=_REQUEST_TIMEOUT,
-            max_retries=0,
-        )
+    def __init__(self, *, api_key: str, retry_timeout_once: bool = False) -> None:
+        self._client = providers.make_anthropic_client(api_key)
+        # PIPE24: set by `providers._anthropic_summary`, the pinned path with no
+        # local fallback. `AutoFallbackClient` and `dogfood` keep it off.
+        self._retry_timeout_once = retry_timeout_once
 
     def summarize(
         self,
@@ -441,6 +459,7 @@ class AnthropicSummaryClient:
             log.info("Anthropic call attempt %d (model=%s)", attempt, model)
             response = _create_message(
                 self._client,
+                retry_timeout_once=self._retry_timeout_once,
                 model=model,
                 # PIPE12: the same temperature local and openai have always sampled
                 # at. Left unset, this call ran at the API default of 1.0, which

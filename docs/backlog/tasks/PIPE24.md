@@ -2,9 +2,9 @@
 id: PIPE24
 title: Three Anthropic call sites build their client with three different timeout and retry policies, and a 529 overload is neither retried nor dropped to local
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch D5): summarize uses 120 s and 0 SDK retries plus tenacity, engine uses 120 s and 2 SDK retries, cleanup uses SDK defaults (600 s, 2 retries) under tenacity; and SDK 0.97.0 raises OverloadedError for 529, which neither the retry nor the auto fallback lists. One make_anthropic_client factory at all three sites, every call through _create_message, 529 added to both. Amended 2026-10-25 (performance review): even on the shared client policy the cleanup windows run back to back with no pass deadline, and a stall there runs into run-all's 90-minute watchdog, which SIGKILLs the meeting's summary and publish with it; add an overall deadline that applies the edits gathered so far. [Spec](./PIPE24.md) Amended 2026-11-13 by the audit band: a workflow pinned to anthropic has no local fallback, so stem 20261022-103101 lost its summary to one 124 s timeout; re-issue a timed-out request once when no fallback exists.
+comment: Shipped 2026-11-18, one providers.make_anthropic_client at all three sites, every call through _create_message, OverloadedError in the retry and the auto fallback, a pinned-anthropic timeout re-issued once, and a 10-minute cleanup-pass deadline with windows_done/windows_total/deadline_hit on the event. Owner still owes confirming the 10-minute deadline and a live pinned-anthropic run.
 ---
 
 # PIPE24: three Anthropic call sites build their client with three different timeout and retry policies, and a 529 overload is neither retried nor dropped to local

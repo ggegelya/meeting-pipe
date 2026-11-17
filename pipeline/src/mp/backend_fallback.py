@@ -49,6 +49,8 @@ def fallback_exceptions() -> tuple[type[BaseException], ...]:
         anthropic.PermissionDeniedError,
         anthropic.RateLimitError,
         anthropic.InternalServerError,
+        # PIPE24: HTTP 529 is its own class in the SDK, not an InternalServerError.
+        anthropic.OverloadedError,
     )
 
 

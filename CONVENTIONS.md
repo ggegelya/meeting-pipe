@@ -521,6 +521,7 @@ Keyed by the segment's array index, the same join key the two overlay sidecars u
 Two invariants worth keeping:
 
 - **Written on every run of the pass, including the single-speaker no-op.** Presence means the pass ran; absence means it never did. Those two states have opposite readings for any later question about a meeting's labels, and the aggregate event counts cannot separate them.
+- **The pass has a deadline (PIPE24).** `CLEANUP_DEADLINE_SEC` (10 minutes) bounds the whole pass: once it is past, no further window is issued, the edits gathered so far are applied, and the pass returns normally. The `pipeline`/`diarize_cleanup` event carries `windows_done`, `windows_total` and `deadline_hit` so a truncated pass is distinguishable from a complete one; the audit file is unchanged.
 - **Rewritten in full, so it describes the last run only.** After a second `mp cleanup-diarization --force` the `from` labels are the first run's `to` labels, and `valid1_check.revert_cleanup` therefore recovers that intermediate transcript, not the finalizer's. That is why, since DIAR9, a transcript already carrying `diarize_cleaned` is skipped without a model call or a rewrite unless `--force` is given; the skip still emits `pipeline`/`diarize_cleanup` with `skipped: "already_cleaned"`.
 
 It exists because the pass emitted only aggregate counts, so no owner correction could be traced to a cleanup edit rather than to a clustering mistake; DIAR5's own demonstration case had to be argued from two sidecars and could not be attributed from disk at all.

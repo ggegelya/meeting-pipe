@@ -35,13 +35,6 @@ from .config import (
 
 log = logging.getLogger("mp.engine")
 
-# Same rationale as summarize: bound a stalled connection instead of the SDK's
-# ~10-minute default. ask / digest are latency-tolerant (async / background), so
-# a generous read budget with a tight connect is right.
-_CONNECT_TIMEOUT = 10.0
-_READ_TIMEOUT = 120.0
-
-
 class EngineError(RuntimeError):
     """The configured engine could not produce a completion (no backend
     reachable, missing credentials, model unavailable). Carries a
@@ -66,26 +59,24 @@ class AnthropicTextClient:
     """Free-form single-turn completion over Anthropic's messages API.
 
     The tool-use / schema-forcing path lives in `summarize.AnthropicSummaryClient`;
-    this returns plain assistant text for ask / digest. `max_retries` is left to
-    the SDK (a small internal backoff) since neither caller has summarize's
-    timeout-to-local-fallback requirement.
+    this returns plain assistant text for ask / digest. Built by the shared
+    `providers.make_anthropic_client` and sent through `summarize._create_message`,
+    so it has summarize's one retry policy (PIPE24); it used to keep SDK retries
+    of its own and never got PIPE10's slept-through re-issue.
     """
 
     backend_id = "anthropic"
 
     def __init__(self, *, api_key: str, model: str) -> None:
-        import anthropic
-        import httpx
-
         self.model = model
-        self._client = anthropic.Anthropic(
-            api_key=api_key,
-            timeout=httpx.Timeout(_READ_TIMEOUT, connect=_CONNECT_TIMEOUT),
-            max_retries=2,
-        )
+        self._client = providers.make_anthropic_client(api_key)
 
     def complete(self, *, system_prompt: str, user_message: str, max_tokens: int) -> str:
-        response = self._client.messages.create(
+        # Lazy: summarize imports engine's siblings at module load.
+        from .summarize import _create_message
+
+        response = _create_message(
+            self._client,
             model=self.model,
             # PIPE12: parity with summarize and with the local / openai backends.
             # Unset, this ran at the API default of 1.0, so the same question asked

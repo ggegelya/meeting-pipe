@@ -35,6 +35,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from .config import BACKENDS, Config, parse_local_endpoint, require_env
 
 if TYPE_CHECKING:
+    import anthropic
+
     from .diarize_cleanup import CleanupClient
     from .services import SummaryClient
 
@@ -62,6 +64,39 @@ def lookup(backend: str) -> Provider:
             f"{', '.join(sorted(BACKENDS))}"
         )
     return row
+
+
+# ----- the one Anthropic client policy (PIPE24) -----
+
+# Bound every request so a stalled connection fails in ~2 min instead of the
+# SDK's ~10-minute default (a real 8.8k-char summary hung the pipeline for the
+# full 10 minutes). Chunked summarization bounds each call's output, so 120 s is
+# generous for legitimate generation while still catching a stall. Paired with
+# max_retries=0 so the SDK does not silently re-try a timeout before
+# `summarize._create_message` (the one retry layer) and the backend fallback see
+# it. Before PIPE24 the three call sites each built their own client: ask and
+# digest ran SDK retries of 2, and the cleanup pass ran the SDK's 600 s timeout
+# with 2 retries under tenacity's four attempts.
+ANTHROPIC_READ_TIMEOUT_SEC = 120.0
+ANTHROPIC_CONNECT_TIMEOUT_SEC = 10.0
+
+
+def make_anthropic_client(api_key: str) -> anthropic.Anthropic:
+    """The only place an `anthropic.Anthropic` is constructed.
+
+    Every call goes through `summarize._create_message`, which owns retry. A
+    caller that needs a longer generation budget gets a `timeout` parameter here
+    with the reason beside the call, not a second policy. Lazy import, like every
+    builder below, so importing this module stays free.
+    """
+    import anthropic
+    import httpx
+
+    return anthropic.Anthropic(
+        api_key=api_key,
+        timeout=httpx.Timeout(ANTHROPIC_READ_TIMEOUT_SEC, connect=ANTHROPIC_CONNECT_TIMEOUT_SEC),
+        max_retries=0,
+    )
 
 
 # ----- summary builders -----
@@ -93,7 +128,9 @@ def _local_summary(cfg: Config) -> SummaryClient:
 def _anthropic_summary(cfg: Config) -> SummaryClient:
     from .summarize import AnthropicSummaryClient
 
-    return AnthropicSummaryClient(api_key=require_env("ANTHROPIC_API_KEY"))
+    # PIPE24: pinned to anthropic means no local rung to drop to, so a timed-out
+    # request is re-issued once (`AutoFallbackClient`'s cloud client leaves it off).
+    return AnthropicSummaryClient(api_key=require_env("ANTHROPIC_API_KEY"), retry_timeout_once=True)
 
 
 def _auto_summary(cfg: Config) -> SummaryClient:
