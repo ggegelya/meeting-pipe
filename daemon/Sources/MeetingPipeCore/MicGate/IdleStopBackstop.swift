@@ -2,16 +2,21 @@ import Foundation
 
 /// The single meeting-idle backstop (TECH-END3). Supersedes both the raw-RMS
 /// `SilenceDetector` and the older `MicOnlySilenceBackstop`: one timing-pure unit,
-/// gated on the MicGate verdict (which already fuses HAL VAD + RMS) rather than raw
-/// level, so ambient room noise no longer resets the timer the way the RMS backstops
-/// did (they fired 2x / 0x in 19.8 days). It catches the "everyone left and the user
+/// gated on the MicGate verdict rather than raw level. On hardware with HAL voice activity
+/// that verdict fuses HAL VAD and RMS; HAL VAD read unsupported at 70 of 70 field starts
+/// (MIC21), so there it fuses the RMS gate with the daemon's own speech detector
+/// (`FloorSpeechDetector`), which is what keeps a stationary noise bed above the RMS gate's
+/// open threshold from resetting the timer (`rmsStationaryNoise` counts as quiet). Before
+/// MIC21 that verdict was the raw level gate, exactly what the older RMS backstops were
+/// (they fired 2x / 0x in 19.8 days). It catches the "everyone left and the user
 /// forgot" case at a long horizon, the way the mature notetakers do (Granola ~15 min,
 /// Otter ~10 min).
 ///
 /// Two horizons off one idle streak: a "still meeting?" nudge, then the auto-stop. The
 /// confidently-unmuted floor (TECH-MIC5) still counts as silence so a forgotten
-/// recording auto-stops; real speech/activity (`voiceActivityDetected` /
-/// `rmsAboveOpenThreshold`) or live system audio resets the streak.
+/// recording auto-stops, and so does a stationary bed (`rmsStationaryNoise`); real
+/// speech/activity (`voiceActivityDetected`, `speechDetected`, `rmsAboveOpenThreshold`) or
+/// live system audio resets the streak.
 ///
 /// A system channel that is **down** holds the streak instead (REC17). The host used to
 /// hand in one `hasSystemAudio` bit derived from a level mirror only the system tap
@@ -164,8 +169,9 @@ public final class IdleStopBackstop {
         case .hot(let reason):
             // The confidently-unmuted floor (TECH-MIC5) reports `.hot` to keep audio,
             // but the user is quiet, so it counts as silence for the forgotten-recording
-            // backstop. Real activity (VAD / RMS) does not.
-            return reason == .confidentlyUnmuted
+            // backstop, and so does a level the speech detector calls a stationary bed (MIC21).
+            // Real activity (VAD, the detector's speech, an RMS level it did not judge) does not.
+            return reason == .confidentlyUnmuted || reason == .rmsStationaryNoise
         case .silentByRMS, .mutedByApp, .mutedByHardware, .uncertain:
             return true
         }

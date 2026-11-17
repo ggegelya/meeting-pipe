@@ -29,6 +29,13 @@ public enum MicGateVerdict: Equatable, Sendable {
         /// so a quiet-but-unmuted moment is never dropped (TECH-MIC5 floor). The
         /// silence backstop still treats this as quiet.
         case confidentlyUnmuted = "confidently_unmuted"
+        /// MIC21: the daemon's own speech detector (`FloorSpeechDetector`) hears voice, where the
+        /// OS has no voice activity to offer. Real activity, like `voiceActivityDetected`.
+        case speechDetected = "speech_detected"
+        /// MIC21: the level clears the RMS gate but the speech detector says it is a stationary
+        /// bed (a fan, an air conditioner). Audio still passes, as it did; the idle backstop counts
+        /// it as quiet, so a forgotten recording in a noisy room still auto-stops.
+        case rmsStationaryNoise = "rms_stationary_noise"
     }
 
     /// True only for `.hot`; all other verdicts zero the mic under the regulated

@@ -21,6 +21,8 @@ final class FakeSessionHost: SessionHost {
 
     let stateMachine = DetectionStateMachine()
     let micGate: MicGate
+    /// What the gate logged (MIC21's `speech_evidence`, its verdicts), in memory.
+    let micGateLog = RecordingEventLog()
     var lifecycleCoord = MeetingLifecycleCoordinator()
     /// Pointed at a directory that does not exist, so `available` stays false and the oracle
     /// degrades to an immediate confirm. That is deliberately the pre-END9 behaviour, so every
@@ -91,7 +93,7 @@ final class FakeSessionHost: SessionHost {
             url: tempDir.appendingPathComponent("workflow_corrections.json")
         )
         self.muteLabels = MuteLabels(entries: [:])
-        self.micGate = MicGate(catalogue: muteLabels, halBus: CoreAudioHALBus(), axBus: AXObserverBus())
+        self.micGate = MicGate(catalogue: muteLabels, halBus: CoreAudioHALBus(), axBus: AXObserverBus(), eventLog: micGateLog)
         // Through the real `upsert`, not a back door: the store owns the TOML
         // round-trip and `workflows` is private(set) precisely so nobody skips it.
         for workflow in workflows {

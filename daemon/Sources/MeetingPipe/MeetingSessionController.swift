@@ -980,6 +980,7 @@ final class MeetingSessionController: @unchecked Sendable {
                     "workflow_name": resolvedWorkflow?.name ?? NSNull(),
                 ])
                 self.armSystemLevelMirror()
+                self.coordinator.micGate.beginSpeechEvidence()
                 self.compareInputDeviceHolder(trigger: "start", source: source)
                 self.resetMicGateBackstop()
                 // PERF15: the AX attach (MicGate, END11's explicit-start engage, the Leave arm)
@@ -1170,6 +1171,8 @@ final class MeetingSessionController: @unchecked Sendable {
         // Tear down per-meeting AX subscriptions; the verdict stream stays
         // open for the next meeting.
         coordinator.lifecycleCoord.disengage()
+        // MIC21: the recording's one speech_evidence row, before `stop` resets the gate's state.
+        coordinator.micGate.emitSpeechEvidence(bundleID: source?.bundleID)
         coordinator.micGate.stop()
         axWindowWatcher?.stop()
         axWindowWatcher = nil

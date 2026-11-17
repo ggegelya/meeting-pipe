@@ -11,6 +11,13 @@ public final class MicGate {
         public var halVad: Bool?
         public var rmsState: RMSGateProbe.State
         public var rmsCloseDwellMillis: Int
+        /// MIC21: the daemon's own speech detector, nil unless it is feeding (HAL voice activity
+        /// unsupported). HAL VAD wins whenever it reports.
+        public var detectedVoice: Bool?
+        /// MIC21: the detector calls the level a stationary bed (held, not merely "not voice").
+        public var detectedStationary: Bool
+        /// MIC21: which oracle wrote `axMute`, for the `speech_evidence` row.
+        public var axMuteSource: MuteReadingSource?
 
         public init(
             halSystemMute: Bool? = nil,
@@ -19,7 +26,10 @@ public final class MicGate {
             axLocale: String? = nil,
             halVad: Bool? = nil,
             rmsState: RMSGateProbe.State = .closed,
-            rmsCloseDwellMillis: Int = 0
+            rmsCloseDwellMillis: Int = 0,
+            detectedVoice: Bool? = nil,
+            detectedStationary: Bool = false,
+            axMuteSource: MuteReadingSource? = nil
         ) {
             self.halSystemMute = halSystemMute
             self.axMute = axMute
@@ -28,7 +38,13 @@ public final class MicGate {
             self.halVad = halVad
             self.rmsState = rmsState
             self.rmsCloseDwellMillis = rmsCloseDwellMillis
+            self.detectedVoice = detectedVoice
+            self.detectedStationary = detectedStationary
+            self.axMuteSource = axMuteSource
         }
+
+        /// The voice-activity reading `decide` uses: HAL's when it reports, else the detector's.
+        public var voiceActivity: Bool? { halVad ?? detectedVoice }
     }
 
     public let verdicts: AsyncStream<MicGateVerdict>
@@ -51,6 +67,15 @@ public final class MicGate {
     private let halSystemMuteProbe: HALSystemMuteProbe
     private let halVadProbe: HALVoiceActivityProbe
     private let rmsGate: RMSGateProbe
+    /// MIC21: the daemon's own speech detector, fed the same level as `rmsGate`.
+    private let speechDetector: FloorSpeechDetector
+    /// MIC21: whether HAL voice activity is on for this gate's device, from the probe's
+    /// `onSupportChange`. Read and written under `lock`, so the tap thread never asks the probe
+    /// (its `support` getter syncs onto the probe's queue). False until a start says otherwise,
+    /// so a recording whose gate never started still gets the detector.
+    private var halVadSupported = false
+    /// MIC21: the `speech_evidence` accounting, confined to `publishQueue`.
+    private var evidence: SpeechEvidenceLedger?
     private let adapters: [MicGateAdapter]
     /// MIC8 fusion inputs: the clock the freshness comparison reads, and how long a
     /// log reading outranks an AX one. Injected so a test can drive the precedence
@@ -58,7 +83,9 @@ public final class MicGate {
     private let now: () -> Date
     private let logFreshness: TimeInterval
 
-    private var state = State()
+    /// Seeded with the speech detector feeding, so it reaches `decide` from the first buffer rather
+    /// than from its first transition (a bed present from the start never makes one).
+    private var state = MicGate.feedingDetectorState
     private var activeAdapters: [MicGateAdapter] = []
     /// When the SlimCore log last spoke, i.e. how `MuteSourceFusion` decides whether
     /// the log is "present". Read and written under `lock` with the state itself, so
@@ -78,6 +105,7 @@ public final class MicGate {
         halSystemMuteProbe: HALSystemMuteProbe? = nil,
         halVadProbe: HALVoiceActivityProbe? = nil,
         rmsGate: RMSGateProbe = RMSGateProbe(),
+        speechDetector: FloorSpeechDetector = FloorSpeechDetector(),
         now: @escaping () -> Date = { Date() },
         logFreshness: TimeInterval = MuteSourceFusion.defaultLogFreshness
     ) {
@@ -90,6 +118,7 @@ public final class MicGate {
         self.halVadProbe = halVadProbe
             ?? HALVoiceActivityProbe(halBus: halBus, eventLog: eventLog)
         self.rmsGate = rmsGate
+        self.speechDetector = speechDetector
         self.adapters = adapters
         var sink: AsyncStream<MicGateVerdict>.Continuation!
         self.verdicts = AsyncStream<MicGateVerdict>(
@@ -106,8 +135,21 @@ public final class MicGate {
             self?.update { $0.halVad = active }
         }
         self.halVadProbe.onSupportChange = { [weak self] support in
-            if support == .unsupported {
-                self?.update { $0.halVad = nil }
+            guard let self else { return }
+            // MIC21: HAL VAD on means the detector stands down; off means it feeds.
+            self.update { state in
+                self.halVadSupported = support == .supported
+                if support == .unsupported { state.halVad = nil }
+                if support == .supported { state.detectedVoice = nil; state.detectedStationary = false }
+            }
+        }
+        self.speechDetector.onChange = { [weak self] voice, stationary in
+            guard let self else { return }
+            // Tap thread, like the RMS gate's callback; the flag is read inside the lock.
+            self.update { state in
+                guard !self.halVadSupported else { return }
+                state.detectedVoice = voice
+                state.detectedStationary = stationary
             }
         }
         self.rmsGate.onChange = { [weak self] gateState in
@@ -120,6 +162,7 @@ public final class MicGate {
         try halSystemMuteProbe.start()
         try halVadProbe.start()
         rmsGate.reset()
+        speechDetector.reset()
         update { $0.rmsState = .closed }
         // One adapter per signal source (MIC8), first match wins within a source.
         // Before MIC8 this was a flat `first(where:)` over the whole list, and for
@@ -154,12 +197,14 @@ public final class MicGate {
         halSystemMuteProbe.stop()
         halVadProbe.stop()
         rmsGate.reset()
+        speechDetector.reset()
         for adapter in activeAdapters { adapter.stop() }
         activeAdapters.removeAll()
         endHeld = false
         lock.withLock {
-            state = State()
+            state = MicGate.feedingDetectorState
             lastLogReadingAt = nil
+            halVadSupported = false
         }
     }
 
@@ -170,6 +215,10 @@ public final class MicGate {
 
     /// Audio-tap entry point. The RMS computation is allocation-free; a state transition's lock, `eventLog.emit`, and verdict-stream yield are all deferred to `publishQueue`, so this stays render-thread-safe regardless of how heavy `eventLog` is (TECH-CONC1).
     public func ingest(rmsDb: Float) {
+        // MIC21: the detector first, so the RMS gate's transition publishes with the detector's
+        // reading of the same buffer, not the previous one's (a talker rising over a held bed
+        // would otherwise pass through `rms_stationary_noise` at the onset).
+        speechDetector.ingest(dBFS: rmsDb)
         rmsGate.ingest(dBFS: rmsDb)
     }
 
@@ -210,6 +259,7 @@ public final class MicGate {
             newState.axMute = event?.state
             newState.axLabel = event?.label
             newState.axLocale = event?.locale
+            newState.axMuteSource = event == nil ? nil : source
             state = newState
             return newState
         }
@@ -217,7 +267,7 @@ public final class MicGate {
             noteSuppressedReading(event, source: source)
             return
         }
-        publish(MicGate.decide(state: snapshot))
+        publish(MicGate.decide(state: snapshot), state: snapshot, halVadSupported: lock.withLock { halVadSupported }, at: timestamp)
     }
 
     /// Record a reading the fusion declined. Rare by construction: both AX producers
@@ -245,7 +295,46 @@ public final class MicGate {
     /// to detect a stale app-mute (MIC10 part 2): app says muted while the OS says the user is
     /// speaking. `nil` (VAD unsupported on this input) reads as not-active.
     public var currentVadActive: Bool {
+        // MIC21: HAL's reading only, never the detector's. This feeds MIC10's muted-but-speaking
+        // contradiction, which clears the app mute in a capture-first mode, and under
+        // `.captureFirstRedact` that un-redacts muted asides. A level detector fires on far-side
+        // bleed through laptop speakers or typing as readily as on the user, so it may not clear a
+        // mute the user set.
         lock.withLock { state.halVad == true }
+    }
+
+    /// The state a gate starts from: the speech detector feeding (HAL VAD unknown until a start
+    /// reports it), reading no voice and no bed.
+    static let feedingDetectorState = State(detectedVoice: false)
+
+    // MARK: - MIC21: speech evidence per recording
+
+    /// Begin a recording's `speech_evidence` accounting. Scoped to the recording, not to `start`:
+    /// the gate can start seconds in, restart, or never start at all (the manual path), while the
+    /// level it is fed publishes verdicts throughout.
+    public func beginSpeechEvidence() {
+        let snapshot = lock.withLock { (state, halVadSupported) }
+        let at = now()
+        publishQueue.async { [weak self] in
+            guard let self else { return }
+            var ledger = SpeechEvidenceLedger(startedAt: at)
+            ledger.observe(state: snapshot.0, halVadSupported: snapshot.1, verdict: MicGate.decide(state: snapshot.0), at: at)
+            self.evidence = ledger
+        }
+    }
+
+    /// Write the recording's one `speech_evidence` row and stop counting. A no-op without a begin,
+    /// so a second stop path writes nothing.
+    public func emitSpeechEvidence(bundleID: String?) {
+        let at = now()
+        publishQueue.async { [weak self] in
+            guard let self, var ledger = self.evidence else { return }
+            self.evidence = nil
+            ledger.close(at: at)
+            var attributes = ledger.attributes
+            attributes["bundle_id"] = bundleID ?? "manual"
+            self.eventLog.emit(category: "micgate", action: "speech_evidence", attributes: attributes)
+        }
     }
 
     #if DEBUG
@@ -254,6 +343,11 @@ public final class MicGate {
     /// many threads and prove none is clobbered (TECH-MIC2).
     func debugUpdate(_ mutator: (inout State) -> Void) {
         update(mutator)
+    }
+
+    /// Test-only: wait until every publish queued so far has run.
+    func debugDrainPublishQueue() {
+        publishQueue.sync {}
     }
 
     /// Test-only: a consistent snapshot of the fused state, read under `lock`.
@@ -272,7 +366,7 @@ public final class MicGate {
                 locale: state.axLocale ?? ""
             )
         }
-        if state.rmsState == .closed && state.halVad != true {
+        if state.rmsState == .closed && state.voiceActivity != true {
             // Confidently-unmuted floor (TECH-MIC5): a confident app-unmute keeps
             // audio even when the RMS gate is closed, so a quiet-but-unmuted
             // moment is never dropped. A distinct reason lets the silence
@@ -285,7 +379,15 @@ public final class MicGate {
         if state.halVad == true {
             return .hot(reason: .voiceActivityDetected)
         }
+        if state.halVad == nil, state.detectedVoice == true {
+            return .hot(reason: .speechDetected)
+        }
         if state.rmsState == .open {
+            // MIC21: the detector holds that the level is a stationary bed. Still hot (audio passes,
+            // as it always did); only the reason changes, which the idle backstop counts as quiet.
+            if state.halVad == nil, state.detectedVoice == false, state.detectedStationary {
+                return .hot(reason: .rmsStationaryNoise)
+            }
             return .hot(reason: .rmsAboveOpenThreshold)
         }
         var reasons: [String] = []
@@ -306,22 +408,25 @@ public final class MicGate {
         // `.unmuted` could be reverted to a stale `.muted` (TECH-MIC2). The
         // snapshot used for `decide` is taken under the lock so the verdict
         // always reflects a consistent state.
-        let snapshot: State = lock.withLock {
+        let (snapshot, supported): (State, Bool) = lock.withLock {
             var newState = state
             mutator(&newState)
             state = newState
-            return newState
+            return (newState, halVadSupported)
         }
-        publish(MicGate.decide(state: snapshot))
+        publish(MicGate.decide(state: snapshot), state: snapshot, halVadSupported: supported, at: now())
     }
 
-    private func publish(_ verdict: MicGateVerdict) {
+    private func publish(_ verdict: MicGateVerdict, state: State, halVadSupported: Bool, at time: Date) {
         // Everything here, the dedupe lock and the synchronous events.jsonl
         // write in eventLog.emit, must stay off the audio render thread
         // (TECH-CONC1). Hop to the serial publishQueue, which also keeps the
         // emit ordered ahead of the verdict-stream yield as before.
+        // MIC21: `time` is when the change happened, read on the calling thread (the tap thread for
+        // the level, as `RMSGateProbe` reads its clock there), not when the queue gets to it.
         publishQueue.async { [weak self, continuation] in
             guard let self else { return }
+            self.evidence?.observe(state: state, halVadSupported: halVadSupported, verdict: verdict, at: time)
             let shouldEmit: Bool = self.lock.withLock {
                 if verdict == self.lastVerdict { return false }
                 self.lastVerdict = verdict
