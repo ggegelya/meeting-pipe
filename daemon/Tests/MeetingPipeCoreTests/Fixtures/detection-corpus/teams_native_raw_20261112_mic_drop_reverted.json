@@ -1,0 +1,100 @@
+{
+  "scenario": "teams_native_raw_20261112_mic_drop_reverted",
+  "description": "T17 item 6(b), a live Teams stretch (era 3): the mic dropped and the Leave button read invalid for about 22 s mid-call, then the window, the mic and the Leave button all came back and the recording ran on for minutes. Truth: live for the whole window (redetect). This is the 22 s mic drop the field evidence cautions against before any shorter pair dwell: at a 20 s dwell it ends. Raw lifecycle trace (redacted), extracted by scripts/extract_detection_trace.py --raw from the work laptop's 2026-11-13 log pack. Titles dropped and pid set to 1234; readings from before the window are carried at their real offsets; logged_verdicts is what that build decided, kept as a record and never asserted.",
+  "engine": "lifecycle",
+  "origin": "raw",
+  "source_window": {
+    "from": "2026-11-12T15:38:30Z",
+    "to": "2026-11-12T15:41:00Z"
+  },
+  "expected_outcome": "no_end",
+  "truth": {
+    "call_ended_at": null,
+    "truth_source": "redetect",
+    "max_overrun_sec": null
+  },
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "until": 150.0,
+  "events": [
+    {
+      "t": -926.457,
+      "kind": "process_audio_is_running_input_false",
+      "state": "live",
+      "carried": true
+    },
+    {
+      "t": -922.567,
+      "kind": "recording_started",
+      "carried": true
+    },
+    {
+      "t": -550.703,
+      "kind": "ax_leave_button",
+      "state": "live",
+      "carried": true
+    },
+    {
+      "t": -550.337,
+      "kind": "shareable_content_window",
+      "state": "ended",
+      "carried": true
+    },
+    {
+      "t": 46.639,
+      "kind": "process_audio_is_running_input_false",
+      "state": "ended"
+    },
+    {
+      "t": 46.656,
+      "kind": "teardown_snapshot",
+      "available": true,
+      "teardown_at": null,
+      "log_written_at": -542.187
+    },
+    {
+      "t": 46.656,
+      "kind": "live_signal",
+      "value": "call_is_down"
+    },
+    {
+      "t": 47.599,
+      "kind": "ax_leave_button",
+      "state": "ended"
+    },
+    {
+      "t": 68.662,
+      "kind": "shareable_content_window",
+      "state": "live"
+    },
+    {
+      "t": 69.759,
+      "kind": "process_audio_is_running_input_false",
+      "state": "live"
+    },
+    {
+      "t": 72.649,
+      "kind": "shareable_content_window",
+      "state": "ended"
+    },
+    {
+      "t": 75.885,
+      "kind": "ax_leave_button",
+      "state": "live"
+    }
+  ],
+  "logged_verdicts": [
+    {
+      "t": 46.643,
+      "verdict": "ending_provisional",
+      "leading": "process_audio_is_running_input_false"
+    },
+    {
+      "t": 68.663,
+      "verdict": "in_meeting"
+    }
+  ]
+}

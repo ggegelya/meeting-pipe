@@ -5,7 +5,40 @@ start/end lifecycle) and `MicGate.decide` (mute gating) and asserts the produced
 verdict sequence matches the captured expectation, so a regression in either is
 caught by CI (`DetectionCorpusTests`). Since T8 a third kind, `engine: "lifecycle"`,
 replays the whole end decision (the engine, the host's hold and Teams' teardown
-oracle together) from raw signal rows. `INDEX.json` lists the active scenarios.
+oracle together) from raw signal rows. `INDEX.json` lists the active scenarios
+in `scenarios`, and since T17 the legacy characterization set apart in
+`legacy_characterization` (below).
+
+## The rule (T17): what a reliability claim may cite
+
+**A reliability claim about end detection (in a task closure, an ADR or an audit)
+cites only traces in `scenarios` that carry `truth`.** A trace without a truth label
+only says what the engine did; a legacy trace says what it was built to say. The
+count of either is never coverage.
+
+## The legacy characterization set (T17)
+
+`legacy_characterization` holds the twenty `teams_native_{rewalk,flicker_rewalk,debounce}_end_*`
+traces and the two synthetic seeds that end on the host's confirm
+(`teams_native_clean_leave_en`, `teams_native_post_call_chat_grab_en`). They are
+**not evidence for any end rule**:
+
+- The twenty were rebuilt by `scripts/extract_detection_trace.py` from logged
+  lifecycle verdicts, not extracted from signal rows. The opening `live` event is
+  fabricated, and a tick-path end sits at today's lone dwell whatever the log of
+  its day recorded. Their `description` says so.
+- They are **four event structures**: 12 are Leave live, Leave ended, confirm; 3
+  are window live, window ended, window live, Leave ended, confirm; 1 is window
+  live, window ended, confirm; 4 are window live, window ended, tick.
+- Eighteen of the twenty-two answer their own end with `confirm_provisional_end`,
+  which takes the engine from any provisional straight to `.ended`, so the pair
+  and lone dwells, the live veto, the revert rule and the teardown oracle never
+  decide them.
+
+They still replay (they pin the in-meeting to provisional transitions and the
+three flicker reverts), in their own test, and the set is closed: a new trace goes
+in `scenarios`. `DetectionCorpusTests` fails on any trace in `scenarios` that
+carries `confirm_provisional_end`.
 
 ## The rule (T8)
 
@@ -17,9 +50,9 @@ meeting, because the corpus could not express the incident; a raw trace is how t
 fix is shown to hold against what actually happened. When the incident happened on
 another Mac, the spec names the UTC window and the owner runs the extraction there.
 
-The corpus is nine synthetic seeds, twenty real dogfood traces
-(`teams_native_{rewalk,debounce,flicker}_end_*`) derived from the daemon event
-log by `scripts/extract_detection_trace.py`, and seven synthetic incident traces
+The corpus is nine synthetic seeds (two of them now legacy), the twenty legacy
+characterization templates (`teams_native_{rewalk,debounce,flicker}_end_*`) rebuilt
+from the daemon event log's verdicts by `scripts/extract_detection_trace.py`, and seven synthetic incident traces
 END17 added (`teams_native_end{9,12,13,14,15}_*`,
 `google_meet_browser_tab_away_ten_minutes`), each built from the raw rows its END
 spec quotes and marked `"expected_outcome": "no_end"`: a live call that must
@@ -38,7 +71,7 @@ so every real trace is redacted before it lands (see below).
 
 ### Coverage reality (honest scope, TECH-C6)
 
-The twenty real traces are **all `com.microsoft.teams2` native**, because that is
+The twenty legacy templates are **all `com.microsoft.teams2` native**, because that is
 the only client this user records; the cross-app seeds stay synthetic until real
 meetings on those clients exist. Three engine paths are represented, all seen in
 real sessions: `rewalk_end` (ax-leave-led end confirmed by the host, the
@@ -74,13 +107,21 @@ the pure engine reproduces the verdict sequence the shipped engine logged live. 
 only emits endings it can faithfully reproduce and reports the rest:
 
 ```bash
-scripts/extract_detection_trace.py --inventory                 # per-session breakdown
+scripts/extract_detection_trace.py --inventory                 # per-session and per-recording breakdown
 scripts/extract_detection_trace.py --emit-all --out-dir /tmp/traces
 scripts/redact_detection_trace.py /tmp/traces/<name>.json --check   # mandatory PII gate
 ```
 
 Those are distilled: each reproduces the verdicts the engine of its day logged, so
-a false end replays as the false end it was. For an incident, extract the raw
+a false end replays as the false end it was, and they go in `legacy_characterization`
+if anywhere. `--inventory` also segments the log by recording (`recording_started`
+to `recording_stopped`) and names each stop's cause: `lifecycle_end` (unless a row
+says the host ignored that end), `hand_stop` (a `force_stop` from the hotkey or the
+URL scheme, or no automated cause row at all, since the menu's Stop writes none),
+`idle_backstop`, `other:<row>` (a mic-in-use or mic-release-ceiling stop, a call
+change split, an app-side `force_stop`), or `unclosed`. A distilled
+session only exists where the detector ended the call, so a missed end shows up only
+there, as a hand or backstop stop: those are the candidate windows for `--raw`. For an incident, extract the raw
 window instead (UTC, a few seconds either side of the rows the spec quotes):
 
 ```bash
@@ -124,7 +165,7 @@ structural signal, never meeting content. Before a real trace lands:
   `PromotionEngine.confirmProvisionalEnd`, which since END17 means Teams'
   teardown line for this recording; `rewalk_signal` names the evidence,
   `call_teardown_observed` today and `ax_leave_rewalk` in traces extracted
-  before it). Anything else the loader
+  before it; only the legacy set may carry it, T17). Anything else the loader
   rejects; do not invent kinds to carry extra data.
 - **No free text, anywhere.** No emails, URLs, `@`-mentions, or notes. The only
   human-readable strings should be `scenario`, `description` (write it yourself,
@@ -172,8 +213,10 @@ documentation only; the replay compares the verdict sequence positionally. An
 optional `"expected_outcome": "no_end"` additionally fails the replay if any
 `.ended` verdict appears, whatever `expected_verdicts` says. The engine runs at
 its default dwells (60 s pair, 720 s lone); the old `debounce_seconds` field is
-gone with the debounce. A real `rewalk_end` trace (the dominant native ending)
-ends with the host's confirm event rather than a `tick`:
+gone with the debounce. A legacy `rewalk_end` template ends with the host's
+confirm pseudo-event rather than a `tick`, which is exactly why it is legacy (T17):
+the event is the trace's own answer. A promotion trace in `scenarios` ends on a
+`tick` past a real dwell, or not at all:
 
 ```json
 "events": [
@@ -248,10 +291,65 @@ from before it. There are no control events; the clock runs to `until` by itself
   inert since END17 moved the veto into the engine); `rewalk` (`found`: the AX
   re-walk's result, inert by design, because an empty walk is not evidence and a found
   button reaches the engine as the re-armed signal's own row).
+- **`engage`** (T17): the host engaged the lifecycle afresh. Extracted from
+  `lifecycle_reengaged` with `has_handles` true (END27's re-engage at a record start;
+  without handles the host engaged nothing) and from the `idle` row the host's
+  disengage writes after an end it acted on. Like END27, it starts a fresh
+  `PromotionEngine` and hold policy **only when the replay's engine has ended**: those
+  rows are the logged build's reaction to its own end, so where today's engine has
+  not ended there, the `engage` is a no-op and cannot cut a later end.
+- **A stop no logged end caused ends the trace** (T17). A hand stop, the backstop, a
+  ceiling or a split happens at HEAD too and its disengage is unconditional, so the
+  extractor sets `until` at that `recording_stopped` and copies nothing after it:
+  past it there is no recording for an end to stop.
+- **Past an end** (T17): the replay no longer stops at the first `.ended`. Later
+  events reach the same engine, which ignores them in `.ended`, unless an `engage`
+  re-engages it; a `.starting` while a recording started since the last end runs is
+  confirmed, as `confirmLateStartIfRecording` does. Every end is recorded, and the
+  expectation and the truth are scored on the first.
 - **Expected:** `"expected_outcome": "no_end"`, or `"ended"` with `ended_at` and
   `trim_at` (`null` for a sub-second hold), each matched within a second.
+- **`truth`** (T17, optional): `{"call_ended_at": <seconds or null>, "truth_source":
+  "owner_stop" | "redetect" | "mic_release" | "owner_label", "max_overrun_sec":
+  <seconds or null>}`, written by hand from evidence other than the lifecycle verdict,
+  with `truth_source` naming which. `call_ended_at` null means the call was live for
+  the whole window. The replay is scored on its first end `E` against the call's end
+  `C`: with `C` null, an end loses `until - E` and no end loses nothing; with `C` set,
+  an end before it loses `C - E`, an end after it overruns by `E - C`, and no end at
+  all overruns by `until - C` (the least it ran past, since the window says no more).
+  It passes with `seconds_lost == 0` and `overrun_sec <= max_overrun_sec`; a call end
+  needs a `max_overrun_sec` with `0 <= call_ended_at` and `call_ended_at +
+  max_overrun_sec < until`, or a replay that never ends would pass on its truth. Exactly these three keys, enforced by
+  `redact_detection_trace.py --check`.
 - **`origin`** is `raw` or `synthetic`; a synthetic one holds the place of a window
   nobody has extracted yet. **`logged_verdicts`** is what the engine of that day logged,
   kept so the incident reads on its own; it is never asserted.
 
-After adding a trace, append its filename to `INDEX.json` `scenarios`.
+After adding a trace, append its filename to `INDEX.json` `scenarios` (never
+`legacy_characterization`, which is closed).
+
+**Truth-labelled traces so far (T17).** All raw, all in `scenarios`:
+
+- `zoom_native_raw_20261013_window_gone_live_mic` (D048, the owner's personal Mac):
+  live for the whole window, must not end. It is no mutation witness: with the veto
+  removed the 720 s lone dwell cannot fire inside its 90 s window, with a 60 s lone
+  dwell the veto holds it, and with both END29's live-Leave refusal still does. Its
+  `owner_label` rests on D048's reading of process audio; the owner did not remember
+  the call when asked, so the label is unconfirmed and the trace is **not citable**
+  under the rule above until it is.
+- From the work laptop's 2026-11-13 pack, era 3: `teams_native_raw_20261112_mic_release_end`
+  and `teams_native_raw_20261113_mic_release_end` (genuine ends, `mic_release`,
+  65 s overrun allowed), `teams_native_raw_20261112_mic_drop_reverted` and
+  `zoom_native_raw_20261112_leave_flicker_reverted` (live stretches with a reverted
+  provisional, `redetect`). The Teams mic drop lasts about 22 s, so a pair dwell of
+  20 s turns it red: check any shorter dwell against it.
+
+One window was tried and dropped: the 2026-11-12 Zoom end the build of its day
+reverted and the owner stopped by hand 9 s after the Leave edge. At HEAD the same
+hold is still open at that stop, so the trace ends there with nothing to score; it
+shows the old revert is gone, not when HEAD would end the call.
+
+No Chrome window qualifies yet. The pack's two Chrome stretches are a 2026-10-05 end
+whose only evidence is the lifecycle verdict itself, and a 2026-11-11 tab-left
+during a source-less recording that was never attached to Chrome's lifecycle, which
+the replay cannot score as a recording end.

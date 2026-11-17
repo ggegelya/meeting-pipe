@@ -1,0 +1,80 @@
+{
+  "scenario": "zoom_native_raw_20261112_leave_flicker_reverted",
+  "description": "T17 item 6(b), a live Zoom stretch (era 3): the Leave button read invalid for 5.5 s with Zoom holding the mic, then came back, and the recording ran on for 17 minutes. Truth: live for the whole window (redetect). Raw lifecycle trace (redacted), extracted by scripts/extract_detection_trace.py --raw from the work laptop's 2026-11-13 log pack. Titles dropped and pid set to 1234; readings from before the window are carried at their real offsets; logged_verdicts is what that build decided, kept as a record and never asserted.",
+  "engine": "lifecycle",
+  "origin": "raw",
+  "source_window": {
+    "from": "2026-11-12T15:02:00Z",
+    "to": "2026-11-12T15:04:00Z"
+  },
+  "expected_outcome": "no_end",
+  "truth": {
+    "call_ended_at": null,
+    "truth_source": "redetect",
+    "max_overrun_sec": null
+  },
+  "context": {
+    "bundle_id": "us.zoom.xos",
+    "kind": "native",
+    "pid": 1234
+  },
+  "until": 120.0,
+  "events": [
+    {
+      "t": -52.103,
+      "kind": "shareable_content_window",
+      "state": "live",
+      "carried": true
+    },
+    {
+      "t": -38.672,
+      "kind": "process_audio_is_running_input_false",
+      "state": "live",
+      "carried": true
+    },
+    {
+      "t": -36.933,
+      "kind": "ax_leave_button",
+      "state": "live",
+      "carried": true
+    },
+    {
+      "t": -28.126,
+      "kind": "recording_started",
+      "carried": true
+    },
+    {
+      "t": 45.485,
+      "kind": "ax_leave_button",
+      "state": "ended"
+    },
+    {
+      "t": 45.522,
+      "kind": "teardown_snapshot",
+      "available": true,
+      "teardown_at": null,
+      "log_written_at": -1892.888
+    },
+    {
+      "t": 45.522,
+      "kind": "live_signal",
+      "value": "call_is_up"
+    },
+    {
+      "t": 50.999,
+      "kind": "ax_leave_button",
+      "state": "live"
+    }
+  ],
+  "logged_verdicts": [
+    {
+      "t": 45.498,
+      "verdict": "ending_provisional",
+      "leading": "ax_leave_button_invalid"
+    },
+    {
+      "t": 51.0,
+      "verdict": "in_meeting"
+    }
+  ]
+}

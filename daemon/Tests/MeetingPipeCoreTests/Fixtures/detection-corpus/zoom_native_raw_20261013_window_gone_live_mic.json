@@ -1,0 +1,71 @@
+{
+  "scenario": "zoom_native_raw_20261013_window_gone_live_mic",
+  "description": "T17 item 6(a), D048: the first real field Zoom false end, on a stale pre-END9 build. Raw lifecycle trace (redacted), extracted by scripts/extract_detection_trace.py --raw. 16.6 s into a recorded Zoom call the shareable-content window read gone while Zoom still held the mic (process audio's last reading live), and the old host confirmed the end 10 ms later on the retired empty AX re-walk, which the replay does not carry. The log goes quiet after that because the old build disengaged. Truth: the call was live for the whole window (owner_label, from D048's reading of process audio; the owner did not remember the call when asked, so this label is unconfirmed and the trace is not citable for a reliability claim until it is). At HEAD the live veto holds the lone window-gone end, so it must not end. Titles dropped and pid set to 1234; logged_verdicts is what that build decided, kept as a record and never asserted.",
+  "engine": "lifecycle",
+  "origin": "raw",
+  "source_window": {
+    "from": "2026-10-13T08:03:00Z",
+    "to": "2026-10-13T08:04:30Z"
+  },
+  "expected_outcome": "no_end",
+  "truth": {
+    "call_ended_at": null,
+    "truth_source": "owner_label",
+    "max_overrun_sec": null
+  },
+  "context": {
+    "bundle_id": "us.zoom.xos",
+    "kind": "native",
+    "pid": 1234
+  },
+  "until": 90.0,
+  "events": [
+    {
+      "t": 1.829,
+      "kind": "process_audio_is_running_input_false",
+      "state": "live"
+    },
+    {
+      "t": 1.85,
+      "kind": "shareable_content_window",
+      "state": "live"
+    },
+    {
+      "t": 1.851,
+      "kind": "ax_leave_button",
+      "state": "live"
+    },
+    {
+      "t": 5.375,
+      "kind": "recording_started"
+    },
+    {
+      "t": 21.967,
+      "kind": "shareable_content_window",
+      "state": "ended"
+    }
+  ],
+  "logged_verdicts": [
+    {
+      "t": 1.829,
+      "verdict": "starting"
+    },
+    {
+      "t": 5.396,
+      "verdict": "in_meeting"
+    },
+    {
+      "t": 21.968,
+      "verdict": "ending_provisional",
+      "leading": "shareable_content_window_gone"
+    },
+    {
+      "t": 21.979,
+      "verdict": "ended",
+      "leading": "shareable_content_window_gone",
+      "confirmed_by": [
+        "ax_leave_rewalk"
+      ]
+    }
+  ]
+}

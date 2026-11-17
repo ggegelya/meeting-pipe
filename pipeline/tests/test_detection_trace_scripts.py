@@ -315,3 +315,174 @@ def test_a_recovered_row_makes_the_log_readable_again():
     trace, _ = _extract(rows, "2026-10-22T12:14:50Z", "2026-10-22T12:15:00Z")
     availability = [e["available"] for e in trace["events"] if e["kind"] == "teardown_snapshot"]
     assert availability == [False, True]
+
+
+# ------------------------------------------------------------------ T17
+
+def _session(confirmed_by: list[str], leading: str = "ax_leave_button_invalid"):
+    s = extract.Session({"ts": "2026-10-22T12:00:00.000Z", "bundle_id": TEAMS, "kind": "native"})
+    s.in_meeting = True
+    s.steps = [("provisional", leading, _ts("2026-10-22T12:10:00.000Z"))]
+    s.leading = leading
+    s.confirmed_by = confirmed_by
+    s.end = _ts("2026-10-22T12:10:01.000Z")
+    return s
+
+
+def test_a_distilled_trace_says_it_is_a_constructed_template():
+    # T17 (G023): the extractor rebuilds the timeline from logged verdicts, fabricating the opening
+    # live event and the lone-dwell tick, so its description may not claim a real session.
+    for confirmed, leading in ((["ax_leave_rewalk"], "ax_leave_button_invalid"),
+                               ([], "shareable_content_window_gone")):
+        trace, _ = extract.synthesize(_session(confirmed, leading), "s")
+        assert trace is not None
+        assert "Real dogfood session" not in trace["description"]
+        assert "constructed, not logged" in trace["description"]
+        assert "Evidence for no end rule" in trace["description"]
+
+
+def test_the_committed_legacy_traces_carry_the_template_words():
+    index = json.loads((_CORPUS / "INDEX.json").read_text(encoding="utf-8"))
+    legacy = index["legacy_characterization"]
+    assert len(legacy) == 22
+    assert not set(legacy) & set(index["scenarios"])
+    distilled = [n for n in legacy if "_end_" in n]
+    assert len(distilled) == 20
+    for name in distilled:
+        description = json.loads((_CORPUS / name).read_text(encoding="utf-8"))["description"]
+        assert description.startswith(extract.TEMPLATE_PREFIX), name
+        assert description.endswith(extract.TEMPLATE_SUFFIX), name
+
+
+def _recording_log() -> list[dict]:
+    """Three recordings: a lifecycle end, a hand stop, the idle backstop, and one never stopped."""
+    return [
+        _row("2026-10-22T09:00:00.000Z", "coordinator", "recording_started", bundle_id=TEAMS),
+        _row("2026-10-22T09:30:00.000Z", "lifecycle", "ended", bundle_id=TEAMS,
+             leading_signal="ax_leave_button_invalid", confirmed_by=["process_audio_is_running_input_false"]),
+        _row("2026-10-22T09:30:01.000Z", "coordinator", "recording_stopped", bundle_id=TEAMS),
+        _row("2026-10-22T10:00:00.000Z", "coordinator", "recording_started", bundle_id=TEAMS),
+        # Another app's end inside the recording is not this recording's end.
+        _row("2026-10-22T10:05:00.000Z", "lifecycle", "ended", bundle_id="us.zoom.xos",
+             leading_signal="workspace_app_terminated", confirmed_by=[]),
+        _row("2026-10-22T10:20:00.000Z", "coordinator", "recording_stopped", bundle_id=TEAMS),
+        _row("2026-10-22T11:00:00.000Z", "coordinator", "recording_started", bundle_id="manual"),
+        _row("2026-10-22T11:40:00.000Z", "coordinator", "auto_stop_silence", bundle_id="manual"),
+        _row("2026-10-22T11:40:02.000Z", "coordinator", "recording_stopped", bundle_id="manual"),
+        _row("2026-10-22T12:00:00.000Z", "coordinator", "recording_started", bundle_id=TEAMS),
+    ]
+
+
+def test_a_sourceless_recording_stopped_by_another_apps_end_is_a_lifecycle_end():
+    rows = [
+        _row("2026-11-11T13:59:52.000Z", "coordinator", "recording_started", bundle_id="manual"),
+        _row("2026-11-11T14:14:28.000Z", "lifecycle", "ended", bundle_id="com.google.Chrome",
+             leading_signal="browser_tab_title_left_meet_pattern", confirmed_by=[]),
+        _row("2026-11-11T14:14:35.000Z", "coordinator", "recording_stopped", bundle_id="manual"),
+    ]
+    assert [r["cause"] for r in extract.recordings(rows)] == ["lifecycle_end"]
+
+
+def test_the_inventory_reports_each_recordings_stop_cause():
+    # T17 (D085): sessionize sees only ends the detector made, so a hand or backstop stop was never
+    # inventoried. Segmenting by recording shows them as candidate windows.
+    recs = extract.recordings(_recording_log())
+    assert [r["cause"] for r in recs] == ["lifecycle_end", "hand_stop", "idle_backstop", "unclosed"]
+    assert [r["lifecycle_ended"] for r in recs] == [True, False, False, False]
+    assert recs[0]["cause_to_stop_s"] == 1.0
+    assert recs[1]["duration_s"] == 1200.0
+
+
+def test_the_inventory_prints_the_recordings(tmp_path, capsys):
+    log = tmp_path / "events.jsonl"
+    log.write_text("".join(json.dumps(r) + "\n" for r in _recording_log()), encoding="utf-8")
+    assert extract.main(["--events", str(log), "--inventory"]) == 0
+    out = capsys.readouterr().out
+    assert "hand_stop" in out and "idle_backstop" in out
+    assert "<- candidate" in out
+
+
+def test_a_reengage_row_with_handles_becomes_an_engage_event_and_one_without_does_not():
+    rows = _end15_log()[:6] + [
+        _row("2026-10-22T12:14:55.000Z", "coordinator", "lifecycle_reengaged", bundle_id=TEAMS,
+             reason="terminal_at_start", has_handles=True),
+        # Without handles the host engaged nothing (`no_pid`): the terminal engine stays.
+        _row("2026-10-22T12:14:57.000Z", "coordinator", "lifecycle_reengaged", bundle_id=TEAMS,
+             reason="terminal_at_start", has_handles=False),
+    ]
+    trace, _ = _extract(rows, "2026-10-22T12:14:50Z", "2026-10-22T12:15:00Z")
+    assert [e for e in trace["events"] if e["kind"] == "engage"] == [{"t": 5.0, "kind": "engage"}]
+    assert _clean(trace)
+
+
+def test_an_idle_row_in_the_window_becomes_an_engage_event():
+    # The host's disengage after an acted end publishes idle; the replay re-engages there only if
+    # its own engine has ended, which the Swift side pins.
+    rows = _end15_log()[:6] + [_row("2026-10-22T12:14:56.000Z", "lifecycle", "idle")]
+    trace, _ = _extract(rows, "2026-10-22T12:14:50Z", "2026-10-22T12:15:00Z")
+    assert {"t": 6.0, "kind": "engage"} in trace["events"]
+
+
+def test_stop_causes_name_ignored_ends_owner_force_stops_and_call_splits():
+    rows = [
+        # An end the host ignored, then the owner's own hotkey Stop.
+        _row("2026-11-11T10:00:00.000Z", "coordinator", "recording_started", bundle_id="manual"),
+        _row("2026-11-11T10:05:00.000Z", "lifecycle", "ended", bundle_id="com.google.Chrome",
+             leading_signal="browser_tab_title_left_meet_pattern", confirmed_by=[]),
+        _row("2026-11-11T10:05:00.010Z", "coordinator", "meeting_end_ignored_sourceless", bundle_id="com.google.Chrome"),
+        _row("2026-11-11T10:20:00.000Z", "coordinator", "force_stop", reason="hotkey", state="recording"),
+        _row("2026-11-11T10:20:01.000Z", "coordinator", "recording_stopped", bundle_id="manual"),
+        # An app-side force stop.
+        _row("2026-11-11T11:00:00.000Z", "coordinator", "recording_started", bundle_id=TEAMS),
+        _row("2026-11-11T11:10:00.000Z", "coordinator", "force_stop", reason="low_space", state="recording"),
+        _row("2026-11-11T11:10:01.000Z", "coordinator", "recording_stopped", bundle_id=TEAMS),
+        # END28's split on a call change.
+        _row("2026-11-11T12:00:00.000Z", "coordinator", "recording_started", bundle_id=TEAMS),
+        _row("2026-11-11T12:10:00.000Z", "coordinator", "recording_split_on_call_change", bundle_id=TEAMS),
+        _row("2026-11-11T12:10:01.000Z", "coordinator", "recording_stopped", bundle_id=TEAMS),
+    ]
+    recs = extract.recordings(rows)
+    assert [r["cause"] for r in recs] == ["hand_stop", "other:force_stop", "other:call_changed"]
+    assert recs[0]["lifecycle_ended"] is True, "the ignored end is still reported as logged"
+
+
+def test_the_check_accepts_a_truth_label_and_rejects_an_unknown_key_beside_it():
+    trace, _ = _extract(_end15_log(), "2026-10-22T12:14:50Z", "2026-10-22T12:15:25Z")
+    trace["truth"] = {"call_ended_at": None, "truth_source": "redetect", "max_overrun_sec": None}
+    assert _clean(trace)
+    trace["truth"] = {"call_ended_at": 9.0, "truth_source": "mic_release", "max_overrun_sec": 20.0}
+    assert _clean(trace)
+
+    for bad in (
+        {"call_ended_at": None, "truth_source": "redetect", "max_overrun_sec": None, "note": "Acme call"},
+        {"call_ended_at": None, "truth_source": "a hunch", "max_overrun_sec": None},
+        {"call_ended_at": 9.0, "truth_source": "mic_release", "max_overrun_sec": None},
+        {"call_ended_at": "late", "truth_source": "owner_stop", "max_overrun_sec": 5.0},
+        {"call_ended_at": 30.0, "truth_source": "owner_stop", "max_overrun_sec": 10.0},  # 30 + 10 >= until 35
+        {"call_ended_at": -1.0, "truth_source": "owner_stop", "max_overrun_sec": 5.0},
+    ):
+        trace["truth"] = bad
+        assert redact.validate(trace), bad
+
+
+def test_a_stop_no_logged_end_caused_ends_the_trace():
+    # T17: a hand stop disengages at HEAD too, so the replay may not run past it into an end the
+    # host could never make for a recording that no longer exists.
+    rows = _end15_log()[:6] + [
+        _row("2026-10-22T12:14:53.000Z", "signal", "ax_leave_button_state",
+             bundle_id=TEAMS, pid=635, state="invalid", reason="health_poll", previous="healthy"),
+        _row("2026-10-22T12:14:58.000Z", "coordinator", "recording_stopped", bundle_id=TEAMS),
+        _row("2026-10-22T12:14:58.100Z", "lifecycle", "idle"),
+        _row("2026-10-22T12:15:10.000Z", "signal", "process_audio_is_running_input",
+             bundle_id=TEAMS, pid=635, value=False, reason="poll", previous=True),
+    ]
+    trace, report = _extract(rows, "2026-10-22T12:14:50Z", "2026-10-22T12:15:30Z")
+    assert trace["until"] == 8.0
+    assert all(e["t"] <= 8.0 for e in trace["events"])
+    assert any("no logged end before it" in line for line in report)
+
+    # A stop a logged end caused is today's engine's to re-decide, so the window runs on.
+    rows.insert(-3, _row("2026-10-22T12:14:57.000Z", "lifecycle", "ended", bundle_id=TEAMS,
+                         leading_signal="ax_leave_button_invalid", confirmed_by=["lone_dwell"]))
+    trace, _ = _extract(rows, "2026-10-22T12:14:50Z", "2026-10-22T12:15:30Z")
+    assert trace["until"] == 40.0

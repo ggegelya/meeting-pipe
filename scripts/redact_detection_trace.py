@@ -99,14 +99,20 @@ def validate(trace: dict) -> list[str]:
 # log and an open key is where a title would slip through.
 LIFECYCLE_KEYS = {
     "scenario", "description", "engine", "origin", "source_window", "expected_outcome",
-    "ended_at", "trim_at", "context", "until", "events", "logged_verdicts",
+    "ended_at", "trim_at", "context", "until", "events", "logged_verdicts", "truth",
 }
+# T17: a truth label, written by hand from evidence other than the lifecycle verdict. Exactly
+# these keys; `truth_source` names the evidence from a closed vocabulary.
+TRUTH_KEYS = {"call_ended_at", "truth_source", "max_overrun_sec"}
+TRUTH_SOURCES = {"owner_stop", "redetect", "mic_release", "owner_label"}
 # Host inputs the replay reads, with the keys each may carry besides `t` and `kind`.
 HOST_KINDS = {
     "recording_started": set(),
     "teardown_snapshot": {"available", "teardown_at", "log_written_at"},
     "live_signal": {"value"},
     "rewalk": {"found"},
+    # T17: the host engaged the lifecycle afresh (END27's re-engage); the replay starts a new engine.
+    "engage": set(),
 }
 LIVE_SIGNALS = {"call_is_up", "call_is_down", "unknown"}
 VERDICTS = {"idle", "starting", "in_meeting", "ending_provisional", "ended"}
@@ -132,6 +138,8 @@ def validate_lifecycle(trace: dict) -> list[str]:
             errors.append("trim_at must be a number or null")
     if not _num(trace.get("until")):
         errors.append("until must be a number (seconds from the window start)")
+    if "truth" in trace:
+        errors += validate_truth(trace["truth"], trace.get("until"))
     context = trace.get("context")
     if not isinstance(context, dict) or set(context) - {"bundle_id", "kind", "pid"} \
             or context.get("kind") not in {"native", "browser"}:
@@ -179,6 +187,26 @@ def validate_lifecycle(trace: dict) -> list[str]:
         tokens = ([rec["leading"]] if "leading" in rec else []) + list(rec.get("confirmed_by", []))
         if not all(isinstance(tok, str) and TOKEN.match(tok) for tok in tokens):
             errors.append(f"{where} leading/confirmed_by must be snake_case signal tokens")
+    return errors
+
+
+def validate_truth(truth: object, until: object = None) -> list[str]:
+    if not isinstance(truth, dict) or set(truth) != TRUTH_KEYS:
+        return [f"truth must carry exactly {sorted(TRUTH_KEYS)}"]
+    errors: list[str] = []
+    ended, overrun = truth.get("call_ended_at"), truth.get("max_overrun_sec")
+    if ended is not None and not _num(ended):
+        errors.append("truth.call_ended_at must be a number or null (live for the whole window)")
+    if overrun is not None and not _num(overrun):
+        errors.append("truth.max_overrun_sec must be a number or null")
+    if ended is not None and overrun is None:
+        errors.append("truth with a call end needs a max_overrun_sec")
+    if _num(ended) and _num(overrun) and _num(until) and not (0 <= ended and ended + overrun < until):
+        # A missing end scores an overrun only up to `until`, so a window that cannot outlast the
+        # allowed overrun would let a replay that never ends pass on its truth.
+        errors.append("truth needs 0 <= call_ended_at and call_ended_at + max_overrun_sec < until")
+    if truth.get("truth_source") not in TRUTH_SOURCES:
+        errors.append(f"truth.truth_source must be one of {sorted(TRUTH_SOURCES)}")
     return errors
 
 

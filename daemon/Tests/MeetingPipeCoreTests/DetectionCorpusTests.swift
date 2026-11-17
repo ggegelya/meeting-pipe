@@ -20,16 +20,66 @@ final class DetectionCorpusTests: XCTestCase {
 
     func test_corpus_index_is_loadable_and_lists_every_referenced_trace() throws {
         let traces = try loadIndex()
+        let legacy = try loadIndex(list: "legacy_characterization")
         XCTAssertGreaterThanOrEqual(traces.count, 5, "Corpus should grow over Phase 2 dogfood")
-        for name in traces {
+        for name in traces + legacy {
             XCTAssertNotNil(traceURL(name: name), "Missing trace file: \(name)")
         }
+        XCTAssertTrue(Set(traces).isDisjoint(with: legacy), "a trace is either a scenario or legacy, never both")
     }
 
     func test_every_corpus_trace_replays_to_expected_verdicts() throws {
         let traces = try loadIndex()
         for name in traces {
             try replay(traceName: name)
+        }
+    }
+
+    /// T17: the 20 distilled `teams_native_{rewalk,flicker_rewalk,debounce}_end_*` traces and the two
+    /// seeds that end on the host's confirm pseudo-event. They are four event structures rebuilt from
+    /// logged verdicts, and 18 of them answer their own end through `confirm_provisional_end`, so they
+    /// pin the provisional transitions and the flicker reverts and are evidence for no end rule.
+    /// Replayed and listed apart so their count is never read as coverage.
+    func test_every_legacy_characterization_trace_replays_to_expected_verdicts() throws {
+        let legacy = try loadIndex(list: "legacy_characterization")
+        XCTAssertEqual(legacy.count, 22, "the legacy set is closed: a new trace goes in scenarios")
+        for name in legacy {
+            try replay(traceName: name)
+        }
+    }
+
+    // MARK: - T17: the pseudo-event fence
+
+    /// A trace in `scenarios` may not answer its own end. `confirm_provisional_end` takes the engine
+    /// straight to `.ended` from any provisional, so the dwells, the live veto, the revert rule and
+    /// the teardown oracle never decide a trace that carries it.
+    func test_no_scenario_answers_its_own_end_with_the_pseudo_event() throws {
+        let offenders = try Self.tracesCarryingThePseudoEvent(try loadIndex()) { name in
+            guard let url = traceURL(name: name) else { return nil }
+            return try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        }
+        XCTAssertEqual(offenders, [], "move these to legacy_characterization or end them on a real rule")
+    }
+
+    /// The fence can fail.
+    func test_the_pseudo_event_fence_names_a_scenario_that_carries_it() throws {
+        let traces: [String: [String: Any]] = [
+            "clean.json": ["events": [["t": 0.0, "kind": "ax_leave_button", "state": "live"]]],
+            "cheat.json": ["events": [
+                ["t": 0.0, "kind": "ax_leave_button", "state": "ended"],
+                ["t": 1.0, "kind": "confirm_provisional_end", "rewalk_signal": "ax_leave_rewalk"],
+            ]],
+        ]
+        let offenders = try Self.tracesCarryingThePseudoEvent(["clean.json", "cheat.json"]) { traces[$0] }
+        XCTAssertEqual(offenders, ["cheat.json"])
+    }
+
+    static func tracesCarryingThePseudoEvent(
+        _ names: [String], load: (String) throws -> [String: Any]?
+    ) throws -> [String] {
+        try names.filter { name in
+            let events = (try load(name)?["events"] as? [[String: Any]]) ?? []
+            return events.contains { ($0["kind"] as? String) == "confirm_provisional_end" }
         }
     }
 
@@ -140,6 +190,9 @@ final class DetectionCorpusTests: XCTestCase {
             return XCTFail("\(traceName) needs an 'origin' of raw or synthetic")
         }
         let outcome = replay.run()
+        for violation in try truthViolations(traceName: traceName, json: json, replay: replay, outcome: outcome) {
+            XCTFail(violation)
+        }
         switch json["expected_outcome"] as? String {
         case "no_end":
             XCTAssertNil(
@@ -185,6 +238,158 @@ final class DetectionCorpusTests: XCTestCase {
         XCTAssertNil(early.trimAt, "a lone-dwell end without process audio trims nothing")
     }
 
+    // MARK: - T17: truth labels
+
+    /// What is wrong with a replay against the trace's `truth`, empty when it passes or has none.
+    private func truthViolations(
+        traceName: String, json: [String: Any], replay: LifecycleTraceReplay, outcome: LifecycleTraceReplay.Outcome
+    ) throws -> [String] {
+        guard let truthJson = json["truth"] else { return [] }
+        let until = replay.until.timeIntervalSince1970
+        let truth = try makeTruth(traceName: traceName, truthJson, until: until)
+        return truth.violations(replayedEnd: outcome.endedAt?.timeIntervalSince1970, until: until)
+            .map { "\(traceName) against its truth (\(truth.source.rawValue)): \($0)" }
+    }
+
+    /// The JSON path can fail too: a trace file whose truth says the call ran to 240 s, replayed to
+    /// the pair dwell's end at 90 s, reports the lost seconds through the same check the corpus runs.
+    func test_a_truth_label_in_a_trace_file_fails_an_early_end() throws {
+        let json: [String: Any] = [
+            "context": ["bundle_id": "com.microsoft.teams2", "kind": "native", "pid": 1234],
+            "until": 300.0,
+            "truth": ["call_ended_at": 240.0, "truth_source": "owner_stop", "max_overrun_sec": 10.0],
+            "events": [
+                ["t": 0.0, "kind": "process_audio_is_running_input_false", "state": "live"],
+                ["t": 0.0, "kind": "ax_leave_button", "state": "live"],
+                ["t": 1.0, "kind": "recording_started"],
+                ["t": 30.0, "kind": "ax_leave_button", "state": "ended"],
+                ["t": 30.0, "kind": "process_audio_is_running_input_false", "state": "ended"],
+            ],
+        ]
+        let replay = try makeLifecycleReplay(traceName: "in_memory", json: json)
+        let violations = try truthViolations(traceName: "in_memory", json: json, replay: replay, outcome: replay.run())
+        XCTAssertEqual(violations.count, 1)
+        XCTAssertTrue(violations.first?.contains("seconds_lost") ?? false)
+    }
+
+    private func makeTruth(traceName: String, _ value: Any, until: TimeInterval) throws -> LifecycleTruth {
+        guard let json = value as? [String: Any],
+              Set(json.keys) == ["call_ended_at", "truth_source", "max_overrun_sec"],
+              let source = (json["truth_source"] as? String).flatMap(LifecycleTruth.Source.init(rawValue:)) else {
+            XCTFail("\(traceName) truth must be {call_ended_at, truth_source, max_overrun_sec} with a known source")
+            throw NSError(domain: "DetectionCorpus", code: 7)
+        }
+        let callEndedAt = json["call_ended_at"] as? Double
+        let maxOverrun = json["max_overrun_sec"] as? Double
+        if let call = callEndedAt {
+            // A call end the window cannot outlast by the allowed overrun would pass with no end at
+            // all, since a missing end is scored as overrunning only to `until`.
+            guard let maxOverrun, call >= 0, call + maxOverrun < until else {
+                XCTFail("\(traceName) truth needs 0 <= call_ended_at and call_ended_at + max_overrun_sec < until")
+                throw NSError(domain: "DetectionCorpus", code: 8)
+            }
+        }
+        return LifecycleTruth(callEndedAt: callEndedAt, source: source, maxOverrunSec: maxOverrun)
+    }
+
+    /// The bar can fail: a truth-labelled trace whose replay ends 60 s into a call that ran to 240 s
+    /// scores the lost minute, and the assertion fires on it.
+    func test_a_truth_labelled_trace_that_ends_early_reports_the_seconds_lost() {
+        let context = MeetingLifecycleContext(bundleID: "com.microsoft.teams2", kind: .native, pid: 1234)
+        let at = { Date(timeIntervalSince1970: $0) }
+        let replay = LifecycleTraceReplay(
+            context: context,
+            events: [
+                (at(0), .signal(.processAudioIsRunningInput, .live)),
+                (at(0), .signal(.axLeaveButton, .live)),
+                (at(1), .recordingStarted),
+                (at(30), .signal(.axLeaveButton, .ended)),
+                (at(30), .signal(.processAudioIsRunningInput, .ended)),
+            ],
+            until: at(300)
+        )
+        let ended = replay.run().endedAt?.timeIntervalSince1970
+        XCTAssertEqual(ended ?? .nan, 90, accuracy: 1, "the pair dwell ends it")
+
+        let truth = LifecycleTruth(callEndedAt: 240, source: .ownerLabel, maxOverrunSec: 10)
+        let score = truth.score(replayedEnd: ended, until: 300)
+        XCTAssertGreaterThan(score.secondsLost, 0)
+        XCTAssertEqual(score.secondsLost, 150, accuracy: 1)
+        XCTAssertFalse(truth.violations(replayedEnd: ended, until: 300).isEmpty, "the assertion fails")
+    }
+
+    func test_truth_scoring_edge_cases() {
+        let live = LifecycleTruth(callEndedAt: nil, source: .ownerLabel, maxOverrunSec: nil)
+        XCTAssertEqual(live.score(replayedEnd: nil, until: 90), .init(secondsLost: 0, overrunSec: 0))
+        XCTAssertEqual(live.score(replayedEnd: 30, until: 90), .init(secondsLost: 60, overrunSec: 0),
+                       "a live call that replays to an end loses the rest of the window")
+
+        let ends = LifecycleTruth(callEndedAt: 100, source: .micRelease, maxOverrunSec: 70)
+        XCTAssertEqual(ends.score(replayedEnd: 160, until: 900), .init(secondsLost: 0, overrunSec: 60))
+        XCTAssertTrue(ends.violations(replayedEnd: 160, until: 900).isEmpty)
+        XCTAssertEqual(ends.score(replayedEnd: nil, until: 900), .init(secondsLost: 0, overrunSec: 800),
+                       "a call end the replay never reached overruns at least to the window's end")
+        XCTAssertFalse(ends.violations(replayedEnd: nil, until: 900).isEmpty)
+    }
+
+    // MARK: - T17: replay past an end
+
+    /// A resume: the call ends on the pair dwell, the host engages afresh (END27's re-engage at a
+    /// record start), and the second call ends the same way. Both ends are recorded.
+    func test_a_lifecycle_replay_goes_on_past_an_end_and_records_a_resumed_calls_end() {
+        let context = MeetingLifecycleContext(bundleID: "com.microsoft.teams2", kind: .native, pid: 1234)
+        let at = { Date(timeIntervalSince1970: $0) }
+        let firstCall: [(at: Date, event: LifecycleTraceReplay.Event)] = [
+            (at(0), .signal(.processAudioIsRunningInput, .live)),
+            (at(0), .signal(.axLeaveButton, .live)),
+            (at(1), .recordingStarted),
+            (at(30), .signal(.axLeaveButton, .ended)),
+            (at(30), .signal(.processAudioIsRunningInput, .ended)),
+        ]
+        // The host's order: the resume's recording starts, then its build lands and END27 re-engages
+        // the terminal engine, which `confirmLateStartIfRecording` takes to `.inMeeting`.
+        let resume: [(at: Date, event: LifecycleTraceReplay.Event)] = [
+            (at(120), .recordingStarted),
+            (at(120.5), .engage),
+            (at(120.5), .signal(.processAudioIsRunningInput, .live)),
+            (at(120.5), .signal(.axLeaveButton, .live)),
+            (at(200), .signal(.axLeaveButton, .ended)),
+            (at(200), .signal(.processAudioIsRunningInput, .ended)),
+        ]
+        let outcome = LifecycleTraceReplay(context: context, events: firstCall + resume, until: at(400)).run()
+        XCTAssertEqual(outcome.ends.map { $0.at.timeIntervalSince1970 }.count, 2)
+        XCTAssertEqual(outcome.ends.first?.at.timeIntervalSince1970 ?? .nan, 90, accuracy: 1)
+        XCTAssertEqual(outcome.ends.last?.at.timeIntervalSince1970 ?? .nan, 260, accuracy: 1)
+        let startings = outcome.verdicts.filter { if case .starting = $0.verdict { return true } else { return false } }
+        XCTAssertEqual(startings.count, 2, "the fresh engine starts again")
+
+        let inMeeting = outcome.verdicts.filter { if case .inMeeting = $0.verdict { return true } else { return false } }
+        XCTAssertEqual(inMeeting.count, 2, "the re-engaged engine is confirmed into .inMeeting, so its end is held")
+
+        // Without the host's engage, the ended engine ignores the second call, as at HEAD.
+        let noEngage = firstCall + resume.filter { if case .engage = $0.event { return false } else { return true } }
+        XCTAssertEqual(LifecycleTraceReplay(context: context, events: noEngage, until: at(400)).run().ends.count, 1)
+    }
+
+    /// An `engage` the build of its day made after its own end is a no-op while today's engine has
+    /// not ended: the old build's reaction must not cut a later end.
+    func test_an_engage_reaching_a_live_engine_changes_nothing() {
+        let context = MeetingLifecycleContext(bundleID: "com.microsoft.teams2", kind: .native, pid: 1234)
+        let at = { Date(timeIntervalSince1970: $0) }
+        let call: [(at: Date, event: LifecycleTraceReplay.Event)] = [
+            (at(0), .signal(.processAudioIsRunningInput, .live)),
+            (at(0), .signal(.axLeaveButton, .live)),
+            (at(1), .recordingStarted),
+            (at(30), .signal(.axLeaveButton, .ended)),
+            (at(30), .signal(.processAudioIsRunningInput, .ended)),
+        ]
+        let withEngage = call + [(at(60), .engage)]
+        let plain = LifecycleTraceReplay(context: context, events: call, until: at(300)).run()
+        let engaged = LifecycleTraceReplay(context: context, events: withEngage, until: at(300)).run()
+        XCTAssertEqual(engaged.ends.map(\.at), plain.ends.map(\.at))
+        XCTAssertEqual(engaged.ends.first?.at.timeIntervalSince1970 ?? .nan, 90, accuracy: 1)
+    }
+
     private func makeLifecycleReplay(traceName: String, json: [String: Any]) throws -> LifecycleTraceReplay {
         guard let contextJson = json["context"] as? [String: Any],
               let events = json["events"] as? [[String: Any]],
@@ -219,6 +424,8 @@ final class DetectionCorpusTests: XCTestCase {
                 timeline.append((at, .liveSignal(value)))
             case "rewalk":
                 timeline.append((at, .rewalk(found: (event["found"] as? Bool) ?? false)))
+            case "engage":
+                timeline.append((at, .engage))
             default:
                 let signal = try mapSignalKind(kind)
                 let state: PrimarySignalState
@@ -273,14 +480,14 @@ final class DetectionCorpusTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func loadIndex() throws -> [String] {
+    private func loadIndex(list: String = "scenarios") throws -> [String] {
         guard let url = Bundle.module.url(forResource: "INDEX", withExtension: "json") else {
             XCTFail("INDEX.json missing from test bundle")
             return []
         }
         let data = try Data(contentsOf: url)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let scenarios = json["scenarios"] as? [String] else {
+              let scenarios = json[list] as? [String] else {
             XCTFail("INDEX.json malformed")
             return []
         }

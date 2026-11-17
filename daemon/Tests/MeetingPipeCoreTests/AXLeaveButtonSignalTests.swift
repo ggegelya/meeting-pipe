@@ -749,3 +749,49 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         XCTAssertGreaterThan(fired.value, 0, "the poll never reached a callback")
     }
 }
+
+// MARK: - T17: D105 pinned at the signal
+
+extension AXLeaveButtonSignalTests {
+
+    /// D105: before PERF15, `_start` threw from `axBus.subscribe` before `startPoll` and the initial
+    /// read, so the element was kept with no poll, the Leave button could never go invalid, and a mic
+    /// release was never corroborated (2026-10-06 and 2026-10-08, 562 s and 63 s past the call). A
+    /// corpus trace cannot pin this: it feeds the engine signal events and never runs `_start`, and a
+    /// raw trace of either window lacks the very row the defect suppressed.
+    func test_aSubscribeThatThrows_isLoggedOnce_andThePollStillCatchesTheLeave() {
+        let log = RecordingEventLog()
+        let scheduler = ManualScheduler()
+        var probeReturn: AXLeaveButtonSignal.State = .healthy
+        var observed: [AXLeaveButtonSignal.State] = []
+        let signal = AXLeaveButtonSignal(
+            axBus: AXObserverBus(backend: RefusingAXBackend()),
+            eventLog: log,
+            probe: { _ in probeReturn },
+            scheduler: manualScheduler(scheduler)
+        )
+        signal.onChange = { observed.append($0) }
+
+        signal.start(context: teamsContext, leaveButton: stubElement())
+        XCTAssertEqual(log.entries.filter { $0.action == "ax_leave_button_arm_failed" }.count, 1)
+        XCTAssertNotNil(scheduler.tick, "the health poll is armed although the subscribe failed")
+        XCTAssertEqual(observed, [.healthy], "the initial read still runs")
+
+        probeReturn = .invalid
+        scheduler.tick?()
+        XCTAssertEqual(observed, [.healthy, .invalid], "the poll emits the invalid edge the notification never will")
+        XCTAssertEqual(log.entries.filter { $0.action == "ax_leave_button_arm_failed" }.count, 1, "logged once, not per poll")
+    }
+}
+
+/// Refuses every registration, as a hung or relaunching client's observer does.
+private final class RefusingAXBackend: AXObserverBus.Backend {
+    func register(
+        pid: pid_t,
+        element: AXUIElement,
+        notification: String,
+        handler: @escaping () -> Void
+    ) throws -> () -> Void {
+        throw AXObserverBus.BusError.backendFailed(.failure)
+    }
+}

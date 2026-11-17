@@ -1,0 +1,95 @@
+{
+  "scenario": "teams_native_raw_20261112_mic_release_end",
+  "description": "T17 item 6(b), a genuine Teams end (era 3): Teams released the mic and the Leave button went invalid 2.7 s later, and nothing came back. Truth: the call ended at the mic release (mic_release), with a 65 s overrun allowed for the 60 s pair dwell. At HEAD the pair confirms 60 s after the later edge and the tail is cut back to the release. Raw lifecycle trace (redacted), extracted by scripts/extract_detection_trace.py --raw from the work laptop's 2026-11-13 log pack. Titles dropped and pid set to 1234; readings from before the window are carried at their real offsets; logged_verdicts is what that build decided, kept as a record and never asserted.",
+  "engine": "lifecycle",
+  "origin": "raw",
+  "source_window": {
+    "from": "2026-11-12T14:52:30Z",
+    "to": "2026-11-12T14:55:00Z"
+  },
+  "expected_outcome": "ended",
+  "ended_at": 129.812,
+  "trim_at": 67.062,
+  "truth": {
+    "call_ended_at": 67.062,
+    "truth_source": "mic_release",
+    "max_overrun_sec": 65.0
+  },
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "until": 150.0,
+  "events": [
+    {
+      "t": -966.024,
+      "kind": "process_audio_is_running_input_false",
+      "state": "live",
+      "carried": true
+    },
+    {
+      "t": -963.956,
+      "kind": "shareable_content_window",
+      "state": "ended",
+      "carried": true
+    },
+    {
+      "t": -963.683,
+      "kind": "recording_started",
+      "carried": true
+    },
+    {
+      "t": -963.538,
+      "kind": "ax_leave_button",
+      "state": "live",
+      "carried": true
+    },
+    {
+      "t": 67.062,
+      "kind": "process_audio_is_running_input_false",
+      "state": "ended"
+    },
+    {
+      "t": 67.066,
+      "kind": "teardown_snapshot",
+      "available": true,
+      "teardown_at": null,
+      "log_written_at": -1322.887
+    },
+    {
+      "t": 67.066,
+      "kind": "live_signal",
+      "value": "call_is_down"
+    },
+    {
+      "t": 69.714,
+      "kind": "ax_leave_button",
+      "state": "ended"
+    },
+    {
+      "t": 127.342,
+      "kind": "engage"
+    }
+  ],
+  "logged_verdicts": [
+    {
+      "t": 67.064,
+      "verdict": "ending_provisional",
+      "leading": "process_audio_is_running_input_false"
+    },
+    {
+      "t": 127.092,
+      "verdict": "ended",
+      "leading": "process_audio_is_running_input_false",
+      "confirmed_by": [
+        "ax_leave_button_invalid",
+        "shareable_content_window_gone"
+      ]
+    },
+    {
+      "t": 127.342,
+      "verdict": "idle"
+    }
+  ]
+}

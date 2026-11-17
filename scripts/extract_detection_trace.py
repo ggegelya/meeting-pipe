@@ -12,13 +12,16 @@ meetings, and for each one it can faithfully reproduce, emits a distilled
 `engine: "promotion"` trace whose replay through the pure engine reproduces that
 exact verdict sequence.
 
-What "distilled" means, and why it is honest: the committed trace is NOT a byte
-copy of the noisy raw signal stream (a 1 Hz `ax_leave_button_state` poll, the
-production-only AX re-walk, the idle backstop). It is the minimal signal timeline
-that reproduces the real VERDICT sequence the engine logged for that meeting, with
-the real leading signal, confirmed_by, provisional-flicker count, and timing
-preserved. That is a characterization test of real behavior, matching how the
-synthetic seeds are shaped.
+What "distilled" means (T17 corrected how it was described): the trace is NOT
+extracted from the signal rows at all. It is a characterization template rebuilt
+from the engine's logged verdicts: the leading signals, confirmed_by and
+provisional count are the log's, but the opening `live` event is fabricated, the
+signal timeline is constructed only to reproduce those verdicts, and a tick-path
+end is placed at the lone dwell whatever the log recorded. Every one of the 20
+committed traces is one of four event structures, and a confirm-path one answers
+its own end with the `confirm_provisional_end` pseudo-event, so none of them is
+evidence for any end rule. They live in INDEX.json `legacy_characterization`, never
+`scenarios`; a new end-detection trace comes from `--raw` below.
 
 It reproduces two ending families (see PromotionEngine):
   - confirm-path: `confirmed_by == ["ax_leave_rewalk"]` (the pre-END17 host
@@ -42,12 +45,13 @@ faked. Two shapes land there, and neither is a corpus coverage gap (C7):
   - a same-class confirmed_by (ax-leave plus window-gone) is correlated evidence,
     not independent corroboration, so it is not a promotion path either (END6/AUD-10).
 
-The idle-stop backstop does NOT appear in this inventory at all, in any shape. It
+The idle-stop backstop does NOT appear in the per-session breakdown, in any shape. It
 force-stops the RECORDING, not the lifecycle: `IdleStopBackstop.onAutoStop` reaches
 `MeetingSessionController.handleIdleAutoStop`, which stops the recorder and
 disengages, so the log shows `coordinator.auto_stop_silence` then `lifecycle.idle`
 and never a `lifecycle.ended`. `sessionize` closes a session on `lifecycle.ended`,
-so a backstop-ended meeting is never even a session here.
+so a backstop-ended meeting is never even a session there. Since T17 the inventory's
+per-recording section (`recordings`) is where it, and every hand stop, shows up.
 
 Output carries no titles and pid 1234, so it is redaction-clean by construction;
 still run every emitted file through `redact_detection_trace.py --check` before
@@ -198,6 +202,16 @@ def sessionize(events: list[dict]) -> list[Session]:
     return sessions
 
 
+# T17: what a distilled trace says it is. The 20 committed ones carry the same words.
+TEMPLATE_PREFIX = ("Characterization template (redacted, T17 legacy set), rebuilt by "
+                   "scripts/extract_detection_trace.py from one real session's logged lifecycle verdicts, "
+                   "not extracted from its signal rows. ")
+TEMPLATE_SUFFIX = ("The verdict sequence, leading signals and provisional count are the log's; the opening "
+                   "live event, any lone-dwell tick time and a tick-path end's confirmed_by (lone_dwell) are "
+                   "constructed, not logged, and the signal timeline is rebuilt only to reproduce those "
+                   "verdicts. Evidence for no end rule. Titles dropped and pid set to 1234.")
+
+
 def synthesize(s: Session, scenario: str) -> tuple[dict | None, str]:
     """Return (trace, shape_tag) if the session's ending is reproducible by the
     pure engine, else (None, skip_reason)."""
@@ -286,10 +300,7 @@ def synthesize(s: Session, scenario: str) -> tuple[dict | None, str]:
                    f"lone {RAW_TO_SHORT[s.leading]}-led end, confirmed on the {LONE_DWELL:.0f}s lone dwell (END17)")
     trace = {
         "scenario": scenario,
-        "description": (f"Real dogfood session (redacted). {s.kind} {s.bundle_id}; {family_note}; {prov_note}. "
-                        "Verdict sequence, leading signal, confirmed_by and relative timing preserved from the "
-                        "event log; signal timeline minimally reconstructed to reproduce that sequence through the "
-                        "pure engine; titles dropped and pid set to 1234."),
+        "description": (f"{TEMPLATE_PREFIX}{s.kind} {s.bundle_id}; {family_note}; {prov_note}. {TEMPLATE_SUFFIX}"),
         "engine": "promotion",
         "context": {"bundle_id": s.bundle_id, "kind": s.kind, "pid": 1234},
         "events": events,
@@ -368,6 +379,12 @@ def _host_events(row: dict, t: float, report: list[str], line_at: float | None =
             report.append(f"t={t}: retired confirm ({oracle or 'pre-END9 re-walk'}) is not teardown evidence; not replayed")
     elif act == "lifecycle_provisional_end_rescued":
         out.append({"kind": "rewalk", "found": True})
+    elif act == "lifecycle_reengaged" and row.get("has_handles") is True:
+        # T17: END27's re-engage at a record start. The replay starts a fresh engine on it, and
+        # never assumes one, so a resume is only replayable when the host logged doing it. Without
+        # handles the host engaged nothing (`no_pid`), so the terminal engine stays and so does
+        # the replay's.
+        out.append({"kind": "engage"})
     elif act == "call_teardown_source_missing":
         out.append({"kind": "teardown_snapshot", "available": False, "teardown_at": None, "log_written_at": None})
     elif act == "call_teardown_source_recovered":
@@ -378,6 +395,94 @@ def _host_events(row: dict, t: float, report: list[str], line_at: float | None =
         # A registration line fires at call start and is never teardown evidence.
         out.append({"kind": "teardown_snapshot", "available": True, "teardown_at": line_at, "log_written_at": None})
     return out
+
+
+# ---------------------------------------------------------------------- recordings (T17, D085)
+
+# Rows that say an automated path stopped the recording, mapped to the cause they name. A stop with
+# none of them before it is a hand stop: the menu's Stop writes no row, so it is inferred from
+# absence (the field evidence's limit, "manual stops are inferred from absence").
+STOP_CAUSE_ROWS = {
+    ("coordinator", "auto_stop_silence"): "idle_backstop",
+    ("coordinator", "mic_in_use_stop"): "other:mic_in_use_stop",
+    ("coordinator", "mic_release_ceiling_stop"): "other:mic_release_ceiling_stop",
+    ("coordinator", "recording_split_on_call_change"): "other:call_changed",
+}
+# `force_stop` is the owner's own Stop when it came from the hotkey or the URL scheme (the menu's
+# Stop writes no row at all); its other reasons are the app's (`low_space`, `write_failure_*`).
+OWNER_FORCE_STOP_REASONS = {"hotkey", "url_scheme"}
+# Rows saying an end the log shows was NOT acted on, so the recording ran on and its real stop
+# came later (END19 item 3, END20): the end is not the stop's cause.
+IGNORED_END_ROWS = {"meeting_end_ignored_sourceless", "meeting_end_ignored_other_app",
+                    "lifecycle_recording_on_terminal_engine"}
+
+
+def recordings(events: list[dict]) -> list[dict]:
+    """Segment on `recording_started` .. `recording_stopped` and name each stop's cause.
+
+    `sessionize` only sees ends the detector made, so a missed end (a hand or backstop stop) was
+    never inventoried; this is where those show up as candidate windows for `--raw`. The cause is
+    the last cause row inside the recording (`lifecycle_end` for a `lifecycle` `ended` of the
+    recording's app, or of any app for a source-less one, unless a row says the host ignored it),
+    `hand_stop` when there is none or the owner's own `force_stop`, `unclosed` when the log has no
+    stop. `lifecycle_ended` says whether any end was logged, acted on or not."""
+    out: list[dict] = []
+    cur: dict | None = None
+    for e in events:
+        cat, act = e.get("category"), e.get("action")
+        ts = _parse_ts(e.get("ts"))
+        if cat == "coordinator" and act == "recording_started":
+            if cur is not None:
+                cur["cause"] = "unclosed"
+                out.append(cur)
+            cur = {"started": e.get("ts"), "stopped": None, "bundle_id": e.get("bundle_id"),
+                   "cause": None, "cause_at": None, "lifecycle_ended": False, "_start": ts}
+            continue
+        if cur is None:
+            continue
+        # A source-less recording (`manual`) has no app of its own, so any app's end can stop it
+        # (the 2026-11-11 browser end the field evidence names stopped one).
+        sourceless = cur["bundle_id"] in (None, "manual")
+        if cat == "lifecycle" and act == "ended" and (sourceless or e.get("bundle_id") == cur["bundle_id"]):
+            cur["lifecycle_ended"] = True
+            cur["cause"], cur["cause_at"] = "lifecycle_end", ts
+        elif (cat, act) in STOP_CAUSE_ROWS:
+            cur["cause"], cur["cause_at"] = STOP_CAUSE_ROWS[(cat, act)], ts
+        elif cat == "coordinator" and act == "force_stop":
+            owner = e.get("reason") in OWNER_FORCE_STOP_REASONS
+            cur["cause"], cur["cause_at"] = ("hand_stop" if owner else "other:force_stop"), ts
+        elif cat == "coordinator" and act in IGNORED_END_ROWS and cur["cause"] == "lifecycle_end":
+            cur["cause"], cur["cause_at"] = None, None
+        elif cat == "coordinator" and act == "recording_stopped":
+            cur["stopped"] = e.get("ts")
+            cur["duration_s"] = round((ts - cur["_start"]).total_seconds(), 1) if ts and cur["_start"] else None
+            cur["cause_to_stop_s"] = (round((ts - cur["cause_at"]).total_seconds(), 1)
+                                      if ts and cur["cause_at"] else None)
+            cur["cause"] = cur["cause"] or "hand_stop"
+            out.append(cur)
+            cur = None
+    if cur is not None:
+        cur["cause"] = "unclosed"
+        out.append(cur)
+    for rec in out:
+        rec.pop("_start", None)
+        rec.pop("cause_at", None)
+    return out
+
+
+def _print_recordings(recs: list[dict]) -> None:
+    print("\n== recordings by stop cause (T17) ==")
+    counts: dict[str, int] = {}
+    for rec in recs:
+        counts[rec["cause"]] = counts.get(rec["cause"], 0) + 1
+    for cause, n in sorted(counts.items(), key=lambda x: -x[1]):
+        print(f"  {n:4d}  {cause}")
+    print("\n== recordings (hand, backstop and other stops are candidate --raw windows) ==")
+    for rec in recs:
+        flag = "" if rec["cause"] == "lifecycle_end" else "  <- candidate"
+        print(f"  {rec['started']}  {rec.get('bundle_id') or 'manual'}  {rec.get('duration_s')} s  "
+              f"{rec['cause']}  lifecycle_ended={rec['lifecycle_ended']}  "
+              f"cause_to_stop={rec.get('cause_to_stop_s')} s{flag}")
 
 
 def _verdict_record(row: dict, t: float) -> dict | None:
@@ -475,9 +580,21 @@ def extract_raw(
     logged: list[dict] = []
     dropped: dict[str, int] = {}
     lines_seen: list[float] = []
+    stop_cut: float | None = None
+    logged_end = False
     for e in window:
         cat, act, own = e.get("category"), e.get("action"), e.get("bundle_id")
         t = rel(e)
+        if cat == "coordinator" and act == "recording_stopped" and own in (bundle, "manual", None) \
+                and not logged_end:
+            # T17: a stop no logged end caused (the owner's, the backstop's, a ceiling's, a split's)
+            # happens at HEAD too, and its disengage is unconditional, so nothing after it is a
+            # recording an end could stop: the trace ends here.
+            stop_cut = t
+            report.append(f"t={t}: the recording stopped with no logged end before it; the trace ends there")
+            break
+        if cat == "lifecycle" and act == "ended" and (own == bundle or own is None):
+            logged_end = True
         if cat == "signal" and own == bundle:
             sig = _signal_event(e, kind)
             if sig is not None:
@@ -495,6 +612,12 @@ def extract_raw(
             rec = _verdict_record(e, t)
             if rec is not None:
                 logged.append(rec)
+            if act == "idle":
+                # T17: `idle` is the coordinator publishing a reset engine, which is what the host's
+                # disengage after an acted end does (and what discovery then re-engages): later
+                # signals reach a fresh engine, so the replay starts one here. The row carries no
+                # bundle; the coordinator holds one engagement at a time.
+                out.append({"t": t, "kind": "engage"})
     for act, n in sorted(dropped.items()):
         report.append(f"dropped {n} {act} row(s): they decide on a title, which never leaves the log")
 
@@ -518,7 +641,7 @@ def extract_raw(
         trace["trim_at"] = None
         report.append("ended_at is the logged end and trim_at is null: confirm both against the replay before committing")
     trace["context"] = {"bundle_id": bundle, "kind": kind, "pid": 1234}
-    trace["until"] = round((end - start).total_seconds(), 3)
+    trace["until"] = stop_cut if stop_cut is not None else round((end - start).total_seconds(), 3)
     trace["events"] = out
     trace["logged_verdicts"] = logged
     return trace, report
@@ -616,6 +739,7 @@ def main(argv: list[str]) -> int:
             skip_reasons[tag] = skip_reasons.get(tag, 0) + 1
         for tag, n in sorted(skip_reasons.items(), key=lambda x: -x[1]):
             print(f"  {n:4d}  {tag}")
+        _print_recordings(recordings(events))
         if not args.emit_all:
             return 0
 
