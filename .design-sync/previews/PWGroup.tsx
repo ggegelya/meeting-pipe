@@ -38,7 +38,7 @@ export const WithFieldsAndTags = () => (
 export const Minimal = () => (
   <div style={{ width: 460, fontFamily: 'var(--mp-font-sans)', color: 'var(--mp-fg)' }}>
     <PWGroup>
-      <PWRow label="Verbose logging" sublabel="Adds MP_VERBOSE=1 detail to the event log." first>
+      <PWRow label="Verbose logging" sublabel="Adds detection and pipeline detail to the log files (pipeline runs pick it up after a restart). Also writes the text of transcript corrections and vocabulary terms into the event log." first>
         <PWToggle />
       </PWRow>
     </PWGroup>

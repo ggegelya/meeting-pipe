@@ -45,6 +45,7 @@ final class DetectionStateMachine {
     private var cooldown = RepromptCooldown()
 
     func recordCooldownEnd(bundleID: String) {
+        Log.verbose("detector", "reprompt cooldown armed for \(bundleID)")
         cooldown.recordEnd(bundleID: bundleID, at: uptime())
     }
 

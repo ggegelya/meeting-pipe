@@ -227,6 +227,8 @@ def fanout(
     happens before the patch boundary.
     """
     pubs = publishers if publishers is not None else build_publishers(cfg)
+    log.debug("publish: configured sinks=%s, built=%s",
+              ",".join(cfg.output.sinks) or "(none)", ",".join(p.name for p in pubs) or "(none)")
     if not pubs:
         log.warning("no publishers configured; returning local-only result")
         # No sink ran, which is not the same as every sink failing: a regulated

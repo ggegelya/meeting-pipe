@@ -162,7 +162,9 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
         return _fail_closed(cfg, read)
     meta = read.data
     if not meta:
+        log.debug("workflow overlay: no sidecar data (%s); global config stands", read.state)
         return cfg
+    log.debug("workflow overlay: sidecar keys=%s", ",".join(sorted(meta)))
 
     # `model_copy(deep=True)` so nested pydantic models clone cleanly
     # and the original cfg stays untouched.

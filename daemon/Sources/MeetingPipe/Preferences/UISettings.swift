@@ -26,7 +26,7 @@ final class UISettings: ObservableObject {
     // A property here is not covered by the CI5 config fence, which compares
     // `config.toml` key sets; see `daemon/docs/gotchas.md`.
 
-    /// Exports `MP_VERBOSE=1` at daemon launch so pipeline subprocesses inherit it. Env propagation requires a restart; verbose-only event fields (e.g. correction transcript text, SEC14) read this live value in-process.
+    /// Exports `MP_VERBOSE=1` at daemon launch so pipeline subprocesses inherit it (`mp.verbose`, OBS6), and gates `Log.verbose` live through the same key. Env propagation requires a restart; verbose-only event fields (e.g. correction transcript text, SEC14) read this live value in-process.
     @Published var verboseLogging: Bool {
         didSet { UserDefaults.standard.set(verboseLogging, forKey: Keys.verboseLogging) }
     }

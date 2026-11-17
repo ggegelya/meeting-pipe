@@ -466,7 +466,7 @@ const PWAdvancedPane = () => (
       </PWRow>
     </PWGroup>
     <PWGroup label="Diagnostics" footer="Takes effect after restarting MeetingPipe - the env var is set at daemon launch and inherited by every subprocess spawned afterwards.">
-      <PWToggleRow first on={false} label="Verbose logging" sublabel="Emit extra detail to the unified log and pass MP_VERBOSE=1 to pipeline subprocesses."/>
+      <PWToggleRow first on={false} label="Verbose logging" sublabel="Adds detection and pipeline detail to the log files (pipeline runs pick it up after a restart). Also writes the text of transcript corrections and vocabulary terms into the event log."/>
     </PWGroup>
     <PWGroup label="Automation" footer={'Paste one into a Shortcuts "Open URL" action, or into Raycast, Stream Deck, or a terminal. MeetingPipe\'s own Shortcuts actions are the other route, and they stay off until the app is signed with an Apple Developer ID.'}>
       {PW_AUTOMATION_VERBS.map((v, i) => (

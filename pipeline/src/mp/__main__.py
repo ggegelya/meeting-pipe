@@ -327,6 +327,9 @@ def main() -> int:
     _install_sigterm_handler()
     # After the handler, so the watcher's SIGTERM lands on it (PIPE37).
     _start_supervision()
+    # OBS6: the daemon's Verbose logging toggle, before any subcommand logs.
+    from .verbose import configure as _configure_verbose
+    _configure_verbose()
     try:
         return _dispatch(cmd, rest)
     except MissingSecretError as e:

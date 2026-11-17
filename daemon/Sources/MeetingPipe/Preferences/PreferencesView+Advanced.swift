@@ -33,7 +33,7 @@ struct AdvancedSectionView: View {
 
             SettingsGroup("Diagnostics") {
                 SettingsToggleRow("Verbose logging",
-                    sublabel: "Emit extra detail to the unified log and pass MP_VERBOSE=1 to pipeline subprocesses.",
+                    sublabel: "Adds detection and pipeline detail to the log files (pipeline runs pick it up after a restart). Also writes the text of transcript corrections and vocabulary terms into the event log.",
                     isOn: $ui.verboseLogging,
                     showsDivider: false)
             } footer: {

@@ -56,6 +56,7 @@ script is the mechanical reader.
     python3 scripts/truth_fences.py links      # doc links + run-on entries only
     python3 scripts/truth_fences.py backlog    # task headers + INDEX.md freshness only
     python3 scripts/truth_fences.py blockers   # OBS7: main-thread blockers in view/controller files only
+    python3 scripts/truth_fences.py env        # OBS6: every MP_* the daemon exports is read by the pipeline
     python3 scripts/truth_fences.py personal   # HYG21: roster names / library stems in tests and scripts (owner machine)
 
 Stdlib only (tomllib, ast, re), so CI can run it without installing anything.
@@ -1167,6 +1168,52 @@ def check_personal(
     return fence.report()
 
 
+# --------------------------------------------------------------------------
+# Fence 8 (OBS6): every MP_* variable the daemon exports has a pipeline reader
+# --------------------------------------------------------------------------
+
+# How the daemon hands a variable to `mp`: `setenv("MP_X"`, `env["MP_X"] =`, a `["MP_X": ...]`
+# extra-env literal, or a `static let ...Env/Key = "MP_X"` constant. `MP_VERBOSE` was exported for
+# months with no reader at all, a third store neither the config fence nor the pipeline checked.
+ENV_EXPORT = re.compile(
+    r'setenv\(\s*"(MP_[A-Z0-9_]+)"'
+    r'|env\[\s*"(MP_[A-Z0-9_]+)"\s*\]\s*='
+    r'|\[\s*"(MP_[A-Z0-9_]+)"\s*:'
+    r'|static let \w*(?:[Ee]nv|Key)\w*\s*=\s*"(MP_[A-Z0-9_]+)"'
+)
+
+
+def env_exports(swift: dict[str, str]) -> dict[str, str]:
+    """{name: first `path:line`} of every MP_* the daemon sources export. Pure."""
+    out: dict[str, str] = {}
+    for path, src in swift.items():
+        for m in ENV_EXPORT.finditer(src):
+            name = next(g for g in m.groups() if g)
+            out.setdefault(name, f"{path}:{src.count(chr(10), 0, m.start()) + 1}")
+    return out
+
+
+def unread_env_exports(swift: dict[str, str], python: dict[str, str]) -> list[str]:
+    exports = env_exports(swift)
+    pipeline = "\n".join(python.values())
+    return [f"{where}: `{name}` is exported to `mp` but nothing under pipeline/src reads it"
+            for name, where in sorted(exports.items()) if name not in pipeline]
+
+
+def check_env() -> bool:
+    fence = Fence("exported MP_ variables")
+    swift = {str(p.relative_to(REPO)): p.read_text(encoding="utf-8") for p in _swift_sources()}
+    python = {
+        str(p.relative_to(REPO)): p.read_text(encoding="utf-8")
+        for p in sorted((REPO / "pipeline" / "src" / "mp").rglob("*.py"))
+    }
+    if len(env_exports(swift)) < 3:
+        fence.fail("found fewer than 3 MP_ exports in daemon/Sources; the extractor is stale")
+    for msg in unread_env_exports(swift, python):
+        fence.fail(msg + ". Read it, or stop exporting it (OBS6).")
+    return fence.report()
+
+
 def main(argv: list[str]) -> int:
     which = argv[0] if argv and not argv[0].startswith("--") else "both"
     flags = dict(zip(argv[1::2], argv[2::2])) if argv and not argv[0].startswith("--") else dict(zip(argv[::2], argv[1::2]))
@@ -1184,14 +1231,16 @@ def main(argv: list[str]) -> int:
         ok &= check_backlog()
     if which in ("both", "blockers"):
         ok &= check_blockers()
+    if which in ("both", "env"):
+        ok &= check_env()
     if which in ("both", "personal"):
         ok &= check_personal(
             roster=Path(flags.get("--roster", DEFAULT_ROSTER)).expanduser(),
             config=Path(flags.get("--config", DEFAULT_CONFIG)).expanduser(),
             library=Path(flags["--library"]).expanduser() if "--library" in flags else None,
         )
-    if which not in ("both", "config", "events", "claude", "links", "backlog", "blockers", "personal"):
-        print("usage: truth_fences.py [both|config|events|claude|links|backlog|blockers|personal]"
+    if which not in ("both", "config", "events", "claude", "links", "backlog", "blockers", "env", "personal"):
+        print("usage: truth_fences.py [both|config|events|claude|links|backlog|blockers|env|personal]"
               " [--roster F] [--config F] [--library D]", file=sys.stderr)
         return 2
     return 0 if ok else 1

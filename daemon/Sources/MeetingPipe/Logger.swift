@@ -69,6 +69,20 @@ enum Log {
         writeLine(category, message, at: Date())
     }
 
+    /// OBS6: the Verbose logging toggle's own key (`UISettings.verboseLogging` writes it).
+    static let verboseDefaultsKey = "mp.ui.verboseLogging"
+
+    /// The live toggle, read from `UserDefaults`, which is safe off main where the scanner runs.
+    static func isVerbose() -> Bool { UserDefaults.standard.bool(forKey: verboseDefaultsKey) }
+
+    /// OBS6: narration at a decision point, written to `<category>.log` only while Verbose logging
+    /// is on. Files, not os.Logger, because macOS does not persist debug lines. Never a failure
+    /// (those stay unconditional) and never a title, a name or transcript text.
+    static func verbose(_ category: String, _ message: @autoclosure () -> String, enabled: () -> Bool = Log.isVerbose) {
+        guard enabled() else { return }
+        writeLine(category, "verbose: \(message())")
+    }
+
     private static func writeLine(_ category: String, _ message: String, at date: Date) {
         let url = logsDir.appendingPathComponent("\(category).log")
         let line = "[\(isoFormatter.string(from: date))] \(message)\n"

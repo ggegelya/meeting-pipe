@@ -347,6 +347,7 @@ final class MeetingSourceScanner {
                     // most of the day, so it stays silent: this is a clean miss, not a refusal.
                     continue
                 case .weakTitleOnly(let matchedTitle):
+                    Log.verbose("detector", "browser \(bid) refused at admission: weak_title_only")
                     rejectedBrowserTabs.append(RejectedBrowserTab(
                         bundleID: bid,
                         displayName: displayName,
@@ -355,7 +356,7 @@ final class MeetingSourceScanner {
                     ))
                     continue
                 case .admit:
-                    break
+                    Log.verbose("detector", "browser \(bid) admitted: strong title")
                 }
                 // DET17 guard 2: key the tab by the title that admitted it.
                 let admittingTitle = windowTitles.first {

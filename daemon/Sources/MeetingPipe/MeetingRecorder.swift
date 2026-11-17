@@ -881,6 +881,7 @@ final class MeetingRecorder {
         self.micFile = micFile
         self.micFileFormat = fileFormat
         Log.writeLine("recorder", "mic file opened format=\(fileFormat) device=\(micFormat)")
+        Log.verbose("recorder", "mic capture chosen: \(micFormat.sampleRate) Hz, \(micFormat.channelCount) ch")
 
         // Zero-fills (20 ms fade) buffers outside `.hot`. Built here so it
         // inherits the input sample rate; released in `stop()`.

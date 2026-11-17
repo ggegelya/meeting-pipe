@@ -69,6 +69,7 @@ Two functions, two purposes. Don't mix them up.
 |---|---|---|
 | `Log.event(category:action:attributes:)` | Anything a script will grep — state transitions, lifecycle, errors with structured context. snake_case action names. | `events.jsonl`, `mp logs`, `mp analyze-detection`, the dogfood scripts. |
 | `Log.writeLine(_:_:)` | Free-form narrative for a human tailing the file. Sentences, not key-value pairs. | The per-category text logs in `~/Library/Logs/MeetingPipe/<category>.log`. |
+| `Log.verbose(_:_:)` | OBS6: narration at a decision point (browser admission, reprompt cooldown, end hold opened and confirmed, mic capture format) that only matters when investigating. Written only while Preferences ▸ Advanced ▸ Verbose logging is on, read live. Never a failure (those stay unconditional), a title, a name or transcript text. The pipeline's twin is `MP_VERBOSE=1`, which `mp.verbose.configure` turns into the `mp` logger at DEBUG (never the root, so `httpx` stays at INFO). | The same per-category text logs. |
 | `Log.main.info` / `.warning` / `.error` | os.Logger for the unified system log. Use sparingly; the jsonl + writeLine surfaces are usually enough. | Console.app, `log stream`. |
 
 Most start/stop/error sites pair an event line (structured) with a writeLine (readable). Pipeline-side uses `mp.events.emit(...)` from `events.py`, same split.

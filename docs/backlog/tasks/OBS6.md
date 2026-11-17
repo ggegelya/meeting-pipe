@@ -2,9 +2,9 @@
 id: OBS6
 title: The Verbose logging toggle adds no diagnostic detail anywhere, yet turning it on writes verbatim transcript text into the event log
 category: Observability
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (observability band, O22: LG-7): nothing in pipeline/src reads MP_VERBOSE (zero debug calls), the daemon gates no detail on it and os.Logger debug is not persisted, yet it adds correction and vocabulary text to events.jsonl. Owner picks: make it real (mp logger at DEBUG, gated daemon writeLine narration, honest sublabel) or remove it; either way fence exported MP_ env vars. [Spec](./OBS6.md)
+comment: Shipped 2026-11-18 (made real, owner decision 2026-11-17) - MP_VERBOSE=1 sets the mp logger to DEBUG with debug lines at the overlay, sink selection, summarize path and guards; daemon Log.verbose writes gated narration at browser admission, reprompt cooldown, end hold open and confirm, and mic capture format; honest sublabel in the view, design kit and preview; truth_fences.py env fences every exported MP_ variable. Owner still owes one verbose run to judge whether the narration answers a missed-meeting question.
 ---
 
 # OBS6: the Verbose logging toggle adds no diagnostic detail anywhere, yet turning it on writes verbatim transcript text into the event log

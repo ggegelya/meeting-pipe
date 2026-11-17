@@ -2865,6 +2865,7 @@ final class MeetingSessionController: @unchecked Sendable {
             held.merge(teardownTailAttributes(snapshot, now: Date())) { _, new in new }
         }
         Log.event(category: "coordinator", action: "lifecycle_end_held", attributes: held)
+        Log.verbose("daemon", "end hold opened for \(context.bundleID) (consults teardown: \(consults))")
         // MIC20: the call UI is usually gone during a hold, so the AX mute probe backs off rather
         // than log an unreadable button once a second until the recording stops.
         coordinator.micGate.setEndHeld(true)
@@ -2907,6 +2908,7 @@ final class MeetingSessionController: @unchecked Sendable {
         )
         guard case .confirm(let reason)? = verdict else { return }
         concludeTeardownHold(now: now, conclusion: .teardown)
+        Log.verbose("daemon", "end hold confirmed by \(reason.rawValue) after \(Int(now.timeIntervalSince(hold.startedAt))) s")
         Log.event(category: "coordinator", action: "lifecycle_provisional_end_confirmed", attributes: [
             "bundle_id": hold.context.bundleID,
             "oracle": reason.rawValue,

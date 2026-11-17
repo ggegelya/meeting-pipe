@@ -545,14 +545,20 @@ def _run_all_inner(
     events.emit("pipeline", "stage_completed", stage="finalize", md=str(t["md"]))
 
     structured = json.loads(t["json"].read_text(encoding="utf-8"))
+    log.debug("guards: segments=%d", len(structured.get("segments") or []))
     skip = _check_no_speech(wav, t, structured) or _check_suspect_transcript(wav, t, structured)
     if skip is not None:
+        log.debug("guards: skipped (%s)", skip.get("skipped"))
         return skip
 
     md_text = t["md"].read_text(encoding="utf-8")
     skip = _check_byo(wav, t, md_text, force_byo, cfg) or _check_too_long(wav, t, md_text, cfg)
     if skip is not None:
+        log.debug("summarize path: none (%s)", skip.get("skipped"))
         return skip
+    log.debug("summarize path: backend=%s effective=%s on_device=%s chars=%d",
+              cfg.summarization.backend, effective_backend(cfg), _will_summarize_locally(cfg),
+              len(md_text))
 
     # PERF25: on the local backend, speaker cleanup and summarize share one
     # client, so one mlx_lm.server load serves both. Each used to build its own
