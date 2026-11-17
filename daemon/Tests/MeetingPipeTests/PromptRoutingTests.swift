@@ -96,12 +96,121 @@ final class PromptRoutingTests: XCTestCase {
         }
     }
 
-    func test_aTimeout_discardsThePick() async {
-        await assertExitDiscardsThePick("timeout") { controller, host in
-            host.livePromptTimeoutSec = 0.01
-            controller.startPromptTimeout(for: self.teams)
-            await self.waitUntil({ host.stateMachine.current == .idle }, "the timeout")
-        }
+    // MARK: - SEC40: a timeout carries the pick into its own offer
+
+    /// General (default), Client NDA (picked on the chip, no rule), Teams Calls (Teams' rule, not
+    /// NDA) and Zoom Calls (Zoom's rule).
+    private func ndaWorkflows() -> (general: Workflow, clientNDA: Workflow, teamsCalls: Workflow, zoomCalls: Workflow) {
+        let general = Workflow(name: "General", isDefault: true)
+        var clientNDA = Workflow(name: "Client NDA")
+        clientNDA.flags.ndaMode = true
+        var teamsCalls = Workflow(name: "Teams Calls")
+        teamsCalls.matchingRules = [WorkflowMatchingRule(bundleID: teams.bundleID)]
+        var zoomCalls = Workflow(name: "Zoom Calls")
+        zoomCalls.matchingRules = [WorkflowMatchingRule(bundleID: zoom.bundleID)]
+        return (general, clientNDA, teamsCalls, zoomCalls)
+    }
+
+    /// The chip pick on a Teams prompt, then the prompt times out into DET18's offer.
+    private func pickThenTimeOut(_ pick: Workflow, _ controller: MeetingSessionController, _ host: FakeSessionHost) async {
+        controller.handleMeetingStarted(source: teams)
+        controller.setPendingWorkflowOverride(pick.id)
+        host.livePromptTimeoutSec = 0.01
+        controller.startPromptTimeout(for: teams)
+        await waitUntil({ host.stateMachine.current == .idle }, "the timeout")
+        XCTAssertTrue(host.stateMachine.isOffered(bundleID: teams.bundleID), "the timeout left the offer")
+    }
+
+    func test_aTimeout_carriesThePickIntoTheOffer_andTheOfferRecordsUnderIt() async {
+        let wf = ndaWorkflows()
+        let (controller, host) = makeController([wf.general, wf.clientNDA, wf.teamsCalls, wf.zoomCalls])
+        await pickThenTimeOut(wf.clientNDA, controller, host)
+        XCTAssertEqual(rows("override_carried_to_offer").count, 1)
+        XCTAssertEqual(rows("override_carried_to_offer").first?["bundle_id"] as? String, teams.bundleID)
+        XCTAssertTrue(rows("override_discarded").isEmpty, "the pick is carried, not discarded")
+
+        XCTAssertTrue(controller.resolvePromptPick(.record, source: teams))
+        await waitUntil({ self.isRecording(host) }, "the offer's recording")
+        XCTAssertEqual(controller.activeWorkflow?.id, wf.clientNDA.id, "the hand pick, not Teams' rule")
+        XCTAssertNil(controller.pendingWorkflowOverride, "consumed by the start")
+        XCTAssertNil(controller.offerWorkflowOverride, "consumed by the start")
+    }
+
+    func test_aCarriedPick_goesWithTheOffersSpan_andNeverReachesTheNextCall() async {
+        let wf = ndaWorkflows()
+        let (controller, host) = makeController([wf.general, wf.clientNDA, wf.teamsCalls, wf.zoomCalls])
+        await pickThenTimeOut(wf.clientNDA, controller, host)
+
+        controller.handleScanReadings([teams.bundleID: .init(processAudio: true)])
+        controller.handleScanReadings([teams.bundleID: .init(processAudio: false)])
+        controller.handleScanReadings([teams.bundleID: .init(processAudio: false)])
+        XCTAssertFalse(host.stateMachine.isOffered(bundleID: teams.bundleID), "the span lapsed")
+        XCTAssertNil(controller.offerWorkflowOverride)
+        XCTAssertEqual(rows("override_discarded").last?["exit"] as? String, "span_lapsed")
+        XCTAssertEqual(controller.workflowForPrompt(source: teams)?.id, wf.teamsCalls.id, "the next Teams call starts from its rule")
+
+        host.stateMachine.clearSuppression(bundleID: zoom.bundleID)
+        host.liveAutoConsentApps = [zoom.bundleID]
+        controller.promptBackoff = nil
+        controller.handleMeetingStarted(source: zoom)
+        await waitUntil({ self.isRecording(host) }, "the auto-consented start")
+        XCTAssertEqual(controller.activeWorkflow?.id, wf.zoomCalls.id)
+    }
+
+    func test_aSkipOnTheOffer_discardsTheCarriedPick() async {
+        let wf = ndaWorkflows()
+        let (controller, host) = makeController([wf.general, wf.clientNDA, wf.teamsCalls, wf.zoomCalls])
+        await pickThenTimeOut(wf.clientNDA, controller, host)
+        XCTAssertTrue(controller.resolvePromptPick(.skip, source: teams))
+        XCTAssertNil(controller.offerWorkflowOverride)
+        XCTAssertEqual(rows("override_discarded").last?["exit"] as? String, "offer_skipped")
+    }
+
+    /// The offer is keyed by app, so a back-to-back call inheriting its hold would inherit the pick:
+    /// a pick laxer than the rule match is therefore not carried, and the offer records under the rule.
+    func test_aPickWeakerThanTheRuleMatch_isNotCarried() async {
+        let general = Workflow(name: "General", isDefault: true)
+        var teamsNDA = Workflow(name: "Teams NDA")
+        teamsNDA.flags.ndaMode = true
+        teamsNDA.matchingRules = [WorkflowMatchingRule(bundleID: teams.bundleID)]
+        let (controller, host) = makeController([general, teamsNDA])
+        await pickThenTimeOut(general, controller, host)
+        XCTAssertTrue(rows("override_carried_to_offer").isEmpty)
+        XCTAssertEqual(rows("override_discarded").last?["exit"] as? String, "timeout")
+        XCTAssertNil(controller.offerWorkflowOverride)
+
+        XCTAssertTrue(controller.resolvePromptPick(.record, source: teams))
+        await waitUntil({ self.isRecording(host) }, "the offer's recording")
+        XCTAssertEqual(controller.activeWorkflow?.id, teamsNDA.id, "the rule's NDA workflow")
+    }
+
+    /// Another app's prompt while the offer lives does not take the offer's pick with it.
+    func test_aCarriedPick_survivesAnotherAppsPrompt() async {
+        let wf = ndaWorkflows()
+        let (controller, host) = makeController([wf.general, wf.clientNDA, wf.teamsCalls, wf.zoomCalls])
+        await pickThenTimeOut(wf.clientNDA, controller, host)
+        controller.promptBackoff = nil
+        controller.handleMeetingStarted(source: zoom)
+        XCTAssertEqual(host.stateMachine.current, .prompting(source: zoom))
+        XCTAssertTrue(controller.resolvePromptPick(.skip, source: zoom))
+        XCTAssertEqual(controller.offerWorkflowOverride?.workflowID, wf.clientNDA.id)
+
+        XCTAssertTrue(controller.resolvePromptPick(.record, source: teams))
+        await waitUntil({ self.isRecording(host) }, "the offer's recording")
+        XCTAssertEqual(controller.activeWorkflow?.id, wf.clientNDA.id)
+    }
+
+    /// A start from the offer that is refused (no microphone) consumes the pick rather than leaving
+    /// it armed for a later start of the same app, after the offer it rode on is gone.
+    func test_aRefusedStartFromTheOffer_leavesNoPickArmed() async {
+        let wf = ndaWorkflows()
+        let (controller, host) = makeController([wf.general, wf.clientNDA, wf.teamsCalls, wf.zoomCalls])
+        await pickThenTimeOut(wf.clientNDA, controller, host)
+        host.micAuthorizationStatus = .denied
+        XCTAssertTrue(controller.resolvePromptPick(.record, source: teams))
+        XCTAssertFalse(isRecording(host))
+        XCTAssertNil(controller.pendingWorkflowOverride)
+        XCTAssertNil(controller.offerWorkflowOverride)
     }
 
     func test_anEndDuringThePrompt_discardsThePick() async {

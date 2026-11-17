@@ -104,13 +104,20 @@ enum WorkflowMatcher {
     /// previous recording's workflow as an override, outranking the new call's own rule match with
     /// no NDA floor. Now a rule match wins; otherwise the previous workflow carries over, unless the
     /// fallback is NDA and the previous is not; a deleted previous workflow falls to the matcher.
+    /// SEC40: the floor holds in both directions. A resume is the same call, so a previous NDA
+    /// workflow (a hand pick on the chip, typically) is never traded for a non-NDA rule match.
     /// `source` names why, for `recording_resumed_after_end`. Pure.
     static func resumeWorkflow(
         matched: Workflow?,
         reason: Reason,
         previous: Workflow?
     ) -> (workflow: Workflow?, source: String) {
-        if case .matched = reason { return (matched, "rule") }
+        if case .matched = reason {
+            if let previous, previous.flags.ndaMode, !(matched?.flags.ndaMode ?? false) {
+                return (previous, "previous_nda_floor")
+            }
+            return (matched, "rule")
+        }
         guard let previous else { return (matched, "default") }
         if (matched?.flags.ndaMode ?? false) && !previous.flags.ndaMode { return (matched, "nda_floor") }
         return (previous, "previous")

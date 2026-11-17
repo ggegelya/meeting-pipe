@@ -40,8 +40,16 @@ final class MeetingSessionController: @unchecked Sendable {
     /// User's explicit workflow pick from the prompt's workflow chip (TECH-B5), keyed to the
     /// prompt's source (SEC39). Consumed by `beginRecording` only for that source, and cleared on
     /// every prompt exit (`clearPromptRouting`), so a pick made for a meeting that was not recorded
-    /// can no longer decide the next one. Highest matcher precedence for its own meeting.
+    /// can no longer decide the next one. Highest matcher precedence for its own meeting. The one
+    /// exit that keeps it is a timeout into DET18's offer, which moves it to `offerWorkflowOverride`.
     var pendingWorkflowOverride: (source: AppSource, workflowID: UUID)?
+
+    /// SEC40: the chip pick a timed-out prompt left with its one-click offer, for that source only.
+    /// Its own slot, so another app's prompt or recording while the offer lives does not wipe it;
+    /// `recordAttached` hands it to the start, and it goes with the offer (span lapse, Skip) or
+    /// with any start of its source. Carried only when it is not weaker than the source's rule
+    /// match, because the source key cannot tell this call from the next one in the same app.
+    var offerWorkflowOverride: (source: AppSource, workflowID: UUID)?
 
     /// SEC39: the workflow a resume decided (`WorkflowMatcher.resumeWorkflow`), for the resumed
     /// source only. Separate from the chip pick on purpose: it is a decision already made, not a
@@ -501,6 +509,10 @@ final class MeetingSessionController: @unchecked Sendable {
         }
         coordinator.prompt.dismiss()
         coordinator.stateMachine.clearSuppression(bundleID: source.bundleID)
+        // SEC40: the offer's carried pick is this start's chip pick.
+        if let carried = offerWorkflowOverride, carried.source == source {
+            pendingWorkflowOverride = carried
+        }
         Log.writeLine("daemon", "record attached (\(source.bundleID)) via \(trigger)")
         Log.event(category: "coordinator", action: "record_attached", attributes: [
             "bundle_id": source.bundleID,
@@ -652,7 +664,8 @@ final class MeetingSessionController: @unchecked Sendable {
     }
 
     /// SEC39: drop the prompt's routing state (the chip pick and AI9's pre-selection) on every way
-    /// a prompt ends without recording, and before a new prompt resolves its chip. A pick that was
+    /// a prompt ends without recording, and before a new prompt resolves its chip. A timeout into
+    /// the offer moves a carried pick out first (SEC40), so this never touches the offer's slot. A pick that was
     /// never recorded is logged, so a discarded routing choice leaves a trace.
     func clearPromptRouting(exit: String) {
         assertMainQueue()
@@ -741,6 +754,25 @@ final class MeetingSessionController: @unchecked Sendable {
             startOrigin = .prompt
         }
 
+        // The routing state, consumed before either early return below so a start refused there
+        // (no microphone, dry run) cannot leave a pick, a resume decision or a hint armed for a
+        // later start of the same source (SEC40, and SEC39's L3). The chip pick, then a resume's
+        // decided workflow, then the AI9 pre-selection; each keyed to the source it was made for
+        // (SEC39), so a start for another meeting, or a manual start with no source, consumes none
+        // of them; all are cleared here either way, bar a carried offer pick for another source.
+        var overrideID: UUID?
+        if let pick = pendingWorkflowOverride, pick.source == source {
+            overrideID = pick.workflowID
+        } else if let resumed = pendingResumeWorkflow, resumed.source == source {
+            overrideID = resumed.workflowID
+        } else if let hint = preselectedRoutingHint, hint.source == source {
+            overrideID = hint.workflowID
+        }
+        pendingWorkflowOverride = nil
+        pendingResumeWorkflow = nil
+        preselectedRoutingHint = nil
+        if let source, offerWorkflowOverride?.source == source { offerWorkflowOverride = nil }
+
         // Mic is non-negotiable (no mic = silent recording, empty
         // transcript); Screen Recording stays optional. Re-probe
         // synchronously so a just-granted permission counts without restart.
@@ -772,18 +804,8 @@ final class MeetingSessionController: @unchecked Sendable {
             return
         }
 
-        // Resolve the workflow controlling context/backend/sinks (TECH-B3): the chip pick, then a
-        // resume's decided workflow, then the AI9 pre-selection, then rule matches, then default.
-        // Each is keyed to the source it was made for (SEC39), so a start for another meeting, or
-        // a manual start with no source, consumes none of them; all are cleared here either way.
-        var overrideID: UUID?
-        if let pick = pendingWorkflowOverride, pick.source == source {
-            overrideID = pick.workflowID
-        } else if let resumed = pendingResumeWorkflow, resumed.source == source {
-            overrideID = resumed.workflowID
-        } else if let hint = preselectedRoutingHint, hint.source == source {
-            overrideID = hint.workflowID
-        }
+        // Resolve the workflow controlling context/backend/sinks (TECH-B3): the chip pick (consumed
+        // above, before the early returns), then rule matches, then default.
         let resolution = WorkflowMatcher.resolveWithReason(
             source: source,
             overrideID: overrideID,
@@ -791,9 +813,6 @@ final class MeetingSessionController: @unchecked Sendable {
         )
         let resolvedWorkflow = resolution.workflow
         noteRoutingUncertainty(source: source, reason: resolution.reason)
-        pendingWorkflowOverride = nil
-        pendingResumeWorkflow = nil
-        preselectedRoutingHint = nil
 
         // Resolve the capture mode (TECH-MIC4): regulated (global) or NDA
         // (per-workflow) takes the no-audio-at-rest gate; everything else
@@ -1486,7 +1505,19 @@ final class MeetingSessionController: @unchecked Sendable {
             default:
                 Log.writeLine("daemon", "prompt timed out → one-click offer (\(source.bundleID))")
                 self.notePromptDismissed(source, reason: .timedOutToOffer)
+                // SEC40: the offer is the same call and the same source, so the chip pick survives
+                // into it (`offerWorkflowOverride`), unless it is weaker than the rule match.
+                let carried = self.pendingWorkflowOverride.flatMap {
+                    $0.source == source && self.pickIsNotWeakerThanRule($0) ? $0 : nil
+                }
+                if carried != nil { self.pendingWorkflowOverride = nil }
                 self.clearPromptRouting(exit: "timeout")
+                if let carried {
+                    self.offerWorkflowOverride = carried
+                    Log.event(category: "workflow", action: "override_carried_to_offer", attributes: [
+                        "bundle_id": source.bundleID,
+                    ])
+                }
                 self.coordinator.prompt.dismiss()
                 // DET18 item 1: a timeout is not a skip. On the work laptop all 32 timeouts became
                 // skips and 19 Teams calls went wholly unrecorded while the app stayed on screen.
@@ -1620,6 +1651,7 @@ final class MeetingSessionController: @unchecked Sendable {
                     liveness: coordinator.stateMachine.heldLiveness(bundleID: held.bundleID),
                     tabKey: coordinator.stateMachine.heldTabKey(bundleID: held.bundleID)
                 )
+                discardCarriedOverride(for: held, exit: "offer_skipped")
                 noteSkipped(held)
             }
             return true
@@ -1659,8 +1691,31 @@ final class MeetingSessionController: @unchecked Sendable {
             ])
             if entry.mode == .offered {
                 notePromptDismissed(entry.source, reason: .spanLapsed)
+                discardCarriedOverride(for: entry.source, exit: "span_lapsed")
             }
         }
+    }
+
+    /// SEC40: an offer that ends without recording takes the pick it carried with it.
+    private func discardCarriedOverride(for source: AppSource, exit: String) {
+        guard let pick = offerWorkflowOverride, pick.source == source else { return }
+        Log.event(category: "workflow", action: "override_discarded", attributes: [
+            "bundle_id": pick.source.bundleID,
+            "exit": exit,
+        ])
+        offerWorkflowOverride = nil
+    }
+
+    /// SEC40: a pick may ride the offer only if it is not a weaker privacy posture than the rule
+    /// match for its source. The offer is keyed by app, so a back-to-back call that inherits the
+    /// offer's hold would inherit the pick too; a stricter pick reaching it over-protects, a laxer
+    /// one would downgrade a call the rule made NDA. A deleted workflow is not carried.
+    private func pickIsNotWeakerThanRule(_ pick: (source: AppSource, workflowID: UUID)) -> Bool {
+        let workflows = coordinator.workflowStore.workflows
+        guard let picked = workflows.first(where: { $0.id == pick.workflowID }) else { return false }
+        if picked.flags.ndaMode { return true }
+        let matched = WorkflowMatcher.resolveWithReason(source: pick.source, workflows: workflows).workflow
+        return !(matched?.flags.ndaMode ?? false)
     }
 
     private func isInPromptBackoff(_ bundleID: String, now: Date = Date()) -> Bool {

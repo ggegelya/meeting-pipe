@@ -116,4 +116,36 @@ final class WorkflowMatcherTests: XCTestCase {
         let result = WorkflowMatcher.resolve(source: nil, workflows: [a, b])
         XCTAssertEqual(result?.name, "B")
     }
+
+    // MARK: - SEC40: the resume's NDA floor holds in both directions
+
+    private func nda(_ name: String, rules: [WorkflowMatchingRule] = []) -> Workflow {
+        var w = Workflow(name: name)
+        w.matchingRules = rules
+        w.flags.ndaMode = true
+        return w
+    }
+
+    func test_resume_aPreviousNDAWorkflow_outranksANonNDARuleMatch() {
+        let rule = wf("Teams Calls", rules: [WorkflowMatchingRule(bundleID: "com.microsoft.teams2")])
+        let picked = nda("Client NDA")
+        let routing = WorkflowMatcher.resumeWorkflow(matched: rule, reason: .matched(score: 2), previous: picked)
+        XCTAssertEqual(routing.workflow?.id, picked.id)
+        XCTAssertEqual(routing.source, "previous_nda_floor")
+    }
+
+    func test_resume_anNDARuleMatch_stillOutranksANonNDAPrevious() {
+        let rule = nda("Teams NDA", rules: [WorkflowMatchingRule(bundleID: "com.microsoft.teams2")])
+        let previous = wf("General", isDefault: true)
+        let routing = WorkflowMatcher.resumeWorkflow(matched: rule, reason: .matched(score: 2), previous: previous)
+        XCTAssertEqual(routing.workflow?.id, rule.id)
+        XCTAssertEqual(routing.source, "rule")
+    }
+
+    func test_resume_withNoPrevious_takesTheMatch() {
+        let rule = wf("Teams Calls", rules: [WorkflowMatchingRule(bundleID: "com.microsoft.teams2")])
+        let routing = WorkflowMatcher.resumeWorkflow(matched: rule, reason: .matched(score: 2), previous: nil)
+        XCTAssertEqual(routing.workflow?.id, rule.id)
+        XCTAssertEqual(routing.source, "rule")
+    }
 }
