@@ -43,8 +43,14 @@ enum StallDetector {
 /// Says out loud when the main thread was blocked (PERF11), so "is it the app or the OS"
 /// can be answered from `events.jsonl` instead of a mistimed live `sample`.
 ///
-/// A utility-queue timer (4 Hz) posts one no-op to the main queue at a time and measures
-/// how long it waited to run. The row is written when the stall ends (the ping finally
+/// A utility-queue timer (every `defaultInterval`, 25 ms) posts one no-op to the main queue at
+/// a time and measures how long it waited to run. 25 ms rather than the first build's 250 ms
+/// (PERF11 amendment, 2026-11-17): a ping only measures the part of a stall left after it was
+/// posted, so at 4 Hz a 200 ms stall was hit less than half the time and understated when it
+/// was, and every logged duration was a lower bound short by up to a quarter second. At 25 ms
+/// the understatement is at most 25 ms, well under the 100 ms threshold. The context snapshot
+/// is refreshed at most every `contextRefreshSeconds`, so the faster ping does not run the
+/// context closure on main forty times a second. The row is written when the stall ends (the ping finally
 /// runs), never from a blocked main. Context cannot be read from main while it is blocked,
 /// so each successful ping refreshes a snapshot (via `context`, which runs on main) and a
 /// stall reports the last one, which describes the moment just before it began. The
@@ -54,10 +60,18 @@ enum StallDetector {
 /// second sequence counter. It adds the two attributes when it does.
 final class MainThreadStallWatchdog: @unchecked Sendable {
 
+    /// How often a ping is posted. 20 to 50 ms was the amendment's range; 25 ms bounds the
+    /// understatement of any stall at a quarter of the log threshold.
+    static let defaultInterval: TimeInterval = 0.025
+    /// The context snapshot is refreshed at most this often (it describes the moment before a
+    /// stall, so a quarter second of staleness costs nothing).
+    static let contextRefreshSeconds: TimeInterval = 0.25
+
     private let queue = DispatchQueue(label: "meetingpipe.stall-watchdog", qos: .utility)
     private var timer: DispatchSourceTimer?
     private let interval: TimeInterval
     private let thresholdMs: Double
+    private let rateLimitSeconds: TimeInterval
     private let context: @Sendable () -> [String: Any]
     private let emit: @Sendable (_ attributes: [String: Any]) -> Void
 
@@ -66,11 +80,13 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
     private var snapshot: [String: Any] = [:]
     private var lastEmitUptime: TimeInterval?
     private var suppressed = 0
+    private var lastContextUptime: TimeInterval?
 
     /// `context` runs on main (cheap reads only). `emit` defaults to the `perf` event.
     init(
-        interval: TimeInterval = 0.25,
+        interval: TimeInterval = MainThreadStallWatchdog.defaultInterval,
         thresholdMs: Double = StallDetector.logThresholdMs,
+        rateLimitSeconds: TimeInterval = StallDetector.rateLimitSeconds,
         context: @escaping @Sendable () -> [String: Any] = { [:] },
         emit: @escaping @Sendable ([String: Any]) -> Void = { attrs in
             Log.event(category: "perf", action: "main_thread_stall", attributes: attrs)
@@ -78,6 +94,7 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
     ) {
         self.interval = interval
         self.thresholdMs = thresholdMs
+        self.rateLimitSeconds = rateLimitSeconds
         self.context = context
         self.emit = emit
     }
@@ -86,7 +103,7 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
         queue.async { [self] in
             guard timer == nil else { return }
             let t = DispatchSource.makeTimerSource(queue: queue)
-            t.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(20))
+            t.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(5))
             t.setEventHandler { [weak self] in self?.tick() }
             timer = t
             t.resume()
@@ -104,23 +121,28 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
         guard !pingOutstanding else { return }
         pingOutstanding = true
         let postedAt = ProcessInfo.processInfo.systemUptime
+        let wantsContext = lastContextUptime.map { postedAt - $0 >= Self.contextRefreshSeconds } ?? true
+        let context = self.context
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             let ranAt = ProcessInfo.processInfo.systemUptime
-            let ctx = self.context()
+            let ctx = wantsContext ? context() : nil
             self.queue.async { self.completed(waitSeconds: ranAt - postedAt, nowUptime: ranAt, ctx: ctx) }
         }
     }
 
-    private func completed(waitSeconds: TimeInterval, nowUptime: TimeInterval, ctx: [String: Any]) {
+    private func completed(waitSeconds: TimeInterval, nowUptime: TimeInterval, ctx: [String: Any]?) {
         pingOutstanding = false
         let waitMs = waitSeconds * 1000
         let before = snapshot
-        snapshot = ctx
+        if let ctx {
+            snapshot = ctx
+            lastContextUptime = nowUptime
+        }
         switch StallDetector.decide(
             waitMs: waitMs, nowUptime: nowUptime,
             lastEmitUptime: lastEmitUptime, suppressedSoFar: suppressed,
-            thresholdMs: thresholdMs
+            thresholdMs: thresholdMs, rateLimitSeconds: rateLimitSeconds
         ) {
         case .none:
             return
