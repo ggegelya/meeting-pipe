@@ -485,6 +485,10 @@ The menu bar's **Finish setup** row is the shorter version, present only while s
 
 The menu bar's **Diagnostics…** opens a read-only view of what the app has been doing, with filters for how far back, what kind of event, and which action. It is the readable version of the logs, and it is where to look when the question is "did it even notice the meeting". If it also says some unreadable lines were skipped, a log line got damaged as it was written and is left out of the list; one now and then is harmless, but it means that moment may be missing an entry. **Open Logs Folder** in the same menu gets you the raw files if you want them.
 
+### A row that says Stalled
+
+While a meeting is processing, its row in the Library shows the step it is on and how long the whole run has taken. **Stalled** means the app has stopped seeing signs of life, and it is only ever a warning: nothing is cancelled, and **Cancel** is always there if you would rather stop. It appears in two shapes. If the row stops updating at all, the processing step has gone quiet for half a minute, and the flag clears by itself the moment it starts reporting again. If the row keeps counting but reads something like **Summarizing, no reply for 1:40**, the step is running but has not finished a piece of work for a minute and a half, which is the picture of a request waiting on a slow or unreachable service; it clears when a reply comes in. A slow start is not a stall: starting the step can take a minute on a busy Mac, and the app waits two minutes for the first sign of life before it says anything.
+
 ### A meeting that failed
 
 Failed meetings collect in the Library's **Needs you** rail, which carries an amber count. Open one to see a short explanation and its next action below the tabs. **Retry summary** reuses a complete saved transcript; **Retry publishing** uses the saved summary without another model call. If a usable transcript is missing, **Retry** starts from the recording. The configured engine and the meeting's privacy rules still apply.

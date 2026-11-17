@@ -40,7 +40,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from . import egress_guard
+from . import egress_guard, events
 from .json_extract import parse_summary
 from .prompt_safety import wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
@@ -190,6 +190,7 @@ class ClaudeCLIClient:
             raise ClaudeCLIError(
                 f"claude CLI exited {proc.returncode}: {(proc.stderr or '').strip()[:500]}"
             )
+        events.note_progress()  # PIPE53
         return _extract_result(proc.stdout)
 
 

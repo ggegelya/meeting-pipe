@@ -2384,4 +2384,148 @@ extension SinkDispatcherTests {
         }
         XCTAssertNotNil(handoff)
     }
+
+    // MARK: - PIPE53: the stall watchdog's two clocks and its no-progress phase
+
+    /// A dispatcher whose watchdog policy and clock the test owns, so nothing waits a real 30 s and
+    /// the 5 s timer never fires on its own (`tickSec` is an hour); the test calls `evaluateStall`.
+    private final class StallRig {
+        var now = Date(timeIntervalSince1970: 1_800_000_000)
+        let driver = FakeDriver()
+        let dispatcher: SinkDispatcher
+        var stalledCalls = 0
+        var progress: [PipelineProgress] = []
+        let logs = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("stall-\(UUID().uuidString)")
+
+        init(policy: SinkDispatcher.StallPolicy) {
+            try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+            setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+            var clock: () -> Date = { Date() }
+            dispatcher = SinkDispatcher(
+                launcher: driver, makeTranscriptionRunner: { PassRunner() },
+                stallPolicy: policy, stallClock: { clock() }
+            )
+            clock = { [unowned self] in self.now }
+            dispatcher.onActiveStalled = { [unowned self] _ in self.stalledCalls += 1 }
+            dispatcher.onActiveProgress = { [unowned self] _, p in self.progress.append(p) }
+        }
+
+        deinit {
+            unsetenv("MEETINGPIPE_LOGS_DIR")
+            try? FileManager.default.removeItem(at: logs)
+        }
+
+        func stalledPhases() -> [String] {
+            ((try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? "")
+                .split(separator: "\n")
+                .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+                .filter { $0["action"] as? String == "pipeline_stalled" }
+                .compactMap { $0["phase"] as? String }
+        }
+    }
+
+    private static let policy = SinkDispatcher.StallPolicy(
+        launchBudgetSec: 100, beatGapSec: 30, noProgressBudgetSec: 90, tickSec: 3600
+    )
+
+    private func startedStallRig() throws -> (StallRig, URL) {
+        let rig = StallRig(policy: Self.policy)
+        let wav = try makeTempWav()
+        rig.dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(rig.driver)
+        return (rig, wav)
+    }
+
+    func test_a_slow_launch_is_not_a_stall() throws {
+        let (rig, wav) = try startedStallRig()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+        rig.now += 35  // past the old 30 s threshold, well inside the launch budget
+        rig.dispatcher.evaluateStall()
+        rig.driver.emitProgress(PipelineProgress(stage: "finalize", elapsedSec: 5, stageElapsedSec: 5))
+        drainMain()
+        rig.now += 5
+        rig.dispatcher.evaluateStall()
+
+        XCTAssertEqual(rig.stalledCalls, 0)
+        XCTAssertTrue(rig.stalledPhases().isEmpty)
+        XCTAssertFalse(rig.progress.contains { $0.stalled })
+    }
+
+    func test_a_launch_that_never_beats_is_flagged_with_the_launch_phase() throws {
+        let (rig, wav) = try startedStallRig()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+        rig.now += 99
+        rig.dispatcher.evaluateStall()
+        XCTAssertEqual(rig.stalledCalls, 0)
+        rig.now += 2
+        rig.dispatcher.evaluateStall()
+        rig.dispatcher.evaluateStall()  // already flagged: once, not once per tick
+
+        XCTAssertEqual(rig.stalledCalls, 1)
+        XCTAssertEqual(rig.stalledPhases(), ["launch"])
+    }
+
+    func test_a_beat_after_a_gap_re_arms_the_watchdog_for_the_same_run() throws {
+        let (rig, wav) = try startedStallRig()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+        rig.driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 5, stageElapsedSec: 5))
+        drainMain()
+        rig.now += 31
+        rig.dispatcher.evaluateStall()
+        XCTAssertEqual(rig.stalledCalls, 1)
+
+        rig.driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 40, stageElapsedSec: 40))
+        drainMain()
+        rig.now += 31  // a second lapse in the same run; before PIPE53 the latched flag swallowed it
+        rig.dispatcher.evaluateStall()
+
+        XCTAssertEqual(rig.stalledCalls, 2)
+        XCTAssertEqual(rig.stalledPhases(), ["beat_gap", "beat_gap"])
+    }
+
+    func test_beats_with_no_progress_flag_the_stage_and_a_unit_of_work_clears_it() throws {
+        let (rig, wav) = try startedStallRig()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+        // The beat thread is alive the whole time: a beat every 5 s, the stage clock climbing.
+        for waited in stride(from: 5, through: 95, by: 5) {
+            rig.now += 5
+            rig.driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: waited, stageElapsedSec: waited))
+            drainMain()
+            rig.dispatcher.evaluateStall()
+        }
+        XCTAssertEqual(rig.stalledPhases(), ["no_progress"])
+        XCTAssertEqual(rig.stalledCalls, 0, "a beating run is reported through the progress entry, not as a lapse")
+        let flagged = try XCTUnwrap(rig.progress.last)
+        XCTAssertTrue(flagged.stalled)
+        XCTAssertEqual(flagged.stageElapsedSec, 95)
+
+        // Still stuck on the next beat: the row keeps saying so rather than being rebuilt healthy.
+        rig.now += 5
+        rig.driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 100, stageElapsedSec: 100))
+        drainMain()
+        XCTAssertTrue(try XCTUnwrap(rig.progress.last).stalled)
+        XCTAssertEqual(rig.stalledPhases(), ["no_progress"], "one flag per stall, not one per beat")
+
+        // A model call returned: the stage clock drops back and the stall ends.
+        rig.now += 5
+        rig.driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 105, stageElapsedSec: 2))
+        drainMain()
+        XCTAssertFalse(try XCTUnwrap(rig.progress.last).stalled)
+    }
+
+    func test_an_apple_run_whose_beats_carry_no_stage_clock_is_never_flagged() throws {
+        // PIPE36: the Apple phase beats `onProgress` once per call, from Swift, with no
+        // `stage_elapsed_s`. Hours of whole-run elapsed must not read as "no progress".
+        let (rig, wav) = try startedStallRig()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
+        for call in 1...40 {
+            rig.now += 20
+            rig.driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: call * 20))
+            drainMain()
+            rig.dispatcher.evaluateStall()
+        }
+        XCTAssertEqual(rig.stalledCalls, 0)
+        XCTAssertTrue(rig.stalledPhases().isEmpty)
+        XCTAssertFalse(rig.progress.contains { $0.stalled })
+    }
 }

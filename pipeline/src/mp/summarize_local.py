@@ -66,7 +66,7 @@ from typing import Any, NoReturn
 import httpx
 from pydantic import ValidationError
 
-from . import local_server, local_snapshot, resource_guard, summarize_staged
+from . import events, local_server, local_snapshot, resource_guard, summarize_staged
 from .chunking import chunked_windows
 from .config import SAMPLING_TEMPERATURE
 from .json_extract import largest_balanced_json_object, repair_missing_commas
@@ -1426,6 +1426,7 @@ class LocalSummaryClient:
                 )
             raise LocalSummaryError(detail)
         data = r.json()
+        events.note_progress()  # PIPE53: every local request (map, reduce, repair) lands here
         try:
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:

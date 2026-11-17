@@ -56,6 +56,11 @@ enum ProcessingPresentation: Equatable {
             // row rather than as a phase without a clock. A real heartbeat never
             // arrives at zero: the pipeline beats every 5 s, so the first one it
             // sends already says 5.
+            // PIPE53: a run stuck inside its stage says how long the stage has waited, which is what
+            // tells a slow request from a dead one; the whole-run clock keeps climbing either way.
+            if p.stalled, let waited = p.stageElapsedSec, waited > 0 {
+                return "\(stage), no reply for \(MeetingRow.formatDuration(Double(waited)))"
+            }
             guard p.elapsedSec > 0 else { return stage }
             return "\(stage) \(MeetingRow.formatDuration(Double(p.elapsedSec)))"
         case .queued(let job):

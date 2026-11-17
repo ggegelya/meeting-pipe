@@ -19,7 +19,7 @@ import os
 import re
 import sys
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -187,6 +187,29 @@ def _events_path() -> Path:
 #: said otherwise). The durable record is the `pipeline.stage_progress` event
 #: `emit_progress` writes alongside it.
 PROGRESS_SENTINEL = "__MP_PROGRESS__"
+
+
+# PIPE53: who to tell when a unit of work finishes. `run_all`'s heartbeat registers itself here
+# for the length of a run, so the model-call sites (and the cleanup loop) can say "progress"
+# without a handle threaded through every signature between them and the orchestrator.
+# Nothing registered (every command but `run-all`) makes `note_progress` a no-op.
+_progress_hook: Callable[[], None] | None = None
+
+
+def set_progress_hook(hook: Callable[[], None] | None) -> None:
+    global _progress_hook
+    _progress_hook = hook
+
+
+def note_progress() -> None:
+    """A unit of real work just finished (one model call, one cleanup window). Never raises."""
+    hook = _progress_hook
+    if hook is None:
+        return
+    try:
+        hook()
+    except Exception:  # noqa: BLE001 - a progress note must never fail the work it describes
+        pass
 
 
 def emit_progress(stage: str, *, elapsed_s: int, **extra: Any) -> None:

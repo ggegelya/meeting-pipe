@@ -174,4 +174,19 @@ final class LibraryProcessingTests: XCTestCase {
             "Publish"
         )
     }
+
+    // MARK: - PIPE53: a run stuck inside its stage says how long the request has waited
+
+    func test_a_stage_that_beats_without_progress_says_how_long_it_has_waited() {
+        let stuck = ActiveProcessing(stem: "m", stage: "summarize", elapsedSec: 200, stalled: true, stageElapsedSec: 100)
+        let p = LibraryProcessing.presentation(stem: "m", active: stuck, pending: [])
+        XCTAssertTrue(p.isStalled)
+        XCTAssertEqual(p.label, "Summarizing, no reply for 1:40")
+    }
+
+    func test_a_lapsed_heartbeat_keeps_the_whole_run_clock_and_a_healthy_row_is_unchanged() {
+        let lapsed = ActiveProcessing(stem: "m", stage: "summarize", elapsedSec: 72, stalled: true)
+        XCTAssertEqual(LibraryProcessing.presentation(stem: "m", active: lapsed, pending: []).label, "Summarizing 1:12")
+        XCTAssertEqual(LibraryProcessing.presentation(stem: "m", active: active(), pending: []).label, "Summarizing 1:12")
+    }
 }

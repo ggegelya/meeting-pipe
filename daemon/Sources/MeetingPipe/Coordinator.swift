@@ -347,13 +347,18 @@ final class Coordinator: NSObject {
             },
             onQueueActivity: { [weak self] activity in self?.statusBar.setQueueActivity(activity) },
             onProgress: { [weak self] stem, progress in
-                // Live pipeline progress for the row (TECH-UX5). Preserve a
-                // prior stalled flag if a late beat arrives after stalling.
+                // Live pipeline progress for the row (TECH-UX5). A beat is healthy by
+                // default; `SinkDispatcher` sets `progress.stalled` on the beats of a run
+                // it has judged stuck inside its stage (PIPE53), which is the one stall
+                // a beat does not end. A lapsed heartbeat is ended by the next beat, as
+                // before. (This comment used to promise a preserved flag the code beside
+                // it did not keep.)
                 self?.libraryModel.activeProcessing = ActiveProcessing(
                     stem: stem,
                     stage: progress.stage,
                     elapsedSec: progress.elapsedSec,
-                    stalled: false
+                    stalled: progress.stalled,
+                    stageElapsedSec: progress.stalled ? progress.stageElapsedSec : nil
                 )
             },
             // UX50: the one clear, fired by the queue when the job lands however

@@ -439,6 +439,7 @@ def _gather_edits(
             else:
                 outside[(edit.segment_index, edit.speaker)] = edit
         done += 1
+        events.note_progress()  # PIPE53: a finished window is a unit of progress
     return _Gathered(by_index, outside, done, len(windows), deadline_hit)
 
 

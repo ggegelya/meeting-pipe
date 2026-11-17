@@ -84,11 +84,42 @@ final class SinkDispatcher: @unchecked Sendable {
     /// is reported or not. Main queue.
     var onActiveProgressEnded: (() -> Void)?
 
-    /// Fires once when the active job's pipeline goes 30 s without a heartbeat (TECH-UX5): (stem). Main queue.
+    /// Fires when the active job's pipeline lapses (TECH-UX5): (stem). Main queue. Once per lapse
+    /// since PIPE53: a beat that follows a lapse re-arms it. A run stuck *inside* a stage while it
+    /// keeps beating is reported through `onActiveProgress` instead, with `stalled` set.
     var onActiveStalled: ((String) -> Void)?
 
-    /// No-heartbeat window before a running pipeline is flagged stalled. The pipeline beats every 5 s, so 30 s is six missed beats.
-    private static let stallThresholdSec: TimeInterval = 30
+    /// Where a run was when the stall watchdog flagged it (PIPE53), as the `phase` of `pipeline_stalled`.
+    enum StallPhase: String {
+        /// Spawned, and no heartbeat yet within the launch budget.
+        case launch
+        /// Beating, then no beat for `beatGapSec`.
+        case beatGap = "beat_gap"
+        /// Still beating, but the stage has gone `noProgressBudgetSec` without a finished unit of work.
+        case noProgress = "no_progress"
+    }
+
+    /// The watchdog's three numbers (PIPE53), injectable so a test does not wait them out.
+    struct StallPolicy: Equatable {
+        /// Spawn to first heartbeat. The pipeline's first beat comes 5 s after `run_all` starts its heartbeat,
+        /// which is after interpreter start, imports and `entry.prepare`. Over the 2026-09-29 to 2026-11-13
+        /// field window the first beat arrived 38.1 s and 41.2 s after `engine_succeeded` on two healthy runs
+        /// (the mp launch itself peaked at 35.9 s), and both were flagged at 30 s. 120 s is about three
+        /// times the worst, and a wedged interpreter start still shows up inside two minutes.
+        var launchBudgetSec: TimeInterval = 120
+        /// No heartbeat once they are flowing. The pipeline beats every 5 s, so 30 s is six missed beats; the
+        /// field shows 0 gaps over 30 s in 968.
+        var beatGapSec: TimeInterval = 30
+        /// A stage that has beaten for this long without finishing a unit of work (a model call, a cleanup
+        /// window). Healthy maxima over 110 field runs were 54.2 s (cleanup) and 77.4 s (summarize), so 90 s
+        /// clears both, and it sits under the 120 s Anthropic read timeout so the 124 s hang of stem
+        /// 20261022-103101 is flagged while it is happening instead of after.
+        var noProgressBudgetSec: TimeInterval = 90
+        /// How often the watchdog looks.
+        var tickSec: TimeInterval = 5
+
+        static let production = StallPolicy()
+    }
 
     private var processingJobs: [ProcessingJob] = []
     private var activeJob: ProcessingJob?
@@ -121,10 +152,17 @@ final class SinkDispatcher: @unchecked Sendable {
     /// started still answers whoever is awaiting it.
     private var libraryRunCompletions: [UUID: (Result<URL?, Error>) -> Void] = [:]
 
-    /// Stall tracking for the active pipeline subprocess (TECH-UX5).
-    private var lastProgressAt: Date?
+    /// Stall tracking for the active pipeline subprocess (TECH-UX5, PIPE53).
     private var stallTimer: Timer?
-    private var stalledFired = false
+    private var stallStem: String?
+    private var stallStartedAt: Date?
+    /// Nil until the first heartbeat, which is what moves the watchdog from the launch budget to the beat gap.
+    private var lastBeatAt: Date?
+    private var lastBeat: PipelineProgress?
+    /// The phase the watchdog is currently flagging; nil when healthy. A beat that ends the condition clears it.
+    private var stalledPhase: StallPhase?
+    private let stallPolicy: StallPolicy
+    private let stallClock: () -> Date
 
     /// The job deadline over the transcription half (PIPE36). Armed when a full or
     /// re-transcribe job starts, disarmed when it commits to its result (the hand-off to the
@@ -156,8 +194,12 @@ final class SinkDispatcher: @unchecked Sendable {
         },
         originalsDir: URL? = nil,
         transcriptionDeadline: @escaping (Double?, Bool) -> TimeInterval = { SinkDispatcher.transcriptionDeadline(audioSeconds: $0, runnerWarm: $1) },
-        globalRegulatedMode: @escaping () -> Bool = { ConfigStore(configURL: Config.defaultPath).regulatedMode }
+        globalRegulatedMode: @escaping () -> Bool = { ConfigStore(configURL: Config.defaultPath).regulatedMode },
+        stallPolicy: StallPolicy = .production,
+        stallClock: @escaping () -> Date = { Date() }
     ) {
+        self.stallPolicy = stallPolicy
+        self.stallClock = stallClock
         self.globalRegulatedMode = globalRegulatedMode
         self.launcher = launcher
         self.makeTranscriptionRunner = makeTranscriptionRunner
@@ -717,8 +759,8 @@ final class SinkDispatcher: @unchecked Sendable {
             summaryMode: job.summaryMode,
             onProgress: { [weak self] progress in
                 // onProgress already hops to main inside the launcher.
-                self?.lastProgressAt = Date()
-                self?.onActiveProgress?(stem, progress)
+                guard let self = self else { return }
+                self.onActiveProgress?(stem, self.noteBeat(progress))
             }
         ) { [weak self] result in
             DispatchQueue.main.async {
@@ -995,24 +1037,81 @@ final class SinkDispatcher: @unchecked Sendable {
     // MARK: - Stall tracking + cancel (TECH-UX5)
 
     private func startStallTracking(stem: String) {
-        lastProgressAt = Date()
-        stalledFired = false
+        stallStem = stem
+        stallStartedAt = stallClock()
+        lastBeatAt = nil
+        lastBeat = nil
+        stalledPhase = nil
         stallTimer?.invalidate()
-        stallTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            guard let self = self, let last = self.lastProgressAt, !self.stalledFired else { return }
-            if Date().timeIntervalSince(last) > SinkDispatcher.stallThresholdSec {
-                self.stalledFired = true
-                Log.event(category: "coordinator", action: "pipeline_stalled", attributes: ["stem": stem])
-                self.onActiveStalled?(stem)
-            }
+        stallTimer = Timer.scheduledTimer(withTimeInterval: stallPolicy.tickSec, repeats: true) { [weak self] _ in
+            self?.evaluateStall()
         }
+    }
+
+    /// One look at the active run (the timer's tick; tests call it with an injected clock).
+    ///
+    /// Before the first beat the run is judged against the launch budget alone: the clock used to
+    /// start at spawn on the beat-gap threshold, so a slow interpreter start was flagged as a stall
+    /// (both field flags were that), and the one flag then spent the watchdog for the rest of the run.
+    /// From the first beat on, a gap in beats and a stage that beats without progressing are the two
+    /// ways to be stuck. Advisory only: nothing here kills the run, Cancel already exists.
+    func evaluateStall() {
+        guard let stem = stallStem, let started = stallStartedAt, stalledPhase == nil else { return }
+        let now = stallClock()
+        let phase: StallPhase?
+        if let last = lastBeatAt {
+            if now.timeIntervalSince(last) > stallPolicy.beatGapSec {
+                phase = .beatGap
+            } else if let waited = lastBeat?.stageElapsedSec, TimeInterval(waited) > stallPolicy.noProgressBudgetSec {
+                phase = .noProgress
+            } else {
+                phase = nil
+            }
+        } else {
+            phase = now.timeIntervalSince(started) > stallPolicy.launchBudgetSec ? .launch : nil
+        }
+        guard let phase else { return }
+        stalledPhase = phase
+        Log.event(category: "coordinator", action: "pipeline_stalled", attributes: [
+            "stem": stem,
+            "phase": phase.rawValue,
+        ])
+        if phase == .noProgress, var beat = lastBeat {
+            // Beating but stuck: the row keeps its live entry and gains the stall, with how long it has waited.
+            beat.stalled = true
+            onActiveProgress?(stem, beat)
+        } else {
+            onActiveStalled?(stem)
+        }
+    }
+
+    /// A heartbeat arrived: re-arm the watchdog, and say whether the beat leaves the run flagged.
+    ///
+    /// A lapse (launch or beat gap) ends with the beat that follows it, so the watchdog can fire
+    /// again later in the same run; before PIPE53 the flag latched until the job ended. A no-progress
+    /// stall does not end on a beat, since beats are what it is made of: it ends when the beat's
+    /// `stage_elapsed_s` drops back under the budget, which is a unit of work finishing.
+    private func noteBeat(_ progress: PipelineProgress) -> PipelineProgress {
+        lastBeatAt = stallClock()
+        lastBeat = progress
+        if let phase = stalledPhase {
+            let stillStuck = phase == .noProgress
+                && TimeInterval(progress.stageElapsedSec ?? 0) > stallPolicy.noProgressBudgetSec
+            if !stillStuck { stalledPhase = nil }
+        }
+        var forwarded = progress
+        forwarded.stalled = stalledPhase == .noProgress
+        return forwarded
     }
 
     private func stopStallTracking() {
         stallTimer?.invalidate()
         stallTimer = nil
-        lastProgressAt = nil
-        stalledFired = false
+        stallStem = nil
+        stallStartedAt = nil
+        lastBeatAt = nil
+        lastBeat = nil
+        stalledPhase = nil
     }
 
     /// Why a cancelled run's row still carries a marker (UX50). Reads as the

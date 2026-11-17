@@ -96,6 +96,9 @@ struct ActiveProcessing: Equatable {
     /// `mp summarize` / `mp publish` emit no progress heartbeat to derive a
     /// stage and an elapsed time from. Nil for a run-all, which has one.
     var label: String? = nil
+    /// PIPE53: how long the stage has gone without progress, carried only while the run is flagged
+    /// stalled inside it, so the row can say how long the request has waited.
+    var stageElapsedSec: Int? = nil
 }
 
 final class LibraryWindowModel: ObservableObject {

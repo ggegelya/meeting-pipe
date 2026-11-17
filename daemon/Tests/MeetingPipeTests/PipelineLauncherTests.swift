@@ -1255,4 +1255,20 @@ extension PipelineLauncherTests {
         XCTAssertNotNil(rows.first?["thermal_state"])
         XCTAssertNotNil(rows.first?["memory_pressure"])
     }
+
+    // MARK: - PIPE53: the beat's stage clock
+
+    func test_parse_progress_reads_the_stage_elapsed_key() {
+        let line = "__MP_PROGRESS__ {\"stage\": \"summarize\", \"elapsed_s\": 40, \"beat\": 8, \"stage_elapsed_s\": 12}"
+        let parsed = PipelineLauncher.parseProgress(line)
+        XCTAssertEqual(parsed?.stageElapsedSec, 12)
+        XCTAssertEqual(parsed?.elapsedSec, 40)
+        XCTAssertEqual(parsed?.stalled, false, "the stall flag is the watchdog's, never parsed")
+    }
+
+    func test_a_beat_without_the_stage_clock_parses_as_before() {
+        let parsed = PipelineLauncher.parseProgress("__MP_PROGRESS__ {\"stage\": \"publish\", \"elapsed_s\": 7}")
+        XCTAssertEqual(parsed, PipelineProgress(stage: "publish", elapsedSec: 7))
+        XCTAssertNil(parsed?.stageElapsedSec)
+    }
 }

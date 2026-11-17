@@ -23,6 +23,7 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from importlib import resources
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -76,36 +77,57 @@ class _ProgressHeartbeat:
     """Background heartbeat for `run_all` (TECH-UX5). Every `interval_s` it
     emits a `pipeline.stage_progress` event and prints a stdout sentinel with
     the current stage + elapsed, so the daemon can distinguish a slow stage
-    from a wedged one. The stage is updated by the run as it advances."""
+    from a wedged one. The stage is updated by the run as it advances.
 
-    def __init__(self, interval_s: float = 5.0) -> None:
+    PIPE53: the beat also carries `stage_elapsed_s`, the seconds since the stage
+    began or since the last unit of real work finished (`mark_progress`, reached
+    through `events.note_progress` from each model call and cleanup window). The
+    timer thread beats whether or not the run is doing anything, so on its own a
+    request hung for 124 s looked exactly like a healthy one; this number is the
+    part of the beat that only moves when the run does."""
+
+    def __init__(self, interval_s: float = 5.0, clock: Callable[[], float] = time.monotonic) -> None:
         self._interval = interval_s
+        self._clock = clock
         self._stage = "starting"
         self._lock = threading.Lock()
         self._stop = threading.Event()
-        self._started_at = time.monotonic()
+        self._started_at = clock()
+        self._progress_at = self._started_at
         self._thread = threading.Thread(target=self._run, name="mp-progress", daemon=True)
 
     def set_stage(self, stage: str) -> None:
         with self._lock:
             self._stage = stage
+            self._progress_at = self._clock()
+
+    def mark_progress(self) -> None:
+        with self._lock:
+            self._progress_at = self._clock()
 
     def start(self) -> "_ProgressHeartbeat":
+        events.set_progress_hook(self.mark_progress)
         self._thread.start()
         return self
 
     def stop(self) -> None:
+        events.set_progress_hook(None)
         self._stop.set()
         self._thread.join(timeout=1.0)
+
+    def _snapshot(self) -> tuple[str, int, int]:
+        """(stage, whole-run elapsed, stage elapsed) as of now."""
+        with self._lock:
+            stage = self._stage
+            now = self._clock()
+            return stage, int(now - self._started_at), int(now - self._progress_at)
 
     def _run(self) -> None:
         beat = 0
         while not self._stop.wait(self._interval):
             beat += 1
-            with self._lock:
-                stage = self._stage
-            elapsed = int(time.monotonic() - self._started_at)
-            events.emit_progress(stage, elapsed_s=elapsed, beat=beat)
+            stage, elapsed, stage_elapsed = self._snapshot()
+            events.emit_progress(stage, elapsed_s=elapsed, beat=beat, stage_elapsed_s=stage_elapsed)
 
 
 #: Set by the daemon's `PipelineLauncher.runMP` on every spawn (PERF13); mirrored

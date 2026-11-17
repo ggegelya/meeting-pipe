@@ -179,7 +179,9 @@ def _create_message(
     wall_start = time.time()
     mono_start = time.monotonic()
     try:
-        return client.messages.create(**kwargs)
+        response = client.messages.create(**kwargs)
+        events.note_progress()  # PIPE53: a finished request is the unit of progress
+        return response
     except anthropic.APITimeoutError:
         wall = time.time() - wall_start
         mono = time.monotonic() - mono_start
@@ -201,7 +203,9 @@ def _create_message(
         else:
             raise
 
-    return client.messages.create(**kwargs)
+    response = client.messages.create(**kwargs)
+    events.note_progress()
+    return response
 
 
 def _extra_sections_directive(specs: list[ExtraSectionSpec] | None) -> str:

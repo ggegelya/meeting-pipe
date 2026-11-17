@@ -11,6 +11,15 @@ struct PipelineProgress: Equatable {
     let elapsedSec: Int
     var stemsDone: Int? = nil
     var stemsTotal: Int? = nil
+    /// PIPE53: seconds the current stage has gone without a unit of real work finishing (the
+    /// pipeline's `stage_elapsed_s`). Unlike `elapsedSec` it does not move just because the timer
+    /// thread is alive, so a request that is hung but beating shows up here. Nil from a pipeline
+    /// that predates the key, and from the daemon's own phases.
+    var stageElapsedSec: Int? = nil
+    /// PIPE53: set by `SinkDispatcher` on the beats it forwards, never parsed: the stall watchdog
+    /// has judged the run stuck inside its stage (beats arriving, no progress), so the row must
+    /// keep saying so rather than being rebuilt as healthy by every beat.
+    var stalled: Bool = false
 }
 
 /// A verified `[stem]` citation on an ask answer (AI3): resolves to a real meeting on disk.
@@ -823,7 +832,8 @@ final class PipelineLauncher: PipelineDriver {
             stage: stage,
             elapsedSec: elapsed,
             stemsDone: obj["stems_done"] as? Int,
-            stemsTotal: obj["stems_total"] as? Int
+            stemsTotal: obj["stems_total"] as? Int,
+            stageElapsedSec: (obj["stage_elapsed_s"] as? Int) ?? (obj["stage_elapsed_s"] as? Double).map { Int($0) }
         )
     }
 

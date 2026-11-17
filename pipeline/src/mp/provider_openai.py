@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
+from . import events
 from .config import SAMPLING_TEMPERATURE
 from .endpoints import OPENAI_API_BASE, OPENAI_CHAT_PATH
 from .json_extract import parse_summary
@@ -151,6 +152,7 @@ class OpenAIClient:
             raise OpenAIError(f"openai backend returned {r.status_code}: {r.text[:500]}") from httpx.HTTPStatusError(
                 "OpenAI request failed", request=r.request, response=r
             )
+        events.note_progress()  # PIPE53
         try:
             content = r.json()["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:

@@ -2,9 +2,9 @@
 id: PIPE53
 title: The pipeline stall watchdog is armed at spawn on a 30 s threshold, so a slow launch shows Stalled on a healthy run while a request hung for 124 s raised nothing
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). Both pipeline_stalled rows in 45 days are launch-time false alarms (20261021-120034 at 30.08 s on a healthy 56.8 s run, 20261022-103101 at 30.12 s), and the latter's summarize request hung 124.4 s while the timer-thread heartbeat beat 24 times, so no stall was raised; one false flag also spends the watchdog for the rest of the run. Start the stall clock at the first heartbeat under its own launch budget, and make the beat carry how long the current stage has gone without progress so a beating-but-stuck request is flagged.
+comment: Shipped 2026-11-18, launch budget (120 s) and beat gap (30 s) as two injectable clocks, the watchdog re-arms after a lapse, the beat carries stage_elapsed_s and a 90 s no_progress phase flags a beating-but-stuck stage with the row saying how long it has waited. Owner still owes seeing the new row text on a real hung request.
 ---
 
 # PIPE53: The pipeline stall watchdog is armed at spawn on a 30 s threshold, so a slow launch shows Stalled on a healthy run while a request hung for 124 s raised nothing
