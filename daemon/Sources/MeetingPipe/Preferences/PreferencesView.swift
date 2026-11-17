@@ -133,7 +133,11 @@ struct PreferencesView: View {
         if let parseError = store.parseError {
             ConfigParseErrorPane(error: parseError)
         } else {
-            paneContent
+            // UX91: a change that did not save is named above whichever pane is open.
+            VStack(alignment: .leading, spacing: 0) {
+                SettingsSaveBanner(store: store, secrets: secrets)
+                paneContent
+            }
         }
     }
 

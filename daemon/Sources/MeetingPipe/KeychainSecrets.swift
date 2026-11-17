@@ -73,7 +73,10 @@ struct KeychainBackend: SecretsBackend {
         }
         let result = runner(["-i"], Data((command + "\n").utf8))
         guard result?.status == 0 else {
-            throw KeychainError.commandFailed(result?.stderr.trimmingCharacters(in: .whitespacesAndNewlines) ?? "security not runnable")
+            throw KeychainError.commandFailed(
+                result?.stderr.trimmingCharacters(in: .whitespacesAndNewlines) ?? "security not runnable",
+                status: result?.status
+            )
         }
     }
 
@@ -81,7 +84,7 @@ struct KeychainBackend: SecretsBackend {
         let result = runner(["delete-generic-password", "-s", service, "-a", account], nil)
         guard let result else { throw KeychainError.commandFailed("security not runnable") }
         guard result.status == 0 || result.status == Self.itemNotFound else {
-            throw KeychainError.commandFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+            throw KeychainError.commandFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines), status: result.status)
         }
     }
 
@@ -102,11 +105,16 @@ struct KeychainBackend: SecretsBackend {
     }
 
     enum KeychainError: Error, LocalizedError {
-        case commandFailed(String)
+        /// `security`'s stderr, and its exit status when it ran (UX91 logs the status, never the text).
+        case commandFailed(String, status: Int32? = nil)
         case unquotable
+        var status: Int32? {
+            if case .commandFailed(_, let status) = self { return status }
+            return nil
+        }
         var errorDescription: String? {
             switch self {
-            case .commandFailed(let message): return "Keychain write failed: \(message)"
+            case .commandFailed(let message, _): return "Keychain write failed: \(message)"
             case .unquotable: return "That token contains a character that cannot be stored (only printable ASCII is accepted). Check it was pasted whole."
             }
         }

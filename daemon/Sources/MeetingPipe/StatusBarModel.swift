@@ -55,6 +55,8 @@ enum StatusBarModel {
         /// UX22 and was missing from this enum until ARCH6, which is the divergence
         /// that proved the two row lists were not the same list.
         case finishSetup(title: String)
+        /// UX91: a Preferences change did not reach `config.toml` or the Keychain.
+        case unsavedSetting(title: String)
         case startRecording
         /// DET7: `startRecording` when a meeting the user skipped is still running, so
         /// the row names what a click will attach to. Same action, honest label: the
@@ -91,6 +93,8 @@ enum StatusBarModel {
         /// UX22: `SetupChecklist.menuTitle` over the still-unmet items, or nil when
         /// every one of them is green and the row disappears entirely.
         var finishSetupTitle: String?
+        /// UX91: `ConfigStore.saveError` or `SecretsStore.saveError` is set.
+        var unsavedSetting: Bool
         var disableAutoRestart: Bool
         /// UX55: whether the `com.meetingpipe.daemon` launch agent is enabled, which is
         /// whether anything is left that *could* relaunch the app after a quit
@@ -125,6 +129,7 @@ enum StatusBarModel {
             failedMeetingCount: Int = 0,
             staleRecordingCount: Int = 0,
             finishSetupTitle: String? = nil,
+            unsavedSetting: Bool = false,
             disableAutoRestart: Bool = false,
             launchAgentEnabled: Bool = true,
             suppressedCandidateAppName: String? = nil,
@@ -144,6 +149,7 @@ enum StatusBarModel {
             self.failedMeetingCount = failedMeetingCount
             self.staleRecordingCount = staleRecordingCount
             self.finishSetupTitle = finishSetupTitle
+            self.unsavedSetting = unsavedSetting
             self.disableAutoRestart = disableAutoRestart
             self.launchAgentEnabled = launchAgentEnabled
             self.suppressedCandidateAppName = suppressedCandidateAppName
@@ -282,6 +288,10 @@ enum StatusBarModel {
         if let title = staleRecordingsTitle(count: i.staleRecordingCount) {
             rows.append(.staleRecordings(count: i.staleRecordingCount, title: title))
         }
+        // UX91: one row for both stores, while either holds a failed save.
+        if i.unsavedSetting {
+            rows.append(.unsavedSetting(title: unsavedSettingTitle))
+        }
 
         // UX22: the "Finish setup" checklist, a quiet holistic "am I done?" view.
         // Present only while something is unmet; the submenu lists each gap and
@@ -371,6 +381,9 @@ enum StatusBarModel {
     /// auto-stop late. Recording by hand (the row below this one, or the hotkey) still works, which
     /// is why the copy names the loss rather than declaring the app broken.
     static let accessibilityOffTitle = "⚠ Accessibility off - meetings are not detected"
+
+    /// UX91: the one row for a Preferences change that did not reach its store.
+    static let unsavedSettingTitle = "⚠ A setting was not saved - open Preferences"
 
     /// The failed-pipeline row's title, or nil when there is nothing to show.
     /// Backed by the durable error sidecar, so a notification missed under Focus

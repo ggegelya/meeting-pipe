@@ -39,6 +39,14 @@ final class SecretsStore: ObservableObject {
         saveStates.compactMapValues { if case .failed(let message) = $0 { return message } else { return nil } }
     }
 
+    /// UX91: the banner's and the menu's view of a failed save, naming the account and
+    /// never a value or `security`'s stderr. Cleared once no account is left failed.
+    @Published private(set) var saveError: SettingSaveFailure?
+
+    /// Retry a failed save through the debounced saver, so the `security` calls stay
+    /// off main (Preferences' Try again). `prepareSave` retries any failed account.
+    func retrySave() { scheduleSave() }
+
     /// Fired on main after a save in which every attempted account landed.
     let didPersist = PassthroughSubject<Void, Never>()
 
@@ -166,6 +174,8 @@ final class SecretsStore: ObservableObject {
     struct SaveFailure: Error {
         let errors: [String: String]
         let first: Error
+        /// Each failed account's own error (UX91's event and banner reason).
+        var perAccount: [String: Error] = [:]
     }
 
     /// Runs on the saver's queue. Writes or removes each account whose trimmed value differs from what the
@@ -174,6 +184,7 @@ final class SecretsStore: ObservableObject {
     private func makeWork(snapshot: [String: String]) -> DebouncedSaver.Work {
         return { [self] in
             var errors: [String: String] = [:]
+            var perAccount: [String: Error] = [:]
             var firstError: Error?
             for account in Self.accounts {
                 do {
@@ -181,10 +192,11 @@ final class SecretsStore: ObservableObject {
                 } catch {
                     Log.main.error("SecretsStore: writing \(account) failed: \(String(describing: error))")
                     errors[account] = error.localizedDescription
+                    perAccount[account] = error
                     firstError = firstError ?? error
                 }
             }
-            if let firstError { throw SaveFailure(errors: errors, first: firstError) }
+            if let firstError { throw SaveFailure(errors: errors, first: firstError, perAccount: perAccount) }
         }
     }
 
@@ -204,10 +216,46 @@ final class SecretsStore: ObservableObject {
             }
         }
         if failed.isEmpty { didPersist.send() }
+        noteSaveOutcome(failed: failed, error: result)
         if !settledSaved.isEmpty {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
                 for account in settledSaved where self?.saveStates[account] == .saved { self?.saveStates[account] = nil }
             }
+        }
+    }
+
+    /// UX91: publish the failure for the banner and the menu, and record one event per
+    /// failed account (its name, `security`'s exit status, the error's domain and code).
+    private func noteSaveOutcome(failed: [String: String], error result: Result<Void, Error>) {
+        guard !failed.isEmpty, case .failure(let error) = result else {
+            let stillFailed = saveStates.values.contains { if case .failed = $0 { return true } else { return false } }
+            if !stillFailed { saveError = nil }
+            return
+        }
+        let perAccount = (error as? SaveFailure)?.perAccount ?? [:]
+        let accounts = failed.keys.sorted()
+        let more = accounts.count > 1 ? " and \(accounts.count - 1) more" : ""
+        let first = perAccount[accounts[0]] ?? error
+        let reason: String
+        if case KeychainBackend.KeychainError.unquotable? = first as? KeychainBackend.KeychainError {
+            // Try again cannot fix this one: the token itself has to change.
+            reason = "\(accounts[0]) has a character the Keychain cannot store, so paste it again\(more)"
+        } else {
+            reason = "the Keychain refused to store \(accounts[0])\(more)"
+        }
+        saveError = SettingSaveFailure(store: .keychain, reason: reason, at: Date())
+        for account in accounts {
+            let own = perAccount[account] ?? error
+            let ns = own as NSError
+            var attributes: [String: Any] = ["account": account, "domain": ns.domain, "code": ns.code]
+            let securityStatus = (own as? KeychainBackend.KeychainError)?.status
+            if let securityStatus { attributes["status"] = Int(securityStatus) }
+            let status = securityStatus.map { " (security status \($0))" } ?? ""
+            SettingSaveFailure.record(
+                .keychain,
+                attributes: attributes,
+                line: "Keychain save of \(account) failed\(status); the field shows the new value but it is not in effect"
+            )
         }
     }
 

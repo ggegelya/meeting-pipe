@@ -466,6 +466,7 @@ final class StatusBarController {
             failedMeetingCount: failedMeetingCount,
             staleRecordingCount: staleRecordingCount,
             finishSetupTitle: finishSetupTitle,
+            unsavedSetting: coordinator?.configStore?.saveError != nil || coordinator?.secretsStore?.saveError != nil,
             disableAutoRestart: UISettings.shared.disableAutoRestart,
             launchAgentEnabled: launchAgentEnabled,
             suppressedCandidateAppName: coordinator?.stateMachine.liveSuppressedCandidate()?.displayName,
@@ -737,7 +738,7 @@ final class StatusBarController {
         case .modelDownload:                             return .download
         case .permissionConsequence, .screenRecordingShortcut: return .permissions
         case .accessibilityDegraded:                     return .accessibility
-        case .failedMeetings, .staleRecordings:          return .failedMeetings
+        case .failedMeetings, .staleRecordings, .unsavedSetting: return .failedMeetings
         case .finishSetup:                               return .finishSetup
         case .startRecording, .recordSuppressedMeeting, .stopRecording: return .transport
         case .quitWithoutRelaunch:                       return .quit
@@ -827,6 +828,10 @@ final class StatusBarController {
 
         case .finishSetup(let title):
             menu.addItem(finishSetupMenuItem(title: title, items: setupItems))
+
+        // UX91: Preferences carries the reason and Try again above every pane.
+        case .unsavedSetting(let title):
+            menu.addItem(actionRow(title: title, action: #selector(Coordinator.menuPreferences)))
 
         // `.suppressed` is the skip-latch display over an idle state machine (see
         // `setSuppressed`), so a manual start still works and the model keeps offering

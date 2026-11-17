@@ -22,6 +22,7 @@ final class SecretsStoreTests: XCTestCase {
         var unreadable: Set<String> = []
         var failSet: Set<String> = []
         var failRemove: Set<String> = []
+        var unquotableSet: Set<String> = []
         /// Sleeps this long inside each `set`, standing in for a slow `security`.
         var setDelay: TimeInterval = 0
         var store: [String: String] { lock.lock(); defer { lock.unlock() }; return _store }
@@ -40,7 +41,8 @@ final class SecretsStoreTests: XCTestCase {
             lock.lock(); defer { lock.unlock() }
             _sets.append(account)
             _callThreadsOnMain.append(Thread.isMainThread)
-            if failSet.contains(account) { throw KeychainBackend.KeychainError.commandFailed("boom") }
+            if unquotableSet.contains(account) { throw KeychainBackend.KeychainError.unquotable }
+            if failSet.contains(account) { throw KeychainBackend.KeychainError.commandFailed("boom", status: 36) }
             _store[account] = value
         }
         func remove(_ account: String) throws {
@@ -437,5 +439,68 @@ final class SecretsStoreTests: XCTestCase {
         let pairs = SecretsStore.parse("WEIRD_KEY=foo=bar=baz\n")
         XCTAssertEqual(pairs.first?.key, "WEIRD_KEY")
         XCTAssertEqual(pairs.first?.value, "foo=bar=baz")
+    }
+}
+
+// MARK: - UX91: a failed Keychain save is published, named by account, never by value
+
+extension SecretsStoreTests {
+    func test_a_failed_keychain_save_names_the_account_and_never_the_value() throws {
+        let logs = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mp-ux91-secrets-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer {
+            unsetenv("MEETINGPIPE_LOGS_DIR")
+            try? FileManager.default.removeItem(at: logs)
+        }
+        let backend = InMemorySecretsBackend()
+        backend.failSet = ["NOTION_TOKEN"]
+        let store = SecretsStore(backend: backend)
+
+        store.notionToken = "ntn-very-secret"
+        XCTAssertThrowsError(try store.saveNow())
+
+        let failure = try XCTUnwrap(store.saveError)
+        XCTAssertEqual(failure.store, .keychain)
+        XCTAssertTrue(failure.reason.contains("NOTION_TOKEN"), failure.reason)
+        XCTAssertFalse(failure.reason.contains("ntn-very-secret"))
+        XCTAssertFalse(failure.reason.contains("boom"), "the security stderr never reaches the banner")
+
+        let raw = (try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? ""
+        let events = raw.split(separator: "\n").compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }.filter { $0["action"] as? String == "config_save_failed" }
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?["store"] as? String, "keychain")
+        XCTAssertEqual(events.first?["account"] as? String, "NOTION_TOKEN")
+        XCTAssertEqual(events.first?["status"] as? Int, 36)
+        let daemonLog = (try? String(contentsOf: logs.appendingPathComponent("daemon.log"), encoding: .utf8)) ?? ""
+        XCTAssertTrue(daemonLog.contains("Keychain save of NOTION_TOKEN failed (security status 36)"), daemonLog)
+        XCTAssertFalse(daemonLog.contains("ntn-very-secret"))
+        XCTAssertFalse(raw.contains("ntn-very-secret"))
+        XCTAssertFalse(raw.contains("boom"))
+
+        backend.failSet = []
+        try store.saveNow()
+        XCTAssertNil(store.saveError)
+    }
+
+    func test_several_failed_accounts_and_an_unstorable_token_read_as_such() throws {
+        let backend = InMemorySecretsBackend()
+        backend.failSet = ["NOTION_TOKEN", "OPENAI_API_KEY"]
+        let store = SecretsStore(backend: backend)
+        store.notionToken = "ntn-x"
+        store.openaiAPIKey = "sk-y"
+        XCTAssertThrowsError(try store.saveNow())
+        XCTAssertEqual(store.saveError?.reason, "the Keychain refused to store NOTION_TOKEN and 1 more")
+
+        let other = InMemorySecretsBackend()
+        other.unquotableSet = ["ANTHROPIC_API_KEY"]
+        let pasted = SecretsStore(backend: other)
+        pasted.anthropicAPIKey = "sk-bad"
+        XCTAssertThrowsError(try pasted.saveNow())
+        XCTAssertEqual(pasted.saveError?.reason,
+                       "ANTHROPIC_API_KEY has a character the Keychain cannot store, so paste it again")
     }
 }

@@ -81,6 +81,14 @@ final class ConfigStore: ObservableObject {
     /// clears it once the file is fixed.
     @Published private(set) var parseError: ConfigParseError?
 
+    /// The last save that could not write the file (UX91), cleared by the next one
+    /// that does. The controls keep their values; Preferences says the change is
+    /// not in effect, and the next edit or **Try again** retries.
+    @Published private(set) var saveError: SettingSaveFailure?
+
+    /// The file this store reads and writes, for Preferences' Reveal in Finder.
+    var fileURL: URL { configURL }
+
     /// Live values exposed to SwiftUI. didSet → schedule debounced save. The
     /// declared values are placeholders: `apply(_:)` assigns every one in init.
     @Published var outputDirPath: String = "" { didSet { scheduleSave() } }
@@ -274,8 +282,10 @@ final class ConfigStore: ObservableObject {
             switch result {
             case .success:
                 if let write { self.commit(write) }
+                self.noteSaveSuccess(sequence: write?.sequence ?? self.writeSequence)
                 self.didPersist.send()
-            case .failure(let error): Log.main.error("ConfigStore persist failed: \(String(describing: error))")
+            case .failure(let error):
+                self.noteSaveFailure(error, sequence: write?.sequence ?? self.writeSequence)
             }
         }
     )
@@ -423,6 +433,9 @@ final class ConfigStore: ObservableObject {
         let current = currentValues()
         let unsaved = current.filter { !Self.same($0.value, syncedValues[$0.key]) }
         reapply(file)
+        // A file broken by hand drops the unsaved change with everything else, so a
+        // banner saying it is "still on screen" would no longer be true (UX91).
+        if file.parseError != nil { saveError = nil }
         if file.parseError == nil, !unsaved.isEmpty {
             let doc = file.document
             for (path, value) in unsaved { Self.set(value, at: path, in: doc) }
@@ -544,14 +557,51 @@ final class ConfigStore: ObservableObject {
 
     // MARK: - Persistence
 
-    /// Force an immediate save (used by tests and "Apply" buttons). Renders on the calling (main) thread and
+    /// Force an immediate save (tests, and Preferences' Try again, UX91), firing
+    /// `didPersist` when it lands like the debounced save does. Renders on the calling (main) thread and
     /// writes through `writeQueue`, behind any debounced write already in flight, so the two never share
     /// the `.writing` temp file and the last render wins.
     func saveNow() throws {
         if let parseError { throw parseError }
         let write = try prepareWrite()
-        try saver.performNow { try self.writeToDisk(write.toml) }
+        do {
+            try saver.performNow { try self.writeToDisk(write.toml) }
+        } catch {
+            noteSaveFailure(error, sequence: write.sequence)
+            throw error
+        }
         commit(write)
+        noteSaveSuccess(sequence: write.sequence)
+        didPersist.send()
+    }
+
+    /// The newest write that failed. A success clears `saveError` only when it is
+    /// newer: a debounced write that lands behind a failed `saveNow` (or the other way
+    /// round, their completions reach main out of order) must not hide or raise a
+    /// banner about a file that says something else.
+    private var failedSequence = 0
+
+    private func noteSaveSuccess(sequence: Int) {
+        if sequence > failedSequence { saveError = nil }
+    }
+
+    /// A write that did not land (UX91): published for Preferences and the menu,
+    /// recorded once with the error's domain and code. Main thread.
+    private func noteSaveFailure(_ error: Error, sequence: Int) {
+        let ns = error as NSError
+        Log.main.error("ConfigStore persist failed: \(String(describing: error))")
+        failedSequence = max(failedSequence, sequence)
+        let reason = ns.localizedDescription.split(whereSeparator: \.isNewline).first.map(String.init)
+            ?? "the settings file could not be written"
+        // A newer write already landed: the file is current, so no banner.
+        if sequence > committedSequence {
+            saveError = SettingSaveFailure(store: .config, reason: reason, at: Date())
+        }
+        SettingSaveFailure.record(
+            .config,
+            attributes: ["domain": ns.domain, "code": ns.code],
+            line: "config.toml save failed (\(ns.domain) \(ns.code)); the change is on screen but not in effect"
+        )
     }
 
     /// Debounce a burst of UI changes into one disk write (500 ms).
