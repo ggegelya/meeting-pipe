@@ -144,6 +144,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let config = store.config
         self.configStore = store
+        // UX96: a hand edit while the app runs reaches the in-memory readers (the
+        // regulated glyph, the recording's meta) instead of waiting for a relaunch.
+        store.startWatching()
 
         // SecretsStore is unfailing: it reads the tokens from the Keychain (a missing item is normal on first run) and writes only the accounts a Preferences edit changed. The tokens are not put into the process environment (SEC23): `PipelineLauncher.runMP` and `NotionDatabaseList` read them from `SecretsStore.live`.
         let secrets = SecretsStore()

@@ -31,6 +31,10 @@ final class DebouncedSaver {
         self.completion = completion
     }
 
+    /// Whether a debounced save is armed and has not fired yet. Main only. A store that reloads from disk
+    /// asks this first, so an outside change never lands under an edit still waiting to be written (UX96).
+    var isScheduled: Bool { timer != nil }
+
     /// A private serial utility queue named for its store.
     static func makeQueue(label: String) -> DispatchQueue {
         DispatchQueue(label: label, qos: .utility)

@@ -163,7 +163,7 @@ There is nothing you have to edit. Your Notion database, your backend, and your 
 
 **Publishing somewhere other than Notion needs no file.** Open **Preferences ▸ Integrations** and set the destination there: an Obsidian vault, a plain output folder, or a mounted network share. Then tick that destination in the workflow editor for the meetings that should use it. If you tick one whose destination is not set, the editor tells you so under the checkbox rather than letting the publish quietly fail after the meeting.
 
-The installer did create a config file at `~/.config/meeting-pipe/config.toml` for power users. Every option is documented with comments in the file, and most have working defaults. You only need it for the few things without a dedicated control yet, such as changing which destinations a meeting uses when **no** workflow matched it:
+The installer did create a config file at `~/.config/meeting-pipe/config.toml` for power users. Every option is documented with comments in the file, and most have working defaults. You can edit it while the app is running: it picks the change up within a moment, and a later change in Preferences keeps your edit (it does rewrite the file, so comments in it do not survive the first such change). You only need it for the few things without a dedicated control yet, such as changing which destinations a meeting uses when **no** workflow matched it:
 
 ```toml
 [output]

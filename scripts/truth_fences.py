@@ -241,10 +241,14 @@ def swift_read_keys() -> set[str]:
     store = _read("daemon/Sources/MeetingPipe/ConfigStore.swift")
     written = {
         f"{section}.{key}"
-        for section, key in re.findall(r'ensureTable\("([a-z_]+)"\)\["([a-z_]+)"\]', store)
+        for section, key in re.findall(r'^\s*\("([a-z_]+)", "([a-z_]+)", ', store, re.MULTILINE)
+    } | {
+        # A direct write outside `modeledValues` (UX96 moved them all into it).
+        f"{section}.{key}"
+        for section, key in re.findall(r'ensureTable\("([a-z_]+)"(?:, in: \w+)?\)\["([a-z_]+)"\]', store)
     }
     if not written:
-        raise SystemExit("ConfigStore.swift: found no ensureTable writes")
+        raise SystemExit("ConfigStore.swift: found no modeledValues entries")
     keys |= written
     return keys
 

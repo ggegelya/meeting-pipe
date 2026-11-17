@@ -258,7 +258,9 @@ final class ConfigStoreTests: XCTestCase {
         """.write(to: url, atomically: true, encoding: .utf8)
 
         let store = ConfigStore(configURL: url)
-        store.diarizationClusteringThreshold = 0.55
+        // A real change: since UX96 a save writes only the keys the UI changed onto an
+        // existing file, and 0.55 is already the default the store read.
+        store.diarizationClusteringThreshold = 0.5
         store.summarizationDiarizeCleanup = true
         try store.saveNow()
 
@@ -268,7 +270,7 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertTrue(raw.contains("~/adapters/meetings"))
         XCTAssertTrue(raw.contains("max_tokens = 4000"))
         XCTAssertTrue(raw.contains("obsidian"), "an unmodelled top-level table survives too")
-        XCTAssertTrue(raw.contains("diarization_clustering_threshold = 0.55"))
+        XCTAssertTrue(raw.contains("diarization_clustering_threshold = 0.5"))
         XCTAssertTrue(raw.contains("diarize_cleanup = true"))
     }
 
@@ -643,7 +645,7 @@ final class ConfigStoreTests: XCTestCase {
         var persisted = false
         let sub = store.didPersist.sink { persisted = true }
         defer { sub.cancel() }
-        store.reloadIfUnparsed()
+        store.reloadIfChangedOnDisk()
 
         XCTAssertNil(store.parseError)
         XCTAssertFalse(store.regulatedMode)
@@ -655,16 +657,9 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: url, encoding: .utf8).contains("ctrl+option+j"))
     }
 
-    func test_reload_is_a_no_op_on_a_store_that_parsed() throws {
-        // The store is the file's author once it parsed; a re-read would race its
-        // own debounced save, so an unsaved edit must survive a Preferences reopen.
-        let url = try makeTempConfigURL()
-        try "[detection]\nmanual_hotkey = \"ctrl+option+m\"\n".write(to: url, atomically: true, encoding: .utf8)
-        let store = ConfigStore(configURL: url)
-        store.manualHotkey = "ctrl+option+k"
-        store.reloadIfUnparsed()
-        XCTAssertEqual(store.manualHotkey, "ctrl+option+k")
-    }
+    // `test_reload_is_a_no_op_on_a_store_that_parsed` became UX96's
+    // `test_an_unsaved_ui_edit_survives_a_reopen_when_the_file_did_not_change`
+    // in ConfigStoreHandEditTests: a parsed store now reloads an outside change.
 
     // MARK: - CONC8: the write half takes a string, and the two writers are ordered
 

@@ -41,9 +41,10 @@ final class PreferencesWindow {
     /// which case the published change is the only thing that moves it.
     func show(initial: PreferencesItem? = nil, vocabularyScope: String? = nil) {
         let seq = UILatency.shared.action("open_window", surface: "preferences")
-        // ARCH9: a config.toml fixed by hand since the last open clears the
-        // parse-error row here; a store that parsed is left alone.
-        store.reloadIfUnparsed()
+        // UX96: a config.toml edited by hand since the last open (a syntax error
+        // fixed, ARCH9, or any other change) is reloaded here, unless a save of the
+        // store's own is pending, which re-reads the file itself.
+        store.reloadIfChangedOnDisk()
         if let scope = vocabularyScope {
             selectionState.pendingVocabularyScope = scope
         }

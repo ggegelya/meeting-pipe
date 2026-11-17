@@ -253,7 +253,7 @@ private struct PreferencesSidebar: View {
 
 /// What every Preferences pane shows while `config.toml` does not parse (ARCH9).
 /// The file is left exactly as the user wrote it; the two buttons are the way to
-/// the fix, and reopening Preferences re-reads it (`ConfigStore.reloadIfUnparsed`).
+/// the fix, and a save in the editor or reopening Preferences re-reads it (`ConfigStore.reloadIfChangedOnDisk`, UX96).
 struct ConfigParseErrorPane: View {
     let error: ConfigParseError
 

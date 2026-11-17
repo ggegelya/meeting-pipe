@@ -22,6 +22,13 @@ struct ConfigParseError: Error, Equatable {
 /// preserves unknown TOML keys (pipeline-side fields stay untouched). The
 /// disk write runs off the main queue.
 ///
+/// UX96: the file is shared with a person's text editor, so the store is never
+/// its only author. Every save re-reads the file and writes only the modeled keys
+/// the UI changed since the last sync onto what is there now, so a hand edit made
+/// while the app runs survives the next Preferences save; and an outside change
+/// with no save of the store's own pending is reloaded (`reloadIfChangedOnDisk`,
+/// called by Preferences' `show()` and by the file watcher `startWatching()` arms).
+///
 /// ARCH9: this is the only Swift type that reads `config.toml`. The daemon's
 /// launch-time `Config`, the cloud-token policy, the Apple summary context,
 /// the workflow migrator, and the Notion picker's regulated check all read a
@@ -34,13 +41,36 @@ final class ConfigStore: ObservableObject {
     private let configURL: URL
     private let writeQueue: DispatchQueue
 
-    /// Read once at load, mutated in place and re-serialized on persist;
-    /// that's how unknown keys survive. Empty while `parseError` is set.
+    /// The document the store last read or wrote; a save starts from a fresh read
+    /// of the file instead and makes that the new one, so unknown keys survive.
+    /// Empty while `parseError` is set.
     private var rawDocument = TOMLTable()
+
+    /// The file's bytes as the store last agreed with them: what it loaded, or what
+    /// its last successful write put there. `nil` while there is no file. A reload
+    /// whose bytes match is the store's own write or no change at all (UX96).
+    private var syncedBytes: Data?
+    /// Every modeled value, keyed `section.key`, as of that same sync. A value that
+    /// differs from it now is one the UI changed, and only those keys are written
+    /// over a file someone else may have edited since (UX96).
+    private var syncedValues: [String: TOMLValue] = [:]
+    /// Debounced writes handed to the queue and not yet completed, oldest first.
+    private var queuedWrites: [PreparedWrite] = []
+    private var writeSequence = 0
+    private var midWriteRetries = 0
+    private var committedSequence = 0
+    private var watcher: FileChangeWatcher?
+
+    /// A rendered save and what the store will have synced to once it lands.
+    private struct PreparedWrite {
+        let sequence: Int
+        let toml: String
+        let values: [String: TOMLValue]
+    }
 
     /// Set when the file exists but does not parse (ARCH9). While set, saves are
     /// refused and every value is its default except `regulatedMode`, which is
-    /// true. `reloadIfUnparsed()` clears it once the file is fixed.
+    /// true. `reloadIfChangedOnDisk()` clears it once the file is fixed.
     @Published private(set) var parseError: ConfigParseError?
 
     /// Live values exposed to SwiftUI. didSet → schedule debounced save. The
@@ -231,8 +261,12 @@ final class ConfigStore: ObservableObject {
         queue: writeQueue,
         prepare: { [weak self] in self?.prepareSave() },
         completion: { [weak self] result in
+            guard let self else { return }
+            let write = self.queuedWrites.isEmpty ? nil : self.queuedWrites.removeFirst()
             switch result {
-            case .success: self?.didPersist.send()
+            case .success:
+                if let write { self.commit(write) }
+                self.didPersist.send()
             case .failure(let error): Log.main.error("ConfigStore persist failed: \(String(describing: error))")
             }
         }
@@ -246,22 +280,44 @@ final class ConfigStore: ObservableObject {
          writeQueue: DispatchQueue = DebouncedSaver.makeQueue(label: "com.meetingpipe.configstore.write")) {
         self.configURL = configURL
         self.writeQueue = writeQueue
-        apply(Self.read(configURL))
+        let file = Self.read(configURL)
+        apply(file)
+        markSynced(bytes: file.bytes)
         // Arm last: every assignment's didSet in `apply` no-ops on !isInitialized.
         self.isInitialized = true
     }
+
+    /// Watch the file for edits made outside the app and reload them when no save
+    /// of the store's own is pending (UX96). Only the app's long-lived store calls
+    /// this: the many stores built for one read must not each hold a descriptor.
+    func startWatching() {
+        guard watcher == nil else { return }
+        let watcher = FileChangeWatcher(url: configURL) { [weak self] in self?.reloadIfChangedOnDisk() }
+        watcher.start()
+        self.watcher = watcher
+    }
+
+    deinit { watcher?.stop() }
 
     /// The one parse of `config.toml` (ARCH9). A missing file is a fresh user and
     /// reads as an empty document; a file that exists but cannot be read or parsed
     /// is an error, never an empty document, because an empty document is what
     /// the next save would write over the user's file.
-    static func read(_ url: URL) -> (document: TOMLTable, parseError: ConfigParseError?) {
-        guard FileManager.default.fileExists(atPath: url.path) else { return (TOMLTable(), nil) }
-        let raw: String
+    static func read(_ url: URL) -> (document: TOMLTable, parseError: ConfigParseError?, bytes: Data?) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return (TOMLTable(), nil, nil) }
+        let bytes: Data
         do {
-            raw = try String(contentsOf: url, encoding: .utf8)
+            bytes = try Data(contentsOf: url)
         } catch {
-            return (TOMLTable(), ConfigParseError(message: error.localizedDescription, line: nil, column: nil))
+            return (TOMLTable(), ConfigParseError(message: error.localizedDescription, line: nil, column: nil), nil)
+        }
+        let parsed = parse(bytes)
+        return (parsed.document, parsed.parseError, bytes)
+    }
+
+    private static func parse(_ bytes: Data) -> (document: TOMLTable, parseError: ConfigParseError?) {
+        guard let raw = String(data: bytes, encoding: .utf8) else {
+            return (TOMLTable(), ConfigParseError(message: "config.toml is not UTF-8 text", line: nil, column: nil))
         }
         do {
             return (try TOMLTable(string: raw), nil)
@@ -273,21 +329,59 @@ final class ConfigStore: ObservableObject {
         }
     }
 
-    /// Re-read the file while the store is refusing to save (ARCH9), so fixing a
-    /// syntax error and reopening Preferences is enough. A no-op once the last
-    /// read parsed: the store is then the file's author, and an unprompted re-read
-    /// would race its own debounced save. Main thread (Preferences' `show()`).
-    func reloadIfUnparsed() {
-        guard parseError != nil else { return }
+    /// Reload the file when it changed outside the app and the store has no save
+    /// of its own pending or in flight (UX96): a hand edit, a restore, or a syntax
+    /// error fixed in an editor (ARCH9's reopen-to-retry). Preferences' `show()`
+    /// and the file watcher call it. With a save pending it does nothing: that
+    /// save re-reads the file itself and keeps the outside change. Bytes that match
+    /// the last sync are the store's own write, or no change, and are not reloaded,
+    /// so an unsaved edit survives a reopen. Main thread.
+    ///
+    /// A change the UI made that never landed (its write failed) is laid back on
+    /// top of the reloaded file and stays unsaved, so the next save still writes
+    /// it; a reload never reverts a control under the user.
+    func reloadIfChangedOnDisk() {
+        guard !saver.isScheduled, queuedWrites.isEmpty else { return }
+        let file = Self.read(configURL)
+        guard file.bytes != syncedBytes || (file.parseError != nil) != (parseError != nil) else { return }
+        let current = currentValues()
+        let unsaved = current.filter { !Self.same($0.value, syncedValues[$0.key]) }
+        reapply(file)
+        if file.parseError == nil, !unsaved.isEmpty {
+            let doc = file.document
+            for (path, value) in unsaved { Self.set(value, at: path, in: doc) }
+            isInitialized = false
+            apply((doc, nil, file.bytes))
+            isInitialized = true
+        }
+        didPersist.send()
+    }
+
+    /// Adopt a fresh read as the store's whole state: values, document and sync.
+    private func reapply(_ file: (document: TOMLTable, parseError: ConfigParseError?, bytes: Data?)) {
         isInitialized = false
-        apply(Self.read(configURL))
+        apply(file)
         isInitialized = true
-        if parseError == nil { didPersist.send() }
+        markSynced(bytes: file.bytes)
+    }
+
+    private func markSynced(bytes: Data?) {
+        syncedBytes = bytes
+        syncedValues = currentValues()
+    }
+
+    /// A landed write becomes the sync point, unless a later one already landed
+    /// (a `saveNow` overtakes a debounced write whose completion is still queued).
+    private func commit(_ write: PreparedWrite) {
+        guard write.sequence > committedSequence else { return }
+        committedSequence = write.sequence
+        syncedBytes = Data(write.toml.utf8)
+        syncedValues = write.values
     }
 
     /// Assign every modeled value from one read. Shared by init and the reload
     /// so the two cannot disagree about a key.
-    private func apply(_ file: (document: TOMLTable, parseError: ConfigParseError?)) {
+    private func apply(_ file: (document: TOMLTable, parseError: ConfigParseError?, bytes: Data?)) {
         let doc = file.document
         self.rawDocument = doc
         self.parseError = file.parseError
@@ -379,9 +473,9 @@ final class ConfigStore: ObservableObject {
     /// the `.writing` temp file and the last render wins.
     func saveNow() throws {
         if let parseError { throw parseError }
-        writeBack()
-        let toml = currentTOML()
-        try saver.performNow { try self.writeToDisk(toml) }
+        let write = try prepareWrite()
+        try saver.performNow { try self.writeToDisk(write.toml) }
+        commit(write)
     }
 
     /// Debounce a burst of UI changes into one disk write (500 ms).
@@ -395,55 +489,161 @@ final class ConfigStore: ObservableObject {
     /// immutable string (MAINTHREAD-13: it used to convert `rawDocument` off main while `saveNow` mutated it).
     private func prepareSave() -> DebouncedSaver.Work? {
         guard isInitialized, parseError == nil else { return nil }
-        writeBack()
-        let toml = currentTOML()
-        return { [self] in try writeToDisk(toml) }
+        let write: PreparedWrite
+        do {
+            write = try prepareWrite()
+        } catch is FileMidWrite where midWriteRetries < 3 {
+            midWriteRetries += 1
+            saver.schedule()
+            return nil
+        } catch is FileMidWrite {
+            // Still empty after three beats: someone emptied it on purpose.
+            midWriteRetries = 0
+            syncedBytes = Data()
+            return prepareSave()
+        } catch {
+            return nil
+        }
+        midWriteRetries = 0
+        queuedWrites.append(write)
+        return { [self] in try writeToDisk(write.toml) }
     }
 
-    /// Mutate `rawDocument` to reflect current `@Published` values.
+    /// Re-read the file and lay the UI's changes onto it (UX96). Main thread, like
+    /// the render it ends in; the file is a few KB on local disk.
+    ///
+    /// A key is written when the UI changed it since the last sync, or when the
+    /// file lacks it (a missing file is seeded whole). Every other key keeps what
+    /// the file says now, and the store adopts it, so a hand-set `regulated_mode`
+    /// both survives the save and reaches the daemon's in-memory readers. A key
+    /// changed on both sides keeps the UI's value, the newer deliberate act, and
+    /// logs `daemon`/`config_edit_conflict` naming the key, never a value. A file
+    /// that no longer parses is not written (ARCH9): the store adopts the failure,
+    /// so `parseError` is set and `regulatedMode` reads true, and this throws it.
+    private func prepareWrite() throws -> PreparedWrite {
+        let file = Self.read(configURL)
+        if file.bytes?.isEmpty == true, syncedBytes?.isEmpty == false {
+            throw FileMidWrite()
+        }
+        if let error = file.parseError {
+            reapply(file)
+            // Subscribers re-read, so the regulated glyph shows the fail-closed state.
+            didPersist.send()
+            throw error
+        }
+        let current = currentValues()
+        let changed = Set(current.keys.filter { !Self.same(current[$0], syncedValues[$0]) })
+        let ownWrite = queuedWrites.contains { Data($0.toml.utf8) == file.bytes }
+        if file.bytes != syncedBytes, !ownWrite, !changed.isEmpty {
+            let synced = syncedBytes.map { Self.parse($0).document } ?? TOMLTable()
+            for path in changed.sorted() {
+                let onDisk = Self.value(at: path, in: file.document)
+                guard !Self.same(onDisk, Self.value(at: path, in: synced)), !Self.same(onDisk, current[path]) else { continue }
+                Log.event(category: "daemon", action: "config_edit_conflict", attributes: ["key": path])
+            }
+        }
+        // Only a missing file is seeded whole. A key someone deleted from an
+        // existing file stays deleted unless the UI changed it, so it reads as its
+        // default rather than coming back with a stale in-memory value.
+        let seed = file.bytes == nil
+        let doc = file.document
+        write(into: doc) { path, _, _ in seed || changed.contains(path) }
+        isInitialized = false
+        apply((doc, nil, file.bytes))
+        isInitialized = true
+        writeSequence += 1
+        return PreparedWrite(sequence: writeSequence, toml: currentTOML(), values: currentValues())
+    }
+
+    /// Every modeled key and its current value, in write order. The one list the
+    /// full write, the changed-key check and the merge share, so no key can be
+    /// written by one and missed by another.
+    private var modeledValues: [(section: String, key: String, value: TOMLValueConvertible)] {
+        [
+            ("recording", "output_dir", outputDirPath),
+            ("recording", "auto_consent_apps", autoConsentApps),
+            ("recording", "voice_processing", voiceProcessing),
+            ("recording", "honor_app_mute", honorAppMute),
+
+            ("detection", "manual_hotkey", manualHotkey),
+            ("detection", "force_stop_hotkey", forceStopHotkey),
+            ("detection", "flag_moment_hotkey", flagMomentHotkey),
+            ("detection", "off_the_record_hotkey", offTheRecordHotkey),
+            ("detection", "prompt_timeout_sec", promptTimeoutSec),
+            ("detection", "default_prompt_action", defaultPromptAction),
+            ("detection", "reprompt_cooldown_sec", repromptCooldownSec),
+            ("detection", "mic_only_silence_seconds", micOnlySilenceSec),
+
+            ("modes", "regulated_mode", regulatedMode),
+
+            ("transcription", "language", transcriptionLanguage),
+            ("transcription", "diarization_clustering_threshold", diarizationClusteringThreshold),
+
+            ("notion", "database_id", notionDatabaseId),
+            ("notion", "include_full_transcript", notionIncludeFullTranscript),
+            ("mcp", "enabled", mcpEnabled),
+            ("summarization", "summary_language", summaryLanguage),
+            ("summarization", "diarize_cleanup", summarizationDiarizeCleanup),
+            ("summarization", "digest_local_only", summarizationDigestLocalOnly),
+            ("summarization", "skip_above_chars", summarizationSkipAboveChars),
+            ("summarization", "backend", summarizationBackend),
+            ("summarization", "model", summarizationModel),
+            ("summarization", "local_model", summarizationLocalModel),
+            ("summarization", "local_endpoint", summarizationLocalEndpoint),
+            ("summarization", "openai_model", summarizationOpenAIModel),
+            ("summarization", "user_label", summarizationUserLabel),
+
+            // UX45 publish targets.
+            ("obsidian", "vault_path", obsidianVaultPath),
+            ("obsidian", "folder", obsidianFolder),
+            ("obsidian", "attach_audio", obsidianAttachAudio),
+            ("obsidian", "attachments_subfolder", obsidianAttachmentsSubfolder),
+            ("filesystem", "output_dir", filesystemOutputDir),
+            ("lan", "mount_path", lanMountPath),
+            ("lan", "host", lanHost),
+        ]
+    }
+
+    private func currentValues() -> [String: TOMLValue] {
+        Dictionary(uniqueKeysWithValues: modeledValues.map { ("\($0.section).\($0.key)", $0.value.tomlValue) })
+    }
+
+    private static func value(at path: String, in doc: TOMLTable) -> TOMLValue? {
+        let parts = path.split(separator: ".", maxSplits: 1).map(String.init)
+        return doc[parts[0]]?.table?[parts[1]]?.tomlValue
+    }
+
+    private static func set(_ value: TOMLValue, at path: String, in doc: TOMLTable) {
+        let parts = path.split(separator: ".", maxSplits: 1).map(String.init)
+        ensureTable(parts[0], in: doc)[parts[1]] = value
+    }
+
+    /// Equal as config values: TOML keeps `45` and `45.0` apart, the store does not
+    /// (a seconds knob reads either literal), so a hand-written integer the UI holds
+    /// as a double is not a change.
+    private static func same(_ a: TOMLValue?, _ b: TOMLValue?) -> Bool {
+        if let a, let b, let x = a.double ?? a.int.map(Double.init), let y = b.double ?? b.int.map(Double.init) {
+            return x == y
+        }
+        return a == b
+    }
+
+    /// The file read empty where the store last saw content: an editor that
+    /// truncates before it writes, caught in between. The debounced save waits a
+    /// beat and reads again rather than writing every modeled key into the gap.
+    struct FileMidWrite: Error {}
+
+    /// Write the modeled keys `include` picks into `doc`.
+    private func write(into doc: TOMLTable, include: (String, String, String) -> Bool) {
+        for entry in modeledValues where include("\(entry.section).\(entry.key)", entry.section, entry.key) {
+            Self.ensureTable(entry.section, in: doc)[entry.key] = entry.value
+        }
+    }
+
+    /// Mutate `rawDocument` to reflect every current `@Published` value.
     /// Visible to tests so they can assert the round-trip without disk I/O.
     func writeBack() {
-        ensureTable("recording")["output_dir"] = outputDirPath
-        ensureTable("recording")["auto_consent_apps"] = autoConsentApps
-        ensureTable("recording")["voice_processing"] = voiceProcessing
-        ensureTable("recording")["honor_app_mute"] = honorAppMute
-
-        ensureTable("detection")["manual_hotkey"] = manualHotkey
-        ensureTable("detection")["force_stop_hotkey"] = forceStopHotkey
-        ensureTable("detection")["flag_moment_hotkey"] = flagMomentHotkey
-        ensureTable("detection")["off_the_record_hotkey"] = offTheRecordHotkey
-        ensureTable("detection")["prompt_timeout_sec"] = promptTimeoutSec
-        ensureTable("detection")["default_prompt_action"] = defaultPromptAction
-        ensureTable("detection")["reprompt_cooldown_sec"] = repromptCooldownSec
-        ensureTable("detection")["mic_only_silence_seconds"] = micOnlySilenceSec
-
-        ensureTable("modes")["regulated_mode"] = regulatedMode
-
-        ensureTable("transcription")["language"] = transcriptionLanguage
-        ensureTable("transcription")["diarization_clustering_threshold"] = diarizationClusteringThreshold
-
-        ensureTable("notion")["database_id"] = notionDatabaseId
-        ensureTable("notion")["include_full_transcript"] = notionIncludeFullTranscript
-        ensureTable("mcp")["enabled"] = mcpEnabled
-        ensureTable("summarization")["summary_language"] = summaryLanguage
-        ensureTable("summarization")["diarize_cleanup"] = summarizationDiarizeCleanup
-        ensureTable("summarization")["digest_local_only"] = summarizationDigestLocalOnly
-        ensureTable("summarization")["skip_above_chars"] = summarizationSkipAboveChars
-        ensureTable("summarization")["backend"] = summarizationBackend
-        ensureTable("summarization")["model"] = summarizationModel
-        ensureTable("summarization")["local_model"] = summarizationLocalModel
-        ensureTable("summarization")["local_endpoint"] = summarizationLocalEndpoint
-        ensureTable("summarization")["openai_model"] = summarizationOpenAIModel
-        ensureTable("summarization")["user_label"] = summarizationUserLabel
-
-        // UX45 publish targets.
-        ensureTable("obsidian")["vault_path"] = obsidianVaultPath
-        ensureTable("obsidian")["folder"] = obsidianFolder
-        ensureTable("obsidian")["attach_audio"] = obsidianAttachAudio
-        ensureTable("obsidian")["attachments_subfolder"] = obsidianAttachmentsSubfolder
-        ensureTable("filesystem")["output_dir"] = filesystemOutputDir
-        ensureTable("lan")["mount_path"] = lanMountPath
-        ensureTable("lan")["host"] = lanHost
+        write(into: rawDocument) { _, _, _ in true }
     }
 
     /// Replace `configURL` with `toml` atomically. Runs on `writeQueue`.
@@ -463,21 +663,21 @@ final class ConfigStore: ObservableObject {
         }
     }
 
-    /// Get-or-create a top-level table in `rawDocument`.
+    /// Get-or-create a top-level table in `doc`.
     ///
     /// CRITICAL: TOMLKit's subscript SET copies the source node into the
-    /// parent, so after `rawDocument[key] = new` the local `new` is detached
+    /// parent, so after `doc[key] = new` the local `new` is detached
     /// and its assignments go to an orphan table. The silent symptom: the
     /// first assignment per fresh table is dropped on save. Re-fetch after
     /// insertion to get a wrapper around the live pointer.
-    private func ensureTable(_ key: String) -> TOMLTable {
-        if let existing = rawDocument[key]?.table { return existing }
-        rawDocument[key] = TOMLTable()
+    private static func ensureTable(_ key: String, in doc: TOMLTable) -> TOMLTable {
+        if let existing = doc[key]?.table { return existing }
+        doc[key] = TOMLTable()
         // Re-fetch: the stored value is a detached copy.
-        if let live = rawDocument[key]?.table { return live }
+        if let live = doc[key]?.table { return live }
         // Defensive fallback (we just inserted).
         let new = TOMLTable()
-        rawDocument[key] = new
+        doc[key] = new
         return new
     }
 
