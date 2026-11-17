@@ -321,3 +321,24 @@ def test_main_pins_offline_and_removes_the_token_from_the_environment(
     assert os.environ["HF_HUB_OFFLINE"] == "1"
     assert shim.TOKEN_ENV not in os.environ
     assert ran[0][-2:] == ["--allowed-origins", ""]           # no CORS origin at all
+
+
+def test_health_never_returns_the_bearer_whatever_the_nonce_SEC27(served) -> None:
+    """The amendment's hole: the bearer's label was itself a valid nonce, so the
+    unauthenticated /health handed it out. Try the old label, the new label and
+    the HMAC domain prefixes as nonces; none may yield the bearer."""
+    port, _ = served
+    bearer = local_server.bearer_for(TOKEN)
+    for nonce in ("mp-local-server-bearer-v1", "mp-local-server-bearer-v2",
+                  "mp-local-server-health-v2", "bearer" * 4, "health" * 4):
+        status, _h, body = _request(port, "GET", f"/health?nonce={nonce}", token=None)
+        assert bearer not in body.decode()
+        if status == 200:
+            assert json.loads(body)["proof"] != bearer
+
+
+def test_the_bearer_and_health_domains_are_disjoint_SEC27() -> None:
+    from mp.local_model_server import _NONCE_RE
+
+    assert local_server.health_proof(TOKEN, "mp-local-server-bearer-v1") != local_server.bearer_for(TOKEN)
+    assert local_server._BEARER_LABEL.decode() and not _NONCE_RE.match(local_server._BEARER_LABEL.decode())

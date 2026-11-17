@@ -173,7 +173,7 @@ def install(server_module: Any, policy: Policy) -> None:
                 # The one unauthenticated route: the server proving itself.
                 policy.check_origin_and_host(self.headers)
                 nonce = (parse_qs(url.query).get("nonce") or [""])[0]
-                if not _NONCE_RE.match(nonce):
+                if not _NONCE_RE.fullmatch(nonce):
                     raise Refusal(400, "a nonce query parameter is required")
                 _send_json(
                     self, 200,

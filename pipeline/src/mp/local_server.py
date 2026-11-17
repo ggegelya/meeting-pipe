@@ -167,6 +167,10 @@ def new_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+_HEALTH_DOMAIN = b"mp-local-server-health-v2:"
+_BEARER_LABEL = b"mp-local-server-bearer-v2:"
+
+
 def health_proof(token: str, nonce: str) -> str:
     """What a server that knows `token` answers `GET /health?nonce=<nonce>` with.
 
@@ -174,8 +178,12 @@ def health_proof(token: str, nonce: str) -> str:
     direction. Anything can bind an idle loopback port and answer 200, so a
     client that sent a transcript to "whatever answers /health" was handing it to
     whichever local program got there first. A squatter cannot read the 0600
-    token file, so it cannot compute this."""
-    return hmac.new(token.encode("utf-8"), nonce.encode("utf-8"), hashlib.sha256).hexdigest()
+    token file, so it cannot compute this.
+
+    The nonce is attacker-chosen and the route is unauthenticated, so this HMAC
+    lives in its own domain (`_HEALTH_DOMAIN`, which `_BEARER_LABEL` does not start with): no nonce a caller can send may
+    reproduce the bearer (see `bearer_for`)."""
+    return hmac.new(token.encode("utf-8"), _HEALTH_DOMAIN + nonce.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def bearer_for(token: str) -> str:
@@ -184,8 +192,15 @@ def bearer_for(token: str) -> str:
     `token` itself is the key of `health_proof`, so it must never leave the two
     processes that hold the file: if the bearer *were* the token, a listener that
     captured one request could pass every later health probe. A captured bearer
-    proves nothing about `token`."""
-    return hmac.new(token.encode("utf-8"), b"mp-local-server-bearer-v1", hashlib.sha256).hexdigest()
+    proves nothing about `token`.
+
+    Both HMACs share the key, so they are separated by domain: `/health` answers
+    `HMAC(token, _HEALTH_DOMAIN + nonce)` for any nonce a caller picks, and the
+    bearer label below does not start with `_HEALTH_DOMAIN`, so no nonce can make
+    the two inputs equal (the `:` in the bearer label is belt and braces: the
+    nonce alphabet `[A-Za-z0-9_-]` cannot carry it). Before SEC27's amendment the bearer label was itself a valid nonce, so
+    one unauthenticated GET returned the bearer."""
+    return hmac.new(token.encode("utf-8"), _BEARER_LABEL, hashlib.sha256).hexdigest()
 
 
 def clear_token(pid: int | None = None, home: Path | None = None) -> None:

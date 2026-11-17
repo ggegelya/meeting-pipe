@@ -1738,7 +1738,8 @@ def test_a_reused_server_is_restamped_to_this_client_and_handed_back(
 
 
 SIGTERM_FAKE_SERVER = """
-import hashlib, hmac, json, os, sys, time
+import json, os, sys, time
+from mp import local_server
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -1750,7 +1751,7 @@ class Handler(BaseHTTPRequestHandler):
         # SEC27: prove we hold the per-spawn token the client put in our env.
         nonce = (parse_qs(urlsplit(self.path).query).get("nonce") or [""])[0]
         token = os.environ["MP_LOCAL_SERVER_TOKEN"]
-        proof = hmac.new(token.encode(), nonce.encode(), hashlib.sha256).hexdigest()
+        proof = local_server.health_proof(token, nonce)
         body = json.dumps({"proof": proof}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
