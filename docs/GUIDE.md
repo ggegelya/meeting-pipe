@@ -240,6 +240,8 @@ This changes labels only. It does not teach the app a new voice, so your saved v
 
 **Preferences ▸ Pipeline ▸ People** lists everyone you have named, with **Rename…** and **Remove**. Removing stops a voice being named automatically in future meetings and leaves past transcripts alone. Renaming carries: the past meetings naming that person follow the new name too.
 
+If the file that holds the people you have named gets damaged (a hand edit or a sync conflict), naming a speaker sets the damaged copy aside next to it, named `roster.json.corrupt-` and a date, and starts a fresh list instead of writing over it. If the file only cannot be read right now, naming refuses and changes nothing. `mp doctor` reports either case.
+
 The Library's **People** rail shows the same list with what each person is actually in, their meetings and the commitments they own, and offers the same rename.
 
 ### The three re-verbs
@@ -251,6 +253,8 @@ These sound alike and do genuinely different things. Pick by what you want chang
 | Different **words** in the transcript, or names applied, or a vocabulary term to reach an old meeting | **Re-transcribe…** | Transcribes the audio again with today's vocabulary, your named voices, and the current models. Entirely on your Mac, nothing published, and it keeps the summary you already have. |
 | A different **summary** of the same transcript, or a different engine | **Re-summarize with…** | Re-runs the summary over the transcript already on disk and republishes. You pick the engine. |
 | To try a **different angle** on the summary before committing | **Reprocess…** | At the foot of the Summary tab. Edit the background the engine is given for this one run and see the candidate side by side with the current one. Keep it or discard it. Never published on its own. |
+
+If one of a meeting's edit files (its speaker names, transcript corrections or flagged moments) is damaged, Re-summarize stops and names the file rather than producing a summary without your edits.
 
 All three are in the detail header's `...` menu (Reprocess also sits under the summary itself). **Re-transcribe with the current stack…** is the same action for several meetings at once, from the batch panel when you select more than one row.
 

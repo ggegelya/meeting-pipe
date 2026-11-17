@@ -32,6 +32,10 @@ _MAX_MOMENTS = 25
 _MAX_EXCERPT_CHARS = 300
 
 
+def markers_path(transcript_md: Path) -> Path:
+    return transcript_md.parent / f"{transcript_md.stem}.markers.json"
+
+
 def flagged_moments_block(transcript_md: Path) -> str | None:
     """The user-flagged excerpts for this meeting as a markdown block, or None.
 
@@ -42,7 +46,7 @@ def flagged_moments_block(transcript_md: Path) -> str | None:
     """
     stem = transcript_md.name.split(".", 1)[0]
     parent = transcript_md.parent
-    offsets = _read_marker_offsets(parent / f"{stem}.markers.json")
+    offsets = _read_marker_offsets(markers_path(transcript_md))
     if not offsets:
         return None
     segments = _read_segments(parent / f"{stem}.json")

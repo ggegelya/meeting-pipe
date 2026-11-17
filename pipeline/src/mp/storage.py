@@ -15,8 +15,10 @@ import secrets
 import shutil
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -169,6 +171,76 @@ def read_json_object(path: Path) -> dict[str, Any] | None:
     if read.not_object:
         log.warning("%s holds JSON whose %s; ignoring it", path, read.reason)
     return read.data
+
+
+class StoreUnreadable(Exception):
+    """A user-data store that is present but cannot be used (STOR9).
+
+    Missing is empty; this is not. `kind` is "io" for an OSError other than
+    not-found (retryable: a writer refuses rather than lose a valid file it merely
+    could not read right now) or "parse" (not JSON, not an object, or the wrong
+    shape: a writer may quarantine it). `reason` is the errno name or
+    "unparseable", the value the `store_unreadable` event carries.
+    """
+
+    def __init__(self, path: Path, read: JsonRead) -> None:
+        self.path = Path(path)
+        self.kind = read.kind or "parse"
+        self.reason = (read.errno or "io") if self.kind == "io" else "unparseable"
+        self.detail = read.reason
+        super().__init__(f"Couldn't read {self.path}: {read.reason}")
+
+
+def unparseable(path: Path, why: str) -> StoreUnreadable:
+    """A `StoreUnreadable` for an object of the wrong shape."""
+    return StoreUnreadable(path, JsonRead("unreadable", kind="parse", reason=why))
+
+
+def quarantine(path: Path, *, now: datetime | None = None) -> Path:
+    """Move an unparseable store aside as `<name>.corrupt-<UTC yyyyMMdd-HHmmss>`,
+    beside it, and return where it went (STOR9). The owner's bytes are kept
+    whole; restoring them is a Finder move."""
+    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%d-%H%M%S")
+    dest = path.with_name(f"{path.name}.corrupt-{stamp}")
+    n = 1
+    while dest.exists():
+        dest = path.with_name(f"{path.name}.corrupt-{stamp}-{n}")
+        n += 1
+    os.replace(path, dest)
+    return dest
+
+
+@contextmanager
+def locked(path: Path) -> Iterator[None]:
+    """Hold an exclusive `flock` on `<path>.lock` (0600) for a read-modify-write.
+
+    Two `mp roster enroll`s spawned a moment apart each read the whole roster,
+    appended, and wrote it back, so the second could drop the first's person
+    (STOR9). The lock file is never removed: unlinking it would let a third
+    writer lock a fresh inode while the second still holds the old one.
+    """
+    import fcntl
+
+    lock = path.with_name(path.name + ".lock")
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def report_unreadable(store: str, error: StoreUnreadable, outcome: str, *, path_kind: str = "config") -> None:
+    """Log and emit `pipeline` / `store_unreadable` (STOR9). Never the path in the
+    event: `path_kind` says which tree the file is in, `store` which file, and
+    `outcome` (`refused`, `quarantined`, `skipped`) what was done about it. The
+    spec called that attribute `action`, which every row already uses for its
+    event name."""
+    from . import events
+
+    log.warning("%s store %s (%s): %s", store, outcome, error.reason, error)
+    events.emit("pipeline", "store_unreadable", store=store, path_kind=path_kind,
+                reason=error.reason, outcome=outcome)
 
 
 def config_dir(home: Path | None = None) -> Path:

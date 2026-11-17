@@ -773,7 +773,14 @@ def _me_signals(
     """
     if not isinstance(speaker_embeddings, dict) or not speaker_embeddings:
         return MeSignals(None, None, None, None)
-    voiceprint = store.embedding()
+    # STOR9: an unusable self-voiceprint is skipped, never read as "not enrolled",
+    # which made the enrol below write a one-sample print over it.
+    try:
+        voiceprint, enrolled = store.load_checked()
+        usable = True
+    except storage.StoreUnreadable as e:
+        storage.report_unreadable("voiceprint", e, "skipped")
+        voiceprint, enrolled, usable = None, 0, False
     voiceprint_me = match_voiceprint(speaker_embeddings, voiceprint)
     tier = analyze_mic_tier(segments, wav)
     # No print yet and two mic-side clusters of comparable size: `owner_pick` takes the leader as
@@ -782,12 +789,16 @@ def _me_signals(
     # `resolve_speaker_labels` folds the rest of `tier.split` into the same name.
     mic_me = tier.owner_pick(voiceprint) if tier else None
     if (
-        store.meetings() < _VOICEPRINT_ENROLL_CAP
+        usable
+        and enrolled < _VOICEPRINT_ENROLL_CAP
         and mic_me is not None
         and mic_me in speaker_embeddings
         and (voiceprint is None or voiceprint_me == mic_me)
     ):
-        store.update(speaker_embeddings[mic_me])
+        try:
+            store.update(speaker_embeddings[mic_me])
+        except storage.StoreUnreadable as e:  # went bad between the read and the lock
+            storage.report_unreadable("voiceprint", e, "skipped")
     return MeSignals(mic_me, voiceprint_me, tier, voiceprint)
 
 

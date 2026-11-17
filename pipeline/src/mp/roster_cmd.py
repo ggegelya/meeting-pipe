@@ -11,9 +11,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import storage
+
+if TYPE_CHECKING:
+    from .roster import RosterStore
 
 
 def main(argv: list[str]) -> int:
@@ -76,6 +81,15 @@ def main(argv: list[str]) -> int:
     from .roster import RosterStore
 
     roster = RosterStore()
+    try:
+        return _run(args, roster)
+    except storage.StoreUnreadable as e:
+        # STOR9: refused, so the file is as it was. stderr is what the app shows.
+        print(f"[FAIL] Couldn't read {e.path.name}: {e.detail}; nothing was changed.", file=sys.stderr)
+        return 1
+
+
+def _run(args: argparse.Namespace, roster: RosterStore) -> int:
 
     if args.action == "list":
         for name in roster.names():
@@ -143,6 +157,9 @@ def main(argv: list[str]) -> int:
         return 2
 
     roster.enroll(args.name, embedding, stem=wav.stem, label=args.label)
+    if roster.quarantined_to is not None:
+        print(f"{roster.path.name} could not be parsed; it was moved to {roster.quarantined_to} "
+              "and a new roster was started")
     if not args.no_relabel:
         _relabel_transcript(wav, args.label, args.name)
 

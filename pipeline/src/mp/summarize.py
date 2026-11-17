@@ -46,7 +46,16 @@ from tenacity import (
     wait_exponential,
 )
 
-from . import corrections, entry, events, evidence, providers, storage, transcript_corrections
+from . import (
+    corrections,
+    entry,
+    events,
+    evidence,
+    providers,
+    speaker_overlay,
+    storage,
+    transcript_corrections,
+)
 from .backend_fallback import run_with_local_fallback
 from .config import (
     SAMPLING_TEMPERATURE,
@@ -59,7 +68,7 @@ from .config import (
     with_backend_override,
 )
 from .markdown import render_markdown, render_summary_md
-from .markers import FLAGGED_INSTRUCTION, flagged_moments_block
+from .markers import FLAGGED_INSTRUCTION, flagged_moments_block, markers_path
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
 from .services import SummaryClient
@@ -511,6 +520,39 @@ class AnthropicSummaryClient:
         raise last_err
 
 
+class OverlayUnreadable(Exception):
+    """A meeting's edit overlay is present but cannot be read (STOR9 item 6)."""
+
+
+#: The owner's edits a summary is built on: (what the owner calls it, the store
+#: name the event carries, where it lives).
+_OVERLAYS = (
+    ("speaker names", "speaker_labels", speaker_overlay.overlay_path),
+    ("transcript corrections", "transcript_corrections", transcript_corrections.corrections_path),
+    ("flagged moments", "markers", markers_path),
+)
+
+
+def refuse_unreadable_overlays(transcript_md: Path) -> None:
+    """Fail the run rather than summarize without the owner's edits.
+
+    The overlay readers return their empty value for a file they cannot read, so a
+    re-summarize used to ship raw diarizer labels and misheard terms the owner had
+    already fixed, then publish them. A missing overlay is the normal case (a fresh
+    recording has none); only a present one that cannot be read refuses.
+    """
+    for label, store, path_of in _OVERLAYS:
+        path = path_of(transcript_md)
+        read = storage.load_json_object(path)
+        if read.state != "unreadable":
+            continue
+        storage.report_unreadable(store, storage.StoreUnreadable(path, read), "refused", path_kind="library")
+        raise OverlayUnreadable(
+            f"This meeting's {label} file can't be read: {read.reason}. Nothing was summarized; "
+            f"fix or remove {path.name} and try again."
+        )
+
+
 def summarize(
     transcript_md: Path,
     cfg: Config | None = None,
@@ -538,6 +580,7 @@ def summarize(
     # honours the same per-meeting context / backend overrides `run-all` would.
     cfg = entry.prepare(cfg, transcript_md)
     storage.sweep_stale_temps(transcript_md.parent, transcript_md.stem)  # PIPE30
+    refuse_unreadable_overlays(transcript_md)  # STOR9 item 6
 
     # PIPE6: a one-shot backend override for this re-summarize, applied AFTER the
     # workflow overlay so it wins over the workflow's persisted backend but still

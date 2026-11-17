@@ -649,7 +649,37 @@ def check_storage(cfg: Config | None, home: Path | None = None, now: datetime | 
     check_library_growth(library, free, now=now)
 
     check_last_backup(home=home)
+    check_user_stores(home=home)
     check_library_sync(cfg, home=home)
+
+
+def check_user_stores(home: Path | None = None) -> None:
+    """WARN for a roster, voiceprint or glossary that is present but unusable (STOR9).
+
+    Each is read as empty by something that shows it, so nothing else says the
+    owner's named voices or vocabulary are not being used.
+    """
+    import tomllib
+
+    from .roster import RosterStore
+    from .voiceprint import VoiceprintStore
+
+    config = storage.config_dir(home)
+    for check in (
+        lambda: RosterStore(config / "roster.json").read_people(),
+        lambda: VoiceprintStore(config / "voiceprint.json").load_checked(),
+    ):
+        try:
+            check()
+        except storage.StoreUnreadable as e:
+            _warn(f"{e.path.name} can't be read ({e.detail}); it is being ignored until it is fixed or removed")
+    glossary = config / "glossary.toml"
+    try:
+        tomllib.loads(glossary.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as e:
+        _warn(f"glossary.toml can't be read ({e}); vocabulary is being ignored until it is fixed")
 
 
 def check_last_backup(home: Path | None = None, now: datetime | None = None) -> None:

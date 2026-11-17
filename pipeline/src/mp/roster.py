@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
 
@@ -130,20 +132,66 @@ class RosterStore:
     from (`fp` fingerprints the sample so a shifted list is never believed), or
     ``null`` for a sample enrolled before provenance existed. It is additive, so
     a roster written without it loads unchanged and every older reader still sees
-    `samples` as before. Absent / malformed file means an empty roster (every
-    speaker stays unknown).
+    `samples` as before. An absent file is an empty roster. A present one that is
+    unreadable or not that shape is never empty to a writer (STOR9): `enroll`
+    quarantines an unparseable one, everything else refuses; readers name nobody.
     """
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or ROSTER_PATH
+        #: Where `enroll` moved an unparseable roster before writing (STOR9).
+        self.quarantined_to: Path | None = None
+        self._reported_skip = False
+
+    def read_people(self) -> list[dict]:
+        """The people, ``[]`` when there is no file. A present roster that cannot
+        be read, is not JSON, or is not ``{"people": [objects]}`` raises
+        `storage.StoreUnreadable` (STOR9): missing is empty, unreadable is not."""
+        read = storage.load_json_object(self.path)
+        if read.state == "missing":
+            return []
+        if read.data is None:
+            raise storage.StoreUnreadable(self.path, read)
+        version = read.data.get("schema_version", _SCHEMA_VERSION)
+        if not isinstance(version, int) or version > _SCHEMA_VERSION:
+            # A later build's roster: reading it as empty would let `enroll` replace it.
+            raise storage.unparseable(self.path, f"schema_version {version!r} is newer than this build reads")
+        people = read.data.get("people")
+        # `_write` always writes `people`, so an object without it is not ours to empty.
+        if not isinstance(people, list) or not all(isinstance(p, dict) for p in people):
+            raise storage.unparseable(self.path, "people is not a list of objects")
+        return people
 
     def _people(self) -> list[dict]:
+        """For the readers (`names`, matching): an unusable roster names nobody,
+        and says so once, instead of failing finalize (STOR9 item 8)."""
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            return self.read_people()
+        except storage.StoreUnreadable as e:
+            if not self._reported_skip:
+                storage.report_unreadable("roster", e, "skipped")
+                self._reported_skip = True
             return []
-        people = data.get("people")
-        return people if isinstance(people, list) else []
+
+    def _people_for_write(self, *, quarantine: bool) -> list[dict]:
+        """The people a writer starts from. An unreadable file refuses (raised);
+        an unparseable one is moved aside first when `quarantine`, so the owner's
+        bytes survive and the edit still lands (STOR9 items 2 and 3)."""
+        try:
+            return self.read_people()
+        except storage.StoreUnreadable as e:
+            if quarantine and e.kind == "parse":
+                self.quarantined_to = storage.quarantine(self.path)
+                storage.report_unreadable("roster", e, "quarantined")
+                return []
+            storage.report_unreadable("roster", e, "refused")
+            raise
+
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        storage.ensure_private_dir(self.path.parent)
+        with storage.locked(self.path):
+            yield
 
     def names(self) -> list[str]:
         return [p["name"] for p in self._people() if isinstance(p.get("name"), str)]
@@ -249,7 +297,11 @@ class RosterStore:
         if not name or len(embedding) != EMBEDDING_DIM:
             return
         sample = _l2_normalize([float(x) for x in embedding])
-        people = self._people()
+        with self._locked():
+            self._enroll_locked(name, sample, stem, label)
+
+    def _enroll_locked(self, name: str, sample: list[float], stem: str | None, label: str | None) -> None:
+        people = self._people_for_write(quarantine=True)
         person = next((p for p in people if p.get("name") == name), None)
         if person is None:
             person = {"name": name, "samples": []}
@@ -286,7 +338,13 @@ class RosterStore:
         Returns ``(removed, person_removed)``. A person with no matching sample,
         or an unknown name, writes nothing and the file stays byte-identical:
         "this meeting contributed nothing" is a correct no-op."""
-        people = self._people()
+        with self._locked():
+            return self._unenroll_locked(name, stem, label, embedding)
+
+    def _unenroll_locked(
+        self, name: str, stem: str, label: str, embedding: list[float] | None
+    ) -> tuple[int, bool]:
+        people = self._people_for_write(quarantine=False)
         person = next((p for p in people if p.get("name") == name), None)
         if person is None:
             return 0, False
@@ -324,12 +382,13 @@ class RosterStore:
 
     def forget(self, name: str) -> bool:
         """Remove a person from the roster. Returns True if one was removed."""
-        people = self._people()
-        kept = [p for p in people if p.get("name") != name]
-        if len(kept) == len(people):
-            return False
-        self._write(kept)
-        return True
+        with self._locked():
+            people = self._people_for_write(quarantine=False)
+            kept = [p for p in people if p.get("name") != name]
+            if len(kept) == len(people):
+                return False
+            self._write(kept)
+            return True
 
     @staticmethod
     def forget_embeddings(name: str, library_dir: Path) -> int:
@@ -384,7 +443,11 @@ class RosterStore:
         new = new.strip()
         if not new:
             return False
-        people = self._people()
+        with self._locked():
+            return self._rename_locked(old, new)
+
+    def _rename_locked(self, old: str, new: str) -> bool:
+        people = self._people_for_write(quarantine=False)
         person = next((p for p in people if p.get("name") == old), None)
         if person is None:
             return False

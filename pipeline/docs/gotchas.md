@@ -230,3 +230,12 @@ Three legs of the helper itself, from the 2026-10-25 performance review and the 
 - **A SIGKILL strands the temp.** No handler runs, so `.<name>.tmp-<pid>-<hex>` stays beside the file and the next backup archives it. `storage.sweep_stale_temps(directory, stem)` runs at the start of `run-all` and `summarize` and removes that stem's temps older than an hour; the age guard keeps a writer that is mid-write.
 
 The LAN writer had the symlink half in a worse form: a peer with write access to the share could plant `.<stem>.summary.md.tmp-<pid>` links pointing at a file on this Mac, and the next re-publish wrote summary text through them. Its temp now takes a random tail and `O_EXCL | O_NOFOLLOW`, and a symlinked target folder is refused.
+
+## A store read as empty and then saved is a wipe (STOR9)
+
+`RosterStore._people` caught every read and parse error and returned `[]`, and `enroll` then appended one person and wrote the list back, so one "Name this speaker" over a `roster.json` with a stray comma replaced every named voice with one. `VoiceprintStore.load` did the same with `(None, 0)`, and finalize's enrol step read that as "not enrolled yet" and wrote a one-sample print over a twelve-meeting one. A top-level list or string did not wipe; it crashed finalize at the `.get` instead (F093). The rule now: missing is empty, unreadable is not. Readers degrade to empty and say so once (`store_unreadable`, `outcome: skipped`); writers branch, quarantining an unparseable file before the write and refusing an `io` one, which is retryable and may be a perfectly good file that could not be read right now (an evicted iCloud file, `EACCES`).
+
+PIPE29's `read_json_object` collapses unreadable to `None` on purpose, which is exactly wrong for a writer, so these two stores read through `load_json_object` and its tri-state, and PIPE29 left them alone.
+
+The lost-update half is separate: two `mp roster enroll` spawned a moment apart both read before either wrote. `storage.locked` takes an exclusive `flock` on a sibling `<file>.lock` that is never unlinked (unlinking would let a third writer lock a fresh inode while the second holds the old one). `flock` locks belong to the open file description, so two threads in one process that each open the lock file do exclude each other, which is what the barrier tests rely on.
+

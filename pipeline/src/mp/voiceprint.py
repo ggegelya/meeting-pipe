@@ -35,29 +35,40 @@ class VoiceprintStore:
     """Single running-average self-voiceprint at ~/.config/meeting-pipe/voiceprint.json.
 
     Shape: ``{"schema_version": 1, "embedding": [256 floats], "meetings": N}``.
-    An absent or malformed file means "not enrolled yet" (``load`` returns
-    ``(None, 0)``), so every reader degrades to the structural "me" heuristic.
+    An absent file means "not enrolled yet". A present one that cannot be read or
+    is not that shape is `StoreUnreadable` to `load_checked` and `update` (STOR9):
+    `update` used to read it as "not enrolled" and write a one-sample print over
+    it. `load`, `embedding` and `meetings` stay lenient for display callers.
     """
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or VOICEPRINT_PATH
 
-    def load(self) -> tuple[list[float] | None, int]:
-        """Return ``(embedding, meetings)``; ``(None, 0)`` when unset/unreadable."""
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+    def load_checked(self) -> tuple[list[float] | None, int]:
+        """``(embedding, meetings)``, ``(None, 0)`` when there is no file; raises
+        `storage.StoreUnreadable` for a present file it cannot use."""
+        read = storage.load_json_object(self.path)
+        if read.state == "missing":
             return None, 0
-        emb = data.get("embedding")
+        if read.data is None:
+            raise storage.StoreUnreadable(self.path, read)
+        emb = read.data.get("embedding")
         if not isinstance(emb, list) or len(emb) != EMBEDDING_DIM:
-            return None, 0
+            raise storage.unparseable(self.path, f"embedding is not {EMBEDDING_DIM} numbers")
         try:
             emb = [float(x) for x in emb]
         except (TypeError, ValueError):
-            return None, 0
-        meetings = data.get("meetings", 0)
+            raise storage.unparseable(self.path, "embedding holds a non-number") from None
+        meetings = read.data.get("meetings", 0)
         meetings = meetings if isinstance(meetings, int) and meetings >= 0 else 0
         return _l2_normalize(emb), meetings
+
+    def load(self) -> tuple[list[float] | None, int]:
+        """Return ``(embedding, meetings)``; ``(None, 0)`` when unset or unusable."""
+        try:
+            return self.load_checked()
+        except storage.StoreUnreadable:
+            return None, 0
 
     def embedding(self) -> list[float] | None:
         return self.load()[0]
@@ -68,11 +79,17 @@ class VoiceprintStore:
     def update(self, sample: list[float]) -> int:
         """Fold a fresh mic-channel user sample into the running-average
         voiceprint and persist it. Returns the new meeting count. A
-        wrong-dimension sample is ignored (count unchanged)."""
+        wrong-dimension sample is ignored (count unchanged). A present file it
+        cannot use raises `storage.StoreUnreadable` and is left as it is (STOR9)."""
         if len(sample) != EMBEDDING_DIM:
             return self.meetings()
         sample = _l2_normalize([float(x) for x in sample])
-        current, n = self.load()
+        storage.ensure_private_dir(self.path.parent)
+        with storage.locked(self.path):  # STOR9: two finalizes cannot lose a sample
+            return self._update_locked(sample)
+
+    def _update_locked(self, sample: list[float]) -> int:
+        current, n = self.load_checked()  # raises rather than reset an unusable print
         if current is None or n <= 0:
             merged, new_n = sample, 1
         else:
