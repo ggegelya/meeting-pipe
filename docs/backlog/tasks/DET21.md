@@ -4,7 +4,7 @@ title: CoreAudioHALBus discards a listener removal's status and ProcessAudioSign
 category: Detection
 status: partial
 priority: P2
-comment: Shipped 2026-11-16: CoreAudioHALBus keeps one backend listener per address with an epoch-tagged fan-out (system-object listeners for the daemon's lifetime, others removed with their status logged as unsubscribed / unsubscribe_failed), ProcessAudioSignal coalesces list changes (250 ms) into one diffing re-resolve with one process_audio_reresolved row and an unresolved back-off (2 s doubling to 60 s, deferred not dropped), and halbus/stale_delivery_count counts what the generation guards drop; measured that the HAL returns noErr for any removal, even of an unknown block, so the status cannot prove a removal. Remainder: the owner's one-week field check (walkthrough steps 1 to 3), not yet approved as owner-verify.
+comment: Shipped 2026-11-16: CoreAudioHALBus keeps one backend listener per address with an epoch-tagged fan-out (system-object listeners for the daemon's lifetime, others removed with their status logged as unsubscribed / unsubscribe_failed), ProcessAudioSignal coalesces list changes (250 ms) into one diffing re-resolve with one process_audio_reresolved row and an unresolved back-off (2 s doubling to 60 s, deferred not dropped), and halbus/stale_delivery_count counts what the generation guards drop; measured that the HAL returns noErr for any removal, even of an unknown block, so the status cannot prove a removal. Remainder: the owner's one-week field check (walkthrough steps 1 to 3), not yet approved as owner-verify. Amended 2026-11-17 by the post-audit fix review: the bus epoch guard drops the stale deliveries the field check counts.
 ---
 
 # DET21: CoreAudioHALBus discards a listener removal's status and ProcessAudioSignal re-subscribes every process object on each list change, so leaked listeners multiply re-resolve storms that fill half the event log
@@ -61,3 +61,6 @@ Correction at filing: the attribution of the 2026-10-12 storm to the leak fits t
 - Item 5: the bus writes `subscribe_attempt` / `subscribed` only for a real HAL registration, so a re-resolve that adds a never-seen object still writes those two rows for it, once per object per daemon lifetime; a re-resolve over known objects writes no `halbus` row.
 - Tests: 9 new in `CoreAudioHALBusTests`, 6 new in `ProcessAudioSignalTests`; two existing bus tests and the CONC9 race test re-pinned to the shared-listener shape.
 
+## Amendment 2026-11-17 (post-audit fix review)
+
+Found by the [post-audit fix review](../../audits/2026-11-17-post-audit-fix-review.md) (recorder report, M2). `CoreAudioHALBus.deliver` returns at `guard let listener = listeners[address], listener.epoch == epoch else { return }` without counting. A HAL block left over from an earlier registration (the leak D057 describes, which a `noErr` removal cannot rule out) reaches this guard, while `noteStaleDelivery` is called only by the subscriber-side generation guards. So `stale_delivery_count` stays at zero with the leak present and walkthrough step 3 passes. Scope addition: call `noteStaleDelivery(source: "bus_epoch")` in that branch; one test.

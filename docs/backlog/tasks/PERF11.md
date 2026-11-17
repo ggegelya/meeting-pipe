@@ -4,7 +4,7 @@ title: A main-thread stall is invisible unless someone runs `sample` at the righ
 category: Performance
 status: partial
 priority: P2
-comment: Shipped 2026-11-16 (MainThreadStallWatchdog + pure StallDetector, perf/main_thread_stall at 100 ms, over_budget at 250 ms, 10 s rate limit with suppressed; 6 tests, ci-local green). Remainder - last_ui_seq and since_ui_action_ms wait on OBS7; owner check after install - scroll the Library and confirm mp logs shows main_thread_stall rows. No stack capture (optional). Note - the 4 Hz ping undercounts duration by up to 250 ms, so duration_ms is a lower bound and 100 to 250 ms stalls are often missed.
+comment: Shipped 2026-11-16 (MainThreadStallWatchdog + pure StallDetector, perf/main_thread_stall at 100 ms, over_budget at 250 ms, 10 s rate limit with suppressed; 6 tests, ci-local green). Remainder - last_ui_seq and since_ui_action_ms wait on OBS7; owner check after install - scroll the Library and confirm mp logs shows main_thread_stall rows. No stack capture (optional). Note - the 4 Hz ping undercounts duration by up to 250 ms, so duration_ms is a lower bound and 100 to 250 ms stalls are often missed. Amended 2026-11-17 by the post-audit fix review: a 250 ms ping cannot see most stalls the 100 ms threshold is for.
 ---
 
 # PERF11: a main-thread stall is invisible unless someone runs `sample` at the right moment, so "is it the app or the OS" cannot be answered from the logs
@@ -60,3 +60,7 @@ Added from the [2026-11-13 responsiveness audit](../../audits/2026-11-13-respons
 - `StallDetector.decide` tests at the new thresholds: a 99 ms wait emits nothing, 100 ms emits a row without `over_budget`, 250 ms emits one with `over_budget: true`; the rate-limit window and `suppressed` count at 100 ms.
 - With OBS7 present, a test that records a `ui_action`, blocks main for 400 ms, and sees one `main_thread_stall` whose `last_ui_seq` equals that action's `seq`.
 - Owner check after install (confirms, does not gate): before PERF28 lands, the first Record after a relaunch on the work laptop yields a `main_thread_stall` row whose `last_ui_seq` is that Record click.
+
+## Amendment 2026-11-17 (post-audit fix review)
+
+Found by the [post-audit fix review](../../audits/2026-11-17-post-audit-fix-review.md) (simpler-fixes report, finding 4). `MainThreadStallWatchdog` ships with `interval: TimeInterval = 0.25` against a 100 ms log threshold. A stall of length D is hit by a ping with probability about D over 250 ms and only its remainder is measured, so a 200 ms stall is logged less than half the time and understated when it is, and the multi-second freezes are lower bounds. The integration test runs at `interval: 0.05, thresholdMs: 300`, so the shipped pair is never exercised. Scope addition: a 20 to 50 ms interval or a run-loop observer, and a test at the shipped values.

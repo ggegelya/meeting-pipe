@@ -4,7 +4,7 @@ title: mp analyze-detection counts every lifecycle end as a detector success and
 category: Detection
 status: partial
 priority: P2
-comment: Shipped 2026-11-16: the end dimension judges every automatic stop against the recording bundle's process_audio_is_running_input rows plus a same-app re-sighting inside --watch-window-sec, reporting false ends with seconds lost, foreign ends, late ends and overrun minutes, trim error, fragments, holds by route and stood-down backstops per app and per week, with mic_in_use_stop and recording_ended_during_start as their own stop kinds; 8 new tests. Remainder: switch the span to DET23's ledger and the stop kind to OBS5's cause, and add the per-era split, once those land; owner approval to close.
+comment: Shipped 2026-11-16: the end dimension judges every automatic stop against the recording bundle's process_audio_is_running_input rows plus a same-app re-sighting inside --watch-window-sec, reporting false ends with seconds lost, foreign ends, late ends and overrun minutes, trim error, fragments, holds by route and stood-down backstops per app and per week, with mic_in_use_stop and recording_ended_during_start as their own stop kinds; 8 new tests. Remainder: switch the span to DET23's ledger and the stop kind to OBS5's cause, and add the per-era split, once those land; owner approval to close. Amended 2026-11-17 by the post-audit fix review: an ignored foreign end is classified as the stop.
 ---
 
 # DET19: mp analyze-detection counts every lifecycle end as a detector success and ignores every event END9 to END17 added, so false ends, overruns and holds never show as minutes
@@ -56,3 +56,6 @@ Depends on DET23 (the ledger) and OBS5's stop cause; until DET23 lands, item 1's
 - A `lifecycle.ended` with no `bundle_id` (older rows) is still taken as the recording's own end. `pair_sessions` now sorts on the parsed instant, since a string sort put a `...36.500Z` stop ahead of a `...36Z` end.
 - Remainder for a later session: replace the span source with DET23's ledger and the inferred stop kind with OBS5's cause once each exists, and add the era split.
 
+## Amendment 2026-11-17 (post-audit fix review)
+
+Found by the [post-audit fix review](../../audits/2026-11-17-post-audit-fix-review.md) (session report, M7). In `pipeline/src/mp/analyze_detection.py`, `pair_sessions` sets `open_session.foreign_ended_ts` on any foreign `lifecycle/ended` inside a session and `classify_session` gives `STOP_FOREIGN_END` precedence over force-stop and manual. Since END19 an ignored end (`meeting_end_ignored_sourceless`, and END11's `meeting_end_ignored_other_app`) leaves the recording running, so a later hand stop is reported as an automatic foreign-end stop. END19's and END21's owner walkthroughs read this report, so the misclassification hides what they look for. Scope addition: read the `meeting_end_ignored_*` rows, or require the foreign end to fall within about 2 s of `recording_stopped`. One new test with the 2026-11-11 shape.

@@ -63,3 +63,6 @@ Sources: F005 (high, confirmed by both verifiers) and F046 (high, partially conf
 - DET17's owner decision (a browser resume prompts) landed before this, so the resume routing only applies to native resumes.
 - README's "A doubtful end keeps recording" bullet does not name the workflow, so it is unchanged; GUIDE's chip-pick and back-to-back paragraphs are updated.
 
+## Note 2026-11-17 (post-audit fix review)
+
+Two routes outside this task's guarantee still drop a stricter hand-picked workflow (a resume, and a prompt that times out into the offer). Filed as [SEC40](./SEC40.md).

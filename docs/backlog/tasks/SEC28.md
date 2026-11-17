@@ -50,3 +50,7 @@ Not affected: Notion (`publish_notion._text` builds plain text runs with no link
 - `test_schemas.py`: a `MeetingSummary` built from the hostile payload (each field above) round-trips with no `![`, no `<`, no live `](`, and no newline in any of them; `detected_language` `"en\ncssclasses: x"` becomes `"en"`.
 - Render tests for both `render_summary_md` and the Obsidian note: no remote image, no HTML tag and no extra front-matter key in the output for the hostile payload and for a hostile `meeting_title` through `apply_meeting_title`; an attendee `Bob, Eve` stays one quoted element.
 - `cd pipeline && uv run --extra dev pytest -q`, ruff and pyright green with the new test count in the commit body; `bash scripts/ci-local.sh` green.
+
+## Note 2026-11-17 (post-audit fix review)
+
+The review found three model-written fields this task's list omitted (`due`, `owner`, `attendees`, plus the digest's `group`) still reaching the Markdown sinks unscrubbed. Filed as [SEC41](./SEC41.md); this task's status is left for the owner to revisit.
