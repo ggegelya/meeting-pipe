@@ -738,6 +738,10 @@ def _me_signals(
     failed). Matches before enrolling, so a meeting never just matches its own
     freshly added sample.
 
+    With no voiceprint and a mic tier that declined only because a second mic-side
+    cluster reached the runner-up share, the leader is taken as the owner (an
+    over-split owner); see the block below and `diarize.resolve_speaker_labels`.
+
     Enrolment folds the mic pick's sample in only when it is corroborated
     (DIAR11): the voiceprint picked the same cluster, or no voiceprint exists yet
     and the mic pick cleared its checks. A pick the voiceprint disagrees with, or
@@ -749,7 +753,11 @@ def _me_signals(
     voiceprint = store.embedding()
     voiceprint_me = match_voiceprint(speaker_embeddings, voiceprint)
     tier = analyze_mic_tier(segments, wav)
-    mic_me = tier.winner if tier else None
+    # No print yet and two mic-side clusters of comparable size: `owner_pick` takes the leader as
+    # the owner (an over-split owner far more often than a second person, owner decision
+    # 2026-11-17, accepting audit F096's cost), and it enrols, which bootstraps the print.
+    # `resolve_speaker_labels` folds the rest of `tier.split` into the same name.
+    mic_me = tier.owner_pick(voiceprint) if tier else None
     if (
         store.meetings() < _VOICEPRINT_ENROLL_CAP
         and mic_me is not None

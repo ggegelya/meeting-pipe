@@ -1490,3 +1490,63 @@ def test_configure_logging_keeps_its_file_handler_on_a_hand_run(tmp_path: Path, 
     handlers, logs_dir = _configured_handlers(monkeypatch, tmp_path, "mp-perf13-hand")
     assert [type(h) for h in handlers if isinstance(h, logging.FileHandler)] == [logging.FileHandler]
     assert (logs_dir / "pipeline.log").exists()
+
+
+def test_with_no_voiceprint_an_over_split_owner_is_named_on_both_clusters_and_bootstraps_the_print(
+    tmp_path: Path, monkeypatch
+):
+    # Owner decision 2026-11-17 (accepting audit F096): two mic-side clusters of comparable size and
+    # no print yet are one over-split owner, so the leader enrols and both carry the owner's name.
+    # A remote voice is on the call too (an all-mic recording gives the mic tier nothing to compare).
+    store = VoiceprintStore(tmp_path / "vp.json")
+    assert store.embedding() is None
+    wav = tmp_path / "20260501-1100.wav"
+    wav.write_bytes(b"")
+    streamed = _streamed_with_embeddings(
+        wav,
+        [
+            {"start": 0.0, "end": 100.0, "text": "a", "speaker": "speaker_0"},
+            {"start": 100.0, "end": 190.0, "text": "b", "speaker": "speaker_1"},
+            {"start": 190.0, "end": 250.0, "text": "c", "speaker": "speaker_2"},
+        ],
+        {"speaker_0": _axis_emb(0), "speaker_1": _axis_emb(1), "speaker_2": _axis_emb(2)},
+    )
+    _mic_channel(monkeypatch, ["speaker_user", "speaker_user", "speaker_other"])
+    events: list[tuple] = []
+    monkeypatch.setattr("mp.events.emit", lambda cat, action, **kw: events.append((cat, action, kw)))
+    out = finalize_streamed_transcript(
+        wav, streamed, user_label="Me",
+        voiceprint_store=store, roster_store=RosterStore(tmp_path / "roster.json"),
+    )
+    speakers = [seg["speaker"] for seg in json.loads(out["json"].read_text(encoding="utf-8"))["segments"]]
+    assert speakers == ["Me", "Me", "THEM-A"]
+    assert store.meetings() == 1
+    assert cosine_similarity(store.embedding(), _axis_emb(0)) > 0.99   # the LEADER's sample, not the contender's
+    chosen = [e[2] for e in events if e[1] == "owner_cluster_chosen"]
+    assert [c["tier"] for c in chosen] == ["mic"] and chosen[0]["folded"] == 1
+
+
+def test_a_print_that_matches_the_split_leader_names_it_alone_and_enrolls_it_once(tmp_path: Path, monkeypatch):
+    # The `voiceprint is None` guard in `_me_signals`: with a print the runner-up decline stands,
+    # so the contender is not folded even though the print agrees with the leader.
+    store = VoiceprintStore(tmp_path / "vp.json")
+    store.update(_axis_emb(0))
+    wav = tmp_path / "20260501-1100.wav"
+    wav.write_bytes(b"")
+    streamed = _streamed_with_embeddings(
+        wav,
+        [
+            {"start": 0.0, "end": 100.0, "text": "a", "speaker": "speaker_0"},
+            {"start": 100.0, "end": 190.0, "text": "b", "speaker": "speaker_1"},
+            {"start": 190.0, "end": 250.0, "text": "c", "speaker": "speaker_2"},
+        ],
+        {"speaker_0": _axis_emb(0), "speaker_1": _axis_emb(1), "speaker_2": _axis_emb(2)},
+    )
+    _mic_channel(monkeypatch, ["speaker_user", "speaker_user", "speaker_other"])
+    out = finalize_streamed_transcript(
+        wav, streamed, user_label="Me",
+        voiceprint_store=store, roster_store=RosterStore(tmp_path / "roster.json"),
+    )
+    speakers = [seg["speaker"] for seg in json.loads(out["json"].read_text(encoding="utf-8"))["segments"]]
+    assert speakers == ["Me", "THEM-A", "THEM-B"]
+    assert store.meetings() == 1    # the tier declined, so nothing new enrols

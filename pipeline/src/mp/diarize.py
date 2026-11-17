@@ -313,10 +313,25 @@ class MicTier(NamedTuple):
     winner: str | None
     mic_time: dict[str, float]
     total_time: dict[str, float]
+    # Set when `winner` is None only because a second mic-side voice reached `RUNNER_UP_SHARE`
+    # of the leader's mic time (the leader clearing the floor): the leader first, then every
+    # such contender. With no voiceprint to tell them apart, the owner decision of 2026-11-17
+    # treats them as one over-split owner (see `orchestrate._me_signals` and the fold in
+    # `resolve_speaker_labels`).
+    split: tuple[str, ...] = ()
 
     def fraction(self, spk: str) -> float:
         total = self.total_time.get(spk, 0.0)
         return self.mic_time.get(spk, 0.0) / total if total > 0 else 0.0
+
+    def owner_pick(self, voiceprint: list[float] | None) -> str | None:
+        """The mic pick as the caller treats it: `winner`, or, with no voiceprint yet and the
+        pick declined only on the runner-up share, the split's leader (an over-split owner, the
+        owner's decision of 2026-11-17). The one home of that promotion, shared by
+        `orchestrate._me_signals` and the `valid1_check --owner-cluster` replay."""
+        if self.winner is None and voiceprint is None and self.split:
+            return self.split[0]
+        return self.winner
 
 
 def pick_mic_speaker(
@@ -334,7 +349,8 @@ def pick_mic_speaker(
     never to whoever was heard first), provided it has `min_mic_seconds` of it.
     The pick is None when another speaker also clears the fraction bar with more
     than `runner_up_share` of the winner's mic time: two local voices, which the
-    voiceprint tier has to tell apart.
+    voiceprint tier has to tell apart, and `split` then names the leader and those
+    contenders, which with no voiceprint at all are folded into one owner.
     """
     def fraction(spk: str) -> float:
         t = total_time.get(spk, 0.0)
@@ -343,15 +359,19 @@ def pick_mic_speaker(
     by_mic = sorted(total_time, key=lambda k: (-mic_time.get(k, 0.0), -fraction(k), k))
     candidates = [k for k in by_mic if fraction(k) >= min_fraction]
     winner = candidates[0] if candidates else None
+    split: tuple[str, ...] = ()
     if winner is not None:
         if mic_time.get(winner, 0.0) < min_mic_seconds:
             winner = None
-        elif any(
-            k != winner and mic_time.get(k, 0.0) >= runner_up_share * mic_time[winner]
-            for k in candidates
-        ):
-            winner = None
-    return MicTier(winner, dict(mic_time), dict(total_time))
+        else:
+            contenders = [
+                k for k in candidates
+                if k != winner and mic_time.get(k, 0.0) >= runner_up_share * mic_time[winner]
+            ]
+            if contenders:
+                split = (winner, *contenders)
+                winner = None
+    return MicTier(winner, dict(mic_time), dict(total_time), split)
 
 
 def analyze_mic_tier(
@@ -468,7 +488,8 @@ def resolve_speaker_labels(
     """Map each diarization speaker id present in `segments` to its final label:
     the user's name ("me"), a matched roster name (`roster.match`), or a stable
     THEM-A/B cluster for an unknown voice. A speaker with no embedding keeps its
-    raw id (it cannot be roster-matched, e.g. channel-fallback labels). The "me"
+    raw id (it cannot be roster-matched, e.g. channel-fallback labels), except a
+    no-voiceprint over-split owner's cluster (DIAR11, below), which is named from its mic time. The "me"
     speaker is never roster-matched. `roster` may be None (no roster).
 
     When no signal identifies the user (`_resolve_me_id` returns None, the
@@ -487,6 +508,12 @@ def resolve_speaker_labels(
     given the owner's name too. One that matches but is system-side is a remote voice
     that sounds like the owner and is left alone, counted as flagged: it must never
     take the owner's name. A cluster the roster already names is never folded.
+
+    With NO voiceprint (`voiceprint` is None) and a mic tier that declined only on the
+    runner-up share, the mic-side clusters in `mic_tier.split` are folded into the leader
+    the caller named (`mic_me`), which is how the print gets bootstrapped (owner decision
+    2026-11-17). Accepted cost, audit F096: a second person on the owner's mic gets the
+    owner's name until a print exists to tell them apart.
     `owner` reports the choice for the event log."""
     from .roster import MATCH_MIN as _SAME_PERSON_MIN  # lazy: roster imports this module
 
@@ -521,6 +548,13 @@ def resolve_speaker_labels(
         name = scored.name if scored else None
         if name and name != label:
             mapping[spk] = name
+            continue
+        if (
+            label and voiceprint is None and me is not None and tier == "mic"
+            and mic_tier is not None and mic_tier.split[:1] == (me,) and spk in mic_tier.split
+        ):
+            mapping[spk] = label
+            folded += 1
             continue
         if emb is None:
             continue

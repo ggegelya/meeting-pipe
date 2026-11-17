@@ -804,7 +804,7 @@ def reselect_placement(item: dict, owner_label: str, voiceprint: list[float] | N
     voiceprint_me = diarize.match_voiceprint(embeddings, voiceprint)
     res = diarize.resolve_speaker_labels(
         segments, embeddings, _Replay(), user_label=owner_label,  # type: ignore[arg-type]
-        mic_me=tier.winner if tier else None, voiceprint_me=voiceprint_me,
+        mic_me=tier.owner_pick(voiceprint) if tier else None, voiceprint_me=voiceprint_me,
         mic_tier=tier, voiceprint=voiceprint,
     )
     owner = {k for k, v in res.mapping.items() if v == owner_label}

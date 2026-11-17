@@ -521,3 +521,81 @@ def test_a_disagreeing_pair_that_named_nobody_folds_nobody():
     assert "Me" not in res.mapping.values()
     assert res.owner.tier == "none" and res.owner.folded == 0
     assert res.owner_id is None
+
+
+# --- DIAR11 amendment 2026-11-17: no voiceprint and two mic-side clusters = one over-split owner --
+
+
+def test_the_tier_reports_the_split_when_the_runner_up_share_declined_the_pick():
+    tier = _tier({"a": 300.0, "b": 260.0, "c": 20.0}, {"a": 300.0, "b": 270.0, "c": 20.0})
+    assert tier.winner is None
+    assert tier.split == ("a", "b")                       # leader first; c is under the share
+    # A clear winner, a sub-floor leader and a remote voice have no split.
+    assert _tier({"a": 400.0, "b": 10.0}, {"a": 400.0, "b": 10.0}).split == ()
+    assert _tier({"a": 10.0, "b": 9.0}, {"a": 10.0, "b": 9.0}).split == ()
+    assert _tier({"a": 300.0, "remote": 0.0}, {"a": 300.0, "remote": 300.0}).split == ()
+
+
+def test_with_no_voiceprint_an_over_split_owner_is_named_on_both_clusters():
+    # The owner decision of 2026-11-17: fold both, accepting audit F096 (a second person on the
+    # owner's mic gets the owner's name until a print exists).
+    segs = [_seg("a", 0, 300), _seg("b", 300, 560), _seg("r", 560, 600)]
+    tier = _tier({"a": 300.0, "b": 260.0, "r": 0.0}, {"a": 300.0, "b": 260.0, "r": 40.0})
+    res = resolve_speaker_labels(
+        segs, {"a": _unit_at(1.0), "b": _unit_at(0.3), "r": _unit_at(0.0)}, _FakeRoster([]),
+        user_label="Me", mic_me=tier.split[0], mic_tier=tier, voiceprint=None)
+    assert res.mapping["a"] == "Me" and res.mapping["b"] == "Me"
+    assert res.mapping["r"].startswith("THEM-")            # the remote voice is never folded
+    assert res.owner.tier == "mic" and res.owner.folded == 1
+
+
+def test_a_split_is_not_folded_once_a_voiceprint_exists():
+    # With a print the tier declines and the voiceprint decides alone: the two-voices case stays two.
+    segs = [_seg("a", 0, 300), _seg("b", 300, 560)]
+    tier = _tier({"a": 300.0, "b": 260.0}, {"a": 300.0, "b": 260.0})
+    res = resolve_speaker_labels(
+        segs, {"a": _unit_at(1.0), "b": _unit_at(0.0)}, _FakeRoster([]), user_label="Me",
+        voiceprint_me="b", mic_tier=tier, voiceprint=_unit_at(0.0))
+    assert res.mapping["b"] == "Me" and res.mapping["a"].startswith("THEM-")
+
+
+def test_a_below_floor_owner_is_unnamed_without_a_voiceprint_through_resolve_speaker_labels():
+    # Item 4 of the amendment: the owner spoke 10 s on the mic, under the 15 s floor.
+    segs = [_seg("owner", 0, 10), _seg("remote", 10, 300)]
+    tier = _tier({"owner": 10.0, "remote": 0.0}, {"owner": 10.0, "remote": 290.0})
+    assert tier.winner is None and tier.split == ()
+    res = resolve_speaker_labels(
+        segs, {"owner": _unit_at(1.0), "remote": _unit_at(0.0)}, _FakeRoster([]), user_label="Me",
+        mic_me=tier.winner, mic_tier=tier, voiceprint=None)
+    assert "Me" not in res.mapping.values()
+    assert res.owner.tier == "none" and res.owner_id is None
+
+
+def test_a_below_floor_owner_is_named_by_the_voiceprint_tier_when_one_matches():
+    segs = [_seg("owner", 0, 10), _seg("remote", 10, 300)]
+    tier = _tier({"owner": 10.0, "remote": 0.0}, {"owner": 10.0, "remote": 290.0})
+    vp = _unit_at(1.0)
+    res = resolve_speaker_labels(
+        segs, {"owner": _unit_at(1.0), "remote": _unit_at(0.0)}, _FakeRoster([]), user_label="Me",
+        mic_me=tier.winner, voiceprint_me="owner", mic_tier=tier, voiceprint=vp)
+    assert res.mapping["owner"] == "Me" and res.mapping["remote"].startswith("THEM-")
+    assert res.owner.tier == "voiceprint" and res.owner.mic_seconds == 10.0
+
+
+def test_owner_pick_promotes_the_split_leader_only_without_a_voiceprint():
+    tier = _tier({"a": 300.0, "b": 260.0}, {"a": 300.0, "b": 260.0})
+    assert tier.owner_pick(None) == "a"
+    assert tier.owner_pick(_unit_at(1.0)) is None
+    assert _tier({"a": 400.0, "b": 10.0}, {"a": 400.0, "b": 10.0}).owner_pick(None) == "a"
+
+
+def test_a_voiceprint_decides_a_split_alone_and_folds_nothing():
+    # Stronger than the case above: the voiceprint names the LEADER, so a fold gated only on the
+    # tier would still pull the contender in. With a print, tier is `voiceprint`, never `mic`.
+    segs = [_seg("a", 0, 300), _seg("b", 300, 560)]
+    tier = _tier({"a": 300.0, "b": 260.0}, {"a": 300.0, "b": 260.0})
+    res = resolve_speaker_labels(
+        segs, {"a": _unit_at(1.0), "b": _unit_at(0.0)}, _FakeRoster([]), user_label="Me",
+        mic_me=tier.owner_pick(_unit_at(1.0)), voiceprint_me="a", mic_tier=tier, voiceprint=_unit_at(1.0))
+    assert res.mapping["a"] == "Me" and res.mapping["b"].startswith("THEM-")
+    assert res.owner.tier == "voiceprint" and res.owner.folded == 0
