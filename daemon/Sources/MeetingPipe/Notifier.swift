@@ -394,6 +394,18 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(req)
     }
 
+    /// MIC17: the mic carried the call, but almost none of it reached a speech level, so the
+    /// owner's own voice is likely far too quiet. Worded so a meeting where they barely spoke
+    /// reads as possible, and names the device and the one fix the user owns.
+    func notifyMicVeryQuiet(file: URL, device: String?) {
+        let content = UNMutableNotificationContent()
+        content.title = "Your voice was recorded very quietly"
+        content.body = MicCoverageCopy.quietBody(device: device)
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: "mic-quiet-\(file.lastPathComponent)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
     /// Posted before a recording starts when the OS default input we are about to capture sits
     /// idle while another input device is active (MIC15 layer c): the meeting client likely opened
     /// a different mic, so warn early rather than discover the dead recording after the call.

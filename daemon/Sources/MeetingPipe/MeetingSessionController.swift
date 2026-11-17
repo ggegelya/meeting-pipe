@@ -983,6 +983,7 @@ final class MeetingSessionController: @unchecked Sendable {
                     "workflow_name": resolvedWorkflow?.name ?? NSNull(),
                 ])
                 self.armSystemLevelMirror()
+                self.armMicQuietCheck()
                 self.coordinator.micGate.beginSpeechEvidence()
                 self.compareInputDeviceHolder(trigger: "start", source: source)
                 self.resetMicGateBackstop()
@@ -1173,6 +1174,7 @@ final class MeetingSessionController: @unchecked Sendable {
         // lifecycle and mic-gate teardown below (P005/P047) is inside the number.
         UILatency.shared.feedbackForLatest(.stop)
         disarmSystemLevelMirror()
+        disarmMicQuietCheck()
         // Tear down per-meeting AX subscriptions; the verdict stream stays
         // open for the next meeting.
         coordinator.lifecycleCoord.disengage()
@@ -1297,7 +1299,8 @@ final class MeetingSessionController: @unchecked Sendable {
                     recordingSeconds: coverage.recordingSeconds,
                     systemAudioPresentWholeCall: recorder.lastSystemFires > 0 && !recorder.lastSystemDegraded,
                     unmutedSeconds: coverage.unmutedSeconds,
-                    peakUnmutedRmsDb: coverage.peakUnmutedRmsDb
+                    peakUnmutedRmsDb: coverage.peakUnmutedRmsDb,
+                    loudUnmutedSeconds: coverage.loudUnmutedSeconds
                 )
                 if committed, micWarning == .micRecordedNothing {
                     self.coordinator.notifications.notifyMicRecordedNothing(file: file)
@@ -1308,6 +1311,19 @@ final class MeetingSessionController: @unchecked Sendable {
                         "peak_unmuted_db": Double(coverage.peakUnmutedRmsDb),
                         "device": recorder.lastInputDevice?.displayName ?? "(unknown)",
                     ])
+                }
+                // MIC17: the quiet tier, which `evaluate` returns only when the dead tier did not
+                // fire. The stop notice stays even when the live HUD notice showed: the HUD can be
+                // missed in a long call, and this is the one the owner reads afterwards.
+                if committed, micWarning == .micVeryQuiet {
+                    let device = recorder.lastInputDevice?.displayName
+                    self.coordinator.notifications.notifyMicVeryQuiet(file: file, device: device)
+                    Log.event(
+                        category: "recorder", action: "mic_very_quiet",
+                        attributes: Self.micVeryQuietAttributes(
+                            phase: "stop", file: file.lastPathComponent, coverage: coverage, device: device
+                        )
+                    )
                 }
                 let stem = file.deletingPathExtension().lastPathComponent
                 do {
@@ -2253,6 +2269,85 @@ final class MeetingSessionController: @unchecked Sendable {
         }
         pendingReconfigureCompare = work
         DispatchQueue.main.asyncAfter(deadline: .now() + max(0, inputHolderChangeSettleSec), execute: work)
+    }
+
+    // MARK: - MIC17: the live quiet-mic notice
+
+    /// Asked every 30 s on main while recording; at most one HUD notice per recording.
+    private var micQuietLive = MicQuietLiveCheck()
+    private var micQuietShown = false
+    private var cancelMicQuietTimer: (() -> Void)?
+    /// Whether the 30 s check is running, so a test can pin that a real start arms it and a stop
+    /// stands it down (END9's lesson: a component nobody starts passes every test of itself).
+    var isMicQuietCheckArmed: Bool { cancelMicQuietTimer != nil }
+    static let micQuietCheckIntervalSeconds: TimeInterval = 30
+
+    /// Arm the 30 s check at the start of a recording. A common-mode run-loop timer (CONC10), so
+    /// it keeps ticking under an open menu or alert.
+    func armMicQuietCheck() {
+        assertMainQueue()
+        micQuietLive = MicQuietLiveCheck()
+        micQuietShown = false
+        cancelMicQuietTimer?()
+        let interval = Self.micQuietCheckIntervalSeconds
+        cancelMicQuietTimer = Schedulers.mainRunLoopRepeating(
+            every: interval, firstFire: Date(timeIntervalSinceNow: interval), tolerance: 5
+        ) { [weak self] in
+            self?.checkMicQuiet()
+        }
+    }
+
+    func disarmMicQuietCheck() {
+        assertMainQueue()
+        cancelMicQuietTimer?()
+        cancelMicQuietTimer = nil
+    }
+
+    /// One tick: copy the recorder's running tally (under its per-buffer lock, never from the
+    /// render thread) and raise the HUD notice the first time the quiet tier holds with the far
+    /// side live. The stop-time tier uses the same bar (`MicCoverageWarning.isVeryQuiet`).
+    func checkMicQuiet() {
+        assertMainQueue()
+        guard case .recording(let file, _, _) = coordinator.stateMachine.current else { return }
+        let recorder = coordinator.audioRecorder
+        let coverage = recorder.liveMicCoverage
+        // Once the owner is audible again (they raised the input level, or simply spoke up), the
+        // notice has done its job; take it down rather than leave a stale warning outranking
+        // "Off the record" for the rest of the call. It does not come back in this recording.
+        if micQuietShown, !MicCoverageWarning.isVeryQuiet(
+            unmutedSeconds: coverage.unmutedSeconds, loudUnmutedSeconds: coverage.loudUnmutedSeconds
+        ) {
+            micQuietShown = false
+            coordinator.hud.setMicVeryQuiet(false, device: nil)
+            return
+        }
+        guard micQuietLive.shouldNotify(coverage: coverage, systemLive: recorder.systemChannelHealth == .live) else {
+            return
+        }
+        let device = recorder.liveInputDevice?.displayName
+        micQuietShown = true
+        coordinator.hud.setMicVeryQuiet(true, device: device)
+        Log.event(
+            category: "recorder", action: "mic_very_quiet",
+            attributes: Self.micVeryQuietAttributes(
+                phase: "live", file: file.lastPathComponent, coverage: coverage, device: device
+            )
+        )
+    }
+
+    /// `mic_recorded_nothing`'s attributes plus the loud-seconds count and the phase.
+    static func micVeryQuietAttributes(
+        phase: String, file: String, coverage: MicCoverageSnapshot, device: String?
+    ) -> [String: Any] {
+        [
+            "phase": phase,
+            "file": file,
+            "recording_seconds": coverage.recordingSeconds,
+            "unmuted_seconds": coverage.unmutedSeconds,
+            "peak_unmuted_db": Double(coverage.peakUnmutedRmsDb),
+            "loud_seconds": coverage.loudUnmutedSeconds,
+            "device": device ?? "(unknown)",
+        ]
     }
 
     func disarmSystemLevelMirror() {

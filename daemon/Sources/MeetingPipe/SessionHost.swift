@@ -121,6 +121,8 @@ protocol SessionNotifying: AnyObject {
     /// REC30: the far side is missing for `missingSeconds` in all though its stream ended healthy.
     func notifyRemoteAudioPartlyMissing(file: URL, missingSeconds: Int)
     func notifyMicRecordedNothing(file: URL)
+    /// MIC17: the mic carried the call, but the owner's voice almost never reached a speech level.
+    func notifyMicVeryQuiet(file: URL, device: String?)
     func notifyShortRecording(file: URL, audioSec: Double, wallclockSec: Double)
     func notifyInputDeviceMismatch()
     /// SEC18: warn once per session when a zero-egress recording starts over a library a sync client owns.
@@ -140,6 +142,10 @@ protocol SessionRecording: AnyObject {
     /// for the dead-mic warning and the `mic_device_name` sidecar key.
     var lastMicCoverage: MicCoverageSnapshot { get }
     var lastInputDevice: InputDeviceIdentity? { get }
+    /// MIC17: the running mic tally and the device resolved at start, read on main every 30 s
+    /// for the live quiet-mic notice.
+    var liveMicCoverage: MicCoverageSnapshot { get }
+    var liveInputDevice: InputDeviceIdentity? { get }
     /// Stop-time audio-vs-wallclock parity of a recording that produced a final
     /// (REC9), read by the controller for the short-recording notice. Nil when the
     /// last stop produced nothing to measure.
@@ -198,6 +204,10 @@ protocol SessionHUDPresenting: AnyObject {
     /// REC22 (F155): show the "Disk falling behind" state once a capture writer is 30 s behind,
     /// for the rest of the recording. The force-stop at the hard cap posts its own banner.
     func setWriterBehind(_ on: Bool)
+
+    /// MIC17: show the "Mic very quiet" state, naming the device and the fix in its tooltip; a
+    /// click on the label dismisses it. The controller raises it once per recording.
+    func setMicVeryQuiet(_ on: Bool, device: String?)
 }
 
 /// The "record this meeting?" prompt (`MeetingPromptWindow`).

@@ -178,6 +178,8 @@ final class SpyNotifier: SessionNotifying {
     private(set) var remotePartlyMissing: [(file: URL, seconds: Int)] = []
     func notifyRemoteAudioPartlyMissing(file: URL, missingSeconds: Int) { remotePartlyMissing.append((file, missingSeconds)) }
     func notifyMicRecordedNothing(file: URL) { micRecordedNothing.append(file) }
+    private(set) var micVeryQuiet: [(file: URL, device: String?)] = []
+    func notifyMicVeryQuiet(file: URL, device: String?) { micVeryQuiet.append((file, device)) }
     func notifyShortRecording(file: URL, audioSec: Double, wallclockSec: Double) {
         shortRecordings.append((file: file, audioSec: audioSec, wallclockSec: wallclockSec))
     }
@@ -236,6 +238,9 @@ final class SpyRecorder: SessionRecording {
     var lastSystemDegraded = false
     var lastMicCoverage = MicCoverageSnapshot.empty
     var lastInputDevice: InputDeviceIdentity?
+    /// MIC17: what the live quiet check reads; a test sets it before calling the check.
+    var liveMicCoverage = MicCoverageSnapshot.empty
+    var liveInputDevice: InputDeviceIdentity?
     var lastDurationParity: RecordingDurationParity?
     var lastChannelCoverage: ChannelCoverage.Verdict?
     /// REC17: `.live` by default, which is the state every pre-REC17 controller test implicitly
@@ -336,6 +341,9 @@ final class SpyHUD: SessionHUDPresenting {
     func setLowSpace(_ text: String?) { lowSpaceTexts.append(text) }
     private(set) var writerBehindStates: [Bool] = []
     func setWriterBehind(_ on: Bool) { writerBehindStates.append(on) }
+    /// MIC17: every push.
+    private(set) var micVeryQuietStates: [(on: Bool, device: String?)] = []
+    func setMicVeryQuiet(_ on: Bool, device: String?) { micVeryQuietStates.append((on, device)) }
 }
 
 final class SpyPrompt: SessionPromptPresenting {

@@ -302,6 +302,10 @@ final class MeetingRecorder {
         /// mid-recording (its `stop()` timed out, so its IO may still be running) must not
         /// interleave buffers with its replacement into the one mic file.
         var engineGeneration: UInt64 = 0
+        /// MIC15/MIC17: the whole-recording mic tally, updated by the render thread inside the
+        /// lock it already takes per buffer, so main can copy it mid-recording (the live quiet
+        /// check) as well as at stop. No second lock and no allocation on the render thread.
+        var coverage = MicCoverageTally()
     }
     private let gateAccess = OSAllocatedUnfairLock(initialState: GateAccess())
 
@@ -332,9 +336,7 @@ final class MeetingRecorder {
     /// `stop()` into `lastMicCoverage` and read post-stop to warn about a dead mic under a live
     /// system channel. Mode-independent (computed before the capture-mode switch) so the
     /// regulated gate's zeroed output does not hide a dead input.
-    private var micTotalSeconds: Double = 0
-    private var micUnmutedSeconds: Double = 0
-    private var micPeakUnmutedDb: Float = -120
+    // MIC17: the tally itself lives in `GateAccess.coverage`.
 
     /// Input-device identity resolved at `start()` (MIC15 layer a). Stashed here because the
     /// meta sidecar is written at stop; `stop()` snapshots it into `lastInputDevice`.
@@ -354,6 +356,12 @@ final class MeetingRecorder {
     /// `MeetingSessionController` for the dead-mic warning and the `mic_device_name` sidecar key
     /// (MIC15). `lastInputDevice` is nil when no default input existed (mic permission ungranted).
     private(set) var lastMicCoverage = MicCoverageSnapshot.empty
+    /// MIC17: the running tally, copied under the per-buffer lock. Read on main at a low cadence
+    /// (the live quiet check, every 30 s), never from the render thread.
+    var liveMicCoverage: MicCoverageSnapshot { gateAccess.withLock { $0.coverage }.snapshot }
+    /// MIC17: the input device this recording resolved at start, for the live HUD notice
+    /// (`lastInputDevice` is only set at stop).
+    var liveInputDevice: InputDeviceIdentity? { capturedInputDevice }
     private(set) var lastInputDevice: InputDeviceIdentity?
 
     /// Audio-vs-wallclock parity of the last recording that produced a final (REC9),
@@ -449,9 +457,6 @@ final class MeetingRecorder {
         micLastBufferUptime = 0
         micDeliveredSeconds = 0
         micLastDelivery.withLock { $0 = nil }
-        micTotalSeconds = 0
-        micUnmutedSeconds = 0
-        micPeakUnmutedDb = -120
         capturedInputDevice = nil
         micAccumSumSq = 0
         micAccumFrames = 0
@@ -462,6 +467,7 @@ final class MeetingRecorder {
         gateAccess.withLock {
             $0.verdict = .uncertain(reasons: ["not_started"])
             $0.manualOffRecord = false
+            $0.coverage = MicCoverageTally()
         }
         // No converter until a device change introduces a format mismatch.
         micConverter = nil
@@ -1101,12 +1107,16 @@ final class MeetingRecorder {
             // multi-word verdict the main thread is mid-write. The level rule
             // itself is pure (`meterLevelDb`), so it is pinned by tests rather
             // than buried in the tap. The HUD polls it at 10 Hz.
+            // MIC15(b)/MIC17: whole-recording mic coverage, for every mode (the regulated gate
+            // zeroes the written buffer, but `db` is the live pre-gate level), in the same lock.
+            let bufSeconds = Double(frameLen) / fileFormat.sampleRate
             let (verdict, offRecord) = gateAccess.withLock { access -> (MicGateVerdict, Bool) in
                 let current = access.verdict
                 let off = access.manualOffRecord
                 access.levelDb = MeetingRecorder.meterLevelDb(
                     micDb: db, mode: mode, verdict: current, offRecord: off
                 )
+                access.coverage.add(rmsDb: db, seconds: bufSeconds, muted: current.indicatesMute)
                 return (current, off)
             }
             switch mode {
@@ -1129,16 +1139,6 @@ final class MeetingRecorder {
                 } else {
                     muteTimeline.add(startSec: startSec, endSec: endSec, muted: verdict.indicatesMute, source: .mute)
                 }
-            }
-            // MIC15(b): whole-recording mic coverage, computed for every mode (the regulated
-            // gate zeroes the written buffer, but `db` above is the live pre-gate level). Only
-            // un-muted frames count toward the peak, so a legitimately muted span cannot read as
-            // a dead mic. Allocation-free; reuses the per-buffer RMS already in hand.
-            let bufSeconds = Double(frameLen) / fileFormat.sampleRate
-            micTotalSeconds += bufSeconds
-            if !verdict.indicatesMute {
-                micUnmutedSeconds += bufSeconds
-                if db > micPeakUnmutedDb { micPeakUnmutedDb = db }
             }
             micFramePosition += Int64(frameLen)
         }
@@ -1444,7 +1444,7 @@ final class MeetingRecorder {
 
     /// Step 6: MIC15/REC7: snapshot the render-thread-accumulated coverage tally only
     /// after the tap is removed, so this read can't race a buffer still being
-    /// written into micTotalSeconds / micUnmutedSeconds / micPeakUnmutedDb.
+    /// written into the coverage tally (`GateAccess.coverage`).
     ///
     /// That ordering holds only when the removeTap above returned; on a teardown
     /// timeout it is abandoned and a late buffer can still land, so the coverage
@@ -1452,11 +1452,7 @@ final class MeetingRecorder {
     /// that never returns, and `engine_teardown_timed_out` says when to distrust it.
     @MainActor
     private func snapshotMicCoverage() {
-        self.lastMicCoverage = MicCoverageSnapshot(
-            recordingSeconds: micTotalSeconds,
-            unmutedSeconds: micUnmutedSeconds,
-            peakUnmutedRmsDb: micPeakUnmutedDb
-        )
+        self.lastMicCoverage = gateAccess.withLock { $0.coverage }.snapshot
         // The writer's sample rate was bound to the now-closed input; the
         // next start() rebuilds it.
         micGateWriter = nil

@@ -104,6 +104,7 @@ enum HUDStateLabel {
         micCaptureLost: Bool,
         lowSpace: String?,
         writerBehind: Bool = false,
+        micVeryQuiet: Bool = false,
         offRecord: Bool,
         confirmingEnd: Bool
     ) -> (text: String, tone: Tone) {
@@ -112,6 +113,9 @@ enum HUDStateLabel {
         // REC22 (F155): a capture writer is over 30 s behind the audio it was handed. Below the
         // two that already name a loss, above the states that are deliberate.
         if writerBehind { return (writerBehindText, .alert) }
+        // MIC17: a mic recording the owner far too quietly. Below the three that name a loss or a
+        // running-out, above the deliberate states; the owner can still fix it mid-call.
+        if micVeryQuiet { return (MicCoverageCopy.hudLabel, .alert) }
         if offRecord { return ("Off the record", .alert) }
         if confirmingEnd { return ("Confirming end", .subtle) }
         return ("Recording", .muted)
@@ -187,7 +191,8 @@ final class RecordingHUDWindow {
 
     /// The "Recording" state label, swapped to "Off the record" while a manual off-record span is
     /// open (MIC14). Held so `setOffTheRecord` can retitle + retint it.
-    private weak var recordingLabel: NSTextField?
+    /// Readable so a test can click it (MIC17); only `applyStateLabel` writes it.
+    private(set) weak var recordingLabel: HUDClickableLabel?
 
     /// The off-the-record toggle beside Stop (MIC14 discoverability, UX23). Held so `setOffTheRecord`
     /// can flip its glyph + tint to reflect the live state.
@@ -310,6 +315,9 @@ final class RecordingHUDWindow {
         lowSpaceText = nil
         writerBehind = false
         confirmingEnd = false
+        // MIC17: and the quiet-mic state, which is about one recording's device and level.
+        micVeryQuiet = false
+        micVeryQuietDevice = nil
 
         guard let panel = panel else { return }
         self.panel = nil
@@ -442,6 +450,18 @@ final class RecordingHUDWindow {
         applyStateLabel()
     }
 
+    /// MIC17: the quiet-mic state and the device it names. Per recording, cleared by `dismiss` and
+    /// by a click on the label.
+    private(set) var micVeryQuiet = false
+    private var micVeryQuietDevice: String?
+
+    /// MIC17: show or clear the quiet-mic state. Idempotent, main-queue only.
+    func setMicVeryQuiet(_ on: Bool, device: String?) {
+        micVeryQuiet = on
+        micVeryQuietDevice = on ? device : nil
+        applyStateLabel()
+    }
+
     /// END9: whether a held end is being confirmed. Stored since REC20 so the label can be
     /// resolved from all four states at once rather than by whichever setter ran last.
     private var confirmingEnd = false
@@ -459,10 +479,21 @@ final class RecordingHUDWindow {
             micCaptureLost: micCaptureLost,
             lowSpace: lowSpaceText,
             writerBehind: writerBehind,
+            micVeryQuiet: micVeryQuiet,
             offRecord: isOffTheRecord,
             confirmingEnd: confirmingEnd
         )
         recordingLabel?.stringValue = label.text
+        // MIC17: only the quiet-mic state explains itself in a tooltip and dismisses on a click.
+        if label.text == MicCoverageCopy.hudLabel, micVeryQuiet {
+            recordingLabel?.toolTip = MicCoverageCopy.hudTooltip(device: micVeryQuietDevice)
+            recordingLabel?.setAccessibilityHelp(MicCoverageCopy.hudTooltip(device: micVeryQuietDevice))
+            recordingLabel?.onClick = { [weak self] in self?.setMicVeryQuiet(false, device: nil) }
+        } else {
+            recordingLabel?.toolTip = nil
+            recordingLabel?.setAccessibilityHelp(nil)
+            recordingLabel?.onClick = nil
+        }
         switch label.tone {
         case .muted: recordingLabel?.textColor = MPColors.fgMuted
         case .alert: recordingLabel?.textColor = MPColors.pulse600
@@ -570,7 +601,7 @@ final class RecordingHUDWindow {
         // UX46: 64pt here, 83pt once `setOffTheRecord` swaps in "Off the record", which is what
         // UX35 measured 96 against. The three-control row at the foot is wider still (102pt), so
         // `HUDPanelGeometry.pillWidth` now holds that and this row clears it comfortably.
-        let recordingLabel = NSTextField(labelWithString: "Recording")
+        let recordingLabel = HUDClickableLabel(labelWithString: "Recording")
         recordingLabel.font = .systemFont(ofSize: 10, weight: MPType.medium)
         recordingLabel.textColor = MPColors.fgMuted
         recordingLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -1058,6 +1089,16 @@ private final class HUDDegradedBanner: NSView {
         ])
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+/// MIC17: the HUD's state label, which takes a click only while a state that can be dismissed owns
+/// it (the quiet-mic notice). Otherwise the click goes where a label's always went.
+final class HUDClickableLabel: NSTextField {
+    var onClick: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        if let onClick { onClick() } else { super.mouseDown(with: event) }
+    }
 }
 
 /// Compact off-the-record toggle beside Stop on the HUD (MIC14 discoverability, UX23). A borderless
