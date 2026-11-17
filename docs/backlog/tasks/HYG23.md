@@ -2,9 +2,9 @@
 id: HYG23
 title: valid1_check's coldstart watchdog SIGKILLs a process group that does not contain the model server, leaving it resident in the low-memory case it exists for
 category: Validation
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). _run_timed SIGKILLs the caffeinate group on the low-memory abort and the 900 s timeout, but mp summarize's mlx_lm.server is setsid'd into its own session, so the model stays loaded with a marker naming a dead owner (G022); Ctrl-C leaves the whole run going and every run leaves candidate summaries beside live ones (G051). Supervise the child through PIPE37's stdin contract, stop it SIGTERM-first, reap this run's server from mlx-server.json, and clean up the candidates. [Spec](./HYG23.md)
+comment: Shipped 2026-11-17 (awaiting owner): valid1_check --coldstart supervises mp summarize (stdin pipe + MP_SUPERVISED=1), stops it SIGTERM-first through _stop_run (group poll, 20 s grace, then SIGKILL) on the low-memory abort, the timeout and Ctrl-C, reaps this run's model server from mlx-server.json (spawned after start, pid still a server), refuses on a pending candidate and removes the candidates it wrote. Remainder: the owner walkthrough (Ctrl-C mid cold run, then a full run). [Spec](./HYG23.md)
 ---
 
 # HYG23: valid1_check's coldstart watchdog SIGKILLs a process group that does not contain the model server, leaving it resident in the low-memory case it exists for
@@ -50,3 +50,5 @@ Related: [LOCAL21](./LOCAL21.md) (the setsid server's two owners, the general ca
 
 1. [owner] With nothing serving on `:8765`, run `scripts/valid1_check.py --coldstart` and press Ctrl-C a few seconds into the cold run. Within about 20 s `pgrep -f mlx_lm.server` prints nothing and `mp doctor` reports no orphan server.
 2. [owner] Run it to completion; afterwards no `<stem>.summary.candidate.json` remains beside the picked transcript.
+
+**Progress (2026-11-17):** Scope 1 to 4 shipped with the acceptance tests (11 new in `test_valid1_check.py`, Linux-safe through injected `killpg`, `pid_command`, `marker_path`, `sleep` and clock). One correction to the spec: since SEC27 the server runs as `python -m mp.local_model_server`, so the script's identity check accepts both that and `mlx_lm.server`, mirroring `local_server._SERVER_COMMAND_MARKS` (a check on `mlx_lm.server` alone would never have matched a current server). The watchdog and the main thread can both reach the stop; the second waits for the first rather than returning while the run is still alive. The candidate check refuses on either the `.json` or the `.md`, and the removal runs in a `finally` around both timed runs. Found in review and fixed: the low-memory abort now waits for its own stop (the watchdog is a daemon thread, and the wait returned as soon as caffeinate died on the SIGTERM, before the SIGKILL fallback and the reap); the reap also requires the marker's owner to have been in this run's group when the stop began, falling back to the time window only when the owner is already gone; candidate names come from the resolved path's `stem`, as `mp summarize` builds them; a second Ctrl-C during the grace skips the SIGKILL and the reap, which is documented, since the stdin EOF has already told `mp` to unwind. The owner walkthrough above is what remains; it needs the local model and a real run, so no harness covers it.

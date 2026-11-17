@@ -579,6 +579,8 @@ The local report is built from an allowlist, never by redacting a traceback: num
 
 `PipelineLauncher` exports `MP_SUPERVISED=1`, beside `MP_FAILURE_PATH`, on the spawns it stops when the app goes: the ask and every spawn anchored on a meeting (run-all, the Library re-runs, merge, finalize, paste publish, the Apple-phase publish; `PipelineLauncher.isSupervised` is the rule, and `roster enroll` is excluded by name). Those spawns get a stdin pipe whose only write end the daemon holds. `mp`'s `__main__` consumes the variable (pops it, so no descendant inherits it), starts a daemon thread that reads fd 0 to EOF, and then SIGTERMs its own main thread into PIPE22's unwind. The kernel closes the write end however the daemon ends, so this covers a crash, a SIGKILL and the termination ceiling's `exit`; an orderly Quit also SIGTERMs them first, from `Coordinator.shutdown` through `PipelineLauncher.terminateSupervised()`, which returns at once and sends no SIGKILL. The daemon writes nothing on the pipe. Stdin rather than the parent pid because the dev tier runs `mp` under `uv run`, so Python's parent is `uv` (`uv` 0.11 forwards both SIGTERM and the EOF). Backup, restore, digest, actions and roster spawns carry neither and finish on their own. No variable means no watch: a manual `mp` run is unaffected. A watch that cannot read its stdin fails open.
 
+`scripts/valid1_check.py --coldstart` is the second supervisor (HYG23): `_run_timed` spawns its `mp summarize` with a stdin pipe and `MP_SUPERVISED=1`, so a Ctrl-C, crash or kill of the script still unwinds `mp` and the model server it started.
+
 ---
 
 ## Model prefetch progress stream (`mp prefetch-model` stdout)

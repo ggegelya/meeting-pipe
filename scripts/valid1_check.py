@@ -57,6 +57,16 @@ DEFAULT_ENDPOINT = "http://127.0.0.1:8765"
 # close to swapping rather than being allowed to wedge it.
 MIN_FREE_MEMORY_PCT = 10.0
 COLDSTART_TIMEOUT_SEC = 900.0
+# HYG23. How long a stopped run gets to unwind after SIGTERM before SIGKILL: above
+# `local_server.terminate_server`'s ~10 s ladder, so `mp`'s own teardown of its
+# model server gets to finish first.
+STOP_GRACE_SEC = 20.0
+# HYG23. Where `local_server.write_marker` records the model server a run spawned
+# (`pid`, `spawned_at` from time.time(), ...). Re-implemented here rather than
+# imported: this script is stdlib-only and CI loads it by path on Linux.
+SERVER_MARKER = DEFAULT_DIR / "mlx-server.json"
+# `local_server._SERVER_COMMAND_MARKS`: the SEC27 shim, and a pre-SEC27 server.
+SERVER_COMMAND_MARKS = ("mp.local_model_server", "mlx_lm.server")
 
 
 def _parse_ts(raw: object) -> datetime | None:
@@ -907,20 +917,145 @@ def endpoint_is_warm(endpoint: str, timeout: float = 2.0) -> bool:
         return False
 
 
+def _pid_command(pid: int) -> str | None:
+    """`ps -o command=` for `pid`, or None when it is gone or unreadable."""
+    try:
+        out = subprocess.run(["/bin/ps", "-o", "command=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None
+
+
+def _group_alive(pgid: int, killpg) -> bool:
+    try:
+        killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # it exists; it is just not ours to signal
+    except OSError:
+        return False
+    return True
+
+
+def _terminate_group(pgid: int, *, killpg, sleep, clock, grace: float, tick=None) -> None:
+    """SIGTERM the group, wait up to `grace` for it to empty, then SIGKILL what is
+    left. Polls the group rather than one process: caffeinate exits on SIGTERM
+    before `mp` has finished unwinding. `tick` reaps an exited child each round so
+    an unreaped zombie does not keep the group looking alive."""
+    try:
+        killpg(pgid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        return
+    deadline = clock() + grace
+    while clock() < deadline:
+        if tick is not None:
+            tick()
+        if not _group_alive(pgid, killpg):
+            return
+        sleep(0.25)
+    try:
+        killpg(pgid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        pass
+
+
+def _read_marker(path: Path) -> tuple[int, float, int | None] | None:
+    """`(pid, spawned_at, owner_pid)` from `mlx-server.json`, or None."""
+    try:
+        marker = json.loads(path.read_text(encoding="utf-8"))
+        owner = marker.get("owner_pid")
+        return (int(marker["pid"]), float(marker["spawned_at"]),
+                int(owner) if owner is not None else None)
+    except (OSError, ValueError, KeyError, TypeError, OverflowError, AttributeError):
+        return None
+
+
+def _stop_run(pgid: int, started_wall: float, *, close_stdin=None, tick=None,
+              killpg=os.killpg, pid_command=_pid_command, marker_path: Path | None = None,
+              getpgid=os.getpgid, sleep=time.sleep, clock=time.monotonic,
+              grace: float = STOP_GRACE_SEC) -> None:
+    """Stop a coldstart run and the model server it started (HYG23).
+
+    Closing the stdin pipe is what PIPE37's supervision contract keys on, so `mp`
+    unwinds every `finally`, server teardown included; the SIGTERM covers the same
+    path for a run that ignores stdin. The server is setsid'd into its own session,
+    so no signal to the run's group reaches it: if `mp` could not tear it down, it
+    is found through `mlx-server.json` and stopped too, but only when the marker
+    was written after this run started (a server from before is someone else's),
+    its owner was in this run's group when the stop began (another `mp` that
+    spawned a server meanwhile is not ours; an owner already gone cannot be
+    checked, and then the time window decides), and its pid still runs a model
+    server (a recycled pid is never signalled).
+
+    A second Ctrl-C during the grace aborts this, leaving no SIGKILL and no reap;
+    the stdin EOF has already told `mp` to unwind, which is what normally stops
+    the server anyway.
+    """
+    path = marker_path if marker_path is not None else SERVER_MARKER
+    before = _read_marker(path)
+    owner_in_group: bool | None = None  # None: the owner was already gone
+    if before is not None and before[2] is not None:
+        try:
+            owner_in_group = getpgid(before[2]) == pgid
+        except (OSError, ProcessLookupError):
+            owner_in_group = None
+    if close_stdin is not None:
+        try:
+            close_stdin()
+        except OSError:
+            pass
+    _terminate_group(pgid, killpg=killpg, sleep=sleep, clock=clock, grace=grace, tick=tick)
+    marker = _read_marker(path)
+    if marker is None:
+        return
+    pid, spawned_at, _owner = marker
+    if spawned_at < started_wall:
+        return
+    if before is not None and before[0] == pid and owner_in_group is False:
+        return
+    command = pid_command(pid)
+    if not command or not any(mark in command for mark in SERVER_COMMAND_MARKS):
+        return
+    print(f"  stopping the model server this run left (pid {pid})")
+    _terminate_group(pid, killpg=killpg, sleep=sleep, clock=clock, grace=grace)
+
+
 def _run_timed(argv: list[str], label: str) -> tuple[float, int]:
     """Run `argv` under caffeinate, wall-clocked, with a low-memory abort.
 
     The watchdog exists because the 14B has OOM-hung this Mac. It samples free
-    memory and kills the whole process group rather than letting the machine
-    swap itself to death.
+    memory and stops the run rather than letting the machine swap itself to death.
+
+    HYG23: the child is supervised (PIPE37: a stdin pipe plus `MP_SUPERVISED=1`), so
+    however this script ends, `mp` sees EOF and unwinds. The low-memory abort, the
+    timeout and Ctrl-C all go through `_stop_run`, SIGTERM first, which also stops
+    the model server `mp summarize` setsid'd out of this group. A SIGKILL of the
+    group used to leave that server resident, the opposite of what the abort is for.
     """
     print(f"  [{label}] $ {' '.join(argv)}")
     started = time.monotonic()
+    started_wall = time.time()  # the marker's `spawned_at` clock, not `started`'s
     proc = subprocess.Popen(
         ["caffeinate", "-i", *argv],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True, env={**os.environ, "MP_SUPERVISED": "1"},
     )
     aborted = threading.Event()
+    stopping = threading.Lock()
+    stopped = threading.Event()
+
+    def stop() -> None:
+        # The watchdog and the main thread can both get here; the second waits for
+        # the first to finish rather than returning while the run is still alive.
+        with stopping:
+            if stopped.is_set():
+                return
+            _stop_run(proc.pid, started_wall,
+                      close_stdin=proc.stdin.close if proc.stdin is not None else None,
+                      tick=proc.poll)
+            stopped.set()
 
     def watchdog() -> None:
         while proc.poll() is None:
@@ -928,11 +1063,8 @@ def _run_timed(argv: list[str], label: str) -> tuple[float, int]:
             if free is not None and free < MIN_FREE_MEMORY_PCT:
                 aborted.set()
                 print(f"  [{label}] ABORT: free memory {free}% below "
-                      f"{MIN_FREE_MEMORY_PCT}%, killing the run.")
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except (OSError, ProcessLookupError):
-                    pass
+                      f"{MIN_FREE_MEMORY_PCT}%, stopping the run.")
+                stop()
                 return
             time.sleep(2.0)
 
@@ -940,12 +1072,25 @@ def _run_timed(argv: list[str], label: str) -> tuple[float, int]:
     monitor.start()
     try:
         rc = proc.wait(timeout=COLDSTART_TIMEOUT_SEC)
+        if aborted.is_set():
+            # The watchdog's stop SIGTERMs the group, so caffeinate exits and the
+            # wait returns while that stop is still in its grace and has not yet
+            # reaped the server. Wait for it: the watchdog is a daemon thread and
+            # would die with the script.
+            stop()
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            pass
+        stop()
         rc = -1
+    except KeyboardInterrupt:
+        print(f"\n  [{label}] interrupted: stopping the run and its model server.")
+        stop()
+        raise
+    finally:
+        if proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
     elapsed = time.monotonic() - started
     if aborted.is_set():
         rc = -2
@@ -983,8 +1128,33 @@ def run_coldstart(mp_cmd: list[str], transcript: Path, endpoint: str,
     if free is not None and free < MIN_FREE_MEMORY_PCT:
         print(f"  ERROR  only {free}% memory free; refusing to start a model run.")
         return False
+    # The names `mp summarize --candidate` writes: `transcript_md.stem` of the
+    # resolved path, so `a.b.md` gives `a.b.summary.candidate.*`.
+    resolved = transcript.resolve()
+    candidates = [resolved.with_name(f"{resolved.stem}.summary.candidate.{ext}")
+                  for ext in ("json", "md")]
+    pending = [p for p in candidates if p.exists()]
+    if pending:
+        # HYG23: an in-app "Re-run locally (preview)" is waiting on this file, and
+        # the measurement would overwrite it.
+        print(f"  ERROR  {pending[0].name} already exists: an in-app preview is pending for")
+        print("         this meeting. Keep or discard it in the app first, then re-run.")
+        return False
     print(f"  transcript: {transcript.name}  (free memory {free}%)")
+    try:
+        return _timed_cold_and_warm(mp_cmd, transcript, endpoint, out)
+    finally:
+        # The two runs' `--candidate` copies of meeting content, beside the live
+        # files: nothing else ever removes them (HYG23).
+        for path in candidates:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
 
+
+def _timed_cold_and_warm(mp_cmd: list[str], transcript: Path, endpoint: str,
+                         out: Path | None) -> bool:
     result: dict = {"transcript": transcript.name, "endpoint": endpoint}
     summarize = [*mp_cmd, "summarize", str(transcript), "--backend", "local", "--candidate"]
 

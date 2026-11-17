@@ -9,7 +9,12 @@ import in the script breaks this file immediately.
 from __future__ import annotations
 
 import importlib.util
+import json as _json
+import signal as _signal
+import subprocess as _subprocess
 from pathlib import Path
+
+import pytest
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "valid1_check.py"
 _spec = importlib.util.spec_from_file_location("valid1_check", _SCRIPT)
@@ -333,3 +338,289 @@ def test_owner_cluster_reselect_never_moves_the_name_onto_a_roster_named_cluster
                                                    {"Heorhii": 300.0, "Dana": 300.0}))
     picked = valid1_check.reselect_placement(inputs[0], "Heorhii", None)
     assert picked is not None and picked["moved_onto_roster_named"] is True
+
+
+# ----- HYG23: the coldstart run is supervised, stopped SIGTERM-first, and its
+# model server and candidate summaries are cleaned up -----
+
+
+class _Group:
+    """A fake process group: alive until `dies_after` signal-0 probes past the
+    SIGTERM, or never when that is None. Records every signal."""
+
+    def __init__(self, dies_after: int | None) -> None:
+        self.signals: list[tuple[int, int]] = []
+        self.dies_after = dies_after
+        self.terminated = False
+        self.probes_since_term = 0
+        self.dead = False
+
+    def killpg(self, pgid: int, sig: int) -> None:
+        if self.dead:
+            raise ProcessLookupError
+        if sig == 0:
+            if self.terminated:
+                self.probes_since_term += 1
+                if self.dies_after is not None and self.probes_since_term > self.dies_after:
+                    self.dead = True
+                    raise ProcessLookupError
+            return
+        self.signals.append((pgid, sig))
+        if sig == _signal.SIGTERM:
+            self.terminated = True
+        if sig == _signal.SIGKILL:
+            self.dead = True
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+    def sleep(self, dt: float) -> None:
+        self.t += dt
+
+
+def _stop(group: _Group, tmp_path, *, marker: dict | None = None, command: str | None = None,
+          started_wall: float = 1000.0) -> None:
+    marker_path = tmp_path / "mlx-server.json"
+    if marker is not None:
+        marker_path.write_text(_json.dumps(marker), encoding="utf-8")
+    clock = _Clock()
+    valid1_check._stop_run(
+        4242, started_wall,
+        killpg=group.killpg, pid_command=lambda pid: command,
+        marker_path=marker_path, getpgid=lambda pid: 4242,
+        sleep=clock.sleep, clock=clock,
+    )
+
+
+def test_a_group_that_exits_within_the_grace_gets_no_sigkill(tmp_path):
+    group = _Group(dies_after=3)
+    _stop(group, tmp_path)
+    assert group.signals == [(4242, _signal.SIGTERM)]
+
+
+def test_a_group_that_outlives_the_grace_gets_sigkill(tmp_path):
+    group = _Group(dies_after=None)
+    _stop(group, tmp_path)
+    assert group.signals == [(4242, _signal.SIGTERM), (4242, _signal.SIGKILL)]
+    assert valid1_check.STOP_GRACE_SEC >= 15  # above terminate_server's ~10 s ladder
+
+
+class _TwoGroups:
+    """The run's group (4242) dies on SIGTERM; the server's group is `server`."""
+
+    def __init__(self, server: _Group) -> None:
+        self.run = _Group(dies_after=0)
+        self.server = server
+
+    def killpg(self, pgid: int, sig: int) -> None:
+        (self.run if pgid == 4242 else self.server).killpg(pgid, sig)
+
+
+def _stop_two(groups: _TwoGroups, tmp_path, marker: dict, command: str | None,
+              owner_group=lambda pid: 4242) -> None:
+    marker_path = tmp_path / "mlx-server.json"
+    marker_path.write_text(_json.dumps(marker), encoding="utf-8")
+    clock = _Clock()
+    valid1_check._stop_run(
+        4242, 1000.0,
+        killpg=groups.killpg, pid_command=lambda pid: command,
+        marker_path=marker_path, getpgid=owner_group,
+        sleep=clock.sleep, clock=clock,
+    )
+
+
+@pytest.mark.parametrize("command", [
+    "/venv/bin/python -m mp.local_model_server --model /snap --port 8765",
+    "/venv/bin/python -m mlx_lm.server --model x --port 8765",
+])
+def test_this_runs_model_server_is_reaped_from_the_marker(tmp_path, command):
+    groups = _TwoGroups(_Group(dies_after=2))
+    _stop_two(groups, tmp_path, {"pid": 777, "owner_pid": 4243, "spawned_at": 1005.0}, command)
+    assert groups.server.signals == [(777, _signal.SIGTERM)]
+
+
+def test_a_server_from_before_the_run_is_left_alone(tmp_path):
+    groups = _TwoGroups(_Group(dies_after=2))
+    _stop_two(groups, tmp_path, {"pid": 777, "spawned_at": 999.0},
+              "/venv/bin/python -m mp.local_model_server")
+    assert groups.server.signals == []
+
+
+def test_a_server_another_mp_started_meanwhile_is_left_alone(tmp_path):
+    """Spawned after this run started, but its owner is in another group."""
+    groups = _TwoGroups(_Group(dies_after=2))
+    _stop_two(groups, tmp_path, {"pid": 777, "owner_pid": 9999, "spawned_at": 1005.0},
+              "/venv/bin/python -m mp.local_model_server", owner_group=lambda pid: 31337)
+    assert groups.server.signals == []
+
+
+def test_an_owner_already_gone_falls_back_to_the_time_window(tmp_path):
+    def gone(pid):
+        raise ProcessLookupError
+
+    groups = _TwoGroups(_Group(dies_after=2))
+    _stop_two(groups, tmp_path, {"pid": 777, "owner_pid": 4243, "spawned_at": 1005.0},
+              "/venv/bin/python -m mp.local_model_server", owner_group=gone)
+    assert groups.server.signals == [(777, _signal.SIGTERM)]
+
+
+def test_a_malformed_marker_is_ignored(tmp_path):
+    groups = _TwoGroups(_Group(dies_after=2))
+    _stop_two(groups, tmp_path, {"pid": 1e999, "spawned_at": 1005.0},
+              "/venv/bin/python -m mp.local_model_server")
+    assert groups.server.signals == []
+
+
+def test_a_recycled_pid_is_never_signalled(tmp_path):
+    groups = _TwoGroups(_Group(dies_after=2))
+    _stop_two(groups, tmp_path, {"pid": 777, "spawned_at": 1005.0}, "/usr/bin/vim notes.txt")
+    assert groups.server.signals == []
+
+
+class _FakeProc:
+    def __init__(self, *args, **kwargs) -> None:
+        self.args, self.kwargs = args, kwargs
+        self.pid = 5151
+        self.stdin = None
+        self.returncode = None
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.returncode = 0
+        raise KeyboardInterrupt
+
+
+def test_run_timed_supervises_the_child_and_stops_it_on_ctrl_c(monkeypatch):
+    made: list[_FakeProc] = []
+
+    def popen(*a, **k):
+        made.append(_FakeProc(*a, **k))
+        return made[-1]
+
+    stopped: list[tuple[int, dict]] = []
+    monkeypatch.setattr(valid1_check.subprocess, "Popen", popen)
+    monkeypatch.setattr(valid1_check, "free_memory_pct", lambda: 100.0)
+    monkeypatch.setattr(valid1_check, "_stop_run",
+                        lambda pgid, started, **k: stopped.append((pgid, k)))
+    with pytest.raises(KeyboardInterrupt):
+        valid1_check._run_timed(["mp", "summarize", "x.md"], "cold")
+    kwargs = made[0].kwargs
+    assert kwargs["stdin"] == _subprocess.PIPE
+    assert kwargs["env"]["MP_SUPERVISED"] == "1"
+    assert kwargs["start_new_session"] is True
+    assert [pgid for pgid, _ in stopped] == [5151]
+    # The stop closes the supervision pipe and reaps an exited caffeinate.
+    assert stopped[0][1]["tick"] == made[0].poll
+
+
+class _ClosableStdin:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_a_timeout_stops_the_run_instead_of_sigkilling_it(monkeypatch):
+    class _Slow(_FakeProc):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.stdin = _ClosableStdin()
+
+        def wait(self, timeout=None):
+            raise _subprocess.TimeoutExpired("caffeinate", timeout)
+
+    made: list[_Slow] = []
+    monkeypatch.setattr(valid1_check.subprocess, "Popen",
+                        lambda *a, **k: made.append(_Slow(*a, **k)) or made[-1])
+    monkeypatch.setattr(valid1_check, "free_memory_pct", lambda: 100.0)
+    monkeypatch.setattr(valid1_check.os, "killpg",
+                        lambda *a: pytest.fail("the timeout used to SIGKILL the group"))
+    stopped: list[dict] = []
+    monkeypatch.setattr(valid1_check, "_stop_run", lambda pgid, started, **k: stopped.append(k))
+    _elapsed, rc = valid1_check._run_timed(["mp"], "cold")
+    assert rc == -1
+    assert len(stopped) == 1
+    stopped[0]["close_stdin"]()
+    assert made[0].stdin.closed
+
+
+def test_the_low_memory_abort_waits_for_its_stop_to_finish(monkeypatch):
+    """The abort is the case HYG23 exists for: its SIGTERM makes caffeinate exit
+    and the wait return while the stop is still in its grace. Returning then lets
+    the script exit and kill the (daemon) watchdog before the reap."""
+    import threading as _threading
+    import time as _time
+
+    term, done = _threading.Event(), _threading.Event()
+
+    class _Proc(_FakeProc):
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            term.wait(5)  # caffeinate exits as soon as the group is SIGTERMed
+            return 0
+
+    def slow_stop(pgid, started, **k):
+        term.set()
+        _time.sleep(0.3)  # the grace, the SIGKILL, the reap
+        done.set()
+
+    monkeypatch.setattr(valid1_check.subprocess, "Popen", lambda *a, **k: _Proc(*a, **k))
+    monkeypatch.setattr(valid1_check, "free_memory_pct", lambda: 1.0)
+    monkeypatch.setattr(valid1_check, "_stop_run", slow_stop)
+    _elapsed, rc = valid1_check._run_timed(["mp"], "cold")
+    assert rc == -2
+    assert done.is_set(), "_run_timed returned while the stop was still running"
+
+
+def _coldstart_fixture(tmp_path, monkeypatch, *, cold_rc: int):
+    transcript = tmp_path / "20260101-100000.md"
+    transcript.write_text("[00:00] A: hi\n", encoding="utf-8")
+    cand_json = tmp_path / "20260101-100000.summary.candidate.json"
+    cand_md = tmp_path / "20260101-100000.summary.candidate.md"
+    warm = iter([False, True, True])
+    monkeypatch.setattr(valid1_check, "endpoint_is_warm", lambda endpoint: next(warm, True))
+    monkeypatch.setattr(valid1_check, "free_memory_pct", lambda: 100.0)
+
+    def run_timed(argv, label):
+        cand_json.write_text("{}", encoding="utf-8")
+        cand_md.write_text("# x", encoding="utf-8")
+        return 1.0, cold_rc if label == "cold" else 0
+
+    class _Server:
+        pid = 6161
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(valid1_check, "_run_timed", run_timed)
+    monkeypatch.setattr(valid1_check.subprocess, "Popen", lambda *a, **k: _Server())
+    monkeypatch.setattr(valid1_check.os, "killpg", lambda pgid, sig: None)
+    return transcript, cand_json, cand_md
+
+
+def test_coldstart_refuses_while_an_in_app_preview_is_pending(tmp_path, monkeypatch):
+    transcript, cand_json, _ = _coldstart_fixture(tmp_path, monkeypatch, cold_rc=0)
+    cand_json.write_text('{"pending": true}', encoding="utf-8")
+    ran: list[str] = []
+    monkeypatch.setattr(valid1_check, "_run_timed", lambda argv, label: ran.append(label))
+    assert valid1_check.run_coldstart(["mp"], transcript, "http://127.0.0.1:8765", None) is False
+    assert ran == []
+    assert cand_json.read_text(encoding="utf-8") == '{"pending": true}'
+
+
+@pytest.mark.parametrize("cold_rc", [0, 1])
+def test_coldstart_removes_the_candidates_it_wrote(tmp_path, monkeypatch, cold_rc):
+    transcript, cand_json, cand_md = _coldstart_fixture(tmp_path, monkeypatch, cold_rc=cold_rc)
+    valid1_check.run_coldstart(["mp"], transcript, "http://127.0.0.1:8765", None)
+    assert not cand_json.exists()
+    assert not cand_md.exists()
