@@ -95,6 +95,17 @@ BACKUP_HEADROOM_BYTES = 256 * 1024 * 1024
 #: stereo final the stop-time merge writes beside them (64,000 B/s), about 4.6 GB.
 RECORDING_RESERVE_BYTES = 2 * 3600 * (384_000 + 192_000 + 64_000)
 
+#: STOR13: retention is skipped when the library holds fewer than this fraction
+#: of the files the previous backup archived (same `audio_included`). Half is
+#: far past anything the owner's own deletions do between two nightly runs, and
+#: well short of the collapse an unplugged drive or a re-pointed recordings
+#: folder causes, which is the case that would otherwise let a week of small
+#: archives prune every archive that still held the recordings.
+PRUNE_SHRINK_RATIO = 0.5
+
+#: How many unreadable folders a refusal names before it only counts the rest.
+UNREADABLE_NAMED = 5
+
 
 class BackupError(Exception):
     """A refusal the caller can print, not a traceback."""
@@ -155,10 +166,34 @@ def _should_include(path: Path, *, holds_audio: bool, include_audio: bool) -> bo
 
 def _root_files(root: Root, *, include_audio: bool) -> Iterator[Path]:
     """Every file `_add_root` archives for `root`, in archive order. The free-space
-    estimate walks the same iterator, so the two cannot disagree on what goes in."""
+    estimate walks the same iterator, so the two cannot disagree on what goes in.
+
+    STOR13: `rglob` skipped a folder it could not list without a word, so a locked
+    library subfolder simply fell out of the archive. `os.walk` reports it instead,
+    and an unlistable folder under the library is a `BackupError` naming it. The
+    other roots keep the old skip: nothing there has ever been unreadable, and a
+    refusal over a cache-like folder would cost the library its backup."""
     if not root.source.is_dir():
         return
-    for path in sorted(root.source.rglob("*")):
+    unreadable: list[str] = []
+
+    def note(error: OSError) -> None:
+        unreadable.append(str(error.filename or error))
+
+    found: list[Path] = []
+    # followlinks=False: a symlinked folder is listed but never entered, as rglob did.
+    for folder, _dirs, names in os.walk(root.source, onerror=note):
+        found.extend(Path(folder) / name for name in names)
+    if unreadable and root.holds_audio:
+        named = ", ".join(unreadable[:UNREADABLE_NAMED])
+        more = len(unreadable) - UNREADABLE_NAMED
+        raise BackupError(
+            f"could not read {len(unreadable)} folder(s) in your recordings folder ({named}"
+            f"{f', and {more} more' if more > 0 else ''}), so their meetings would be missing "
+            "from the backup. Fix their permissions in Finder (Get Info ▸ Sharing & Permissions) "
+            "and back up again."
+        )
+    for path in sorted(found):
         if path.is_symlink() or not path.is_file():
             continue
         if not _should_include(path, holds_audio=root.holds_audio, include_audio=include_audio):
@@ -207,6 +242,45 @@ def build_manifest(
         },
         "excluded": EXCLUSIONS,
     }
+
+
+def check_library(cfg: Config) -> None:
+    """Refuse a library root that is not a folder (STOR13).
+
+    A missing root contributes zero files on purpose (`_add_root`), which is right
+    for `digests` and wrong for the library: an unplugged drive or a re-pointed
+    recordings folder archived as an empty library, stamped the marker, and let
+    retention prune the archives that held the recordings.
+    """
+    library = Path(cfg.recording.output_dir).expanduser()
+    if library.is_dir():
+        return
+    raise BackupError(
+        f"your recordings folder {library} is not there, so this backup would hold no "
+        "meetings. If it lives on an external drive, plug the drive in; if the recordings "
+        "folder was changed in Preferences, point it back at your library."
+    )
+
+
+def _previous_backup(home: Path | None) -> dict[str, Any]:
+    """The last run's marker, or `{}` when there is none or it does not parse.
+    Only its `library_files` and `audio_included` are compared (STOR13)."""
+    try:
+        data = json.loads(storage.backup_marker(home).read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _previous_library_files(previous: dict[str, Any], *, include_audio: bool) -> int | None:
+    """The previous run's library count when it is comparable with this run's:
+    an int (a pre-STOR13 marker has none) taken with the same `audio_included`."""
+    count = previous.get("library_files")
+    if isinstance(count, bool) or not isinstance(count, int):
+        return None
+    if previous.get("audio_included") is not include_audio:
+        return None
+    return count
 
 
 def check_destination(destination: Path, *, volumes_root: Path | None = None) -> None:
@@ -439,6 +513,12 @@ class BackupResult:
     #: STOR8: the mode of a destination folder that already existed and is readable
     #: by other accounts (left alone, but named in the summary); None otherwise.
     destination_open_mode: int | None = None
+    #: STOR13: the library root's archived file count, recorded in the marker.
+    library_files: int = 0
+    #: STOR13: the previous marker's count when comparable, else None.
+    previous_library_files: int | None = None
+    #: STOR13: retention did not run because the library shrank past the ratio.
+    prune_skipped: bool = False
 
 
 DISKUTIL = "/usr/sbin/diskutil"
@@ -514,6 +594,8 @@ def run_backup(
     """Write a dated archive into `destination`, stamp the marker, apply retention."""
     now = now or datetime.now(timezone.utc)
     destination = destination.expanduser()
+    check_library(cfg)
+    previous = _previous_library_files(_previous_backup(home), include_audio=include_audio)
     check_destination(destination)
     check_synced_destination(cfg, destination)
     check_free_space(
@@ -549,9 +631,22 @@ def run_backup(
             # compresslevel=1: see the module docstring. `name` is the final one,
             # so the gzip header never records `.partial`.
             with tarfile.open(name=str(archive), mode="w:gz", fileobj=raw, compresslevel=1) as tar:
+                library_files = 0
                 for root in backup_roots(cfg, home):
-                    entries.append(_add_root(tar, root, include_audio=include_audio))
+                    root_entry = _add_root(tar, root, include_audio=include_audio)
+                    entries.append(root_entry)
+                    if root.holds_audio and isinstance(root_entry["files"], int):
+                        library_files = root_entry["files"]
 
+                if library_files == 0 and previous is not None and previous > 0:
+                    # STOR13: before the rename, so the marker and every archive
+                    # already in the destination stay exactly as they were.
+                    raise BackupError(
+                        f"your recordings folder {cfg.recording.output_dir} has 0 files, and the "
+                        f"last backup had {previous}. Refusing to record an empty library as a "
+                        "backup. If you really did delete every meeting, delete "
+                        f"{storage.backup_marker(home)} and back up again."
+                    )
                 manifest = build_manifest(
                     entries, include_audio=include_audio, created_at=now.isoformat()
                 )
@@ -577,16 +672,26 @@ def run_backup(
             "bytes": archive.stat().st_size,
             "audio_included": include_audio,
             "destination_encrypted": encrypted,
+            "library_files": library_files,
         }, indent=2),
     )
 
-    try:
-        pruned, pruned_bytes = prune_old_backups(destination, written=archive, now=now)
-    except OSError:  # the backup itself is done; retention retries next run
-        pruned, pruned_bytes = 0, 0
-    if pruned:
-        events.emit("pipeline", "backup_pruned", count=pruned, bytes=pruned_bytes)
-    return BackupResult(archive, manifest, pruned, pruned_bytes, encrypted, open_mode)
+    # STOR13: a true copy of what exists, so it is written and stamped, but a sharp
+    # shrink keeps every older archive: those may be the only copies left.
+    prune_skipped = previous is not None and library_files < previous * PRUNE_SHRINK_RATIO
+    pruned, pruned_bytes = 0, 0
+    if prune_skipped:
+        events.emit("pipeline", "backup_prune_skipped",
+                    library_files=library_files, previous_library_files=previous)
+    else:
+        try:
+            pruned, pruned_bytes = prune_old_backups(destination, written=archive, now=now)
+        except OSError:  # the backup itself is done; retention retries next run
+            pass
+        if pruned:
+            events.emit("pipeline", "backup_pruned", count=pruned, bytes=pruned_bytes)
+    return BackupResult(archive, manifest, pruned, pruned_bytes, encrypted, open_mode,
+                        library_files, previous, prune_skipped)
 
 
 def create_backup(
@@ -648,7 +753,11 @@ def main(argv: list[str]) -> int:
         print(f"  {root['name']:12} {root['files']:>6} files  {storage.human_bytes(root['bytes'])}")
     if not include_audio:
         print("  recordings were skipped (--no-audio)")
-    print(f"  pruned {result.pruned} older backups ({storage.human_bytes(result.pruned_bytes)})")
+    if result.prune_skipped:
+        print(f"  retention skipped: library has {result.library_files} files, "
+              f"last backup had {result.previous_library_files}")
+    else:
+        print(f"  pruned {result.pruned} older backups ({storage.human_bytes(result.pruned_bytes)})")
     print()
     print("Keychain items are named in the manifest but never exported. Re-create them by hand:")
     keychain = manifest["keychain"]

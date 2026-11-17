@@ -1154,3 +1154,176 @@ def test_a_real_restore_of_an_archive_with_no_manifest_says_why_on_stderr(
     assert rc == 1
     assert "[FAIL]" in captured.err
     assert "[FAIL]" not in captured.out
+
+
+# ---------- a missing, unreadable or collapsed library (STOR13) --------------
+
+
+def _fifteen_nights(out: Path) -> set[str]:
+    """A destination holding 15 dated archives, the set STOR12's retention would
+    thin to 8; returns their names."""
+    out.mkdir(parents=True, exist_ok=True)
+    for days in range(1, 16):
+        (out / _archive_name(_NOW - timedelta(days=days))).write_bytes(b"x" * 100)
+    return {p.name for p in out.iterdir()}
+
+
+def _previous_marker(home: Path, library_files: int, *, audio_included: bool = True) -> str:
+    marker = storage.backup_marker(home)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps({
+        "at": (_NOW - timedelta(days=1)).isoformat(),
+        "archive": "/elsewhere/meeting-pipe-backup-20261111-030000.tar.gz",
+        "bytes": 1234,
+        "audio_included": audio_included,
+        "destination_encrypted": True,
+        "library_files": library_files,
+    })
+    marker.write_text(text)
+    return text
+
+
+def _library_with(home: Path, count: int) -> Path:
+    library = home / "Meetings" / "raw"
+    library.mkdir(parents=True, exist_ok=True)
+    for i in range(count):
+        (library / f"2026010{i // 10}-1200{i % 10:02d}.summary.json").write_text("{}")
+    return library
+
+
+def test_a_missing_library_is_refused_and_touches_nothing(tmp_path: Path) -> None:
+    """F092: an unplugged library drive was archived as zero files, stamped the
+    marker, and let retention prune the archives that held recordings."""
+    home = _make_home(tmp_path)  # no Meetings/raw at all
+    out = tmp_path / "out"
+    names = _fifteen_nights(out)
+    marker_before = _previous_marker(home, 40)
+
+    with pytest.raises(BackupError, match="recordings folder") as raised:
+        backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW)
+
+    assert str(home / "Meetings" / "raw") in str(raised.value)
+    assert {p.name for p in out.iterdir()} == names
+    assert storage.backup_marker(home).read_text() == marker_before
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 directory anyway")
+def test_an_unreadable_library_folder_is_refused_by_name(tmp_path: Path) -> None:
+    home = _make_home(tmp_path)
+    library = _library_with(home, 2)
+    locked = library / "locked"
+    locked.mkdir()
+    (locked / "b.wav").write_bytes(b"RIFF")
+    out = tmp_path / "out"
+    names = _fifteen_nights(out)
+    locked.chmod(0)
+    try:
+        with pytest.raises(BackupError, match="1 folder") as raised:
+            backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW)
+    finally:
+        locked.chmod(0o700)
+
+    assert str(locked) in str(raised.value)
+    assert {p.name for p in out.iterdir()} == names
+    assert not storage.backup_marker(home).exists()
+
+
+def test_a_library_collapsed_to_zero_files_is_refused_with_both_counts(tmp_path: Path) -> None:
+    home = _make_home(tmp_path)
+    _library_with(home, 0)
+    out = tmp_path / "out"
+    names = _fifteen_nights(out)
+    marker_before = _previous_marker(home, 40)
+
+    with pytest.raises(BackupError, match="40") as raised:
+        backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW)
+
+    assert "0 files" in str(raised.value)
+    assert {p.name for p in out.iterdir()} == names  # no archive, no .partial
+    assert storage.backup_marker(home).read_text() == marker_before
+
+
+def test_an_empty_library_is_not_refused_when_audio_inclusion_differs(tmp_path: Path) -> None:
+    """A `--no-audio` run counts a library of recordings as zero; comparing it to
+    a with-audio run's count would be comparing two different things."""
+    home = _make_home(tmp_path)
+    library = _library_with(home, 0)
+    (library / "20260101-120000.wav").write_bytes(b"RIFF")
+    _previous_marker(home, 40, audio_included=True)
+
+    result = backup_mod.run_backup(_cfg(home), tmp_path / "out", home=home, now=_NOW,
+                                   include_audio=False)
+
+    assert result.library_files == 0
+    assert json.loads(storage.backup_marker(home).read_text())["library_files"] == 0
+
+
+def test_a_sharply_shrunk_library_is_backed_up_but_retention_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _make_home(tmp_path)
+    _library_with(home, 10)
+    out = tmp_path / "out"
+    names = _fifteen_nights(out)
+    _previous_marker(home, 40)
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(backup_mod.events, "emit", lambda c, a, **kw: emitted.append((c, a, kw)))
+
+    result = backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW)
+
+    assert {p.name for p in out.iterdir()} == names | {result.archive.name}
+    marker = json.loads(storage.backup_marker(home).read_text())
+    assert marker["archive"] == str(result.archive)
+    assert marker["library_files"] == 10
+    assert result.pruned == 0
+    assert result.previous_library_files == 40
+    assert result.prune_skipped
+    assert emitted == [
+        ("pipeline", "backup_prune_skipped", {"library_files": 10, "previous_library_files": 40})
+    ]
+
+
+def test_the_summary_says_retention_was_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = _make_home(tmp_path)
+    _library_with(home, 10)
+    out = tmp_path / "out"
+    _fifteen_nights(out)
+    _previous_marker(home, 40)
+
+    assert _backup_main([str(out)], home, monkeypatch) == 0
+    stdout = capsys.readouterr().out
+    assert "retention skipped: library has 10 files, last backup had 40" in stdout
+    assert "pruned " not in stdout
+
+
+def test_a_steady_library_prunes_as_before_and_the_marker_counts_it(tmp_path: Path) -> None:
+    home = _make_home(tmp_path)
+    _library_with(home, 40)
+    out = tmp_path / "out"
+    _fifteen_nights(out)
+    _previous_marker(home, 40)
+
+    result = backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW)
+
+    assert result.pruned == 8  # STOR12's policy over the same 15 nights
+    assert not result.prune_skipped
+    assert json.loads(storage.backup_marker(home).read_text())["library_files"] == 40
+
+
+def test_a_marker_without_a_count_compares_nothing(tmp_path: Path) -> None:
+    """A marker written before STOR13 carries no `library_files`; the first run
+    after the upgrade prunes as before and starts the count."""
+    home = _make_home(tmp_path)
+    _library_with(home, 3)
+    marker = storage.backup_marker(home)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"at": _NOW.isoformat(), "audio_included": True}))
+    out = tmp_path / "out"
+    _fifteen_nights(out)
+
+    result = backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW)
+
+    assert result.pruned == 8
+    assert json.loads(marker.read_text())["library_files"] == 3

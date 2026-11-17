@@ -2,9 +2,9 @@
 id: STOR13
 title: A backup of a missing or unreadable library succeeds, stamps the last-backup marker, and lets retention prune the archives that held recordings
 category: Storage
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). run_backup archives a missing library root as zero files and rglob silently skips unreadable directories (reproduced on the venv's Python 3.11.15), yet the run stamps .last-backup.json and STOR12's retention prunes, so a daily schedule with the library away removes every archive that held recordings in about five weeks (F092; latent, no backup agent or marker on 2026-11-14). Refuse a missing library root or an unreadable library directory, record the library file count in the marker and refuse a collapse to zero, skip pruning on a large shrink.
+comment: Shipped 2026-11-17 - the library root and every folder under it are checked before anything is written, the marker records library_files, a collapse to 0 is refused and a shrink below half skips retention (backup_prune_skipped). Owner still owes the close; nothing needs a live run, since the 9 new tests reproduce each loss against a temp home.
 ---
 
 # STOR13: A backup of a missing or unreadable library succeeds, stamps the last-backup marker, and lets retention prune the archives that held recordings
@@ -54,3 +54,5 @@ All in `pipeline/src/mp/backup.py`, `run_backup` and its helpers.
 - `pipeline` `backup_prune_skipped` and the marker's `library_files` key documented in `CONVENTIONS.md`'s "Backup and restore" section; `python3 scripts/truth_fences.py` green.
 - `docs/GUIDE.md`'s backing-up recipe and README's backup runbook say that a backup refuses a missing or unreadable library and keeps older archives when the library shrinks sharply, in the same commit.
 - `cd pipeline && uv run --extra dev ruff check src tests`, `uv run --extra dev --extra mcp pyright` and `uv run --extra dev pytest -q` green, with the number of new tests in the commit body; `bash scripts/ci-local.sh` green.
+
+**Progress (2026-11-17):** shipped in full against the scope above. `check_library` refuses a missing root; `_root_files` walks with `os.walk(onerror=...)` and refuses an unlistable library folder (other roots keep the silent skip, a deliberate narrowing to the spec's library); the marker gains `library_files`; a zero collapse is refused before the rename; `PRUNE_SHRINK_RATIO = 0.5` skips retention and emits `pipeline` / `backup_prune_skipped`. Both comparisons need an int `library_files` and an equal `audio_included`. Docs: CONVENTIONS backup section and marker shape, GUIDE backing-up recipe, README backup runbook.
