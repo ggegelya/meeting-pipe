@@ -45,6 +45,14 @@ public final class NativeMuteAdapter: MicGateAdapter {
         )
     }
 
+    /// Test seam (MIC20): an injected probe, so a test can drive the held flag through the adapter
+    /// and watch it land on the probe. Without it the protocol's no-op default could stand in for
+    /// `setEndHeld` below and every test would stay green.
+    init(config: NativeAppMuteConfig, probe: AXMuteButtonProbe) {
+        self.config = config
+        self.probe = probe
+    }
+
     public func start(
         context: MeetingLifecycleContext,
         handle: MicGateAdapterHandle,
@@ -64,5 +72,9 @@ public final class NativeMuteAdapter: MicGateAdapter {
 
     public func stop() {
         probe.stop()
+    }
+
+    public func setEndHeld(_ held: Bool) {
+        probe.setEndHeld(held)
     }
 }

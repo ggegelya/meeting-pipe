@@ -253,6 +253,46 @@ final class EngageOffMainTests: XCTestCase {
         await waitUntil({ host.stateMachine.current == .idle }, "the stop to finish")
     }
 
+    // MARK: - MIC20: a resumed recording gets a fresh probe
+
+    /// The resume branch starts a recording through `beginRecording` like any start, so MicGate
+    /// engages on handles a new build produced, never on the stopped recording's probe. Pinned so a
+    /// change to that branch cannot leave the previous recording's probe in place.
+    func test_aResumedRecording_engagesMicGateOnAFreshBuild() async {
+        let build = GatedBuild(gated: false)
+        let (controller, host, _) = makeController(build: build)
+        host.liveHonorAppMute = true
+        host.recorderSpy.lastSystemFires = 1
+        controller.recordStartBuildDeadlineSec = 30
+        var micGateStarts: [pid_t] = []
+        controller.engageSeams.startMicGate = { context, _ in micGateStarts.append(context.pid) }
+
+        let first = tempDir.appendingPathComponent("20261117-100000.wav")
+        host.recorderSpy.fileToReturn = first
+        controller.beginRecording(source: teams, summaryMode: .auto)
+        await waitUntil({ micGateStarts.count == 1 }, "the first recording's MicGate")
+        controller.handleMeetingEnded(
+            bundleID: teams.bundleID,
+            reason: EndingReason(leadingSignal: "ax_leave_button_destroyed", confirmedBy: ["lone_dwell"])
+        )
+        await waitUntil({ host.stateMachine.current == .idle }, "the first flush")
+        XCTAssertNotNil(controller.resumeCandidate, "the end left a way back")
+
+        let second = tempDir.appendingPathComponent("20261117-100130.wav")
+        host.recorderSpy.fileToReturn = second
+        controller.handleMeetingStarted(source: teams)
+        await waitUntil({ micGateStarts.count == 2 }, "the resumed recording's MicGate")
+
+        XCTAssertEqual(eventRows(action: "recording_resumed_after_end").count, 1, "this was the resume branch")
+        XCTAssertNotEqual(micGateStarts[1], micGateStarts[0], "the resume engaged on a new build's handles")
+        let attached = eventRows(action: "micgate_attached")
+        XCTAssertEqual(attached.count, 2)
+        XCTAssertEqual(attached.last?["via"] as? String, "build")
+
+        controller.stopRecording(file: second, source: teams, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current == .idle }, "the second flush")
+    }
+
     // MARK: - The late `.starting` an off-main engage produces
 
     /// An explicit start's engine reaches `.starting` after `beginRecording`'s `confirmRecording`

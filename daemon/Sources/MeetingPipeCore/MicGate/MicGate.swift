@@ -64,6 +64,10 @@ public final class MicGate {
     /// the log is "present". Read and written under `lock` with the state itself, so
     /// the gate and the write it guards cannot interleave.
     private var lastLogReadingAt: Date?
+    /// MIC20: a weak end is held (END17). Set and read on main, like `start`/`stop`, and forwarded to
+    /// every active adapter. `stop` clears it, and `start` begins with a `stop`, so a hold never
+    /// carries into the next recording's gate.
+    private var endHeld = false
 
     public init(
         catalogue: MuteLabels,
@@ -135,12 +139,24 @@ public final class MicGate {
         }
     }
 
+    /// MIC20: `MeetingSessionController` opened (true) or released (false) a teardown hold. The AX
+    /// mute probe then polls slowly and stops writing a row per unreadable read; a known reading
+    /// still flows, so a rescued call reads its mute without a re-engage. Main queue.
+    public func setEndHeld(_ held: Bool) {
+        endHeld = held
+        for adapter in activeAdapters { adapter.setEndHeld(held) }
+    }
+
+    /// MIC20: whether a held end is in force, for the session-spine tests.
+    public var isEndHeld: Bool { endHeld }
+
     public func stop() {
         halSystemMuteProbe.stop()
         halVadProbe.stop()
         rmsGate.reset()
         for adapter in activeAdapters { adapter.stop() }
         activeAdapters.removeAll()
+        endHeld = false
         lock.withLock {
             state = State()
             lastLogReadingAt = nil

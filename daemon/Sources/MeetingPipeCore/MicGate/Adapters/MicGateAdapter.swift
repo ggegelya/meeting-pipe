@@ -34,8 +34,13 @@ public protocol MicGateAdapter: AnyObject {
     ) throws
 
     func stop()
+
+    /// MIC20: a weak end is being held (END17) with the recorder still running, or no longer is.
+    /// An adapter that polls a call UI backs off while held; the rest ignore it.
+    func setEndHeld(_ held: Bool)
 }
 
 public extension MicGateAdapter {
     var source: MuteReadingSource { .ax }
+    func setEndHeld(_ held: Bool) {}
 }

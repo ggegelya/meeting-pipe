@@ -2264,6 +2264,9 @@ final class MeetingSessionController: @unchecked Sendable {
                 "error": error.localizedDescription,
             ])
         }
+        // MIC20: `MicGate.start` begins with a `stop`, which clears the held flag, so a gate that
+        // engages while a hold is already open (a build landing after a weak end) hears it again.
+        if holdPolicy.isOpen { coordinator.micGate.setEndHeld(true) }
 
         // Authoritative 1 Hz mute-state poll: re-resolves and reads the live
         // mute button(s) each tick (survives Teams 2 compact-view / backgrounded
@@ -2746,6 +2749,9 @@ final class MeetingSessionController: @unchecked Sendable {
             held.merge(teardownTailAttributes(snapshot, now: Date())) { _, new in new }
         }
         Log.event(category: "coordinator", action: "lifecycle_end_held", attributes: held)
+        // MIC20: the call UI is usually gone during a hold, so the AX mute probe backs off rather
+        // than log an unreadable button once a second until the recording stops.
+        coordinator.micGate.setEndHeld(true)
         Log.writeLine(
             "daemon",
             "holding a weak end for \(context.bundleID) and still recording: nothing definitive says the call is over (END17)"
@@ -2856,6 +2862,8 @@ final class MeetingSessionController: @unchecked Sendable {
             ])
         }
         consultLedger = TeardownConsultLedger()
+        // MIC20: every way out of a hold, rescued or concluded, lets the probe read at full rate.
+        coordinator.micGate.setEndHeld(false)
         // `cancelHoldTimer != nil` is the record of whether the holding state was ever shown. Without it,
         // an end that confirmed on its first consult would still push a `setConfirmingEnd(false)` at
         // a HUD that was never told true, which is a state change the surface has to handle for no

@@ -41,6 +41,8 @@ public final class AXMuteButtonProbe {
     public typealias LocaleResolver = () -> String
     /// Applies the per-element messaging timeout to an element before the probe first reads it.
     public typealias ElementTimeout = (AXUIElement) -> Void
+    /// The clock a streak's length is measured on (MIC20). Injected so a test can step it.
+    public typealias Clock = () -> Date
 
     public struct Event: Equatable {
         public let state: MuteLabels.State
@@ -118,6 +120,34 @@ public final class AXMuteButtonProbe {
     private var resolveElement: (() -> AXUIElement?)?
     /// Consecutive `.unknown` reads since the last confident state.
     private var consecutiveUnknown: Int = 0
+    /// MIC20: the run of `.unknown` reads in progress, or nil. Opened by the first unknown read,
+    /// closed by the next known one or by teardown, which is when its one summary row is written.
+    private var unknownStreak: UnknownStreak?
+    /// MIC20: a weak end is being held (END17). The poll stays `slow` and a streak writes no kept
+    /// row; a known read is still delivered at once, since a rescued call must read its mute.
+    private var endHeld = false
+    private let clock: Clock
+
+    /// MIC20: what one run of unreadable reads did, so it costs the log two rows rather than one a
+    /// second. Before, `ax_mute_button_state_kept` fired on every unknown read after a known one
+    /// (1,772 field rows, 39 percent of one build's events), and a re-resolve that found nothing
+    /// wrote no row at all, so "tried and failed" and "never tried" looked the same.
+    struct UnknownStreak {
+        let startedAt: Date
+        /// The state the latch held, or nil for a streak with no known reading before it.
+        let keptState: MuteLabels.State?
+        var reads = 0
+        /// Reads taken while an end was held.
+        var heldReads = 0
+        var rearmAttempts = 0
+        var rearmFailures = 0
+        var keptLogged = false
+        var rearmFailedLogged = false
+
+        /// A streak that latched a state or tried a re-resolve writes a summary; a bare unknown
+        /// from the first read on has nothing to summarise beyond its own `ax_mute_button_state`.
+        var isWorthSummarising: Bool { keptState != nil || rearmAttempts > 0 }
+    }
 
     /// `scheduler` nil is production: the private queue and a `DispatchSourceTimer` poll on it. An
     /// injected scheduler is the test path and runs everything inline on the caller.
@@ -132,8 +162,10 @@ public final class AXMuteButtonProbe {
         elementTimeout: @escaping ElementTimeout = AXMuteButtonProbe.defaultElementTimeout,
         pollInterval: TimeInterval = AXMuteButtonProbe.defaultPollInterval,
         slowPollInterval: TimeInterval = AXMuteButtonProbe.defaultSlowPollInterval,
-        rearmThreshold: Int = AXMuteButtonProbe.defaultRearmThreshold
+        rearmThreshold: Int = AXMuteButtonProbe.defaultRearmThreshold,
+        clock: @escaping Clock = { Date() }
     ) {
+        self.clock = clock
         self.app = app
         self.axBus = axBus
         self.eventLog = eventLog
@@ -185,6 +217,16 @@ public final class AXMuteButtonProbe {
     public func stop() {
         _ = bumpGeneration()
         run { self.teardown() }
+    }
+
+    /// MIC20: a weak end is being held (`MeetingSessionController.beginTeardownHold`), or no longer
+    /// is. Returns at once; applies to the session in progress only, since every `start` clears it.
+    public func setEndHeld(_ held: Bool) {
+        let generation = lock.withLock { self.generation }
+        run {
+            guard self.isCurrent(generation) else { return }
+            self.endHeld = held
+        }
     }
 
     /// Test seam: wait until every block queued so far has run. A no-op on the inline path.
@@ -269,6 +311,8 @@ public final class AXMuteButtonProbe {
     }
 
     private func teardown() {
+        closeUnknownStreak(endedBy: "stop")
+        endHeld = false
         for token in tokens { axBus.unsubscribe(token) }
         tokens.removeAll()
         cancelPoll?(); cancelPoll = nil
@@ -291,7 +335,11 @@ public final class AXMuteButtonProbe {
         cancelPoll = scheduler(interval) { [weak self] in
             guard let self, self.isCurrent(generation) else { return }
             let observation = self.evaluate(reason: "health_poll", generation: generation)
-            let next = self.cadence.intervalAfterPoll(observation)
+            // MIC20: while an end is held the call UI is usually gone, so an unknown read is the
+            // expected answer rather than news. The cadence still sees the poll, so the first read
+            // after the hold clears takes it back to `fast` the ordinary way.
+            let cadenceNext = self.cadence.intervalAfterPoll(observation)
+            let next = self.endHeld ? self.slowPollInterval : cadenceNext
             if next != self.currentPollInterval {
                 self.startPoll(interval: next, generation: generation)
             }
@@ -322,11 +370,13 @@ public final class AXMuteButtonProbe {
         // The latch below still holds the prior state across the streak; the
         // re-arm just retargets the element it reads.
         if state == .unknown {
+            noteUnknownRead()
             noteUnknownAndMaybeRearm(reason: reason, generation: generation)
             // So can the walk.
             guard isCurrent(generation) else { return .unknown }
         } else {
             consecutiveUnknown = 0
+            closeUnknownStreak(endedBy: "known")
         }
 
         if event == lastEvent { return state == .unknown ? .unknown : .steady }
@@ -342,6 +392,10 @@ public final class AXMuteButtonProbe {
         // `mutedByApp` in place across the glitch; the next real
         // `.muted` or `.unmuted` event resumes normal flow.
         if state == .unknown, let prev = lastEvent, prev.state != .unknown {
+            // MIC20: once per streak, never while an end is held. A streak that opened during a
+            // hold and outlives it writes its row at the first read after the hold clears.
+            guard !endHeld, unknownStreak?.keptLogged == false else { return .unknown }
+            unknownStreak?.keptLogged = true
             eventLog.emit(category: "micgate", action: "ax_mute_button_state_kept", attributes: [
                 "bundle_id": bundleID,
                 "pid": Int(pid),
@@ -390,7 +444,25 @@ public final class AXMuteButtonProbe {
         consecutiveUnknown += 1
         guard consecutiveUnknown >= rearmThreshold, let resolve = resolveElement else { return }
         consecutiveUnknown = 0
-        guard let fresh = resolve(), isCurrent(generation) else { return }
+        unknownStreak?.rearmAttempts += 1
+        let resolved = resolve()
+        guard isCurrent(generation) else { return }
+        guard let fresh = resolved else {
+            // MIC20: the walk ran and found nothing. Once per streak; the summary row carries the
+            // count. Before, this returned silently, so a 379 s field streak showed no attempt.
+            unknownStreak?.rearmFailures += 1
+            if unknownStreak?.rearmFailedLogged == false {
+                unknownStreak?.rearmFailedLogged = true
+                eventLog.emit(category: "micgate", action: "ax_mute_button_rearm_failed", attributes: [
+                    "bundle_id": bundleID,
+                    "pid": Int(pid),
+                    "app": app,
+                    "reason": reason,
+                    "end_held": endHeld,
+                ])
+            }
+            return
+        }
         elementTimeout(fresh)
         element = fresh
         eventLog.emit(category: "micgate", action: "ax_mute_button_rearmed", attributes: [
@@ -399,6 +471,37 @@ public final class AXMuteButtonProbe {
             "app": app,
             "reason": reason,
         ])
+    }
+
+    /// MIC20: count an unknown read into the streak, opening one on the first.
+    private func noteUnknownRead() {
+        if unknownStreak == nil {
+            let kept = lastEvent.flatMap { $0.state == .unknown ? nil : $0.state }
+            unknownStreak = UnknownStreak(startedAt: clock(), keptState: kept)
+        }
+        unknownStreak?.reads += 1
+        if endHeld { unknownStreak?.heldReads += 1 }
+    }
+
+    /// MIC20: the streak is over (a known read, or the probe stopping). One row says how long it
+    /// ran, how many reads it took and what the re-resolves did.
+    private func closeUnknownStreak(endedBy: String) {
+        guard let streak = unknownStreak else { return }
+        unknownStreak = nil
+        guard streak.isWorthSummarising else { return }
+        var attributes: [String: Any] = [
+            "bundle_id": bundleID,
+            "pid": Int(pid),
+            "app": app,
+            "ended_by": endedBy,
+            "reads": streak.reads,
+            "held_reads": streak.heldReads,
+            "streak_sec": max(0, clock().timeIntervalSince(streak.startedAt)),
+            "rearm_attempts": streak.rearmAttempts,
+            "rearm_failures": streak.rearmFailures,
+        ]
+        if let kept = streak.keptState { attributes["kept_state"] = kept == .muted ? "muted" : "unmuted" }
+        eventLog.emit(category: "micgate", action: "ax_mute_button_unknown_streak", attributes: attributes)
     }
 
     private func labelFromBlob(_ blob: AXTextBlob) -> String? {

@@ -116,6 +116,62 @@ final class HeldEndSessionTests: XCTestCase {
         XCTAssertNil(try meta(for: file)[HeldEndTrim.metaKey])
     }
 
+    // MARK: - MIC20: the gate hears about the hold
+
+    /// The AX mute probe backs off while an end is held, so the hold has to reach it, and every way
+    /// out of the hold has to let it read at full rate again.
+    func test_aHold_setsTheGatesHeldFlag_andBothWaysOutClearIt() async {
+        let (controller, host) = makeController()
+        let file = tempDir.appendingPathComponent("20261024-140000.wav")
+        host.recorderSpy.fileToReturn = file
+        controller.beginRecording(source: teams, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current.isRecording }, "the meeting to record")
+        XCTAssertFalse(host.micGate.isEndHeld)
+
+        controller.beginTeardownHold(context: context)
+        XCTAssertTrue(host.micGate.isEndHeld, "lifecycle_end_held tells the gate")
+        controller.releaseTeardownHold(rescued: true)
+        XCTAssertFalse(host.micGate.isEndHeld, "a rescued call reads at full rate")
+
+        controller.beginTeardownHold(context: context)
+        XCTAssertTrue(host.micGate.isEndHeld)
+        let openedAt = controller.holdPolicy.hold?.startedAt ?? Date()
+        controller.concludeTeardownHold(
+            now: openedAt.addingTimeInterval(PromotionEngine.defaultConfirmDwell), conclusion: .engineEnd
+        )
+        XCTAssertFalse(host.micGate.isEndHeld, "a confirmed end clears it too")
+
+        controller.stopRecording(file: file, source: teams, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
+    }
+
+    /// A gate that engages while a hold is already open (the record-start build landing after a weak
+    /// end) is told again, since `MicGate.start` begins with the `stop` that clears the flag.
+    func test_aGateEngagedDuringAnOpenHold_isHeldToo() async {
+        let (controller, host) = makeController()
+        let file = tempDir.appendingPathComponent("20261024-141000.wav")
+        host.recorderSpy.fileToReturn = file
+        controller.beginRecording(source: teams, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current.isRecording }, "the meeting to record")
+        controller.beginTeardownHold(context: context)
+        host.liveHonorAppMute = true
+        // The real `MicGate.start`'s first move, without touching the HAL.
+        controller.engageSeams.startMicGate = { _, _ in host.micGate.stop() }
+
+        controller.engageMicGate(
+            source: teams,
+            handles: MeetingAXHandleBuilder.Handles(
+                lifecycle: LifecycleAdapterHandle(), micGate: MicGateAdapterHandle(), context: context
+            ),
+            via: "build"
+        )
+        XCTAssertTrue(host.micGate.isEndHeld)
+
+        controller.releaseTeardownHold(rescued: true)
+        controller.stopRecording(file: file, source: teams, summaryMode: .auto)
+        await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
+    }
+
     // MARK: - Recovery
 
     /// PD-9. An end the same call outlives: inside the window the reprompt cooldown is bypassed, the
