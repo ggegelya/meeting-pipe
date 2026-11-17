@@ -236,6 +236,11 @@ daemon() {
         bash ../scripts/test-dev-cert-acl.sh
         bash ../scripts/test-hardened-runtime.sh
         end
+        begin "Rebuild guard: live recording, stop before write, rename (DIST9)"
+        # A copy of the real rebuild.sh in a scratch tree with launchctl, pgrep, pkill, open,
+        # codesign, swift, uv and mdimport stubbed on PATH. Never the real launchctl or app.
+        bash ../scripts/test-rebuild-guard.sh
+        end
         begin "Daemon: installed-app relocation smoke (DIST4)"
         # Assembles a staging MeetingPipe.app from the debug build above with the
         # installer's own functions, moves daemon/.build aside, and runs the staged

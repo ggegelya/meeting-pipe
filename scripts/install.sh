@@ -30,6 +30,9 @@
 #   --reset-tcc  clear all TCC grants for the bundle, forcing a fresh prompt
 #                per service. Use for a clean slate or if a grant looks stuck.
 #   --keep-tcc   no-op alias (keeping grants is now the default).
+#   --force      go on even when a recording may be in progress (DIST9). Without
+#                it the install asks first, and with no terminal exits 2 having
+#                changed nothing.
 #
 # Transcription stack: FluidAudio runs Parakeet TDT v3 + pyannote
 # Community-1 in-process on the Apple Neural Engine. Models live in
@@ -49,10 +52,12 @@ set -euo pipefail
 # re-toggle. Pass --reset-tcc for a clean slate. --keep-tcc kept as a no-op
 # alias for muscle memory.
 RESET_TCC=0
+FORCE=0
 for arg in "$@"; do
     case "$arg" in
         --keep-tcc)  RESET_TCC=0 ;;
         --reset-tcc) RESET_TCC=1 ;;
+        --force)     FORCE=1 ;;
         -h|--help)
             awk '/^set -/{exit}{print}' "$0"
             exit 0
@@ -85,6 +90,9 @@ source "$REPO_ROOT/scripts/lib/pipeline-venv.sh"
 # install must not re-arm a login-start the owner turned off in Preferences.
 # shellcheck source=scripts/lib/login-agent.sh
 source "$REPO_ROOT/scripts/lib/login-agent.sh"
+# DIST9: the live-recording check (also used by rebuild.sh).
+# shellcheck source=scripts/lib/live-recording.sh
+source "$REPO_ROOT/scripts/lib/live-recording.sh"
 
 # 1. Prereqs ---------------------------------------------------------------
 
@@ -345,6 +353,10 @@ fi
 # rather than waiting for the next housekeeping pass.
 APPS_DIR="$HOME/Applications"
 APP="$APPS_DIR/MeetingPipe.app"
+# DIST9: the reinstall below relaunches the daemon (and `--reset-tcc` kills it
+# outright, skipping the flush), so ask before the first write into the app or the
+# venv when a recording may be in progress.
+guard_live_recording "$APP" "$CONFIG_DIR/config.toml" "$FORCE" "reinstall"
 mkdir -p "$APPS_DIR"
 say "Installing app bundle → $APP"
 rm -rf "$APP"
