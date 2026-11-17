@@ -87,24 +87,22 @@ class FilesystemPublisher:
 
         summary_path = self._out / f"{stem}.summary.md"
         actions_path = self._out / f"{stem}.actions.json"
-        summary_path.write_text(summary_md, encoding="utf-8")
-        actions_path.write_text(actions_json, encoding="utf-8")
+        # PIPE30: atomic and 0600; a truncated sidecar would read as absent and
+        # the next publish would treat the meeting as new.
+        storage.atomic_write_text(summary_path, summary_md)
+        storage.atomic_write_text(actions_path, actions_json)
         if transcript_text:
-            transcript_path = self._out / f"{stem}.transcript.md"
-            transcript_path.write_text(transcript_text, encoding="utf-8")
+            storage.atomic_write_text(self._out / f"{stem}.transcript.md", transcript_text)
 
         sidecar_path.parent.mkdir(parents=True, exist_ok=True)
-        sidecar_path.write_text(
-            json.dumps({
-                "schema_version": 1,
-                "summary_path": str(summary_path),
-                "actions_path": str(actions_path),
-                "output_dir": str(self._out),
-                "signature_sha256": signature,
-                "ts": now_iso(),
-            }, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        storage.atomic_write_text(sidecar_path, json.dumps({
+            "schema_version": 1,
+            "summary_path": str(summary_path),
+            "actions_path": str(actions_path),
+            "output_dir": str(self._out),
+            "signature_sha256": signature,
+            "ts": now_iso(),
+        }, indent=2, sort_keys=True))
 
         return {
             "page_id": str(summary_path),

@@ -134,7 +134,7 @@ class ObsidianPublisher:
 
         note_path = self._compute_note_path(summary, transcript_md)
         note_path.parent.mkdir(parents=True, exist_ok=True)
-        note_path.write_text(body, encoding="utf-8")
+        storage.atomic_write_text(note_path, body)  # PIPE30
         log.info("wrote the Obsidian note")  # SEC38: the note path embeds the title slug
 
         attachment_rel: str | None = None
@@ -145,17 +145,14 @@ class ObsidianPublisher:
             self._append_daily_note_backlink(note_path)
 
         sidecar_path.parent.mkdir(parents=True, exist_ok=True)
-        sidecar_path.write_text(
-            json.dumps({
-                "schema_version": 1,
-                "note_path": str(note_path),
-                "vault": str(self._vault),
-                "attachment_rel": attachment_rel,
-                "body_sha256": body_hash,
-                "ts": _now_iso(),
-            }, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        storage.atomic_write_text(sidecar_path, json.dumps({
+            "schema_version": 1,
+            "note_path": str(note_path),
+            "vault": str(self._vault),
+            "attachment_rel": attachment_rel,
+            "body_sha256": body_hash,
+            "ts": _now_iso(),
+        }, indent=2, sort_keys=True))
 
         return {
             "page_id": str(note_path),

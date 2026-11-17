@@ -240,7 +240,7 @@ after raising `summarization.skip_above_chars` in
     flagged = flagged_moments_block(transcript_md)
     if flagged:
         body += f"\n\n---\n\n{flagged}\n"
-    bundle.write_text(body, encoding="utf-8")
+    storage.atomic_write_text(bundle, body)  # the whole transcript: 0600 (PIPE30)
     return bundle
 
 
@@ -312,6 +312,7 @@ def run_all(
     # on the resolved config (TECH-SEC3), then secrets. No-op overlay for
     # shell-invoked `mp run-all` against wavs that have no sidecar.
     cfg = entry.prepare(cfg, wav)
+    storage.sweep_stale_temps(wav.parent, wav.stem)  # PIPE30: a killed writer's leftovers
     if backend is not None:
         cfg = with_backend_override(cfg, backend)
         log.info("run-all: one-shot backend override -> %s", backend)
@@ -477,14 +478,11 @@ def _check_apple_handoff(wav: Path, t: dict[str, Path], md_text: str, cfg: Confi
     if effective_backend(cfg) != "apple_intelligence":
         return None
     sentinel = wav.parent / f"{wav.stem}.apple_pending.json"
-    sentinel.write_text(
-        json.dumps({
-            "schema_version": 1,
-            "transcript_md": str(t["md"]),
-            "transcript_json": str(t["json"]),
-        }),
-        encoding="utf-8",
-    )
+    storage.atomic_write_text(sentinel, json.dumps({
+        "schema_version": 1,
+        "transcript_md": str(t["md"]),
+        "transcript_json": str(t["json"]),
+    }))
     log.info("Apple Intelligence backend: handing summary off to the daemon.")
     log.info("Apple-pending sentinel written: %s", sentinel)
     events.emit("pipeline", "run_skipped", wav=str(wav), reason="apple_pending",

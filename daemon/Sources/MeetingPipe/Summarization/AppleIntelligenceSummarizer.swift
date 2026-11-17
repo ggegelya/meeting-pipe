@@ -465,9 +465,25 @@ struct AppleIntelligenceSummarizer {
             withJSONObject: summary.jsonObject(),
             options: [.prettyPrinted, .withoutEscapingSlashes]
         )
-        try data.write(to: jsonURL)
+        // PIPE30: the markdown first and the JSON last, because `MeetingStore` reads a
+        // summary.json on disk as done; a markdown write that failed after it left a done
+        // row with no `.md`. Both atomic and 0600, the shape `TranscriptSidecar.write(to:)` has.
         if let md = renderMarkdown(summary, deeplinkStem: stem).data(using: .utf8) {
-            try md.write(to: mdURL)
+            try writePrivate(md, to: mdURL)
+        }
+        try writePrivate(data, to: jsonURL)
+    }
+
+    /// Atomic write, then 0600: a summary carries meeting content (SEC14). A refused
+    /// chmod is reported, not thrown, as in `TranscriptSidecar.write(to:)`.
+    private static func writePrivate(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: .atomic)
+        do {
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch {
+            let ns = error as NSError
+            MuteRedactor.reportProtectionFailures(
+                [.init(protection: "permissions", errorDomain: ns.domain, errorCode: ns.code)], file: url)
         }
     }
 

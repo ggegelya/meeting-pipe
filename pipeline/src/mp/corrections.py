@@ -89,9 +89,7 @@ def write_run_sidecar(
         "ts": ts or _now_utc_iso(),
     }
     out = recordings_dir / f"{stem}.run.json"
-    tmp = out.with_suffix(out.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, out)
+    storage.atomic_write_text(out, json.dumps(payload, indent=2, sort_keys=True))
     return out
 
 
@@ -108,7 +106,7 @@ def write_empty_marker(
     Without it the Library has no terminal sidecar to read, so an empty
     recording spins in "Processing" until the staleness window flips it to a
     misleading "Failed". The marker lets the Library show a terminal "No speech"
-    state instead. Atomic via temp + rename, matching ``write_run_sidecar``.
+    state instead. Atomic via temp + rename, matching ``write_run_sidecar`` (both go through ``storage.atomic_write_text``).
     """
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -117,9 +115,7 @@ def write_empty_marker(
         "ts": ts or _now_utc_iso(),
     }
     out = recordings_dir / f"{stem}.empty.json"
-    tmp = out.with_suffix(out.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, out)
+    storage.atomic_write_text(out, json.dumps(payload, indent=2, sort_keys=True))
     return out
 
 
@@ -135,9 +131,7 @@ def set_publish_state(sidecar_path: Path, publish_state: str) -> None:
     if payload is None:
         return
     payload["publish_state"] = publish_state
-    tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, sidecar_path)
+    storage.atomic_write_text(sidecar_path, json.dumps(payload, indent=2, sort_keys=True))
 
 
 def read_run_sidecar(path: Path) -> dict[str, Any] | None:

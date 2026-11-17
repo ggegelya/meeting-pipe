@@ -537,6 +537,7 @@ def summarize(
     # the standalone `mp summarize` (the Library's "Regenerate" action) so it
     # honours the same per-meeting context / backend overrides `run-all` would.
     cfg = entry.prepare(cfg, transcript_md)
+    storage.sweep_stale_temps(transcript_md.parent, transcript_md.stem)  # PIPE30
 
     # PIPE6: a one-shot backend override for this re-summarize, applied AFTER the
     # workflow overlay so it wins over the workflow's persisted backend but still

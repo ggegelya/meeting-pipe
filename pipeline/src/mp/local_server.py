@@ -220,15 +220,9 @@ def write_token(port: int, token: str, pid: int, home: Path | None = None) -> No
     cannot authenticate to is useless, so the caller must stop."""
     path = token_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # A per-pid temp name, created fresh: two servers writing at once cannot
-    # interleave, and a stale file with looser permissions is never reused.
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.unlink(missing_ok=True)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps({"port": port, "pid": pid, "token": token}))
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
+    # The helper's temp is created fresh at 0600 under a per-writer name (PIPE30),
+    # so two servers writing at once cannot interleave and no looser file is reused.
+    storage.atomic_write_text(path, json.dumps({"port": port, "pid": pid, "token": token}))
 
 
 def read_token(port: int, home: Path | None = None) -> str | None:
@@ -295,10 +289,7 @@ def _write_marker_payload(payload: dict[str, Any], home: Path | None) -> None:
     whether a failed write matters."""
     path = marker_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
+    storage.atomic_write_text(path, json.dumps(payload, indent=2))
 
 
 def restamp_owner(server_pid: int, home: Path | None = None) -> int | None:

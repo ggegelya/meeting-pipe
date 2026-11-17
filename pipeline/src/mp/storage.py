@@ -11,7 +11,10 @@ import errno as errno_mod
 import json
 import logging
 import os
+import secrets
 import shutil
+import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -45,14 +48,73 @@ def atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
     place. `mode` defaults to 0600 because the files this guards (transcripts,
     summaries) carry meeting content and stay user-private (SEC14)."""
     path = Path(path)
-    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    # PIPE30: created at `mode` (O_EXCL, so never an existing file and never a
+    # planted symlink), so the temp is not wider than `mode` for even an instant;
+    # a random tail keeps two writers in one process apart. `fchmod` because
+    # O_CREAT's mode is filtered by the umask.
+    tmp = path.with_name(f".{path.name}{TEMP_MARK}{os.getpid()}-{secrets.token_hex(4)}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     try:
-        tmp.write_text(text, encoding="utf-8")
-        os.chmod(tmp, mode)
+        with os.fdopen(fd, "wb") as fh:
+            os.fchmod(fh.fileno(), mode)
+            fh.write(text.encode("utf-8"))
+            fh.flush()
+            full_sync(fh.fileno())
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+#: Every temp `atomic_write_text` makes is named `.<name>` + this + `<pid>-<hex>`.
+TEMP_MARK = ".tmp-"
+
+#: A temp older than this is a writer a SIGKILL stopped, not one still writing.
+STALE_TEMP_AGE_S = 3600
+
+
+def full_sync(fd: int) -> None:
+    """Force `fd`'s data to stable storage before a rename publishes it (PIPE30).
+
+    On macOS `fsync` only reaches the drive's cache; `F_FULLFSYNC` is what
+    survives a power loss, so a rename cannot outlive the bytes it points at.
+    A filesystem that refuses it (some network shares) falls back to `fsync`.
+    """
+    if sys.platform == "darwin":
+        import fcntl
+
+        try:
+            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+            return
+        except OSError:
+            pass
+    os.fsync(fd)
+
+
+def sweep_stale_temps(directory: Path, stem: str, *, now: float | None = None) -> int:
+    """Delete `atomic_write_text` temps for `stem` that a killed writer left (PIPE30).
+
+    Only `.<stem>*.tmp-*` files older than `STALE_TEMP_AGE_S` go: the age guard
+    keeps a writer that is mid-write right now. Returns how many were removed.
+    Called at the start of `run-all` and `summarize` for their stem.
+    """
+    clock = time.time() if now is None else now
+    removed = 0
+    try:
+        candidates = list(Path(directory).glob(f".{stem}*{TEMP_MARK}*"))
+    except OSError:
+        return 0
+    for path in candidates:
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            if clock - path.stat().st_mtime <= STALE_TEMP_AGE_S:
+                continue
+            path.unlink()
+        except OSError:
+            continue
+        removed += 1
+    return removed
 
 
 @dataclass(frozen=True)

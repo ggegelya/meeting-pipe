@@ -25,9 +25,12 @@ import hashlib
 import json
 import logging
 import os
+import secrets
+import stat
 from pathlib import Path
 from typing import Any
 
+from . import storage
 from .markdown import deeplink_stem, render_summary_md
 from .publish_fs import (
     file_url,
@@ -99,17 +102,15 @@ class LanPublisher:
             _atomic_write(target / f"{stem}.transcript.md", transcript_text)
 
         sidecar_path.parent.mkdir(parents=True, exist_ok=True)
-        sidecar_path.write_text(
-            json.dumps({
-                "schema_version": 1,
-                "summary_path": str(summary_path),
-                "actions_path": str(actions_path),
-                "mount_path": str(target),
-                "signature_sha256": signature,
-                "ts": now_iso(),
-            }, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        # The local sidecar lives in the library, so the library's rule (PIPE30).
+        storage.atomic_write_text(sidecar_path, json.dumps({
+            "schema_version": 1,
+            "summary_path": str(summary_path),
+            "actions_path": str(actions_path),
+            "mount_path": str(target),
+            "signature_sha256": signature,
+            "ts": now_iso(),
+        }, indent=2, sort_keys=True))
 
         return {
             "page_id": str(summary_path),
@@ -144,14 +145,30 @@ class LanPublisher:
 
 def _atomic_write(path: Path, text: str) -> None:
     """Write `text` to `path` via a sibling temp file + atomic rename, so a
-    reader on the share never sees a partial file."""
-    tmp = path.parent / f".{path.name}.tmp-{os.getpid()}"
+    reader on the share never sees a partial file.
+
+    Its own helper rather than `storage.atomic_write_text` (PIPE30 item 2): a
+    network share's modes are the share's, so this leaves them to the umask and
+    the server instead of forcing 0600 on files other machines read.
+
+    A peer with write access to the share could plant `.<name>.tmp-<pid>`
+    symlinks to a path on this Mac, which a plain `write_text` follows (security
+    review 2026-11-12, finding 9). So the temp takes a random tail and is opened
+    `O_CREAT | O_EXCL | O_NOFOLLOW`, which refuses any existing name, a symlink
+    included, and a symlinked target folder is refused outright.
+    """
+    parent = path.parent
+    if stat.S_ISLNK(os.lstat(parent).st_mode):
+        raise LanUnreachableError(f"LAN target {parent} is a symbolic link; refusing to write through it")
+    tmp = parent / f".{path.name}.tmp-{os.getpid()}-{secrets.token_hex(4)}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o666)
     try:
-        tmp.write_text(text, encoding="utf-8")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(text.encode("utf-8"))
         os.replace(tmp, path)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise

@@ -2,9 +2,9 @@
 id: PIPE30
 title: The atomic-write helper is re-implemented ten times, nine of them without its 0600 chmod, and several writers rewrite the only copy of a file in place
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (code-quality audit PY3, CV4): 10 hand-rolled temp-and-replace writers, 9 without the chmod; non-atomic rewrites include publish_from_paste's summary.json and .md (which summarize writes atomically), the manual bundle, digest and the file sinks, and AppleIntelligenceSummarizer is the daemon's one non-atomic summary writer. All through atomic_write_text, `.atomic` plus 0600 in Swift, one fence shared with SEC22. Amended 2026-10-25 (performance review): the Apple Intelligence writer writes the .md before the .json, and the helper gains F_FULLFSYNC, a temp created at its final mode, and a stale-temp sweep (PYTHON-11). Amended 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md)): publish_lan._atomic_write follows symlinks a share peer plants (pid-named temp, plain write_text); create the temp with O_EXCL|O_NOFOLLOW. [Spec](./PIPE30.md)
+comment: Shipped 2026-11-18 - every writer in scope goes through atomic_write_text (temp O_EXCL at its mode, F_FULLFSYNC, os.replace), stale temps swept at run-all and summarize, the LAN writer refuses planted symlinks, one fence for hand-rolled replaces and library write_text, Swift writes .md then .json atomically at 0600. Owner still owes the close; tests only.
 ---
 
 # PIPE30: The atomic-write helper is re-implemented ten times, nine of them without its 0600 chmod, and several writers rewrite the only copy of a file in place
@@ -75,3 +75,5 @@ From the [security review](../../audits/2026-11-12-security-review.md) finding 9
 Attack: a peer with write access to the share plants links named `.<stem>.summary.md.tmp-<pid>` across the pid range for a stem already visible there, pointing at an absolute path on the owner's Mac; the next re-publish of that stem overwrites the target with summary text. Solid over NFS (client-side symlinks); on SMB it depends on the macOS client resolving symlink files, not verified.
 
 Added to scope item 2: create the temp with `tempfile.mkstemp(dir=...)` (or `O_CREAT|O_EXCL|O_NOFOLLOW`) and `lstat` the target directory, refusing a symlinked one. Added acceptance: a test that a pre-existing symlink at the temp path is not followed and a symlinked target directory is refused.
+
+**Progress (2026-11-18):** shipped against items 1 to 5 and both amendments. Decisions not in the spec: `atomic_write_text`'s temp is `.<name>.tmp-<pid>-<hex>` (a random tail so two writers in one process cannot collide, and so a planted name is never the one opened); `local_server.write_token` joined the helper too, which took `local_server.py`, `corrections.py` and `publish_router.py` off the fence's allowlist, and the fence now fails on an allowlist entry that no longer hand-rolls anything; the vault note and the filesystem sink's copies keep the default 0600 (no owner ask to widen them); the LAN temp is created at the umask's mode, since the share's modes are the share's. `publish_notion.py` is on the `write_text` allowlist for PIPE23. The fence's planted cases run as unit tests (`test_the_fence_fails_on_a_planted_example`, `test_the_write_text_fence_fails_on_a_planted_summary_write`) rather than as a manual try-and-revert.

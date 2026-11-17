@@ -515,8 +515,9 @@ def main(argv: list[str]) -> int:
     stem = f"digest-{today.strftime('%Y%m%d')}"
     json_path = out_dir / f"{stem}.summary.json"
     md_path = out_dir / f"{stem}.summary.md"
-    json_path.write_text(summary.model_dump_json(indent=2, exclude_none=False), encoding="utf-8")
-    md_path.write_text(render_summary_md(summary), encoding="utf-8")
+    # PIPE30: a same-day rerun rewrites both; .md first, as every summary writer.
+    storage.atomic_write_text(md_path, render_summary_md(summary))
+    storage.atomic_write_text(json_path, summary.model_dump_json(indent=2, exclude_none=False))
 
     published = False
     publish_failed = False

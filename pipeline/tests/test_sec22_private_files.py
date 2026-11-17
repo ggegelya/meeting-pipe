@@ -1,6 +1,7 @@
 """SEC22: voiceprints and embeddings are written private, atomically, and can be forgotten."""
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -165,7 +166,11 @@ def test_purging_a_name_that_is_not_on_the_roster_still_cleans_the_meetings(tmp_
     assert roster_main(["forget", "--name", "Alice", "--purge-embeddings", "--library", str(tmp_path)]) == 0
 
 
-# ----- the ratchet: a fifth hand-rolled writer cannot appear -----
+# ----- the ratchet: a hand-rolled writer cannot appear (SEC22, PIPE30) -----
+#
+# One fence for both tasks (PIPE30 item 4): a temp-and-replace outside the
+# helper, and a plain `.write_text(` to a library-suffixed path, each refused
+# unless the file is on its allowlist with a reason.
 
 _SRC = Path(__file__).resolve().parents[1] / "src" / "mp"
 # A temp-file-then-rename write: `tmp.replace(`, `tmp_path.replace(`, `os.replace(`.
@@ -175,10 +180,7 @@ _HAND_ROLLED = re.compile(r"\b(?:tmp\w*|temp\w*)\.replace\(|\bos\.replace\(")
 #: that is not "it was easier": the biometric writers were here until SEC22.
 _ALLOWED = {
     "storage.py": "the helper itself",
-    "corrections.py": "the corrections corpus: not biometric, owns its own pattern",
-    "local_server.py": "the marker and token records set 0600 explicitly (SEC27)",
-    "publish_router.py": "publish result sidecar, written 0600 by hand",
-    "publish_lan.py": "LAN sink output, mode set by hand",
+    "publish_lan.py": "files on a network share, whose modes are the share's (PIPE30 item 2)",
     "backup.py": "renames a finished archive: a binary file, modes are STOR8's",
     "merge_meetings.py": "renames an ffmpeg-merged audio file into place, not a text write",
     "restore.py": "renames each extracted archive member into place (STOR17): tarfile writes the temp",
@@ -199,9 +201,88 @@ def test_no_new_hand_rolled_atomic_write_outside_the_allowlist() -> None:
     )
 
 
+def test_every_allowlist_entry_still_hand_rolls_one() -> None:
+    """A file that stopped hand-rolling leaves the list, so the list stays a
+    statement of what is true rather than a pile of old permissions."""
+    stale = sorted(
+        name for name in _ALLOWED
+        if not _HAND_ROLLED.search((_SRC / name).read_text(encoding="utf-8"))
+    )
+    assert stale == []
+
+
 def test_the_fence_fails_on_a_planted_example(tmp_path: Path) -> None:
     (tmp_path / "voiceprint2.py").write_text(
         "tmp = path.with_name('x.tmp')\ntmp.write_text('x')\ntmp.replace(path)\n"
     )
     (tmp_path / "fine.py").write_text("storage.atomic_write_text(path, 'x')\n")
     assert _offenders(tmp_path) == ["voiceprint2.py"]
+
+
+#: Suffixes of files that live in the library (or a sink's copy of one), where a
+#: plain `write_text` truncates the only copy when it is killed mid-write.
+_LIBRARY_SUFFIXES = (
+    ".summary.json", ".summary.md", ".meta.json", ".publish.json", ".run.json",
+    ".empty.json", ".notion.json", ".obsidian.json", ".filesystem.json", ".lan.json",
+    ".transcript.md", ".actions.json", ".READY_FOR_MANUAL.md", ".apple_pending.json",
+    ".embeddings.json", ".speaker_labels.json", ".transcript_corrections.json",
+    "with_suffix('.json')", "with_suffix('.md')",
+)
+_WRITE_TEXT_ALLOWED = {
+    "storage.py": "the helper itself",
+    "publish_notion.py": "the <stem>.notion.json sidecar writer is PIPE23 scope item 4",
+}
+
+
+def _direct_library_writes(root: Path) -> list[str]:
+    """`<file>:<line>` for every `X.write_text(` where X, or what X was assigned
+    from in the same function, names a library suffix. An AST walk, so a
+    user-named `--out` path (an argument, not a suffix) never matches."""
+    hits: list[str] = []
+    for path in sorted(root.glob("*.py")):
+        if path.name in _WRITE_TEXT_ALLOWED:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for scope in ast.walk(tree):
+            if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+                continue
+            assigned: dict[str, list[str]] = {}
+            for node in ast.walk(scope):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            assigned.setdefault(target.id, []).append(ast.unparse(node.value))
+            for node in ast.walk(scope):
+                if not (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "write_text"
+                ):
+                    continue
+                receiver = node.func.value
+                texts = [ast.unparse(receiver)]
+                if isinstance(receiver, ast.Name):
+                    texts += assigned.get(receiver.id, [])
+                if any(suffix in text for text in texts for suffix in _LIBRARY_SUFFIXES):
+                    hits.append(f"{path.name}:{node.lineno}")
+    return sorted(set(hits))
+
+
+def test_no_plain_write_text_to_a_library_file() -> None:
+    assert _direct_library_writes(_SRC) == [], (
+        "a plain write_text to a library file truncates the only copy when killed; "
+        "use storage.atomic_write_text, or add the file to _WRITE_TEXT_ALLOWED with a reason"
+    )
+
+
+def test_the_write_text_fence_fails_on_a_planted_summary_write(tmp_path: Path) -> None:
+    (tmp_path / "planted.py").write_text(
+        "def f(root, stem, s):\n"
+        "    out = root / f'{stem}.summary.json'\n"
+        "    out.write_text(s)\n"
+        "    (root / f'{stem}.meta.json').write_text(s)\n"
+    )
+    (tmp_path / "report.py").write_text(
+        "def g(args, s):\n    args.out.write_text(s)\n"
+    )
+    assert _direct_library_writes(tmp_path) == ["planted.py:3", "planted.py:4"]

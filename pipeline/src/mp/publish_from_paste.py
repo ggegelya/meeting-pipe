@@ -19,7 +19,7 @@ import re
 import sys
 from pathlib import Path
 
-from . import entry
+from . import entry, storage
 from .config import Config
 from .publish_router import EXIT_PUBLISH_FAILED, all_sinks_failed, fanout
 from .schemas import ActionItem, ExtraSection, MeetingSummary
@@ -256,10 +256,8 @@ def publish_from_paste(transcript_md: Path, cfg: Config | None = None) -> dict:
 
     # Persist the canonical .summary.json so re-runs (or the auto-flow
     # later) see a consistent on-disk shape.
-    summary_json_path.write_text(
-        summary.model_dump_json(indent=2, exclude_none=False),
-        encoding="utf-8",
-    )
+    # PIPE30: atomic, like `summarize`'s writer of the same two files. The .md
+    # goes first: `MeetingStore` reads a summary.json on disk as done.
     # Re-render the summary.md from the parsed form so the published body
     # matches what we publish: preserves user content but drops whatever
     # ad-hoc styling the LLM produced.
@@ -267,9 +265,8 @@ def publish_from_paste(transcript_md: Path, cfg: Config | None = None) -> dict:
     # same way `summarize` does. A pasted summary carries no anchors today, so
     # the rendered text is unchanged; wiring it here is what keeps the two
     # writers of one file from drifting the day it can.
-    summary_md_path.write_text(
-        render_summary_md(summary, deeplink_stem(transcript_md)), encoding="utf-8"
-    )
+    storage.atomic_write_text(summary_md_path, render_summary_md(summary, deeplink_stem(transcript_md)))
+    storage.atomic_write_text(summary_json_path, summary.model_dump_json(indent=2, exclude_none=False))
 
     # Route through the fanout so every configured sink receives the summary,
     # not just Notion (PIPE2/AUD-15). An NDA workflow still drops the Notion

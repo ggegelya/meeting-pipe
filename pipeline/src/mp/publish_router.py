@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import events
+from . import events, storage
 from .config import Config, effective_sinks, zero_egress
 from .schemas import MeetingSummary
 from .services import MeetingPublisher
@@ -398,8 +398,6 @@ def _write_publish_sidecar(summary_json: Path, result: dict[str, Any]) -> None:
     }
     path = publish_sidecar_path(summary_json)
     try:
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        storage.atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
     except OSError as e:
         log.warning("publish sidecar write failed: %s", e)

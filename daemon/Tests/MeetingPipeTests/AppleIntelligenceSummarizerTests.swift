@@ -131,6 +131,49 @@ final class AppleIntelligenceSummarizerTests: XCTestCase {
         XCTAssertFalse(mdText.contains("\u{2014}"))  // no em-dash anywhere
     }
 
+    // PIPE30: under a 022 umask both summary files land 0600, and the markdown is written
+    // before the JSON, so a markdown write that fails leaves an existing summary.json alone.
+    private func pipe30Summary() -> MeetingSummary {
+        MeetingSummary(
+            title: "Demo", summary: ["one"], decisions: [], actions: [], questions: [],
+            attendees: [], detectedLanguage: "en"
+        )
+    }
+
+    func test_write_leaves_both_files_private_under_a_022_umask() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let previous = umask(0o022)
+        defer { umask(previous) }
+        let md = dir.appendingPathComponent("20260516-0900.md")
+
+        try AppleIntelligenceSummarizer.write(summary: pipe30Summary(), transcriptMD: md)
+
+        for name in ["20260516-0900.summary.json", "20260516-0900.summary.md"] {
+            let attrs = try FileManager.default.attributesOfItem(
+                atPath: dir.appendingPathComponent(name).path)
+            XCTAssertEqual((attrs[.posixPermissions] as? NSNumber)?.intValue, 0o600, name)
+        }
+    }
+
+    func test_a_failed_markdown_write_leaves_the_existing_json_alone() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let md = dir.appendingPathComponent("20260516-0900.md")
+        let jsonURL = dir.appendingPathComponent("20260516-0900.summary.json")
+        let before = Data(#"{"title": "the summary that was there"}"#.utf8)
+        try before.write(to: jsonURL)
+        // A directory where the markdown goes makes that write throw.
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("20260516-0900.summary.md"), withIntermediateDirectories: true)
+
+        XCTAssertThrowsError(try AppleIntelligenceSummarizer.write(summary: pipe30Summary(), transcriptMD: md))
+
+        XCTAssertEqual(try Data(contentsOf: jsonURL), before)
+    }
+
     func test_render_markdown_has_sections_and_uses_hyphen() {
         let summary = MeetingSummary(
             title: "T",
