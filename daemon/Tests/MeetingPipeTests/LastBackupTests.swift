@@ -61,4 +61,21 @@ final class LastBackupTests: XCTestCase {
         let now = ISO8601DateFormatter().date(from: "2026-07-11T09:00:00Z")!
         XCTAssertEqual(LastBackup.ageDescription(now: now, at: url), "Last backup 1 day ago")
     }
+
+    // MARK: - STOR8: the destination's encryption
+
+    func test_reads_the_destination_encryption_and_names_an_unencrypted_drive() {
+        let now = LastBackup.parseISO8601("2026-07-11T18:00:00+00:00")!
+        let base = #""at":"2026-07-11T14:32:05.123456+00:00","archive":"/Volumes/USB/b.tar.gz","audio_included":true"#
+        for (field, expected, suffix) in [(#","destination_encrypted":false"#, false, ", to a drive that is not encrypted"),
+                                          (#","destination_encrypted":true"#, true, "Last backup today"),
+                                          (#","destination_encrypted":null"#, nil, ", to a drive that may not be encrypted"),
+                                          ("", nil, "Last backup today")] as [(String, Bool?, String)] {
+            let url = writeMarker("{\(base)\(field)}")
+            defer { try? FileManager.default.removeItem(at: url) }
+            XCTAssertEqual(LastBackup.read(at: url)?.destinationEncrypted, expected, field)
+            let line = LastBackup.ageDescription(now: now, at: url) ?? ""
+            XCTAssertTrue(line.hasSuffix(suffix), line)
+        }
+    }
 }

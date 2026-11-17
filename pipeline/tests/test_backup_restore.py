@@ -83,6 +83,11 @@ def _populate(home: Path) -> None:
 _Usage = namedtuple("_Usage", "total used free")
 
 
+# The real STOR8 probe, kept for its own tests; conftest's `_known_encryption`
+# stubs it for the rest of the suite.
+_REAL_ENCRYPTION_PROBE = backup_mod.destination_encrypted
+
+
 @pytest.fixture(autouse=True)
 def _plenty_of_room(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every destination here shares the library's volume, so the STOR12 check
@@ -974,3 +979,138 @@ def test_the_estimate_counts_what_the_archive_holds(tmp_path: Path) -> None:
     )
     no_audio = backup_mod.estimate_backup_bytes(_cfg(home), home=home, include_audio=False)
     assert no_audio < backup_mod.estimate_backup_bytes(_cfg(home), home=home)
+
+
+# ---------- STOR8: a private archive, and a word about the destination -------
+
+
+_ENCRYPTED_PLIST = (
+    b'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
+    b"<key>Encryption</key><true/><key>FileVault</key><true/>"
+    b"<key>MountPoint</key><string>/Volumes/Vault</string></dict></plist>"
+)
+_PLAIN_PLIST = (
+    b'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
+    b"<key>Encryption</key><false/><key>FileVault</key><false/>"
+    b"<key>MountPoint</key><string>/Volumes/USB</string></dict></plist>"
+)
+_ERROR_PLIST = (
+    b'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
+    b"<key>Error</key><true/><key>ErrorMessage</key><string>Could not find disk</string></dict></plist>"
+)
+_EXFAT_PLIST = (
+    b'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
+    b"<key>FilesystemType</key><string>exfat</string></dict></plist>"
+)
+_NO_KEYS_PLIST = (
+    b'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
+    b"<key>FilesystemType</key><string>smbfs</string></dict></plist>"
+)
+# Apple Silicon with FileVault off: the always-on hardware encryption says
+# `Encryption` true, and that is not a backup someone else cannot read.
+_HARDWARE_ONLY_PLIST = (
+    b'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
+    b"<key>Encryption</key><true/><key>FileVault</key><false/>"
+    b"<key>FilesystemType</key><string>apfs</string></dict></plist>"
+)
+
+
+@pytest.mark.parametrize(
+    "plist,expected",
+    [(_ENCRYPTED_PLIST, True), (_PLAIN_PLIST, False), (_HARDWARE_ONLY_PLIST, False),
+     (_EXFAT_PLIST, False), (_ERROR_PLIST, None), (_NO_KEYS_PLIST, None), (b"not a plist", None)],
+)
+def test_the_encryption_probe_reads_diskutil(plist: bytes, expected: bool | None) -> None:
+    assert backup_mod.parse_diskutil_encryption(plist) is expected
+
+
+def test_the_probe_asks_diskutil_about_the_destinations_mount_point(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def run(args: list[str], **_kwargs: object):
+        calls.append(args)
+        if args[0].endswith("df"):
+            out = "Filesystem 512-blocks Used Available Capacity Mounted on\nmap auto_home 100 50 50 50% /Volumes/My Drive\n"
+            return namedtuple("R", "stdout returncode")(out, 0)
+        return namedtuple("R", "stdout returncode")(_PLAIN_PLIST, 0)
+
+    assert _REAL_ENCRYPTION_PROBE(tmp_path / "not-yet" / "made", run=run) is False
+    assert calls[1][-1] == "/Volumes/My Drive", "spaces in the device or the mount point survive the df parse"
+
+
+def test_an_unrunnable_probe_reads_unknown(tmp_path: Path) -> None:
+    def run(args: list[str], **_kwargs: object):
+        raise FileNotFoundError(args[0])
+
+    assert _REAL_ENCRYPTION_PROBE(tmp_path, run=run) is None
+
+
+@pytest.mark.parametrize("encrypted", [True, False, None])
+def test_the_marker_records_what_the_probe_said(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, encrypted: bool | None
+) -> None:
+    monkeypatch.setattr(backup_mod, "destination_encrypted", lambda _d: encrypted)
+    home = _make_home(tmp_path)
+    _populate(home)
+    result = backup_mod.run_backup(_cfg(home), tmp_path / "out", home=home, now=_NOW)
+    marker = json.loads(storage.backup_marker(home).read_text())
+    assert marker["destination_encrypted"] is encrypted
+    assert result.destination_encrypted is encrypted
+
+
+def test_the_archive_and_a_created_destination_are_private_whatever_the_umask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(backup_mod, "destination_encrypted", lambda _d: True)
+    home = _make_home(tmp_path)
+    _populate(home)
+    out = tmp_path / "fresh" / "backups"
+    previous = os.umask(0o022)
+    try:
+        result = backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW)
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(result.archive.stat().st_mode) == 0o600
+    assert stat.S_IMODE(out.stat().st_mode) == 0o700
+    assert result.destination_open_mode is None
+
+
+def test_an_existing_open_destination_is_left_alone_and_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(backup_mod, "destination_encrypted", lambda _d: True)
+    home = _make_home(tmp_path)
+    _populate(home)
+    out = tmp_path / "shared"
+    out.mkdir()
+    os.chmod(out, 0o755)
+    result = backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW)
+    assert stat.S_IMODE(out.stat().st_mode) == 0o755
+    assert result.destination_open_mode == 0o755
+    assert stat.S_IMODE(result.archive.stat().st_mode) == 0o600
+
+
+def test_the_cli_warns_about_an_unencrypted_or_unknown_destination_and_an_open_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = _make_home(tmp_path)
+    _populate(home)
+    out = tmp_path / "shared"
+    out.mkdir()
+    os.chmod(out, 0o755)
+
+    monkeypatch.setattr(backup_mod, "destination_encrypted", lambda _d: False)
+    assert _backup_main([str(out)], home, monkeypatch) == 0
+    text = capsys.readouterr().out
+    assert "[WARN]" in text and "not on an encrypted volume" in text
+    assert "readable by other accounts" in text
+
+    monkeypatch.setattr(backup_mod, "destination_encrypted", lambda _d: None)
+    assert _backup_main([str(tmp_path / "private")], home, monkeypatch) == 0
+    text = capsys.readouterr().out
+    assert "[WARN]" in text and "could not tell" in text
+    assert "readable by other accounts" not in text
+
+    monkeypatch.setattr(backup_mod, "destination_encrypted", lambda _d: True)
+    assert _backup_main([str(tmp_path / "vault")], home, monkeypatch) == 0
+    assert "[WARN]" not in capsys.readouterr().out

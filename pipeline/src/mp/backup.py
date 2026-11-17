@@ -46,8 +46,11 @@ import argparse
 import io
 import json
 import os
+import plistlib
 import re
 import shutil
+import stat
+import subprocess
 import tarfile
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -55,7 +58,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import entry, events, storage
+from . import egress_guard, entry, events, storage
 from .config import KEYCHAIN_SERVICE, MANAGED_SECRET_KEYS, Config
 
 MANIFEST_NAME = "manifest.json"
@@ -429,6 +432,74 @@ class BackupResult:
     manifest: dict[str, Any]
     pruned: int
     pruned_bytes: int
+    #: STOR8: whether the destination's volume is encrypted; None when the probe
+    #: could not tell. Recorded in the marker as `destination_encrypted`.
+    destination_encrypted: bool | None = None
+    #: STOR8: the mode of a destination folder that already existed and is readable
+    #: by other accounts (left alone, but named in the summary); None otherwise.
+    destination_open_mode: int | None = None
+
+
+DISKUTIL = "/usr/sbin/diskutil"
+
+
+#: Filesystems that cannot be encrypted at all, so a volume of one of these types is
+#: known not to be (the stick most backups go to is one of them).
+UNENCRYPTABLE_FILESYSTEMS = frozenset({"msdos", "exfat", "hfs"})
+
+
+def parse_diskutil_encryption(plist: bytes) -> bool | None:
+    """Whether `diskutil info -plist <mount point>` describes an encrypted volume.
+
+    `FileVault` is the per-volume answer for APFS, external encrypted volumes
+    included. `Encryption` alone is not: an Apple Silicon Mac's internal volumes
+    report it true from the always-on hardware encryption with FileVault off, which
+    protects nothing once the Mac is unlocked, so it is read only when `FileVault`
+    is absent. A FAT, exFAT or plain HFS+ volume is known unencrypted. An error
+    plist (a network share is no disk to `diskutil`) or bytes that do not parse are
+    unknown, never "encrypted".
+    """
+    try:
+        info = plistlib.loads(plist)
+    except Exception:  # noqa: BLE001 - any unreadable answer is "could not tell"
+        return None
+    if not isinstance(info, dict) or info.get("Error"):
+        return None
+    if isinstance(info.get("FileVault"), bool):
+        return info["FileVault"]
+    if info.get("FilesystemType") in UNENCRYPTABLE_FILESYSTEMS:
+        return False
+    if isinstance(info.get("Encryption"), bool):
+        return info["Encryption"]
+    return None
+
+
+def destination_encrypted(destination: Path, run: Any = subprocess.run) -> bool | None:
+    """Whether the volume `destination` is (or would be) on is encrypted (STOR8).
+
+    `diskutil info` takes a mount point, not an arbitrary path, so `df -P` names
+    the mount point of the nearest existing ancestor first. Any failure reads as
+    None ("could not tell"), which warns like an unencrypted volume but is not
+    claimed as one.
+    """
+    try:
+        target = _existing_ancestor(destination.expanduser())
+        df = run(["/bin/df", "-P", str(target)], capture_output=True, text=True, timeout=10,
+                 env=egress_guard.child_env())
+        if df.returncode != 0:
+            return None
+        # The mount point is everything after the capacity column, so a space in
+        # either the device name or the mount point survives.
+        match = re.search(r"\s\d+%\s+(.+)$", df.stdout.rstrip("\n").splitlines()[-1])
+        if match is None:
+            return None
+        mount = match.group(1)
+        info = run([DISKUTIL, "info", "-plist", mount], capture_output=True, timeout=10,
+                   env=egress_guard.child_env())
+    except (OSError, subprocess.SubprocessError, IndexError, ValueError):
+        return None
+    out = info.stdout
+    return parse_diskutil_encryption(out if isinstance(out, bytes) else str(out).encode("utf-8"))
 
 
 def run_backup(
@@ -449,14 +520,29 @@ def run_backup(
         needed=estimate_backup_bytes(cfg, include_audio=include_audio, home=home),
         library=cfg.recording.output_dir,
     )
-    destination.mkdir(parents=True, exist_ok=True)
+    encrypted = destination_encrypted(destination)
+    # STOR8: the archive holds every transcript, recording and voiceprint, so it is
+    # private by construction rather than by umask. A folder this run creates is
+    # 0700; one that already exists is the owner's to set, and is only named.
+    open_mode: int | None = None
+    try:
+        destination.mkdir(parents=True)
+    except FileExistsError:
+        mode = stat.S_IMODE(destination.stat().st_mode)
+        open_mode = mode if mode & 0o044 else None
+    else:
+        try:
+            os.chmod(destination, 0o700)
+        except OSError:  # a share that refuses modes; the archive's own mode still applies
+            pass
     archive = destination / f"meeting-pipe-backup-{now.strftime(ARCHIVE_TIMESTAMP_FORMAT)}.tar.gz"
     partial = archive.with_name(archive.name + PARTIAL_SUFFIX)
 
     entries: list[dict[str, object]] = []
-    # "x": never write into another run's `.partial`. Opened outside the `try` so
-    # a collision cannot delete the file this run did not create.
-    raw = open(partial, "xb")
+    # O_EXCL: never write into another run's `.partial`; 0o600 whatever the umask
+    # (STOR8). Opened outside the `try` so a collision cannot delete the file this
+    # run did not create.
+    raw = os.fdopen(os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb")
     try:
         with raw:
             # compresslevel=1: see the module docstring. `name` is the final one,
@@ -489,6 +575,7 @@ def run_backup(
             "archive": str(archive),
             "bytes": archive.stat().st_size,
             "audio_included": include_audio,
+            "destination_encrypted": encrypted,
         }, indent=2),
     )
 
@@ -498,7 +585,7 @@ def run_backup(
         pruned, pruned_bytes = 0, 0
     if pruned:
         events.emit("pipeline", "backup_pruned", count=pruned, bytes=pruned_bytes)
-    return BackupResult(archive, manifest, pruned, pruned_bytes)
+    return BackupResult(archive, manifest, pruned, pruned_bytes, encrypted, open_mode)
 
 
 def create_backup(
@@ -543,6 +630,17 @@ def main(argv: list[str]) -> int:
     # STOR12: printed from the manifest this run built. Reading it back out of
     # the archive meant decompressing the whole thing again for a summary.
     archive, manifest = result.archive, result.manifest
+    # STOR8: said, not refused. The usual destination is an external drive or a
+    # share nobody is watching, and the archive holds the whole corpus.
+    if result.destination_encrypted is False:
+        print(f"[WARN] {archive.parent} is not on an encrypted volume, and this archive holds every "
+              "transcript, recording and voiceprint. Back up to a FileVault disk or an encrypted drive.")
+    elif result.destination_encrypted is None:
+        print(f"[WARN] could not tell whether {archive.parent} is on an encrypted volume. This archive "
+              "holds every transcript, recording and voiceprint; keep it on an encrypted disk.")
+    if result.destination_open_mode is not None:
+        print(f"[WARN] {archive.parent} is readable by other accounts on this Mac "
+              f"(mode {result.destination_open_mode:o}); the archive itself is mode 600.")
     print(f"wrote {archive}  ({storage.human_bytes(archive.stat().st_size)})")
     for root in manifest["roots"]:
         print(f"  {root['name']:12} {root['files']:>6} files  {storage.human_bytes(root['bytes'])}")

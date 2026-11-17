@@ -828,7 +828,7 @@ Note for tests: `com.apple.icloud.desktop` can be written by an unprivileged pro
 
 **The config-root exception.** A new Mac must write `config.toml` *before* restoring, since that file names the destinations. So `config.toml` (and `.last-backup.json`) do not count toward the config root's occupancy check, and the backup's `config.toml` never overwrites an existing one: it names the old Mac's paths, and restoring it would repoint `output_dir` at a library that is not there. Every other config file (workflows, roster, voiceprint, glossary) restores normally. Found by walking the runbook; keep the runbook walkable.
 
-`mp doctor` reports the last backup's age from `~/.config/meeting-pipe/.last-backup.json`. Informational only: the owner may be relying on Time Machine.
+`mp doctor` reports the last backup's age from `~/.config/meeting-pipe/.last-backup.json`. Informational only: the owner may be relying on Time Machine. The marker is `{at, archive, bytes, audio_included, destination_encrypted}`, written 0600 by `storage.atomic_write_text`; `destination_encrypted` (STOR8) is `true`, `false`, or `null` when `diskutil` could not tell, absent on a marker older than STOR8. Swift's `LastBackup.read` reads it for the Preferences age line, and doctor `[WARN]`s on `false` and on `null` (a present `null`, not an absent field).
 
 ---
 

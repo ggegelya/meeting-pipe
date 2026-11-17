@@ -634,6 +634,14 @@ def check_last_backup(home: Path | None = None, now: datetime | None = None) -> 
     when = "today" if days == 0 else f"{days} day{'s' if days != 1 else ''} ago"
     suffix = "" if data.get("audio_included", True) else ", without recordings"
     _info(f"last backup {when}{suffix}: {data.get('archive', marker)}")
+    # STOR8: the archive holds the whole corpus. A marker from before STOR8 has no
+    # field and says nothing; `null` is a probe that could not tell.
+    if data.get("destination_encrypted") is False:
+        _warn("the last backup went to a volume that is not encrypted; the archive holds every "
+              "transcript, recording and voiceprint")
+    elif "destination_encrypted" in data and data["destination_encrypted"] is None:
+        _warn("could not tell whether the last backup's volume is encrypted (a network share, or a "
+              "drive diskutil could not read); the archive holds every transcript, recording and voiceprint")
 
 
 class _SyncedRoot(NamedTuple):

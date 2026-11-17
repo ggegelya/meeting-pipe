@@ -11,6 +11,17 @@ from mp.config import MANAGED_SECRET_KEYS
 
 
 @pytest.fixture(autouse=True)
+def _known_encryption(monkeypatch):
+    """STOR8: `mp backup` asks `df` and `diskutil` about the destination's volume.
+    Stubbed for the whole suite so no test shells out to them (`diskutil` does not
+    exist on the Linux runner); the probe's own tests in `test_backup_restore.py`
+    call the real function with an injected runner."""
+    from mp import backup
+
+    monkeypatch.setattr(backup, "destination_encrypted", lambda _d: True)
+
+
+@pytest.fixture(autouse=True)
 def _disable_memory_guard(monkeypatch):
     """LOCAL16: the memory guard reads the REAL machine (physical RAM, and free
     RAM via `vm_stat`), so leaving it live would let an unrelated local-client

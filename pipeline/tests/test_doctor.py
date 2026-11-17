@@ -888,3 +888,25 @@ def test_doctor_warns_on_each_unknown_key(capsys, monkeypatch, tmp_path: Path) -
     assert cfg is not None
     assert "[WARN] unknown config key summarization.backedn" in out
     assert "[WARN] unknown config key sinks" in out
+
+
+# ---------- the last backup's destination (STOR8) ----------------------------
+
+
+def test_doctor_warns_when_the_last_backup_went_to_an_unencrypted_volume(capsys, tmp_path: Path) -> None:
+    from mp.doctor import check_last_backup
+
+    marker = storage.backup_marker(tmp_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime(2026, 11, 17, tzinfo=timezone.utc)
+    cases = (({"destination_encrypted": False}, "is not encrypted"),
+             ({"destination_encrypted": True}, None),
+             ({"destination_encrypted": None}, "could not tell"),
+             ({}, None))   # a marker from before STOR8 says nothing
+    for extra, warning in cases:
+        marker.write_text(json.dumps({"at": now.isoformat(), "archive": "/Volumes/USB/b.tar.gz", **extra}))
+        check_last_backup(home=tmp_path, now=now)
+        out = capsys.readouterr().out
+        assert ("[WARN]" in out) is (warning is not None), (extra, out)
+        if warning:
+            assert warning in out

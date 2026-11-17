@@ -16,6 +16,12 @@ enum LastBackup {
     struct Info: Equatable {
         let takenAt: Date
         let audioIncluded: Bool
+        /// STOR8: whether the destination volume was encrypted; nil when `mp backup`
+        /// could not tell (`null`) or the marker predates STOR8 (absent).
+        var destinationEncrypted: Bool? = nil
+        /// Whether the marker carries the field at all, so a `null` (a share, a drive
+        /// `diskutil` could not read) is told apart from a marker older than STOR8.
+        var encryptionRecorded = false
     }
 
     /// The parsed marker, or nil when no `mp backup` has run (absent / malformed /
@@ -27,7 +33,12 @@ enum LastBackup {
             let at = obj["at"] as? String,
             let taken = parseISO8601(at)
         else { return nil }
-        return Info(takenAt: taken, audioIncluded: obj["audio_included"] as? Bool ?? true)
+        return Info(
+            takenAt: taken,
+            audioIncluded: obj["audio_included"] as? Bool ?? true,
+            destinationEncrypted: obj["destination_encrypted"] as? Bool,
+            encryptionRecorded: obj["destination_encrypted"] != nil
+        )
     }
 
     /// A human age line ("Last backup today", "Last backup 3 days ago"), matching
@@ -37,7 +48,15 @@ enum LastBackup {
         let days = max(0, Calendar.current.dateComponents([.day], from: info.takenAt, to: now).day ?? 0)
         let when = days == 0 ? "today" : "\(days) day\(days == 1 ? "" : "s") ago"
         let suffix = info.audioIncluded ? "" : ", without recordings"
-        return "Last backup \(when)\(suffix)"
+        // STOR8: the archive holds every transcript and voiceprint; an unencrypted
+        // destination is said here because a scheduled run's warning goes to a log.
+        let volume: String
+        switch (info.encryptionRecorded, info.destinationEncrypted) {
+        case (true, false?): volume = ", to a drive that is not encrypted"
+        case (true, nil): volume = ", to a drive that may not be encrypted"
+        default: volume = ""
+        }
+        return "Last backup \(when)\(suffix)\(volume)"
     }
 
     /// Python writes `datetime.now(timezone.utc).isoformat()`, e.g.
