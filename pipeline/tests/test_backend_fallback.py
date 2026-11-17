@@ -138,3 +138,50 @@ def test_billing_exhaustion_is_the_message_not_the_status() -> None:
     assert is_billing_exhaustion(_credit_exhausted())
     assert not is_billing_exhaustion(_status_error(anthropic.BadRequestError, 400))
     assert not is_billing_exhaustion(_status_error(anthropic.AuthenticationError, 401))
+
+
+# ----- PIPE28: a rejected model id drops to local, and says so -----
+
+
+def _model_not_found() -> anthropic.NotFoundError:
+    body = {"type": "error", "error": {"type": "not_found_error", "message": "model: claude-gone-1"}}
+    return anthropic.NotFoundError(
+        "model: claude-gone-1", response=httpx.Response(404, request=_REQ), body=body
+    )
+
+
+def test_a_rejected_model_falls_back_to_local_and_leaves_an_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    emitted: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr("mp.events.emit", lambda *a, **k: emitted.append((a, k)))
+
+    def cloud() -> str:
+        raise _model_not_found()
+
+    assert run_with_local_fallback(cloud=cloud, local=lambda: "local", model="claude-gone-1") == (
+        "local", "local"
+    )
+    assert emitted == [(("pipeline", "model_rejected_fallback"),
+                        {"model": "claude-gone-1", "http_status": 404})]
+
+
+def test_a_404_that_is_not_about_the_model_still_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    def cloud() -> str:
+        raise _status_error(anthropic.NotFoundError, 404)
+
+    with pytest.raises(anthropic.NotFoundError):
+        run_with_local_fallback(cloud=cloud, local=lambda: "local")
+
+
+def test_a_plain_400_still_raises_after_the_model_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    def cloud() -> str:
+        raise _status_error(anthropic.BadRequestError, 400)
+
+    with pytest.raises(anthropic.BadRequestError):
+        run_with_local_fallback(cloud=cloud, local=lambda: "local")

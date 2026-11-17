@@ -545,6 +545,12 @@ def gen_failures() -> str:
         error = anthropic.APIStatusError(message, response=httpx.Response(status, request=request,
             headers={"request-id": "req_0123456789abcdef"}), body={"error": {"message": message}})
         cases.append({"name": name, "payload": describe(error, operation="summary"), "cause": expected})
+    # PIPE28: a retired or mistyped model id, as the API answers it (a 404 whose type names it).
+    rejected = anthropic.NotFoundError("model: claude-synthetic-retired", response=httpx.Response(
+        404, request=request, headers={"request-id": "req_0123456789abcdef"}),
+        body={"type": "error", "error": {"type": "not_found_error", "message": "model: claude-synthetic-retired"}})
+    cases.append({"name": "model_rejected", "payload": describe(rejected, operation="summary"),
+                  "cause": "model_rejected"})
     for name, error in [("missing_key", MissingSecretError("ANTHROPIC_API_KEY")),
                         ("connection", httpx.ConnectError("synthetic connection failure")),
                         ("timeout", httpx.ReadTimeout("synthetic timeout")),

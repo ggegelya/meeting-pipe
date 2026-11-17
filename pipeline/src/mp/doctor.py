@@ -27,6 +27,7 @@ import httpx
 
 from . import cloudsync, resource_guard, storage, workflows
 from .config import CONFIG_PATH, KEYCHAIN_SERVICE, Config, load_secrets
+from .model_check import check_anthropic_model
 from .endpoints import (
     ANTHROPIC_API_BASE,
     ANTHROPIC_API_VERSION,
@@ -138,7 +139,7 @@ def check_config() -> Config | None:
 
 # ---------- Anthropic ------------------------------------------------------
 
-def check_anthropic(present: bool) -> None:
+def check_anthropic(present: bool, cfg: Config | None = None) -> None:
     print("\n== Anthropic API ==")
     if not present:
         _fail("ANTHROPIC_API_KEY missing — skipping live check")
@@ -165,13 +166,33 @@ def check_anthropic(present: bool) -> None:
         _fail(f"network error reaching api.anthropic.com: {e}")
         return
     if resp.status_code == 200:
-        _ok("API key valid — billable account, model access confirmed")
+        _ok("API key valid, billable account")
     elif resp.status_code in (401, 403):
         _fail(f"key rejected: HTTP {resp.status_code} — {resp.text[:200]}")
+        return
     elif resp.status_code == 429:
         _warn("key valid but rate-limited right now (HTTP 429)")
     else:
         _warn(f"unexpected status {resp.status_code}: {resp.text[:200]}")
+    _check_configured_anthropic_model(api_key, cfg)
+
+
+def _check_configured_anthropic_model(api_key: str, cfg: Config | None) -> None:
+    """PIPE28: the probe above runs on a pinned cheap model, so it says nothing about the id the
+    owner actually configured. Ask the unbilled models endpoint about `summarization.model`."""
+    if cfg is None:
+        return
+    model = cfg.summarization.model
+    if cfg.summarization.backend not in {"anthropic", "auto"}:
+        _info(f"summarization.model = {model} is not used by backend {cfg.summarization.backend}")
+        return
+    verdict = check_anthropic_model(model, api_key)
+    if verdict == "found":
+        _ok(f"configured model {model} exists")
+    elif verdict == "not_found":
+        _fail(f"configured model {model} not found, pick another in Preferences > Pipeline")
+    else:
+        _warn(f"could not confirm configured model {model} (the models endpoint did not answer clearly)")
 
 
 # ---------- claude CLI (PROV1) ---------------------------------------------
@@ -229,12 +250,32 @@ def check_openai(present: bool, cfg: Config | None) -> None:
         return
     if resp.status_code == 200:
         _ok("API key valid — model list reachable")
+        _check_configured_openai_model(resp, cfg)
     elif resp.status_code in (401, 403):
         _fail(f"key rejected: HTTP {resp.status_code} — {resp.text[:200]}")
     elif resp.status_code == 429:
         _warn("key valid but rate-limited right now (HTTP 429)")
     else:
         _warn(f"unexpected status {resp.status_code}: {resp.text[:200]}")
+
+
+def _check_configured_openai_model(resp: httpx.Response, cfg: Config | None) -> None:
+    """PIPE28: the list the key check already fetched says whether `openai_model` is on it. An
+    empty or unreadable list proves nothing (a compatible gateway may not implement it), so only
+    a list that is there and lacks the id is a failure."""
+    if cfg is None or cfg.summarization.backend != "openai":
+        return
+    model = cfg.summarization.openai_model
+    try:
+        ids = {m["id"] for m in resp.json()["data"] if isinstance(m, dict) and "id" in m}
+    except (ValueError, KeyError, TypeError):
+        ids = set()
+    if not ids:
+        _info(f"could not read the model list to confirm summarization.openai_model = {model}")
+    elif model in ids:
+        _ok(f"configured model {model} exists")
+    else:
+        _fail(f"configured model {model} not found, pick another in Preferences > Pipeline")
 
 
 # ---------- Notion ---------------------------------------------------------
@@ -1022,7 +1063,7 @@ def main(argv: list[str]) -> int:
         _info("regulated_mode is ON; skipping the live Anthropic / OpenAI / Notion / HuggingFace probes")
         _info("doctor stays zero-egress under regulated mode: no transcript or token leaves this Mac")
     else:
-        check_anthropic(presence["ANTHROPIC_API_KEY"])
+        check_anthropic(presence["ANTHROPIC_API_KEY"], cfg)
         check_openai(presence["OPENAI_API_KEY"], cfg)
         check_notion(presence["NOTION_TOKEN"], cfg)
         check_huggingface(presence["HF_TOKEN"])

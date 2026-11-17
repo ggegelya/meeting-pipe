@@ -34,6 +34,18 @@ def _chain(error: BaseException) -> list[BaseException]:
     return links
 
 
+def _names_a_rejected_model(status: object, code: str | None, message: str, provider: str | None) -> bool:
+    """PIPE28: a cloud API that answered "no" about the *model id* (a retired or mistyped id is a
+    404, a model the account may not use a 403), as opposed to a 404/403 about anything else. The
+    message has to name a model, so a Notion 404 or an Anthropic 403 about the key stays what it
+    was. Provider-scoped: only the two cloud engines take a configurable model id."""
+    if provider not in {"anthropic", "openai"} or "model" not in message:
+        return False
+    if status == 404:
+        return code in {"not_found_error", "model_not_found"}
+    return status == 403
+
+
 def _has_type_name(links: list[BaseException], name: str) -> bool:
     return any(type(link).__name__ == name for link in links)
 
@@ -95,6 +107,8 @@ def describe(error: BaseException, *, operation: str, provider: str | None = Non
         cause = "quota"
     elif status == 401:
         cause = "expired_key" if "key has expired" in message or "token has expired" in message else "rejected_key"
+    elif _names_a_rejected_model(status, code, message, provider):
+        cause = "model_rejected"
     elif first(_TIMEOUTS) is not None:
         cause = "timeout"
     elif first(_CONNECTIONS) is not None:
@@ -118,7 +132,7 @@ def describe(error: BaseException, *, operation: str, provider: str | None = Non
     remedy = {"credits": "billing", "quota": "billing", "missing_key": "integrations",
               "rejected_key": "integrations", "expired_key": "integrations", "synced_target": "integrations",
               "memory": "model",
-              "model_missing": "model"}.get(cause, "retry")
+              "model_missing": "model", "model_rejected": "model"}.get(cause, "retry")
     result: dict = {"schema_version": 1, "cause": cause,
                     "operation": operation if operation in OPERATIONS else "processing", "remedy": remedy}
     if provider in PROVIDERS:

@@ -6,6 +6,11 @@ struct FailureMetadata: Codable, Equatable, Hashable {
         case missingKey = "missing_key", rejectedKey = "rejected_key", expiredKey = "expired_key"
         case rateLimit = "rate_limit", serviceUnavailable = "service_unavailable", modelMissing = "model_missing"
         case syncedTarget = "synced_target"
+        case modelRejected = "model_rejected"
+
+        /// Causes whose fix is in Preferences > Pipeline rather than Integrations. One place, so
+        /// the Ask, Digest and Library settings buttons cannot disagree about a new cause (PIPE28).
+        var opensModelSettings: Bool { self == .memory || self == .modelMissing || self == .modelRejected }
     }
     enum Operation: String, Codable {
         case summary, ask, digest, publish, transcribe, processing, storage, integrations, model
@@ -126,6 +131,11 @@ struct FailurePresentation: Equatable {
             explanation = searchModelMissing
                 ? "Download the search model, then retry Ask. Open Details for the download command for this model."
                 : "Download the model, then retry. You can choose another model in Preferences > Pipeline."
+        case .modelRejected:
+            // No id here on purpose: the sidecar is an allowlist and carries none, and Preferences
+            // shows the configured one right beside the field to change.
+            heading = "\(provider ?? "The provider") does not recognise the model"
+            explanation = "The configured model was retired, mistyped or is not available to your account. Pick another model in Preferences > Pipeline, then retry."
         case .memory:
             heading = "Not enough memory"
             explanation = "Close other apps or choose a smaller model in Preferences > Pipeline, then retry."
@@ -163,7 +173,7 @@ struct FailurePresentation: Equatable {
         if isSearchModelMissing { return nil }
         switch metadata.cause {
         case .missingKey, .rejectedKey, .expiredKey, .publish, .syncedTarget: return "Open Integrations"
-        case .modelMissing, .memory: return "Model settings"
+        case .modelMissing, .memory, .modelRejected: return "Model settings"
         default: return nil
         }
     }

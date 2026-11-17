@@ -204,7 +204,9 @@ class AutoTextClient:
             finally:
                 client.close()
 
-        (text, self.model), self.backend_id = run_with_local_fallback(cloud=_cloud, local=_local)
+        (text, self.model), self.backend_id = run_with_local_fallback(
+            cloud=_cloud, local=_local, model=self._model or self._cfg.summarization.model
+        )
         return text
 
 

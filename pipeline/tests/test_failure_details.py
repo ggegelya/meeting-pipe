@@ -213,3 +213,47 @@ def test_a_cyclic_chain_terminates():
     a, b = RuntimeError("a"), RuntimeError("b")
     a.__cause__, b.__cause__ = b, a
     assert describe(a, operation="summary")["cause"] == "unknown"
+
+
+# ----- PIPE28: a refused, retired or mistyped model id is its own cause -----
+
+
+def _status(cls, code, message, *, host="api.anthropic.com", err_type="not_found_error", err_code=None):
+    response = httpx.Response(code, request=httpx.Request("POST", f"https://{host}/v1/x"))
+    error = {"type": err_type, "message": message}
+    if err_code:
+        error["code"] = err_code
+    return cls(message, response=response, body={"type": "error", "error": error})
+
+
+@pytest.mark.parametrize("error,provider", [
+    (_status(anthropic.NotFoundError, 404, "model: claude-sonnet-9-9"), "anthropic"),
+    (_status(anthropic.PermissionDeniedError, 403, "Your API key does not have access to model claude-x",
+             err_type="permission_error"), "anthropic"),
+])
+def test_a_rejected_model_is_its_own_cause_with_the_model_remedy(error, provider):
+    from mp.failure_details import describe
+    payload = describe(error, operation="summary")
+    assert (payload["cause"], payload["remedy"], payload["provider"]) == ("model_rejected", "model", provider)
+    assert "claude-" not in json.dumps(payload)  # the id is the owner's to read in Details, not in the sidecar
+
+
+def test_an_openai_model_not_found_is_a_rejected_model_too():
+    from mp.failure_details import describe
+    response = httpx.Response(404, request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"),
+                              json={"error": {"code": "model_not_found", "message": "The model `gpt-9` does not exist"}})
+    error = httpx.HTTPStatusError("404", request=response.request, response=response)
+    payload = describe(error, operation="summary")
+    assert (payload["cause"], payload["provider"], payload["remedy"]) == ("model_rejected", "openai", "model")
+
+
+def test_a_404_or_403_that_is_not_about_a_model_is_unchanged():
+    from mp.failure_details import describe
+    notion = httpx.Response(404, request=httpx.Request("GET", "https://api.notion.com/v1/pages/x"),
+                            json={"code": "object_not_found", "message": "Could not find model database"})
+    notion_error = httpx.HTTPStatusError("404", request=notion.request, response=notion)
+    assert describe(notion_error, operation="publish")["cause"] == "publish"
+    other_404 = _status(anthropic.NotFoundError, 404, "resource not found")
+    assert describe(other_404, operation="summary")["cause"] == "unknown"
+    key_403 = _status(anthropic.PermissionDeniedError, 403, "forbidden", err_type="permission_error")
+    assert describe(key_403, operation="summary")["cause"] == "unknown"

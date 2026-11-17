@@ -36,6 +36,8 @@ struct PipelineSectionView: View {
     /// id. A draft for the same reason as `customModelDraft`: a cleared field is shown
     /// as typed but never saved.
     @State private var anthropicModelDraft: String?
+    /// PIPE28: asks the pipeline whether the Anthropic id just committed exists.
+    @StateObject private var modelChecker = ModelIdChecker()
 
     // FEAT3-MANAGE: the named-speaker roster. Read directly for display (the
     // `VoiceprintProfile` exception); mutations go through `mp roster` via `launcher`.
@@ -67,9 +69,17 @@ struct PipelineSectionView: View {
                 // model whatever the global backend is.
                 SettingsStackRow("Anthropic model",
                     sublabel: "Any Anthropic model id, used wherever Anthropic writes the summary or answers in Ask. Blank keeps the current one.") {
-                    TextField("claude-sonnet-5-5", text: anthropicModelBinding)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
+                    VStack(alignment: .leading, spacing: 4) {
+                        TextField("claude-sonnet-5-5", text: anthropicModelBinding)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                        if let note = ModelIdCheck.note(for: modelChecker.result, currentID: store.summarizationModel) {
+                            Text(note)
+                                .font(.mpTextXS)
+                                .foregroundStyle(Color(MPColors.warning600))
+                                .accessibilityIdentifier("anthropic-model-not-found")
+                        }
+                    }
                 }
                 if store.summarizationBackend == "openai" {
                     // UX45: this row replaces an instruction to hand-edit
@@ -497,6 +507,8 @@ struct PipelineSectionView: View {
                 anthropicModelDraft = typed
                 if let modelId = ModelIdField.persistable(typed) {
                     store.summarizationModel = modelId
+                    // Egresses, so never under regulated mode (the pipeline refuses too).
+                    if !store.regulatedMode { modelChecker.schedule(modelId) }
                 }
             }
         )

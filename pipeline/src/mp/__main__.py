@@ -45,6 +45,8 @@ Subcommands:
                               reattributes obvious mistakes, then rewrites
                               `<stem>.json`/.md (TECH-DIAR1)
   doctor                      Preflight check (secrets, config, live API access)
+  check-model <model-id>      Ask the cloud whether a model id exists (unbilled;
+                              prints one JSON line; used by Preferences)
   logs [--since 1h] [--category C] [--action A] [--json]
                               Filter and pretty-print JSONL event streams
   dogfood <transcript.md>     Run Anthropic + local backends side-by-side
@@ -254,6 +256,9 @@ def _dispatch(cmd: str, rest: list[str]) -> int:
         return run(rest)
     if cmd == "doctor":
         from .doctor import main as run
+        return run(rest)
+    if cmd in {"check-model", "check_model"}:
+        from .model_check import main as run
         return run(rest)
     if cmd == "logs":
         from .logs_cmd import main as run

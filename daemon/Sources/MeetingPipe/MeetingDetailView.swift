@@ -205,7 +205,7 @@ struct MeetingDetailView: View {
                 } : nil,
                 showRecording: held ? { FailedMeetingFix.revealHeldRecording(stem: meeting.stem) } : nil,
                 settings: {
-                    if [.memory, .modelMissing].contains(problem.metadata.cause) {
+                    if problem.metadata.cause.opensModelSettings {
                         libraryModel.coordinator?.preferencesWindow?.show(initial: .pipeline)
                     } else { libraryModel.coordinator?.menuPreferencesIntegrations() }
                 }, downloadModel: { libraryModel.coordinator?.downloadLocalModelNow() })

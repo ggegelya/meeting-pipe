@@ -176,4 +176,23 @@ final class FailurePresentationTests: XCTestCase {
         let failure = FailurePresentation(diagnostics: traceback, operation: .storage)
         XCTAssertEqual(failure.explanation, "Retry when you are ready, or open Details to inspect the failure.")
     }
+
+    // MARK: - PIPE28: a rejected model id
+
+    func test_a_rejected_model_names_the_provider_and_points_at_the_model_settings() {
+        let metadata = FailureMetadata(cause: .modelRejected, operation: .summary, provider: "anthropic",
+                                       httpStatus: 404, remedy: "model")
+        let failure = FailurePresentation(diagnostics: "", operation: .summary, metadata: metadata)
+        XCTAssertEqual(failure.title, "Anthropic does not recognise the model")
+        XCTAssertTrue(failure.explanation.contains("Preferences > Pipeline"), failure.explanation)
+        XCTAssertEqual(failure.settingsLabel, "Model settings")
+        XCTAssertTrue(FailureMetadata.Cause.modelRejected.opensModelSettings)
+        XCTAssertFalse(FailureMetadata.Cause.rejectedKey.opensModelSettings)
+    }
+
+    func test_the_model_rejected_cause_decodes_from_the_sidecar_wire_value() throws {
+        let json = #"{"schema_version":1,"cause":"model_rejected","operation":"summary","remedy":"model"}"#
+        let metadata = try XCTUnwrap(FailureMetadata.decode(Data(json.utf8)))
+        XCTAssertEqual(metadata.cause, .modelRejected)
+    }
 }

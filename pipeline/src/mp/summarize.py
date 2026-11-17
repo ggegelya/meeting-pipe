@@ -874,7 +874,7 @@ class AutoFallbackClient:
                 self._local_identity = _served_local_identity(fallback, self._cfg)
                 return out
 
-        result, backend = run_with_local_fallback(cloud=_cloud, local=_local)
+        result, backend = run_with_local_fallback(cloud=_cloud, local=_local, model=model)
         self.last_used_backend = backend
         if backend == "anthropic":
             self.last_used_model = model

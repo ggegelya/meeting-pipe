@@ -13,6 +13,8 @@ from __future__ import annotations
 # --- Anthropic ---------------------------------------------------------------
 ANTHROPIC_API_BASE = "https://api.anthropic.com/v1"
 ANTHROPIC_MESSAGES_PATH = "/messages"
+# PIPE28: GET {base}/models/{id} is unbilled and 404s on an id that does not exist.
+ANTHROPIC_MODELS_PATH = "/models"
 ANTHROPIC_API_VERSION = "2023-06-01"
 ANTHROPIC_CONSOLE_KEYS_URL = "https://console.anthropic.com/settings/keys"
 ANTHROPIC_DOCTOR_PROBE_MODEL = "claude-haiku-4-5-20251001"

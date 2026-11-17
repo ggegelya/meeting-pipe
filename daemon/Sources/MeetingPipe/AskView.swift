@@ -359,7 +359,7 @@ struct AskView: View {
                 retry: askModel.inFlight == nil ? { _ = askModel.ask(entry.question) } : nil,
                 settings: {
                     model.coordinator?.preferencesWindow?.show(initial:
-                        [.memory, .modelMissing].contains(failure.metadata.cause) ? .pipeline : .integrations)
+                        failure.metadata.cause.opensModelSettings ? .pipeline : .integrations)
                 }, downloadModel: { model.coordinator?.downloadLocalModelNow() })
         } else if let answer = entry.answer {
             if answer.empty {

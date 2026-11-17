@@ -75,7 +75,7 @@ struct DigestsView: View {
     private func errorBanner(_ failure: FailurePresentation) -> some View {
         FailureNotice(failure: failure, retry: { generate() }, settings: {
             libraryModel.coordinator?.preferencesWindow?.show(initial:
-                [.memory, .modelMissing].contains(failure.metadata.cause) ? .pipeline : .integrations)
+                failure.metadata.cause.opensModelSettings ? .pipeline : .integrations)
         }, downloadModel: { libraryModel.coordinator?.downloadLocalModelNow() })
     }
 

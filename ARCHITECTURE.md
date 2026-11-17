@@ -466,6 +466,7 @@ One module per subcommand, registered in `__main__.py`. **Adding a subcommand me
 | `backup.py` | `mp backup <dir>` | dated tar.gz of the non-recreatable state + manifest (STOR2); refuses a destination without room, writes via `.partial`, then prunes older archives to the owner's 7 + 4-weekly policy (STOR12) |
 | `restore.py` | `mp restore <archive>` | unpack a backup into this Mac's configured roots (STOR2); `--dry-run --json [--out P]` emits the plan (per-root counts, what would be overwritten) the in-app restore previews instead of restoring (STOR5) |
 | `doctor.py` | `mp doctor` | preflight diagnostics |
+| `model_check.py` | `mp check-model <id>` | one JSON line `{"model", "verdict"}` (`found`, `not_found`, `inconclusive`) from the unbilled `GET /v1/models/{id}`; what Preferences runs when a new Anthropic model id is committed and what `mp doctor` asks about `summarization.model` (PIPE28). Never runs under regulated mode, and a network error is `inconclusive`, never `not_found` |
 | `logs_cmd.py` | `mp logs` | `events.jsonl` pretty-printer / filter |
 | `prefetch_model.py` | `mp prefetch-model <repo>` | MLX model download at the pinned revision, never `*.py` (JSONL progress); records a custom model's pin |
 | `local_snapshot.py` | (library) | SEC27: reviewed revision per preset, `resolve_for_serving`, `verify_snapshot` (refuses `model_file`/code), the custom-model pin file |

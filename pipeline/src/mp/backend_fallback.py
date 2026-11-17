@@ -54,7 +54,9 @@ def fallback_exceptions() -> tuple[type[BaseException], ...]:
     )
 
 
-def run_with_local_fallback(*, cloud: Callable[[], T], local: Callable[[], T]) -> tuple[T, str]:
+def run_with_local_fallback(
+    *, cloud: Callable[[], T], local: Callable[[], T], model: str | None = None
+) -> tuple[T, str]:
     """Run `cloud()`, falling back to `local()` on an unreachable-cloud failure.
 
     Returns `(result, backend)` where backend is "anthropic" or "local", so the
@@ -64,6 +66,10 @@ def run_with_local_fallback(*, cloud: Callable[[], T], local: Callable[[], T]) -
     helper exits the process on a miss, which would defeat the whole point of a
     fallback. A missing key is the ordinary no-cloud-configured case, not an
     error, so it takes the local branch without a warning-level log.
+
+    PIPE28: a 404 on the model id (retired or mistyped) is "the cloud is unwilling" too, so
+    `auto` summarizes locally instead of failing; `model` is only there to name the rejected id
+    in the event the fallback leaves, so a silent switch to local stays visible.
     """
     if not os.environ.get("ANTHROPIC_API_KEY", ""):
         log.info("ANTHROPIC_API_KEY not set; using local backend")
@@ -72,8 +78,16 @@ def run_with_local_fallback(*, cloud: Callable[[], T], local: Callable[[], T]) -
     try:
         return cloud(), "anthropic"
     except Exception as e:
-        if not (isinstance(e, fallback_exceptions()) or is_billing_exhaustion(e)):
+        rejected = is_model_rejection(e)
+        if not (isinstance(e, fallback_exceptions()) or is_billing_exhaustion(e) or rejected):
             raise
+        if rejected:
+            from . import events
+
+            events.emit(
+                "pipeline", "model_rejected_fallback",
+                model=model, http_status=getattr(e, "status_code", None),
+            )
         # A sustained 429 / 5xx has already exhausted the caller's own backoff
         # (summarize._create_message); a busy Anthropic should drop to local
         # rather than fail the whole run.
@@ -100,3 +114,17 @@ def is_billing_exhaustion(exc: BaseException) -> bool:
     from .failure_details import describe
 
     return describe(exc, operation="summary")["cause"] in {"credits", "quota"}
+
+
+def is_model_rejection(exc: BaseException) -> bool:
+    """True for a 404 (or 403) that is about the model id, which the type alone cannot say:
+    `NotFoundError` is also what any other missing resource raises. Same shape as
+    `is_billing_exhaustion`, and the same classifier, so the ladder and the failure sidecar cannot
+    disagree about what a failure was."""
+    import anthropic
+
+    if not isinstance(exc, anthropic.APIStatusError):
+        return False
+    from .failure_details import describe
+
+    return describe(exc, operation="summary")["cause"] == "model_rejected"
