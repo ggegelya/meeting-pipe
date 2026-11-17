@@ -58,6 +58,7 @@ from .publish_router import (
     all_sinks_failed,
     fanout as publish_fanout,
     publish_state,
+    published_sinks,
 )
 from .summarize import summarize
 
@@ -624,8 +625,9 @@ def _run_all_inner(
         cfg=cfg,
         transcript_md=t["md"],
     )
+    # SEC38: sink names, never the page address (it embeds the meeting title's slug).
     events.emit("pipeline", "stage_completed", stage="publish",
-                page_url=pub.get("page_url"),
+                sinks=published_sinks(pub),
                 failures=[name for name, _ in pub.get("failures", [])])
 
     # Record the publish outcome onto the run sidecar so the Library can badge a
@@ -656,9 +658,10 @@ def _run_all_inner(
                     error=reason, error_type="PublishFailed")
         return {**result, "publish_failed": True}
 
-    log.info("done: page_url=%s", pub.get("page_url"))
+    landed = published_sinks(pub)
+    log.info("done: sinks=%s", ",".join(landed) or "local-only")
     events.emit("pipeline", "run_completed", wav=str(wav),
-                page_url=pub.get("page_url"))
+                published=bool(landed), sinks=landed)
     return result
 
 

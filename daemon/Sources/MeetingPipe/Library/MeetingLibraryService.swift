@@ -531,7 +531,7 @@ final class MeetingLibraryService {
                     self.refreshLibrary()
                     Log.event(category: "coordinator", action: "retranscribe_failed", attributes: [
                         "stem": stem,
-                        "error": err.localizedDescription,
+                        "error_type": PipelineOutcomeLog.errorType(err),  // SEC38: the text can quote the title
                     ])
                     completion(.failure(err))
                 }
@@ -1335,12 +1335,12 @@ final class MeetingLibraryService {
         launcher.publish(summaryJSON: summaryURL) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
-                case .success(let url):
+                case .success:
                     PipelineFailureSidecar.clear(stem: stem, in: dir)
+                    // SEC38: sink names, never the page address.
                     Log.event(category: "coordinator", action: "republish_succeeded", attributes: [
                         "stem": stem,
-                        "page_url": url?.absoluteString ?? NSNull(),
-                    ])
+                    ].merging(PipelineOutcomeLog.publishAttributes(PublishResult.load(stem: stem, in: dir))) { a, _ in a })
                 case .failure(let err):
                     // UX50: a cancelled publish is the owner's own action, and
                     // the summary it was publishing is untouched on disk. No
@@ -1349,7 +1349,7 @@ final class MeetingLibraryService {
                     guard !PipelineLauncher.isCancellation(err) else { break }
                     Log.event(category: "coordinator", action: "republish_failed", attributes: [
                         "stem": stem,
-                        "error": err.localizedDescription,
+                        "error_type": PipelineOutcomeLog.errorType(err),  // SEC38: the text can quote the title
                     ])
                     // Durably mark the row failed so it can be retried; the banner is gone in seconds.
                     PipelineFailureSidecar.write(
@@ -1417,13 +1417,12 @@ final class MeetingLibraryService {
                     Log.event(category: "coordinator", action: "merge_succeeded", attributes: [
                         "primary": primaryStem,
                         "fragments_trashed": trashed,
-                        "page_url": url?.absoluteString ?? NSNull(),
-                    ])
+                    ].merging(PipelineOutcomeLog.publishAttributes(PublishResult.load(stem: primaryStem, in: dir))) { a, _ in a })
                     completion(.success(url))
                 case .failure(let err):
                     Log.event(category: "coordinator", action: "merge_failed", attributes: [
                         "primary": primaryStem,
-                        "error": err.localizedDescription,
+                        "error_type": PipelineOutcomeLog.errorType(err),  // SEC38: the text can quote the title
                     ])
                     self.notifyError("Merge failed: \(err.localizedDescription)")
                     completion(.failure(err))

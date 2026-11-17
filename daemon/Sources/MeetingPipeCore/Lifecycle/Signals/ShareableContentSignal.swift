@@ -253,7 +253,7 @@ public final class ShareableContentSignal {
         adjustCadence(forActive: present, session: session)
 
         // Transition + candidate-diagnosis bookkeeping under the lock; emit + onChange after.
-        var candidatesToLog: [String]?
+        var candidateShapesToLog: [String]?
         var transition: (previous: Bool?, value: Bool)?
         var lockTaken = false
         var relocked: (from: Int, to: Int)?
@@ -285,13 +285,16 @@ public final class ShareableContentSignal {
             if present {
                 state.lastUnmatchedCandidates = nil
             } else {
-                // Log the bundle's window titles to distinguish "no window" from "title mismatch"; deduped to avoid noise.
-                let candidates = summaries
+                // Log the bundle's windows to distinguish "no window" from "title mismatch"; deduped to avoid noise.
+                // SEC38: the row carries the count and each title's shape class, never the title; the
+                // dedupe still compares the titles, in memory only.
+                let bundleTitles = summaries
                     .filter { $0.bundleIdentifier == context.bundleID }
-                    .map { $0.title ?? "<nil>" }
+                    .map(\.title)
+                let candidates = bundleTitles.map { $0 ?? "<nil>" }
                 if candidates != state.lastUnmatchedCandidates {
                     state.lastUnmatchedCandidates = candidates
-                    candidatesToLog = candidates
+                    candidateShapesToLog = bundleTitles.map { WindowTitleShape.classify($0, patterns: [titleMatch]) }
                 }
             }
             if state.lastValue != present {
@@ -335,10 +338,11 @@ public final class ShareableContentSignal {
                 "reason": reason
             ])
         }
-        if let candidatesToLog {
+        if let candidateShapesToLog {
             eventLog.emit(category: "signal", action: "shareable_content_no_match", attributes: [
                 "bundle_id": context.bundleID,
-                "candidate_titles": candidatesToLog,
+                "candidate_count": candidateShapesToLog.count,
+                "candidate_shapes": candidateShapesToLog,
                 "reason": reason
             ])
         }

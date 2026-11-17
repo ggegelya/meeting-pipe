@@ -690,7 +690,7 @@ final class SinkDispatcher: @unchecked Sendable {
                     // relabel it. Mark the row so Reprocess is offered.
                     Log.event(category: "coordinator", action: "retranscribe_failed", attributes: [
                         "stem": loc.stem,
-                        "error": err.localizedDescription,
+                        "error_type": PipelineOutcomeLog.errorType(err),  // SEC38: the text can quote the title
                     ])
                     PipelineFailureSidecar.write(
                         stem: loc.stem, in: loc.dir,
@@ -725,12 +725,13 @@ final class SinkDispatcher: @unchecked Sendable {
                 guard let self = self else { return }
                 let loc = SinkDispatcher.sidecarLocation(for: job)
                 switch result {
-                case .success(let pageURL):
-                    Log.writeLine("daemon", "pipeline OK -> \(pageURL?.absoluteString ?? "(local-only)")")
+                case .success:
+                    // SEC38: sink names, never the note path or page address (it embeds the title slug).
+                    let publish = PublishResult.load(stem: loc.stem, in: loc.dir)
+                    Log.writeLine("daemon", PipelineOutcomeLog.successLine(publish))
                     Log.event(category: "coordinator", action: "pipeline_succeeded", attributes: [
                         "file": job.file.lastPathComponent,
-                        "page_url": pageURL?.absoluteString ?? NSNull(),
-                    ])
+                    ].merging(PipelineOutcomeLog.publishAttributes(publish)) { a, _ in a })
                     // The run finished; clear any failure sidecar a prior
                     // failed run (or retry) left behind for this stem.
                     PipelineFailureSidecar.clear(stem: loc.stem, in: loc.dir)
@@ -757,11 +758,13 @@ final class SinkDispatcher: @unchecked Sendable {
                             reason: SinkDispatcher.cancelledReason
                         )
                     } else {
-                        Log.writeLine("daemon", "pipeline FAIL -> \(err.localizedDescription)")
+                        // SEC38: the stage and the error's class; the free text can quote the title,
+                        // and the full reason is in `<stem>.error.json` below.
+                        let stage = SinkDispatcher.stage(for: err)
+                        Log.writeLine("daemon", PipelineOutcomeLog.failureLine(err, stage: stage))
                         Log.event(category: "coordinator", action: "pipeline_failed", attributes: [
                             "file": job.file.lastPathComponent,
-                            "error": err.localizedDescription,
-                        ])
+                        ].merging(PipelineOutcomeLog.failureAttributes(err, stage: stage)) { a, _ in a })
                         PipelineFailureSidecar.write(
                             stem: loc.stem, in: loc.dir,
                             stage: SinkDispatcher.stage(for: err), reason: PipelineLauncher.diagnostics(for: err),

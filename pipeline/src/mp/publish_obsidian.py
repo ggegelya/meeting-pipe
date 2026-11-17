@@ -134,7 +134,7 @@ class ObsidianPublisher:
         note_path = self._compute_note_path(summary, transcript_md)
         note_path.parent.mkdir(parents=True, exist_ok=True)
         note_path.write_text(body, encoding="utf-8")
-        log.info("wrote %s", note_path)
+        log.info("wrote the Obsidian note")  # SEC38: the note path embeds the title slug
 
         attachment_rel: str | None = None
         if self._attach_audio and transcript_md is not None:

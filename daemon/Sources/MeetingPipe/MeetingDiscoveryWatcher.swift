@@ -424,14 +424,25 @@ final class MeetingDiscoveryWatcher {
     /// in hindsight, which is a precondition for deciding whether to widen the gate at all.
     /// Runs on `scanQueue` (serial), so the signature field needs no further synchronisation.
     private func emitRejectedBrowserTabs(_ rejected: [MeetingSourceScanner.RejectedBrowserTab]) {
-        guard !rejected.isEmpty else { lastRejectedBrowserSignature = nil; return }
+        let decision = MeetingDiscoveryWatcher.rejectedTabRows(rejected, lastSignature: lastRejectedBrowserSignature)
+        lastRejectedBrowserSignature = decision.signature
+        MeetingDiscoveryWatcher.logRejectedBrowserTabs(decision.rows)
+    }
+
+    /// Which refused tabs to log this scan. The signature holds the titles, in memory only (SEC38):
+    /// the row itself carries a shape class, so without the title here a second tab of the same
+    /// shape would be throttled away. Pure.
+    static func rejectedTabRows(
+        _ rejected: [MeetingSourceScanner.RejectedBrowserTab],
+        lastSignature: String?
+    ) -> (rows: [MeetingSourceScanner.RejectedBrowserTab], signature: String?) {
+        guard !rejected.isEmpty else { return ([], nil) }
         let signature = rejected
             .map { "\($0.bundleID)|\($0.reason)|\($0.title)" }
             .sorted()
             .joined(separator: ",")
-        guard signature != lastRejectedBrowserSignature else { return }
-        lastRejectedBrowserSignature = signature
-        MeetingDiscoveryWatcher.logRejectedBrowserTabs(rejected)
+        guard signature != lastSignature else { return ([], signature) }
+        return (rejected, signature)
     }
 
     /// Signature of the last `browser_identity` batch. Touched only on `scanQueue`.
@@ -463,6 +474,14 @@ final class MeetingDiscoveryWatcher {
         }
     }
 
+    /// SEC38: the logged class of a refused tab's title. DET17's Meet classes where the Meet brand is
+    /// present, else `WindowTitleShape`'s against the strong matchers (a refused tab never matches one,
+    /// so in practice `brand_token`).
+    static func rejectedTabShape(_ title: String) -> String {
+        MeetingSourceScanner.meetBrandShape(title)
+            ?? WindowTitleShape.classify(title, patterns: BrowserMeetingLifecycleAdapter.strongTitleMatchers)
+    }
+
     /// The event itself, lifted out of the throttle so a test can assert the line that ships rather
     /// than a re-spelling of it (the DET11 shape). Static: it reads no watcher state.
     static func logRejectedBrowserTabs(_ rejected: [MeetingSourceScanner.RejectedBrowserTab]) {
@@ -471,7 +490,9 @@ final class MeetingDiscoveryWatcher {
                 "bundle_id": tab.bundleID,
                 "display_name": tab.displayName,
                 "kind": "browser",
-                "title": tab.title,
+                // SEC38: a shape class, never the title. The throttle signature above keeps the title
+                // in memory, so a second tab still re-logs.
+                "shape": rejectedTabShape(tab.title),
                 "reason": tab.reason,
             ])
         }

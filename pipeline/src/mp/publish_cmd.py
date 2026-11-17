@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 from . import entry
-from .publish_router import EXIT_PUBLISH_FAILED, all_sinks_failed, fanout
+from .publish_router import EXIT_PUBLISH_FAILED, all_sinks_failed, fanout, published_sinks
 
 log = logging.getLogger("mp.publish")
 
@@ -49,7 +49,7 @@ def main(argv: list[str]) -> int:
     if all_sinks_failed(pub):
         log.error("publish failed on every sink")
         return EXIT_PUBLISH_FAILED
-    log.info("publish done: page_url=%s", pub.get("page_url"))
+    log.info("publish done: sinks=%s", ",".join(published_sinks(pub)) or "local-only")  # SEC38
     return 0
 
 

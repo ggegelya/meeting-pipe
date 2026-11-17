@@ -352,6 +352,16 @@ def all_sinks_failed(result: dict[str, Any]) -> bool:
     )
 
 
+def published_sinks(result: dict[str, Any]) -> list[str]:
+    """The sinks that landed, by name, sorted: what the logs carry instead of ``page_url`` (SEC38).
+
+    A note path or page address embeds the meeting title's slug, so it stays in
+    ``<stem>.publish.json`` (the Library's link) and never reaches a log line.
+    """
+    sinks = result.get("sinks") or {}
+    return sorted(name for name, r in sinks.items() if isinstance(r, dict) and not r.get("error"))
+
+
 def publish_sidecar_path(summary_json: Path) -> Path:
     stem = summary_json.name.removesuffix(".summary.json")
     return summary_json.parent / f"{stem}{PUBLISH_SIDECAR_SUFFIX}"

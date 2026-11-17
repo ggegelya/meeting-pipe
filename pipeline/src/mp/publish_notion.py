@@ -127,7 +127,7 @@ class NotionRestPublisher:
             encoding="utf-8",
         )
 
-        log.info("Published → %s", page_url)
+        log.info("Published to Notion")  # SEC38: the page address embeds the title slug
         return {"page_id": page_id, "page_url": page_url, "idempotent": idempotent}
 
 

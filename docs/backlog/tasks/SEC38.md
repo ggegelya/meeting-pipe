@@ -2,9 +2,9 @@
 id: SEC38
 title: The event and daemon logs carry window titles, display names and published note paths, so a diagnostics pack cannot be shared without scrubbing
 category: Security
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). The field pack held 3,007 window titles in 1,484 shareable_content_no_match rows, browser_tab_rejected and window_title_changed write titles verbatim (F163), and 70 pipeline_succeeded rows plus 838 daemon.log "pipeline OK" lines carry a note path or page address that embeds the title slug, so the logs cannot go to an analysis session unscrubbed. Log counts and shape classes instead of titles and sink names instead of note paths, in both trees, behind a truth-fence denylist of attribute keys.
+comment: Shipped 2026-11-18 - window titles, note paths and the error text of pipeline_failed, retranscribe_failed, republish_failed and merge_failed are out of the event, daemon and pipeline logs in both trees (shape classes, sink names, error classes), behind the CI5 content-key fence. Other Library failure rows and Python run_failed still carry error text. Owner still owes the one-week grep of events.jsonl for `candidate_titles`, `"title"` and `page_url` on the new build.
 ---
 
 # SEC38: The event and daemon logs carry window titles, display names and published note paths, so a diagnostics pack cannot be shared without scrubbing

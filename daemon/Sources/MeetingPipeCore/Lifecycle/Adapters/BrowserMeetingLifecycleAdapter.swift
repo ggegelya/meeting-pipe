@@ -119,7 +119,7 @@ public final class BrowserMeetingLifecycleAdapter: LifecycleAdapter {
         self.init(
             shareableContent: ShareableContentSignal(eventLog: eventLog),
             workspace: WorkspaceSignal(eventLog: eventLog),
-            windowTitle: WindowTitleSignal(axBus: axBus, eventLog: eventLog),
+            windowTitle: WindowTitleSignal(axBus: axBus, eventLog: eventLog, patterns: titleMatchers),
             bundleIDs: bundleIDs,
             titleMatchers: titleMatchers,
             eventLog: eventLog

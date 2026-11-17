@@ -151,13 +151,17 @@ final class ShareableContentSignalTests: XCTestCase {
         XCTAssertTrue(log.entries.contains { $0.action == "shareable_content_unavailable" })
     }
 
-    func test_no_match_logs_candidate_titles_for_diagnosis() {
+    /// SEC38: the row diagnoses "no window" against "title mismatch" by count and shape class, never
+    /// by the titles, and stays deduped on an unchanged list.
+    func test_no_match_logs_candidate_shapes_and_no_titles() {
         let log = RecordingEventLog()
         let scheduler = ManualScheduler()
         let signal = ShareableContentSignal(
             eventLog: log,
             probe: {
-                [Summary(bundleIdentifier: "com.microsoft.teams2", title: "Chat - Acme")]
+                [Summary(bundleIdentifier: "com.microsoft.teams2", title: "Chat | Microsoft Teams"),
+                 Summary(bundleIdentifier: "com.microsoft.teams2", title: "Placeholder Topic"),
+                 Summary(bundleIdentifier: "com.microsoft.teams2", title: nil)]
             },
             scheduler: manualScheduler(scheduler)
         )
@@ -165,11 +169,14 @@ final class ShareableContentSignalTests: XCTestCase {
         signal.start(context: teamsContext, titleMatch: { title in
             (title ?? "").lowercased().contains("meeting")
         })
+        scheduler.tick?()
 
-        XCTAssertTrue(
-            log.entries.contains { $0.action == "shareable_content_no_match" },
-            "A bundle-owned window that fails the title match is logged for diagnosis"
-        )
+        let rows = log.entries.filter { $0.action == "shareable_content_no_match" }
+        XCTAssertEqual(rows.count, 1, "an unchanged candidate list still emits once")
+        XCTAssertEqual(rows.first?.attributes["candidate_count"], "3")
+        XCTAssertEqual(rows.first?.attributes["candidate_shapes"], String(describing: ["brand_token", "other", "nil"]))
+        XCTAssertNil(rows.first?.attributes["candidate_titles"])
+        XCTAssertFalse(rows.first?.attributes.values.contains { $0.contains("Placeholder Topic") } ?? true)
     }
 
     // MARK: - PERF15: the production start never waits on the probe

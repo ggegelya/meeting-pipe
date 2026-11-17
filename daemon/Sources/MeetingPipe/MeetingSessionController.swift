@@ -1459,7 +1459,8 @@ final class MeetingSessionController: @unchecked Sendable {
             options: [.prettyPrinted, .sortedKeys]
         )
         try data.write(to: sidecar, options: .atomic)
-        Log.writeLine("daemon", "meta sidecar → \(sidecar.lastPathComponent) title=\(source?.meetingTitle ?? "(none)") workflow=\(activeWorkflow?.name ?? "(none)")")
+        let titleKnown = source?.meetingTitle?.isEmpty == false  // SEC38: whether, never which
+        Log.writeLine("daemon", "meta sidecar → \(sidecar.lastPathComponent) title_known=\(titleKnown) workflow=\(activeWorkflow?.name ?? "(none)")")
     }
 
     /// Write the start-time recovery manifest (`<stem>.recovery.json`, REC2 /

@@ -547,6 +547,86 @@ def non_snake_actions() -> list[tuple[str, int, str]]:
     return out
 
 
+# SEC38: attribute keys that carry meeting content (a window or meeting title, a
+# published note's path or page address, which embeds the title slug). The event
+# log is handed to analysis sessions as a diagnostics pack, so a row carries a
+# shape class or a sink name instead. `previous` is deliberately absent: many rows
+# use it for a non-title value, so `window_title_changed`'s is pinned by its test.
+CONTENT_KEY_DENYLIST = ("title", "titles", "candidate_titles", "page_url", "note_path", "meeting_title")
+# Keys that look like content and are not, with the reason (SEC38's filing-time
+# correction). A new entry needs the same kind of reason.
+CONTENT_KEY_ALLOWLIST: dict[str, str] = {
+    "display_name": "the app's localizedName (MeetingSourceScanner), not a meeting's",
+    "ax_label": "the mute button's accessibility label (MicGate.attributes(for:))",
+    "label": "the mute button's AX label, or the diarizer's cluster label; a typed speaker name is never logged",
+}
+# Interpolations a daemon.log line may not carry.
+WRITELINE_DENYLIST = ("meetingTitle", "pageURL")
+
+SWIFT_EMIT_CALL = re.compile(r"(?:Log\.event|\.emit)\(\s*category:")
+SWIFT_ATTR_ASSIGN = re.compile(r'attributes\["([a-z_]+)"\]\s*=')
+PY_EMIT_CALL = re.compile(r"events\.emit\(")
+WRITELINE_CALL = re.compile(r"Log\.writeLine\(")
+
+
+SWIFT_ATTR_LITERAL = re.compile(r":\s*\[String:\s*Any\]\s*=\s*\[")
+
+
+def _denied(key: str) -> bool:
+    """A denylisted key, or any `*_title` / `*_titles` (END28's `from_title` was both)."""
+    return key in CONTENT_KEY_DENYLIST or key.endswith(("_title", "_titles"))
+
+
+def _call_span(src: str, open_paren: int, pair: str = "()") -> str:
+    """The text from an opening bracket to its balanced close."""
+    depth = 0
+    for i in range(open_paren, len(src)):
+        if src[i] == pair[0]:
+            depth += 1
+        elif src[i] == pair[1]:
+            depth -= 1
+            if depth == 0:
+                return src[open_paren : i + 1]
+    return src[open_paren:]
+
+
+def content_key_hits(swift: dict[str, str], python: dict[str, str]) -> list[str]:
+    """`path:line: why` for every denied key in an emit call or a daemon.log line. Pure."""
+    out: list[str] = []
+    dict_key = re.compile(r'(?:^|[\[,])\s*"([a-z_]+)"\s*:', re.MULTILINE)
+
+    def line_of(src: str, pos: int) -> int:
+        return src.count("\n", 0, pos) + 1
+
+    for path, src in swift.items():
+        for m in SWIFT_EMIT_CALL.finditer(src):
+            span = _call_span(src, m.start() + m.group(0).index("("))
+            # A dictionary key follows `[`, `,` or a line start; a ternary's `? "x" :` is a value.
+            for key in dict_key.findall(span):
+                if _denied(key):
+                    out.append(f"{path}:{line_of(src, m.start())}: event attribute `{key}`")
+        # An attributes dictionary built before the call (`var attributes: [String: Any] = [...]`).
+        for m in SWIFT_ATTR_LITERAL.finditer(src):
+            for key in dict_key.findall(_call_span(src, m.end() - 1, "[]")):
+                if _denied(key):
+                    out.append(f"{path}:{line_of(src, m.start())}: event attribute `{key}`")
+        for m in SWIFT_ATTR_ASSIGN.finditer(src):
+            if _denied(m.group(1)):
+                out.append(f"{path}:{line_of(src, m.start())}: event attribute `{m.group(1)}`")
+        for m in WRITELINE_CALL.finditer(src):
+            span = _call_span(src, m.end() - 1)
+            for name in WRITELINE_DENYLIST:
+                if re.search(r"\\\([^)]*\b" + name + r"\b", span):
+                    out.append(f"{path}:{line_of(src, m.start())}: daemon log line interpolates `{name}`")
+    for path, src in python.items():
+        for m in PY_EMIT_CALL.finditer(src):
+            span = _call_span(src, m.end() - 1)
+            for key in re.findall(r"\b([a-z_]+)\s*=(?!=)", span):
+                if _denied(key):
+                    out.append(f"{path}:{line_of(src, m.start())}: event attribute `{key}`")
+    return out
+
+
 def check_events() -> bool:
     fence = Fence("event categories")
 
@@ -576,6 +656,17 @@ def check_events() -> bool:
                 f"category `{category}` is documented for the {source} but nothing emits "
                 "it. Remove the row entry, or restore the emitter."
             )
+
+    swift_src = {str(p.relative_to(REPO)): p.read_text(encoding="utf-8") for p in _swift_sources()}
+    py_src = {
+        str(p.relative_to(REPO)): p.read_text(encoding="utf-8")
+        for p in sorted((REPO / "pipeline" / "src" / "mp").rglob("*.py"))
+    }
+    for hit in content_key_hits(swift_src, py_src):
+        fence.fail(
+            f"{hit} carries meeting content into a log (SEC38). Log a shape class "
+            "(`WindowTitleShape`), the sink names, or a count instead."
+        )
 
     for path, line, action in non_snake_actions():
         fence.fail(

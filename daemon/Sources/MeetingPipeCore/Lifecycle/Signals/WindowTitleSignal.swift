@@ -15,6 +15,8 @@ public final class WindowTitleSignal {
     private let axBus: AXObserverBus
     private let eventLog: EventLog
     private let probe: Probe
+    /// The owning adapter's in-meeting title matchers, used only to classify the logged shape (SEC38).
+    private let patterns: [(String?) -> Bool]
 
     private var token: AXObserverBus.Token?
     private var window: AXUIElement?
@@ -23,8 +25,10 @@ public final class WindowTitleSignal {
     public init(
         axBus: AXObserverBus,
         eventLog: EventLog = NoopEventLog(),
-        probe: @escaping Probe = WindowTitleSignal.defaultProbe
+        probe: @escaping Probe = WindowTitleSignal.defaultProbe,
+        patterns: [(String?) -> Bool] = []
     ) {
+        self.patterns = patterns
         self.axBus = axBus
         self.eventLog = eventLog
         self.probe = probe
@@ -59,8 +63,9 @@ public final class WindowTitleSignal {
         lastTitle = title
         eventLog.emit(category: "signal", action: "window_title_changed", attributes: [
             "bundle_id": context.bundleID,
-            "title": title as Any,
-            "previous": previous as Any,
+            // SEC38: shape classes, never the titles; the full title still reaches `onChange` in memory.
+            "shape": WindowTitleShape.classify(title, patterns: patterns),
+            "previous_shape": WindowTitleShape.classify(previous, patterns: patterns),
             "reason": reason
         ])
         if let title = title { onChange?(title) }

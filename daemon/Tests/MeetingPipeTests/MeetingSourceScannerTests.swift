@@ -223,9 +223,27 @@ final class MeetingSourceScannerTests: XCTestCase {
         XCTAssertEqual(refused.count, 1, "a refused browser tab must not be silent")
         XCTAssertEqual(refused.first?["category"] as? String, "detector")
         XCTAssertEqual(refused.first?["bundle_id"] as? String, "com.google.Chrome")
-        XCTAssertEqual(refused.first?["title"] as? String, "Weekly sync | Microsoft Teams")
+        // SEC38: a shape class, never the page title.
+        XCTAssertNil(refused.first?["title"])
+        XCTAssertEqual(refused.first?["shape"] as? String, "brand_token")
         XCTAssertEqual(refused.first?["reason"] as? String, "weak_title_only")
         XCTAssertEqual(refused.first?["kind"] as? String, "browser")
+    }
+
+    /// SEC38: the row carries a shape, but the throttle still keys on the title in memory, so a second
+    /// tab of the same shape in the same browser re-logs and an unchanged one does not.
+    func test_a_second_refused_tab_with_another_title_still_relogs() {
+        func tab(_ title: String) -> MeetingSourceScanner.RejectedBrowserTab {
+            .init(bundleID: "com.google.Chrome", displayName: "Google Chrome", title: title,
+                  reason: MeetingSourceScanner.RejectedBrowserTab.weakTitleOnly)
+        }
+        let first = MeetingDiscoveryWatcher.rejectedTabRows([tab("Placeholder A | Microsoft Teams")], lastSignature: nil)
+        XCTAssertEqual(first.rows.count, 1)
+        let same = MeetingDiscoveryWatcher.rejectedTabRows([tab("Placeholder A | Microsoft Teams")], lastSignature: first.signature)
+        XCTAssertTrue(same.rows.isEmpty)
+        let other = MeetingDiscoveryWatcher.rejectedTabRows([tab("Placeholder B | Microsoft Teams")], lastSignature: first.signature)
+        XCTAssertEqual(other.rows.count, 1)
+        XCTAssertEqual(MeetingDiscoveryWatcher.rejectedTabShape("Placeholder B | Microsoft Teams"), "brand_token")
     }
 
     /// The refusal rides beside the scoring decisions rather than through them: a refused tab is not

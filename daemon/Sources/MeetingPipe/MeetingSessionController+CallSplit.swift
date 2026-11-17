@@ -63,7 +63,8 @@ extension MeetingSessionController {
         case .adopted(let identity):
             Log.event(category: "signal", action: "call_identity_observed", attributes: [
                 "bundle_id": source.bundleID,
-                "title": identity.title ?? NSNull(),
+                // SEC38: the title's shape class, never the meeting subject; `window` tells a split apart.
+                "shape": MeetingTitlePatterns.windowShape(bundleID: source.bundleID, title: identity.title),
                 "window": Int(identity.windowID),
                 "subrole": identity.subrole ?? NSNull(),
                 "change": "adopted",
@@ -73,15 +74,15 @@ extension MeetingSessionController {
             var attributes: [String: Any] = [
                 "bundle_id": source.bundleID,
                 "split_from": stem,
-                "from_title": from.title ?? NSNull(),
-                "to_title": to.title ?? NSNull(),
+                "from_shape": MeetingTitlePatterns.windowShape(bundleID: source.bundleID, title: from.title),
+                "to_shape": MeetingTitlePatterns.windowShape(bundleID: source.bundleID, title: to.title),
             ]
             if let hold = holdPolicy.hold {
                 attributes["since_hold_start_sec"] = now.timeIntervalSince(hold.startedAt)
             }
             Log.event(category: "signal", action: "call_identity_observed", attributes: [
                 "bundle_id": source.bundleID,
-                "title": to.title ?? NSNull(),
+                "shape": MeetingTitlePatterns.windowShape(bundleID: source.bundleID, title: to.title),
                 "window": Int(to.windowID),
                 "subrole": to.subrole ?? NSNull(),
                 "change": "split",

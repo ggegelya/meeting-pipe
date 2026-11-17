@@ -579,6 +579,75 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertTrue(driver.startedFiles.isEmpty, "pipeline must not run when ASR fails")
     }
 
+    // MARK: - SEC38: outcome rows name sinks and error classes, never a title or note path
+
+    func test_pipeline_succeeded_logs_sinks_and_no_page_url_SEC38() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        var completed = 0
+        dispatcher.onJobCompleted = { _, _ in completed += 1 }
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir); unsetenv("MEETINGPIPE_LOGS_DIR") }
+        let logs = try withLogs(dir)
+        try #"{"schema_version":1,"state":"partial","page_url":"file:///vault/placeholder-topic.md","sinks":{"obsidian":{"ok":true,"page_url":"file:///vault/placeholder-topic.md","error":null},"notion":{"ok":false,"page_url":null,"error":"401"}}}"#
+            .write(to: dir.appendingPathComponent("clip.publish.json"), atomically: true, encoding: .utf8)
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        driver.finish(.success(URL(string: "file:///vault/placeholder-topic.md")))
+        waitForJobCompletion { completed }
+
+        let row = try XCTUnwrap(eventRows(logs).first { $0["action"] as? String == "pipeline_succeeded" })
+        XCTAssertNil(row["page_url"])
+        XCTAssertEqual(row["published"] as? Bool, true)
+        XCTAssertEqual(row["sinks"] as? [String], ["obsidian"])
+        let daemonLog = (try? String(contentsOf: logs.appendingPathComponent("daemon.log"), encoding: .utf8)) ?? ""
+        XCTAssertFalse(daemonLog.contains("placeholder-topic"), "daemon.log names sinks, not the note path")
+        XCTAssertTrue(daemonLog.contains("pipeline OK -> obsidian"))
+    }
+
+    func test_pipeline_failed_logs_no_error_text_and_the_sidecar_keeps_it_SEC38() throws {
+        let driver = FakeDriver()
+        let dispatcher = makeDispatcher(driver)
+        var completed = 0
+        dispatcher.onJobCompleted = { _, _ in completed += 1 }
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir); unsetenv("MEETINGPIPE_LOGS_DIR") }
+        let logs = try withLogs(dir)
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+        // An error whose own description quotes the title, so the assertion below is not vacuous
+        // (`LaunchError.nonZeroExit`'s description is only a caption).
+        struct TitledError: LocalizedError {
+            var errorDescription: String? { "summarize failed for Placeholder Topic" }
+        }
+        driver.finish(.failure(TitledError()))
+        waitForJobCompletion { completed }
+
+        let row = try XCTUnwrap(eventRows(logs).first { $0["action"] as? String == "pipeline_failed" })
+        XCTAssertNil(row["error"])
+        XCTAssertEqual(row["error_type"] as? String, "TitledError")
+        XCTAssertEqual(row["stage"] as? String, "pipeline")
+        let text = try String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)
+            + ((try? String(contentsOf: logs.appendingPathComponent("daemon.log"), encoding: .utf8)) ?? "")
+        XCTAssertFalse(text.contains("Placeholder Topic"))
+        let sidecar = PipelineFailureSidecar.read(stem: "clip", in: dir)
+        XCTAssertTrue(sidecar?.reason.contains("Placeholder Topic") ?? false, "the Library's sidecar keeps the full reason")
+    }
+
+    func test_failure_attributes_carry_the_exit_code_and_a_fixed_class_SEC38() {
+        let attrs = PipelineOutcomeLog.failureAttributes(
+            PipelineLauncher.LaunchError.nonZeroExit(1, "Traceback ... Placeholder Topic"), stage: .pipeline
+        )
+        XCTAssertEqual(attrs["error_type"] as? String, "non_zero_exit")
+        XCTAssertEqual(attrs["exit_code"] as? Int, 1)
+        XCTAssertEqual(attrs["stage"] as? String, "pipeline")
+        XCTAssertEqual(PipelineOutcomeLog.successLine(nil), "pipeline OK -> local-only")
+    }
+
     // MARK: - SEC37: the held-end trim reads the sidecar fail-closed
 
     private func eventRows(_ logs: URL) -> [[String: Any]] {

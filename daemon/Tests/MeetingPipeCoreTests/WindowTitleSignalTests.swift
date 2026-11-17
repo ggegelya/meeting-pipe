@@ -66,4 +66,27 @@ final class WindowTitleSignalTests: XCTestCase {
         XCTAssertEqual(bus.activeSubscriptionCount, 0)
         XCTAssertNil(signal.lastTitle)
     }
+
+    /// SEC38: the row carries the shape classes, never either title.
+    func test_title_change_logs_shapes_and_no_titles() throws {
+        let log = RecordingEventLog()
+        var current: String? = "Meet - abc-defg-hij"
+        let signal = WindowTitleSignal(
+            axBus: AXObserverBus(), eventLog: log, probe: { _ in current },
+            patterns: [MeetingTitlePatterns.googleMeet]
+        )
+        try signal.start(context: teamsContext, window: stubElement())
+        current = "Placeholder Topic"
+        signal.evaluate(reason: "test")
+
+        let rows = log.entries.filter { $0.action == "window_title_changed" }
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows.last?.attributes["shape"], "other")
+        XCTAssertEqual(rows.last?.attributes["previous_shape"], "matches")
+        for row in rows {
+            XCTAssertNil(row.attributes["title"])
+            XCTAssertNil(row.attributes["previous"])
+            XCTAssertFalse(row.attributes.values.contains { $0.contains("Placeholder") || $0.contains("abc-defg") })
+        }
+    }
 }

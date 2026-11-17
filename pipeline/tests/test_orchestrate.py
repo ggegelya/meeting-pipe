@@ -1550,3 +1550,30 @@ def test_a_print_that_matches_the_split_leader_names_it_alone_and_enrolls_it_onc
     speakers = [seg["speaker"] for seg in json.loads(out["json"].read_text(encoding="utf-8"))["segments"]]
     assert speakers == ["Me", "THEM-A", "THEM-B"]
     assert store.meetings() == 1    # the tier declined, so nothing new enrols
+
+
+# --- SEC38: the success rows carry sink names, never the page address ---------
+
+
+def test_run_all_success_events_carry_sink_names_and_no_page_url(tmp_path: Path, monkeypatch):
+    """The page address embeds the meeting title's slug, and the event log is handed to
+    analysis sessions; `<stem>.publish.json` keeps the link, the log names the sinks."""
+    emitted: list[tuple] = []
+    monkeypatch.setattr("mp.orchestrate.events.emit",
+                        lambda cat, action, **attrs: emitted.append((cat, action, attrs)))
+    pub = {
+        "page_id": "p", "page_url": "https://example.invalid/placeholder-topic-slug",
+        "sinks": {"notion": {"page_url": "https://example.invalid/placeholder-topic-slug"},
+                  "obsidian": {"error": "boom"}},
+        "failures": [("obsidian", "boom")],
+    }
+    _run_with_publish_result(tmp_path, pub, monkeypatch)
+
+    completed = next(attrs for _, a, attrs in emitted if a == "run_completed")
+    stage = next(attrs for _, a, attrs in emitted
+                 if a == "stage_completed" and attrs.get("stage") == "publish")
+    for row in (completed, stage):
+        assert "page_url" not in row
+        assert "placeholder-topic-slug" not in json.dumps(row)
+        assert row["sinks"] == ["notion"]
+    assert completed["published"] is True
