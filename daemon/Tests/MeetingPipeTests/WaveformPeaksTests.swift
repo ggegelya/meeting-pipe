@@ -13,6 +13,9 @@ final class WaveformPeaksTests: XCTestCase {
         try FileManager.default.createDirectory(
             at: dir, withIntermediateDirectories: true
         )
+        // T11: this directory holds the 220 MiB `long.wav`, and nothing ever removed it (135 of them
+        // were 5.37 GiB on the dev Mac). The hook runs after the test, including when it throws.
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
         return dir
     }
 
@@ -121,6 +124,27 @@ final class WaveformPeaksTests: XCTestCase {
         XCTAssertGreaterThan(lastRight, lastLeft + 0.3)
     }
 
+    /// T11: the chunked writer must not drop or repeat a frame at a chunk boundary. The ramp is
+    /// strictly increasing, so the file's length and its last frame tell if one went missing.
+    func test_the_chunked_writer_is_exact_across_chunk_boundaries() throws {
+        let dir = try tempDir()
+        let wavURL = dir.appendingPathComponent("ramp.wav")
+        let total = 5_003   // not a multiple of the 1_000-frame chunk
+        // Frame i is stored as the Int16 value i, so a frame that moved by one is visible exactly.
+        try writeStereoWAV(at: wavURL, sampleRate: 1_000, seconds: Double(total) / 1_000, chunkFrames: 1_000) { i, _ in
+            (Float(i) / 32767, 0)
+        }
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: wavURL.path)[.size] as? Int, 44 + total * 4)
+        let file = try AVAudioFile(forReading: wavURL)
+        XCTAssertEqual(file.length, AVAudioFramePosition(total))
+        let buf = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(total)))
+        try file.read(into: buf)
+        let left = try XCTUnwrap(buf.floatChannelData?[0])
+        for i in [0, 1, 999, 1_000, 1_001, 1_999, 2_000, 4_999, 5_000, 5_001, total - 1] {
+            XCTAssertEqual(left[i], Float(i) / 32768, accuracy: 1e-5, "frame \(i)")
+        }
+    }
+
     func test_compute_renders_60_minute_synth_in_under_two_seconds() throws {
         // Mirrors the acceptance criterion (60-min file renders in <2 s).
         // Uses a low sample rate so the test stays fast on CI while
@@ -182,36 +206,54 @@ final class WaveformPeaksTests: XCTestCase {
         at url: URL,
         sampleRate: Int,
         seconds: Double,
+        chunkFrames: Int = 1 << 16,
         sampleFn: (Int, Int) -> (Float, Float)
     ) throws {
         let totalFrames = Int(Double(sampleRate) * seconds)
         let byteRate = sampleRate * 2 /*ch*/ * 2 /*bytes/sample*/
         let blockAlign: UInt16 = 4
-        let dataSize = totalFrames * 4   // 2 channels × 2 bytes
+        let dataSize = totalFrames * 4   // 2 channels x 2 bytes
         let riffSize = 36 + dataSize
 
-        var data = Data()
-        data.append(contentsOf: Array("RIFF".utf8))
-        data.append(contentsOf: u32LE(UInt32(riffSize)))
-        data.append(contentsOf: Array("WAVE".utf8))
-        data.append(contentsOf: Array("fmt ".utf8))
-        data.append(contentsOf: u32LE(16))           // fmt chunk size
-        data.append(contentsOf: u16LE(1))            // PCM
-        data.append(contentsOf: u16LE(2))            // channels
-        data.append(contentsOf: u32LE(UInt32(sampleRate)))
-        data.append(contentsOf: u32LE(UInt32(byteRate)))
-        data.append(contentsOf: u16LE(blockAlign))
-        data.append(contentsOf: u16LE(16))           // bits/sample
-        data.append(contentsOf: Array("data".utf8))
-        data.append(contentsOf: u32LE(UInt32(dataSize)))
+        var header = Data()
+        header.append(contentsOf: Array("RIFF".utf8))
+        header.append(contentsOf: u32LE(UInt32(riffSize)))
+        header.append(contentsOf: Array("WAVE".utf8))
+        header.append(contentsOf: Array("fmt ".utf8))
+        header.append(contentsOf: u32LE(16))           // fmt chunk size
+        header.append(contentsOf: u16LE(1))            // PCM
+        header.append(contentsOf: u16LE(2))            // channels
+        header.append(contentsOf: u32LE(UInt32(sampleRate)))
+        header.append(contentsOf: u32LE(UInt32(byteRate)))
+        header.append(contentsOf: u16LE(blockAlign))
+        header.append(contentsOf: u16LE(16))           // bits/sample
+        header.append(contentsOf: Array("data".utf8))
+        header.append(contentsOf: u32LE(UInt32(dataSize)))
 
-        data.reserveCapacity(data.count + dataSize)
-        for i in 0..<totalFrames {
-            let (l, r) = sampleFn(i, totalFrames)
-            data.append(contentsOf: i16LE(toInt16(l)))
-            data.append(contentsOf: i16LE(toInt16(r)))
+        // T11: the data goes out through a handle in fixed chunks from one reused buffer. It used
+        // to be built whole in memory, a frame at a time, then written in one call.
+        precondition(chunkFrames > 0)
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: url)
+        var closed = false
+        defer { if !closed { try? handle.close() } }
+        try handle.write(contentsOf: header)
+        var buffer = [Int16](repeating: 0, count: chunkFrames * 2)
+        var frame = 0
+        while frame < totalFrames {
+            let n = min(chunkFrames, totalFrames - frame)
+            for k in 0..<n {
+                let (l, r) = sampleFn(frame + k, totalFrames)
+                buffer[2 * k] = toInt16(l).littleEndian
+                buffer[2 * k + 1] = toInt16(r).littleEndian
+            }
+            try buffer.withUnsafeBytes { raw in
+                try handle.write(contentsOf: Data(bytes: raw.baseAddress!, count: n * 4))
+            }
+            frame += n
         }
-        try data.write(to: url)
+        closed = true
+        try handle.close()   // a close-time I/O error fails the test, as the old `data.write` would have
     }
 
     private func toInt16(_ f: Float) -> Int16 {
@@ -225,11 +267,6 @@ final class WaveformPeaksTests: XCTestCase {
     }
 
     private func u32LE(_ v: UInt32) -> [UInt8] {
-        let le = v.littleEndian
-        return withUnsafeBytes(of: le) { Array($0) }
-    }
-
-    private func i16LE(_ v: Int16) -> [UInt8] {
         let le = v.littleEndian
         return withUnsafeBytes(of: le) { Array($0) }
     }

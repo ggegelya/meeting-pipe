@@ -48,16 +48,22 @@ final class MergeLengthFallbackTests: XCTestCase {
         body.append(le16(32))
         body.append(contentsOf: Array("data".utf8))
         body.append(le32(declaredDataSize ?? UInt32(payload)))
-        body.append(Data(count: payload))
 
-        var file = Data()
-        file.append(contentsOf: Array("RIFF".utf8))
-        file.append(le32(UInt32(4 + body.count)))
-        file.append(contentsOf: Array("WAVE".utf8))
-        file.append(body)
+        var header = Data()
+        header.append(contentsOf: Array("RIFF".utf8))
+        header.append(le32(UInt32(4 + body.count + payload)))
+        header.append(contentsOf: Array("WAVE".utf8))
+        header.append(body)
 
+        // T11 (F194): the header, then the file is extended to its full length. A sparse file on
+        // APFS, so the size `audioDurationSec` reads is unchanged while nothing is buffered or
+        // written; this fixture was 1.85 GB of zeros for a read of the first 8 KB.
         let url = dir.appendingPathComponent(name)
-        try file.write(to: url)
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.write(contentsOf: header)
+        try handle.truncate(atOffset: UInt64(header.count + payload))
         return url
     }
 
@@ -174,6 +180,11 @@ final class MergeLengthFallbackTests: XCTestCase {
         let mic = try makeWav("orphan.mic.wav", seconds: 2798.5, declaredDataSize: nil)
         let system = try makeWav("orphan.system.wav", seconds: 6844.18, declaredDataSize: 0)
 
+        // T11 (F194): the two incident-sized legs cost nothing on disk.
+        for url in [mic, system] {
+            let allocated = try XCTUnwrap(url.resourceValues(forKeys: [.fileAllocatedSizeKey]).fileAllocatedSize)
+            XCTAssertLessThan(allocated, 1_000_000, "\(url.lastPathComponent) should be a sparse fixture")
+        }
         let lengths = P.mergeLengths(
             micDurationSec: P.audioDurationSec(of: mic),
             systemDurationSec: P.audioDurationSec(of: system),
