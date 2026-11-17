@@ -4,7 +4,7 @@ title: The session layer ignores sleep, wake, lock and display changes and measu
 category: Detection
 status: partial
 priority: P2
-comment: Shipped 2026-11-17: dwells (pair, lone, END27 grace) on awake time via the engine's sleep intervals; a wake gate needing a fresh post-wake live or ended reading (the vetoer's own where engaged) or a 10 s awake bound; the coordinator detects sleep from its wall-vs-uptime gap (beats the didWake race) and asks the adapter to re-publish; SleepWakeObserver (wake, screen wake, unlock, display change) as a SessionWatchers member; a window-gone deferred 5 s after a display change; cooldown and resume window on systemUptime, resume capped at 10 min wall; idle backstop restarts its streak across a sample gap over 30 s. Remainder: the owner walkthrough (a lid-close during a test call) and the owner's answer on the 10 min resume cap.
+comment: Shipped 2026-11-17: dwells (pair, lone, END27 grace) on awake time via the engine's sleep intervals; a wake gate needing a fresh post-wake live or ended reading (the vetoer's own where engaged) or a 10 s awake bound; the coordinator detects sleep from its wall-vs-uptime gap (beats the didWake race) and asks the adapter to re-publish; SleepWakeObserver (wake, screen wake, unlock, display change) as a SessionWatchers member; a window-gone deferred 5 s after a display change; cooldown and resume window on systemUptime, resume capped at 10 min wall; idle backstop restarts its streak across a sample gap over 30 s. Owner approved the 10 min resume wall cap and the uncapped awake-time cooldown (2026-11-17). Remainder: the owner walkthrough (a lid-close during a test call).
 ---
 
 # END22: The session layer ignores sleep, wake, lock and display changes and measures every dwell on the wall clock, so a sleep inside an open hold confirms the end on the first tick after wake
@@ -50,7 +50,7 @@ Source finding: D076 (low, "consistent but unproven") in the [recording reliabil
 2. [owner] Once, during a test call with the recording running, close the lid for about 2 minutes, open it, stay in the call for a minute, then end it. Pass: one recording that ends after the call ends, not on wake.
 3. [session] Grep `events.jsonl` for `lifecycle_wake_reset` and the `lifecycle ended` row that followed it, and report the gap.
 
-**Progress (2026-11-17): shipped; owner walkthrough and one owner question remain.**
+**Progress (2026-11-17): shipped; the owner walkthrough remains.**
 
 Designed with an Opus review, which changed four things from the first draft:
 
@@ -61,7 +61,7 @@ Designed with an Opus review, which changed four things from the first draft:
 
 Other decisions not in the spec: unlock is the distributed `com.apple.screenIsUnlocked` (the spec's `sessionDidBecomeActiveNotification` is fast user switching); a display-change window-gone is deferred 5 s and ingested stamped at the settle's end unless a newer window reading supersedes it (mapping it to `.unknown` would have starved a browser meeting's only end class); the 5 s settle is unmeasured, since none of the four topology changes in the owner's recorder.log fell in a call. The host hold stamp stays wall-clock (a trim position, compared with Teams' log); DET18's offer needed nothing (`SkippedMeetingLatch` caps each feed gap at one idle poll, pinned by `SkippedMeetingLatchTests`); the prompt timeout is left as it is.
 
-**Owner question (open, sent 2026-11-17):** the resume window is now 120 s of awake time and also at most 10 min of wall time since the end, so a short lid-close mid-call still resumes and an overnight one prompts instead of silently resuming yesterday's recording. The spec asked only that a sleep neither close nor spend the window; the cap is `ResumeAfterEnd.wallCapSec`.
+**Owner decision (2026-11-17): approved as shipped.** The resume window is 120 s of awake time and at most 10 min of wall time since the end (`ResumeAfterEnd.wallCapSec`), so a short lid-close mid-call still resumes and an overnight one prompts instead of silently resuming yesterday's recording. The reprompt cooldown is on awake time with no wall cap. The known cost: a sleep longer than 10 min that falls inside the 120 s window (the lid closed within two minutes of a call ending) prompts on wake even if the same call is still running, where the spec's pure awake-time rule would have resumed it.
 
 Opus review of the diff, fixed before landing: `ProcessAudioSignal.refresh` forces a re-delivery instead of clearing `lastValue` (clearing it skipped END17's unknown delivery for a live mic whose objects vanished while asleep, leaving its veto in place for ever); the backstop restart moved from a wake handler into the backstop's own sample gap (the handler raced the first post-wake sample); a deferred window-gone is dropped on disengage; the clock sample restarts with each engagement and a small clock step just after a wake is not a second sleep.
 
