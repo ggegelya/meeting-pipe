@@ -327,14 +327,9 @@ def default_embedder(model_id: str = DEFAULT_EMBED_MODEL) -> Embedder:
 
 
 def _read_title(root: Path, stem: str) -> str:
-    summary_json = root / f"{stem}.summary.json"
-    if summary_json.exists():
-        try:
-            obj = json.loads(summary_json.read_text(encoding="utf-8"))
-            if isinstance(obj, dict) and obj.get("title"):
-                return str(obj["title"])
-        except (OSError, ValueError):
-            pass
+    obj = storage.read_json_object(root / f"{stem}.summary.json")
+    if obj is not None and obj.get("title"):
+        return str(obj["title"])
     return stem
 
 

@@ -13,8 +13,9 @@ unflagged meeting is unaffected.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
+
+from . import storage
 
 # The trusted instruction that points the model at the excerpts. Lives in the
 # system prompt; the excerpts themselves ride in the (untrusted) transcript
@@ -71,11 +72,8 @@ def flagged_moments_block(transcript_md: Path) -> str | None:
 
 
 def _read_marker_offsets(path: Path) -> list[float]:
-    try:
-        obj = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    if not isinstance(obj, dict):
+    obj = storage.read_json_object(path)
+    if obj is None:
         return []
     out: list[float] = []
     for m in obj.get("markers", []):
@@ -86,11 +84,8 @@ def _read_marker_offsets(path: Path) -> list[float]:
 
 
 def _read_segments(path: Path) -> list[dict]:
-    try:
-        obj = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    segs = obj.get("segments") if isinstance(obj, dict) else None
+    obj = storage.read_json_object(path)
+    segs = obj.get("segments") if obj is not None else None
     return segs if isinstance(segs, list) else []
 
 

@@ -82,3 +82,49 @@ def test_human_bytes_reads_like_the_daemons_formatter() -> None:
     assert storage.human_bytes(1_500) == "1.5 KB"
     assert storage.human_bytes(2_400_000_000) == "2.4 GB"
     assert storage.human_bytes(None) == "unknown"
+
+
+# ---------- read_json_object (PIPE29) -----------------------------------------
+
+
+def test_read_json_object_returns_the_object(tmp_path: Path) -> None:
+    path = tmp_path / "x.json"
+    path.write_text('{"a": 1}')
+    assert storage.read_json_object(path) == {"a": 1}
+
+
+@pytest.mark.parametrize("text", ["", "{not json", "\udcff"])
+def test_read_json_object_is_none_for_a_file_that_does_not_parse(tmp_path: Path, text: str) -> None:
+    path = tmp_path / "x.json"
+    path.write_bytes(text.encode("utf-8", "surrogateescape"))
+    assert storage.read_json_object(path) is None
+
+
+def test_read_json_object_is_none_for_a_missing_file(tmp_path: Path) -> None:
+    assert storage.read_json_object(tmp_path / "absent.json") is None
+
+
+@pytest.mark.parametrize("text", ["[1]", '"x"', "5", "true", "null"])
+def test_read_json_object_is_none_for_json_that_is_not_an_object_and_says_so(
+    tmp_path: Path, text: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "x.json"
+    path.write_text(text)
+    with caplog.at_level("WARNING", logger="mp.storage"):
+        assert storage.read_json_object(path) is None
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert str(path) in warnings[0].getMessage()
+
+
+def test_load_json_object_tells_missing_from_unreadable(tmp_path: Path) -> None:
+    """The tri-state STOR9's writers branch on; `read_json_object` collapses it."""
+    assert storage.load_json_object(tmp_path / "absent.json").state == "missing"
+    bad = tmp_path / "bad.json"
+    bad.write_text("[1]")
+    read = storage.load_json_object(bad)
+    assert (read.state, read.kind) == ("unreadable", "parse")
+    assert "list" in read.reason
+    good = tmp_path / "good.json"
+    good.write_text('{"k": 2}')
+    assert storage.load_json_object(good).data == {"k": 2}

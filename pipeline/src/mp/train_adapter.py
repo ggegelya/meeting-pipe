@@ -36,7 +36,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import corrections, entry
+from . import corrections, entry, storage
 
 log = logging.getLogger("mp.train_adapter")
 
@@ -127,11 +127,8 @@ def build_pairs(
     instr = system_prompt if system_prompt is not None else base_system_prompt()
     pairs: list[Pair] = []
     for path in sorted(corrections_dir.glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if data.get("verdict") != "edited":
+        data = storage.read_json_object(path)
+        if data is None or data.get("verdict") != "edited":
             continue
         corrected = data.get("corrected_summary")
         if not isinstance(corrected, dict):
@@ -170,11 +167,8 @@ def build_run_pairs(
     skip = exclude_stems or set()
     pairs: list[Pair] = []
     for path in sorted(recordings_dir.glob("*.run.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(data, dict) or data.get("backend") == "local":
+        data = storage.read_json_object(path)
+        if data is None or data.get("backend") == "local":
             continue
         stem = data.get("stem") or path.name[: -len(".run.json")]
         if stem in skip:
@@ -199,11 +193,8 @@ def _read_summary(summary_json_path: str) -> dict | None:
     """The summary JSON a run produced, or None when absent/unreadable/empty."""
     if not summary_json_path:
         return None
-    try:
-        data = json.loads(Path(summary_json_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) and data else None
+    data = storage.read_json_object(Path(summary_json_path))
+    return data or None
 
 
 def _make_pair(

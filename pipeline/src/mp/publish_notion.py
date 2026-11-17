@@ -40,7 +40,7 @@ from typing import Any
 import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from . import entry
+from . import entry, storage
 from .config import Config, require_env, zero_egress
 from .endpoints import NOTION_API_BASE, NOTION_API_VERSION, notion_page_url
 from .schemas import MeetingSummary
@@ -740,22 +740,21 @@ def _load_meta_sidecar(summary_json: Path) -> dict[str, Any] | None:
     p = _meta_sidecar_path(summary_json)
     if not p.exists():
         return None
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
-    except Exception:  # noqa: BLE001
+    data = storage.read_json_object(p)
+    if data is None:
         log.warning("Could not parse meta sidecar %s; ignoring", p)
-        return None
+    return data
 
 
 def _load_sidecar(p: Path) -> dict[str, Any] | None:
+    """PIPE29: a list-shaped `<stem>.notion.json` used to reach `upsert`'s
+    `existing.get("page_id")`; it now reads as absent, the create path."""
     if not p.exists():
         return None
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
+    data = storage.read_json_object(p)
+    if data is None:
         log.warning("Could not parse sidecar %s; treating as new page", p)
-        return None
+    return data
 
 
 def _now_iso() -> str:

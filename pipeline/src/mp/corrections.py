@@ -36,6 +36,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from . import storage
+
 log = logging.getLogger("mp.corrections")
 
 CORRECTIONS_DIR = Path(
@@ -129,11 +131,8 @@ def set_publish_state(sidecar_path: Path, publish_state: str) -> None:
     badge a partial or failed publish. Atomic and best-effort: a missing or
     unreadable sidecar is a no-op.
     """
-    try:
-        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return
-    if not isinstance(payload, dict):
+    payload = storage.read_json_object(sidecar_path)
+    if payload is None:
         return
     payload["publish_state"] = publish_state
     tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
@@ -147,10 +146,7 @@ def read_run_sidecar(path: Path) -> dict[str, Any] | None:
     The stats command tolerates missing sidecars (older recordings
     pre-Phase-2) by counting them with empty backend/model.
     """
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    return storage.read_json_object(path)
 
 
 def _now_utc_iso() -> str:
@@ -185,10 +181,9 @@ def load_records(corrections_dir: Path) -> list[CorrectionRecord]:
         return []
     out: list[CorrectionRecord] = []
     for path in sorted(corrections_dir.glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as e:
-            log.warning("skipping unreadable correction %s: %s", path, e)
+        data = storage.read_json_object(path)
+        if data is None:
+            log.warning("skipping unreadable correction %s", path)
             continue
         rec = _record_from(data)
         if rec is not None:

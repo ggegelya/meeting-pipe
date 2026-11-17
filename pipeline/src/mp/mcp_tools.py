@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from . import actions as actions_mod
-from . import embed_index, visibility
+from . import embed_index, storage, visibility
 from .prompt_safety import clean_due, clean_person, wrap_untrusted
 from .workflow import read_meta
 
@@ -86,14 +86,7 @@ def _meeting_date(stem: str) -> str | None:
 
 
 def _summary(root: Path, stem: str) -> dict[str, Any]:
-    path = root / f"{stem}.summary.json"
-    if not path.exists():
-        return {}
-    try:
-        obj = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return obj if isinstance(obj, dict) else {}
+    return storage.read_json_object(root / f"{stem}.summary.json") or {}
 
 
 def _task(text: str) -> str:

@@ -677,14 +677,8 @@ def existing_daemon_transcript(wav: Path) -> dict | None:
 
     Shared with `mp finalize` (ASR3), which reads the same sidecar.
     """
-    json_path = wav.parent / f"{wav.stem}.json"
-    if not json_path.exists():
-        return None
-    try:
-        data = json.loads(json_path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        return None
-    if not isinstance(data, dict):
+    data = storage.read_json_object(wav.parent / f"{wav.stem}.json")
+    if data is None:
         return None
     if str(data.get("backend") or "") not in _DAEMON_BACKENDS:
         return None

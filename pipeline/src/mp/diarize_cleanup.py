@@ -558,10 +558,8 @@ def _load_embeddings(transcript_json: Path) -> dict[str, list[float]]:
     """Per-label voiceprints from `<stem>.embeddings.json`, keyed by the same
     labels the transcript carries at this point (the finalizer wrote both).
     Fail-open: a missing or malformed sidecar means no evidence, not an error."""
-    path = transcript_json.with_name(f"{transcript_json.stem}.embeddings.json")
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    data = storage.read_json_object(transcript_json.with_name(f"{transcript_json.stem}.embeddings.json"))
+    if data is None:
         return {}
     embeddings = data.get("embeddings")
     if not isinstance(embeddings, dict):

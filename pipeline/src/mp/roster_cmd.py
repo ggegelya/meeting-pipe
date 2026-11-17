@@ -88,11 +88,10 @@ def main(argv: list[str]) -> int:
         # provenance existed; a missing sidecar or label means provenance-only
         # matching, not an error.
         embedding = None
-        try:
-            edata = json.loads((wav.parent / f"{wav.stem}.embeddings.json").read_text(encoding="utf-8"))
-            embedding = (edata.get("embeddings") or {}).get(args.label)
-        except (OSError, ValueError, AttributeError):
-            pass
+        edata = storage.read_json_object(wav.parent / f"{wav.stem}.embeddings.json")
+        embeddings = edata.get("embeddings") if edata is not None else None
+        if isinstance(embeddings, dict):
+            embedding = embeddings.get(args.label)
         removed, person_removed = roster.unenroll(args.name, wav.stem, args.label, embedding)
         from . import events
 
@@ -133,12 +132,12 @@ def main(argv: list[str]) -> int:
     # enroll
     wav: Path = args.wav
     emb_path = wav.parent / f"{wav.stem}.embeddings.json"
-    try:
-        data = json.loads(emb_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    data = storage.read_json_object(emb_path)
+    if data is None:
         print(f"no embeddings sidecar at {emb_path}")
         return 2
-    embedding = (data.get("embeddings") or {}).get(args.label)
+    embeddings = data.get("embeddings")
+    embedding = embeddings.get(args.label) if isinstance(embeddings, dict) else None
     if not embedding:
         print(f"no embedding for label {args.label!r} in {emb_path}")
         return 2
@@ -164,9 +163,8 @@ def _relabel_transcript(wav: Path, old_label: str, new_label: str) -> None:
     from .markdown import render_markdown
 
     json_path = wav.parent / f"{wav.stem}.json"
-    try:
-        data = json.loads(json_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    data = storage.read_json_object(json_path)
+    if data is None:
         return
     segments = data.get("segments") or []
     changed = False
@@ -181,11 +179,10 @@ def _relabel_transcript(wav: Path, old_label: str, new_label: str) -> None:
     storage.atomic_write_text(wav.parent / f"{wav.stem}.md", render_markdown(data))
 
     emb_path = wav.parent / f"{wav.stem}.embeddings.json"
-    try:
-        edata = json.loads(emb_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    edata = storage.read_json_object(emb_path)
+    if edata is None:
         return
-    embeddings = edata.get("embeddings") or {}
-    if old_label in embeddings:
+    embeddings = edata.get("embeddings")
+    if isinstance(embeddings, dict) and old_label in embeddings:
         embeddings[new_label] = embeddings.pop(old_label)
         storage.atomic_write_text(emb_path, json.dumps(edata))

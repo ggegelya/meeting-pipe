@@ -265,11 +265,7 @@ def check_library(cfg: Config) -> None:
 def _previous_backup(home: Path | None) -> dict[str, Any]:
     """The last run's marker, or `{}` when there is none or it does not parse.
     Only its `library_files` and `audio_included` are compared (STOR13)."""
-    try:
-        data = json.loads(storage.backup_marker(home).read_text())
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return storage.read_json_object(storage.backup_marker(home)) or {}
 
 
 def _previous_library_files(previous: dict[str, Any], *, include_audio: bool) -> int | None:

@@ -7,10 +7,17 @@ matching the injectable-path convention the roster and voiceprint stores use.
 """
 from __future__ import annotations
 
+import errno as errno_mod
+import json
+import logging
 import os
 import shutil
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any, Literal
+
+log = logging.getLogger(__name__)
 
 
 def ensure_private_dir(path: Path, mode: int = 0o700) -> Path:
@@ -46,6 +53,60 @@ def atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+@dataclass(frozen=True)
+class JsonRead:
+    """One read of a JSON-object file: `missing` (ENOENT only), `ok` with `data`,
+    or `unreadable` with `kind` "io" (any other OSError, `errno` named) or
+    "parse" (not JSON, or JSON whose top level is not an object)."""
+
+    state: Literal["missing", "ok", "unreadable"]
+    data: dict[str, Any] | None = None
+    kind: Literal["io", "parse"] | None = None
+    errno: str | None = None
+    reason: str = ""
+    #: Valid JSON with a non-object top level: the one case nothing used to log.
+    not_object: bool = False
+
+
+def load_json_object(path: Path) -> JsonRead:
+    """Read `path` as a JSON object, telling missing from unreadable (PIPE29).
+
+    The seam a writer branches on (STOR9: missing is empty, unreadable is not);
+    a reader that only wants the dict calls `read_json_object`. Never raises.
+    """
+    try:
+        raw = Path(path).read_bytes()
+    except FileNotFoundError:
+        return JsonRead("missing")
+    except OSError as e:
+        name = errno_mod.errorcode.get(e.errno, str(e.errno)) if e.errno is not None else None
+        return JsonRead("unreadable", kind="io", errno=name, reason=str(e))
+    try:
+        obj = json.loads(raw.decode("utf-8"))
+    except ValueError as e:  # JSONDecodeError and UnicodeDecodeError both derive from it
+        return JsonRead("unreadable", kind="parse", reason=str(e))
+    if not isinstance(obj, dict):
+        return JsonRead("unreadable", kind="parse", not_object=True,
+                        reason=f"top level is {type(obj).__name__}, not an object")
+    return JsonRead("ok", data=obj)
+
+
+def read_json_object(path: Path) -> dict[str, Any] | None:
+    """The JSON object in `path`, or None when the file is missing, unreadable,
+    not valid JSON, or valid JSON whose top level is not an object (PIPE29).
+
+    The one reader for per-meeting and config JSON that a caller then `.get`s:
+    a list or string there used to reach that `.get` and crash every
+    library-wide command over one hand-edited file. Only the not-an-object case
+    logs here, since nothing else said so; a caller that already warns about an
+    unreadable file keeps its own line.
+    """
+    read = load_json_object(path)
+    if read.not_object:
+        log.warning("%s holds JSON whose %s; ignoring it", path, read.reason)
+    return read.data
 
 
 def config_dir(home: Path | None = None) -> Path:

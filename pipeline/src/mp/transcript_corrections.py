@@ -25,8 +25,9 @@ Schema mirror of Swift's `TranscriptCorrectionStore`:
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
+
+from . import storage
 
 SCHEMA_VERSION = 1
 
@@ -38,11 +39,8 @@ def corrections_path(transcript_md: Path) -> Path:
 def read_corrections(transcript_md: Path) -> dict[int, str]:
     """The ``{segment index: edited text}`` map for a meeting, or empty when the
     sidecar is missing or malformed (so a bad file never breaks a re-read)."""
-    try:
-        obj = json.loads(corrections_path(transcript_md).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(obj, dict):
+    obj = storage.read_json_object(corrections_path(transcript_md))
+    if obj is None:
         return {}
     segments = obj.get("segments")
     if not isinstance(segments, list):
@@ -95,11 +93,8 @@ def overlaid_structured(transcript_md: Path) -> tuple[dict, bool] | None:
     overlay = speaker_overlay.read_overlay(transcript_md)
     corrections = read_corrections(transcript_md)
     json_path = transcript_md.with_suffix(".json")
-    try:
-        data = json.loads(json_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
+    data = storage.read_json_object(json_path)
+    if data is None:
         return None
     segments = data.get("segments") or []
     changed = speaker_overlay.apply_overlay(segments, overlay)

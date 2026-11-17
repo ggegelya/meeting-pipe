@@ -2,9 +2,9 @@
 id: PIPE29
 title: One meta.json that is valid JSON but not an object crashes every library-wide command, because the pipeline's hand-rolled JSON readers have three failure behaviours
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (code-quality audit PY1): reproduced with a `[1]` meta.json: `read_meta` returns the list and `visibility.withheld_reason` raises AttributeError, taking down ask, digest, mcp and actions plus every later summary in that workflow; 9 of 38 file readers skip the object check. One `storage.read_json_object` for all of them, the visibility gate stays fail-closed. [Spec](./PIPE29.md)
+comment: Shipped 2026-11-18 - storage.read_json_object (plus the tri-state load_json_object) now backs 27 readers; every unguarded one (run sidecar, notion sidecar, doctor's marker, embeddings, roster_cmd, train_adapter, corrections corpus) treats a non-object as absent. RosterStore and VoiceprintStore are left to STOR9 on purpose. Owner still owes the close; tests only, no live run.
 ---
 
 # PIPE29: One meta.json that is valid JSON but not an object crashes every library-wide command, because the pipeline's hand-rolled JSON readers have three failure behaviours
@@ -55,3 +55,11 @@ Re-checked at filing: the audit counted 13 readers with 6 guarded; the full coun
 - One test each that `actions.discover` and `summarize._prior_meeting_context` skip a meeting whose sidecar is `[1]` (and `null` for the latter) instead of raising.
 - A test that `NotionRestPublisher.upsert` treats a list-shaped `<stem>.notion.json` as absent instead of raising. Absent means the create path, which is PIPE23's duplicate risk; PIPE23's natural key is what makes that path safe, and this task does not try to.
 - `bash scripts/ci-local.sh pipeline` green (ruff, pyright, pytest), with the number of new tests stated in the commit body.
+
+**Progress (2026-11-18):** shipped. `storage.load_json_object` returns `missing` / `ok` / `unreadable` (`kind` io or parse, `not_object` for valid JSON that is not an object) and `read_json_object` collapses it to the dict or None, warning only for the non-object case. Migrated: the guarded readers of item 1, the unguarded ones of item 2 (plus two the count missed: the corrections corpus loader, which crashed on a list, and `local_server.read_token`), and `backup`'s STOR13 marker read; `merge_meetings._read_transcript` keeps its three typed errors through `load_json_object`. Deliberately not migrated:
+
+- `RosterStore._people` and `VoiceprintStore.load`. Reading a non-object as empty there would turn today's crash into the wipe STOR9 describes (the next `enroll` writes the empty-plus-one roster), so they move with STOR9's quarantine instead.
+- `workflow.load_meta`: SEC25 already reads `<stem>.meta.json` this way and fails closed. So the visibility, `actions.discover` and `_prior_meeting_context` tests pin behaviour rather than fail on `main`, and `apply_overrides` on a `[1]` sidecar now forces the on-device path (SEC25's verdict) rather than returning the config unchanged as this spec said.
+- The index manifests, the split manifest and the transcript `structured` reads, which raise by design.
+
+Red before the fix: 7 reader cases (6 readers plus the Notion upsert) and the 11 helper cases. Pins: 4.

@@ -11,7 +11,6 @@ uses the messages endpoint with `max_tokens=1` (cheapest possible request,
 """
 from __future__ import annotations
 
-import json
 import os
 import plistlib
 import re
@@ -661,10 +660,12 @@ def check_last_backup(home: Path | None = None, now: datetime | None = None) -> 
     saying once rather than nagging about.
     """
     marker = storage.backup_marker(home)
+    data = storage.read_json_object(marker)
     try:
-        data = json.loads(marker.read_text(encoding="utf-8"))
+        if data is None:
+            raise ValueError("no marker")
         taken = datetime.fromisoformat(data["at"])
-    except (OSError, ValueError, KeyError):
+    except (ValueError, KeyError, TypeError):
         _info("no `mp backup` has run on this Mac (see the README backup runbook)")
         return
 
@@ -702,10 +703,8 @@ def _backup_destinations(home: Path | None) -> list[Path]:
     so these two are all doctor can see. A relative archive path (a hand-typed CLI run) is
     skipped rather than guessed at, and an unreadable file is simply absent."""
     found: list[Path] = []
-    try:
-        archive = json.loads(storage.backup_marker(home).read_text(encoding="utf-8")).get("archive")
-    except (OSError, ValueError, AttributeError):
-        archive = None
+    marker = storage.read_json_object(storage.backup_marker(home))
+    archive = marker.get("archive") if marker is not None else None
     if isinstance(archive, str) and archive:
         path = Path(archive).expanduser()
         if path.is_absolute():

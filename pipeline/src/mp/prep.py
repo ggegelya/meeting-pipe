@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
+from . import storage
 from .config import Config
 
 #: How much of the last summary the card carries. Small on purpose: this is a
@@ -68,11 +69,7 @@ def parse_stem(stem: str) -> datetime | None:
 
 
 def _read_json(path: Path) -> dict | None:
-    try:
-        obj = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return obj if isinstance(obj, dict) else None
+    return storage.read_json_object(path)
 
 
 @dataclass

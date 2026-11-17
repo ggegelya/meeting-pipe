@@ -47,7 +47,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from . import actions as actions_mod
-from . import engine, entry, events, visibility
+from . import engine, entry, events, storage, visibility
 from .config import Config
 from .schemas import ActionItem, Confidence, ExtraSection, MeetingSummary
 from .markdown import render_summary_md
@@ -146,11 +146,8 @@ def collect_recent_decisions(
         day = _meeting_day(stem)
         if day is None or day < cutoff:
             continue
-        try:
-            obj = json.loads(summary_json.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(obj, dict):
+        obj = storage.read_json_object(summary_json)
+        if obj is None:
             continue
         title = str(obj.get("title") or stem)
         for d in obj.get("decisions") or []:

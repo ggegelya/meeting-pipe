@@ -16,8 +16,9 @@ Schema mirror of Swift's `SpeakerLabelStore.Overlay`:
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
+
+from . import storage
 
 
 def overlay_path(transcript_md: Path) -> Path:
@@ -50,11 +51,8 @@ def read_overlay(transcript_md: Path) -> dict:
     are canonicalized (`"01"` -> `"1"`) because Swift keys them by `Int`, so an
     un-normalized key would match on one side only. Pinned by
     `Fixtures/speaker-overlay-golden.json` (CI4)."""
-    try:
-        obj = json.loads(overlay_path(transcript_md).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"labels": {}, "segments": {}}
-    if not isinstance(obj, dict):
+    obj = storage.read_json_object(overlay_path(transcript_md))
+    if obj is None:
         return {"labels": {}, "segments": {}}
     raw_labels = obj.get("labels")
     raw_segments = obj.get("segments")

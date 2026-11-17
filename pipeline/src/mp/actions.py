@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from . import entry
+from . import entry, storage
 from .prompt_safety import clean_due, clean_person
 from .workflow import read_meta
 
@@ -86,11 +86,8 @@ def discover(root: Path, *, allow_stems: set[str] | None = None) -> list[OpenAct
         stem = summary_json.name.split(".", 1)[0]
         if allow_stems is not None and stem not in allow_stems:
             continue
-        try:
-            obj = json.loads(summary_json.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(obj, dict):
+        obj = storage.read_json_object(summary_json)
+        if obj is None:
             continue
         title = str(obj.get("title") or stem)
         # AI7: the meeting's workflow is the series key. Read once per meeting,

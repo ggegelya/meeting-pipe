@@ -629,3 +629,22 @@ def test_schema_probe_failure_falls_back_to_base_properties(tmp_path: Path, monk
 
     assert result["page_id"] == "p"
     assert set(captured[0]["properties"].keys()) == {"Name", "Date", "Status"}
+
+
+def test_a_list_shaped_notion_sidecar_is_treated_as_absent(tmp_path: Path, monkeypatch):
+    """PIPE29: `upsert` called `existing.get("page_id")` on whatever parsed."""
+    summary_path = _write_summary(tmp_path)
+    (tmp_path / "20260428-1200.notion.json").write_text("[1]", encoding="utf-8")
+    monkeypatch.setenv("NOTION_TOKEN", "ntn-test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/pages":
+            return httpx.Response(200, json={"id": "page-new-123", "url": "https://n/p"})
+        return httpx.Response(404, json={"message": "unexpected route"})
+
+    _install_mock_transport(monkeypatch, handler)
+
+    result = publish(summary_path, cfg=_cfg())
+
+    assert result["page_id"] == "page-new-123"
+    assert not result["idempotent"]

@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import storage
 from .markdown import deeplink_stem, evidence_suffix
 from .schemas import MeetingSummary
 
@@ -348,9 +349,7 @@ def _file_url(p: Path) -> str:
 def _load_sidecar(p: Path) -> dict[str, Any] | None:
     if not p.exists():
         return None
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
-    except Exception:  # noqa: BLE001
+    data = storage.read_json_object(p)
+    if data is None:
         log.warning("could not parse Obsidian sidecar %s; treating as new", p)
-        return None
+    return data

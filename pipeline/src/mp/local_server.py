@@ -69,7 +69,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
 
-from . import events, local_snapshot
+from . import events, local_snapshot, storage
 
 log = logging.getLogger("mp.local_server")
 
@@ -158,8 +158,6 @@ HEALTH_PATH = "/health"
 
 
 def token_path(home: Path | None = None) -> Path:
-    from . import storage
-
     return storage.app_support_dir(home) / TOKEN_NAME
 
 
@@ -209,11 +207,11 @@ def clear_token(pid: int | None = None, home: Path | None = None) -> None:
     path = token_path(home)
     try:
         if pid is not None:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or data.get("pid") != pid:
+            data = storage.read_json_object(path)
+            if data is None or data.get("pid") != pid:
                 return
         path.unlink(missing_ok=True)
-    except (OSError, ValueError):
+    except OSError:
         pass
 
 
@@ -236,11 +234,8 @@ def write_token(port: int, token: str, pid: int, home: Path | None = None) -> No
 def read_token(port: int, home: Path | None = None) -> str | None:
     """The token of the server recorded for `port`, or None when there is no
     readable record for that port (so there is nothing to verify or sign with)."""
-    try:
-        data = json.loads(token_path(home).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or data.get("port") != port:
+    data = storage.read_json_object(token_path(home))
+    if data is None or data.get("port") != port:
         return None
     token = data.get("token")
     return token if isinstance(token, str) and token else None
@@ -380,12 +375,10 @@ def read_marker(home: Path | None = None) -> dict[str, Any] | None:
     path = marker_path(home)
     if not path.exists():
         return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        log.warning("local-server marker at %s is unreadable: %s", path, e)
-        return None
-    return data if isinstance(data, dict) else None
+    data = storage.read_json_object(path)
+    if data is None:
+        log.warning("local-server marker at %s is unreadable", path)
+    return data
 
 
 def pid_command(pid: int) -> str | None:

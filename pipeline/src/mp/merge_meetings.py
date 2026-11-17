@@ -153,15 +153,14 @@ def _verify_concat(out_path: Path, durations: list[float]) -> None:
 
 def _read_transcript(audio: Path) -> dict:
     json_path = audio.with_suffix(".json")
-    if not json_path.exists():
+    read = storage.load_json_object(json_path)
+    if read.state == "missing":
         raise MergeError(f"missing transcript for {audio.name} ({json_path.name})")
-    try:
-        data = json.loads(json_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise MergeError(f"unreadable transcript for {audio.name}: {exc}") from exc
-    if not isinstance(data, dict):
+    if read.not_object:
         raise MergeError(f"transcript for {audio.name} is not an object")
-    return data
+    if read.data is None:
+        raise MergeError(f"unreadable transcript for {audio.name}: {read.reason}")
+    return read.data
 
 
 def merge_meetings(

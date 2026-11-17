@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import storage
 from .markdown import deeplink_stem, render_summary_md
 from .schemas import MeetingSummary
 
@@ -137,9 +138,7 @@ def now_iso() -> str:
 def load_sidecar(p: Path) -> dict[str, Any] | None:
     if not p.exists():
         return None
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
-    except Exception:  # noqa: BLE001
+    data = storage.read_json_object(p)
+    if data is None:
         log.warning("could not parse filesystem sidecar %s; treating as new", p)
-        return None
+    return data
