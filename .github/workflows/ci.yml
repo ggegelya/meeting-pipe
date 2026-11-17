@@ -71,6 +71,9 @@ jobs:
     # resolve the FluidAudio package (its Package.swift declares
     # swift-tools-version 6.0).
     runs-on: macos-15
+    # A green run takes about 15 minutes. Without a cap a hang burns the 6 h default
+    # and reports nothing (CI8's strict-pool step did exactly that from 2026-11-12).
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Show toolchain

@@ -215,7 +215,18 @@ daemon() {
         # meant to abandon it, and how badly depends on the core count, so the full
         # suite passing on a many-core Mac proves nothing about the 3-core runner.
         # Pinning the pool to one thread makes the starvation deterministic here.
-        LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 swift test --filter 'EngineTeardownTests|BoundedEngineStartTests|RunWithTimeoutTests'
+        # The pin goes on the test process alone, never on `swift test`: SwiftPM 6.1 (the
+        # macos-15 runner's) deadlocked on its own build graph under the strict pool and sat
+        # silent until the 6 h job limit, on every push from 2026-11-12. The suite above has
+        # built the bundle, so run it directly, under a 10 minute alarm so a starved deadline
+        # fails the job instead of hanging it. SwiftPM 6.1 emits one package bundle, 6.4 one per target.
+        local bin bundle
+        bin="$(swift build --show-bin-path)"
+        bundle="$bin/MeetingPipeTests.xctest"
+        [ -d "$bundle" ] || bundle="$bin/MeetingPipePackageTests.xctest"
+        LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 perl -e 'alarm shift; exec @ARGV' 600 \
+            xcrun xctest -XCTest MeetingPipeTests.EngineTeardownTests,MeetingPipeTests.BoundedEngineStartTests,MeetingPipeTests.RunWithTimeoutTests \
+            "$bundle"
         end
         begin "Signing key ACL and hardened runtime (SEC17)"
         # macOS only, so here and not in the Linux fences job. A scratch keychain and a tiny ad-hoc
