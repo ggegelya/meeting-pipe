@@ -109,10 +109,15 @@ final class InputDeviceRecovery {
     private(set) var consecutiveRecoveryFailures = 0
     static let recoveryFailureBudget = 5
 
-    /// Whether the mic half of this recording has been given up on. Set by `abandonMicCapture`,
-    /// cleared by `start()`; read by the tap-liveness watchdog, which is the loop it exists to
-    /// stop. System audio is unaffected and keeps recording.
+    /// Whether the mic half of this recording has been given up on. Set by `abandonMicCapture`;
+    /// cleared by `start()` and by a recovery that actually restarted the engine and installed the
+    /// tap (REC15 amendment, F027: it used to be cleared by `start()` only, so a device change that
+    /// brought the mic back left the watchdog and the wake re-check shut for the rest of the
+    /// recording). Read by the tap-liveness watchdog, which is the loop it exists to stop, and by
+    /// the wake re-check. System audio is unaffected and keeps recording.
     private(set) var micCaptureAbandoned = false
+    /// Why the mic was abandoned, for `mic_capture_unabandoned`. Nil while it is not.
+    private var micAbandonReason: String?
 
     /// Pending recovery retry. Bluetooth inputs publish the route change
     /// before the input format is queryable, so we retry rather than give
@@ -136,6 +141,7 @@ final class InputDeviceRecovery {
         captureRecoveryFailed = false
         consecutiveRecoveryFailures = 0
         micCaptureAbandoned = false
+        micAbandonReason = nil
         cancelPendingRecoveryRetry()
         configurationRecoveryAttempts = 0
     }
@@ -490,6 +496,7 @@ final class InputDeviceRecovery {
 
         captureRecoveryFailed = false
         consecutiveRecoveryFailures = 0
+        unabandonMicCapture()
         Log.event(category: "recorder", action: "configuration_change_recovered", attributes: [
             "live_sample_rate": liveFormat.sampleRate,
             "used_converter": needsConverter,
@@ -524,12 +531,14 @@ final class InputDeviceRecovery {
     /// re-arming and system audio carries on alone.
     ///
     /// Deliberately per-recording rather than per-engine. It is cleared by `start()`, so the next
-    /// meeting begins with a full budget however badly this one ended, and a real device-change
+    /// meeting begins with a full budget however badly this one ended, and by a recovery that
+    /// succeeds (`unabandonMicCapture`), so a mic that comes back is watched again; a real device-change
     /// notification is unaffected: that carries new information about the route, where the
     /// watchdog's 1 Hz tick carries none, which is the whole distinction this draws.
     private func abandonMicCapture(reason: String) {
         guard !micCaptureAbandoned else { return }
         micCaptureAbandoned = true
+        micAbandonReason = reason
         Log.event(category: "recorder", action: "mic_capture_abandoned", attributes: [
             "reason": reason,
             "consecutive_failures": consecutiveRecoveryFailures,
@@ -538,6 +547,20 @@ final class InputDeviceRecovery {
             "recorder",
             "mic capture abandoned for this recording (\(reason)) - the tap watchdog stands down, system audio continues"
         )
+    }
+
+    /// REC15 amendment (F027): a recovery that restarted the engine and installed the tap has the
+    /// mic back, so the watchdog and the wake re-check open again. Only `recoverCapture`'s success
+    /// tail calls this, which is what keeps REC15's 1 Hz spin from returning: a recovery that
+    /// cannot succeed never reaches it. The row says which abandonment came back.
+    private func unabandonMicCapture() {
+        guard micCaptureAbandoned else { return }
+        micCaptureAbandoned = false
+        Log.event(category: "recorder", action: "mic_capture_unabandoned", attributes: [
+            "reason": micAbandonReason as Any,
+        ])
+        Log.writeLine("recorder", "mic capture recovered after being abandoned (\(micAbandonReason ?? "unknown")) - the tap watchdog is back on")
+        micAbandonReason = nil
     }
 
     // MARK: - Mic tap liveness watchdog

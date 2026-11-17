@@ -277,6 +277,47 @@ final class InputDeviceRecoveryTests: XCTestCase {
         XCTAssertEqual(host.readCalls, 0)
     }
 
+    /// REC15 amendment (F027): a device change that brings the mic back un-abandons it, so the
+    /// watchdog re-arms on a later stopped engine and the wake re-check reads again. Before it, the
+    /// flag was cleared only by `start()`, and both stayed shut for the rest of the recording.
+    func test_aSuccessfulRecoveryAfterAbandonmentReopensTheWatchdogAndTheWakeCheck() async throws {
+        let logs = FileManager.default.temporaryDirectory.appendingPathComponent("rec15-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer {
+            unsetenv("MEETINGPIPE_LOGS_DIR")
+            try? FileManager.default.removeItem(at: logs)
+        }
+        for _ in 0..<InputDeviceRecovery.recoveryFailureBudget {
+            recovery.reportRecoveryFailure()
+        }
+        XCTAssertTrue(recovery.micCaptureAbandoned)
+
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+        XCTAssertEqual(host.outcomes.last, .resumed)
+        XCTAssertFalse(recovery.micCaptureAbandoned, "a recovery that installed the tap has the mic back")
+        let rows = (try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? ""
+        let unabandoned = rows.split(separator: "\n").filter { $0.contains("\"mic_capture_unabandoned\"") }
+        XCTAssertEqual(unabandoned.count, 1)
+        XCTAssertTrue(unabandoned.first?.contains("\"recovery_budget_exhausted\"") == true, "it names which abandonment came back")
+
+        // The headset drops again silently: the watchdog re-arms on the stopped engine.
+        host.engineIsRunning = false
+        let haltsBefore = host.haltCalls
+        recovery.checkTapLiveness()
+        XCTAssertNotNil(recovery.recoveryTask, "the watchdog is open again")
+        await recovery.recoveryTask?.value
+        XCTAssertEqual(host.haltCalls, haltsBefore + 1)
+
+        // And a wake with a stopped engine re-arms too.
+        let readsBefore = host.readCalls
+        recovery.recheckAfterWake()
+        await recovery.recoveryTask?.value
+        XCTAssertEqual(host.readCalls, readsBefore + 1, "the wake re-check reads again")
+        XCTAssertEqual(host.haltCalls, haltsBefore + 2)
+    }
+
     /// REC25: the writer backlog check rides the tap tick ahead of the abandonment guard. An
     /// abandoned mic still has a writer that a hung volume can stall, so giving up on the tap must
     /// not also give up on watching the memory behind it. Not recording, it checks nothing.
