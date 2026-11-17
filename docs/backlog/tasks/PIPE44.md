@@ -2,9 +2,9 @@
 id: PIPE44
 title: failure_details.describe classifies only the root of the exception chain, so an Anthropic timeout whose root is httpcore.ReadTimeout is filed as cause unknown
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). The one field failure (20261022-103101, APITimeoutError on 2026-10-22) has cause unknown and no provider in its error.json because describe() walks __cause__ to httpcore.ReadTimeout, which matches no timeout class; reproduced at HEAD for the timeout and for a connection error rooted in httpcore.ConnectError, so the owner gets the generic summary-failure copy instead of the timeout or connection copy. Classify on the first link of the chain, outermost first, that matches a known class, pinned by a test that raises through a real httpx transport.
+comment: Shipped 2026-11-18, describe classifies on the first matching link of the cause chain and reads status fields from the first link carrying them, pinned through a real loopback socket for the timeout and the connection chain. Owner still owes seeing the timeout copy on the next real Anthropic timeout.
 ---
 
 # PIPE44: failure_details.describe classifies only the root of the exception chain, so an Anthropic timeout whose root is httpcore.ReadTimeout is filed as cause unknown

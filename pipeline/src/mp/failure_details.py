@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 import anthropic
+import httpcore
 import httpx
 
 from .config import MissingSecretError
@@ -17,16 +18,50 @@ OPERATIONS = {"summary", "ask", "digest", "publish", "transcribe", "processing",
 PROVIDERS = {"anthropic", "openai", "notion", "local", "filesystem", "obsidian", "lan", "claude_cli"}
 
 
+_TIMEOUTS = (anthropic.APITimeoutError, httpx.TimeoutException, httpcore.TimeoutException, TimeoutError)
+_CONNECTIONS = (anthropic.APIConnectionError, httpx.ConnectError, httpcore.ConnectError, ConnectionError)
+
+
+def _chain(error: BaseException) -> list[BaseException]:
+    """The explicit `__cause__` chain, outermost first, cycle-guarded."""
+    links: list[BaseException] = []
+    seen: set[int] = set()
+    cur: BaseException | None = error
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        links.append(cur)
+        cur = cur.__cause__
+    return links
+
+
+def _has_type_name(links: list[BaseException], name: str) -> bool:
+    return any(type(link).__name__ == name for link in links)
+
+
 def describe(error: BaseException, *, operation: str, provider: str | None = None) -> dict:
     # Follow explicit wrapping only; a stale implicit context can describe a recovered failure.
-    seen: set[int] = set()
-    while error.__cause__ is not None and id(error) not in seen:
-        seen.add(id(error))
-        error = error.__cause__
-    response = getattr(error, "response", None)
-    status = getattr(error, "status_code", None)
-    body = getattr(error, "body", None)
-    request_id = getattr(error, "request_id", None)
+    # PIPE44: classify on the first link, outermost first, that matches a known class. The old
+    # walk judged only the root, which for an Anthropic timeout is httpcore.ReadTimeout (the SDK
+    # wraps httpx.ReadTimeout wraps httpcore.ReadTimeout), a class no check named, so the one
+    # field timeout was filed as cause unknown.
+    links = _chain(error)
+
+    def first(kind: type | tuple[type, ...]) -> BaseException | None:
+        return next((link for link in links if isinstance(link, kind)), None)
+
+    # The status-bearing fields come from the first link that carries a response or a status, so a
+    # wrapped APIStatusError keeps its HTTP status and request id; a chain with none reads the root,
+    # as before.
+    carrier = next(
+        (link for link in links
+         if isinstance(getattr(link, "response", None), httpx.Response)
+         or getattr(link, "status_code", None) is not None),
+        links[-1],
+    )
+    response = getattr(carrier, "response", None)
+    status = getattr(carrier, "status_code", None)
+    body = getattr(carrier, "body", None)
+    request_id = getattr(carrier, "request_id", None)
     if isinstance(response, httpx.Response):
         status = response.status_code
         request_id = request_id or response.headers.get("request-id") or response.headers.get("x-request-id")
@@ -40,29 +75,29 @@ def describe(error: BaseException, *, operation: str, provider: str | None = Non
             host = ""
         provider = provider or {"api.anthropic.com": "anthropic", "api.openai.com": "openai",
                                 "api.notion.com": "notion"}.get(host)
-    if isinstance(error, anthropic.APIError):
+    if first(anthropic.APIError) is not None:
         provider = "anthropic"
     native = body.get("error", body) if isinstance(body, dict) else {}
     code = native.get("code") or native.get("type") if isinstance(native, dict) else None
     if not isinstance(code, str):
         code = None
-    message = str(error).lower()
+    message = str(carrier).lower()
     if isinstance(native, dict) and isinstance(native.get("message"), str):
         message += " " + native["message"].lower()
     cause = "unknown"
-    if isinstance(error, MissingSecretError):
+    if isinstance(secret := first(MissingSecretError), MissingSecretError):
         cause = "missing_key"
         provider = {"ANTHROPIC_API_KEY": "anthropic", "OPENAI_API_KEY": "openai",
-                    "NOTION_TOKEN": "notion"}.get(error.name)
+                    "NOTION_TOKEN": "notion"}.get(secret.name)
     elif provider == "anthropic" and status == 400 and "your credit balance is too low" in message:
         cause = "credits"
     elif code in {"insufficient_quota", "billing_hard_limit_reached", "credit_balance_too_low"}:
         cause = "quota"
     elif status == 401:
         cause = "expired_key" if "key has expired" in message or "token has expired" in message else "rejected_key"
-    elif isinstance(error, (anthropic.APITimeoutError, httpx.TimeoutException, TimeoutError)):
+    elif first(_TIMEOUTS) is not None:
         cause = "timeout"
-    elif isinstance(error, (anthropic.APIConnectionError, httpx.ConnectError, ConnectionError)):
+    elif first(_CONNECTIONS) is not None:
         cause = "connection"
     elif status == 429:
         cause = "rate_limit"
@@ -71,10 +106,10 @@ def describe(error: BaseException, *, operation: str, provider: str | None = Non
     elif "not enough memory" in message:
         cause = "memory"
         provider = "local"
-    elif "not in the local huggingface cache" in message or type(error).__name__ == "EmbedderUnavailableError":
+    elif "not in the local huggingface cache" in message or _has_type_name(links, "EmbedderUnavailableError"):
         cause = "model_missing"
         provider = "local"
-    elif type(error).__name__ == "SyncedTargetError":
+    elif _has_type_name(links, "SyncedTargetError"):
         # SEC18: a zero-egress run's file sink sits inside a sync folder. Retrying cannot help until the
         # publish folder is changed in Integrations, so it is its own cause with that remedy.
         cause = "synced_target"

@@ -109,3 +109,107 @@ def test_transport_keeps_the_inner_operation_and_ignores_stale_implicit_context(
     error = RuntimeError("a new unrelated error")
     error.__context__ = api_error()
     assert describe(error, operation="summary")["cause"] == "unknown"
+
+
+# ----- PIPE44: classify on the first matching link of the chain, outermost first -----
+
+
+def _chain(*errors):
+    """Wrap `errors` outermost-first with explicit `from`, as the SDK does."""
+    for outer, inner in zip(errors, errors[1:]):
+        outer.__cause__ = inner
+    return errors[0]
+
+
+_REQ = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+
+
+def _real_chain_error(base_url: str):
+    """What `client.messages.create` really raises against `base_url`: a real socket, so the
+    error goes through httpcore. An `httpx.MockTransport` would not, and its chain would end at an
+    httpx class that already matched before this fix."""
+    client = anthropic.Anthropic(api_key="sk-test", base_url=base_url, max_retries=0, timeout=1.0)
+    try:
+        client.messages.create(model="m", max_tokens=1, messages=[{"role": "user", "content": "x"}])
+    except Exception as e:  # noqa: BLE001 - the exception is the thing under test
+        return e
+    raise AssertionError("the request was expected to fail")
+
+
+def test_a_real_anthropic_timeout_is_classified_timeout():
+    import socket
+
+    from mp.failure_details import describe
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)  # accepts into the backlog and never answers
+    try:
+        err = _real_chain_error(f"http://127.0.0.1:{server.getsockname()[1]}")
+    finally:
+        server.close()
+    assert isinstance(err, anthropic.APITimeoutError)
+    assert type(err.__cause__.__cause__).__module__.startswith("httpcore")  # the production chain
+    payload = describe(err, operation="summary")
+    assert (payload["cause"], payload["provider"], payload["remedy"]) == ("timeout", "anthropic", "retry")
+
+
+def test_a_real_anthropic_connection_failure_is_classified_connection():
+    import socket
+
+    from mp.failure_details import describe
+
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()  # nothing listens here now
+    err = _real_chain_error(f"http://127.0.0.1:{port}")
+    assert isinstance(err, anthropic.APIConnectionError)
+    payload = describe(err, operation="summary")
+    assert (payload["cause"], payload["provider"], payload["remedy"]) == ("connection", "anthropic", "retry")
+
+
+def test_a_hand_built_chain_rooted_in_httpcore_classifies():
+    import httpcore
+
+    from mp.failure_details import describe
+
+    timeout = _chain(anthropic.APITimeoutError(request=_REQ), httpx.ReadTimeout("t"), httpcore.ReadTimeout("t"))
+    assert describe(timeout, operation="summary")["cause"] == "timeout"
+    connect = _chain(anthropic.APIConnectionError(request=_REQ), httpcore.ConnectError("c"))
+    assert describe(connect, operation="summary")["cause"] == "connection"
+    # A chain that has only the httpcore link is still named.
+    assert describe(httpcore.ReadTimeout("t"), operation="summary")["cause"] == "timeout"
+    assert describe(httpcore.ConnectError("c"), operation="summary")["cause"] == "connection"
+
+
+def test_a_wrapper_over_a_known_error_takes_its_classification():
+    from mp.failure_details import describe
+
+    wrapped = _chain(RuntimeError("summary stage failed"), anthropic.APITimeoutError(request=_REQ))
+    payload = describe(wrapped, operation="summary")
+    assert (payload["cause"], payload["provider"]) == ("timeout", "anthropic")
+
+
+def test_a_chain_with_no_known_link_stays_unknown():
+    from mp.failure_details import describe
+
+    chain = _chain(RuntimeError("a"), ValueError("b"), KeyError("c"))
+    assert describe(chain, operation="summary")["cause"] == "unknown"
+
+
+def test_a_wrapped_status_error_keeps_its_status_and_request_id():
+    from mp.failure_details import describe
+
+    payload = describe(_chain(RuntimeError("wrapper"), api_error()), operation="summary")
+    assert payload["cause"] == "credits"
+    assert payload["http_status"] == 400
+    assert payload["request_id"] == "req_0123456789abcdef"
+
+
+def test_a_cyclic_chain_terminates():
+    from mp.failure_details import describe
+
+    a, b = RuntimeError("a"), RuntimeError("b")
+    a.__cause__, b.__cause__ = b, a
+    assert describe(a, operation="summary")["cause"] == "unknown"
