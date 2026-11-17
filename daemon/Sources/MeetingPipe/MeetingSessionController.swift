@@ -980,6 +980,7 @@ final class MeetingSessionController: @unchecked Sendable {
                     "workflow_name": resolvedWorkflow?.name ?? NSNull(),
                 ])
                 self.armSystemLevelMirror()
+                self.compareInputDeviceHolder(trigger: "start", source: source)
                 self.resetMicGateBackstop()
                 // PERF15: the AX attach (MicGate, END11's explicit-start engage, the Leave arm)
                 // runs when the build lands, or MicGate alone at the deadline, so nothing on this
@@ -2112,6 +2113,7 @@ final class MeetingSessionController: @unchecked Sendable {
             // buffer, so a capture that stalls later still passes its last level).
             let live = self.coordinator.audioRecorder.systemChannelHealth == .live
             self.coordinator.micHolderFeed.noteLevels(micDb: micDb, systemDb: live ? self.latestSystemLevelDb : nil)
+            self.noteHolderDevicesTick()
             guard let verdict = self.latestVerdict else { return }
             self.coordinator.silenceBackstop.ingest(verdict: verdict, systemChannel: self.backstopSystemChannel())
         }
@@ -2145,6 +2147,92 @@ final class MeetingSessionController: @unchecked Sendable {
         case .micOnly:
             return .micOnly
         }
+    }
+
+    // MARK: - MIC22: which microphone the call uses
+
+    /// MIC22 leg 1's seams: the device reads run off main (a HAL property read can wait on a busy
+    /// `coreaudiod`), and a test runs them inline on fakes.
+    struct InputHolderSeams {
+        var captured: () -> InputDeviceIdentity? = { InputDeviceResolver.resolveDefaultInput() }
+        /// One holder device's identities: itself, or an aggregate's active members.
+        var holderIdentities: (AudioObjectID) -> [InputDeviceIdentity] = { InputDeviceResolver.holderIdentities(of: $0) }
+        var run: (@escaping @Sendable () -> Void) -> Void = { DispatchQueue.global(qos: .utility).async(execute: $0) }
+    }
+    var inputHolderSeams = InputHolderSeams()
+    /// How long after the recorder reconfigures the comparison waits, so the mic-holder monitor
+    /// (1 Hz) has sampled the client's own switch before its devices are read.
+    var inputHolderChangeSettleSec: TimeInterval = 2.0
+    /// The client's held devices the last comparison saw, so the 1 Hz tick compares again only
+    /// when the client switches. Main queue.
+    private var lastComparedHolderDevices: [AudioObjectID]?
+    /// The pending comparison after a recorder reconfigure: a flapping episode writes one row.
+    private var pendingReconfigureCompare: DispatchWorkItem?
+
+    /// The meeting client's held devices for `bundleID` in the monitor's latest snapshot, or nil
+    /// when it does not read held (no devices to compare: unknown, not a mismatch).
+    private func heldInputDevices(bundleID: String?) -> [AudioObjectID]? {
+        let snapshot = coordinator.micHolderFeed.currentSnapshot()
+        let reading = bundleID
+            .flatMap { MicHolderMonitor.family(forBundleID: $0, in: Array(snapshot.readings.keys)) }
+            .flatMap { snapshot.readings[$0] }
+        return reading.flatMap { $0.level == .held ? $0.inputDevices : nil }
+    }
+
+    /// MIC22 leg 1, measure only: log the input devices the meeting client holds beside the one we
+    /// capture (the system default). Called at a recording's start, when the client switches its
+    /// device, and after the recorder reconfigures. Nothing is decided on it; leg 2 (capture the
+    /// client's device) waits for a week of these rows.
+    func compareInputDeviceHolder(trigger: String, source: AppSource?) {
+        assertMainQueue()
+        let bundleID = source?.bundleID
+        let devices = heldInputDevices(bundleID: bundleID)
+        lastComparedHolderDevices = devices
+        let seams = inputHolderSeams
+        seams.run {
+            let captured = seams.captured()
+            let holders = devices?.flatMap(seams.holderIdentities)
+            Log.event(
+                category: "recorder", action: "input_device_holder_compared",
+                attributes: InputDeviceResolver.holderComparisonAttributes(
+                    trigger: trigger, bundleID: bundleID, captured: captured, holders: holders
+                )
+            )
+        }
+    }
+
+    /// The 1 Hz level tick: the client switched its microphone (its held devices changed to a
+    /// non-empty set) without our engine reconfiguring, which is the walkthrough's case: the
+    /// meeting app's mic changed and the system default did not. Also fires once when a client
+    /// that held nothing at the start begins holding. Limits, accepted for a measurement: the tick
+    /// rides the mic tap, so a stalled or abandoned tap writes none; and a switch the monitor
+    /// samples mid-way (both devices held for a second) writes two rows.
+    func noteHolderDevicesTick() {
+        assertMainQueue()
+        guard case .recording(_, let source?, _) = coordinator.stateMachine.current,
+              let devices = heldInputDevices(bundleID: source.bundleID), !devices.isEmpty,
+              devices != lastComparedHolderDevices else { return }
+        compareInputDeviceHolder(trigger: "holder_change", source: source)
+    }
+
+    /// The recorder re-armed (or failed to re-arm) capture: an input change, or a tap-stall or wake
+    /// recovery, which also reports through `onConfigurationChange`. Compared once the client's own
+    /// switch has had a monitor tick to show, only if the same recording still runs, and once per
+    /// burst: a newer report replaces a pending one.
+    func noteInputDeviceChanged(recovered: Bool) {
+        assertMainQueue()
+        guard case .recording(let file, let source, _) = coordinator.stateMachine.current else { return }
+        pendingReconfigureCompare?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingReconfigureCompare = nil
+            guard case .recording(let now, _, _) = self.coordinator.stateMachine.current, now == file else { return }
+            self.compareInputDeviceHolder(
+                trigger: recovered ? "recorder_reconfigured" : "recorder_reconfigure_failed", source: source
+            )
+        }
+        pendingReconfigureCompare = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, inputHolderChangeSettleSec), execute: work)
     }
 
     func disarmSystemLevelMirror() {

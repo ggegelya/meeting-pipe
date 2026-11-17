@@ -72,12 +72,19 @@ public final class MicHolderMonitor: MicHolderRecordingFeed {
         /// held or when it never has. A release cut, and it moves on every hold, including one too
         /// short for a reader polling the snapshot to see.
         public let leftHeldAt: TimeInterval?
+        /// MIC22: the input devices the family's holding objects use
+        /// (`kAudioProcessPropertyDevices`, input scope), empty unless it reads held.
+        public let inputDevices: [AudioObjectID]
 
-        public init(level: MicHolderLevel, since: TimeInterval, readAt: TimeInterval, leftHeldAt: TimeInterval? = nil) {
+        public init(
+            level: MicHolderLevel, since: TimeInterval, readAt: TimeInterval, leftHeldAt: TimeInterval? = nil,
+            inputDevices: [AudioObjectID] = []
+        ) {
             self.level = level
             self.since = since
             self.readAt = readAt
             self.leftHeldAt = leftHeldAt
+            self.inputDevices = inputDevices
         }
     }
 
@@ -437,7 +444,10 @@ public final class MicHolderMonitor: MicHolderRecordingFeed {
 
     private func publish(at now: TimeInterval) {
         let readings = ledger.families.mapValues {
-            Reading(level: $0.level, since: $0.since, readAt: now, leftHeldAt: $0.leftHeldAt)
+            Reading(
+                level: $0.level, since: $0.since, readAt: now, leftHeldAt: $0.leftHeldAt,
+                inputDevices: $0.inputDevices
+            )
         }
         let failed = ledger.listFailedSince != nil
         lock.withLock {

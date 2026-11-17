@@ -450,3 +450,25 @@ final class MicHolderMonitorTests: XCTestCase {
         XCTAssertEqual(tail[0], .afterRelease(family: "b", systemDb: [-60], regainedAfter: 1, truncated: true))
     }
 }
+
+// MARK: - MIC22: the holder's devices reach the snapshot
+
+extension MicHolderMonitorTests {
+
+    /// MIC22 compares these against the device we capture, so a held family publishes them and a
+    /// released one publishes none.
+    func testAHeldFamilysReadingCarriesItsInputDevices_andAReleasedOneNone() {
+        hal.objects[10] = .init(bundleID: "com.microsoft.teams2.modulehost", pid: 500, input: true, devices: [77, 78])
+        hal.objects[11] = .init(bundleID: Self.chrome, pid: 600, input: false, devices: [79])
+        let monitor = makeMonitor()
+        monitor.start()
+        let readings = monitor.currentSnapshot().readings
+        XCTAssertEqual(readings[Self.teams]?.level, .held)
+        XCTAssertEqual(readings[Self.teams]?.inputDevices, [77, 78])
+        XCTAssertEqual(readings[Self.chrome]?.inputDevices, [])
+
+        hal.objects[10]?.input = false
+        tick()
+        XCTAssertEqual(monitor.currentSnapshot().readings[Self.teams]?.inputDevices, [], "released: nothing to compare")
+    }
+}

@@ -430,6 +430,8 @@ final class Coordinator: NSObject {
             // the recording. Every `configuration_change_unrecoverable` path leaves the recording
             // running with a dead mic channel, so the HUD carries a persistent state beside the
             // one-shot toast, the way a degraded system channel already does.
+            // MIC22: which device the call's client holds now, beside the one we capture.
+            self.session.noteInputDeviceChanged(recovered: outcome == .resumed)
             switch outcome {
             case .resumed:
                 Log.event(category: "recording", action: "recovered", attributes: ["channel": "mic"])

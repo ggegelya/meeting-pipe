@@ -4,11 +4,13 @@ import Foundation
 /// Human-readable identity of the CoreAudio input device bound at capture start (MIC15).
 ///
 /// The daemon records `AVAudioEngine.inputNode`, which macOS binds to the System-Settings
-/// default input; there is no macOS API to read the input device the meeting client itself
-/// chose, so following the meeting's device is out of scope. What we can do is record what we
-/// captured: a Bluetooth headset left as the system default (mic idle in A2DP) is recorded
-/// faithfully while the user speaks into a different mic, and until MIC15 no device name was
-/// logged anywhere, so the class of bug was undiagnosable.
+/// default input, not to the device the meeting client opened. The client's device IS readable:
+/// `kAudioProcessPropertyDevices` in the input scope on its process objects, which DET23's
+/// `MicHolderMonitor` already reads, and MIC22 logs it beside the captured one
+/// (`input_device_holder_compared`). Following the client's device is leg 2 of MIC22, gated on
+/// those rows showing a real mismatch. Until MIC15 no device name was logged anywhere, so a
+/// Bluetooth headset left as the system default (mic idle in A2DP) while the user spoke into a
+/// different mic was undiagnosable.
 public struct InputDeviceIdentity: Equatable, Sendable {
 
     /// Physical connection of the input device. Only the four the spec names are distinguished;
@@ -46,6 +48,11 @@ public struct InputDeviceIdentity: Equatable, Sendable {
         self.uid = uid
         self.transport = transport
         self.sampleRate = sampleRate
+    }
+
+    /// Whether any identity read worked: a device that has gone away answers neither.
+    public var isReadable: Bool {
+        !(name ?? "").isEmpty || !(uid ?? "").isEmpty
     }
 
     /// What the Library detail and the `mic_device_name` sidecar key show. Falls back through
@@ -131,12 +138,106 @@ public enum InputDeviceResolver {
     /// SlimCore `ModuleHost` helper that actually holds the mic, with no TCC grant, and an owner-run
     /// live-call probe returned GO across two calls. So there IS an unconfounded per-process read to
     /// reach for now, and it is wired end-side for Teams and Zoom. It does not replace this
-    /// start-time check: it says whether the CLIENT is capturing, not whether the device we are about
-    /// to record is the one it opened, which is the mismatch this function exists to catch. And it is
+    /// start-time check: it says whether the CLIENT is capturing; which device it opened is a second
+    /// property on the same objects, which MIC22 reads (`holderMatch` below). And it is
     /// held to `requiresCorroboration`, so end detection still rests on the AX re-walk and the
     /// idle-stop backstop with process audio as a corroborator rather than a lead.
     public static func shouldWarnMismatch(defaultInputRunning: Bool, anotherInputRunning: Bool) -> Bool {
         !defaultInputRunning && anotherInputRunning
+    }
+
+    // MARK: - (d) the meeting client's device against the captured one (MIC22)
+
+    /// The `match` attribute of `input_device_holder_compared`.
+    public enum HolderMatch: String, Sendable {
+        case match = "true"
+        case mismatch = "false"
+        /// The captured device or the holder's list could not be read, or the list was empty.
+        case unknown
+    }
+
+    /// Pure: does the device we capture appear among the input devices the meeting client holds?
+    /// A client may hold two (an aggregate's members, a device switch in flight), and any one of
+    /// them being ours is a match. Compared on the UID, which is stable across reconnects; on the
+    /// name only when either side has no UID. A holder device whose identity could not be read (no
+    /// name, no UID: a device that just went away, say) is no evidence either way, so a list with
+    /// one and no match is unknown, never a mismatch: leg 2's GO turns on a single `false`.
+    public static func holderMatch(captured: InputDeviceIdentity?, holders: [InputDeviceIdentity]) -> HolderMatch {
+        guard let captured, captured.isReadable, !holders.isEmpty else { return .unknown }
+        let same = holders.contains { holder in
+            if let a = captured.uid, let b = holder.uid, !a.isEmpty, !b.isEmpty { return a == b }
+            guard let a = captured.name, let b = holder.name, !a.isEmpty else { return false }
+            return a == b
+        }
+        if same { return .match }
+        return holders.allSatisfy(\.isReadable) ? .mismatch : .unknown
+    }
+
+    /// The `recorder` / `input_device_holder_compared` row. `holders` nil means the holder's list
+    /// was not readable at all (no source app, no reading, the family not holding).
+    public static func holderComparisonAttributes(
+        trigger: String, bundleID: String?, captured: InputDeviceIdentity?, holders: [InputDeviceIdentity]?
+    ) -> [String: Any] {
+        var attrs: [String: Any] = [
+            "trigger": trigger,
+            "bundle_id": bundleID ?? "manual",
+            "match": holderMatch(captured: captured, holders: holders ?? []).rawValue,
+            "captured_name": captured?.name ?? "(unknown)",
+            "captured_uid": captured?.uid ?? "(unknown)",
+            "captured_transport": (captured?.transport ?? .unknown).rawValue,
+            "holder_names": (holders ?? []).map { $0.name ?? "(unknown)" },
+            "holder_uids": (holders ?? []).map { $0.uid ?? "(unknown)" },
+            "holder_transports": (holders ?? []).map(\.transport.rawValue),
+        ]
+        if holders == nil { attrs["holder_read"] = "unavailable" }
+        return attrs
+    }
+
+    /// The identities a holder device stands for, through the default seams. An aggregate is
+    /// expanded to its active members: a client on the system default through voice processing or
+    /// an engine of its own can report a private aggregate (`CADefaultDeviceAggregate-<pid>-0`,
+    /// measured in END6's probe) whose own UID matches nothing, which would read as a mismatch on
+    /// the very device we capture.
+    public static func holderIdentities(of device: AudioDeviceID) -> [InputDeviceIdentity] {
+        holderIdentities(
+            of: device,
+            subDevices: defaultActiveSubDevices,
+            hasInput: hasInputStream,
+            identity: { identity(device: $0, readString: defaultStringRead, readUInt32: defaultUInt32Read, readFloat64: defaultFloat64Read) }
+        )
+    }
+
+    /// Pure: the aggregate expansion, with the reads injected. Only members with an input stream
+    /// count: the active sub-device list spans both directions (END6 measured the default
+    /// aggregate at one input, two outputs), and a headset is one device with both, so an output
+    /// member left in would match a captured headset the client only plays through. An aggregate
+    /// whose input members cannot be read is no evidence: it reads as an unreadable identity, so
+    /// the comparison says unknown rather than mismatching on the aggregate's own UID.
+    public static func holderIdentities(
+        of device: AudioDeviceID,
+        subDevices: (AudioDeviceID) -> [AudioDeviceID],
+        hasInput: (AudioDeviceID) -> Bool,
+        identity: (AudioDeviceID) -> InputDeviceIdentity
+    ) -> [InputDeviceIdentity] {
+        let own = identity(device)
+        guard own.transport == .aggregate else { return [own] }
+        let members = subDevices(device).filter(hasInput).map(identity)
+        return members.isEmpty
+            ? [InputDeviceIdentity(name: nil, uid: nil, transport: .aggregate, sampleRate: own.sampleRate)]
+            : members
+    }
+
+    public static let defaultActiveSubDevices: (AudioDeviceID) -> [AudioDeviceID] = { device in
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioAggregateDevicePropertyActiveSubDeviceList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(device, &addr, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &ids) == noErr else { return [] }
+        return ids.filter { $0 != 0 }
     }
 
     /// Read the running-somewhere states and apply the pure decision. Injectable seams so the
@@ -245,7 +346,7 @@ public enum InputDeviceResolver {
         return devices.filter { hasInputStream($0) }
     }
 
-    private static func hasInputStream(_ device: AudioDeviceID) -> Bool {
+    static func hasInputStream(_ device: AudioDeviceID) -> Bool {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
             mScope: kAudioObjectPropertyScopeInput,

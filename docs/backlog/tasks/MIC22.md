@@ -2,9 +2,9 @@
 id: MIC22
 title: The recorder captures the system default input, not the microphone the meeting app opened, and nothing records which device the call used
 category: Recording
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). MeetingRecorder records AVAudioEngine.inputNode (the system default) and logs only input_device_resolved; MIC15's mismatch nudge never changes the device and fired once in 74 starts (2026-11-05T15:57:01Z, Bluetooth). Consistent with MIC17's faint owner channel but unproven. Measure first: log the input devices the meeting client's process objects hold (kAudioProcessPropertyDevices) beside the captured device at every start and device change; capture the client's device only if mismatches are real.
+comment: Leg 1 shipped 2026-11-17 - recorder input_device_holder_compared at start, on a client device switch (1 Hz tick) and after each recorder reconfigure (2 s settle, one per burst), from DET23's monitor readings now carrying the holder's input devices, aggregates expanded; pure HolderMatch (unreadable reads unknown); stale InputDeviceIdentity header fixed. Remaining - the owner's week (walkthrough step 2) and the leg 2 GO or NO-GO read.
 ---
 
 # MIC22: the recorder captures the system default input, not the microphone the meeting app opened
@@ -43,3 +43,12 @@ Correction at filing: two premises are narrower than stated. (1) There is no `Mi
 1. [session] Confirm the installed build is newer than leg 1's landing commit.
 2. [owner] Work normally for a week; on at least one call, switch the meeting app's microphone (for example to a headset) without changing the system default. Cost: one switch.
 3. [session] Count the `input_device_holder_compared` rows and write the leg 2 verdict into this file.
+
+**Progress (2026-11-17):** leg 1 shipped; leg 2 not started (it waits for the rows and the owner's go-ahead).
+
+- Source of the holder's devices: DET23's `MicHolderMonitor` (it landed after this task was filed and already read `kAudioProcessPropertyDevices` for every holding object). Its published `Reading` now carries `inputDevices` (held families only), so the comparison reads a lock-guarded snapshot and adds no HAL enumeration; the family is resolved from the recording's bundle with `MicHolderMonitor.family(forBundleID:)`, which covers the Teams SlimCore helper through the monitor's own attribution.
+- `InputDeviceResolver.holderMatch` (pure, beside `shouldWarnMismatch`): any held device equal to the captured one is a match, on the UID when both have one, on the name otherwise; an empty list, a failed read or a client not reading held is unknown, never a mismatch.
+- `MeetingSessionController.compareInputDeviceHolder` at the start (after `recording_started`), from `noteHolderDevicesTick` on the 1 Hz mic-level callback when the client's held devices change to a new non-empty set (the walkthrough's switch made only in the meeting app never reconfigures our engine, so the recorder's handler alone would have written nothing for it), and from `noteInputDeviceChanged`, which `Coordinator`'s `onConfigurationChange` calls on both outcomes: 2 s later, only if the same recording still runs, one row per burst. That handler also fires after tap-stall and wake recoveries with no device change, so its rows are labelled `recorder_reconfigured` / `recorder_reconfigure_failed` rather than "device change". The device-identity reads run off main behind `InputHolderSeams`. The captured side is a fresh read of the system default, because the recorder's own `capturedInputDevice` is set at start only and goes stale after a change.
+- An aggregate holder device is expanded to its active members (`kAudioAggregateDevicePropertyActiveSubDeviceList`): a client on the default through voice processing or its own engine can report a private `CADefaultDeviceAggregate` (END6's probe saw ours), whose own UID would read as a false mismatch. A holder identity that cannot be read (no name, no UID) makes a no-match answer unknown rather than false, since leg 2's GO turns on one false. UIDs are logged on both sides so a false row can be checked afterwards.
+- Decisions beyond the spec: the `holder_change` trigger, the aggregate expansion and the unknown-on-unreadable rule (all from the independent review); the 2 s settle; `match` as a string (`"true"`, `"false"`, `"unknown"`); the `Coordinator` call site is untested (no `Coordinator` harness), the controller entries it calls are.
+- Tests: 8 in `InputDeviceHolderMatchTests`, 1 in `MicHolderMonitorTests`, 3 in `InputDeviceHolderComparisonTests` (start, a client switch and a reconfigure burst each one row through the real settle; a reconfigure right before a stop writes none; not holding or no source reads unknown).

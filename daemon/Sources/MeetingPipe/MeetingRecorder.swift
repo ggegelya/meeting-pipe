@@ -829,8 +829,9 @@ final class MeetingRecorder {
         }
 
         // MIC15(a): record which input device the OS bound us to. We capture the system default
-        // input and cannot read the meeting client's own chosen device, so logging the captured
-        // identity is what makes a wrong-mic recording diagnosable at all. Always logged; also
+        // input, not the meeting client's own device (which MIC22 reads and logs beside this one,
+        // `input_device_holder_compared`), so logging the captured identity is what makes a
+        // wrong-mic recording diagnosable at all. Always logged; also
         // persisted per-meeting (via lastInputDevice -> the meta sidecar) for the Library detail.
         let inputDevice = InputDeviceResolver.resolveDefaultInput()
         capturedInputDevice = inputDevice
