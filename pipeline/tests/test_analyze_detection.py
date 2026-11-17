@@ -11,6 +11,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from mp.analyze_detection import (
     MIC_INPUT_DEVICE_UNAVAILABLE,
     MIC_INPUT_NO_SPANS,
@@ -659,6 +661,41 @@ def test_another_apps_end_inside_a_sourceless_session_is_a_foreign_end() -> None
     out = render_report(sessions, aggregate(sessions), judgement=judge_sessions(sessions, events))
     assert "another app's lifecycle end" in out
     assert "m.wav" not in out.split("## Detector misses")[1], "a foreign end is not a manual miss"
+
+
+@pytest.mark.parametrize("ignored", ["meeting_end_ignored_sourceless", "meeting_end_ignored_other_app"])
+@pytest.mark.parametrize("ignored_first", [False, True])
+def test_an_end_the_controller_ignored_does_not_classify_a_later_hand_stop_as_foreign_DET19(
+    ignored: str, ignored_first: bool
+) -> None:
+    """The 2026-11-11 shape after END19: a stale Chrome engage's end is ignored, the recording
+    runs on, and the owner stops it by hand 21 minutes later. That is a manual stop."""
+    ended = _event("2026-11-11T16:20:00Z", "lifecycle", "ended", bundle_id="com.google.Chrome")
+    refused_at = "2026-11-11T16:19:59.800Z" if ignored_first else "2026-11-11T16:20:00.200Z"
+    refused = _event(refused_at, "coordinator", ignored, ended_bundle_id="com.google.Chrome")
+    middle = [ended, refused]
+    events = [
+        _event("2026-11-11T15:59:51Z", "coordinator", "recording_started", file="m.wav", bundle_id="manual"),
+        *middle,
+        _event("2026-11-11T16:41:00Z", "coordinator", "recording_stopped", file="m.wav", bundle_id="manual"),
+    ]
+    sessions, _ = _judged(events)
+    assert sessions[0].foreign_ended_ts is None
+    assert sessions[0].stop_kind == "manual"
+    out = render_report(sessions, aggregate(sessions), judgement=judge_sessions(sessions, events))
+    assert "m.wav" in out.split("## Detector misses")[1], "a hand stop is the miss the walkthrough looks for"
+
+
+def test_a_foreign_end_that_was_honoured_after_an_ignored_one_still_counts_DET19() -> None:
+    events = [
+        _event("2026-11-11T15:59:51Z", "coordinator", "recording_started", file="m.wav", bundle_id="manual"),
+        _event("2026-11-11T16:10:00Z", "lifecycle", "ended", bundle_id="com.google.Chrome"),
+        _event("2026-11-11T16:10:00.2Z", "coordinator", "meeting_end_ignored_sourceless"),
+        _event("2026-11-11T16:20:00Z", "lifecycle", "ended", bundle_id="com.google.Chrome"),
+        _event("2026-11-11T16:20:01Z", "coordinator", "recording_stopped", file="m.wav", bundle_id="manual"),
+    ]
+    sessions, _ = _judged(events)
+    assert sessions[0].stop_kind == "foreign_end"
 
 
 def test_a_held_end_reports_its_overrun_and_trim_error() -> None:

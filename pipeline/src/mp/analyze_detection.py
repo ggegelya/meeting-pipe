@@ -80,6 +80,11 @@ STOP_DETECTOR = "detector"
 # DET19: a lifecycle end that named another app (the 2026-11-11 Chrome engage that stopped a
 # source-less recording mid-conversation). Never the recording's own detector success.
 STOP_FOREIGN_END = "foreign_end"
+# DET19 amendment: `coordinator` actions that say a lifecycle end was refused and the recording
+# kept running (END11 item 4, END19 item 3). A `lifecycle.ended` within this many seconds of one
+# is that refused end, not a stop.
+IGNORED_END_ACTIONS = frozenset({"meeting_end_ignored_other_app", "meeting_end_ignored_sourceless"})
+IGNORED_END_PAIRING_SEC = 2.0
 STOP_MIC_IN_USE = "mic_in_use_stop"
 STOP_ENDED_DURING_START = "ended_during_start"
 STOP_SILENCE_BACKSTOP = "silence_backstop"
@@ -113,6 +118,8 @@ class Session:
     detector_ended_ts: datetime | None = None
     # DET19: the latest `lifecycle.ended` naming a different bundle, and the own end's route.
     foreign_ended_ts: datetime | None = None
+    # The controller's own `meeting_end_ignored_*` rows inside the recording: ends that did not stop it.
+    ignored_end_ts: list[datetime] = field(default_factory=list)
     confirmed_by: list[str] = field(default_factory=list)
     mic_in_use_stopped: bool = False
     ended_during_start: bool = False
@@ -257,12 +264,23 @@ def pair_sessions(events: Iterable[dict], *, since: datetime | None = None) -> l
             # end naming this recording's bundle is its own; another app's end is foreign. A row
             # naming no bundle (older logs) is taken as the recording's own.
             ended_bundle = ev.get("bundle_id")
+            if any(abs((ts - t).total_seconds()) <= IGNORED_END_PAIRING_SEC for t in open_session.ignored_end_ts):
+                continue  # the controller logged it ignored just before this row: not a stop (DET19)
             if ended_bundle and ended_bundle != open_session.bundle_id:
                 open_session.foreign_ended_ts = ts
             else:
                 open_session.detector_ended_ts = ts
                 confirmed = ev.get("confirmed_by")
                 open_session.confirmed_by = [str(c) for c in confirmed] if isinstance(confirmed, list) else []
+        elif cat == "coordinator" and action in IGNORED_END_ACTIONS:
+            # DET19 amendment (2026-11-17): the controller refused this end (END11's other app,
+            # END19's stale source-less engage) and the recording ran on, so the `lifecycle.ended`
+            # row next to it is not what stopped it. The row the engine writes lands within a
+            # couple of seconds of the refusal, on either side of it.
+            open_session.ignored_end_ts.append(ts)
+            if (open_session.foreign_ended_ts is not None
+                    and abs((ts - open_session.foreign_ended_ts).total_seconds()) <= IGNORED_END_PAIRING_SEC):
+                open_session.foreign_ended_ts = None
         elif cat == "coordinator" and action == "mic_in_use_stop":
             open_session.mic_in_use_stopped = True
         elif cat == "coordinator" and action == "recording_ended_during_start":
