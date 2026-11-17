@@ -2,9 +2,9 @@
 id: STOR17
 title: Restore overwrites live files in place with no free-space check, no per-file atomicity and no check against the manifest
 category: Storage
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). restore_archive extracts each member straight over the live file (tarfile makefile opens it "wb"), catches only FilterError and never checks free space, and the app always passes --force, so ENOSPC mid-restore truncates a previously intact file and leaves a half-restored library behind a traceback; the manifest's schema_version is never read and a truncated archive escapes as EOFError (F094, F120, F205). Preflight space from the validation walk, temp-and-os.replace per file, OSError, EOFError and a bad manifest as RestoreError, assert on-disk content after a forced restore.
+comment: Shipped 2026-11-18 - manifest schema_version and keys validated, truncated or unreadable archives are RestoreError, free space preflighted per volume from the validation walk, each member extracted to .<name>.restoring and os.replace'd, failures name the member and count. Owner still owes the close; the 10 new tests reproduce each loss in temp homes, no live run needed.
 ---
 
 # STOR17: Restore overwrites live files in place with no free-space check, no per-file atomicity and no check against the manifest
@@ -67,3 +67,5 @@ All in `pipeline/src/mp/restore.py`. No Swift change and no `RestorePlan` contra
 - The existing STOR12 pass-count pins (`test_plan_restore_walks_the_archive_once`, `test_a_real_restore_walks_the_archive_twice`) stay green: the sizes come from the validation walk the real run already makes, so the preflight adds no pass.
 - `cd pipeline && uv run --extra dev pytest -q`, `uv run --extra dev ruff check src tests` and `uv run --extra dev --extra mcp pyright` green, with the number of new tests in the commit body; `bash scripts/ci-local.sh` green.
 - `CONVENTIONS.md#backup-and-restore-stor2` and README.md's new-Mac restore runbook (the `mp restore ... --dry-run` steps) say, in the same commit, that a restore refuses a destination without room and that a failure leaves each file either old or restored, never truncated.
+
+**Progress (2026-11-18):** shipped against the whole scope. `scan_archive` (with `read_manifest` as its manifest-only form) validates and sizes in the one walk; `check_restore_space` mirrors `backup.check_free_space` (`backup._existing_ancestor` promoted to `existing_ancestor` for it); `_extract_atomically` writes `.<name>.restoring` then `os.replace`s, and `restore.py` joined the SEC22 fence's allowlist with that reason. A dry run is never refused for room. `restore_archive`'s `manifest=` parameter became `scan=`; `main` is its only caller. No Swift or `RestorePlan` change. Docs: CONVENTIONS backup and restore section, README new-Mac runbook, GUIDE restore recipe.

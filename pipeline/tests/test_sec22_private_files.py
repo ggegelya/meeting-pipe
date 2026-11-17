@@ -181,6 +181,7 @@ _ALLOWED = {
     "publish_lan.py": "LAN sink output, mode set by hand",
     "backup.py": "renames a finished archive: a binary file, modes are STOR8's",
     "merge_meetings.py": "renames an ffmpeg-merged audio file into place, not a text write",
+    "restore.py": "renames each extracted archive member into place (STOR17): tarfile writes the temp",
 }
 
 

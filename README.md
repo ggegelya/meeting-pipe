@@ -512,7 +512,7 @@ This is the fresh-machine path, and it runs from the Terminal because it happens
    mp restore ~/Backups/meeting-pipe-backup-20260709-215757.tar.gz --dry-run   # look first
    mp restore ~/Backups/meeting-pipe-backup-20260709-215757.tar.gz
    ```
-   Restore refuses to write into a root that already has files (pass `--force` if you mean it), and it keeps the `config.toml` you wrote in step 1 rather than the backup's, which names the old Mac's paths. Everything else under the config directory (workflows, roster, voiceprint, glossary) is restored. `--dry-run --json` prints the same look-first pass as machine-readable counts instead of prose; that is what the in-app preview reads.
+   Restore refuses to write into a root that already has files (pass `--force` if you mean it), refuses before writing anything when a destination disk lacks room for what lands there (plus the 4.6 GB recording reserve on the library's disk), refuses an archive that is truncated or was written by a newer meeting-pipe, and writes each file under a temporary name before swapping it in, so a restore that fails part way leaves every file either as it was or fully restored, never half written (re-run it to finish). It keeps the `config.toml` you wrote in step 1 rather than the backup's, which names the old Mac's paths. Everything else under the config directory (workflows, roster, voiceprint, glossary) is restored. `--dry-run --json` prints the same look-first pass as machine-readable counts instead of prose; that is what the in-app preview reads.
 3. **Re-add the Keychain items.** `mp restore` prints the exact commands:
    ```bash
    security add-generic-password -U -s com.meetingpipe.daemon -a ANTHROPIC_API_KEY -w '<value>'

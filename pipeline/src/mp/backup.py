@@ -362,7 +362,7 @@ def estimate_backup_bytes(
     )
 
 
-def _existing_ancestor(path: Path) -> Path:
+def existing_ancestor(path: Path) -> Path:
     """`path`, or the nearest ancestor that exists: what a new destination will
     be created inside, and so the volume it will land on."""
     path = path.expanduser().absolute()
@@ -372,7 +372,7 @@ def _existing_ancestor(path: Path) -> Path:
 
 
 def _same_volume(a: Path, b: Path) -> bool:
-    return _existing_ancestor(a).stat().st_dev == _existing_ancestor(b).stat().st_dev
+    return existing_ancestor(a).stat().st_dev == existing_ancestor(b).stat().st_dev
 
 
 def list_backups(destination: Path) -> list[tuple[datetime, Path]]:
@@ -479,7 +479,7 @@ def check_free_space(destination: Path, *, needed: int, library: Path) -> None:
     """
     on_library_volume = _same_volume(destination, library)
     headroom = RECORDING_RESERVE_BYTES if on_library_volume else BACKUP_HEADROOM_BYTES
-    free = shutil.disk_usage(_existing_ancestor(destination)).free
+    free = shutil.disk_usage(existing_ancestor(destination)).free
     if free >= needed + headroom:
         return
     held = list_backups(destination)
@@ -564,7 +564,7 @@ def destination_encrypted(destination: Path, run: Any = subprocess.run) -> bool 
     claimed as one.
     """
     try:
-        target = _existing_ancestor(destination.expanduser())
+        target = existing_ancestor(destination.expanduser())
         df = run(["/bin/df", "-P", str(target)], capture_output=True, text=True, timeout=10,
                  env=egress_guard.child_env())
         if df.returncode != 0:

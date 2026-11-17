@@ -6,6 +6,7 @@ manifest names every Keychain item without exporting one.
 """
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
@@ -1327,3 +1328,196 @@ def test_a_marker_without_a_count_compares_nothing(tmp_path: Path) -> None:
 
     assert result.pruned == 8
     assert json.loads(marker.read_text())["library_files"] == 3
+
+
+# ---------- a restore that fails part way, or cannot fit (STOR17) ------------
+
+
+def _forced_restore_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A real archive of `old-mac`, and a populated `this-mac` whose library's two
+    text files were edited after the backup and which holds a newer meeting the
+    archive never saw."""
+    source = _make_home(tmp_path, "old-mac")
+    _populate(source)
+    archive = create_backup(_cfg(source), tmp_path / "out", home=source)
+    here = _make_home(tmp_path, "this-mac")
+    _populate(here)
+    library = here / "Meetings" / "raw"
+    (library / "20260101-120000.md").write_text("# edited here after the backup")
+    (library / "20260101-120000.summary.json").write_text('{"title": "edited here"}')
+    (library / "20260301-090000.md").write_text("# a newer meeting")
+    return archive, here, library
+
+
+def _fail_second_replace(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mp import restore as restore_mod
+
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError(errno.ENOSPC, "No space left on device", str(dst))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(restore_mod.os, "replace", replace)
+
+
+def _restoring_temps(*roots: Path) -> list[Path]:
+    return [p for root in roots if root.exists() for p in root.rglob("*.restoring")]
+
+
+def test_a_failed_forced_restore_leaves_each_file_old_or_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F094: extraction opened the live file `wb`, so ENOSPC on the next member
+    left a previously intact transcript truncated."""
+    archive, here, library = _forced_restore_fixture(tmp_path)
+    before = (library / "20260101-120000.summary.json").read_bytes()
+    _fail_second_replace(monkeypatch)
+
+    with pytest.raises(RestoreError, match="ENOSPC") as raised:
+        restore_archive(archive, _cfg(here), home=here, force=True)
+
+    # Archive order is sorted: the .md is replaced first, the summary second.
+    assert (library / "20260101-120000.md").read_text() == "# transcript"
+    assert (library / "20260101-120000.summary.json").read_bytes() == before
+    assert "1 file(s) were already restored" in str(raised.value)
+    assert _restoring_temps(here) == []
+
+
+def test_the_cli_reports_a_failed_restore_without_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    archive, here, _library = _forced_restore_fixture(tmp_path)
+    _fail_second_replace(monkeypatch)
+
+    assert _restore_main([str(archive), "--force"], here, monkeypatch) == 1
+    captured = capsys.readouterr()
+    assert captured.err.startswith("[FAIL] restore from")
+    assert "Traceback" not in captured.err + captured.out
+
+
+def test_a_restore_without_room_is_refused_before_anything_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, here, _library = _forced_restore_fixture(tmp_path)
+    snapshot = {
+        p: (p.read_bytes(), p.stat().st_mtime_ns) for p in here.rglob("*") if p.is_file()
+    }
+    # Plenty for the archive's few hundred bytes, short of the recording reserve.
+    _free(monkeypatch, backup_mod.RECORDING_RESERVE_BYTES - 1)
+
+    with pytest.raises(RestoreError, match="not enough room") as raised:
+        restore_archive(archive, _cfg(here), home=here, force=True)
+
+    assert "Nothing was written" in str(raised.value)
+    assert {
+        p: (p.read_bytes(), p.stat().st_mtime_ns) for p in here.rglob("*") if p.is_file()
+    } == snapshot
+
+
+def test_a_dry_run_is_never_refused_for_room(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, here, _library = _forced_restore_fixture(tmp_path)
+    _free(monkeypatch, 0)
+    assert restore_archive(archive, _cfg(here), home=here, dry_run=True)["library"] == 3
+
+
+def test_a_forced_restore_puts_the_archived_bytes_back_and_leaves_newer_files(
+    tmp_path: Path,
+) -> None:
+    """F120: the forced-restore tests only counted files, never read one back."""
+    archive, here, library = _forced_restore_fixture(tmp_path)
+
+    restore_archive(archive, _cfg(here), home=here, force=True)
+
+    assert (library / "20260101-120000.md").read_text() == "# transcript"
+    assert (library / "20260101-120000.summary.json").read_text() == '{"title": "Weekly sync"}'
+    assert (library / "20260301-090000.md").read_text() == "# a newer meeting"
+    assert _restoring_temps(here) == []
+
+
+def _with_manifest(tmp_path: Path, edit) -> Path:
+    """A real backup whose manifest has been rewritten by `edit`."""
+    home = _make_home(tmp_path, "old-mac")
+    _populate(home)
+    archive = create_backup(_cfg(home), tmp_path / "out", home=home)
+    edited = tmp_path / "edited.tar.gz"
+    with tarfile.open(archive, "r:gz") as src, tarfile.open(edited, "w:gz") as dst:
+        for member in src.getmembers():
+            data = src.extractfile(member).read()  # type: ignore[union-attr]
+            if member.name == MANIFEST_NAME:
+                manifest = json.loads(data)
+                edit(manifest)
+                data = json.dumps(manifest).encode()
+                member.size = len(data)
+            dst.addfile(member, io.BytesIO(data))
+    return edited
+
+
+@pytest.mark.parametrize(
+    ("edit", "match"),
+    [
+        (lambda m: m.update(schema_version=2), "schema_version 2"),
+        (lambda m: m.pop("schema_version"), "missing schema_version"),
+        (lambda m: m.pop("created_at"), "missing created_at"),
+    ],
+    ids=["future-schema", "no-schema", "no-created-at"],
+)
+def test_a_manifest_this_version_cannot_honour_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    edit, match: str,
+) -> None:
+    """F205: `schema_version` was written by every backup and read by nothing."""
+    archive = _with_manifest(tmp_path, edit)
+    fresh = _make_home(tmp_path, "new-mac")
+
+    with pytest.raises(RestoreError, match=match):
+        read_manifest(archive)
+    with pytest.raises(RestoreError, match=match):
+        plan_restore(archive, _cfg(fresh), home=fresh)
+    assert _restore_main([str(archive)], fresh, monkeypatch) == 1
+    assert _restore_main([str(archive), "--dry-run", "--json"], fresh, monkeypatch) == 1
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    assert not (fresh / "Meetings" / "raw").exists()
+
+
+def test_a_truncated_archive_is_refused_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _make_home(tmp_path, "old-mac")
+    _populate(home)
+    archive = create_backup(_cfg(home), tmp_path / "out", home=home)
+    archive.write_bytes(archive.read_bytes()[: archive.stat().st_size // 2])
+    fresh = _make_home(tmp_path, "new-mac")
+
+    with pytest.raises(RestoreError, match="truncated or unreadable"):
+        read_manifest(archive)
+    with pytest.raises(RestoreError, match="truncated or unreadable"):
+        plan_restore(archive, _cfg(fresh), home=fresh)
+    assert _restore_main([str(archive)], fresh, monkeypatch) == 1
+
+
+def test_an_interrupted_restore_leaves_no_temp_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The router turns SIGTERM into SystemExit; a `.restoring` file left by it
+    would be archived by the next backup."""
+    from mp import restore as restore_mod
+
+    archive, here, library = _forced_restore_fixture(tmp_path)
+    before = (library / "20260101-120000.md").read_bytes()
+
+    def interrupted(src, dst):
+        raise SystemExit(143)
+
+    monkeypatch.setattr(restore_mod.os, "replace", interrupted)
+    with pytest.raises(SystemExit):
+        restore_archive(archive, _cfg(here), home=here, force=True)
+
+    assert (library / "20260101-120000.md").read_bytes() == before
+    assert _restoring_temps(here) == []

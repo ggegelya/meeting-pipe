@@ -18,19 +18,40 @@ STOR5 added `--dry-run --json`, the machine-readable plan the in-app restore
 (Preferences ▸ Storage) previews before it runs anything. It is the same walk the
 real run makes, counting instead of extracting, so the confirm can name the blast
 radius exactly rather than scraping it out of the prose report.
+
+STOR17 made a failing restore safe. Every member is extracted to a dot-prefixed
+temporary sibling and `os.replace`d over its target, so a restore that dies half
+way (a full disk, an unplugged drive) leaves each file either as it was or whole
+from the archive, never truncated. Before the first write, the free space each
+destination volume needs is checked from the sizes the validating walk already
+read, and the manifest's `schema_version` and required keys are checked too.
 """
 from __future__ import annotations
 
 import argparse
+import errno
 import json
+import os
+import shutil
 import sys
 import tarfile
+import zlib
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict
 
 from . import entry, storage
-from .backup import CONFIG_PRESERVED, EXCLUDED_NAMES, MANIFEST_NAME, backup_roots
+from .backup import (
+    BACKUP_HEADROOM_BYTES,
+    CONFIG_PRESERVED,
+    EXCLUDED_NAMES,
+    MANIFEST_NAME,
+    MANIFEST_SCHEMA_VERSION,
+    RECORDING_RESERVE_BYTES,
+    backup_roots,
+    existing_ancestor,
+)
 from .config import Config
 
 
@@ -43,6 +64,19 @@ class RestoreError(Exception):
 #: roots come from `config.toml`, so `config.toml` has to exist first, which would
 #: make the config root permanently "occupied".
 _CONFIG_ALLOWED = {CONFIG_PRESERVED} | EXCLUDED_NAMES
+
+#: Every failure reading an archive that means "this file is broken", as opposed
+#: to a refusal this module raises on purpose. A gzip cut short raises EOFError,
+#: which is neither a TarError nor an OSError (measured 2026-11-14).
+_READ_ERRORS = (EOFError, zlib.error, tarfile.TarError, OSError, ValueError)
+
+#: The manifest keys a restore reads. Every archive since STOR2 carries all four.
+_MANIFEST_REQUIRED = ("schema_version", "created_at", "roots", "keychain")
+
+#: Suffix of the temporary sibling a member is extracted to before `os.replace`.
+#: The name is also dot-prefixed, so neither `MeetingStore.stem(of:)` nor the
+#: library's directory watcher can take it for a meeting file.
+RESTORING_SUFFIX = ".restoring"
 
 #: How many example paths a plan carries per bucket. The counts are exact; the
 #: samples are what let a preview *name* what comes back ("this meeting") rather
@@ -93,21 +127,109 @@ class RestorePlan(TypedDict):
     replaced_sample: list[str]
 
 
+def _validate_manifest(archive: Path, manifest: dict) -> dict:
+    """Refuse a manifest this version cannot honour (STOR17, F205).
+
+    A missing `schema_version` is refused, not defaulted: `mp backup` has stamped
+    one since STOR2, so its absence means the archive is not one of ours. A newer
+    one is refused because a restore would read a shape it does not know.
+    """
+    if not manifest:
+        raise RestoreError(f"{archive} has no {MANIFEST_NAME}; not a meeting-pipe backup")
+    missing = [key for key in _MANIFEST_REQUIRED if key not in manifest]
+    if missing:
+        raise RestoreError(
+            f"{archive}'s {MANIFEST_NAME} is missing {', '.join(missing)} "
+            f"(schema_version {manifest.get('schema_version', 'absent')}); not a backup this "
+            "version can restore"
+        )
+    version = manifest["schema_version"]
+    if isinstance(version, bool) or not isinstance(version, int) or version > MANIFEST_SCHEMA_VERSION:
+        raise RestoreError(
+            f"{archive} was written with manifest schema_version {version!r}, and this version "
+            f"of meeting-pipe reads up to {MANIFEST_SCHEMA_VERSION}. Update meeting-pipe, then "
+            "restore again."
+        )
+    return manifest
+
+
+@dataclass
+class ArchiveScan:
+    """What one validating walk learned: the manifest, and per destination prefix
+    the bytes this Mac would write plus the largest single member (STOR17)."""
+
+    manifest: dict
+    incoming: dict[str, int] = field(default_factory=dict)
+    largest: dict[str, int] = field(default_factory=dict)
+
+
+def scan_archive(archive: Path, destinations: dict[str, Path] | None = None) -> ArchiveScan:
+    """Walk `archive` once, validating its manifest and sizing what would land.
+
+    It is the last member, so finding it walks the whole archive anyway; the
+    member sizes are in the headers that walk already passes, so the free-space
+    preflight costs no extra decompression (STOR12's pass counts hold). With no
+    `destinations` only the manifest is read.
+    """
+    if not archive.is_file():
+        raise RestoreError(f"no archive at {archive}")
+    scan = ArchiveScan({})
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            for member, prefix, _dest, _rel in _restorable_members(
+                tar, destinations or {}, scan.manifest
+            ):
+                scan.incoming[prefix] = scan.incoming.get(prefix, 0) + member.size
+                scan.largest[prefix] = max(scan.largest.get(prefix, 0), member.size)
+    except _READ_ERRORS as exc:
+        raise RestoreError(f"{archive} is truncated or unreadable ({exc})") from exc
+    _validate_manifest(archive, scan.manifest)
+    return scan
+
+
 def read_manifest(archive: Path) -> dict:
-    """The archive's manifest, in one forward pass.
+    """The archive's validated manifest, in one forward pass.
 
     It is the last member, so finding it walks the whole archive. Reading it as
     the walk reaches it keeps that to one pass; `tar.extractfile(MANIFEST_NAME)`
     walked every header and then seeked back to the member, which in a gzip
     stream restarts decompression from byte 0 (STOR12).
     """
-    with tarfile.open(archive, "r:gz") as tar:
-        for member in tar:
-            if member.name == MANIFEST_NAME and member.isfile():
-                handle = tar.extractfile(member)
-                if handle is not None:
-                    return json.loads(handle.read())
-    raise RestoreError(f"{archive} has no {MANIFEST_NAME}; not a meeting-pipe backup")
+    return scan_archive(archive).manifest
+
+
+def check_restore_space(scan: ArchiveScan, destinations: dict[str, Path], library: Path) -> None:
+    """Refuse, before the first write, a restore a destination volume has no room for.
+
+    Mirrors `backup.check_free_space`. Per volume the bar is the bytes landing
+    there, plus its largest member (the temporary copy coexists with the file it
+    replaces), plus `RECORDING_RESERVE_BYTES` on the library's volume and
+    `BACKUP_HEADROOM_BYTES` elsewhere. Files a restore replaces are not credited:
+    that over-estimates, and a refusal costs less than a truncation.
+    """
+    library_dev = existing_ancestor(library).stat().st_dev
+    volumes: dict[int, tuple[Path, int, int]] = {}
+    for prefix, incoming in scan.incoming.items():
+        anchor = existing_ancestor(destinations[prefix])
+        dev = anchor.stat().st_dev
+        _, total, largest = volumes.get(dev, (anchor, 0, 0))
+        volumes[dev] = (anchor, total + incoming, max(largest, scan.largest.get(prefix, 0)))
+    for dev, (anchor, incoming, largest) in volumes.items():
+        headroom = RECORDING_RESERVE_BYTES if dev == library_dev else BACKUP_HEADROOM_BYTES
+        needed = incoming + largest
+        free = shutil.disk_usage(anchor).free
+        if free >= needed + headroom:
+            continue
+        why = (
+            f"and {storage.human_bytes(headroom)} has to stay free for the next recording"
+            if dev == library_dev
+            else f"plus {storage.human_bytes(headroom)} of headroom"
+        )
+        raise RestoreError(
+            f"not enough room to restore into {anchor}: {storage.human_bytes(free)} free, and "
+            f"this restore needs about {storage.human_bytes(needed)} {why}. Nothing was "
+            "written. Free some space and restore again."
+        )
 
 
 def _is_occupied(path: Path, prefix: str) -> bool:
@@ -182,22 +304,24 @@ def plan_restore(archive: Path, cfg: Config, *, home: Path | None = None) -> Res
     # Nothing is written either way, so validating at the end refuses the same
     # archives and costs nothing.
     manifest: dict = {}
-    with tarfile.open(archive, "r:gz") as tar:
-        for member, prefix, destination, relative in _restorable_members(
-            tar, destinations, manifest
-        ):
-            bucket = counts[prefix]
-            bucket["files"] += 1
-            if (destination / relative).exists():
-                bucket["replaced"] += 1
-                if len(replaced_sample) < PLAN_SAMPLE_LIMIT:
-                    replaced_sample.append(member.name)
-            else:
-                bucket["added"] += 1
-                if len(added_sample) < PLAN_SAMPLE_LIMIT:
-                    added_sample.append(member.name)
-    if not manifest:
-        raise RestoreError(f"{archive} has no {MANIFEST_NAME}; not a meeting-pipe backup")
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            for member, prefix, destination, relative in _restorable_members(
+                tar, destinations, manifest
+            ):
+                bucket = counts[prefix]
+                bucket["files"] += 1
+                if (destination / relative).exists():
+                    bucket["replaced"] += 1
+                    if len(replaced_sample) < PLAN_SAMPLE_LIMIT:
+                        replaced_sample.append(member.name)
+                else:
+                    bucket["added"] += 1
+                    if len(added_sample) < PLAN_SAMPLE_LIMIT:
+                        added_sample.append(member.name)
+    except _READ_ERRORS as exc:
+        raise RestoreError(f"{archive} is truncated or unreadable ({exc})") from exc
+    _validate_manifest(archive, manifest)
 
     config_root = destinations["config"]
     return {
@@ -234,7 +358,7 @@ def restore_archive(
     home: Path | None = None,
     force: bool = False,
     dry_run: bool = False,
-    manifest: dict | None = None,
+    scan: ArchiveScan | None = None,
 ) -> dict[str, int]:
     """Extract each prefix into its configured root. Returns files-written per root.
 
@@ -244,17 +368,22 @@ def restore_archive(
     destinations), so that one file does not count as occupancy, and the backup's
     copy never overwrites it. Every other config file restores.
 
-    `manifest` is the caller's already-validated `read_manifest(archive)`. Passing
-    it skips a second full decompression just to validate again (STOR12); without
-    it the archive is validated here, before anything is touched.
+    `scan` is the caller's `scan_archive(archive, destinations)` for these same
+    destinations. Passing it skips a second full decompression just to validate
+    again (STOR12); without it the archive is scanned here, before anything is
+    touched. Either way the free-space preflight runs before the first write.
+
+    Each member is extracted to `.<name>.restoring` beside its target and then
+    `os.replace`d over it (STOR17), so a failure part way leaves every file
+    either untouched or whole from the archive.
     """
     archive = archive.expanduser()
     if not archive.is_file():
         raise RestoreError(f"no archive at {archive}")
-    if manifest is None:
-        read_manifest(archive)  # validate before touching anything
 
     destinations = {root.prefix: root.source for root in backup_roots(cfg, home)}
+    if scan is None:
+        scan = scan_archive(archive, destinations)  # validate before touching anything
     if not force and not dry_run:
         for prefix, destination in destinations.items():
             if _is_occupied(destination, prefix):
@@ -262,27 +391,81 @@ def restore_archive(
                     f"{destination} already has files ({prefix}). "
                     "Move it aside, or pass --force to write into it."
                 )
+    if not dry_run:
+        check_restore_space(scan, destinations, destinations["library"])
 
     written: dict[str, int] = {prefix: 0 for prefix in destinations}
-    with tarfile.open(archive, "r:gz") as tar:
-        for member, prefix, destination, relative in _restorable_members(tar, destinations):
-            written[prefix] += 1
-            if dry_run:
-                continue
-            destination.mkdir(parents=True, exist_ok=True)
-            # Strip the prefix so `library/a.wav` lands at `<library>/a.wav`. A
-            # traversing tail (`library/../../x`) survives that strip, so the
-            # `data` filter is what actually rejects absolute paths and `..`
-            # escapes. Surface its refusal as a RestoreError, not a traceback.
-            member.name = relative
-            try:
-                tar.extract(member, path=destination, filter="data")
-            except tarfile.FilterError as exc:
-                raise RestoreError(
-                    f"refusing to restore {archive}: a member would write outside "
-                    f"{destination} ({exc})"
-                ) from exc
+    restored = 0
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            for member, prefix, destination, relative in _restorable_members(tar, destinations):
+                written[prefix] += 1
+                if dry_run:
+                    continue
+                _extract_atomically(tar, member, archive, destination, relative, restored)
+                restored += 1
+    except _READ_ERRORS as exc:
+        # A failure between members (the stream itself breaking) rather than one
+        # `_extract_atomically` already named.
+        raise RestoreError(_partial_message(archive, None, exc, restored)) from exc
     return written
+
+
+def _partial_message(archive: Path, name: str | None, exc: BaseException, restored: int) -> str:
+    code = getattr(exc, "errno", None)
+    reason = errno.errorcode.get(code, str(code)) if isinstance(code, int) else type(exc).__name__
+    where = f" at {name}" if name else ""
+    return (
+        f"restore from {archive} stopped{where} ({reason}: {exc}). {restored} file(s) were "
+        "already restored and the rest are as they were, so the library holds a mix of the "
+        "two; no file was left half written. Fix the cause and run the restore again to "
+        "complete it."
+    )
+
+
+def _extract_atomically(
+    tar: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    archive: Path,
+    destination: Path,
+    relative: str,
+    restored: int,
+) -> None:
+    """Extract one member to a temporary sibling, then `os.replace` it into place."""
+    target = destination / relative
+    parent, _, name = relative.rpartition("/")
+    temp_relative = f"{parent}/.{name}{RESTORING_SUFFIX}" if parent else f".{name}{RESTORING_SUFFIX}"
+    temp = destination / temp_relative
+    # Strip the prefix so `library/a.wav` lands at `<library>/a.wav`. A
+    # traversing tail (`library/../../x`) survives that strip, so the `data`
+    # filter, which sees the temporary name in the same folder, is what actually
+    # rejects absolute paths and `..` escapes.
+    member.name = temp_relative
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+        tar.extract(member, path=destination, filter="data")
+        os.replace(temp, target)
+    except tarfile.FilterError as exc:
+        _discard(temp)
+        raise RestoreError(
+            f"refusing to restore {archive}: a member would write outside "
+            f"{destination} ({exc})"
+        ) from exc
+    except _READ_ERRORS as exc:
+        _discard(temp)
+        raise RestoreError(_partial_message(archive, f"{destination}/{relative}", exc, restored)) from exc
+    except BaseException:
+        # Ctrl-C, or the router's SIGTERM `SystemExit` (PIPE22): no `.restoring`
+        # file outlives the run for the next backup to archive.
+        _discard(temp)
+        raise
+
+
+def _discard(temp: Path) -> None:
+    try:
+        temp.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _report_plan(plan: RestorePlan, out: Path | None) -> int:
@@ -355,9 +538,11 @@ def main(argv: list[str]) -> int:
         return _report_plan(plan, args.out)
 
     try:
-        manifest = read_manifest(args.archive.expanduser())
+        destinations = {root.prefix: root.source for root in backup_roots(cfg)}
+        scan = scan_archive(args.archive.expanduser(), destinations)
+        manifest = scan.manifest
         written = restore_archive(
-            args.archive, cfg, force=args.force, dry_run=args.dry_run, manifest=manifest
+            args.archive, cfg, force=args.force, dry_run=args.dry_run, scan=scan
         )
     except RestoreError as exc:
         # STOR14: stderr, the only stream `runMP` keeps for the failure text.

@@ -382,7 +382,7 @@ A backup also refuses when your recordings folder is missing (its drive is unplu
 
 **Preferences ▸ Storage ▸ Restore from backup…**. Pick an archive and the app reads it first without writing anything, then shows you exactly what a restore would do: how many files land, how many replace files that are already there, and what comes back. Nothing happens until you confirm.
 
-This is the way to undo a retention sweep, recover from a bad batch action, or pull your library back after moving it. It writes into your live library, so same-named files are replaced and there is no undo. Files the backup does not carry are left alone, and the setting naming where your library lives is kept rather than overwritten with the old Mac's.
+This is the way to undo a retention sweep, recover from a bad batch action, or pull your library back after moving it. It writes into your live library, so same-named files are replaced and there is no undo. If the disk does not have room, the restore says so before writing anything; and if it stops part way (a drive unplugged, say), each file is either the old one or the restored one, never half written, and running the restore again finishes it. Files the backup does not carry are left alone, and the setting naming where your library lives is kept rather than overwritten with the old Mac's.
 
 Setting up a **brand new** Mac is the one case this window cannot walk you through, because it all happens before the app exists on that Mac: you install it there first, and the restore runs from the Terminal rather than from Preferences. Your keys do not come across either way, so you re-enter those by hand once. What you can do from here is make sure there is a recent archive to restore, which is the section above.
 
