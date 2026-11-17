@@ -335,3 +335,188 @@ final class RecordingPostProcessorTests: XCTestCase {
         throw XCTSkip("ffmpeg not available (local run)")
     }
 }
+
+// MARK: - REC36: orphan recovery merges with the persisted placement
+
+/// REC36: `recoverOrphan` used to merge at offset 0 with no cut, because the REC9 head offset and
+/// the END9 trim lived only in memory at stop. These drive `recoverOrphan` itself over real files,
+/// with real ffmpeg for the placement, as the merge tests above do.
+extension RecordingPostProcessorTests {
+
+    func test_recoverOrphan_places_the_system_channel_at_the_persisted_offset() async throws {
+        try requireFFmpeg()
+        let (dir, logs) = try makeRecoveryDir()
+        let stem = "20261117-100000"
+        try makeWavData(seconds: 10, amplitude: 8000).write(to: dir.appendingPathComponent("\(stem).mic.wav"))
+        try makeWavData(seconds: 3, channels: 2, amplitude: 8000).write(to: dir.appendingPathComponent("\(stem).system.wav"))
+        let final = dir.appendingPathComponent("\(stem).wav")
+        XCTAssertTrue(MergePlacement.write(.init(systemHeadOffsetSec: 4, spanSec: 10), forFinal: final))
+
+        let recovered = await RecordingPostProcessor.recoverOrphan(stem: stem, in: dir)
+
+        XCTAssertEqual(recovered, final)
+        XCTAssertEqual(try XCTUnwrap(RecordingPostProcessor.audioDurationSec(of: final)), 10, accuracy: 0.05)
+        XCTAssertLessThan(try peak(final, channel: 1, from: 0.5, to: 3.5), 100, "silent before the capture started")
+        XCTAssertGreaterThan(try peak(final, channel: 1, from: 4.5, to: 6.5), 4000, "the far side sits 4 s in")
+        XCTAssertEqual(MergePlacement.load(forFinal: final), .absent, "removed once the final is promoted")
+        XCTAssertTrue(recoveryEvents(logs, action: "orphan_recovered_without_offset").isEmpty)
+        // The termination flush's span means stop never ran REC30's check, so recovery does.
+        let coverage = recoveryEvents(logs, action: "channel_coverage_short")
+        XCTAssertEqual(coverage.count, 1)
+        XCTAssertEqual(coverage.first?["path"] as? String, "orphan_recovery")
+        XCTAssertEqual(coverage.first?["head_offset_sec"] as? Double, 4)
+    }
+
+    func test_recoverOrphan_cuts_at_the_persisted_limit() async throws {
+        try requireFFmpeg()
+        let (dir, logs) = try makeRecoveryDir()
+        let stem = "20261117-101000"
+        try makeWavData(seconds: 10, amplitude: 8000).write(to: dir.appendingPathComponent("\(stem).mic.wav"))
+        try makeWavData(seconds: 10, channels: 2, amplitude: 8000).write(to: dir.appendingPathComponent("\(stem).system.wav"))
+        let final = dir.appendingPathComponent("\(stem).wav")
+        MergePlacement.write(.init(systemHeadOffsetSec: 0, limitSeconds: 6), forFinal: final)
+
+        let recovered = await RecordingPostProcessor.recoverOrphan(stem: stem, in: dir)
+
+        XCTAssertEqual(recovered, final)
+        XCTAssertEqual(try XCTUnwrap(RecordingPostProcessor.audioDurationSec(of: final)), 6, accuracy: 0.05)
+        XCTAssertTrue(recoveryEvents(logs, action: "channel_coverage_short").isEmpty, "a stop-time placement carries no span")
+    }
+
+    func test_recoverOrphan_with_nothing_persisted_merges_at_zero_and_says_so() async throws {
+        try requireFFmpeg()
+        let (dir, logs) = try makeRecoveryDir()
+        let stem = "20261117-102000"
+        try makeWavData(seconds: 10, amplitude: 8000).write(to: dir.appendingPathComponent("\(stem).mic.wav"))
+        try makeWavData(seconds: 3, channels: 2, amplitude: 8000).write(to: dir.appendingPathComponent("\(stem).system.wav"))
+        let final = dir.appendingPathComponent("\(stem).wav")
+
+        let recovered = await RecordingPostProcessor.recoverOrphan(stem: stem, in: dir)
+
+        XCTAssertEqual(recovered, final)
+        XCTAssertGreaterThan(try peak(final, channel: 1, from: 0.5, to: 2.5), 4000, "no offset: the far side starts at 0")
+        let without = recoveryEvents(logs, action: "orphan_recovered_without_offset")
+        XCTAssertEqual(without.count, 1)
+        XCTAssertEqual(without.first?["category"] as? String, "recorder")
+        XCTAssertEqual(without.first?["reason"] as? String, "absent")
+        XCTAssertEqual(without.first?["file"] as? String, "\(stem).wav")
+    }
+
+    /// The case a placement carried in the failure breadcrumb would have lost: that file is
+    /// rewritten on every failure, so the second attempt would merge at 0.
+    func test_a_failed_recovery_keeps_the_placement_for_the_next_attempt() async throws {
+        let (dir, _) = try makeRecoveryDir()
+        let stem = "20261117-103000"
+        try makeWavData(seconds: 10, amplitude: 8000).write(to: dir.appendingPathComponent("\(stem).mic.wav"))
+        try makeWavData(seconds: 10, channels: 2, amplitude: 8000).write(to: dir.appendingPathComponent("\(stem).system.wav"))
+        let final = dir.appendingPathComponent("\(stem).wav")
+        MergePlacement.write(.init(systemHeadOffsetSec: 4, limitSeconds: 8), forFinal: final)
+        let truncated = dir.appendingPathComponent("truncated.wav")
+        try makeWavData(seconds: 1, amplitude: 8000).write(to: truncated)
+        setenv("MEETINGPIPE_FFMPEG", try fakeFFmpeg(in: dir, writing: truncated).path, 1)
+        defer { unsetenv("MEETINGPIPE_FFMPEG") }
+
+        let recovered = await RecordingPostProcessor.recoverOrphan(stem: stem, in: dir)
+
+        XCTAssertNil(recovered)
+        XCTAssertEqual(MergePlacement.load(forFinal: final), .loaded(.init(systemHeadOffsetSec: 4, limitSeconds: 8)))
+        XCTAssertNotNil(RecordingPostProcessor.readPostProcessFailure(final: final))
+    }
+
+    func test_placement_round_trips_and_refuses_what_it_did_not_write() throws {
+        let (dir, _) = try makeRecoveryDir()
+        let final = dir.appendingPathComponent("20261117-104000.wav")
+        XCTAssertEqual(MergePlacement.load(forFinal: final), .absent)
+
+        let values = MergePlacement.Values(systemHeadOffsetSec: 33.21, limitSeconds: 1800, spanSec: 2400)
+        MergePlacement.write(values, forFinal: final)
+        XCTAssertEqual(MergePlacement.load(forFinal: final), .loaded(values))
+
+        for body in ["not json", #"{"system_head_offset_sec": -1}"#, #"{"system_head_offset_sec": true}"#,
+                     #"{"system_head_offset_sec": 2, "limit_sec": 0}"#, #"{"limit_sec": 5}"#] {
+            try Data(body.utf8).write(to: MergePlacement.url(forFinal: final))
+            XCTAssertEqual(MergePlacement.load(forFinal: final), .unreadable, body)
+        }
+    }
+
+    /// A merge that keeps failing keeps its placement, but the coverage row is measured once.
+    func test_recovered_coverage_is_emitted_once_across_failed_retries() async throws {
+        let (dir, logs) = try makeRecoveryDir()
+        let stem = "20261117-105000"
+        try makeWavData(seconds: 10, amplitude: 8000).write(to: dir.appendingPathComponent("\(stem).mic.wav"))
+        try makeWavData(seconds: 10, channels: 2, amplitude: 8000).write(to: dir.appendingPathComponent("\(stem).system.wav"))
+        let final = dir.appendingPathComponent("\(stem).wav")
+        MergePlacement.write(.init(systemHeadOffsetSec: 4, spanSec: 14), forFinal: final)
+        let truncated = dir.appendingPathComponent("truncated.wav")
+        try makeWavData(seconds: 1, amplitude: 8000).write(to: truncated)
+        setenv("MEETINGPIPE_FFMPEG", try fakeFFmpeg(in: dir, writing: truncated).path, 1)
+        defer { unsetenv("MEETINGPIPE_FFMPEG") }
+
+        _ = await RecordingPostProcessor.recoverOrphan(stem: stem, in: dir)
+        _ = await RecordingPostProcessor.recoverOrphan(stem: stem, in: dir)
+
+        XCTAssertEqual(recoveryEvents(logs, action: "channel_coverage_short").count, 1)
+        XCTAssertEqual(MergePlacement.load(forFinal: final), .loaded(.init(systemHeadOffsetSec: 4)))
+    }
+
+    func test_a_placement_beside_a_finished_final_is_cleared_not_applied() async throws {
+        let (dir, _) = try makeRecoveryDir()
+        let stem = "20261117-106000"
+        let final = dir.appendingPathComponent("\(stem).wav")
+        try makeWavData(seconds: 10, amplitude: 8000).write(to: final)
+        try makeWavData(seconds: 10, amplitude: 8000).write(to: dir.appendingPathComponent("\(stem).mic.wav"))
+        MergePlacement.write(.init(systemHeadOffsetSec: 4), forFinal: final)
+
+        let recovered = await RecordingPostProcessor.recoverOrphan(stem: stem, in: dir)
+
+        XCTAssertNil(recovered)
+        XCTAssertEqual(MergePlacement.load(forFinal: final), .absent)
+    }
+
+    /// T7 source fence (deliberate): the recorder half of REC36. Missing seam: `stop()` and the
+    /// termination flush need a live engine and real capture files, so no test can drive them to
+    /// the write; this pins that each persists the placement at the point the fix depends on:
+    /// `stop()` straight after `endSession` (a quit after that skips the flush), and the flush
+    /// before its writer drains (a slow drain must not starve it).
+    func test_the_recorder_persists_the_placement_where_recovery_needs_it() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Sources/MeetingPipe/MeetingRecorder.swift"), encoding: .utf8
+        )
+        func range(of needle: String, after start: String.Index? = nil) throws -> Range<String.Index> {
+            try XCTUnwrap(source.range(of: needle, range: (start ?? source.startIndex)..<source.endIndex), needle)
+        }
+        let stop = try range(of: "func stop(limitSeconds: Double? = nil) async -> Bool {")
+        let ended = try range(of: "let session = endSession()", after: stop.upperBound)
+        let write = try range(of: "MergePlacement.write(", after: ended.upperBound)
+        let halt = try range(of: "await systemChannel.haltCapture()", after: ended.upperBound)
+        XCTAssertLessThan(write.lowerBound, halt.lowerBound, "stop() persists the placement before its first await")
+
+        let flush = try range(of: "func flushIntermediatesForTermination() {")
+        let flushWrite = try range(of: "MergePlacement.write(placement, forFinal: final)", after: flush.upperBound)
+        let drain = try range(of: "micWriter?.finish(timeout:", after: flush.upperBound)
+        XCTAssertLessThan(flushWrite.lowerBound, drain.lowerBound, "the flush persists the placement before the drains")
+        let drop = try range(of: "systemChannel.dropCaptureForTermination()", after: flush.upperBound)
+        let read = try range(of: "systemChannel.systemFirstFrameUptime", after: flush.upperBound)
+        XCTAssertLessThan(read.lowerBound, drop.lowerBound, "the offset is read before the system capture is dropped")
+    }
+
+    private func makeRecoveryDir() throws -> (URL, URL) {
+        let dir = try makeTempDir()
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        addTeardownBlock { unsetenv("MEETINGPIPE_LOGS_DIR") }
+        return (dir, logs)
+    }
+
+    private func recoveryEvents(_ logs: URL, action: String) -> [[String: Any]] {
+        let text = (try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? ""
+        return text.split(separator: "\n").compactMap { line in
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  object["action"] as? String == action else { return nil }
+            return object
+        }
+    }
+}

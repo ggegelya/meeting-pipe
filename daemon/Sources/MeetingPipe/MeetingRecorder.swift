@@ -1248,6 +1248,17 @@ final class MeetingRecorder {
             return false
         }
         let session = endSession()
+        // REC36: `endSession` cleared `isRecording`, so from here a quit skips the termination
+        // flush, and the halt, stand-down, teardown and drains below can take seconds each. Persist
+        // the placement now, with the span, so a quit in that window still recovers placed and
+        // trimmed, and coverage-checked once; `mergeIntermediates` rewrites it without the span
+        // once its own coverage check has run.
+        MergePlacement.write(
+            MergePlacement.Values(
+                systemHeadOffsetSec: session.systemHeadOffsetSec, limitSeconds: limitSeconds, spanSec: session.spanSec
+            ),
+            forFinal: final
+        )
         standDownTimersAndHooks()
         await systemChannel.haltCapture()
         await deviceRecovery.standDown()
@@ -1546,14 +1557,29 @@ final class MeetingRecorder {
         ])
         noteChannelCoverage(session: session, micAudioSec: micAudioSec, systemAudioSec: systemAudioSec)
 
+        // REC36: the placement `stop()` wrote after `endSession`, rewritten without the span now
+        // that the coverage check above has run, so a failed or wedged merge, or a kill inside it,
+        // leaves the orphan sweep merging where this one would have and measuring nothing twice.
+        // Removed once a verified final is promoted, and here when there is nothing to recover.
+        if writerWedged || hasMic || hasSystem {
+            MergePlacement.write(
+                MergePlacement.Values(systemHeadOffsetSec: session.systemHeadOffsetSec, limitSeconds: limitSeconds),
+                forFinal: final
+            )
+        } else {
+            MergePlacement.remove(forFinal: final)
+        }
+
         if writerWedged {
             RecordingPostProcessor.writePostProcessFailure(final: final, retained: [micURL, systemURL])
             return false
         } else if hasMic || hasSystem {
-            return await RecordingPostProcessor.produceFinal(
+            let produced = await RecordingPostProcessor.produceFinal(
                 mic: micURL, system: systemURL, final: final, hasMic: hasMic, hasSystem: hasSystem,
                 systemHeadOffsetSec: session.systemHeadOffsetSec, limitSeconds: limitSeconds
             )
+            if produced { MergePlacement.remove(forFinal: final) }
+            return produced
         } else {
             Log.writeLine("recorder", "WARN: neither mic nor system has audio data - leaving \(final.lastPathComponent) absent")
             return false
@@ -1681,6 +1707,16 @@ final class MeetingRecorder {
         guard let final = currentFile else { return }
         Log.writeLine("recorder", "flushing intermediates for termination (orphan sweep merges on next launch)")
 
+        // REC36: where the system channel starts and how long the capture ran, read before the
+        // system capture is dropped, for the next launch's merge and its coverage check. No trim:
+        // END9 decides one only when a held end confirms at stop, which a quit never reaches.
+        let captureStop = ProcessInfo.processInfo.systemUptime
+        let firstFrame = systemChannel.systemFirstFrameUptime
+        let placement = MergePlacement.Values(
+            systemHeadOffsetSec: firstFrame > 0 ? max(0, firstFrame - startedAtUptime) : 0,
+            spanSec: max(0, captureStop - startedAtUptime)
+        )
+
         // REC8: release the timers, wake hook, and power assertion on the terminate
         // path too, so a lingering process (a SIGTERM the user later cancels) holds
         // no sleep lock.
@@ -1745,6 +1781,9 @@ final class MeetingRecorder {
                 "path": MuteTimelinePersistence.Path.termination.rawValue,
             ])
         }
+
+        // REC36: before the drains, like the timeline, so a slow drain cannot starve it.
+        MergePlacement.write(placement, forFinal: final)
 
         // Drain pending buffers to disk, then close the files so their headers
         // are valid for the next-launch merge. Bounded (REC11(a)): quit has its own

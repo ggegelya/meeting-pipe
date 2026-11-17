@@ -192,25 +192,80 @@ enum RecordingPostProcessor {
         let finalURL = directory.appendingPathComponent("\(stem).wav")
         let fm = FileManager.default
 
-        // Never clobber a recording that already finished.
-        guard !fm.fileExists(atPath: finalURL.path) else { return nil }
+        // Never clobber a recording that already finished. A placement left beside it (a kill
+        // between the promote and its removal) or beside nothing to merge is stale (REC36).
+        guard !fm.fileExists(atPath: finalURL.path) else {
+            MergePlacement.remove(forFinal: finalURL)
+            return nil
+        }
 
         let hasMic = fm.fileExists(atPath: micURL.path) && fileSize(micURL) > 4096
         let hasSystem = fm.fileExists(atPath: systemURL.path) && fileSize(systemURL) > 4096
-        guard hasMic || hasSystem else { return nil }
+        guard hasMic || hasSystem else {
+            MergePlacement.remove(forFinal: finalURL)
+            return nil
+        }
+
+        // REC36: the head offset and held-end trim `stop()` or the termination flush persisted.
+        // Absent (a kill before either ran, or a pre-REC36 orphan) or unreadable keeps the old
+        // behaviour, offset 0 and no cut, and says so when there is a system channel to place.
+        let placement = MergePlacement.load(forFinal: finalURL)
+        var values = MergePlacement.Values(systemHeadOffsetSec: 0)
+        switch placement {
+        case .loaded(let loaded):
+            values = loaded
+        case .absent, .unreadable:
+            if hasMic && hasSystem {
+                Log.event(category: "recorder", action: "orphan_recovered_without_offset", attributes: [
+                    "file": finalURL.lastPathComponent,
+                    "reason": placement == .absent ? "absent" : "unreadable",
+                ])
+                Log.writeLine("recorder", "WARN: orphan \(stem) has no readable merge placement; merging the system channel at 0 s")
+            }
+        }
+        if let span = values.spanSec {
+            noteRecoveredCoverage(
+                final: finalURL, spanSec: span, headOffsetSec: values.systemHeadOffsetSec,
+                micAudioSec: hasMic ? audioDurationSec(of: micURL) : nil,
+                systemAudioSec: hasSystem ? audioDurationSec(of: systemURL) : nil
+            )
+            // Measured now, so a failed merge's retries keep the placement but not the span:
+            // one coverage row per recording, however many attempts the merge takes.
+            var measured = values
+            measured.spanSec = nil
+            MergePlacement.write(measured, forFinal: finalURL)
+        }
 
         // Same temp+promote path stop() uses (REC7): never delete an unverified
         // merge's inputs, and never leave a truncated final at the canonical path.
         // produceFinal already keeps the intermediates + writes a recordfail
-        // breadcrumb on failure, so a later launch retries.
+        // breadcrumb on failure, so a later launch retries, with the placement still on disk.
         guard await produceFinal(
-            mic: micURL, system: systemURL, final: finalURL, hasMic: hasMic, hasSystem: hasSystem
+            mic: micURL, system: systemURL, final: finalURL, hasMic: hasMic, hasSystem: hasSystem,
+            systemHeadOffsetSec: values.systemHeadOffsetSec, limitSeconds: values.limitSeconds
         ) else {
             Log.writeLine("recorder", "WARN: orphan recovery merge failed for \(stem); kept intermediates for the next launch")
             return nil
         }
+        MergePlacement.remove(forFinal: finalURL)
         Log.writeLine("recorder", "recovered orphaned recording → \(finalURL.lastPathComponent)")
         return finalURL
+    }
+
+    /// REC30's coverage check for a recording whose `stop()` never reached its own (REC36): the
+    /// termination flush, or a quit between `endSession` and the merge. This is the one time it runs. No delivery records survive a quit, so the causes
+    /// read from the durations alone.
+    private static func noteRecoveredCoverage(
+        final: URL, spanSec: Double, headOffsetSec: Double, micAudioSec: Double?, systemAudioSec: Double?
+    ) {
+        guard let verdict = ChannelCoverage.evaluate(ChannelCoverage.Input(
+            spanSec: spanSec, micAudioSec: micAudioSec, systemAudioSec: systemAudioSec,
+            headOffsetSec: headOffsetSec, mic: nil, system: nil
+        )), verdict.isShort else { return }
+        var attributes = ChannelCoverage.eventAttributes(verdict)
+        attributes["file"] = final.lastPathComponent
+        attributes["path"] = "orphan_recovery"
+        Log.event(category: "recorder", action: "channel_coverage_short", attributes: attributes)
     }
 
     // MARK: - ffmpeg post-process
@@ -308,7 +363,8 @@ enum RecordingPostProcessor {
     /// `systemHeadOffsetSec` (REC9) is how long after the mic started the system
     /// channel's first frame landed, so a capture that came up late is merged where
     /// it was recorded instead of at sample 0. `stop()` measures it; `recoverOrphan`
-    /// passes 0, because a crash leaves no record of when either channel began.
+    /// passes what `stop()` or the termination flush persisted in `<stem>.placement.json`
+    /// (REC36), and 0 when nothing was, as after a kill mid-recording.
     /// `limitSeconds` (END9) cuts the output at that many seconds from the recording's start. It is
     /// set only when a held provisional end confirmed, where everything past the hold's opening is
     /// post-call audio by construction: a real end has to publish byte-for-byte what it published

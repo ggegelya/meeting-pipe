@@ -200,6 +200,10 @@ enum OrphanRecordingRecovery {
                     Log.writeLine("daemon", "WARN: could not set aside \(url.lastPathComponent): \(error.localizedDescription)")
                 }
             }
+            if !failed {
+                // REC36: nothing is left to place.
+                MergePlacement.remove(forFinal: directory.appendingPathComponent("\(stem).wav"))
+            }
             Log.event(category: "coordinator", action: "orphan_stale_discarded", attributes: [
                 "stem": stem,
                 "moved": moved,
