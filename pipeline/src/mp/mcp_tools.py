@@ -20,7 +20,12 @@ Three properties hold for every function here and are what the tests pin:
    codebase already fences for its own prompts (TECH-SEC6). The fence does not
    make injection impossible; it makes the boundary explicit, and it is the same
    marker pair `prompt_safety` uses everywhere else so a later rename cannot
-   leave this surface fencing against markers nothing writes.
+   leave this surface fencing against markers nothing writes. AUTO8 made it hold
+   for every model-written string, not just the content blocks: a meeting
+   `title`, an action's `task` and `owner` are each fenced on their own, so the
+   row shapes stay plain JSON a client can read field by field. A `due` that is
+   an ISO date is a value and stays bare; any other `due` is model prose and is
+   fenced. Stem, date, workflow and the flags are not model text.
 """
 from __future__ import annotations
 
@@ -32,7 +37,7 @@ from typing import Any
 
 from . import actions as actions_mod
 from . import embed_index, visibility
-from .prompt_safety import wrap_untrusted
+from .prompt_safety import clean_due, clean_person, wrap_untrusted
 from .workflow import read_meta
 
 #: The one refusal shape. Identical for a withheld meeting and for a stem that
@@ -50,6 +55,11 @@ MAX_TRANSCRIPT_WINDOW = 20000
 SEARCH_EXCERPT_CHARS = 900
 DEFAULT_SEARCH_LIMIT = 5
 MAX_SEARCH_LIMIT = 20
+
+#: AUTO8. Longest action `task` any tool returns. `ActionItem.task` has no length
+#: bound, so a dictated "action" can be a paragraph addressed to whatever reads it;
+#: a real task fits in a sentence or two. A longer one is cut and ends in "...".
+TASK_MAX_CHARS = 300
 
 _STEM_DATE = re.compile(r"^(\d{8})")
 
@@ -86,6 +96,16 @@ def _summary(root: Path, stem: str) -> dict[str, Any]:
     return obj if isinstance(obj, dict) else {}
 
 
+def _task(text: str) -> str:
+    """An action's task text, capped at `TASK_MAX_CHARS` (unfenced)."""
+    return text if len(text) <= TASK_MAX_CHARS else text[: TASK_MAX_CHARS - 3] + "..."
+
+
+def _fenced(text: str | None) -> str | None:
+    """`wrap_untrusted`, passing None through so an absent owner stays absent."""
+    return None if text is None else wrap_untrusted(text)
+
+
 def _workflow_name(root: Path, stem: str) -> str | None:
     return str(read_meta(root / f"{stem}.meta.json").get("workflow_name") or "") or None
 
@@ -97,7 +117,7 @@ def _row(root: Path, stem: str) -> dict[str, Any]:
     summary = _summary(root, stem)
     return {
         "stem": stem,
-        "title": str(summary.get("title") or stem),
+        "title": wrap_untrusted(str(summary.get("title") or stem)),
         "date": _meeting_date(stem),
         "workflow": _workflow_name(root, stem),
         "has_transcript": (root / f"{stem}.md").exists(),
@@ -128,7 +148,7 @@ def search_meetings(
     results = [
         {
             "stem": h.chunk.stem,
-            "title": h.chunk.title,
+            "title": wrap_untrusted(h.chunk.title),
             "date": _meeting_date(h.chunk.stem),
             "score": round(float(h.score), 4),
             "excerpt": wrap_untrusted(h.chunk.text[:SEARCH_EXCERPT_CHARS]),
@@ -157,9 +177,9 @@ def get_meeting(root: Path, stem: str, allow_stems: set[str]) -> dict[str, Any]:
     decisions = [str(d) for d in (summary.get("decisions") or []) if isinstance(d, str)]
     actions = [
         {
-            "task": str(a.get("task") or ""),
-            "owner": str(a["owner"]) if a.get("owner") else None,
-            "due": str(a["due"]) if a.get("due") else None,
+            "task": _task(str(a.get("task") or "")),
+            "owner": clean_person(str(a["owner"])) if a.get("owner") else None,
+            "due": clean_due(str(a["due"])) if a.get("due") else None,
             "resolved": bool(a.get("resolved") or a.get("done")),
         }
         for a in (summary.get("actions") or [])
@@ -285,6 +305,15 @@ def list_actions(
 
     Reuses `mp actions`' discovery and lifecycle filter rather than re-reading
     the summaries, so "open" means here exactly what it means in the app.
+
+    AUTO8: every row that passes the filters is collected and ranked before the
+    cut, then `limit` keeps the top: dated actions first by soonest `due`, then
+    undated ones newest meeting first (ties inside a group also newest first). A
+    `due` that is not an ISO date ranks as undated.
+    Discovery walks the library oldest first, and it used to stop at `limit`
+    there, so a library with more open actions than the limit answered with its
+    oldest ones, re-sorted to look complete. `total` and `truncated` say when the
+    answer is a page.
     """
     root = Path(root).expanduser()
     today = today or date.today()
@@ -296,19 +325,27 @@ def list_actions(
         day = _meeting_date(a.stem)
         if since and (day is None or day < since):
             continue
+        # An ISO `due` is a date and ranks as one; "end of week" is model prose,
+        # fenced, and ranks with the undated rows rather than above them all.
+        dated = a.age_days(today) is not None
         rows.append({
             "stem": a.stem,
-            "title": a.title,
+            "title": wrap_untrusted(a.title),
             "date": day,
-            "task": a.task,
-            "owner": a.owner,
-            "due": a.due,
+            "task": wrap_untrusted(_task(a.task)),
+            "owner": _fenced(a.owner),
+            "due": a.due if dated else _fenced(a.due),
+            "_rank_due": a.due if dated else None,
             "resolved": a.resolved,
             "overdue": a.is_overdue(today),
             "age_days": a.age_days(today),
             "workflow": a.workflow,
         })
-        if len(rows) >= max(1, int(limit)):
-            break
-    rows.sort(key=lambda r: (r["due"] is None, r["due"] or "", r["stem"]))
-    return {"actions": rows, "count": len(rows)}
+    # Two stable sorts: newest meeting first, then dated before undated by due.
+    rows.sort(key=lambda r: r["stem"], reverse=True)
+    rows.sort(key=lambda r: (r["_rank_due"] is None, r["_rank_due"] or ""))
+    for r in rows:
+        del r["_rank_due"]
+    page = rows[: max(1, int(limit))]
+    return {"actions": page, "count": len(page), "total": len(rows),
+            "truncated": len(rows) > len(page)}

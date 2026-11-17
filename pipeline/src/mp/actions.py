@@ -25,6 +25,7 @@ from datetime import date
 from pathlib import Path
 
 from . import entry
+from .prompt_safety import clean_due, clean_person
 from .workflow import read_meta
 
 _CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
@@ -102,8 +103,12 @@ def discover(root: Path, *, allow_stems: set[str] | None = None) -> list[OpenAct
                 stem=stem,
                 title=title,
                 task=str(item["task"]),
-                owner=str(item["owner"]) if item.get("owner") else None,
-                due=str(item["due"]) if item.get("due") else None,
+                # AUTO8: owner and due are scrubbed on read as well as at write.
+                # The Python schema runs clean_person / clean_due, but a
+                # summary.json the Swift Apple Intelligence summarizer wrote
+                # never passed through them.
+                owner=clean_person(str(item["owner"])) if item.get("owner") else None,
+                due=clean_due(str(item["due"])) if item.get("due") else None,
                 confidence=str(item.get("confidence") or "medium"),
                 resolved=bool(item.get("resolved") or item.get("done")),
                 workflow=workflow,

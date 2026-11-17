@@ -2,9 +2,9 @@
 id: AUTO8
 title: The MCP server's `list_actions` returns model-written task text unfenced and uncapped while its own description tells the client returned text is fenced, and meeting titles are unfenced in every tool
 category: Automation
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md) finding 6): get_meeting fences the same task strings list_actions returns raw; list_meetings lacks UNTRUSTED_NOTE; the AUTO3 promise that returned summary text stays fenced is broken and no test covers list_actions. Fence every model-written string in every tool, cap task length, extend the fence test. [Spec](./AUTO8.md) Amended 2026-11-13 by the audit band: list_actions cuts at the limit before sorting, so with 761 open field actions it returns the oldest 200 with no total or truncated flag (F089); sort then cut, newest undated first, return total and truncated.
+comment: Shipped 2026-11-17 (awaiting owner close): every model-written title, task and owner fenced field by field in every MCP tool, task capped at 300 chars, UNTRUSTED_NOTE on list_meetings and true for every tool, actions.discover runs clean_person on owner, list_actions ranks before the cut (dated soonest, then undated newest first) and returns total/truncated; table-driven fence test over the registered tools. Remainder: owner close. [Spec](./AUTO8.md)
 ---
 
 # AUTO8: the MCP server's `list_actions` returns model-written task text unfenced and uncapped while its own description tells the client returned text is fenced, and meeting titles are unfenced in every tool
@@ -69,3 +69,5 @@ Correction at filing: the audit's direction, "rank before applying the limit", i
 - A test over a library with more open actions than `limit`, spread across stems on several dates, most undated and a few dated: the page holds every dated action that fits, then the newest meetings' undated actions; `total` equals the full count and `truncated` is true. With `limit` above the total, `truncated` is false and `total == count`.
 - A test where `since` alone brings the matching rows under `limit` returns `truncated: false`, so the filter still runs before the cut.
 - `test_list_actions_covers_exactly_the_visible_two` and `test_list_actions_open_only_is_the_default` stay green; `cd pipeline && uv run --extra dev --extra mcp pytest -q`, ruff and pyright green.
+
+**Progress (2026-11-17):** All four scope items and both amendment items shipped with every acceptance test. Fencing is per field (each `title`, `task`, `owner` wrapped on its own) rather than one block per tool, so row shapes stay plain JSON; `test_list_actions_covers_exactly_the_visible_two` and `test_list_actions_open_only_is_the_default` therefore compare the unwrapped text, with the same visibility and default-open assertions. Beyond the spec: `get_meeting`'s fenced block also caps `task` and scrubs `owner`, since it returns the same strings, and the owner scrub in `actions.discover` reaches `mp digest` and `mp actions` as well. `TASK_MAX_CHARS` is 300, with `...` marking a cut. Found in review and fixed: `due` is model text on the Apple path too, so `actions.discover` and `get_meeting` run `clean_due` on read, an ISO `due` stays a bare value while any other `due` is fenced, and a non-ISO `due` ranks with the undated rows instead of above them (it used to sort as dated).

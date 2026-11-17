@@ -844,6 +844,10 @@ Swift's `MCPStatus` (`daemon/Sources/MeetingPipe/Preferences/MCPStatusStore.swif
 
 `--status` deliberately works without the optional `mcp` extra (`sdk_available` is how it says so), because Preferences has to render on an install that never opted in.
 
+### Model-written fields are fenced one at a time (AUTO8)
+
+Every string a tool returns that a model wrote or a person said (a meeting `title`, the `content` blocks, search `excerpt`s, an action's `task` and `owner`) is wrapped in `prompt_safety`'s untrusted markers, field by field, so rows stay plain JSON. A client that wants the bare text strips the first and last line. A `due` that is an ISO date stays bare; any other `due` is model prose, fenced, and ranked as undated. Stems, dates, `workflow` (an owner-configured name) and the booleans are not fenced. `task` is capped at `mcp_tools.TASK_MAX_CHARS` (300, ending in `...` when cut), and `owner` and `due` go through `clean_person` / `clean_due` on read, so a `summary.json` the Swift Apple Intelligence summarizer wrote gets the scrub the Python schema applies at write time. `list_actions` ranks every match before it cuts at `limit` (dated by soonest `due`, then undated newest meeting first) and returns `total` and `truncated` beside `count`. A new tool whose description carries `UNTRUSTED_NOTE` is held to this by a table-driven test over the registered tools.
+
 ### Tool arguments are closed (AUTO5)
 
 Every tool's `inputSchema` carries `additionalProperties: false`, and `dispatch` rejects an argument the called tool does not declare, returning a client-visible payload rather than an answer:
