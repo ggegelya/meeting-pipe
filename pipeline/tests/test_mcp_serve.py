@@ -12,12 +12,14 @@ from __future__ import annotations
 import ast
 import json
 import socket
+import threading
+import time
 from datetime import date
 from pathlib import Path
 
 import pytest
 
-from mp import mcp_serve, mcp_tools, visibility
+from mp import embed_index, mcp_serve, mcp_tools, visibility
 from mp.config import Config
 from mp.prompt_safety import wrap_untrusted
 
@@ -97,7 +99,8 @@ def _hashing_embedder(monkeypatch):
 def _lib(library: Path, tmp_path: Path, *, enabled: bool = True) -> mcp_serve.Library:
     cfg = Config()
     cfg.mcp.enabled = enabled
-    return mcp_serve.Library(cfg, library, tmp_path / "idx")
+    # AUTO6: the library re-reads config per call; never the developer's real file.
+    return mcp_serve.Library(cfg, library, tmp_path / "idx", load_config=lambda: cfg)
 
 
 # --------------------------------------------------------------------------
@@ -567,3 +570,300 @@ def test_the_sdk_server_registers_the_five_tools_and_no_others() -> None:
     tools = anyio.run(captured["list_tools"])
     assert [t.name for t in tools] == list(mcp_serve.TOOL_NAMES)
     assert all(t.annotations is not None and t.annotations.readOnlyHint for t in tools)
+
+
+# --------------------------------------------------------------------------
+# AUTO6: global regulated mode, a config that changes under a running server,
+# and a search index that has to follow the gate
+# --------------------------------------------------------------------------
+
+
+def _cfg(*, regulated: bool = False, enabled: bool = True) -> Config:
+    cfg = Config()
+    cfg.mcp.enabled = enabled
+    cfg.modes.regulated_mode = regulated
+    return cfg
+
+
+@pytest.fixture
+def plain(tmp_path: Path) -> Path:
+    """Two meetings recorded before regulated mode was switched on: sidecars
+    present, no policy flag in either, so the per-meeting gate passes both."""
+    root = tmp_path / "plain"
+    _meeting(root, NORMAL_A, text="we decided to ship the roster on Friday",
+             meta={"schema_version": 1, "workflow_name": "Standup"})
+    _meeting(root, NORMAL_B, text="hiring loop feedback and the budget",
+             meta={"schema_version": 1, "workflow_name": "Hiring"})
+    return root
+
+
+def test_global_regulated_mode_withholds_every_meeting(plain: Path, tmp_path: Path) -> None:
+    cfg = _cfg(regulated=True)
+    lib = mcp_serve.Library(cfg, plain, tmp_path / "idx", load_config=lambda: cfg)
+    assert lib.allow_stems() == set()
+    hidden = mcp_serve.dispatch(lib, "get_meeting", {"stem": NORMAL_A})
+    never = mcp_serve.dispatch(lib, "get_meeting", {"stem": "20250101-000000"})
+    assert hidden == mcp_tools.not_found(NORMAL_A)
+    assert {k: v for k, v in hidden.items() if k != "stem"} == {
+        k: v for k, v in never.items() if k != "stem"
+    }
+
+
+def test_the_config_is_re_read_on_every_call(plain: Path, tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[mcp]\nenabled = true\n", encoding="utf-8")
+    lib = mcp_serve.Library(_cfg(), plain, tmp_path / "idx", load_config=lambda: Config.load(path))
+    assert lib.allow_stems() == {NORMAL_A, NORMAL_B}
+    path.write_text("[mcp]\nenabled = true\n\n[modes]\nregulated_mode = true\n", encoding="utf-8")
+    assert lib.allow_stems() == set()
+
+
+def test_turning_the_switch_off_reaches_a_running_server(plain: Path, tmp_path: Path) -> None:
+    """Beyond AUTO6's letter, same gap: the Preferences switch is the kill switch,
+    and a server started before it was turned off used to keep serving."""
+    path = tmp_path / "config.toml"
+    path.write_text("[mcp]\nenabled = true\n", encoding="utf-8")
+    lib = mcp_serve.Library(_cfg(), plain, tmp_path / "idx", load_config=lambda: Config.load(path))
+    assert lib.allow_stems() == {NORMAL_A, NORMAL_B}
+    path.write_text("[mcp]\nenabled = false\n", encoding="utf-8")
+    assert lib.allow_stems() == set()
+
+
+def test_an_unreadable_config_serves_nothing(plain: Path, tmp_path: Path) -> None:
+    def broken() -> Config:
+        raise ValueError("half-written config.toml")
+
+    lib = mcp_serve.Library(_cfg(), plain, tmp_path / "idx", load_config=broken)
+    assert lib.allow_stems() == set()
+    assert mcp_serve.dispatch(lib, "list_meetings", {})["meetings"] == []
+
+
+def test_serve_refuses_under_regulated_mode(plain: Path, monkeypatch, capsys) -> None:
+    cfg = _cfg(regulated=True)
+    monkeypatch.setattr(mcp_serve.entry, "prepare", lambda *a, **k: cfg)
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(mcp_serve.events, "emit",
+                        lambda cat, action, **kw: emitted.append((cat, action, kw)))
+
+    def _never(*a, **k):
+        raise AssertionError("the server started under regulated mode")
+
+    monkeypatch.setattr(mcp_serve, "_run_stdio", _never)
+    assert mcp_serve.main(["--dir", str(plain)]) != 0
+    assert ("pipeline", "mcp_serve_refused", {"reason": "regulated"}) in emitted
+    assert "regulated" in capsys.readouterr().err.lower()
+
+
+def test_status_under_regulated_mode_reports_the_global_reason(plain: Path) -> None:
+    snapshot = mcp_serve.status(_cfg(regulated=True), plain)
+    assert snapshot["visible"] == 0
+    assert snapshot["withheld"] == 2
+    assert snapshot["withheld_by_reason"] == {visibility.WITHHELD_REGULATED_GLOBAL: 2}
+    assert visibility.WITHHELD_REGULATED_GLOBAL == "regulated_global"
+
+
+class _CountingEmbedder(embed_index.HashingEmbedder):
+    def __init__(self) -> None:
+        super().__init__(dim=256)
+        self.releases = 0
+
+    def release(self) -> None:
+        self.releases += 1
+
+
+def _stems_in(payload: dict) -> set[str]:
+    return {r["stem"] for r in payload["results"]}
+
+
+def test_a_meeting_withheld_after_the_first_search_leaves_search(
+    library: Path, tmp_path: Path
+) -> None:
+    lib = _lib(library, tmp_path)
+    first = mcp_serve.dispatch(lib, "search_meetings", {"query": "hiring loop budget", "limit": 10})
+    assert NORMAL_B in _stems_in(first)
+    (library / f"{NORMAL_B}.meta.json").write_text(
+        json.dumps({"schema_version": 1, "workflow_name": "Client work",
+                    "workflow_nda_mode": True}), encoding="utf-8")
+    after = mcp_serve.dispatch(lib, "search_meetings", {"query": "hiring loop budget", "limit": 10})
+    assert NORMAL_B not in _stems_in(after)
+
+
+def test_a_meeting_recorded_after_the_first_search_becomes_searchable(
+    library: Path, tmp_path: Path
+) -> None:
+    lib = _lib(library, tmp_path)
+    mcp_serve.dispatch(lib, "search_meetings", {"query": "roster", "limit": 10})
+    fresh = "20260105-100000"
+    _meeting(library, fresh, text="the quarterly volcano expedition logistics",
+             meta={"schema_version": 1, "workflow_name": "Standup"})
+    after = mcp_serve.dispatch(lib, "search_meetings", {"query": "volcano expedition", "limit": 10})
+    assert fresh in _stems_in(after)
+
+
+def test_regulated_search_returns_nothing_and_leaves_the_index_alone(
+    plain: Path, tmp_path: Path
+) -> None:
+    current = {"cfg": _cfg()}
+    lib = mcp_serve.Library(current["cfg"], plain, tmp_path / "idx",
+                            load_config=lambda: current["cfg"])
+    assert mcp_serve.dispatch(lib, "search_meetings", {"query": "roster"})["count"] >= 1
+    before = {p: p.stat().st_mtime_ns for p in (tmp_path / "idx").rglob("*") if p.is_file()}
+    assert before
+    current["cfg"] = _cfg(regulated=True)
+    payload = mcp_serve.dispatch(lib, "search_meetings", {"query": "roster"})
+    assert payload == {"query": "roster", "results": [], "count": 0}
+    assert lib._index is None  # withheld text is not left resident either
+    after = {p: p.stat().st_mtime_ns for p in (tmp_path / "idx").rglob("*") if p.is_file()}
+    assert after == before
+
+
+def _counting_build(monkeypatch, *, delay: float = 0.0) -> list[int]:
+    calls: list[int] = []
+    real = embed_index.load_or_build
+
+    def counting(*a, **k):
+        calls.append(1)
+        time.sleep(delay)
+        return real(*a, **k)
+
+    monkeypatch.setattr(embed_index, "load_or_build", counting)
+    return calls
+
+
+def test_two_concurrent_first_searches_build_once(library: Path, tmp_path: Path, monkeypatch) -> None:
+    calls = _counting_build(monkeypatch, delay=0.2)
+    lib = _lib(library, tmp_path)
+    barrier = threading.Barrier(2)
+    results: list[dict] = []
+
+    def go() -> None:
+        barrier.wait()
+        results.append(mcp_serve.dispatch(lib, "search_meetings", {"query": "roster"}))
+
+    threads = [threading.Thread(target=go) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(results) == 2
+    assert len(calls) == 1
+
+
+def test_an_unchanged_library_does_not_rebuild(library: Path, tmp_path: Path, monkeypatch) -> None:
+    calls = _counting_build(monkeypatch)
+    lib = _lib(library, tmp_path)
+    mcp_serve.dispatch(lib, "search_meetings", {"query": "roster"})
+    mcp_serve.dispatch(lib, "search_meetings", {"query": "budget"})
+    assert len(calls) == 1
+
+
+def test_the_embedder_is_released_after_every_search(
+    library: Path, tmp_path: Path, monkeypatch
+) -> None:
+    embedder = _CountingEmbedder()
+    monkeypatch.setattr(embed_index, "default_embedder", lambda *a, **k: embedder)
+    lib = _lib(library, tmp_path)
+    mcp_serve.dispatch(lib, "search_meetings", {"query": "roster"})
+    assert embedder.releases == 1
+    mcp_serve.dispatch(lib, "search_meetings", {"query": "budget"})
+    assert embedder.releases == 2
+
+
+def test_a_failed_refresh_is_an_error_not_the_stale_index(
+    library: Path, tmp_path: Path, monkeypatch
+) -> None:
+    lib = _lib(library, tmp_path)
+    assert NORMAL_B in _stems_in(
+        mcp_serve.dispatch(lib, "search_meetings", {"query": "hiring loop budget", "limit": 10})
+    )
+    (library / f"{NORMAL_B}.meta.json").write_text(
+        json.dumps({"schema_version": 1, "workflow_name": "Client work",
+                    "workflow_nda_mode": True}), encoding="utf-8")
+
+    def boom(*a, **k):
+        raise embed_index.EmbedderUnavailableError("model not cached")
+
+    monkeypatch.setattr(embed_index, "load_or_build", boom)
+    payload = mcp_serve.dispatch(lib, "search_meetings", {"query": "hiring loop budget"})
+    assert payload["error"] == mcp_serve.SEARCH_UNAVAILABLE
+    assert "results" not in payload
+    assert "model not cached" not in json.dumps(payload)  # the detail stays in the log
+
+
+def test_a_search_queued_behind_a_build_reads_the_gate_after_waiting(
+    plain: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """The second call waits for the first one's (cold, possibly minutes-long)
+    build. Regulated mode switched on meanwhile must reach it."""
+    current = {"cfg": _cfg()}
+    lib = mcp_serve.Library(current["cfg"], plain, tmp_path / "idx",
+                            load_config=lambda: current["cfg"])
+    building, release_build = threading.Event(), threading.Event()
+    real = embed_index.load_or_build
+
+    def slow(*a, **k):
+        building.set()
+        release_build.wait(5)
+        return real(*a, **k)
+
+    monkeypatch.setattr(embed_index, "load_or_build", slow)
+    results: dict[str, dict] = {}
+    first = threading.Thread(target=lambda: results.update(
+        first=mcp_serve.dispatch(lib, "search_meetings", {"query": "roster"})))
+    first.start()
+    assert building.wait(5)
+    second = threading.Thread(target=lambda: results.update(
+        second=mcp_serve.dispatch(lib, "search_meetings", {"query": "roster"})))
+    second.start()
+    time.sleep(0.1)  # let it queue on the lock
+    current["cfg"] = _cfg(regulated=True)
+    release_build.set()
+    first.join(5)
+    second.join(5)
+    assert results["second"] == {"query": "roster", "results": [], "count": 0}
+
+
+class _OverlapEmbedder(embed_index.HashingEmbedder):
+    """Records a release that lands while another call is mid-embed."""
+
+    def __init__(self) -> None:
+        super().__init__(dim=256)
+        self.active = 0
+        self.overlaps = 0
+        self._guard = threading.Lock()
+
+    def embed(self, texts, kind="passage"):  # type: ignore[override]
+        with self._guard:
+            self.active += 1
+        try:
+            time.sleep(0.05)
+            return super().embed(texts, kind=kind)
+        finally:
+            with self._guard:
+                self.active -= 1
+
+    def release(self) -> None:
+        with self._guard:
+            if self.active:
+                self.overlaps += 1
+
+
+def test_a_release_never_lands_inside_another_calls_embed(
+    library: Path, tmp_path: Path, monkeypatch
+) -> None:
+    embedder = _OverlapEmbedder()
+    monkeypatch.setattr(embed_index, "default_embedder", lambda *a, **k: embedder)
+    lib = _lib(library, tmp_path)
+    mcp_serve.dispatch(lib, "search_meetings", {"query": "roster"})  # warm build
+    barrier = threading.Barrier(4)
+
+    def go() -> None:
+        barrier.wait()
+        mcp_serve.dispatch(lib, "search_meetings", {"query": "budget"})
+
+    threads = [threading.Thread(target=go) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert embedder.overlaps == 0

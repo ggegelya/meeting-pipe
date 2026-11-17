@@ -320,7 +320,7 @@ Turn on **Let AI tools read your meetings** in **Preferences â–¸ Integrations â–
 
 **It is off until you turn it on, and that is deliberate.** Everywhere else, this app decides what leaves your Mac. Here the other tool decides what to ask for, and anything it reads has gone to whoever runs that tool. So it starts off, and turning it off again stops it.
 
-**The same meetings stay out.** Confidential meetings, and meetings with no record of whether they were confidential, are never handed over, and there is no setting that changes that. To the other tool they look exactly like meetings that do not exist, so it cannot even tell that it is being kept from something. The panel shows you both numbers, how many meetings are reachable and how many are held back, with the reason.
+**The same meetings stay out.** Confidential meetings, and meetings with no record of whether they were confidential, are never handed over, and there is no setting that changes that. To the other tool they look exactly like meetings that do not exist, so it cannot even tell that it is being kept from something. While regulated mode is on, every meeting is held back, the older ones too, and a tool that was already connected finds nothing from its next question on. The panel shows you both numbers, how many meetings are reachable and how many are held back, with the reason.
 
 **Two things it cannot do.** It cannot change anything: there is no way for a connected tool to re-summarize, publish, edit, or delete. And it is not on your network. It talks to one program you started, on this Mac, so nothing else can connect to it.
 

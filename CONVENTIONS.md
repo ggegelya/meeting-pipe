@@ -835,7 +835,7 @@ Note for tests: `com.apple.icloud.desktop` can be written by an unprivileged pro
 }
 ```
 
-Swift's `MCPStatus` (`daemon/Sources/MeetingPipe/Preferences/MCPStatusStore.swift`) decodes it, so the keys are a **Python-to-Swift contract** in the same sense STOR5's restore plan is: rename one and Preferences ▸ Integrations renders "Unknown" for the counts that are the whole point of the control. `withheld_by_reason`'s keys are `visibility`'s three reason constants (`nda`, `regulated`, `no_sidecar`), and Swift maps each to a phrase, so a fourth reason renders as itself rather than vanishing.
+Swift's `MCPStatus` (`daemon/Sources/MeetingPipe/Preferences/MCPStatusStore.swift`) decodes it, so the keys are a **Python-to-Swift contract** in the same sense STOR5's restore plan is: rename one and Preferences ▸ Integrations renders "Unknown" for the counts that are the whole point of the control. `withheld_by_reason`'s keys are `visibility`'s reason constants (`nda`, `regulated`, `no_sidecar`, and AUTO6's `regulated_global`, which `status` reports for every meeting while the global `regulated_mode` is on), and Swift maps each to a phrase, so an unmapped reason renders as itself rather than vanishing.
 
 **The counts are read, never recomputed.** `mp.visibility` is the single owner of which meetings may leave the machine, and the number the owner reads has to be the number the server enforces, not a second implementation that agrees today. That is also why this is a subprocess call rather than a Swift sidecar walk. It obeys UX67: `MCPStatusStore.refresh()` runs detached, the child is killed at `ceilingSeconds`, and the read is re-taken on the pane's `.onAppear` rather than per render.
 

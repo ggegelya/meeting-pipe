@@ -34,6 +34,8 @@ struct MCPStatus: Decodable, Equatable {
             case "nda": return "\(count) under an NDA workflow"
             case "regulated": return "\(count) recorded in regulated mode"
             case "no_sidecar": return "\(count) with no recorded privacy stance"
+            // AUTO6: global regulated mode withholds every meeting, whatever its sidecar says.
+            case "regulated_global": return "\(count) hidden while regulated mode is on"
             default: return "\(count) \(key)"
             }
         }

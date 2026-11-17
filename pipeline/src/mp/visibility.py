@@ -55,6 +55,12 @@ from .workflow import read_meta
 WITHHELD_NDA = "nda"
 WITHHELD_REGULATED = "regulated"
 WITHHELD_NO_SIDECAR = "no_sidecar"
+#: AUTO6. Not a per-meeting verdict: every meeting, while the *global*
+#: `regulated_mode` is on. `withheld_reason` never returns it, since this module
+#: stays config-free; `mcp_serve` applies it at the one boundary whose output
+#: leaves the process unclamped, and names it here beside the others because the
+#: Swift readout maps all four.
+WITHHELD_REGULATED_GLOBAL = "regulated_global"
 
 
 def library_stems(root: Path) -> list[str]:

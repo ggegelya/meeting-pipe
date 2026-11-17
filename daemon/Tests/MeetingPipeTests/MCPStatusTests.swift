@@ -68,6 +68,16 @@ final class MCPStatusTests: XCTestCase {
         XCTAssertEqual(status.withheldExplanation, "1 recorded in regulated mode")
     }
 
+    func test_global_regulated_mode_reads_as_english() {
+        // AUTO6: Python reports every meeting under one reason while the global
+        // switch is on, rather than leaving the old per-meeting counts in place.
+        let status = MCPStatus(
+            enabled: true, transport: "stdio", tools: [], sdkAvailable: true,
+            visible: 0, withheld: 217, withheldByReason: ["regulated_global": 217]
+        )
+        XCTAssertEqual(status.withheldExplanation, "217 hidden while regulated mode is on")
+    }
+
     func test_a_malformed_payload_is_an_error_not_a_zero() throws {
         // Rendering "0 withheld" for a status read that failed would tell the
         // owner the opposite of the truth about their own privacy.

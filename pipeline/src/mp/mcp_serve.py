@@ -26,6 +26,14 @@ the in-process guard. So the exposure decision moves earlier, to
 and meetings with no recorded policy stance are withheld, and a withheld stem is
 indistinguishable from one that never existed.
 
+**Global regulated mode withholds everything (AUTO6).** `visibility` is
+per-meeting and config-free, so a meeting recorded before regulated mode was
+switched on carries no flag and used to stay served. The process-level clamp that
+covers `mp ask` does not help here, because what a client pulls leaves through
+the client. So this module refuses to start under `zero_egress`, `Library`
+re-reads the config on every call and serves nothing while it holds, and
+`status` reports every meeting as `regulated_global`.
+
 **Off unless the owner turned it on.** `mcp.enabled` defaults to false and this
 command refuses to start while it is, so the Preferences switch is a kill switch
 and not a label.
@@ -42,15 +50,22 @@ import argparse
 import json
 import logging
 import sys
+import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from . import embed_index, entry, events, mcp_tools, resource_guard, visibility
-from .config import Config
+from .config import Config, zero_egress
 
 log = logging.getLogger("mp.mcp_serve")
 
 SERVER_NAME = "meeting-pipe"
+
+#: AUTO6. The error a search returns when the index could not be brought up to
+#: date with the gate. Never a fallback to the index it already had: that index
+#: may hold a meeting the gate has since withheld.
+SEARCH_UNAVAILABLE = "search_unavailable"
 
 #: Prepended to every tool description. An MCP client is agentic, so it is worth
 #: saying once per tool (not once per server) that what comes back is speech
@@ -66,7 +81,7 @@ INSTRUCTIONS = (
     "meeting, pull a bounded transcript window, list meetings, and list open "
     "action items. Meetings recorded under an NDA workflow, and meetings with no "
     "recorded privacy stance, are withheld and behave exactly as if they do not "
-    "exist. There are no write tools."
+    "exist; while regulated mode is on, every meeting is. There are no write tools."
 )
 
 
@@ -200,28 +215,97 @@ class Library:
     The visibility gate is resolved per call rather than once at startup: a
     session can outlive the recording of a new meeting, and a long-lived server
     holding a stale allowlist would keep exposing a meeting whose workflow the
-    owner has since changed. The embedding index is the expensive half and is
-    built lazily, on the first `search_meetings` and not before, so a client that
-    only lists meetings never loads a model.
+    owner has since changed. AUTO6 extends that to the config: it is re-read per
+    call too, so switching regulated mode on (or the MCP switch off) in
+    Preferences reaches a server that is already running.
+
+    The embedding index is the expensive half and is built lazily, on the first
+    `search_meetings` and not before, so a client that only lists meetings never
+    loads a model. AUTO6: it is refreshed whenever the gated library's
+    fingerprints stop matching it, under one lock held across refresh, search
+    and release (the SDK serves calls concurrently on worker threads, and one
+    call's release must not land inside another's embed).
     """
 
-    def __init__(self, cfg: Config, root: Path, index_dir: Path) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        root: Path,
+        index_dir: Path,
+        *,
+        load_config: Callable[[], Config] = Config.load,
+    ) -> None:
         self.cfg = cfg
         self.root = Path(root).expanduser()
         self.index_dir = Path(index_dir).expanduser()
+        self._load_config = load_config
         self._index: embed_index.EmbeddingIndex | None = None
+        self._lock = threading.Lock()
 
     def allow_stems(self) -> set[str]:
+        """The meetings this call may touch. Empty while global regulated mode is
+        on (AUTO6), while the MCP switch is off, and when the config cannot be
+        read, since an unreadable config is not permission."""
+        try:
+            cfg = self._load_config()
+        except Exception as e:  # noqa: BLE001 - any failure to read is a refusal
+            log.warning("config unreadable, serving nothing: %s", e)
+            return set()
+        if zero_egress(cfg) or not cfg.mcp.enabled:
+            return set()
         return visibility.visible_stems(self.root)
 
-    def index(self, allow: set[str]) -> embed_index.EmbeddingIndex:
-        if self._index is None:
-            watchdog = resource_guard.MemoryWatchdog(
-                floor_pct=self.cfg.summarization.local_memory_floor_pct
-            )
+    def search(self, query: str, limit: int) -> dict[str, Any]:
+        """`search_meetings`. Reads the gate itself, after taking the lock: a call
+        queued behind a minutes-long cold build must not run on an allowlist read
+        before it waited, or it would serve (and re-index) a meeting withheld in
+        the meantime."""
+        with self._lock:
+            allow = self.allow_stems()
+            if not allow:
+                # Nothing may be searched: answer before touching the index, so a
+                # regulated session never rewrites the one `mp ask` shares, and
+                # drop the in-memory one so withheld text is not left resident.
+                self._index = None
+                return mcp_tools.no_results(query)
+            try:
+                index = self._current_index(allow)
+            except Exception as e:  # noqa: BLE001 - surfaced as a payload, never a stale index
+                self._index = None
+                # The detail stays on stderr: the payload reaches a client that may
+                # be a cloud one, and the message can carry local paths.
+                log.warning("search index refresh failed: %s", e)
+                return {
+                    "error": SEARCH_UNAVAILABLE,
+                    "detail": "the search index could not be brought up to date; see the server log",
+                }
+            try:
+                return mcp_tools.search_meetings(self.root, index, query, limit=limit)
+            finally:
+                # e5 reloads in about 0.8 s once warm (measured 2026-11-17), so
+                # holding it for the whole session buys little.
+                index.release_embedder()
+
+    def _current_index(self, allow: set[str]) -> embed_index.EmbeddingIndex:
+        """The index for exactly `allow`, refreshed when it differs. Compared in
+        memory first: `load_or_build` re-reads and parses the whole on-disk index
+        even when its plan turns out to be a no-op."""
+        if self._index is not None and self._index.stems == embed_index.library_stem_fingerprints(
+            self.root, allow_stems=allow
+        ):
+            return self._index
+        self._index = None
+        watchdog = resource_guard.MemoryWatchdog(
+            floor_pct=self.cfg.summarization.local_memory_floor_pct
+        )
+        embedder = embed_index.default_embedder()
+        try:
             self._index = embed_index.load_or_build(
-                self.root, self.index_dir, watchdog=watchdog, allow_stems=allow
+                self.root, self.index_dir, embedder, watchdog=watchdog, allow_stems=allow
             )
+        except BaseException:
+            embedder.release()  # a build that died halfway may have loaded e5
+            raise
         return self._index
 
 
@@ -247,14 +331,12 @@ def dispatch(library: Library, name: str, arguments: dict[str, Any]) -> dict[str
             "unknown": unknown,
             "accepted": sorted(TOOL_ARGUMENTS[name]),
         }
-    allow = library.allow_stems()
     if name == "search_meetings":
-        index = library.index(allow)
-        return mcp_tools.search_meetings(
-            library.root, index,
+        return library.search(
             str(arguments.get("query") or ""),
-            limit=_int_or(arguments.get("limit"), mcp_tools.DEFAULT_SEARCH_LIMIT),
+            _int_or(arguments.get("limit"), mcp_tools.DEFAULT_SEARCH_LIMIT),
         )
+    allow = library.allow_stems()
     if name == "get_meeting":
         return mcp_tools.get_meeting(library.root, str(arguments.get("stem") or ""), allow)
     if name == "get_transcript":
@@ -305,8 +387,21 @@ def status(cfg: Config, root: Path) -> dict[str, Any]:
     the number the owner reads and the number the server enforces cannot drift.
     Recomputing them in Swift would have made a second owner of the rule leg 0
     exists to have exactly one of.
+
+    AUTO6: under global regulated mode every meeting is withheld for one reason,
+    `regulated_global`, which is what `Library.allow_stems` enforces.
     """
-    snapshot = visibility.library_visibility(Path(root).expanduser())
+    root = Path(root).expanduser()
+    if zero_egress(cfg):
+        snapshot = visibility.LibraryVisibility(
+            visible=(),
+            withheld={
+                stem: visibility.WITHHELD_REGULATED_GLOBAL
+                for stem in visibility.library_stems(root)
+            },
+        )
+    else:
+        snapshot = visibility.library_visibility(root)
     return {
         "enabled": cfg.mcp.enabled,
         "transport": "stdio",
@@ -429,6 +524,18 @@ def main(argv: list[str]) -> int:
         print(
             "The MCP server is off. Turn it on in Preferences > Integrations > "
             "Model Context Protocol, or set `[mcp] enabled = true` in config.toml.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if zero_egress(cfg):
+        # AUTO6. Belt and braces with `Library.allow_stems`, which would serve
+        # nothing anyway: a server that can answer nothing should not start.
+        events.emit("pipeline", "mcp_serve_refused", reason="regulated")
+        print(
+            "The MCP server does not run while regulated mode is on. Turn off "
+            "regulated mode in Preferences, or set `[modes] regulated_mode = false` "
+            "in config.toml.",
             file=sys.stderr,
         )
         return 1

@@ -138,6 +138,13 @@ def search_meetings(
     return {"query": query, "results": results, "count": len(results)}
 
 
+def no_results(query: str) -> dict[str, Any]:
+    """A search that found nothing. Also what an empty allowlist answers (AUTO6),
+    so a session under regulated mode cannot tell "nothing matched" from "nothing
+    may be searched"."""
+    return {"query": query, "results": [], "count": 0}
+
+
 def get_meeting(root: Path, stem: str, allow_stems: set[str]) -> dict[str, Any]:
     """One meeting's summary-level facts (use cases 1 and 3)."""
     root = Path(root).expanduser()
