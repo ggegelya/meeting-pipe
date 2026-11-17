@@ -642,6 +642,8 @@ Every Swift-Python surface where both trees implement the same thing is pinned b
 | `regulated-mode-golden.json` (PIPE42) | `modes.regulated_mode` in `config.toml`: a top-level boolean, absent, appended under the last table, inside an array of tables, a string or integer, a syntax error; what `Config.load` reads or refuses, which `ConfigStore` must match for these regulated-switch shapes (a refused file reads `parseError` set and regulated on; a file refused for another reason, a misspelt sink, is out of its scope) | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |
 | `glossary-golden.json` (FEAT11) | `glossary.toml` resolution: the global + per-workflow merge, key folding, the skip rules, and `[fuzzy].enabled` | `CI4ContractFixtureTests` | `test_ci4_contracts.py` |
 
+One surface is pinned without a fixture, because it is a single string: the search embedder's Hugging Face repo id (STOR15). `EmbedderModel.id` (Swift) must equal `embed_index.DEFAULT_EMBED_MODEL`; `StorageStatsTests.test_the_embedder_id_matches_the_pipeline_default` reads the Python source and fails when either side changes alone, so Storage's **Evict unused** cannot delete a swapped-in embedder.
+
 **The CI4 four, the UX80 metadata fixture and PIPE42's regulated-mode fixture are generated**, by `scripts/gen_contract_fixtures.py`, which calls the shipping Python writers (and AST-walks `prefetch_model`'s `_emit` call sites). Regenerate after any intentional shape change:
 
 ```bash

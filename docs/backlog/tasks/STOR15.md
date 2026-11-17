@@ -2,9 +2,9 @@
 id: STOR15
 title: 'Evict unused' deletes every model in the shared Hugging Face cache except the summary model, including other tools' models and the app's own search embedder
 category: Storage
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). StorageStatsStore.evictUnusedModels removes every models--* repo in ~/.cache/huggingface/hub except summarization.local_model, so it deletes other tools' cached models and mp's own embedder (mlx-community/multilingual-e5-small-mlx); on the owner's Mac on 2026-11-14 the 241 MB it offers is exactly that embedder, and under regulated mode the next Ask or MCP serve then fails closed until a manual mp prefetch-model (F073, F064, F134). Offer only repos the app uses (LocalModelPreset.all, the configured local model, the embedder), keep the embedder, name each repo in the confirm; promote before enabling regulated.
+comment: Shipped 2026-11-17: Evict unused offers and deletes only LocalModelPreset models the config no longer uses (ownership in/embedder/evictable/foreign), keeps the search embedder, confirm names each repo, EmbedderModel.id pinned to DEFAULT_EMBED_MODEL. Owed: the owner confirms the Storage pane copy and dialog on the Mac that has the 241 MB embedder.
 ---
 
 # STOR15: 'Evict unused' deletes every model in the shared Hugging Face cache except the summary model, including other tools' models and the app's own search embedder
@@ -48,3 +48,7 @@ Correction at filing (on F064 and F134's direction): an ownership manifest writt
 - A test (view-model level, not a token-presence fence) that the confirm's message names each evictable repo.
 - `cd daemon && swift build` and `swift test` green, the number of new tests in the commit body; `bash scripts/ci-local.sh` green.
 - README's description of Evict unused (and `docs/GUIDE.md`, if it gains one) says it removes only the app's unused summary models and leaves the search embedder and other tools' models, in the same commit.
+
+**Progress (2026-11-17): shipped.** `StorageStats.Ownership` (`inUse`, `embedder`, `evictable`, `foreign`) is decided from the hub directory name in `StorageScanner.ownership(ofDirectoryName:activeModelID:)`; `evictableModelBytes` and `evictUnusedModels` use only `evictable`; foreign repos stay in the size total and the pane's sublabel says Evict unused leaves them alone; `ModelEviction.confirmMessage` names each repo with its size from the same entries the delete runs over; `EmbedderModel.id` is pinned against `embed_index.DEFAULT_EMBED_MODEL` by a Swift test that reads the Python source (no fixture, one string). `StorageStatsStore` gained an injectable `hubRoot` so the eviction itself is tested over a temp hub. Decisions beyond the spec: the pin is a source-reading test rather than a golden fixture; `evictable` is exactly "a `LocalModelPreset` model that is not configured", so a custom model the owner once configured and then changed away from is `foreign` and is no longer offered. Left `partial` only because the owner has not seen the dialog; this is a UI affordance a harness cannot render.
+
+Two guards beyond the spec, from the opus review: the keep-side comparisons (configured model, embedder) are case-insensitive, since a config spelled in another case uses the folder the hub wrote in the original case and would otherwise read as deletable; and `evictUnusedModels` re-checks the config as it is at click time, so a switch to an already-cached preset since the last scan cannot delete the model now in use. `StorageStats.evictableModels` is the one set the confirm, the delete and the size all use.

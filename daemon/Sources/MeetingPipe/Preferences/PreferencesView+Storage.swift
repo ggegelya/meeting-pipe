@@ -83,7 +83,7 @@ struct StorageSectionView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Every downloaded model except the one Pipeline is configured to use. They re-download on demand.")
+            Text(ModelEviction.confirmMessage(for: stats.stats?.evictableModels ?? []))
         }
         .confirmationDialog(
             "Move the library?",
@@ -532,8 +532,11 @@ struct StorageSectionView: View {
         guard let stats = stats.stats, !stats.models.isEmpty else {
             return "No local models downloaded yet."
         }
-        let inUse = stats.models.filter(\.inUse).count
-        return "\(stats.models.count) downloaded, \(inUse) in use by the configured backend."
+        let evictable = stats.models.filter { $0.ownership == .evictable }.count
+        let foreign = stats.foreignModelBytes
+        var text = "\(stats.models.count) in the cache, \(evictable) of this app's models unused."
+        if foreign > 0 { text += " Includes \(byteText(foreign)) from other tools, which Evict unused leaves alone." }
+        return text
     }
 
     private func policyTitle(_ policy: RetentionPolicy) -> String {

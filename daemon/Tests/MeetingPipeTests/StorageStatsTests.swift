@@ -140,20 +140,123 @@ final class StorageStatsTests: XCTestCase {
         XCTAssertEqual(files.map(\.bytes).sorted(), [5, 7, 10])
     }
 
-    func test_models_marks_only_the_configured_model_in_use() throws {
-        try write("hub/models--mlx-community--Qwen2.5-7B-Instruct-4bit/blobs/x", bytes: 200)
-        try write("hub/models--mlx-community--Qwen2.5-3B-Instruct-4bit/blobs/x", bytes: 100)
-        try write("hub/not-a-model/x", bytes: 999)
+    private let configured = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 
+    /// STOR15: a hub holding the configured model, another preset, the search embedder and a repo
+    /// some other tool downloaded.
+    private func writeHub() throws {
+        try write("hub/models--mlx-community--Qwen2.5-7B-Instruct-4bit/blobs/x", bytes: 400)
+        try write("hub/models--mlx-community--Qwen2.5-3B-Instruct-4bit/blobs/x", bytes: 100)
+        try write("hub/models--mlx-community--multilingual-e5-small-mlx/blobs/x", bytes: 241)
+        try write("hub/models--someone--other-model/blobs/x", bytes: 900)
+        try write("hub/not-a-model/x", bytes: 999)
+    }
+
+    func test_models_classifies_each_repo_by_who_owns_it() throws {
+        try writeHub()
+        let models = StorageScanner.models(in: root.appendingPathComponent("hub"), activeModelID: configured)
+        XCTAssertEqual(models.count, 4, "only `models--` entries count")
+        let byRepo = Dictionary(uniqueKeysWithValues: models.map { ($0.repoID, $0) })
+        XCTAssertEqual(byRepo[configured]?.ownership, .inUse)
+        XCTAssertEqual(byRepo["mlx-community/Qwen2.5-3B-Instruct-4bit"]?.ownership, .evictable)
+        XCTAssertEqual(byRepo[EmbedderModel.id]?.ownership, .embedder)
+        XCTAssertEqual(byRepo["someone/other-model"]?.ownership, .foreign)
+        XCTAssertEqual(byRepo[configured]?.bytes, 400)
+    }
+
+    func test_only_the_apps_other_preset_models_are_evictable() throws {
+        try writeHub()
+        var stats = StorageStats()
+        stats.models = StorageScanner.models(in: root.appendingPathComponent("hub"), activeModelID: configured)
+        XCTAssertEqual(stats.evictableModelBytes, 100)
+        XCTAssertEqual(stats.modelCacheBytes, 400 + 100 + 241 + 900)
+        XCTAssertEqual(stats.foreignModelBytes, 900)
+    }
+
+    func test_a_config_spelled_in_another_case_still_marks_the_cached_model_in_use() throws {
+        try write("hub/models--mlx-community--Qwen2.5-7B-Instruct-4bit/blobs/x", bytes: 10)
         let models = StorageScanner.models(
-            in: root.appendingPathComponent("hub"),
-            activeModelID: "mlx-community/Qwen2.5-7B-Instruct-4bit"
+            in: root.appendingPathComponent("hub"), activeModelID: "mlx-community/qwen2.5-7b-instruct-4bit"
         )
-        XCTAssertEqual(models.count, 2, "only `models--` entries count")
-        XCTAssertEqual(models[0].repoID, "mlx-community/Qwen2.5-7B-Instruct-4bit")
-        XCTAssertTrue(models[0].inUse)
-        XCTAssertEqual(models[0].bytes, 200)
-        XCTAssertFalse(models[1].inUse)
+        XCTAssertEqual(models.first?.ownership, .inUse, "a model in use must never read as deletable over a case difference")
+    }
+
+    @MainActor
+    func test_a_switch_to_a_cached_preset_since_the_scan_is_not_evicted() async throws {
+        try writeHub()
+        let hub = root.appendingPathComponent("hub")
+        let config = ConfigStore(configURL: root.appendingPathComponent("config.toml"))
+        config.outputDirPath = root.appendingPathComponent("library").path
+        let store = StorageStatsStore(
+            configStore: config,
+            workflowStore: WorkflowStore(directory: root.appendingPathComponent("workflows", isDirectory: true)),
+            hubRoot: hub
+        )
+        await store.rescan()  // 3B is evictable here
+        config.summarizationLocalModel = "mlx-community/Qwen2.5-3B-Instruct-4bit"  // switched before the click
+        await store.evictUnusedModels()
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: hub.appendingPathComponent("models--mlx-community--Qwen2.5-3B-Instruct-4bit").path),
+            "the model that is configured now survives a stale scan")
+    }
+
+    func test_the_confirm_has_a_sentence_for_nothing_left() {
+        XCTAssertFalse(ModelEviction.confirmMessage(for: []).contains("deletes ,"))
+    }
+
+    func test_a_configured_custom_model_is_in_use_and_not_evictable() throws {
+        try write("hub/models--me--custom-model/blobs/x", bytes: 50)
+        let models = StorageScanner.models(in: root.appendingPathComponent("hub"), activeModelID: "me/custom-model")
+        XCTAssertEqual(models.first?.ownership, .inUse)
+    }
+
+    func test_the_embedder_id_matches_the_pipeline_default() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("pipeline/src/mp/embed_index.py"), encoding: .utf8)
+        let match = source.range(of: #"DEFAULT_EMBED_MODEL\s*=\s*"([^"]+)""#, options: .regularExpression)
+        let line = try XCTUnwrap(match.map { String(source[$0]) })
+        XCTAssertTrue(line.contains("\"\(EmbedderModel.id)\""),
+                      "EmbedderModel.id drifted from embed_index.DEFAULT_EMBED_MODEL: \(line). Change both together (STOR15).")
+    }
+
+    func test_the_confirm_names_each_repo_it_will_delete_and_leaves_the_rest_alone() throws {
+        try writeHub()
+        try write("hub/models--mlx-community--Qwen2.5-14B-Instruct-4bit/blobs/x", bytes: 300)
+        let models = StorageScanner.models(in: root.appendingPathComponent("hub"), activeModelID: configured)
+        let message = ModelEviction.confirmMessage(for: models.filter { $0.ownership == .evictable })
+        XCTAssertTrue(message.contains("mlx-community/Qwen2.5-3B-Instruct-4bit"))
+        XCTAssertTrue(message.contains("mlx-community/Qwen2.5-14B-Instruct-4bit"))
+        XCTAssertFalse(message.contains("someone/other-model"))
+        XCTAssertFalse(message.contains(EmbedderModel.id))
+        XCTAssertFalse(message.contains(configured))
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("other tools"))
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("search"))
+    }
+
+    @MainActor
+    func test_evicting_deletes_only_the_evictable_repo() async throws {
+        try writeHub()
+        let hub = root.appendingPathComponent("hub")
+        let config = ConfigStore(configURL: root.appendingPathComponent("config.toml"))
+        // Hermetic: the default library path is the owner's real, synced one.
+        config.outputDirPath = root.appendingPathComponent("library").path
+        let store = StorageStatsStore(
+            configStore: config,
+            workflowStore: WorkflowStore(directory: root.appendingPathComponent("workflows", isDirectory: true)),
+            hubRoot: hub
+        )
+        await store.rescan()
+        XCTAssertEqual(store.stats?.evictableModelBytes, 100)
+        let message = ModelEviction.confirmMessage(for: store.stats?.evictableModels ?? [])
+        XCTAssertTrue(message.contains("mlx-community/Qwen2.5-3B-Instruct-4bit"), "the dialog names what the store will delete")
+        await store.evictUnusedModels()
+        let fm = FileManager.default
+        XCTAssertFalse(fm.fileExists(atPath: hub.appendingPathComponent("models--mlx-community--Qwen2.5-3B-Instruct-4bit").path))
+        XCTAssertTrue(fm.fileExists(atPath: hub.appendingPathComponent("models--mlx-community--Qwen2.5-7B-Instruct-4bit").path), "the configured model")
+        XCTAssertTrue(fm.fileExists(atPath: hub.appendingPathComponent("models--mlx-community--multilingual-e5-small-mlx").path), "the search embedder")
+        XCTAssertTrue(fm.fileExists(atPath: hub.appendingPathComponent("models--someone--other-model").path), "another tool's model")
     }
 
     func test_repoID_unsanitizes_the_hub_directory_name() {

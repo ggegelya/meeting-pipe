@@ -17,8 +17,21 @@ struct StorageStats: Equatable {
     var heldBytes = 0
     /// The waveform peaks cache. Rebuildable; safe to clear.
     var waveformCacheBytes = 0
-    /// One HuggingFace hub entry, and whether the current config still points at it.
+    /// One HuggingFace hub entry, and who it belongs to.
     var models: [ModelEntry] = []
+
+    /// STOR15: whose a hub entry is. The hub is `~/.cache/huggingface/hub`, which every Hugging
+    /// Face tool on the Mac shares, so "not the configured model" is not the same as "ours to delete".
+    enum Ownership: Equatable {
+        /// `summarization.local_model` names it.
+        case inUse
+        /// The search embedder `mp ask` and `mp mcp-serve` load. Kept: under regulated mode it cannot be re-downloaded.
+        case embedder
+        /// One of the app's own `LocalModelPreset` models that the config no longer points at. The only deletable class.
+        case evictable
+        /// Anything else: another tool's download. Counted in the total, never offered, never deleted.
+        case foreign
+    }
 
     struct ModelEntry: Equatable, Identifiable {
         /// `mlx-community/Qwen2.5-7B-Instruct-4bit`, un-sanitized back from the
@@ -26,15 +39,17 @@ struct StorageStats: Equatable {
         let repoID: String
         let directory: URL
         let bytes: Int
-        /// True when `summarization.local_model` names this repo. Everything else
-        /// is evictable: a re-download is a `mp prefetch-model` away.
-        let inUse: Bool
+        let ownership: Ownership
 
+        var inUse: Bool { ownership == .inUse }
         var id: String { repoID }
     }
 
     var modelCacheBytes: Int { models.reduce(0) { $0 + $1.bytes } }
-    var evictableModelBytes: Int { models.filter { !$0.inUse }.reduce(0) { $0 + $1.bytes } }
+    /// The one set the confirm names, the delete removes and the button's size counts.
+    var evictableModels: [ModelEntry] { models.filter { $0.ownership == .evictable } }
+    var evictableModelBytes: Int { evictableModels.reduce(0) { $0 + $1.bytes } }
+    var foreignModelBytes: Int { models.filter { $0.ownership == .foreign }.reduce(0) { $0 + $1.bytes } }
 
     /// Per-policy library breakdown, resolved by joining each meeting's
     /// `workflow_id` to its workflow's retention.
@@ -203,14 +218,29 @@ enum StorageScanner {
         Int(RecordingWriteFailure.freeSpace(at: url).freeBytes ?? 0)
     }
 
-    /// Every `models--*` entry in the hub root, sized, with the configured local
-    /// model marked in-use.
+    /// The hub directory name for a repo id (`org/name` becomes `models--org--name`).
+    static func hubDirectoryName(forRepo repoID: String) -> String {
+        "models--" + repoID.replacingOccurrences(of: "/", with: "--")
+    }
+
+    /// Whose a hub directory is. Matched on the directory name, as eviction always was: the
+    /// repo-id round trip is lossy for a name containing `--`.
+    static func ownership(ofDirectoryName name: String, activeModelID: String) -> StorageStats.Ownership {
+        // Case-insensitive on the keep side: Hugging Face resolves repo ids without regard to case
+        // and APFS usually does too, so a config spelled `qwen2.5-7b...` uses the folder the hub
+        // wrote as `Qwen2.5-7B...`. A miss here would class the model in use as deletable.
+        if name.caseInsensitiveCompare(hubDirectoryName(forRepo: activeModelID)) == .orderedSame { return .inUse }
+        if name.caseInsensitiveCompare(hubDirectoryName(forRepo: EmbedderModel.id)) == .orderedSame { return .embedder }
+        if LocalModelPreset.all.contains(where: { hubDirectoryName(forRepo: $0.modelId) == name }) { return .evictable }
+        return .foreign
+    }
+
+    /// Every `models--*` entry in the hub root, sized, and classified by who owns it (STOR15).
     static func models(in hubRoot: URL, activeModelID: String) -> [StorageStats.ModelEntry] {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
             at: hubRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
         ) else { return [] }
-        let activeDirName = "models--" + activeModelID.replacingOccurrences(of: "/", with: "--")
         return entries
             .filter { $0.lastPathComponent.hasPrefix("models--") }
             .map { dir in
@@ -218,7 +248,7 @@ enum StorageScanner {
                     repoID: repoID(fromDirectoryName: dir.lastPathComponent),
                     directory: dir,
                     bytes: bytesOnDisk(dir),
-                    inUse: dir.lastPathComponent == activeDirName
+                    ownership: ownership(ofDirectoryName: dir.lastPathComponent, activeModelID: activeModelID)
                 )
             }
             .sorted { $0.bytes > $1.bytes }
@@ -272,5 +302,20 @@ enum StorageScanner {
             }
         }
         return (byPolicy, unassigned, wavBytes, flacBytes)
+    }
+}
+
+/// STOR15: what **Evict unused** tells the owner before it deletes anything.
+enum ModelEviction {
+    /// Names each repo that will go, with its size, and what is left alone. Built from the same
+    /// `[ModelEntry]` the delete runs over, so the dialog cannot name one set and remove another.
+    static func confirmMessage(for evictable: [StorageStats.ModelEntry]) -> String {
+        guard !evictable.isEmpty else { return "Nothing is left to delete. The models in this cache are in use or belong to other tools." }
+        let list = evictable
+            .map { "\($0.repoID) (\(ByteCountFormatter.string(fromByteCount: Int64($0.bytes), countStyle: .file)))" }
+            .joined(separator: ", ")
+        return "This deletes \(list), which are this app's own models and no longer configured. "
+            + "The model Pipeline is configured to use, the search model Ask relies on, and other tools' models in the same cache are left alone. "
+            + "What is deleted downloads again on demand."
     }
 }

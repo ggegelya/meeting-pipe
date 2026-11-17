@@ -26,14 +26,17 @@ final class StorageStatsStore: ObservableObject {
     private let workflowStore: WorkflowStore
     private let configStore: ConfigStore
     private let planner: MovePlanner
+    private let hubRoot: URL
 
     init(
         configStore: ConfigStore,
         workflowStore: WorkflowStore,
         planner: @escaping MovePlanner = { source, destination in
             try LibraryMover.plan(source: source, destinationParent: destination)
-        }
+        },
+        hubRoot: URL = StorageScanner.hubRoot(home: FileManager.default.homeDirectoryForCurrentUser)
     ) {
+        self.hubRoot = hubRoot
         self.configStore = configStore
         self.workflowStore = workflowStore
         self.planner = planner
@@ -56,7 +59,7 @@ final class StorageStatsStore: ObservableObject {
         }.value
         let originalsDir = MuteRedactor.originalsDirectory()
         let waveformCacheDir = WaveformPeaksLoader.cacheDirectory()
-        let hubRoot = StorageScanner.hubRoot(home: FileManager.default.homeDirectoryForCurrentUser)
+        let hubRoot = self.hubRoot
         let activeModelID = configStore.summarizationLocalModel
         let retention = Dictionary(
             uniqueKeysWithValues: workflowStore.workflows.map { ($0.id, $0.retention.policy) }
@@ -93,11 +96,18 @@ final class StorageStatsStore: ObservableObject {
         await rescan()
     }
 
-    /// Delete every HuggingFace hub entry the current config does not point at.
+    /// Delete the app's own preset models the config no longer points at (STOR15). Never the
+    /// configured model, the search embedder, or another tool's model in the shared hub.
     /// Re-downloadable via `mp prefetch-model`, which the daemon already spawns
     /// when a chosen model is not cached.
     func evictUnusedModels() async {
-        guard let evictable = stats?.models.filter({ !$0.inUse }), !evictable.isEmpty else { return }
+        // Ownership was decided at the last scan. Re-check against the config as it is now, so a
+        // switch to an already-cached preset (or a hand edit UX96 reloads live) since that scan
+        // cannot delete the model that is in use.
+        let nowConfigured = StorageScanner.hubDirectoryName(forRepo: configStore.summarizationLocalModel)
+        guard let evictable = stats?.evictableModels
+            .filter({ $0.directory.lastPathComponent.caseInsensitiveCompare(nowConfigured) != .orderedSame }),
+            !evictable.isEmpty else { return }
         let directories = evictable.map(\.directory)
         let bytes = evictable.reduce(0) { $0 + $1.bytes }
         await Task.detached(priority: .userInitiated) {
