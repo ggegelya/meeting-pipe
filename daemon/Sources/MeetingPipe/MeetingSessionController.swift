@@ -76,6 +76,8 @@ final class MeetingSessionController: @unchecked Sendable {
     /// END9: the open call-teardown hold's decisions (T8: `TeardownHoldPolicy`, in Core so the
     /// detection corpus replays them on a virtual clock). Main-queue only, like everything else here.
     var holdPolicy = TeardownHoldPolicy()
+    /// END16: the open hold's teardown consults, for the edge rows and the blind count.
+    private(set) var consultLedger = TeardownConsultLedger()
 
     /// Cancels the 1 Hz consult timer while a hold is shown, or nil. Host-side, since Core has no run
     /// loop; common-mode (CONC10), so an alert left open cannot keep an ended meeting recording.
@@ -2698,10 +2700,12 @@ final class MeetingSessionController: @unchecked Sendable {
     /// re-entry, the consult, the trim point) is `TeardownHoldPolicy`'s (T8); this side owns the
     /// clock, the timer, the watcher read, the log rows and the HUD.
     ///
-    /// The immediate consult is what keeps a genuine Teams end free: the teardown line **leads** the
-    /// AX edge (p50 about 1.3 s), so on a real end the answer is already on disk when this runs and
-    /// the first consult confirms with no added latency at all. The timer exists for a teardown that
-    /// lands a moment late. It no longer bounds anything: since END17 the hold ends on the engine's
+    /// The immediate consult was meant to keep a genuine Teams end free: the teardown line led the
+    /// AX edge (p50 about 1.3 s) when measured in 2026-08, so the first consult would confirm with
+    /// no added latency. The field did not bear that out (END16: 0 of 59 Teams ends from 2026-09-29
+    /// to 2026-11-13 were confirmed by the line; they ended on the pair dwell, 60 s after the mic
+    /// release), and the `lifecycle_teardown_consult` rows are there to say why. The timer exists
+    /// for a teardown that lands a moment late. It no longer bounds anything: since END17 the hold ends on the engine's
     /// dwells (`PromotionEngine.tick`), and this side only ever confirms on evidence.
     ///
     /// Re-entrant by design. A second provisional for the same call keeps the first stamp, because
@@ -2712,10 +2716,11 @@ final class MeetingSessionController: @unchecked Sendable {
             consultTeardownOracle()
             return
         }
+        consultLedger = TeardownConsultLedger()
         consultTeardownOracle()
-        // A confirm on the first consult already concluded it, and that is the common Teams case:
-        // a genuine end never reaches the lines below and looks exactly as it looked before END9,
-        // timer and HUD included.
+        // A confirm on the first consult already concluded it, and a genuine end that does never
+        // reaches the lines below and looks exactly as it looked before END9, timer and HUD
+        // included. That was meant to be the common Teams case; in the field it is rare (END16).
         guard holdPolicy.isOpen else { return }
         cancelHoldTimer = Schedulers.mainRunLoopRepeating(1.0) { [weak self] in
             self?.consultTeardownOracle()
@@ -2731,10 +2736,14 @@ final class MeetingSessionController: @unchecked Sendable {
             // runs long can be read back without correlating two logs.
             "live_signal": coordinator.liveCallSignal.rawValue,
         ]
-        // END12: how old the SlimCore generation looked when the hold opened. The oracle does not
-        // decide on it (a quiet log and a dead one look the same for the length of a call).
-        if let written = snapshot.logLastWrittenAt {
-            held["log_written_sec_ago"] = Date().timeIntervalSince(written)
+        // END16: whether this hold asks Teams' line at all, and, for one that does, what the oracle
+        // was looking at when it opened: END12's `log_written_sec_ago` (the oracle does not decide
+        // on it; a quiet log and a dead one look the same for the length of a call), the tail and
+        // the newest teardown's age. A hold that does not consult carries none of Teams' log.
+        let consults = TeardownHoldPolicy.consultsTeardown(for: context)
+        held["consults_teardown"] = consults
+        if consults {
+            held.merge(teardownTailAttributes(snapshot, now: Date())) { _, new in new }
         }
         Log.event(category: "coordinator", action: "lifecycle_end_held", attributes: held)
         Log.writeLine(
@@ -2754,7 +2763,21 @@ final class MeetingSessionController: @unchecked Sendable {
     func consultTeardownOracle(now: Date = Date()) {
         assertMainQueue()
         guard let hold = holdPolicy.hold else { return }
+        // END16 (G053): only a Teams hold asks Teams' line, so nothing else consults it.
+        guard TeardownHoldPolicy.consultsTeardown(for: hold.context) else { return }
         let snapshot = coordinator.callTeardown.snapshot()
+        if let edge = consultLedger.note(available: snapshot.available, newestTeardownAt: snapshot.lastTeardownAt) {
+            var row: [String: Any] = [
+                "bundle_id": hold.context.bundleID,
+                "edge": edge.rawValue,
+                "available": snapshot.available,
+                "held_sec": now.timeIntervalSince(hold.startedAt),
+                "consults": consultLedger.consults,
+                "blind_consults": consultLedger.blindConsults,
+            ]
+            row.merge(teardownTailAttributes(snapshot, now: now, holdStartedAt: hold.startedAt)) { _, new in new }
+            Log.event(category: "coordinator", action: "lifecycle_teardown_consult", attributes: row)
+        }
         let verdict = holdPolicy.consult(
             now: now,
             lastTeardownAt: snapshot.available ? snapshot.lastTeardownAt : nil,
@@ -2772,9 +2795,36 @@ final class MeetingSessionController: @unchecked Sendable {
         coordinator.lifecycleCoord.confirmProvisionalEnd(evidence: PromotionEngine.teardownEvidence)
     }
 
+    /// END16: how a hold resolved, for the `resolved` consult row.
+    private static func resolutionLabel(_ conclusion: TeardownHoldPolicy.Conclusion) -> String {
+        switch conclusion {
+        case .engineEnd: return "engine_end"
+        case .loneDwell: return "lone_dwell"
+        case .teardown: return "teardown"
+        case .stop: return "stop"
+        }
+    }
+
+    /// END16: the watcher's view of Teams' log, for the hold rows. Times as ages, never raw stamps,
+    /// like the rest of the hold's rows; `teardown_after_hold_start_sec` is negative for a teardown
+    /// older than the hold.
+    private func teardownTailAttributes(
+        _ snapshot: CallTeardownWatcher.Snapshot, now: Date, holdStartedAt: Date? = nil
+    ) -> [String: Any] {
+        var attributes: [String: Any] = ["tail_offset": snapshot.tailOffset]
+        if let size = snapshot.tailFileSize { attributes["tail_file_size"] = size }
+        if let written = snapshot.logLastWrittenAt { attributes["log_written_sec_ago"] = now.timeIntervalSince(written) }
+        if let teardown = snapshot.lastTeardownAt {
+            attributes["teardown_age_sec"] = now.timeIntervalSince(teardown)
+            if let holdStartedAt { attributes["teardown_after_hold_start_sec"] = teardown.timeIntervalSince(holdStartedAt) }
+        }
+        return attributes
+    }
+
     /// The hold ended in an end, by whichever route. Its trim point becomes the cut `stopRecording`
     /// acts on: cut at stop under the regulated and NDA postures, suggested and kept everywhere else
-    /// (END17). `TeardownHoldPolicy.trimPoint` leaves sub-second holds, the normal Teams path, alone.
+    /// (END17). `TeardownHoldPolicy.trimPoint` leaves sub-second holds (a first-consult teardown
+    /// confirm, meant to be the normal Teams path and rare in the field, END16) alone.
     func concludeTeardownHold(now: Date = Date(), conclusion: TeardownHoldPolicy.Conclusion) {
         assertMainQueue()
         guard holdPolicy.isOpen else { return }
@@ -2785,14 +2835,27 @@ final class MeetingSessionController: @unchecked Sendable {
         ) {
             pendingEndTrimAt = trimAt
         }
-        releaseTeardownHold()
+        releaseTeardownHold(conclusion: conclusion)
     }
 
     /// Drop the hold without concluding it. Called when the call comes back (the whole point) and
     /// on every path that leaves `.endingProvisional`, so a stale timer can never outlive its meeting.
-    func releaseTeardownHold(rescued: Bool = false) {
+    func releaseTeardownHold(rescued: Bool = false, conclusion: TeardownHoldPolicy.Conclusion? = nil) {
         assertMainQueue()
         guard let hold = holdPolicy.release() else { return }
+        // END16: one row with the hold's consult counts, however it resolved, and how. A hold that
+        // never consulted (not Teams) writes none.
+        if consultLedger.consults > 0 {
+            Log.event(category: "coordinator", action: "lifecycle_teardown_consult", attributes: [
+                "bundle_id": hold.context.bundleID,
+                "edge": "resolved",
+                "held_sec": Date().timeIntervalSince(hold.startedAt),
+                "consults": consultLedger.consults,
+                "blind_consults": consultLedger.blindConsults,
+                "resolution": conclusion.map(Self.resolutionLabel) ?? (rescued ? "reverted" : "released"),
+            ])
+        }
+        consultLedger = TeardownConsultLedger()
         // `cancelHoldTimer != nil` is the record of whether the holding state was ever shown. Without it,
         // an end that confirmed on its first consult would still push a `setConfirmingEnd(false)` at
         // a HUD that was never told true, which is a state change the surface has to handle for no

@@ -44,6 +44,48 @@ final class TeardownHoldPolicyTests: XCTestCase {
         XCTAssertNil(policy.consult(now: at(100), lastTeardownAt: at(99), recordingStartedAt: at(0)))
     }
 
+    /// END16 (G053): a Zoom hold under a live mic used to consult Teams' line, so an unrelated
+    /// Teams call unregistering after the recording started confirmed the Zoom end.
+    func test_a_native_zoom_hold_never_consults_teams_line_END16() {
+        var policy = TeardownHoldPolicy()
+        let zoom = MeetingLifecycleContext(bundleID: "us.zoom.xos", kind: .native, pid: 4321)
+        policy.open(context: zoom, at: at(100))
+        XCTAssertNil(policy.consult(now: at(100), lastTeardownAt: at(99.5), recordingStartedAt: at(0)))
+        XCTAssertFalse(TeardownHoldPolicy.consultsTeardown(for: zoom))
+    }
+
+    /// Both Teams registry ids consult, as `EndingReason.isDefinitive` reads them.
+    func test_both_teams_bundles_still_consult_END16() {
+        for bundleID in ["com.microsoft.teams2", "com.microsoft.teams"] {
+            var policy = TeardownHoldPolicy()
+            policy.open(context: MeetingLifecycleContext(bundleID: bundleID, kind: .native, pid: 1), at: at(100))
+            XCTAssertEqual(
+                policy.consult(now: at(100), lastTeardownAt: at(99.5), recordingStartedAt: at(0)),
+                .confirm(reason: .teardownObserved), bundleID
+            )
+        }
+    }
+
+    // MARK: - END16: the consult ledger
+
+    func test_the_ledger_logs_the_first_consult_and_each_moved_stamp_and_counts_blind_ones() {
+        var ledger = TeardownConsultLedger()
+        XCTAssertEqual(ledger.note(available: true, newestTeardownAt: at(10)), .first)
+        XCTAssertNil(ledger.note(available: true, newestTeardownAt: at(10)), "an unchanged stamp is no edge")
+        XCTAssertNil(ledger.note(available: false, newestTeardownAt: nil), "a blind consult is counted, not logged")
+        XCTAssertNil(ledger.note(available: true, newestTeardownAt: at(10)), "compared with the last stamp read")
+        XCTAssertEqual(ledger.note(available: true, newestTeardownAt: at(130)), .stampChanged)
+        XCTAssertEqual(ledger.consults, 5)
+        XCTAssertEqual(ledger.blindConsults, 1)
+    }
+
+    func test_a_blind_first_consult_is_still_the_first_edge() {
+        var ledger = TeardownConsultLedger()
+        XCTAssertEqual(ledger.note(available: false, newestTeardownAt: nil), .first)
+        XCTAssertEqual(ledger.note(available: true, newestTeardownAt: at(10)), .stampChanged, "the first stamp read")
+        XCTAssertEqual(ledger.blindConsults, 1)
+    }
+
     func test_a_teardown_inside_the_lookback_confirms_from_the_hold_stamp() {
         var policy = TeardownHoldPolicy()
         policy.open(context: teams, at: at(100))
@@ -75,8 +117,8 @@ final class TeardownHoldPolicyTests: XCTestCase {
         XCTAssertEqual(verdict, .hold(elapsedSec: 0))
     }
 
-    /// Sub-second holds are the normal Teams path (the teardown confirms on the first consult), and
-    /// marking them for trimming would be churn.
+    /// Sub-second holds (the teardown confirming on the first consult, meant to be the normal Teams
+    /// path and rare in the field, END16) are not marked for trimming: that would be churn.
     func test_a_hold_under_one_second_yields_no_trim_point() {
         var policy = TeardownHoldPolicy()
         policy.open(context: teams, at: at(100))

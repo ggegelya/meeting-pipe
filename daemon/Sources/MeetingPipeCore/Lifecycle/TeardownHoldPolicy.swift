@@ -49,8 +49,10 @@ public struct TeardownHoldPolicy: Equatable {
     /// a headphone switch makes a Stop during the switch cut the few restorable seconds since it.
     public static let secondSignalLeadSec: TimeInterval = 30
 
-    /// A hold shorter than this is not trimmed. The normal Teams end confirms on the first consult,
-    /// a few milliseconds in, and marking those would be churn on every genuine leave.
+    /// A hold shorter than this is not trimmed: a hold the teardown line confirms on its first
+    /// consult is milliseconds old, and marking those would be churn. That was meant to be the
+    /// normal Teams end; in the field it is rare (END16: the line confirmed 0 of 59 Teams ends
+    /// from 2026-09-29 to 2026-11-13, which ended on the pair dwell 60 s after the mic release).
     public static let minimumTrimmedHoldSec: TimeInterval = 1.0
 
     public private(set) var hold: Hold?
@@ -69,11 +71,21 @@ public struct TeardownHoldPolicy: Equatable {
         return true
     }
 
+    /// Whether a hold on `context` asks Teams' teardown line at all: only a native Teams hold.
+    /// END16 (G053): the guard used to be `.native` alone, so a Zoom, Webex or Slack hold under a
+    /// live mic consulted the Teams watcher, and an unrelated Teams call unregistering after the
+    /// recording started confirmed it. The family is `NativeLifecycleConfig.teams`'s, the same set
+    /// `EndingReason.isDefinitive(forBundleID:)` reads the teardown evidence against.
+    public static func consultsTeardown(for context: MeetingLifecycleContext) -> Bool {
+        context.kind == .native && NativeLifecycleConfig.teams.bundleIDs.contains(context.bundleID)
+    }
+
     /// One consult of Teams' teardown line against the open hold, or `nil` when there is nothing to
-    /// ask: no hold, or a browser hold, which Teams' log says nothing about. `lastTeardownAt` is
-    /// the watcher's newest teardown, `nil` when the log is unreadable (no evidence since END17).
+    /// ask: no hold, or a hold on anything but Teams (`consultsTeardown`), which Teams' log says
+    /// nothing about. `lastTeardownAt` is the watcher's newest teardown, `nil` when the log is
+    /// unreadable (no evidence since END17).
     public func consult(now: Date, lastTeardownAt: Date?, recordingStartedAt: Date?) -> CallTeardownOracle.Verdict? {
-        guard let hold, hold.context.kind == .native else { return nil }
+        guard let hold, Self.consultsTeardown(for: hold.context) else { return nil }
         return CallTeardownOracle.decide(CallTeardownOracle.Input(
             now: now,
             provisionalStartedAt: hold.startedAt,
@@ -125,6 +137,39 @@ public struct TeardownHoldPolicy: Equatable {
     public mutating func release() -> Hold? {
         defer { hold = nil }
         return hold
+    }
+}
+
+/// END16: which of a hold's teardown consults the host logs, and how many of them were blind.
+///
+/// The host consults once a second for the whole hold, so a row per consult would bury the log.
+/// It logs edges instead: the first consult, and every later one where the watcher's newest
+/// teardown stamp moved; the counts go out once, when the hold resolves. `blindConsults` is the
+/// count the 2026-10-25 amendment asked for: consults made while the watcher could not read the
+/// log, i.e. holds the oracle could not have helped. Pure; the host owns the clock and the rows.
+public struct TeardownConsultLedger: Equatable {
+    public enum Edge: String, Equatable {
+        case first
+        case stampChanged = "stamp_changed"
+    }
+
+    public private(set) var consults = 0
+    public private(set) var blindConsults = 0
+    private var lastStamp: Date?
+
+    public init() {}
+
+    /// Count one consult; returns the edge to log, or nil. A blind consult never moves the stamp,
+    /// so the next readable one is compared with the last stamp actually read.
+    public mutating func note(available: Bool, newestTeardownAt: Date?) -> Edge? {
+        consults += 1
+        guard available else {
+            blindConsults += 1
+            return consults == 1 ? .first : nil
+        }
+        defer { lastStamp = newestTeardownAt }
+        if consults == 1 { return .first }
+        return newestTeardownAt != lastStamp ? .stampChanged : nil
     }
 }
 

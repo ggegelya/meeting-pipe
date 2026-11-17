@@ -193,6 +193,91 @@ final class CallTeardownHoldTests: XCTestCase {
         controller.releaseTeardownHold()
     }
 
+    // MARK: - END16: the hold-side rows and the Teams-family gate
+
+    private func withEventLog(_ body: (URL) throws -> Void) throws {
+        let logs = tempDir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+        try body(logs)
+    }
+
+    private func rows(_ action: String, in logs: URL) -> [[String: Any]] {
+        let text = (try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? ""
+        return text.split(separator: "\n").compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }.filter { $0["action"] as? String == action }
+    }
+
+    /// G053 at the host: a Teams teardown half a second ago, a native Zoom hold. Zoom's end must not
+    /// be confirmed by it, and the hold asks the watcher nothing.
+    func test_a_teams_teardown_does_not_confirm_a_zoom_hold_END16() throws {
+        try withEventLog { logs in
+            let (controller, host) = try makeController(logLines: [teardownLine(secondsAgo: 0.5)])
+            defer { withExtendedLifetime(host) {} }
+            let zoom = MeetingLifecycleContext(bundleID: "us.zoom.xos", kind: .native, pid: 88)
+
+            controller.beginTeardownHold(context: zoom)
+            controller.consultTeardownOracle()
+
+            XCTAssertNotNil(controller.holdPolicy.hold, "another app's teardown is no evidence about Zoom")
+            controller.releaseTeardownHold()
+            XCTAssertTrue(rows("lifecycle_teardown_consult", in: logs).isEmpty, "a hold that does not consult logs no consult, nor a resolved row")
+            let held = rows("lifecycle_end_held", in: logs).first
+            XCTAssertEqual(held?["consults_teardown"] as? Bool, false)
+            XCTAssertNil(held?["tail_offset"], "a Zoom hold carries none of Teams' log")
+        }
+    }
+
+    /// The measurement the 60 s Teams end waits on: an edge row on the first consult, the counts
+    /// (blind consults among them) once when the hold resolves, and the oracle's view in the held row.
+    func test_a_blind_teams_hold_logs_its_first_consult_and_its_counts_once_END16() throws {
+        try withEventLog { logs in
+            let (controller, host) = try makeController(logLines: nil)
+            defer { withExtendedLifetime(host) {} }
+
+            controller.beginTeardownHold(context: context)
+            controller.consultTeardownOracle()
+            controller.consultTeardownOracle()
+            controller.releaseTeardownHold()
+
+            let held = try XCTUnwrap(rows("lifecycle_end_held", in: logs).first)
+            XCTAssertEqual(held["consults_teardown"] as? Bool, true)
+            XCTAssertNotNil(held["tail_offset"])
+            let consults = rows("lifecycle_teardown_consult", in: logs)
+            XCTAssertEqual(consults.map { $0["edge"] as? String }, ["first", "resolved"])
+            XCTAssertEqual(consults.first?["available"] as? Bool, false)
+            XCTAssertEqual(consults.last?["consults"] as? Int, 3)
+            XCTAssertEqual(consults.last?["blind_consults"] as? Int, 3)
+            XCTAssertEqual(consults.last?["resolution"] as? String, "released")
+        }
+    }
+
+    /// A readable log: the first consult carries the newest teardown's age and where it fell against
+    /// the hold, and a new teardown line landing mid-hold is an edge of its own.
+    func test_a_readable_teams_hold_logs_a_new_teardown_line_as_an_edge_END16() throws {
+        try withEventLog { logs in
+            let (controller, host) = try makeController(logLines: [teardownLine(secondsAgo: 600)])
+            defer { withExtendedLifetime(host) {} }
+
+            controller.beginTeardownHold(context: context)
+            controller.consultTeardownOracle()   // the same stamp: no row
+            try appendToGeneration([teardownLine(secondsAgo: 0)])
+            scheduler.fire()
+            controller.consultTeardownOracle()   // confirms on the fresh line, and resolves
+
+            let consults = rows("lifecycle_teardown_consult", in: logs)
+            XCTAssertEqual(consults.map { $0["edge"] as? String }, ["first", "stamp_changed", "resolved"])
+            XCTAssertEqual(consults.first?["available"] as? Bool, true)
+            XCTAssertGreaterThan(consults.first?["teardown_age_sec"] as? Double ?? 0, 500)
+            XCTAssertLessThan(consults.first?["teardown_after_hold_start_sec"] as? Double ?? 0, -500)
+            XCTAssertEqual(consults.last?["blind_consults"] as? Int, 0)
+            XCTAssertEqual(consults.last?["resolution"] as? String, "teardown")
+            XCTAssertNil(controller.holdPolicy.hold, "the fresh line confirmed it")
+        }
+    }
+
     // MARK: - END12: a quiet log is not a dead log
 
     /// The 2026-09-02 12:36 cut: the Leave button went invalid five minutes into a live call, the

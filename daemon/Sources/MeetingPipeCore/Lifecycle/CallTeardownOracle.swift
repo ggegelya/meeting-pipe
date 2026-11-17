@@ -23,8 +23,11 @@ import Foundation
 /// It is the lifetime of the call's DRM registration object. It carries no localized text, no
 /// window reference and nothing the UI can restyle, so it is independent of every rendering change
 /// that makes the AX read unreliable. Measured 2026-07-01 to 2026-08-03 and re-measured 2026-08-20:
-/// it **leads** the daemon's AX edge (p50 about 1.3 s), so on a genuine end the answer is already on
-/// disk the instant the provisional opens and the median added latency is zero.
+/// it **leads** the daemon's AX edge (p50 about 1.3 s), so on a genuine end the answer was expected on
+/// disk the instant the provisional opens, at no added latency. The field did not bear that out
+/// (END16): from 2026-09-29 to 2026-11-13 the line confirmed 0 of 59 Teams ends, which waited out
+/// the pair dwell, 60 s after the mic release. Whether the line is late to disk or late to be read
+/// is what the `call_teardown_line` and `lifecycle_teardown_consult` rows are there to measure.
 ///
 /// The 2026-08-20 re-run, over the full corpus, by leading signal:
 ///

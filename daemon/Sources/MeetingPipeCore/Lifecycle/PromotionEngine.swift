@@ -710,8 +710,8 @@ public final class PromotionEngine {
             }
             // END17: every other end is weak and opens a hold. END14's instant pair (a vetoed
             // window-gone plus the mic release within the debounce) went with the debounce: it is
-            // a pair like any other now, confirmed by Teams' teardown at once on the host or by the
-            // pair dwell elsewhere.
+            // a pair like any other now, confirmed by Teams' teardown on the host when the line is
+            // read in time (in the field, almost never: END16) and otherwise by the pair dwell.
             let reason = EndingReason(leadingSignal: event.kind.rawValue, confirmedBy: [])
             phase = .endingProvisional(
                 context: context,

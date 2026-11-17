@@ -97,9 +97,10 @@ final class StopCandidateRetentionTests: XCTestCase {
         XCTAssertFalse(EndingReason(leadingSignal: "process_audio_is_running_input_false").isDefinitive(forBundleID: teams2))
     }
 
-    /// The review's catch: the host's teardown consult reads Teams' log for any native hold, so a
-    /// Teams call ending during a Zoom hold can confirm it. That is not a definitive Zoom end, and
-    /// the candidate is what the owner would rescue the cut Zoom recording with.
+    /// The review's catch: the host's teardown consult used to read Teams' log for any native hold,
+    /// so a Teams call ending during a Zoom hold could confirm it. END16's gate now stops that at
+    /// the consult; this pins the second check behind it: such an end is not a definitive Zoom end,
+    /// and the candidate is what the owner would rescue the cut Zoom recording with.
     func test_a_teardown_confirm_of_a_non_teams_recording_still_retains_the_candidate() {
         let zoom = AppSource(bundleID: "us.zoom.xos", displayName: "Zoom")
         let host = FakeSessionHost(tempDir: tempDir)
