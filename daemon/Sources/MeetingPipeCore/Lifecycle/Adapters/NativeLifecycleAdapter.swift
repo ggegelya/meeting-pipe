@@ -34,17 +34,24 @@ public struct NativeLifecycleConfig {
     /// END30 gave Zoom the same identity mode. Nil keeps the title rule (Webex, Slack: unmeasured,
     /// left as they were).
     public let windowLockRank: ((String?) -> Int)?
+    /// END24 amendment: the rank from which a lock is weak, the fallback rank that admits windows
+    /// other than the call window (Teams' main window at 2; for Zoom, whose rank has two levels,
+    /// any window without "Zoom Meeting" at 1). A weak lock's present reading never contradicts the
+    /// Leave button's edge or reverts a hold, because such a window can outlive the call.
+    public let windowWeakLockRank: Int?
 
     public init(
         bundleIDs: Set<String>,
         titleMatch: @escaping (String?) -> Bool,
         usesProcessAudio: Bool,
-        windowLockRank: ((String?) -> Int)? = nil
+        windowLockRank: ((String?) -> Int)? = nil,
+        windowWeakLockRank: Int? = nil
     ) {
         self.bundleIDs = bundleIDs
         self.titleMatch = titleMatch
         self.usesProcessAudio = usesProcessAudio
         self.windowLockRank = windowLockRank
+        self.windowWeakLockRank = windowWeakLockRank
     }
 }
 
@@ -57,7 +64,8 @@ public extension NativeLifecycleConfig {
         bundleIDs: ["com.microsoft.teams2", "com.microsoft.teams"],
         titleMatch: MeetingTitlePatterns.teamsWindow,
         usesProcessAudio: true,
-        windowLockRank: MeetingTitlePatterns.teamsLockRank
+        windowLockRank: MeetingTitlePatterns.teamsLockRank,
+        windowWeakLockRank: 2
     )
 
     /// ShareableContent + AXLeaveButton + ProcessAudio (same set as Teams). Zoom was not covered by
@@ -68,7 +76,8 @@ public extension NativeLifecycleConfig {
         bundleIDs: ["us.zoom.xos"],
         titleMatch: MeetingTitlePatterns.zoomWindow,
         usesProcessAudio: true,
-        windowLockRank: MeetingTitlePatterns.zoomLockRank
+        windowLockRank: MeetingTitlePatterns.zoomLockRank,
+        windowWeakLockRank: 1
     )
 
     /// ShareableContent + AXLeaveButton. Covers legacy `com.cisco.webexmeetingsapp` and the unified
@@ -202,12 +211,15 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
             ))
         }
         workspace.start(context: context)
-        shareableContent.onChange = { present in
+        // END24 amendment: `onReading` carries the lock's strength too (and fires on a relock);
+        // a title-rule app reads never weak, as before.
+        shareableContent.onReading = { present, weak in
             sink(PrimarySignalEvent(
                 kind: .shareableContentWindow,
                 state: present ? .live : .ended,
                 timestamp: Date(),
-                context: context
+                context: context,
+                weak: present && weak
             ))
         }
         axLeaveButton.onChange = { state in
@@ -224,6 +236,7 @@ public final class NativeLifecycleAdapter: LifecycleAdapter {
         shareableContent.start(
             context: context,
             lockRank: config.windowLockRank,
+            weakLockRank: config.windowWeakLockRank,
             titleMatch: config.titleMatch
         )
         // Start the Leave-button signal whenever we have a button OR a resolver. The

@@ -114,17 +114,22 @@ public struct PrimarySignalEvent: Equatable {
     public let state: PrimarySignalState
     public let timestamp: Date
     public let context: MeetingLifecycleContext
+    /// END24 amendment: a `.live` window reading on a weak lock (a window that may not be the call
+    /// window). Recorded, but never a contradiction in `pairEdges` and never a revert.
+    public let weak: Bool
 
     public init(
         kind: PrimarySignalKind,
         state: PrimarySignalState,
         timestamp: Date,
-        context: MeetingLifecycleContext
+        context: MeetingLifecycleContext,
+        weak: Bool = false
     ) {
         self.kind = kind
         self.state = state
         self.timestamp = timestamp
         self.context = context
+        self.weak = weak
     }
 }
 
@@ -230,6 +235,9 @@ public final class PromotionEngine {
         /// untrusted (a teardown read of the Leave button passing as healthy), so `pairEdges` does
         /// not let it contradict the class-mates that had gone ended before it.
         var declined = false
+        /// END24 amendment: a `.live` reading from a weak window lock. It does not contradict a
+        /// class-mate's edge; a change of strength alone updates it without restamping `at`.
+        var weak = false
     }
 
     /// END14: an end the engine declined because a live signal contradicted it. The engine stays
@@ -461,7 +469,8 @@ public final class PromotionEngine {
     /// for nothing, because `states` outlives a hold.
     static func pairEdges(in states: SignalStates, holdStartedAt: Date) -> [EndEvidenceClass: Date] {
         let earliest = holdStartedAt.addingTimeInterval(-pairEdgeAllowance)
-        let live = states.filter { $0.value.state == .live }
+        // END24 amendment: a weak window lock's present reading is no contradiction.
+        let live = states.filter { $0.value.state == .live && !$0.value.weak }
         var edges: [EndEvidenceClass: Date] = [:]
         for (kind, reading) in states where reading.state == .ended && reading.at >= earliest {
             let cls = kind.evidenceClass
@@ -519,7 +528,9 @@ public final class PromotionEngine {
         let previous = states[event.kind]
         if event.state == .unknown, previous?.state != .live { return previous }
         if previous?.state != event.state {
-            states[event.kind] = SignalReading(state: event.state, at: event.timestamp)
+            states[event.kind] = SignalReading(state: event.state, at: event.timestamp, weak: event.weak)
+        } else if previous?.weak != event.weak {
+            states[event.kind]?.weak = event.weak
         }
         return previous
     }
@@ -621,7 +632,7 @@ public final class PromotionEngine {
 
     private func handleIdle(_ event: PrimarySignalEvent) -> Decision? {
         guard event.state == .live else { return nil }
-        phase = .starting(context: event.context, observed: [event.kind], states: [event.kind: SignalReading(state: event.state, at: event.timestamp)])
+        phase = .starting(context: event.context, observed: [event.kind], states: [event.kind: SignalReading(state: event.state, at: event.timestamp, weak: event.weak)])
         return Decision(verdict: .starting(context: event.context))
     }
 
@@ -807,6 +818,18 @@ public final class PromotionEngine {
             // and leaves the hold alone. Since END18 the first two count only while no other evidence
             // class has ended inside the hold (below), and the rescue's healthy Leave reaches here
             // as a real reading (`AXLeaveButtonSignal.reassertOrArm`).
+            // END24 amendment: a weak lock's reading, or a weak one turning strong (a relock while
+            // present), is no revert: neither says the call came back. Except the window that led
+            // this hold coming back: a weak lock is often the real call window (every Zoom window
+            // without "Zoom Meeting"), and its own return after a minimise reverts as before.
+            let leadReturning = event.kind == leading && previous?.state == .ended
+            if !leadReturning, event.weak || (previous?.state == .live && previous?.weak == true) {
+                phase = .endingProvisional(
+                    context: context, leading: leading,
+                    startedAt: startedAt, loneSince: loneSince, observed: observed, states: states
+                )
+                return nil
+            }
             let returning = previous?.state == .ended
             guard event.kind.evidenceClass == leading.evidenceClass || returning || event.kind.vetoesLoneEnd else {
                 phase = .endingProvisional(

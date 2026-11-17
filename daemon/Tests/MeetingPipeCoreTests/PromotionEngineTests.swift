@@ -734,6 +734,73 @@ final class PromotionEngineTests: XCTestCase {
         )
     }
 
+    /// END24 amendment (M2): the same shape on a weak lock (the main window locked because the call
+    /// window was not on screen). Its present reading says nothing about the call, so it does not
+    /// contradict the Leave edge, and the mic plus the Leave pair on the dwell.
+    func test_a_weak_window_lock_does_not_contradict_an_invalid_leave_END24() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(PrimarySignalEvent(
+            kind: .shareableContentWindow, state: .live, timestamp: Date(timeIntervalSince1970: 0),
+            context: teamsContext, weak: true
+        ))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 100))
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 100.3))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 100.3 + dwell))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "process_audio_is_running_input_false", confirmedBy: ["ax_leave_button_invalid"])
+            )
+        )
+    }
+
+    /// A relock while present (weak to strong) is no new reading: it does not revert a Leave-led
+    /// hold, and it does not restamp the window's reading. A weak reading never reverts either.
+    func test_a_weak_lock_turning_strong_does_not_revert_a_hold_END24() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(PrimarySignalEvent(
+            kind: .shareableContentWindow, state: .live, timestamp: Date(timeIntervalSince1970: 0),
+            context: teamsContext, weak: true
+        ))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 100))
+        XCTAssertTrue(engine.hasPendingEndDeadline)
+        XCTAssertNil(engine.ingest(PrimarySignalEvent(
+            kind: .shareableContentWindow, state: .live, timestamp: Date(timeIntervalSince1970: 101),
+            context: teamsContext, weak: true
+        )), "a weak re-delivery is no revert")
+        XCTAssertNil(engine.ingest(event(.shareableContentWindow, .live, at: 110)), "nor is the relock")
+        XCTAssertTrue(engine.hasPendingEndDeadline)
+        // Strong now: it contradicts the Leave edge again, so the mic's release does not pair with it.
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 120))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 120 + dwell + 1)), "no pair against a strong window")
+        XCTAssertTrue(engine.hasPendingEndDeadline)
+    }
+
+    /// The window that led the hold coming back reverts it even on a weak lock: a weak lock is often
+    /// the real call window (a Zoom window without "Zoom Meeting"), minimised and restored.
+    func test_a_weak_window_that_led_the_hold_reverts_it_on_return_END24() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(PrimarySignalEvent(
+            kind: .shareableContentWindow, state: .live, timestamp: Date(timeIntervalSince1970: 0),
+            context: teamsContext, weak: true
+        ))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 100))
+        XCTAssertTrue(engine.hasPendingEndDeadline)
+        XCTAssertEqual(
+            engine.ingest(PrimarySignalEvent(
+                kind: .shareableContentWindow, state: .live, timestamp: Date(timeIntervalSince1970: 105),
+                context: teamsContext, weak: true
+            ))?.verdict,
+            .inMeeting(context: teamsContext)
+        )
+    }
+
     /// One PWA title change is one root cause read twice (F158): the AX window title and the
     /// shareable-content snapshot match the same `titleMatchers`, so they do not pair.
     func test_the_two_title_reads_of_one_pwa_do_not_pair_END14() {

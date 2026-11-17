@@ -50,6 +50,17 @@ public final class ShareableContentSignal {
     }
     private var _onChange: ((Bool) -> Void)?
 
+    /// END24 amendment: the reading with its strength, for an identity-mode adapter. `weak` is true
+    /// while the window reads present on a lock at or past `weakLockRank` (a window that may not be
+    /// the call window, such as Teams' main window), and is the only change this fires on that
+    /// `onChange` does not (a relock to a better window, present to present). Same locking as
+    /// `onChange`; the browser adapter and title-rule apps never set it.
+    public var onReading: ((_ present: Bool, _ weak: Bool) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _onReading }
+        set { lock.lock(); _onReading = newValue; lock.unlock() }
+    }
+    private var _onReading: ((Bool, Bool) -> Void)?
+
     /// Both 1 s since PERF19 (it was 0.5); kept as two names so adapters and tests read the same
     /// constants and a later split stays a one-line change. See the type comment for why not faster.
     public static let activePollInterval: TimeInterval = 1.0
@@ -80,9 +91,16 @@ public final class ShareableContentSignal {
         /// END24 identity mode when non-nil: ranks the title-matching windows for the lock.
         var lockRank: LockRank?
         /// END24: the call window(s) locked at the first present reading. Once non-empty the
-        /// reading is "is any of these still listed", whatever their titles; never re-locked
-        /// within a session, so a window appearing later cannot turn a real gone back to present.
+        /// reading is "is any of these still listed", whatever their titles. Re-locked only from a
+        /// weak lock to a strictly better-ranked window, and only while the lock still reads
+        /// present (END24 amendment), so a window appearing after a real end cannot turn gone back
+        /// to present.
         var lockedWindowIDs: Set<UInt32> = []
+        /// The rank the lock was taken at, and the rank from which a lock is weak (nil: never).
+        var lockedRank: Int?
+        var weakLockRank: Int?
+        /// The strength last reported through `onReading`.
+        var lastWeak = false
         /// The bundle's window ids at the previous successful poll, for the recreation diagnostic.
         var previousBundleWindowIDs: Set<UInt32> = []
         var cancelTick: (() -> Void)?
@@ -131,9 +149,14 @@ public final class ShareableContentSignal {
     /// first present reading (the matching windows of the lowest rank), and from then on the window
     /// reads present while one of those window ids is still listed. Callers pass `titleMatch:` by
     /// label: a trailing closure would bind to `lockRank` under Swift 6's forward-scan rule.
+    ///
+    /// `weakLockRank` (END24 amendment): a lock taken at this rank or worse reads present as weak
+    /// (`onReading`), which the engine never lets contradict the Leave button's edge or revert a
+    /// hold, since such a window (Teams' main window) can outlive the call.
     public func start(
         context: MeetingLifecycleContext,
         lockRank: LockRank? = nil,
+        weakLockRank: Int? = nil,
         titleMatch: @escaping TitleMatch = { _ in true }
     ) {
         stop()
@@ -141,6 +164,7 @@ public final class ShareableContentSignal {
             state.context = context
             state.titleMatch = titleMatch
             state.lockRank = lockRank
+            state.weakLockRank = weakLockRank
         }
         // The initial evaluate arms the first timer via `adjustCadence` (currentInterval
         // starts at 0, so the first call always (re)schedules). Arming inside the initial
@@ -181,13 +205,13 @@ public final class ShareableContentSignal {
     }
 
     func evaluate(reason: String) {
-        typealias Snapshot = (MeetingLifecycleContext, TitleMatch, LockRank?, Set<UInt32>, Set<UInt32>, Int)
+        typealias Snapshot = (MeetingLifecycleContext, TitleMatch, LockRank?, Set<UInt32>, Set<UInt32>, Int, Int?, Int?)
         let snapshot: Snapshot? = lock.withLock {
             guard let context = state.context, let titleMatch = state.titleMatch else { return nil }
             return (context, titleMatch, state.lockRank, state.lockedWindowIDs,
-                    state.previousBundleWindowIDs, generation)
+                    state.previousBundleWindowIDs, generation, state.lockedRank, state.weakLockRank)
         }
-        guard let (context, titleMatch, lockRank, locked, previousIDs, session) = snapshot else { return }
+        guard let (context, titleMatch, lockRank, locked, previousIDs, session, lockedRank, weakLockRank) = snapshot else { return }
 
         // Probe OFF the lock: the production probe blocks on ScreenCaptureKit, and the
         // lock also guards stop()/start() on main.
@@ -201,9 +225,22 @@ public final class ShareableContentSignal {
         // END24: with a lock, presence is identity; before one (and always outside identity mode),
         // it is the title rule. A new lock is computed here and taken below, under the session check.
         var toLock: [ShareableWindowSummary] = []
+        var toRelock: [ShareableWindowSummary] = []
         let present: Bool
         if lockRank != nil, !locked.isEmpty {
             present = !locked.isDisjoint(with: bundleIDs)
+            // END24 amendment: a lock taken on a worse window (the main window, when no call window
+            // was on screen at the first present reading) moves to a strictly better-ranked one
+            // when it appears, but only while the lock still reads present: from a gone reading a
+            // new window (a popped-out chat ranks like a call window) would revert a real end.
+            // Only a weak lock moves: a lock on a call window (Teams' rank 1 suffix shape) must not
+            // move to a rank-0 popped-out chat, which would then outlive the call.
+            if present, let lockRank, let lockedRank, let weakFrom = weakLockRank, lockedRank >= weakFrom {
+                let candidates = titleMatched.filter { $0.windowID.map { !locked.contains($0) } ?? false }
+                if let best = candidates.map({ lockRank($0.title) }).min(), best < lockedRank {
+                    toRelock = candidates.filter { lockRank($0.title) == best }
+                }
+            }
         } else {
             present = !titleMatched.isEmpty
             if let lockRank {
@@ -219,7 +256,10 @@ public final class ShareableContentSignal {
         var candidatesToLog: [String]?
         var transition: (previous: Bool?, value: Bool)?
         var lockTaken = false
+        var relocked: (from: Int, to: Int)?
         var lockedCount = 0
+        var weak = false
+        var strengthChanged = false
         let isCurrent: Bool = lock.withLock {
             // The session stopped while the probe ran: its reading belongs to nobody.
             guard generation == session else { return false }
@@ -227,9 +267,20 @@ public final class ShareableContentSignal {
             // Only an empty set locks, so an evaluate racing another cannot widen a taken lock.
             if !toLock.isEmpty, state.lockedWindowIDs.isEmpty {
                 state.lockedWindowIDs = Set(toLock.compactMap(\.windowID))
+                state.lockedRank = toLock.first.map { lockRank?($0.title) ?? 0 }
                 lockTaken = true
             }
+            // A relock only replaces the lock this evaluate read, so a racing one cannot undo it.
+            if !toRelock.isEmpty, state.lockedWindowIDs == locked, state.lockedRank == lockedRank,
+               let from = lockedRank, let to = toRelock.first.map({ lockRank?($0.title) ?? from }) {
+                state.lockedWindowIDs = Set(toRelock.compactMap(\.windowID))
+                state.lockedRank = to
+                relocked = (from, to)
+            }
             lockedCount = state.lockedWindowIDs.count
+            if present, let rank = state.lockedRank, let weakFrom = state.weakLockRank {
+                weak = rank >= weakFrom
+            }
             state.previousBundleWindowIDs = bundleIDs
             if present {
                 state.lastUnmatchedCandidates = nil
@@ -246,10 +297,29 @@ public final class ShareableContentSignal {
             if state.lastValue != present {
                 transition = (previous: state.lastValue, value: present)
                 state.lastValue = present
+            } else if present, state.lastWeak != weak {
+                strengthChanged = true
             }
+            state.lastWeak = weak
             return true
         }
         guard isCurrent else { return }
+
+        if let relocked {
+            var shapes: [String: Int] = [:]
+            for window in toRelock {
+                shapes[MeetingTitlePatterns.windowShape(bundleID: context.bundleID, title: window.title), default: 0] += 1
+            }
+            eventLog.emit(category: "signal", action: "shareable_content_window_relocked", attributes: [
+                "bundle_id": context.bundleID,
+                "count": toRelock.count,
+                "shapes": shapes,
+                "from_rank": relocked.from,
+                "rank": relocked.to,
+                "weak": weak,
+                "reason": reason
+            ])
+        }
 
         if lockTaken {
             // The app's own shape classes: Teams (END24) or Zoom (END30), the identity-mode apps.
@@ -281,6 +351,7 @@ public final class ShareableContentSignal {
             ]
             if lockRank != nil {
                 attributes["locked_windows"] = lockedCount
+                attributes["weak_lock"] = weak
                 if !transition.value, !locked.isEmpty {
                     // END24 recreation diagnostic: title-matching windows of this app that first
                     // appeared in this same poll. Non-zero on a real end is a popped-out chat; on a
@@ -293,6 +364,9 @@ public final class ShareableContentSignal {
             }
             eventLog.emit(category: "signal", action: "shareable_content_window_present", attributes: attributes)
             onChange?(transition.value)
+            onReading?(transition.value, weak)
+        } else if strengthChanged {
+            onReading?(true, weak)
         }
     }
 

@@ -554,6 +554,116 @@ final class ShareableContentSignalTests: XCTestCase {
         }
     }
 
+    // MARK: - END24 amendment: relock upward while present, and a weak lock's strength
+
+    private struct Reading: Equatable { let present: Bool; let weak: Bool }
+
+    /// An identity signal wired as the native adapter wires it, recording `onReading` too.
+    private func rankedSignal(
+        _ windows: LockedBox<[Summary]>, context: MeetingLifecycleContext, config: NativeLifecycleConfig,
+        log: RecordingEventLog, readings: LockedBox<[Reading]>, observed: LockedBox<[Bool]>
+    ) -> ManualScheduler {
+        let scheduler = ManualScheduler()
+        let signal = ShareableContentSignal(eventLog: log, probe: { windows.get() }, scheduler: manualScheduler(scheduler))
+        signal.onChange = { value in observed.mutate { $0.append(value) } }
+        signal.onReading = { present, weak in readings.mutate { $0.append(Reading(present: present, weak: weak)) } }
+        retained.append(signal)
+        signal.start(
+            context: context, lockRank: config.windowLockRank,
+            weakLockRank: config.windowWeakLockRank, titleMatch: config.titleMatch
+        )
+        return scheduler
+    }
+
+    /// M2's first route: the call window off screen at the first present reading, so the main
+    /// window locked (rank 2, weak). When the call window appears the lock moves to it, and once it
+    /// closes the reading is gone, though the main window stays.
+    func test_a_main_window_lock_moves_to_the_call_window_when_it_appears_END24() {
+        let main = Summary(bundleIdentifier: teams2, title: "Chat | Acme", windowID: 12, pid: 7)
+        let call = Summary(bundleIdentifier: teams2, title: "Weekly sync", windowID: 41, pid: 7)
+        let windows = LockedBox([main])
+        let log = RecordingEventLog()
+        let readings = LockedBox<[Reading]>([])
+        let observed = LockedBox<[Bool]>([])
+        let scheduler = rankedSignal(windows, context: teamsContext, config: .teams, log: log, readings: readings, observed: observed)
+        XCTAssertEqual(readings.get(), [Reading(present: true, weak: true)], "a main-window lock is weak")
+
+        windows.set([main, call])
+        scheduler.tick?()
+        let relocked = log.entries.first { $0.action == "shareable_content_window_relocked" }
+        XCTAssertEqual(relocked?.attributes["from_rank"], "2")
+        XCTAssertEqual(relocked?.attributes["rank"], "0")
+        XCTAssertEqual(readings.get().last, Reading(present: true, weak: false))
+        XCTAssertEqual(observed.get(), [true], "present to present: `onChange` does not fire")
+
+        windows.set([main])
+        scheduler.tick?()
+        XCTAssertEqual(readings.get().last, Reading(present: false, weak: false), "the call window closing reads gone")
+        XCTAssertEqual(observed.get(), [true, false])
+    }
+
+    /// Never from a gone reading: a popped-out chat ranks like a call window, so moving the lock to
+    /// it after the locked window went would revert a real end.
+    func test_no_relock_from_a_gone_reading_END24() {
+        let older = Summary(bundleIdentifier: teams2, title: "Standup | Microsoft Teams", windowID: 41, pid: 7)
+        let windows = LockedBox([older])
+        let log = RecordingEventLog()
+        let readings = LockedBox<[Reading]>([])
+        let observed = LockedBox<[Bool]>([])
+        let scheduler = rankedSignal(windows, context: teamsContext, config: .teams, log: log, readings: readings, observed: observed)
+        windows.set([])
+        scheduler.tick?()
+        windows.set([Summary(bundleIdentifier: teams2, title: "Ana Lima", windowID: 55, pid: 7)])
+        scheduler.tick?()
+        XCTAssertEqual(observed.get(), [true, false], "still gone")
+        XCTAssertFalse(log.entries.contains { $0.action == "shareable_content_window_relocked" })
+    }
+
+    /// A lock on a call window is not weak and never moves, even to a better rank: Teams' rank-1
+    /// suffix call window must not move to a rank-0 popped-out chat that would outlive the call.
+    func test_a_strong_rank_one_lock_does_not_move_to_a_popped_out_chat_END24() {
+        let call = Summary(bundleIdentifier: teams2, title: "Standup | Microsoft Teams", windowID: 41, pid: 7)
+        let windows = LockedBox([call])
+        let log = RecordingEventLog()
+        let readings = LockedBox<[Reading]>([])
+        let scheduler = rankedSignal(windows, context: teamsContext, config: .teams, log: log, readings: readings, observed: LockedBox([]))
+        windows.set([call, Summary(bundleIdentifier: teams2, title: "Ana Lima", windowID: 55, pid: 7)])
+        scheduler.tick?()
+        windows.set([Summary(bundleIdentifier: teams2, title: "Ana Lima", windowID: 55, pid: 7)])
+        scheduler.tick?()
+        XCTAssertEqual(readings.get(), [Reading(present: true, weak: false), Reading(present: false, weak: false)])
+        XCTAssertFalse(log.entries.contains { $0.action == "shareable_content_window_relocked" })
+    }
+
+    /// A strong lock is not moved by another window of the same rank (ties stay as they are).
+    func test_a_rank_zero_lock_is_never_moved_END24() {
+        let call = Summary(bundleIdentifier: teams2, title: "Weekly sync", windowID: 41, pid: 7)
+        let windows = LockedBox([call])
+        let log = RecordingEventLog()
+        let readings = LockedBox<[Reading]>([])
+        let scheduler = rankedSignal(windows, context: teamsContext, config: .teams, log: log, readings: readings, observed: LockedBox([]))
+        windows.set([call, Summary(bundleIdentifier: teams2, title: "Ana Lima", windowID: 55, pid: 7)])
+        scheduler.tick?()
+        XCTAssertEqual(readings.get(), [Reading(present: true, weak: false)])
+        XCTAssertFalse(log.entries.contains { $0.action == "shareable_content_window_relocked" })
+    }
+
+    /// Zoom's rank has two levels, so any window without "Zoom Meeting" is a weak lock, and the
+    /// meeting window appearing takes it over.
+    func test_a_zoom_lock_without_the_meeting_window_is_weak_until_it_appears_END24() {
+        let zoomContext = MeetingLifecycleContext(bundleID: "us.zoom.xos", kind: .native, pid: 8)
+        let webinar = Summary(bundleIdentifier: "us.zoom.xos", title: "Quarterly webinar", windowID: 70, pid: 8)
+        let meeting = Summary(bundleIdentifier: "us.zoom.xos", title: "Zoom Meeting", windowID: 71, pid: 8)
+        let windows = LockedBox([webinar])
+        let log = RecordingEventLog()
+        let readings = LockedBox<[Reading]>([])
+        let scheduler = rankedSignal(windows, context: zoomContext, config: .zoom, log: log, readings: readings, observed: LockedBox([]))
+        XCTAssertEqual(readings.get(), [Reading(present: true, weak: true)])
+        windows.set([webinar, meeting])
+        scheduler.tick?()
+        XCTAssertEqual(readings.get().last, Reading(present: true, weak: false))
+    }
+
     // MARK: - END30: Zoom follows the call window's identity too
 
     private let zoomApp = "us.zoom.xos"

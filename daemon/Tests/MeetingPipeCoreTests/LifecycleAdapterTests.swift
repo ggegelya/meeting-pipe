@@ -174,6 +174,32 @@ final class LifecycleAdapterTests: XCTestCase {
         XCTAssertNotNil(NativeLifecycleConfig.zoom.windowLockRank, "END30")
         XCTAssertNil(NativeLifecycleConfig.webex.windowLockRank)
         XCTAssertNil(NativeLifecycleConfig.slack.windowLockRank)
+        // END24 amendment: the fallback rank of each is the weak one.
+        XCTAssertEqual(NativeLifecycleConfig.teams.windowWeakLockRank, 2)
+        XCTAssertEqual(NativeLifecycleConfig.zoom.windowWeakLockRank, 1)
+        XCTAssertEqual(MeetingTitlePatterns.teamsLockRank("Chat | Acme"), 2)
+        XCTAssertEqual(MeetingTitlePatterns.zoomLockRank("Quarterly webinar"), 1)
+    }
+
+    /// The adapter hands the lock's strength to the engine: a main-window lock arrives weak.
+    func test_the_native_adapter_marks_a_weak_window_lock_END24() throws {
+        let teams = MeetingLifecycleContext(bundleID: "com.microsoft.teams2", kind: .native, pid: 4242)
+        let main = ShareableContentSignal.ShareableWindowSummary(
+            bundleIdentifier: "com.microsoft.teams2", title: "Chat | Acme", windowID: 12, pid: 4242
+        )
+        let adapter = NativeLifecycleAdapter(
+            config: .teams,
+            processAudio: nil,
+            shareableContent: ShareableContentSignal(probe: { [main] }, scheduler: { _, _ in { } }),
+            axLeaveButton: AXLeaveButtonSignal(axBus: AXObserverBus(), probe: { _ in .healthy }, scheduler: { _, _ in { } }),
+            workspace: WorkspaceSignal(probe: { _ in nil }, notificationCenter: NotificationCenter())
+        )
+        var events: [PrimarySignalEvent] = []
+        try adapter.start(context: teams, handle: LifecycleAdapterHandle()) { events.append($0) }
+        let window = events.filter { $0.kind == .shareableContentWindow }
+        XCTAssertEqual(window.map(\.state), [.live])
+        XCTAssertEqual(window.map(\.weak), [true])
+        adapter.stop()
     }
 
     /// END30: a call window, never the main Workplace window or the account-titled one, which the
