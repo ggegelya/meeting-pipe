@@ -577,6 +577,85 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("m.wav").path))
     }
 
+    // MARK: - STOR18: the meeting being recorded or processed is not trashed
+
+    private func guardedService(_ block: @escaping (String) -> MeetingLibraryService.DeletionBlock?) -> MeetingLibraryService {
+        MeetingLibraryService(
+            outputDir: { [unowned self] in self.dir },
+            launcher: driver,
+            notifyError: { [unowned self] message in self.errors.append(message) },
+            enqueue: { _, _, _ in },
+            originalsDir: { [unowned self] in self.originalsDir },
+            deletionBlock: block
+        )
+    }
+
+    private func eventRows(in logs: URL) throws -> [[String: Any]] {
+        try String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)
+            .split(separator: "\n")
+            .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+    }
+
+    func test_softDelete_refuses_a_stem_being_recorded_and_trashes_nothing() throws {
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+        let live = ["20261117-162938.mic.wav", "20261117-162938.system.wav", "20261117-162938.recovery.json"]
+        for name in live { try touch(name) }
+
+        let service = guardedService { $0 == "20261117-162938" ? .recording : nil }
+        let result = service.softDeleteMeeting(stem: "20261117-162938")
+
+        guard case .failure(let error) = result else { return XCTFail("expected a refusal") }
+        XCTAssertEqual(
+            error as? MeetingLibraryService.LibraryError,
+            .meetingInUse(stem: "20261117-162938", reason: .recording)
+        )
+        for name in live {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent(name).path), "\(name) must stay")
+        }
+        let row = try XCTUnwrap(try eventRows(in: logs).first { $0["action"] as? String == "delete_refused" })
+        XCTAssertEqual(row["category"] as? String, "coordinator")
+        XCTAssertEqual(row["stem"] as? String, "20261117-162938")
+        XCTAssertEqual(row["reason"] as? String, "recording")
+    }
+
+    func test_softDelete_refuses_a_stem_being_processed() throws {
+        try touch("m.wav"); try touch("m.meta.json")
+        let service = guardedService { _ in .processing }
+        guard case .failure(let error) = service.softDeleteMeeting(stem: "m") else { return XCTFail("expected a refusal") }
+        XCTAssertEqual(error as? MeetingLibraryService.LibraryError, .meetingInUse(stem: "m", reason: .processing))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("m.wav").path))
+    }
+
+    func test_softDelete_with_no_block_still_trashes() throws {
+        try touch("m.wav"); try touch("m.meta.json")
+        let service = guardedService { _ in nil }
+        guard case .success = service.softDeleteMeeting(stem: "m") else { return XCTFail("expected success") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("m.wav").path))
+    }
+
+    /// The FEAT9 merge cleanup goes through the same seam, so a blocked fragment survives and is
+    /// not counted as trashed.
+    func test_merge_cleanup_leaves_a_blocked_fragment_and_does_not_count_it() throws {
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+        try touch("a.wav"); try touch("b.wav"); try touch("c.wav")
+        let service = guardedService { $0 == "c" ? .recording : nil }
+
+        service.mergeMeetings(primaryStem: "a", fragmentStems: ["b", "c"]) { _ in }
+        driver.finishMerge(.success(nil))
+        drainMain()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("b.wav").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("c.wav").path))
+        let row = try XCTUnwrap(try eventRows(in: logs).first { $0["action"] as? String == "merge_succeeded" })
+        XCTAssertEqual(row["fragments_trashed"] as? Int, 1)
+    }
+
     // MARK: - merge fragmented recordings (FEAT9)
 
     func test_merge_success_trashes_fragments_and_returns_page_url() throws {

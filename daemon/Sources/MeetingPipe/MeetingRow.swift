@@ -509,12 +509,16 @@ struct MeetingRow: View, Equatable {
 
         Divider()
 
+        // STOR18: the live meeting's capture files are open; `processing.isBusy` is idle while
+        // recording, so it never covered this row. The service guard is what holds.
+        let deleteBlock = SoftDeleteTally.presentationBlock(isLiveRecording: isLiveRecording, processing: processing)
         Button(role: .destructive) {
             promptDelete()
         } label: {
             Text("Move to Trash…")
         }
-        .disabled(processing.isBusy)
+        .disabled(deleteBlock != nil)
+        .help(deleteBlock.map(SoftDeleteTally.disabledHelp) ?? "")
     }
 
     // MARK: Actions

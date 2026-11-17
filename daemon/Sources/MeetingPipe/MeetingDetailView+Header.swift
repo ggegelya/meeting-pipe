@@ -443,9 +443,16 @@ extension MeetingDetailView {
                 toolbarAction("copy_id") { copyMeetingID() }
             }
             Divider()
+            // STOR18: disabled for the meeting being recorded and for a running or queued job.
+            let deleteBlock = SoftDeleteTally.presentationBlock(
+                isLiveRecording: libraryModel.liveRecordingStem == meeting.stem,
+                processing: libraryModel.processing(for: meeting.stem)
+            )
             Button("Delete\u{2026}", role: .destructive) {
                 toolbarAction("delete") { confirmDelete() }
             }
+            .disabled(deleteBlock != nil)
+            .help(deleteBlock.map(SoftDeleteTally.disabledHelp) ?? "")
         } label: {
             // From macOS 27 the borderless menu's AX cell takes its label from
             // the image's description (the bare symbol's is "More") and drops

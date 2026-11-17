@@ -23,6 +23,9 @@ final class MeetingLibraryService {
         case noSummary(stem: String)
         /// Soft-delete found nothing on disk under this stem.
         case noFiles(stem: String)
+        /// STOR18: soft-delete refused because the meeting is being recorded or processed
+        /// right now. Nothing was trashed.
+        case meetingInUse(stem: String, reason: DeletionBlock)
         /// The meeting was held back because a stretch that had to be cut out could not be (SEC16). Its
         /// recording is in `originals/held/`, not in `raw/`, so there is nothing to re-run.
         case heldBack(stem: String)
@@ -60,6 +63,8 @@ final class MeetingLibraryService {
                 return "No summary.json for \(stem) - corrected summary must be written before republish"
             case .noFiles(let stem):
                 return "No files found for \(stem)"
+            case .meetingInUse(let stem, let reason):
+                return "\(stem) \(reason.inUseSentence) It can be moved to the Trash once that finishes."
             case .heldBack:
                 return "No recording to retry: this meeting was held back and its recording is kept in MeetingPipe's originals folder (held). Use Show recording."
             case .noCandidateSummary:
@@ -80,6 +85,23 @@ final class MeetingLibraryService {
                 return "Part of \(stem) has to be cut before it is transcribed, and MeetingPipe could not save that note, so nothing was run. Check there is free disk space and try again."
             case .transcriptionUnavailable:
                 return "Transcription is not available yet."
+            }
+        }
+    }
+
+    /// STOR18: why a meeting cannot be moved to the Trash right now. Answered per stem by the
+    /// injected `deletionBlock`, which the Coordinator wires to the recorder's stem ownership
+    /// (REC23's guard, never the Library's `liveRecordingStem` mirror) and the processing lane.
+    enum DeletionBlock: String, Equatable {
+        /// The recorder owns this stem: its capture files and recovery manifest are open.
+        case recording
+        /// A pipeline job for this stem is running or queued.
+        case processing
+
+        var inUseSentence: String {
+            switch self {
+            case .recording: return "is being recorded."
+            case .processing: return "is being processed."
             }
         }
     }
@@ -131,6 +153,10 @@ final class MeetingLibraryService {
     /// reaches the menu through the dispatcher instead. A no-op by default, like
     /// `refreshLibrary`, so a headless test need not wire a menu.
     private let failedSetMayHaveChanged: () -> Void
+    /// STOR18: whether a stem may be trashed right now. Asked first by `softDeleteMeeting`, so every
+    /// delete (the row, the detail header, the batch pane, the FEAT9 merge cleanup) goes through it.
+    /// Never blocks by default, like the other collaborators, so a headless test need not wire it.
+    private let deletionBlock: (String) -> DeletionBlock?
 
     init(
         outputDir: @escaping () -> URL,
@@ -145,8 +171,10 @@ final class MeetingLibraryService {
         refreshLibrary: @escaping () -> Void = {},
         libraryRunLane: @escaping () -> LibraryRunLane? = { nil },
         notifyFailure: ((String?, FailurePresentation) -> Void)? = nil,
-        failedSetMayHaveChanged: @escaping () -> Void = {}
+        failedSetMayHaveChanged: @escaping () -> Void = {},
+        deletionBlock: @escaping (String) -> DeletionBlock? = { _ in nil }
     ) {
+        self.deletionBlock = deletionBlock
         self.outputDir = outputDir
         self.originalsDir = originalsDir
         self.launcher = launcher
@@ -1187,6 +1215,16 @@ final class MeetingLibraryService {
 
     /// Move all sidecars for a stem (audio, transcript, summary, run, meta, notion, obsidian, READY_FOR_MANUAL) to the Trash. The directory watcher picks up the deletes and refreshes the list.
     func softDeleteMeeting(stem: String) -> Result<Void, Error> {
+        // STOR18: first, before the directory is even listed. Trashing is a rename, so a live
+        // recording kept writing into the Trash, its stop found no intermediates and produced no
+        // final, and the orphan sweep that "will recover it automatically" looked in raw/.
+        if let block = deletionBlock(stem) {
+            Log.event(category: "coordinator", action: "delete_refused", attributes: [
+                "stem": stem,
+                "reason": block.rawValue,
+            ])
+            return .failure(LibraryError.meetingInUse(stem: stem, reason: block))
+        }
         defer { failedSetMayHaveChanged() }
         let dir = outputDir()
         let fm = FileManager.default

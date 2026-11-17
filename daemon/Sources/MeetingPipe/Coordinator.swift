@@ -951,7 +951,18 @@ final class Coordinator: NSObject {
         libraryRunLane: { [weak self] in self?.jobDispatcher },
         notifyFailure: { [weak self] stem, failure in self?.notifier.notifyFailure(failure, stem: stem) },
         // PERF24: retry and delete move the failed set; recount off main before the next open.
-        failedSetMayHaveChanged: { [weak self] in self?.statusBar.refreshFailedMeetingCount() }
+        failedSetMayHaveChanged: { [weak self] in self?.statusBar.refreshFailedMeetingCount() },
+        // STOR18: a delete never trashes a stem the recorder owns (REC23's guard, claimed before the
+        // first capture file exists) or one the pipeline lane is running or holding. Every delete
+        // surface is called on main, so the main-actor reads are assumed rather than hopped to.
+        deletionBlock: { [weak self] stem in
+            guard let self else { return nil }
+            return MainActor.assumeIsolated {
+                if self.recorder.stemOwnership.contains(stem) { return .recording }
+                if self.libraryModel.processing(for: stem).isBusy { return .processing }
+                return nil
+            }
+        }
     )
 
     /// Config-change responses: eager local-model prefetch, model-download

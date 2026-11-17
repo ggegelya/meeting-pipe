@@ -133,6 +133,17 @@ final class RecordingStemOwnershipREC23Tests: XCTestCase {
         XCTAssertNotNil(source.range(of: "isOwned:"), "the sweep re-asks per stem, not only at scan")
     }
 
+    /// STOR18: the Library's delete guard reads the same ownership the sweeps do. The file-wide
+    /// `liveRecordingStem` ban above already keeps the UI mirror out of it.
+    func test_theDeleteGuardReadsTheRecordersOwnership() throws {
+        let source = try repoFile("daemon/Sources/MeetingPipe/Coordinator.swift")
+        let start = try XCTUnwrap(source.range(of: "deletionBlock: {"), "the Coordinator wires the delete guard")
+        let closure = String(source[start.upperBound...].prefix(600))
+        XCTAssertTrue(closure.contains("recorder.stemOwnership.contains(stem)"), closure)
+        XCTAssertTrue(closure.contains("return .recording"), closure)
+        XCTAssertTrue(closure.contains(".isBusy"), "a running or queued job blocks too")
+    }
+
     // MARK: - Helpers
 
     private func waitUntil(_ condition: @MainActor () -> Bool) async -> Bool {

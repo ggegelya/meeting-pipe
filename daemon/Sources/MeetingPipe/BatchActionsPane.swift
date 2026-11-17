@@ -32,6 +32,9 @@ struct BatchActionsPane: View {
     /// merge: it overwrites `<stem>.summary.json`, which is where the owner's
     /// text edits and done ticks live, once per selected meeting.
     @State private var confirmingResummarize: Bool = false
+    /// STOR18: the meetings the last Move to Trash skipped because they were being recorded or
+    /// processed, by title, so the finished row can name them.
+    @State private var deleteSkipped: [String] = []
 
     var body: some View {
         ScrollView {
@@ -50,7 +53,7 @@ struct BatchActionsPane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(MPColors.bg))
         .alert(
-            "Move \(meetings.count) meetings to Trash?",
+            "Move \(deletableCount) meetings to Trash?",
             isPresented: $confirmingDelete,
             actions: {
                 Button("Move to Trash", role: .destructive) {
@@ -60,7 +63,8 @@ struct BatchActionsPane: View {
             },
             message: {
                 Text("Every sidecar (audio, transcript, summary) for these meetings goes to the system Trash. "
-                     + LibraryDialogs.trashRecoveryNote)
+                     + LibraryDialogs.trashRecoveryNote
+                     + SoftDeleteTally.skipNote(count: meetings.count - deletableCount))
             }
         )
         .alert(
@@ -392,6 +396,16 @@ struct BatchActionsPane: View {
                     if case .running(let label, let done, let total) = state,
                        label == "Moving to Trash" {
                         runningFooter(done: done, total: total, onStop: { cancelRequested = true })
+                    } else if case .finished(let label, let succeeded, let failed) = state,
+                              label == "Move to Trash", !deleteSkipped.isEmpty {
+                        // STOR18: the meetings left behind stay selected, so say why by name.
+                        finishedRow(succeeded: succeeded, failed: failed)
+                        Text(SoftDeleteTally.skippedLine(deleteSkipped))
+                            .font(.mpTextXS)
+                            .foregroundStyle(Color(MPColors.fgSubtle))
+                            .lineLimit(2)
+                            .truncationMode(.tail)
+                        Spacer()
                     } else {
                         Text("Recoverable from the system Trash.")
                             .font(.mpTextXS)
@@ -399,7 +413,7 @@ struct BatchActionsPane: View {
                         Spacer()
                         Button("Move to Trash") { confirmingDelete = true }
                             .buttonStyle(.mpDanger)
-                            .disabled(isRunning)
+                            .disabled(isRunning || deletableCount == 0)
                     }
                 }
             }
@@ -613,21 +627,31 @@ struct BatchActionsPane: View {
         }
     }
 
+    /// STOR18: what the confirm counts. Presentation only (the published live stem and lane
+    /// state); the service's ownership guard is what actually refuses.
+    private var deletableCount: Int {
+        meetings.filter { m in
+            SoftDeleteTally.presentationBlock(
+                isLiveRecording: libraryModel.liveRecordingStem == m.stem,
+                processing: libraryModel.processing(for: m.stem)
+            ) == nil
+        }.count
+    }
+
     @MainActor
     private func runSoftDelete() async {
-        let stems = meetings.map(\.stem)
-        var ok = 0, bad = 0
+        let captured = meetings
+        var tally = SoftDeleteTally()
         cancelRequested = false
-        state = .running(label: "Moving to Trash", done: 0, total: stems.count)
-        for (i, stem) in stems.enumerated() {
+        deleteSkipped = []
+        state = .running(label: "Moving to Trash", done: 0, total: captured.count)
+        for (i, m) in captured.enumerated() {
             if cancelRequested { break }
-            switch libraryModel.softDeleteMeeting(stem: stem) {
-            case .success: ok += 1
-            case .failure: bad += 1
-            }
-            state = .running(label: "Moving to Trash", done: i + 1, total: stems.count)
+            tally.record(libraryModel.softDeleteMeeting(stem: m.stem), title: m.displayTitle)
+            state = .running(label: "Moving to Trash", done: i + 1, total: captured.count)
         }
-        state = .finished(label: "Move to Trash", succeeded: ok, failed: bad)
+        deleteSkipped = tally.skipped
+        state = .finished(label: "Move to Trash", succeeded: tally.succeeded, failed: tally.failed)
     }
 
     private func runExport() async {
@@ -704,3 +728,58 @@ private struct MPSecondaryButtonStyle: ButtonStyle {
 // `Preferences/PreferencesControls.swift` as `MPDangerButtonStyle` / `.mpDanger` (UX30).
 // It was declared private here, so the workflow editor could not see it and concluded
 // the app had no destructive button at all.
+
+/// STOR18: the batch delete's arithmetic, pure so it can be tested without a view. A meeting the
+/// service refused because it is being recorded or processed is skipped, not failed: nothing went
+/// wrong, and the meeting can be trashed once it finishes.
+struct SoftDeleteTally: Equatable {
+    var succeeded = 0
+    var failed = 0
+    /// Titles of the meetings the guard refused, in selection order.
+    var skipped: [String] = []
+
+    mutating func record(_ result: Result<Void, Error>, title: String) {
+        switch result {
+        case .success:
+            succeeded += 1
+        case .failure(let error):
+            if case .meetingInUse? = error as? MeetingLibraryService.LibraryError {
+                skipped.append(title)
+            } else {
+                failed += 1
+            }
+        }
+    }
+
+    /// The disabled-control reason the row, the header and the confirm share. Nil when a delete
+    /// is allowed.
+    static func presentationBlock(
+        isLiveRecording: Bool, processing: ProcessingPresentation
+    ) -> MeetingLibraryService.DeletionBlock? {
+        if isLiveRecording { return .recording }
+        if processing.isBusy { return .processing }
+        return nil
+    }
+
+    /// The help tag on a disabled delete.
+    static func disabledHelp(_ block: MeetingLibraryService.DeletionBlock) -> String {
+        switch block {
+        case .recording: return "This meeting is being recorded. Move it to the Trash after the recording stops."
+        case .processing: return "This meeting is being processed. Move it to the Trash once that finishes."
+        }
+    }
+
+    /// The confirm's extra sentence when the selection holds meetings that will be skipped.
+    static func skipNote(count: Int) -> String {
+        switch count {
+        case ..<1: return ""
+        case 1: return " One meeting that is being recorded or processed will be skipped."
+        default: return " \(count) meetings that are being recorded or processed will be skipped."
+        }
+    }
+
+    /// The finished row's line naming what was skipped.
+    static func skippedLine(_ titles: [String]) -> String {
+        "Skipped, being recorded or processed: " + titles.joined(separator: ", ")
+    }
+}
