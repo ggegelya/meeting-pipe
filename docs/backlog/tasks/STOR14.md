@@ -2,9 +2,9 @@
 id: STOR14
 title: mp backup and mp restore print their failure reason to stdout, so the app's Back up now and in-app restore show a failure with no cause
 category: Storage
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). backup.main and restore.main print BackupError and RestoreError with a bare print to stdout and exit 1, while runMP keeps only the stderr tail, so an unplugged backup drive shows "Couldn't finish the file operation" with no cause and the restore pane "Could not read that backup: " with nothing after it; STOR3's shipped promise that a Back up now failure surfaces inline does not hold (F109). [FAIL] lines to sys.stderr in both mains, the CLI test that pins stdout flipped.
+comment: Shipped 2026-11-17 (pending the owner's unplugged-drive check): backup.main and restore.main print every [FAIL] line to stderr and FailurePresentation shows a storage [FAIL] sentence under the title, so Back up now and the in-app restore show the refusal's reason; the CLI test flipped to stderr, new tests for an unmounted destination, a real restore of an archive with no manifest, and a launcher spawn whose stderr [FAIL] reaches diagnostics(for:). Remainder: the owner's check in Acceptance, then the owner closes it.
 ---
 
 # STOR14: mp backup and mp restore print their failure reason to stdout, so the app's Back up now and in-app restore show a failure with no cause
@@ -47,3 +47,11 @@ Correction at filing: the audit offers `emit_failure(..., operation="storage")` 
 - A `PipelineLauncherTests` or `FailureProcessTests` case that spawns a child writing one `[FAIL] ...` line to stderr and exiting 1 yields `diagnostics(for:)` containing that line (skips without the pipeline venv where the existing process tests do).
 - `cd pipeline && uv run --extra dev ruff check src tests`, `uv run --extra dev --extra mcp pyright`, `uv run --extra dev pytest -q` and `cd daemon && swift test` green, the number of new tests per tree in the commit body; `bash scripts/ci-local.sh` green.
 - [owner] With the backup destination on an unplugged drive, Back up now shows the "is not mounted" sentence under the failure title (a simple owner-verify item).
+
+**Progress (2026-11-17): shipped, left `partial` for the owner's check.** The three `[FAIL]` prints (`backup.main`, and `restore.main`'s `--json` preview and real run) go to `sys.stderr`; success output, the `--json` plan included, stays on stdout (`test_cli_json_to_stdout_is_the_whole_of_stdout` still green). `test_cli_reports_a_bad_archive_without_a_traceback` now asserts `[FAIL]` on stderr and an empty stdout. New: `mp backup` to a destination under a monkeypatched `VOLUMES_ROOT` with no such volume returns 1 with "is not mounted" on stderr and nothing on stdout; a real `mp restore` (no `--dry-run`) of an archive with no manifest returns 1 with `[FAIL]` on stderr; `PipelineLauncherTests.test_a_fail_line_on_stderr_reaches_the_backup_failure_diagnostics` spawns a `/bin/sh` stand-in for `mp` through `backup(dir:libraryBytes:)` and finds the line in `diagnostics(for:)` (no pipeline venv needed, so no new skip). CONC7 has landed, so the drain no longer drops a last chunk written just before exit.
+
+Independent review (opus, fresh context) found that stderr alone did not meet the acceptance: both Storage consumers build `FailurePresentation(diagnostics:operation: .storage, ...)`, whose `.unknown` cause showed a stock "open Details" sentence, so the reason sat behind **Details…**. `FailurePresentation.storageRefusal` now makes a storage failure's last `[FAIL] <sentence>` line the explanation under the title (capped, refusing anything secret- or payload-shaped); a traceback still stays in Details. Pinned by three `FailurePresentationTests`.
+
+Decisions beyond the spec: that presentation change, and item 2's optional `emit_failure(..., operation="storage")` is not added: both consumers turn the error into a string with `diagnostics(for:)` and build their notice without metadata, so the cause class would be dropped before it reached the screen. For STOR10's pickup: a scheduled run's `[FAIL]` line now lands in `backup.err.log`, not `backup.out.log`.
+
+Owner check (from the spec): with the backup destination on an unplugged drive, Back up now shows the "is not mounted" sentence under the failure title.

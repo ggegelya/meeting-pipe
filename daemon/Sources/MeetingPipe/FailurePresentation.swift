@@ -138,6 +138,7 @@ struct FailurePresentation: Equatable {
         case .unknown:
             explanation = "Retry when you are ready, or open Details to inspect the failure."
             if Self.isValidation(diagnostics) { explanation = diagnostics }
+            else if let refusal = Self.storageRefusal(diagnostics, operation: facts.operation) { explanation = refusal }
         }
         var saved: [String] = []
         if savedRecording && savedTranscript { saved.append("Your recording and transcript are saved.") }
@@ -206,6 +207,21 @@ struct FailurePresentation: Equatable {
             cause = .connection; provider = "anthropic"
         } else if operation == .publish { cause = .publish }
         return FailureMetadata(cause: cause, operation: operation, provider: provider)
+    }
+
+    /// STOR14: `mp backup` and `mp restore` refuse with one `[FAIL] <sentence>` line on
+    /// stderr that names the fix ("... is not mounted. Plug the drive in, or pick another
+    /// destination."). For a storage operation that sentence is the explanation, not
+    /// something behind Details; a traceback or anything else stays there. The last such
+    /// line wins, capped, and anything that looks like a secret or a payload is refused.
+    static func storageRefusal(_ diagnostics: String, operation: FailureMetadata.Operation) -> String? {
+        guard operation == .storage else { return nil }
+        let marker = "[FAIL] "
+        guard let line = diagnostics.split(whereSeparator: \.isNewline).last(where: { $0.contains(marker) }),
+              let start = line.range(of: marker)?.upperBound else { return nil }
+        let sentence = line[start...].trimmingCharacters(in: .whitespaces)
+        guard !sentence.isEmpty, sentence.count <= 400, !sentence.contains("sk-"), !sentence.contains("{") else { return nil }
+        return sentence
     }
 
     private static func isValidation(_ text: String) -> Bool {

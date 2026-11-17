@@ -152,4 +152,28 @@ final class FailurePresentationTests: XCTestCase {
         XCTAssertEqual(recovered.status, .done)
         XCTAssertNil(recovered.failureReason)
     }
+
+    // MARK: - STOR14: a storage refusal's sentence is the explanation
+
+    func test_a_backup_refusal_line_is_shown_under_the_title_not_only_in_details() {
+        let line = "[FAIL] /Volumes/BackupDrive is not mounted, so /Volumes/BackupDrive/mp would be created on the startup disk instead of the drive. Plug the drive in, or pick another destination.\n"
+        let failure = FailurePresentation(diagnostics: line, operation: .storage, title: "Couldn't finish the file operation")
+        XCTAssertEqual(failure.title, "Couldn't finish the file operation")
+        XCTAssertTrue(failure.explanation.hasPrefix("/Volumes/BackupDrive is not mounted"), failure.explanation)
+        XCTAssertTrue(failure.explanation.hasSuffix("pick another destination."), failure.explanation)
+    }
+
+    func test_a_restore_failure_line_carries_the_refusal_after_its_own_prefix() {
+        let text = "Could not read that backup: [FAIL] /tmp/b.tar.gz has no manifest.json; it is not a meeting-pipe backup\n"
+        let failure = FailurePresentation(diagnostics: text, operation: .storage, title: "Couldn't restore the backup")
+        XCTAssertEqual(failure.explanation, "/tmp/b.tar.gz has no manifest.json; it is not a meeting-pipe backup")
+    }
+
+    func test_only_storage_failures_promote_a_fail_line_and_a_traceback_stays_in_details() {
+        let line = "[FAIL] something refused\n"
+        XCTAssertNil(FailurePresentation.storageRefusal(line, operation: .processing))
+        let traceback = "Traceback (most recent call last):\n  File \"x.py\"\nOSError: [Errno 28] No space left on device\n"
+        let failure = FailurePresentation(diagnostics: traceback, operation: .storage)
+        XCTAssertEqual(failure.explanation, "Retry when you are ready, or open Details to inspect the failure.")
+    }
 }

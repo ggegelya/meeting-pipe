@@ -1072,8 +1072,8 @@ final class PipelineLauncher: PipelineDriver {
     }
 
     /// STOR3: `mp backup <dir>`. Local-only (the pipeline arms `entry.prepare(secrets=False)`),
-    /// so no meeting anchor. `mp backup` prints only a final report and has no clean failure
-    /// exit code, so a failure surfaces here as `LaunchError.nonZeroExit(code, stderrTail)`.
+    /// so no meeting anchor. A refusal exits 1 with one `[FAIL]` line on stderr (STOR14),
+    /// so it surfaces here as `LaunchError.nonZeroExit(code, stderrTail)` carrying that line.
     /// The cap scales with `libraryBytes` (STOR12), the Storage pane's last scan.
     func backup(dir: URL, libraryBytes: Int, completion: @escaping (Result<Void, Error>) -> Void) {
         runMP(["backup", dir.path], timeout: Self.storageJobTimeout(bytes: libraryBytes),

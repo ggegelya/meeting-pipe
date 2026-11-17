@@ -1177,4 +1177,27 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertEqual(beats.compactMap(\.stemsDone), Array(0..<planned))
         XCTAssertTrue(FileManager.default.fileExists(atPath: rig.published.path), "the publish followed")
     }
+
+    // MARK: - STOR14: a refusal's reason, printed to stderr, reaches the failure text
+
+    /// `mp backup` and `mp restore` printed their `[FAIL]` line to stdout, and `runMP`
+    /// keeps only the stderr tail, so Back up now showed "Couldn't finish the file
+    /// operation" with no cause. A child that writes the line to stderr and exits 1
+    /// must come back with that line in `diagnostics(for:)`.
+    func test_a_fail_line_on_stderr_reaches_the_backup_failure_diagnostics() {
+        let done = expectation(description: "backup completed")
+        let line = "[FAIL] /Volumes/BackupDrive is not mounted. Plug the drive in, or pick another destination."
+        let launcher = PipelineLauncher(
+            invocation: { .init(shell: "/bin/sh", args: ["-c", "printf '%s\\n' '\(line)' >&2; exit 1"]) },
+            environment: ["PATH": "/usr/bin:/bin"],
+            reapOrphanedServer: {}
+        )
+        var diagnostics = ""
+        launcher.backup(dir: URL(fileURLWithPath: "/Volumes/BackupDrive"), libraryBytes: 0) { result in
+            if case .failure(let error) = result { diagnostics = PipelineLauncher.diagnostics(for: error) }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 15)
+        XCTAssertTrue(diagnostics.contains(line), diagnostics)
+    }
 }

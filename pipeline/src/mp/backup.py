@@ -51,6 +51,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -624,7 +625,8 @@ def main(argv: list[str]) -> int:
     try:
         result = run_backup(cfg, args.directory, include_audio=include_audio)
     except BackupError as exc:
-        print(f"[FAIL] {exc}")
+        # STOR14: stderr, the only stream `runMP` keeps for the failure text.
+        print(f"[FAIL] {exc}", file=sys.stderr)
         return 1
 
     # STOR12: printed from the manifest this run built. Reading it back out of

@@ -631,7 +631,10 @@ def test_cli_reports_a_bad_archive_without_a_traceback(
         [str(tmp_path / "nope.tar.gz"), "--dry-run", "--json"], _make_home(tmp_path), monkeypatch
     )
     assert rc == 1
-    assert "[FAIL]" in capsys.readouterr().out
+    # STOR14: the daemon reads only stderr, so the reason has to be there.
+    captured = capsys.readouterr()
+    assert "[FAIL]" in captured.err
+    assert captured.out == ""
 
 
 def test_read_manifest_round_trips_the_creation_time(tmp_path: Path) -> None:
@@ -1114,3 +1117,40 @@ def test_the_cli_warns_about_an_unencrypted_or_unknown_destination_and_an_open_f
     monkeypatch.setattr(backup_mod, "destination_encrypted", lambda _d: True)
     assert _backup_main([str(tmp_path / "vault")], home, monkeypatch) == 0
     assert "[WARN]" not in capsys.readouterr().out
+
+
+# ---------- STOR14: a refusal's reason reaches the app ----------------------
+
+
+def test_backup_to_an_unplugged_drive_says_why_on_stderr_and_nothing_on_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    volumes = tmp_path / "Volumes"
+    volumes.mkdir()
+    monkeypatch.setattr(backup_mod, "VOLUMES_ROOT", volumes)
+    home = _make_home(tmp_path)
+    _populate(home)
+
+    rc = _backup_main([str(volumes / "BackupDrive" / "meeting-pipe")], home, monkeypatch)
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "[FAIL]" in captured.err and "is not mounted" in captured.err
+    assert captured.out == ""
+
+
+def test_a_real_restore_of_an_archive_with_no_manifest_says_why_on_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bogus = tmp_path / "bogus.tar.gz"
+    with tarfile.open(bogus, "w:gz") as tar:
+        payload = tmp_path / "x.txt"
+        payload.write_text("hi")
+        tar.add(payload, arcname="library/x.txt")
+
+    rc = _restore_main([str(bogus)], _make_home(tmp_path), monkeypatch)
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "[FAIL]" in captured.err
+    assert "[FAIL]" not in captured.out

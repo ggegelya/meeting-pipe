@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import tarfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -348,7 +349,8 @@ def main(argv: list[str]) -> int:
         try:
             plan = plan_restore(args.archive, cfg)
         except RestoreError as exc:
-            print(f"[FAIL] {exc}")
+            # STOR14: stderr, the only stream `runMP` keeps for the failure text.
+            print(f"[FAIL] {exc}", file=sys.stderr)
             return 1
         return _report_plan(plan, args.out)
 
@@ -358,7 +360,8 @@ def main(argv: list[str]) -> int:
             args.archive, cfg, force=args.force, dry_run=args.dry_run, manifest=manifest
         )
     except RestoreError as exc:
-        print(f"[FAIL] {exc}")
+        # STOR14: stderr, the only stream `runMP` keeps for the failure text.
+        print(f"[FAIL] {exc}", file=sys.stderr)
         return 1
 
     verb = "would restore" if args.dry_run else "restored"
