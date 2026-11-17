@@ -906,6 +906,11 @@ def test_a_failing_server_lands_its_stderr_in_the_log(
     """`stdout=DEVNULL` discarded exactly the message an OOM postmortem needs,
     and left the failure reading as a generic "exited during startup" guess."""
     monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(tmp_path))
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(  # mlx-lm is darwin-only; CI's Linux runner has no copy
+        importlib.util, "find_spec",
+        lambda name, *a, **k: object() if name == "mlx_lm" else real_find_spec(name, *a, **k),
+    )
     monkeypatch.setattr(
         "mp.local_snapshot.resolve_for_serving",
         lambda repo_id, home=None: Path(f"/snap/models--x/snapshots/{'a' * 40}"),

@@ -38,7 +38,9 @@ final class DebouncedSaverTests: XCTestCase {
 
     func test_a_burst_of_schedules_makes_one_save() {
         let c = Counter()
-        let saver = makeSaver(c)
+        // The interval must outlast the gap between two schedules even on a loaded
+        // CI runner, where a 20 ms run-loop turn has taken over 100 ms and split the burst.
+        let saver = makeSaver(c, interval: 1.0)
         for _ in 0..<5 {
             saver.schedule()
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.02))

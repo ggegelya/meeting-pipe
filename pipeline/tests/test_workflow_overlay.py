@@ -19,6 +19,10 @@ from mp.config import Config, zero_egress
 from mp.publish_router import build_publishers
 from mp.workflow import MetaRead, apply_overrides, load_meta, read_meta
 
+# The reader names an errno through `errno.errorcode`, which is platform-defined:
+# macOS calls 11 EDEADLK, while Linux aliases EDEADLK and EDEADLOCK and reports the latter.
+_EDEADLK_NAME = errno.errorcode[errno.EDEADLK]
+
 
 def _write_meta(dir: Path, stem: str, data: dict) -> None:
     (dir / f"{stem}.meta.json").write_text(json.dumps(data), encoding="utf-8")
@@ -214,7 +218,7 @@ def test_an_unreadable_sidecar_emits_one_event_per_run(
     apply_overrides(Config(), tmp_path / f"{stem}.md")
 
     rows = [(c, attrs) for c, a, attrs in emitted if a == "sidecar_unreadable"]
-    assert rows == [("pipeline", {"stem": stem, "kind": "io", "errno": "EDEADLK"})]
+    assert rows == [("pipeline", {"stem": stem, "kind": "io", "errno": _EDEADLK_NAME})]
 
 
 def test_a_parse_failure_event_names_the_kind_and_no_errno(
@@ -258,7 +262,7 @@ def test_the_io_log_line_says_could_not_be_read_not_malformed(
         apply_overrides(Config(), wav)
     text = caplog.text
     assert "could not be read" in text
-    assert "EDEADLK" in text
+    assert _EDEADLK_NAME in text
     assert "running this meeting on-device" in text
     assert "malformed" not in text
 
@@ -290,7 +294,7 @@ def test_read_meta_still_reads_an_unreadable_sidecar_as_empty(
     assert read_meta(tmp_path / f"{stem}.wav") == {}
     unreadable = load_meta(tmp_path / f"{stem}.wav")
     assert isinstance(unreadable, MetaRead)
-    assert (unreadable.state, unreadable.kind, unreadable.errno) == ("unreadable", "io", "EDEADLK")
+    assert (unreadable.state, unreadable.kind, unreadable.errno) == ("unreadable", "io", _EDEADLK_NAME)
 
 
 def test_unknown_backend_value_is_ignored(tmp_path: Path) -> None:
