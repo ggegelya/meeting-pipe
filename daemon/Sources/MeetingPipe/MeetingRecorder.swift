@@ -157,10 +157,14 @@ final class MeetingRecorder {
     /// short-circuits the math when nobody listens.
     /// CONC6: swapped on main (`armSystemLevelMirror` / `disarm`) while the mic tap reads it once per
     /// emit on its own thread, so it sits behind a lock. Closures are not `Sendable`, hence `unchecked`.
-    private let micLevelCallback = OSAllocatedUnfairLock<((Float) -> Void)?>(uncheckedState: nil)
+    /// CONC13: the lock holds a `LevelSink`, never the bare function type; see `LevelSink` for why.
+    private let micLevelCallback = OSAllocatedUnfairLock<LevelSink?>(uncheckedState: nil)
     var onMicLevel: ((Float) -> Void)? {
-        get { micLevelCallback.withLockUnchecked { $0 } }
-        set { micLevelCallback.withLockUnchecked { $0 = newValue } }
+        get { micLevelCallback.withLockUnchecked { $0 }?.call }
+        set {
+            let sink = newValue.map(LevelSink.init)
+            micLevelCallback.withLockUnchecked { $0 = sink }
+        }
     }
     var onSystemLevel: ((Float) -> Void)? {
         get { systemChannel.onSystemLevel }

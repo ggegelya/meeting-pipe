@@ -1080,6 +1080,16 @@ The ceilings are measured, not guessed. One `-compression_level 8` FLAC encode o
 **`Task.detached` is not off-pool**, and neither is a plain `async` function: only a GCD queue, a dedicated thread or an actor is.
 
 
+## A locked bare closure grows per read
+
+CONC13. CONC6 put `onMicLevel` and `onSystemLevel` in `OSAllocatedUnfairLock<((Float) -> Void)?>` with a `withLockUnchecked { $0 }` getter. That shape leaks and eventually crashes. A function type stored as a generic `State` lives at maximal abstraction; the body receives the state `inout` at the substituted type, so the access reabstracts the closure on the way in and **writes the reabstracted value back** on the way out. Every read leaves the stored closure wrapped in two more thunks, permanently, until the next assignment. The capture threads read the callback once per buffer, so by 35 minutes into a Teams call (2026-11-17, `MeetingPipe-2026-11-17-170438.ips`) the ~1 Hz level call recursed through tens of thousands of thunks and overflowed main's stack. Short recordings survived because `disarmSystemLevelMirror` sets both to `nil` at stop, which resets the chain.
+
+**Lock a struct, not the function type.** `LevelSink { let call: (Float) -> Void }` keeps the closure at its natural abstraction as a stored property of a non-generic struct, so the inout access writes nothing new back. Measured in a standalone repro: call depth 6, 8, 26, 206 after 0, 1, 10, 100 reads of the bare shape (`-O` and `-Onone` alike), and a flat 3 to 5 after 100,000 reads of the wrapped one. `CaptureThreadHygieneTests` pins it: 10,000 reads must not change the callback's `Thread.callStackSymbols.count` (before the fix, +20,002).
+
+**Why the CONC6 race test missed it.** It reassigns both callbacks 5,000 times while a reader loops, so the chain is reset continuously and never grows. A race test checks the lock; it says nothing about what a long run of reads does to the value inside it.
+
+**What is not affected.** A closure kept in an ordinary stored property behind `NSLock` (`withLock { _onChange }`) only reabstracts the returned copy. `CallTeardownWatcher.cancelBox` and `UILatency`'s `cancelKey` are closure-typed `OSAllocatedUnfairLock`s, but each is read at most a handful of times per arm and reassigned or dropped after, so nothing accumulates; a new closure-typed lock that is read in a loop gets the struct.
+
 ## A click is only measurable if it was stamped at the entry point (OBS7)
 
 Until OBS7 nothing logged a click, so the 2026-11-13 responsiveness audit started every Record figure at the recorder's `start:` line, after an unlogged synchronous prefix, and could time no Library or Preferences action at all. `UILatency` stamps `ui_action` as the first line of each entry point and `ui_feedback` on the **next main turn** after the first visible state was set; a synchronous tail after the setter (P005/P047's HAL teardown after `hud.dismiss()`) is therefore inside `ms`, which a stamp at the setter would hide.

@@ -2,9 +2,9 @@
 id: CONC13
 title: Every read of the lock-guarded level callbacks wraps the stored closure in two more thunks, so a recording past about 30 minutes overflows the main thread's stack and crashes the daemon
 category: Concurrency
-status: new
+status: partial
 priority: P1
-comment: Filed 2026-11-17 (crash MeetingPipe-2026-11-17-170438.ips): CONC6 item 6 put onMicLevel and onSystemLevel in OSAllocatedUnfairLock<((Float) -> Void)?>, whose withLockUnchecked { $0 } getter writes a reabstracted closure back on every per-buffer read, so the 1 Hz level call recursed through tens of thousands of thunks and overflowed main 35 min into a Teams recording. Broken promise: a long meeting records to completion. Scope: lock a struct wrapper instead, plus a no-growth regression test. Blocks closing [CONC6](./CONC6.md). Owner may re-band.
+comment: Shipped 2026-11-17: both level-callback locks hold a LevelSink struct, 2 no-growth tests (red at +20,002 frames before the fix, green after, TSan clean), ci-local green. Owed: the owner's 45-minute recording walkthrough on an installed build (no new .ips, normal recording_stopped).
 ---
 
 # CONC13: Every read of the lock-guarded level callbacks wraps the stored closure in two more thunks, so a recording past about 30 minutes overflows the main thread's stack and crashes the daemon
@@ -50,3 +50,5 @@ Band origin: filed 2026-11-17 (crash triage of `MeetingPipe-2026-11-17-170438.ip
 - `cd daemon && swift build` and `swift test` green, with the new tests counted in the commit body (2 expected, one per property).
 - `bash scripts/ci-local.sh` green.
 - Owner walkthrough after install (confirms, does not gate building): record or leave running a meeting longer than 45 minutes on a build containing the fix, and confirm no new `MeetingPipe-*.ips` in `~/Library/Logs/DiagnosticReports/` and a normal `recording_stopped` for that stem in `events.jsonl`.
+
+**Progress (2026-11-17):** `LevelSink` (in `SystemAudioChannel.swift`) is what `micLevelCallback` and `systemLevelCallback` now lock; the getters return `?.call`, the setters wrap before taking the lock. `CaptureThreadHygieneTests` gained `test_reading_onMicLevel_many_times_does_not_deepen_its_call` and `test_reading_onSystemLevel_many_times_does_not_deepen_its_call`; against the pre-fix sources both failed with depth 20079 against a baseline of 77. The other closure-typed `OSAllocatedUnfairLock`s were re-checked: `CallTeardownWatcher.cancelBox` (named above) and `UILatency.windowOpened`'s `cancelKey`, which the 2026-11-17 grep missed because its state is `(@Sendable () -> Void)?`; it is local to one window open and read once, so it cannot accumulate and was left alone. The story is in `daemon/docs/gotchas.md#a-locked-bare-closure-grows-per-read`.

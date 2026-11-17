@@ -32,6 +32,40 @@ final class CaptureThreadHygieneTests: XCTestCase {
         XCTAssertGreaterThan(reads.value, 0)
     }
 
+    /// CONC13: reading the getter must not grow the stored closure. Before the fix every read wrapped
+    /// it in two more reabstraction thunks, so the call's stack depth rose two frames per read and a
+    /// 35-minute recording overflowed main. 10,000 reads would add ~20,000 frames.
+    func test_reading_onMicLevel_many_times_does_not_deepen_its_call() {
+        let recorder = MeetingRecorder()
+        let depth = CallDepthBox()
+        recorder.onMicLevel = { _ in depth.value = Thread.callStackSymbols.count }
+        let (before, after) = Self.depthBeforeAndAfterReads(depth) { recorder.onMicLevel }
+        XCTAssertEqual(after, before, "onMicLevel's call grew by \(after - before) frames over 10,000 reads")
+    }
+
+    func test_reading_onSystemLevel_many_times_does_not_deepen_its_call() {
+        let recorder = MeetingRecorder()
+        let depth = CallDepthBox()
+        recorder.onSystemLevel = { _ in depth.value = Thread.callStackSymbols.count }
+        let (before, after) = Self.depthBeforeAndAfterReads(depth) { recorder.onSystemLevel }
+        XCTAssertEqual(after, before, "onSystemLevel's call grew by \(after - before) frames over 10,000 reads")
+    }
+
+    /// Invoke the callback once for a baseline, read the getter 10,000 times without reassigning
+    /// (what the capture threads do per buffer), invoke it again from the same call site.
+    private static func depthBeforeAndAfterReads(
+        _ depth: CallDepthBox, read: () -> ((Float) -> Void)?
+    ) -> (Int, Int) {
+        func invoke() -> Int {
+            read()?(-30)
+            return depth.value
+        }
+        let before = invoke()
+        for _ in 0..<10_000 { _ = read() }
+        let after = invoke()
+        return (before, after)
+    }
+
     func test_an_async_log_line_reaches_the_file_with_its_text_unchanged() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("conc6-log-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -69,4 +103,9 @@ final class ThreadSafeCounter: @unchecked Sendable {
     private var _value = 0
     func increment() { lock.lock(); _value += 1; lock.unlock() }
     var value: Int { lock.lock(); defer { lock.unlock() }; return _value }
+}
+
+/// CONC13: the stack depth the level callback saw on its last call. Single-threaded use only.
+final class CallDepthBox {
+    var value = 0
 }

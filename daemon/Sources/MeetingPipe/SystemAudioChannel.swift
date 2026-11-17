@@ -5,6 +5,19 @@ import Foundation
 import MeetingPipeCore
 import os
 
+/// CONC13: what the two level-callback locks hold (`MeetingRecorder.onMicLevel`,
+/// `SystemAudioChannel.onSystemLevel`). Do not "simplify" it back to
+/// `OSAllocatedUnfairLock<((Float) -> Void)?>`: a function type stored as a generic `State` sits at
+/// maximal abstraction, and `withLockUnchecked { $0 }` hands it to the body `inout`, so every read
+/// reabstracts the closure and writes it back wrapped in two more thunks. The capture threads read
+/// once per buffer, so 35 minutes in the ~1 Hz call recursed through tens of thousands of thunks and
+/// overflowed main's stack (crash 2026-11-17). A function-typed stored property of a non-generic
+/// struct keeps its natural abstraction, so nothing is written back. Pinned by
+/// `CaptureThreadHygieneTests`' no-growth tests.
+struct LevelSink {
+    let call: (Float) -> Void
+}
+
 /// The system-audio half of a recording (ARCH8, out of `MeetingRecorder`): the SCStream start and
 /// its REC17 bound, the retry that resumes the open WAV behind a silence pad (REC10), REC8's one
 /// automatic retry, the REC4 liveness watchdog, and the system WAV with its serial writer and
@@ -37,11 +50,15 @@ final class SystemAudioChannel {
     /// The ~1 Hz system RMS average on the main queue, feeding the idle backstop's
     /// `hasSystemAudio` mirror (TECH-END3). `nil` short-circuits the math when nobody listens.
     /// CONC6: swapped on main while the SCStream delegate queue reads it once per emit, so it sits
-    /// behind a lock. Closures are not `Sendable`, hence `unchecked`.
-    private let systemLevelCallback = OSAllocatedUnfairLock<((Float) -> Void)?>(uncheckedState: nil)
+    /// behind a lock. Closures are not `Sendable`, hence `unchecked`. CONC13: the lock holds a
+    /// `LevelSink`, never the bare function type; see `LevelSink` for why that is load-bearing.
+    private let systemLevelCallback = OSAllocatedUnfairLock<LevelSink?>(uncheckedState: nil)
     var onSystemLevel: ((Float) -> Void)? {
-        get { systemLevelCallback.withLockUnchecked { $0 } }
-        set { systemLevelCallback.withLockUnchecked { $0 = newValue } }
+        get { systemLevelCallback.withLockUnchecked { $0 }?.call }
+        set {
+            let sink = newValue.map(LevelSink.init)
+            systemLevelCallback.withLockUnchecked { $0 = sink }
+        }
     }
 
     /// Fired on main when system-audio (SCStream) capture fails to start, so
