@@ -61,6 +61,14 @@ def clean_person(value: str | None) -> str | None:
         return None
     if "@" in v or _CONTROL.search(v) or _URLISH.search(v):
         return None
+    # SEC41: the literal-scheme test above loses to an entity-encoded scheme
+    # (`![a](&#104;ttps://x/p.png)`: CommonMark decodes entities inside a link
+    # destination). A name is a name, so anything `clean_text` would have to
+    # change (a link, an image, a tag) is injected and the value is dropped
+    # rather than forwarded in a defused form. Plain parentheses and brackets
+    # ("Sam (PM)") pass unchanged.
+    if clean_text(v) != _WS_RUN.sub(" ", v):
+        return None
     return v
 
 
@@ -125,3 +133,17 @@ def clean_language(value: object, default: str = "en") -> str:
     primary, sep, rest = value.strip().partition("-")
     candidate = primary.lower() + sep + rest
     return candidate if _LANGUAGE_CODE.match(candidate) else default
+
+
+_MAX_DUE_CHARS = 80
+
+
+def clean_due(value: str | None) -> str | None:
+    """A model-written due date, made inert (SEC41). The tool schema asks for an
+    ISO date but the model may write "end of week", so this keeps free text, runs
+    it through `clean_text`, and drops an empty or paragraph-length result: `due`
+    is written into the action line of every Markdown sink, under NDA too."""
+    if not value:
+        return None
+    cleaned = clean_text(value)
+    return cleaned if cleaned and len(cleaned) <= _MAX_DUE_CHARS else None

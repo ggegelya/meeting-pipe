@@ -2,9 +2,9 @@
 id: SEC41
 title: Action-item due dates, owners and attendees still reach the Markdown sinks unscrubbed, so the beacon SEC28 closed still works through them
 category: Security
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-17 (post-audit fix review). SEC28 (done) scrubs title, summary, decisions, questions, task and extra sections, but `ActionItem.due` has no validator and `owner` and `attendees` pass only `clean_person`, whose URL test is a literal `https?://|www\.` that an entity-encoded scheme beats; all three are written into `summary.md`, the filesystem and LAN copies and the Obsidian note, also under NDA. Scope: give the three fields the same structural scrub and a test.
+comment: Shipped 2026-11-17: `ActionItem.due` (`clean_due`), `group` (`clean_text`) and `clean_person` (drops any value `clean_text` would change, entity-encoded schemes included) with 15 new red-before tests in test_sec28_sanitize.py. Nothing is owed by the owner; close when satisfied.
 ---
 
 # SEC41: Action-item due dates, owners and attendees still reach the Markdown sinks unscrubbed, so the beacon SEC28 closed still works through them
@@ -41,3 +41,5 @@ Scenario: a participant dictates a due date that is a Markdown image pointing at
 - `test_sec28_sanitize.py`: an image link, an entity-encoded image link and an HTML image tag in each of `due`, `owner`, `attendees` and `group` produce no live image, link or tag in `render_summary_md`, the Obsidian note and the digest. At least 6 new tests, each failing on the code before the change.
 - `cd pipeline && uv run --extra dev pytest -q` green; ruff and pyright clean.
 - SEC28's file gets a one-line note pointing here.
+
+**Progress (2026-11-17):** all three scope items shipped. `due` takes `clean_text` and is dropped when empty or over 80 characters (a date-only shape would have lost "end of week", which `mp actions` already tolerates by ordering undated and unparseable values last). `clean_person` rejects rather than defuses: a name with a link, image or tag is injected by definition, and plain brackets and parentheses in a real name still pass. `group` is scrubbed in `ActionItem`'s validator, so the digest, the renderer and any reader inherit it. The 15 new cases fail on the previous code and pass now. No owner action is owed; the owner can close this and decide whether SEC28 returns to partial.

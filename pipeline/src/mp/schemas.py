@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
-from .prompt_safety import clean_language, clean_person, clean_text
+from .prompt_safety import clean_due, clean_language, clean_person, clean_text
 
 # Named so consumers that coerce a free-form string onto this field (digest's
 # `_clamp_confidence`) can say so in their signature rather than returning `str`.
@@ -121,6 +121,18 @@ class ActionItem(BaseModel):
         # Notion to-dos / Obsidian / the correction corpus. Drop it if it carries
         # an email, URL, @-mention, or control char rather than forward it. (TECH-SEC6)
         return clean_person(v)
+
+    @field_validator("due", mode="after")
+    @classmethod
+    def _scrub_due(cls, v: str | None) -> str | None:
+        # SEC41: SEC28's field list missed `due`, which every sink prints.
+        return clean_due(v)
+
+    @field_validator("group", mode="after")
+    @classmethod
+    def _scrub_group(cls, v: str | None) -> str | None:
+        # SEC41: the digest's heading key is a workflow name or a meeting title.
+        return clean_text(v) or None if v is not None else None
 
     @field_validator("evidence", mode="after")
     @classmethod

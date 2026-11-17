@@ -173,3 +173,80 @@ def test_every_attendee_is_one_quoted_element(tmp_path: Path) -> None:
         transcript_md=transcript, sidecar_path=tmp_path / "s.json",
     )
     assert 'attendees: ["Bob, Eve", "Alice"]' in Path(res["page_id"]).read_text(encoding="utf-8")
+
+
+# ----- SEC41: action due / owner / attendees / group -----
+
+ENTITY_IMG = "![x](&#104;ttps://attacker.example/t.png)"
+HEX_ENTITY_IMG = "![x](&#x68;ttps://attacker.example/t.png)"
+NAMED_ENTITY_IMG = "![x](&Tab;javascript:alert(1))"
+# an image link, an entity-encoded one and an HTML tag, the three shapes the acceptance names
+SEC41_PAYLOADS = [IMG, ENTITY_IMG, HEX_ENTITY_IMG, NAMED_ENTITY_IMG, "<img src=https://attacker.example/p.png>"]
+
+
+def _live_markup(text: str) -> bool:
+    """True when `text` would render a live image, link or tag (entity-decoded
+    schemes included: CommonMark decodes entities in a link destination)."""
+    return bool(re.search(r"!?\[[^\]]*\]\(", text) or re.search(r"<\s*[/!A-Za-z]", text))
+
+
+@pytest.mark.parametrize("payload", SEC41_PAYLOADS)
+def test_due_cannot_carry_markup_into_any_sink_SEC41(payload: str, tmp_path: Path) -> None:
+    s = MeetingSummary.model_validate(
+        {"title": "t", "summary": ["a"], "actions": [{"task": "Do it", "owner": "Alice", "due": payload}]}
+    )
+    action_line = next(line for line in render_summary_md(s).splitlines() if line.startswith("- [ ]"))
+    assert not _live_markup(action_line), action_line
+    pub = ObsidianPublisher(vault_path=tmp_path / "vault", attach_audio=False)
+    transcript = tmp_path / "20260506-1500.md"
+    transcript.write_text("# T\n", encoding="utf-8")
+    res = pub.upsert(summary=s, transcript_md=transcript, sidecar_path=tmp_path / "s.json")
+    note = Path(res["page_id"]).read_text(encoding="utf-8")
+    assert not any(_live_markup(line) for line in note.splitlines() if "Do it" in line), note
+
+
+def test_a_plain_or_dateish_due_survives_SEC41() -> None:
+    def due(v: str | None) -> str | None:
+        return MeetingSummary.model_validate(
+            {"title": "t", "summary": ["a"], "actions": [{"task": "x", "due": v}]}
+        ).actions[0].due
+    assert due("2026-11-20") == "2026-11-20"
+    assert due("end of week") == "end of week"
+    assert due(None) is None and due("") is None and due("<b></b>") is None
+    assert due("x" * 200) is None                                    # a smuggled paragraph is dropped
+
+
+@pytest.mark.parametrize("payload", SEC41_PAYLOADS + ["[a](javascript:x)"])
+def test_owner_and_attendees_drop_a_link_or_image_however_the_scheme_is_spelled_SEC41(payload: str) -> None:
+    s = MeetingSummary.model_validate({
+        "title": "t", "summary": ["a"], "attendees": [payload, "Alice"],
+        "actions": [{"task": "Do it", "owner": payload}],
+    })
+    assert s.actions[0].owner is None
+    assert s.attendees == ["Alice"]
+    rendered = render_summary_md(s)
+    assert not _live_markup(rendered), rendered
+
+
+@pytest.mark.parametrize("name", ["Alice", "Sam (PM)", "Dr. O'Neil", "Ana-Maria [QA]", "Іван Петренко"])
+def test_a_real_name_passes_the_person_scrub_SEC41(name: str) -> None:
+    from mp.prompt_safety import clean_person
+    assert clean_person(name) == name
+
+
+@pytest.mark.parametrize("payload", SEC41_PAYLOADS)
+def test_the_digest_group_heading_is_inert_SEC41(payload: str) -> None:
+    from datetime import date
+
+    from mp import actions as actions_mod
+    from mp import digest
+
+    open_a = actions_mod.OpenAction(
+        stem="20260510-1000", title=f"Sync {payload}", task="Do it", owner=payload, due=payload,
+        confidence="high", workflow=payload,
+    )
+    scope = digest.scope_actions([open_a], date(2026, 5, 17), 14)
+    summary = digest.build_digest_summary(scope, [], ["ok"], today=date(2026, 5, 17), since_days=14)
+    assert not _live_markup(render_summary_md(summary))
+    assert not _live_markup(summary.actions[0].group or "")
+    assert summary.actions[0].owner is None
