@@ -42,7 +42,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     line="${line%%#*}"
     [ -z "${line//[[:space:]]/}" ] && continue
     read -r id pkg date reason <<<"$line"
-    if [ -z "${reason:-}" ] || ! [[ "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    if [ -z "${pkg:-}" ] || [ -z "${reason:-}" ] || ! [[ "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
         echo "::error::CI12: $allowlist:$lineno needs '<advisory id> <package> <YYYY-MM-DD> <reason>'; an exemption with no reason is refused."
         exit 1
     fi
