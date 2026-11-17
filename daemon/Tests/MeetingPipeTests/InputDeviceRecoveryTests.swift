@@ -318,6 +318,110 @@ final class InputDeviceRecoveryTests: XCTestCase {
         XCTAssertEqual(host.haltCalls, haltsBefore + 2)
     }
 
+    // MARK: - REC16: the gap pad starts at the last buffer (F029)
+
+    /// The last buffer landed 1.7 s before the recovery, so the pad covers 1.7 s on every path,
+    /// not the few milliseconds between noticing and resuming. The upper bound is loose on purpose:
+    /// it only has to tell 1.7 s from the 6 to 16 ms the field saw, never time the runner.
+    private func assertPadsAboutAGapOf(_ seconds: Double, _ label: String, file: StaticString = #filePath, line: UInt = #line) {
+        let padded = Double(host.padFrames.last ?? 0) / host.fileFormat.sampleRate
+        XCTAssertGreaterThanOrEqual(padded, seconds - 0.01, label, file: file, line: line)
+        XCTAssertLessThan(padded, seconds + 1.0, label, file: file, line: line)
+    }
+
+    func test_aConfigurationChangePadsFromTheLastMicBuffer() async {
+        host.lastMicBufferAt = Date().addingTimeInterval(-1.7)
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+        assertPadsAboutAGapOf(1.7, "configuration change")
+    }
+
+    func test_aWatchdogStallPadsFromTheLastMicBuffer() async {
+        host.engineIsRunning = false
+        host.lastMicBufferAt = Date().addingTimeInterval(-1.7)
+        recovery.checkTapLiveness()
+        await recovery.recoveryTask?.value
+        assertPadsAboutAGapOf(1.7, "watchdog stall")
+    }
+
+    func test_aWakePadsFromTheLastMicBuffer() async {
+        host.engineIsRunning = false
+        host.lastMicBufferAt = Date().addingTimeInterval(-1.7)
+        recovery.recheckAfterWake()
+        await recovery.recoveryTask?.value
+        assertPadsAboutAGapOf(1.7, "wake")
+    }
+
+    func test_withNoBufferYetThePadStartsAtTheRecovery() async {
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+        XCTAssertEqual(host.padFrames.count, 1)
+        XCTAssertLessThan(Double(host.padFrames[0]) / host.fileFormat.sampleRate, 1.0)
+    }
+
+    /// The field's episodes ran up to three recoveries inside 1.5 s. The second, before the tap
+    /// delivers again, must not pad the span the first already covered.
+    func test_aSecondRecoveryBeforeAnyNewBufferDoesNotPadTheSameSpanTwice() async {
+        host.lastMicBufferAt = Date().addingTimeInterval(-1.7)
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+        XCTAssertEqual(host.padFrames.count, 2)
+        XCTAssertLessThan(Double(host.padFrames[1]) / host.fileFormat.sampleRate, 1.0, "only the time since the first resume")
+    }
+
+    /// REC16 review: a retry queued by a change that found no usable format is cancelled once
+    /// another path (here the watchdog) recovers, so it cannot halt the running engine again.
+    func test_aSuccessfulRecoveryCancelsAQueuedRetry() async {
+        host.liveFormat = nil
+        host.lastMicBufferAt = Date().addingTimeInterval(-1.7)
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+        XCTAssertNotNil(recovery.pendingRecoveryRetry)
+
+        host.liveFormat = host.fileFormat
+        host.engineIsRunning = false
+        recovery.checkTapLiveness()
+        await recovery.recoveryTask?.value
+
+        XCTAssertNil(recovery.pendingRecoveryRetry)
+        XCTAssertEqual(host.padFrames.count, 1)
+    }
+
+    /// REC16 review: a retry that does run, carrying its episode's old `gapStart`, pads only what
+    /// the recovery since has not.
+    func test_aRetryCarryingAnOldGapStartDoesNotRepadAPaddedSpan() async {
+        host.lastMicBufferAt = Date().addingTimeInterval(-1.7)
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+        XCTAssertEqual(host.padFrames.count, 1)
+
+        recovery.scheduleRecoveryRetry(after: 60, gapStart: Date().addingTimeInterval(-1.7))
+        recovery.pendingRecoveryRetry?.perform()
+        await recovery.recoveryTask?.value
+
+        XCTAssertEqual(host.padFrames.count, 2)
+        XCTAssertLessThan(Double(host.padFrames[1]) / host.fileFormat.sampleRate, 1.0, "only the time since the first resume")
+    }
+
+    /// F028 through the recovery path: an hour-long gap is clamped before it reaches the host.
+    func test_anHourGapReachesTheHostClamped() async {
+        host.lastMicBufferAt = Date().addingTimeInterval(-3_600)
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+        XCTAssertEqual(host.padFrames, [AVAudioFrameCount(SystemCaptureRetryPlanner.maxPadSeconds * 48_000)])
+    }
+
+    /// F156: a channel-count change alone takes the collapse path, no converter.
+    func test_aStereoInputAtTheFileRateNeedsNoConverter() async {
+        host.liveFormat = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+        XCTAssertEqual(host.converters, [false])
+        XCTAssertEqual(host.outcomes, [.resumed])
+    }
+
     /// REC25: the writer backlog check rides the tap tick ahead of the abandonment guard. An
     /// abandoned mic still has a writer that a hung volume can stall, so giving up on the tap must
     /// not also give up on watching the memory behind it. Not recording, it checks nothing.
@@ -439,6 +543,7 @@ private final class FakeRecoveryHost: InputDeviceRecoveryHost {
 
     var isRecording = true
     var micFires: UInt64 = 0
+    var lastMicBufferAt: Date?
     var engineIsRunning = true
     var observedEngine: AnyObject = NSObject()
     var micFileFormat: AVAudioFormat? { fileFormat }
@@ -498,7 +603,11 @@ private final class FakeRecoveryHost: InputDeviceRecoveryHost {
 
     func setMicConverter(_ converter: AVAudioConverter?) { converters.append(converter != nil) }
     @MainActor func retireEngine(reason: String) async { retireReasons.append(reason) }
-    func padMicGap(frames: AVAudioFrameCount, format: AVAudioFormat) { padFormats.append(format) }
+    private(set) var padFrames: [AVAudioFrameCount] = []
+    func padMicGap(frames: AVAudioFrameCount, format: AVAudioFormat) {
+        padFormats.append(format)
+        padFrames.append(frames)
+    }
     func reportConfigurationChange(_ outcome: MeetingRecorder.CaptureRecoveryOutcome) { outcomes.append(outcome) }
 
     func releaseHalt() {

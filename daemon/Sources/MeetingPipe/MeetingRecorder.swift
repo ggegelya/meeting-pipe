@@ -367,6 +367,11 @@ final class MeetingRecorder {
     private var micFirstBufferUptime: Double = 0
     private var micLastBufferUptime: Double = 0
     private var micDeliveredSeconds: Double = 0
+    /// REC16 (F029): the latest mic buffer's wall-clock time, behind a lock because device-change
+    /// recovery reads it on main mid-recording to backdate the gap pad, where the fields above are
+    /// read only once the tap is gone. Wall-clock rather than `systemUptime`, which stops during
+    /// sleep. Nil before the first buffer.
+    private let micLastDelivery = OSAllocatedUnfairLock<Date?>(initialState: nil)
 
     /// `SystemAudioChannel.systemDegraded` as it stood at the last `stop()` (REC4 / AUD-13).
     private(set) var lastSystemDegraded = false
@@ -439,6 +444,7 @@ final class MeetingRecorder {
         micFirstBufferUptime = 0
         micLastBufferUptime = 0
         micDeliveredSeconds = 0
+        micLastDelivery.withLock { $0 = nil }
         micTotalSeconds = 0
         micUnmutedSeconds = 0
         micPeakUnmutedDb = -120
@@ -1044,10 +1050,10 @@ final class MeetingRecorder {
         // an owned buffer in the file format either way.
         let buffer: AVAudioPCMBuffer
         if let converter = micConverter {
-            // Device-change path: the converter resamples and, because the file
-            // format is mono (TECH-MIC3), downmixes the live device format to
-            // one channel in the same step.
-            guard let converted = Self.resample(rawBuffer, using: converter, to: fileFormat) else { return }
+            // Device-change path, only when the live rate differs from the file's: collapse to
+            // mono by the loudest-channel rule, then resample (REC16, F156; the converter used to
+            // take the multichannel buffer and downmix it its own way).
+            guard let converted = Self.convertMicBuffer(rawBuffer, using: converter, to: fileFormat) else { return }
             buffer = converted
         } else {
             // Normal path: collapse the (possibly multichannel) tap buffer to
@@ -1061,6 +1067,7 @@ final class MeetingRecorder {
         let deliveredAt = ProcessInfo.processInfo.systemUptime
         if micFirstBufferUptime == 0 { micFirstBufferUptime = deliveredAt }
         micLastBufferUptime = deliveredAt
+        micLastDelivery.withLock { $0 = Date() }
         micDeliveredSeconds += Double(buffer.frameLength) / fileFormat.sampleRate
         if micFires == 1 {
             // CONC6: off the capture thread; `Log.writeLine` takes the process-wide append lock.
@@ -1960,9 +1967,15 @@ extension MeetingRecorder: InputDeviceRecoveryHost {
         }
     }
 
+    var lastMicBufferAt: Date? { micLastDelivery.withLock { $0 } }
+
     func padMicGap(frames: AVAudioFrameCount, format: AVAudioFormat) {
-        if frames > 0, let silence = Self.makeSilenceBuffer(format: format, frames: frames) {
-            micWriter?.enqueue(silence)
+        if frames > 0, let writer = micWriter {
+            // REC16 (F028): one shared 1 s chunk charged once, plus a tail, never one buffer the
+            // length of the gap. The caller has already clamped `frames` to the shared ceiling.
+            Self.enqueueSilence(frames: frames, format: format) { buffer, bytes in
+                writer.enqueue(buffer, bytes: bytes)
+            }
             // Keep the capture-first mute timeline aligned with the mic file:
             // the pad adds frames the render thread did not, so advance the
             // position here. Safe to touch from main: the engine is stopped, so

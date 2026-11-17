@@ -14,6 +14,9 @@ protocol InputDeviceRecoveryHost: AnyObject {
     var micFileFormat: AVAudioFormat? { get }
     /// The mic tap's buffer counter, sampled by the stall watchdog.
     var micFires: UInt64 { get }
+    /// REC16 (F029): the latest mic buffer's wall-clock time, nil before the first. Where a gap
+    /// pad starts.
+    var lastMicBufferAt: Date? { get }
     /// The instance `AVAudioEngineConfigurationChange` is posted from. The observer binds to it,
     /// which is why the engine is swapped only through `MeetingRecorder.replaceEngine(reason:)`.
     var observedEngine: AnyObject { get }
@@ -124,6 +127,17 @@ final class InputDeviceRecovery {
     /// up on the first sampleRate=0. Cancelled in `stop()`.
     private(set) var pendingRecoveryRetry: DispatchWorkItem?
 
+    /// REC16: when the last pad ran to (the resume of the last successful recovery), so a second
+    /// recovery in the same episode, before the tap delivers again, does not pad the span the
+    /// first already covered. Nil until a pad has run this recording.
+    private var paddedThrough: Date?
+
+    /// REC16 (F029): the gap's start for a recovery triggered now: the last mic buffer, or the
+    /// end of the last pad, whichever is later, so the pad covers what the tap actually missed.
+    private func micGapStart() -> Date {
+        CaptureRecoveryPlanner.micGapStart(now: Date(), lastBufferAt: host?.lastMicBufferAt, paddedThrough: paddedThrough)
+    }
+
     /// Retries queued for the current device-change event.
     private(set) var configurationRecoveryAttempts = 0
 
@@ -142,6 +156,7 @@ final class InputDeviceRecovery {
         consecutiveRecoveryFailures = 0
         micCaptureAbandoned = false
         micAbandonReason = nil
+        paddedThrough = nil
         cancelPendingRecoveryRetry()
         configurationRecoveryAttempts = 0
     }
@@ -214,7 +229,7 @@ final class InputDeviceRecovery {
         // A fresh change supersedes any queued retry and restarts the budget.
         cancelPendingRecoveryRetry()
         configurationRecoveryAttempts = 0
-        evaluateConfigurationChange(gapStart: Date())
+        evaluateConfigurationChange(gapStart: micGapStart())
     }
 
     /// Inspect the input format and dispatch to recovery/retry/failure. Split
@@ -359,8 +374,14 @@ final class InputDeviceRecovery {
             return
         }
 
+        // What the converter decision actually was, for the event: the fresh-engine retry below
+        // can decide differently from `needsConverter` (REC16 review).
+        var usedConverter = needsConverter
         if needsConverter {
-            guard let converter = AVAudioConverter(from: liveFormat, to: fileFormat) else {
+            // REC16 (F156): from the mono form of the live format; the tap buffer is collapsed to
+            // it first (`MeetingRecorder.convertMicBuffer`).
+            guard let monoLive = MeetingRecorder.monoCaptureFormat(from: liveFormat),
+                  let converter = AVAudioConverter(from: monoLive, to: fileFormat) else {
                 Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
                     "reason": "converter_init_failed",
                 ])
@@ -369,8 +390,10 @@ final class InputDeviceRecovery {
                 return
             }
             host.setMicConverter(converter)
+            usedConverter = true
         } else {
             host.setMicConverter(nil)
+            usedConverter = false
         }
 
         // REC12: the recovery path is the one that runs while the route is mid-transition,
@@ -403,8 +426,9 @@ final class InputDeviceRecovery {
                 return
             }
             let retryFormat = retryRead.format ?? liveFormat
-            if retryFormat != fileFormat {
-                guard let converter = AVAudioConverter(from: retryFormat, to: fileFormat) else {
+            if retryFormat.sampleRate != fileFormat.sampleRate {
+                guard let monoRetry = MeetingRecorder.monoCaptureFormat(from: retryFormat),
+                      let converter = AVAudioConverter(from: monoRetry, to: fileFormat) else {
                     Log.event(category: "recorder", action: "configuration_change_unrecoverable", attributes: [
                         "reason": "converter_init_failed",
                     ])
@@ -414,8 +438,10 @@ final class InputDeviceRecovery {
                     return
                 }
                 host.setMicConverter(converter)
+                usedConverter = true
             } else {
                 host.setMicConverter(nil)
+                usedConverter = false
             }
 
             guard let retryOutcome = await host.installMicTap(captureFormat: retryFormat) else {
@@ -447,17 +473,29 @@ final class InputDeviceRecovery {
         // Pad the switchover gap with silence so the mic file stays
         // frame-aligned with the system channel. Enqueued before the
         // engine restarts, so it lands ahead of the first resumed
-        // buffer. The span is measured from the change being observed to
-        // here, so it under-pads slightly by the engine warmup; a
-        // sub-100 ms offset is below what a meeting recording cares
-        // about, and padding only the gap keeps it clear of the separate
-        // end-of-call skew investigation.
-        let padFrames = CaptureRecoveryPlanner.silenceFrames(
-            gapStart: gapStart,
-            resumeAt: Date(),
+        // buffer. Since REC16 the span runs from the last buffer the tap
+        // delivered (`micGapStart`), not from when the change or stall was
+        // noticed, so it no longer under-pads by the detection latency; it
+        // still under-pads by the engine warmup, which is sub-100 ms. Clamped
+        // to the ceiling the system channel uses and enqueued in 1 s chunks.
+        // Re-anchored here, after the halt, rather than trusting `gapStart` alone: a scheduled
+        // retry carries its episode's start, but a watchdog or wake recovery may have padded part
+        // of that span since (`paddedThrough`), or a transient stall may have delivered again while
+        // the format read was outstanding (`lastMicBufferAt`). The latest of the three is where the
+        // missing audio actually begins (REC16 review).
+        let resumeAt = Date()
+        let padFrom = CaptureRecoveryPlanner.micGapStart(
+            now: resumeAt,
+            lastBufferAt: [gapStart, host.lastMicBufferAt].compactMap { $0 }.max(),
+            paddedThrough: paddedThrough
+        )
+        let pad = CaptureRecoveryPlanner.micPad(
+            gapSeconds: resumeAt.timeIntervalSince(padFrom),
             sampleRate: fileFormat.sampleRate
         )
+        let padFrames = pad.frames
         host.padMicGap(frames: padFrames, format: fileFormat)
+        paddedThrough = resumeAt
 
         // Same wedge risk as the initial start (a device change can leave the
         // route mid-transition): bound it off the main thread.
@@ -496,11 +534,16 @@ final class InputDeviceRecovery {
 
         captureRecoveryFailed = false
         consecutiveRecoveryFailures = 0
+        // REC16 review: a retry still queued from this episode would halt the engine that is now
+        // running and pad what was just padded.
+        cancelPendingRecoveryRetry()
+        configurationRecoveryAttempts = 0
         unabandonMicCapture()
         Log.event(category: "recorder", action: "configuration_change_recovered", attributes: [
             "live_sample_rate": liveFormat.sampleRate,
-            "used_converter": needsConverter,
+            "used_converter": usedConverter,
             "gap_frames": Int(padFrames),
+            "pad_clamped": pad.clamped,
         ])
         Log.writeLine("recorder", "input device changed mid-recording - capture re-armed (\(padFrames) silent frames padded the gap)")
         host.reportConfigurationChange(.resumed)
@@ -673,8 +716,10 @@ final class InputDeviceRecovery {
     @MainActor
     private func recoverAfterStall() async {
         guard let host, host.isRecording, let fileFormat = host.micFileFormat else { return }
-        // Stamp the gap start before the read, so the silence pad measures from the stall.
-        let gapStart = Date()
+        // REC16 (F029): the gap starts at the last buffer the tap delivered, not at detection. The
+        // old stamp here missed the watchdog's 2.5 s window on a stalled tap and the whole outage
+        // on an engine that stopped while nothing was looking (a wake).
+        let gapStart = micGapStart()
         let read = await host.liveInputFormat()
         if case .timedOut = read {
             await engineCallTimedOut(site: "stall_format_read")
@@ -684,7 +729,7 @@ final class InputDeviceRecovery {
         await recoverCapture(
             fileFormat: fileFormat,
             liveFormat: liveFormat,
-            needsConverter: liveFormat != fileFormat,
+            needsConverter: liveFormat.sampleRate != fileFormat.sampleRate,
             gapStart: gapStart
         )
     }

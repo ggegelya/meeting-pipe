@@ -603,21 +603,10 @@ final class SystemAudioChannel {
     /// Counted per enqueue, a clamped 900 s pad read as 345.6 MB pending the instant it was queued:
     /// a false `writer_backlog` warning after every long recovery, and two thirds of the cap.
     private func padSystemChannel(frames: AVAudioFrameCount) {
-        guard frames > 0, let writer = systemWriter else { return }
-        let format = SystemAudioCapture.captureFormat
-        let chunkFrames = AVAudioFrameCount(format.sampleRate)  // 1 s per buffer
-        var remaining = frames
-        if remaining >= chunkFrames {
-            guard let chunk = MeetingRecorder.makeSilenceBuffer(format: format, frames: chunkFrames) else { return }
-            var chunkBytes = MeetingRecorder.byteSize(of: chunk)
-            while remaining >= chunkFrames {
-                writer.enqueue(chunk, bytes: chunkBytes)
-                chunkBytes = 0
-                remaining -= chunkFrames
-            }
-        }
-        if remaining > 0, let tail = MeetingRecorder.makeSilenceBuffer(format: format, frames: remaining) {
-            writer.enqueue(tail)
+        guard let writer = systemWriter else { return }
+        // REC16: the one chunked pad both channels use.
+        MeetingRecorder.enqueueSilence(frames: frames, format: SystemAudioCapture.captureFormat) { buffer, bytes in
+            writer.enqueue(buffer, bytes: bytes)
         }
     }
 

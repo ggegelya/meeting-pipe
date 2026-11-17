@@ -46,13 +46,15 @@ final class CaptureRecoveryPlannerTests: XCTestCase {
         XCTAssertEqual(action, .resume(needsConverter: true))
     }
 
-    func test_plan_resumes_with_a_converter_when_the_channel_count_differs() {
+    /// REC16 (F156): a channel-count change alone collapses to the loudest channel, as `start()`
+    /// does, rather than taking AVAudioConverter's default downmix.
+    func test_plan_resumes_without_a_converter_when_only_the_channel_count_differs() {
         let action = CaptureRecoveryPlanner.plan(
             isRecording: true,
             fileFormat: format(48000, channels: 1),
             liveFormat: format(48000, channels: 2)
         )
-        XCTAssertEqual(action, .resume(needsConverter: true))
+        XCTAssertEqual(action, .resume(needsConverter: false))
     }
 
     func test_plan_aborts_when_no_usable_input_format_remains() {

@@ -101,6 +101,8 @@ final class Coordinator: NSObject {
 
     /// Gate the "Screen Recording disabled" banner to once per launch.
     var didNotifyAboutPermissionDenial: Bool = false
+    /// REC16 item 7: coalesces the mic's "Input device changed" notifications to one per episode.
+    var recoveredNotices = RecoveredNoticeCoalescer()
 
     /// Dry-run (`MEETING_PIPE_DRY_RUN`): detection runs and logs, but the
     /// recorder never starts. Verify detection accuracy without producing
@@ -432,8 +434,12 @@ final class Coordinator: NSObject {
             case .resumed:
                 Log.event(category: "recording", action: "recovered", attributes: ["channel": "mic"])
                 self.recordingHUD.setMicCaptureLost(false)
-                self.notifier.notifyCaptureRecovered()
+                // REC16 item 7: one notification per episode; the row above stays per recovery.
+                if self.recoveredNotices.shouldNotifyResumed(at: Date(), recording: self.recorder.currentFile) {
+                    self.notifier.notifyCaptureRecovered()
+                }
             case .failed:
+                self.recoveredNotices.noteFailed()
                 Log.event(category: "recording", action: "degraded", attributes: ["channel": "mic"])
                 self.recordingHUD.setMicCaptureLost(true)
                 self.notifier.notifyCaptureLost()

@@ -27,7 +27,35 @@ enum CaptureRecoveryPlanner {
         guard let liveFormat, liveFormat.sampleRate > 0, liveFormat.channelCount > 0 else {
             return .abort
         }
-        return .resume(needsConverter: !liveFormat.isEqual(fileFormat))
+        // REC16 (F156): only a sample-rate change needs the converter. A channel-count change
+        // alone goes through `collapseToMono`, the loudest-channel rule the start path uses, which
+        // AVAudioConverter's default N-to-1 downmix does not follow.
+        return .resume(needsConverter: liveFormat.sampleRate != fileFormat.sampleRate)
+    }
+
+    /// REC16 (F029): when the mic's gap began, for the silence pad. The last buffer the tap
+    /// delivered is when the mic actually stopped, which a stamp taken at detection (2.5 s later
+    /// on a stalled tap) or at the notification misses; `paddedThrough`, the resume of the last
+    /// recovery, keeps a second recovery in the same episode, before any new buffer, from padding
+    /// the span the first already covered. Wall-clock, like the system channel's outage pad, because
+    /// `systemUptime` stops while the Mac sleeps and a wake is one of the three paths. With neither,
+    /// the gap starts now, as it always did; a value from the future reads as now.
+    static func micGapStart(now: Date, lastBufferAt: Date?, paddedThrough: Date?) -> Date {
+        guard let anchor = [lastBufferAt, paddedThrough].compactMap({ $0 }).max(), anchor < now else { return now }
+        return anchor
+    }
+
+    /// REC16 (F028): the mic pad for a measured gap, clamped to the one ceiling both channels
+    /// use, `SystemCaptureRetryPlanner.maxPadSeconds`.
+    struct MicPad: Equatable {
+        let frames: AVAudioFrameCount
+        let clamped: Bool
+    }
+
+    static func micPad(gapSeconds: Double, sampleRate: Double) -> MicPad {
+        let clamped = gapSeconds > SystemCaptureRetryPlanner.maxPadSeconds
+        let seconds = clamped ? SystemCaptureRetryPlanner.maxPadSeconds : gapSeconds
+        return MicPad(frames: silenceFrames(gapSeconds: seconds, sampleRate: sampleRate), clamped: clamped)
     }
 
     /// Silent frames to pad the mic file during the device-switchover gap,
@@ -66,4 +94,35 @@ enum CaptureRecoveryPlanner {
         }
         return retryDelaysSeconds[attemptsAlreadyMade]
     }
+}
+
+/// REC16 item 7: one "Input device changed" notification per episode, not one per recovery. In the
+/// field, 11 recoveries in 6 episodes posted 11 notifications, up to 3 inside 1.5 s, because each
+/// answered a real engine stop. The recoveries are right and stay one each (with their event rows);
+/// what the owner sees is coalesced. A failure in between ends the episode, so the recovery after a
+/// "Microphone capture stopped" notification is always announced.
+struct RecoveredNoticeCoalescer {
+    /// A few seconds: covers the field's back-to-back recoveries (3 within 1.5 s) with margin, and
+    /// is short enough that a second device change a meeting later is announced on its own.
+    static let windowSeconds: TimeInterval = 5
+
+    private var lastResumedAt: Date?
+    private var recording: URL?
+
+    /// Whether a recovery reported at `now` posts the notification. Sliding: each `.resumed`
+    /// extends the episode. A different `recording` starts a new one, so a recovery a few seconds
+    /// into the next meeting is never folded into the last one's.
+    mutating func shouldNotifyResumed(at now: Date, recording: URL? = nil) -> Bool {
+        if recording != self.recording {
+            self.recording = recording
+            lastResumedAt = nil
+        }
+        defer { lastResumedAt = now }
+        guard let last = lastResumedAt else { return true }
+        let since = now.timeIntervalSince(last)
+        return !(since >= 0 && since < Self.windowSeconds)
+    }
+
+    /// A failed recovery ends the episode.
+    mutating func noteFailed() { lastResumedAt = nil }
 }

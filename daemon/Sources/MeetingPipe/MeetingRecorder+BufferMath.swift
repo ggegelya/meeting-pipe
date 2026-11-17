@@ -93,6 +93,47 @@ extension MeetingRecorder {
         return mono
     }
 
+    /// REC16 (F156): the converter path's buffer. Collapse to mono at the live rate first, by the
+    /// loudest-channel rule the start path uses, then resample to the file format; the converter
+    /// is built from the mono form of the live format (`converter.inputFormat`), so the channel
+    /// the recording keeps after a recovery is the one `start()` would have picked, not
+    /// AVAudioConverter's default N-to-1 mapping.
+    static func convertMicBuffer(
+        _ raw: AVAudioPCMBuffer,
+        using converter: AVAudioConverter,
+        to fileFormat: AVAudioFormat
+    ) -> AVAudioPCMBuffer? {
+        guard let mono = collapseToMono(raw, to: converter.inputFormat) else { return nil }
+        return resample(mono, using: converter, to: fileFormat)
+    }
+
+    /// REC16 (F028): enqueue `frames` of silence as one shared 1 s chunk, repeated, plus a tail,
+    /// charging the chunk's bytes to the backlog once. One buffer of memory, however long the pad,
+    /// for both channels (REC10's system pad shape, now the mic's too): a single buffer the length
+    /// of the gap was allocated on main and charged in full, and above about 46 minutes at 48 kHz
+    /// it crossed `WriterBacklogPolicy.hardCapBytes` by itself.
+    static func enqueueSilence(
+        frames: AVAudioFrameCount,
+        format: AVAudioFormat,
+        enqueue: (AVAudioPCMBuffer, Int) -> Void
+    ) {
+        guard frames > 0, format.sampleRate > 0 else { return }
+        let chunkFrames = AVAudioFrameCount(max(1, format.sampleRate.rounded()))  // 1 s per buffer
+        var remaining = frames
+        if remaining >= chunkFrames {
+            guard let chunk = makeSilenceBuffer(format: format, frames: chunkFrames) else { return }
+            var chunkBytes = byteSize(of: chunk)
+            while remaining >= chunkFrames {
+                enqueue(chunk, chunkBytes)
+                chunkBytes = 0
+                remaining -= chunkFrames
+            }
+        }
+        if remaining > 0, let tail = makeSilenceBuffer(format: format, frames: remaining) {
+            enqueue(tail, byteSize(of: tail))
+        }
+    }
+
     /// Build a zero-filled buffer used to pad the gap left by an input
     /// device switch.
     static func makeSilenceBuffer(format: AVAudioFormat, frames: AVAudioFrameCount) -> AVAudioPCMBuffer? {
