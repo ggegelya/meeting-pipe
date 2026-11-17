@@ -346,8 +346,17 @@ final class MeetingSessionController: @unchecked Sendable {
                         // engine (or the one engaged beside it) is terminal and ignores every later
                         // signal. Countable, so the dogfood report can see it happen at all.
                         if case .recording(_, let src, _) = self.coordinator.stateMachine.current {
+                            // END21 amendment (2026-11-17): `resolveTeardownHold` armed this end's
+                            // cut before `handleMeetingEnded` decided not to act on it. The engine
+                            // is terminal now, so no later verdict clears it, and every stop route
+                            // consumes it: a hand Stop much later would cut the transcript at a
+                            // foreign hold's stamp, and under NDA or regulated capture truncate
+                            // the audio there. The cut belongs to the end that was not applied.
+                            let trimDropped = self.pendingEndTrimAt != nil
+                            self.pendingEndTrimAt = nil
                             self.noteRecordingOnTerminalEngine(
-                                bundleID: context.bundleID, recordingBundleID: src?.bundleID, reason: "end_not_applied"
+                                bundleID: context.bundleID, recordingBundleID: src?.bundleID, reason: "end_not_applied",
+                                trimDropped: trimDropped
                             )
                         }
                     default:
@@ -381,13 +390,17 @@ final class MeetingSessionController: @unchecked Sendable {
     }
 
     /// END20: a recording is running on an engine that has already ended. Logged, never acted on.
-    func noteRecordingOnTerminalEngine(bundleID: String, recordingBundleID: String?, reason: String) {
+    func noteRecordingOnTerminalEngine(
+        bundleID: String, recordingBundleID: String?, reason: String, trimDropped: Bool = false
+    ) {
         assertMainQueue()
-        Log.event(category: "coordinator", action: "lifecycle_recording_on_terminal_engine", attributes: [
+        var attributes: [String: Any] = [
             "bundle_id": bundleID,
             "recording_bundle_id": recordingBundleID ?? "manual",
             "reason": reason,
-        ])
+        ]
+        if trimDropped { attributes["trim_dropped"] = true }
+        Log.event(category: "coordinator", action: "lifecycle_recording_on_terminal_engine", attributes: attributes)
     }
 
     func shutdownConsumers() {
@@ -909,6 +922,10 @@ final class MeetingSessionController: @unchecked Sendable {
                 }
                 self.recordingCommittedAt = Date()
                 self.lifecycleReachedInMeetingThisRecording = false
+                // END21 amendment: a cut armed while no recording ran (an end the start latch
+                // ignored, or one during a prompt) is no cut of this recording. An end of this
+                // meeting during the bring-up stopped above with its cut; an open hold keeps its own.
+                self.pendingEndTrimAt = nil
                 self.coordinator.stateMachine.setRecording(file: file, source: source, summaryMode: summaryMode)
                 self.coordinator.statusUI.setRecording(file: file, source: source, summaryMode: summaryMode, workflow: resolvedWorkflow)
                 self.coordinator.hud.present(

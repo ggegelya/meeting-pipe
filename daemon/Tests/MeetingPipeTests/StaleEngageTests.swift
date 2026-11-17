@@ -198,6 +198,75 @@ final class StaleEngageSessionTests: XCTestCase {
         await waitUntil({ host.stateMachine.current == .idle }, "the flush")
     }
 
+    /// END21 amendment (2026-11-17): a hold the stale engage opened and then concluded leaves a cut
+    /// behind, armed by `resolveTeardownHold` before `handleMeetingEnded` ignores the end. The
+    /// recording keeps running on a terminal engine, so nothing else would clear it, and the hand
+    /// Stop much later consumed it: under NDA it truncated the audio at the foreign hold's stamp.
+    /// The verdicts are published straight to the coordinator; the engine route to this shape needs
+    /// the foreign engage promoted without an `.inMeeting` under the recording, which END19's
+    /// review traced only through M2 (a skipped engage), and the controller's handling is the same.
+    private func recordOverAForeignHeldEnd(workflows: [Workflow]) async throws -> (MeetingSessionController, FakeSessionHost) {
+        let host = FakeSessionHost(tempDir: tempDir, workflows: workflows)
+        host.recorderSpy.lastSystemFires = 1
+        host.recorderSpy.fileToReturn = tempDir.appendingPathComponent("20261117-100000.wav")
+        let adapter = ChromeAdapter()
+        host.lifecycleCoord = MeetingLifecycleCoordinator(adapters: [adapter])
+        let controller = MeetingSessionController(coordinator: host)
+        let context = chromeContext
+        controller.engageSeams.buildHandles = { _, _ in
+            MeetingAXHandleBuilder.Handles(lifecycle: LifecycleAdapterHandle(), micGate: MicGateAdapterHandle(), context: context)
+        }
+        controller.startConsumers()
+        controller.handleDiscovery(chrome)
+        await waitUntil({ host.lifecycleCoord.isEngaged }, "the stale engage")
+        controller.toggleManual()
+        await waitUntil({ self.isRecording(host) }, "the hand start")
+
+        let reason = EndingReason(
+            leadingSignal: PrimarySignalKind.browserTabTitle.rawValue,
+            confirmedBy: [PrimarySignalKind.shareableContentWindow.rawValue]
+        )
+        host.lifecycleCoord.publish(.endingProvisional(context: context, reason: reason))
+        await waitUntil({ controller.holdPolicy.isOpen }, "the foreign hold")
+        // Old enough that concluding it arms a cut (`minimumTrimmedHoldSec`).
+        try? await Task.sleep(nanoseconds: 1_100_000_000)
+        host.lifecycleCoord.publish(.ended(context: context, reason: reason))
+        await waitUntil({ !self.rows("meeting_end_ignored_sourceless").isEmpty }, "the ignored end")
+        await waitUntil({ !self.rows("lifecycle_recording_on_terminal_engine").isEmpty }, "the terminal-engine row")
+        XCTAssertTrue(isRecording(host), "the hand-started recording keeps running")
+        XCTAssertEqual(rows("lifecycle_recording_on_terminal_engine").first?["trim_dropped"] as? Bool, true)
+        return (controller, host)
+    }
+
+    func test_aForeignHeldEndTheRecordingIgnored_leavesNoCutForALaterStop_underNDA() async throws {
+        var nda = Workflow(name: "Client NDA")
+        nda.flags.ndaMode = true
+        nda.isDefault = true
+        let (controller, host) = try await recordOverAForeignHeldEnd(workflows: [nda])
+        controller.toggleManual()
+        await waitUntil({ host.stateMachine.current == .idle }, "the flush")
+        controller.shutdownConsumers()
+
+        XCTAssertEqual(host.recorderSpy.stopCallCount, 1)
+        XCTAssertTrue(rows("held_end_trimmed").isEmpty, "no cut from the hold the recording ignored")
+        XCTAssertNil(host.recorderSpy.lastStopLimitSeconds ?? nil, "the audio is not truncated at stop")
+    }
+
+    func test_aForeignHeldEndTheRecordingIgnored_leavesNoSuggestedTrim() async throws {
+        // A default workflow so the sidecar is written at all (an empty one is skipped).
+        var plain = Workflow(name: "Default")
+        plain.isDefault = true
+        let (controller, host) = try await recordOverAForeignHeldEnd(workflows: [plain])
+        controller.toggleManual()
+        await waitUntil({ host.stateMachine.current == .idle }, "the flush")
+        controller.shutdownConsumers()
+
+        XCTAssertTrue(rows("held_end_trimmed").isEmpty)
+        let meta = tempDir.appendingPathComponent("20261117-100000.meta.json")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: meta)) as? [String: Any])
+        XCTAssertNil(json[HeldEndTrim.metaKey], "no held_end_trim_sec in the sidecar")
+    }
+
     /// An engage the hand start promoted is the recording's own, so its end is honoured, and the
     /// same browser sighted again inside the window is offered back (item 4). Owner's decision
     /// 2026-11-16 (DET17): a browser resume prompts rather than recording without a click.
