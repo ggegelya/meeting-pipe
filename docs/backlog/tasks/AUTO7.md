@@ -2,9 +2,9 @@
 id: AUTO7
 title: Any app or clicked link can start or stop a recording, run a digest, or auto-run an Ask through the unauthenticated `meetingpipe://` scheme
 category: Automation
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch S6, go-live PP-8): handleAutomation acts on toggle, record, stop and digest from any URL with no confirm, and a URL ask auto-runs, both possibly cloud calls; App Intents route through the same URLs. One-click confirm for URL-sourced state-changing verbs, URL ask prefills without running, -- before the question in askArgs, README, GUIDE and the Automation reference updated. [Spec](./AUTO7.md)
+comment: Shipped 2026-11-18 - a URL's toggle, record, record_byo, stop and digest raise a one-click confirm (AutomationGate / AutomationRouter, one panel at a time, decline logs command_declined), a URL ask prefills without running, askArgs puts -- before the question; README, GUIDE, the Automation reference and CONVENTIONS updated. Owner still owes the check that `open meetingpipe://stop` during a recording shows the confirm and the recording continues until it is accepted.
 ---
 
 # AUTO7: any app or clicked link can start or stop a recording, run a digest, or auto-run an Ask through the unauthenticated `meetingpipe://` scheme

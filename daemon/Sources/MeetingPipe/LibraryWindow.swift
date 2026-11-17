@@ -145,9 +145,13 @@ final class LibraryWindowModel: ObservableObject {
     /// `pendingSelection`.
     @Published var pendingScope: LibraryScope? = nil
 
-    /// AUTO1: a `meetingpipe://ask?q=...` deeplink sets this; `AskView` prefills the
-    /// question, runs it, then clears it.
-    @Published var pendingAskQuestion: String? = nil
+    /// AUTO1: a `meetingpipe://ask?q=...` deeplink or Quick Find sets this; `AskView` prefills
+    /// the question, runs it when `run` is set, then clears it. AUTO7: a URL's ask never runs.
+    struct PendingAsk: Equatable {
+        let question: String
+        let run: Bool
+    }
+    @Published var pendingAsk: PendingAsk? = nil
 
     /// AUTO2: one meeting's transcript, addressed by a `meetingpipe://open?stem=`
     /// citation link in a published note. `seek` is the cited moment, or nil for

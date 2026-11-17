@@ -46,22 +46,22 @@ struct AutomationReference: Identifiable {
         AutomationReference(
             template: "meetingpipe://toggle",
             command: .toggle,
-            purpose: "Start recording, or stop the recording that is running. Same as the record hotkey."
+            purpose: "Start recording, or stop the recording that is running. Same as the record hotkey. Asks first."
         ),
         AutomationReference(
             template: "meetingpipe://record",
             command: .record(byo: false),
-            purpose: "Start recording. Does nothing if a recording is already running."
+            purpose: "Start recording. Does nothing if a recording is already running. Asks first."
         ),
         AutomationReference(
             template: "meetingpipe://record?byo=1",
             command: .record(byo: true),
-            purpose: "Start recording, without writing the summary for you. You paste your own notes after it stops."
+            purpose: "Start recording, without writing the summary for you. You paste your own notes after it stops. Asks first."
         ),
         AutomationReference(
             template: "meetingpipe://stop",
             command: .stop,
-            purpose: "Stop the recording that is running. Does nothing when nothing is recording."
+            purpose: "Stop the recording that is running. Does nothing when nothing is recording. Asks first."
         ),
         AutomationReference(
             template: "meetingpipe://library",
@@ -76,12 +76,12 @@ struct AutomationReference: Identifiable {
         AutomationReference(
             template: "meetingpipe://ask?q=<question>",
             command: .ask(question: "<question>"),
-            purpose: "Ask a question across every meeting, and open the answer as it arrives."
+            purpose: "Open Ask with this question filled in. Press Ask to run it."
         ),
         AutomationReference(
             template: "meetingpipe://digest",
             command: .digest,
-            purpose: "Build this week's review of open actions and recent decisions, and open it."
+            purpose: "Build this week's review of open actions and recent decisions, and open it. Asks first."
         ),
     ]
 }

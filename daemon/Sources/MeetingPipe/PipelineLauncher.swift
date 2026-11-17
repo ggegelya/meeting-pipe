@@ -945,7 +945,9 @@ final class PipelineLauncher: PipelineDriver {
     /// path rather than two, and the `ask_answered` event then records the width
     /// every answer was bought with rather than only the widened ones.
     static func askArgs(question: String, out: URL, contextTokens: Int) -> [String] {
-        ["ask", question, "--out", out.path, "--context-tokens", String(contextTokens)]
+        // AUTO7: `--` ends option parsing, so a question spelled like an option (`--rebuild`) is
+        // still the question rather than a flag that leaves the positional missing.
+        ["ask", "--out", out.path, "--context-tokens", String(contextTokens), "--", question]
     }
 
     /// Ask a natural-language question across the library (AI3). Spawns `mp ask

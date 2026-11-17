@@ -886,6 +886,9 @@ final class Coordinator: NSObject {
         }
     }
 
+    /// AUTO7: the one-click confirm in front of a URL's state-changing verbs.
+    lazy var automationRouter = AutomationRouter()
+
     lazy var quickFindWindow: QuickFindWindow = QuickFindWindow(
         meetingStore: libraryModel.meetingStore,
         // PERF20: Quick Find calls this off main, through its own `FTSLookup`, so it captures

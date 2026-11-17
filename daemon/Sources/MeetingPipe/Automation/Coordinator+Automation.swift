@@ -10,8 +10,19 @@ extension Coordinator {
     /// `source` names who triggered it, so an in-app caller reusing this router
     /// (UX25's Quick Find handoff) is distinguishable in the event log from a real
     /// deeplink instead of inflating the URL-scheme's usage trail.
-    func handleAutomation(_ command: AutomationCommand, source: String = "url_scheme") {
+    ///
+    /// AUTO7: a URL's state-changing verbs pass `AutomationGate`'s one-click confirm first, and a URL
+    /// `ask` prefills without running. macOS gives a URL open no caller identity to check.
+    func handleAutomation(_ command: AutomationCommand, source: String = AutomationGate.urlSource) {
         Log.event(category: "automation", action: "command", attributes: ["verb": command.verb, "source": source])
+        let isRecording: Bool
+        if case .idle = stateMachine.current { isRecording = false } else { isRecording = true }
+        automationRouter.route(command, source: source, isRecording: isRecording) { [weak self] in
+            self?.performAutomation(command, source: source)
+        }
+    }
+
+    private func performAutomation(_ command: AutomationCommand, source: String) {
         switch command {
         case .toggle:
             UILatency.shared.action("automation_toggle", surface: "automation")
@@ -28,7 +39,7 @@ extension Coordinator {
             openMeetingViaAutomation(stem: stem, seek: seek)
         case .ask(let question):
             openLibraryViaAutomation(scope: "ask")
-            libraryModel.pendingAskQuestion = question
+            libraryModel.pendingAsk = .init(question: question, run: AutomationGate.asksRun(source: source))
         case .digest:
             openLibraryViaAutomation(scope: "digests")
             Task { @MainActor in _ = await libraryModel.generateDigest() }

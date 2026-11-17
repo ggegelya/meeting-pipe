@@ -185,7 +185,7 @@ final class AskModel: ObservableObject {
     private let runner: AskRunning
 
     /// Called when the run in flight ends, however it ends. Carries the deeplink
-    /// consume (AUTO1), so `pendingAskQuestion` is cleared on completion rather
+    /// consume (AUTO1), so `pendingAsk` is cleared on completion rather
     /// than on render: a scope switch mid-run must not lose the question that
     /// started it.
     private var onRunFinished: (() -> Void)?
@@ -227,7 +227,11 @@ final class AskModel: ObservableObject {
     /// this with the same still-pending question, which is why the in-flight
     /// question is matched first: re-running it would spawn a second subprocess
     /// for a question already being answered.
-    func acceptDeeplink(_ pending: String?, onConsumed: @escaping () -> Void) {
+    ///
+    /// AUTO7: `run: false` (a `meetingpipe://ask` link) only prefills the field and is consumed at
+    /// once, so a later mount cannot overwrite what the owner has typed since; the question runs
+    /// when the owner presses Ask. Quick Find's in-app handoff keeps `run: true`.
+    func acceptDeeplink(_ pending: String?, run: Bool = true, onConsumed: @escaping () -> Void) {
         guard let pending else { return }
         let q = pending.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return }
@@ -236,6 +240,7 @@ final class AskModel: ObservableObject {
         // still runs it; refusing here is the same one-at-a-time rule as `ask()`.
         guard inFlight == nil else { return }
         question = q
+        guard run else { onConsumed(); return }
         start(q, onFinished: onConsumed)
     }
 

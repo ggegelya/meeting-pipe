@@ -156,7 +156,7 @@ struct OpenLibraryIntent: AppIntent {
 struct AskLibraryIntent: AppIntent {
     static var title: LocalizedStringResource = "Ask MeetingPipe"
     static var description = IntentDescription(
-        "Open the Ask rail with a question prefilled, and run it against your meeting library."
+        "Open the Ask rail with a question prefilled. Press Ask to run it against your meeting library."
     )
     static var openAppWhenRun: Bool = false
 

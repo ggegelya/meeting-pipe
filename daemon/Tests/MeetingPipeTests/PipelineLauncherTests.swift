@@ -431,9 +431,18 @@ final class PipelineLauncherTests: XCTestCase {
             question: "what did we decide about hiring?", out: out, contextTokens: 100_000
         )
         XCTAssertEqual(args.first, "ask")
-        XCTAssertEqual(args[1], "what did we decide about hiring?")
-        XCTAssertEqual(args.suffix(2), ["--context-tokens", "100000"])
+        XCTAssertEqual(args.last, "what did we decide about hiring?")
+        XCTAssertEqual(args.firstIndex(of: "--context-tokens").map { args[$0 + 1] }, "100000")
         XCTAssertTrue(args.contains("--out"))
+    }
+
+    /// AUTO7: `--` precedes the question, so a question spelled like an option is still the
+    /// question. `test_ask.py` pins the same argv against `mp ask`'s real parser.
+    func test_askArgs_puts_the_question_after_a_double_dash() {
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("a.json")
+        let args = PipelineLauncher.askArgs(question: "--rebuild", out: out, contextTokens: 4000)
+        XCTAssertEqual(args.suffix(2), ["--", "--rebuild"])
+        XCTAssertEqual(args.firstIndex(of: "--"), args.count - 2)
     }
 
     /// The resting position passes exactly what the CLI would have defaulted to
@@ -444,7 +453,7 @@ final class PipelineLauncherTests: XCTestCase {
         let args = PipelineLauncher.askArgs(
             question: "q", out: out, contextTokens: AskContextWidth.normal.tokens
         )
-        XCTAssertEqual(args.suffix(2), ["--context-tokens", "4000"])
+        XCTAssertEqual(args.firstIndex(of: "--context-tokens").map { args[$0 + 1] }, "4000")
     }
 
     // MARK: - UX50: a run this app killed is a cancellation, not a failure

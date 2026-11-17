@@ -433,3 +433,38 @@ def test_an_unsubstituted_answer_carries_a_null_marker(
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert "substituted_from" in payload
     assert payload["substituted_from"] is None
+
+
+# --- AUTO7: the daemon's argv puts `--` before the question -----------------
+
+
+def test_the_daemons_argv_reads_an_option_shaped_question_as_the_question(monkeypatch, tmp_path):
+    """`PipelineLauncher.askArgs` sends `ask --out <f> --context-tokens <n> -- <question>`.
+    Without the `--`, a question of `--rebuild` was taken as the flag and `mp ask` exited 2."""
+    import argparse
+
+    from mp import ask as ask_mod
+
+    parsed: list = []
+    real = argparse.ArgumentParser.parse_args
+
+    def spy(self, *a, **k):
+        ns = real(self, *a, **k)
+        parsed.append(ns)
+        return ns
+
+    class Stop(Exception):
+        pass
+
+    def stop(*_a, **_k):
+        raise Stop
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", spy)
+    monkeypatch.setattr(ask_mod.entry, "prepare", stop)
+    try:
+        ask_mod.main(["--out", str(tmp_path / "a.json"), "--context-tokens", "4000", "--", "--rebuild"])
+    except Stop:
+        pass
+    assert parsed and parsed[0].question == ["--rebuild"]
+    assert parsed[0].rebuild is False
+    assert parsed[0].context_tokens == 4000

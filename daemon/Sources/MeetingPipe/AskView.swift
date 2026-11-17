@@ -134,7 +134,7 @@ struct AskView: View {
             // before this view mounted (the scope switch mounts it).
             consumePendingQuestion()
         }
-        .onChange(of: model.pendingAskQuestion) { _, _ in consumePendingQuestion() }
+        .onChange(of: model.pendingAsk) { _, _ in consumePendingQuestion() }
         .onChange(of: askModel.isAsking) { _, running in
             // Clear the field once the run ends, not when it starts: while the
             // question is running it is the only place the question itself is
@@ -152,7 +152,7 @@ struct AskView: View {
     /// clears the pending question when that run *finishes*. Clearing it here on
     /// render is what used to lose the question on a mid-run scope switch.
     private func consumePendingQuestion() {
-        askModel.acceptDeeplink(model.pendingAskQuestion) { model.pendingAskQuestion = nil }
+        askModel.acceptDeeplink(model.pendingAsk?.question, run: model.pendingAsk?.run ?? true) { model.pendingAsk = nil }
     }
 
     // MARK: - Invitation

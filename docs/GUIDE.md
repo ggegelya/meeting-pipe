@@ -467,7 +467,7 @@ Close the last window and the menu bar goes back to whatever app is in front. Th
 
 Every hotkey above has a control: the recording panel carries Stop, the off-the-record toggle, and the flag button on its control row, with the same three on its right-click menu. The menu-bar dropdown carries Start and Stop. Nothing here is keyboard-only.
 
-Recording can also be driven from Shortcuts, Raycast, or a Stream Deck through the `meetingpipe://` links listed in **Preferences ▸ Advanced ▸ Automation**, each with a Copy button.
+Recording can also be driven from Shortcuts, Raycast, or a Stream Deck through the `meetingpipe://` links listed in **Preferences ▸ Advanced ▸ Automation**, each with a Copy button. A link that starts or stops a recording or builds a digest shows a small panel first, because any app or web page can open one; press Return or click the action to go ahead. An Ask link fills in the question and waits for you to press Ask.
 
 ---
 

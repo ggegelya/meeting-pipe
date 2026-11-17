@@ -25,7 +25,8 @@ enum AutomationCommand: Equatable {
     /// `stem` comes from a file that may outlive its recording; the router treats
     /// an unknown stem as a quiet Library open, never an error.
     case openMeeting(stem: String, seek: Double?)
-    /// Open the Library's Ask rail with `question` prefilled and run it (AI3).
+    /// Open the Library's Ask rail with `question` prefilled (AI3); from a URL it waits for the
+    /// owner's Ask (AUTO7), from Quick Find it runs.
     case ask(question: String)
     /// Open the Library's Digests rail and generate the weekly digest (AI4).
     case digest

@@ -309,6 +309,26 @@ final class AskModelTests: XCTestCase {
         XCTAssertEqual(model.latest?.wasCancelled, true)
     }
 
+    /// AUTO7: a `meetingpipe://ask` link prefills the field and runs nothing; it is consumed at
+    /// once so a later mount cannot overwrite what the owner typed since.
+    func testAURLDeeplinkPrefillsWithoutRunning() async {
+        let pending = PendingBox("placeholder question")
+        model.acceptDeeplink(pending.question, run: false) { pending.question = nil }
+        await settle()
+        XCTAssertEqual(model.question, "placeholder question")
+        XCTAssertFalse(model.isAsking)
+        XCTAssertTrue(runner.questions.isEmpty)
+        XCTAssertNil(pending.question)
+    }
+
+    /// Quick Find's in-app handoff still runs.
+    func testAnInAppDeeplinkStillRuns() async {
+        let pending = PendingBox("placeholder question")
+        model.acceptDeeplink(pending.question, run: true) { pending.question = nil }
+        await pump { runner.isRunning }
+        XCTAssertEqual(runner.questions, ["placeholder question"])
+    }
+
     func testEmptyDeeplinkIsIgnored() async {
         var consumed = false
         model.acceptDeeplink(nil) { consumed = true }
