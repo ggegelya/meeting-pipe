@@ -23,10 +23,12 @@ protocol PlaybackEngine: AnyObject, Sendable {
     func stop()
     /// Stop the player node, flushing whatever it had scheduled.
     func stopPlayer()
-    /// Rewire player -> time-pitch -> main mixer for `format`.
-    func connect(format: AVAudioFormat)
+    /// Rewire player -> time-pitch -> main mixer for `format`. Throws on macOS 27 and later,
+    /// where the SDK 27 `connectNode` reports a refused connection as an error (REC29).
+    func connect(format: AVAudioFormat) throws
 
-    func play()
+    /// Throws on macOS 27 and later, where `playAudio()` reports a refused start (REC29).
+    func play() throws
     func pause()
     func schedule(_ buffer: AVAudioPCMBuffer, completion: @escaping @Sendable () -> Void)
     /// Source frames played since the player's last `play()`, or nil while it is not rendering.
@@ -61,15 +63,36 @@ final class AVPlaybackEngine: PlaybackEngine {
         playerNode.stop()
     }
 
-    func connect(format: AVAudioFormat) {
+    // REC29: the SDK 27 error variants on 27 and later, the deprecated ones below. The
+    // `compiler(>=6.4)` gate is `GuardedTapInstall.inputTapInstaller`'s: these calls are absent
+    // from the SDK CI's macos-15 runner compiles against.
+    func connect(format: AVAudioFormat) throws {
         engine.disconnectNodeOutput(playerNode)
         engine.disconnectNodeOutput(timePitch)
+        #if compiler(>=6.4)
+        if #available(macOS 27, *) {
+            try engine.connectNode(playerNode, to: timePitch, format: format)
+            try engine.connectNode(timePitch, to: engine.mainMixerNode, format: format)
+        } else {
+            engine.connect(playerNode, to: timePitch, format: format)
+            engine.connect(timePitch, to: engine.mainMixerNode, format: format)
+        }
+        #else
         engine.connect(playerNode, to: timePitch, format: format)
         engine.connect(timePitch, to: engine.mainMixerNode, format: format)
+        #endif
     }
 
-    func play() {
+    func play() throws {
+        #if compiler(>=6.4)
+        if #available(macOS 27, *) {
+            try playerNode.playAudio()
+        } else {
+            playerNode.play()
+        }
+        #else
         playerNode.play()
+        #endif
     }
 
     func pause() {

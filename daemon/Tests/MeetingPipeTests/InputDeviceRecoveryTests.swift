@@ -219,6 +219,28 @@ final class InputDeviceRecoveryTests: XCTestCase {
         XCTAssertFalse(recovery.micCaptureAbandoned)
     }
 
+    /// REC29: the macOS 27 install's error takes the raise's path exactly.
+    func test_aThrownInstallErrorReplacesTheEngineOnceAndRetriesTheTap() async {
+        host.installResults = [.failed, .installed]
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+
+        XCTAssertEqual(host.retireReasons, ["condemned_mid_recording"])
+        XCTAssertEqual(host.installFormats.count, 2)
+        XCTAssertEqual(host.outcomes, [.resumed])
+        XCTAssertFalse(recovery.micCaptureAbandoned)
+    }
+
+    func test_aReplacementWhoseInstallErrorsAgainAbandonsTheMic() async {
+        host.installResults = [.failed, .failed]
+        recovery.handleConfigurationChange()
+        await recovery.recoveryTask?.value
+
+        XCTAssertEqual(host.retireReasons, ["condemned_mid_recording"])
+        XCTAssertTrue(recovery.micCaptureAbandoned)
+        XCTAssertEqual(host.outcomes, [.failed])
+    }
+
     /// A replacement that raises again will not stop raising, so the mic is given up at once.
     func test_aReplacementThatRaisesAgainAbandonsTheMic() async {
         host.installResults = [.raised, .raised]

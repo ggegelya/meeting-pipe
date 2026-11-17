@@ -655,7 +655,7 @@ final class MeetingRecorder {
             await unwindFailedEngineStart(micURL: micURL, recreateEngine: refusal.requiresFreshEngine)
             throw RecorderError.engineStartFailed(
                 refusal.requiresFreshEngine
-                    ? "installTap raised on the input node twice; the audio engine was replaced"
+                    ? "installTap failed on the input node twice (\(refusal.recoveryReason)); the audio engine was replaced"
                     : "the input format cannot carry a tap (\(micFormat.sampleRate) Hz, \(micFormat.channelCount) ch)"
             )
         }
@@ -1028,9 +1028,12 @@ final class MeetingRecorder {
         // hand-off goes through a `@Sendable` closure. One local constant, not a type.
         nonisolated(unsafe) let tapBlock = makeMicTapBlock()
         return await engineCall(site: "install_tap") { engine in
-            GuardedTapInstall.install(format: captureFormat, site: "meeting_recorder", engine: engine) {
-                engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: captureFormat, block: tapBlock)
-            }
+            GuardedTapInstall.install(
+                format: captureFormat, site: "meeting_recorder", engine: engine,
+                installer: GuardedTapInstall.inputTapInstaller(
+                    engine.inputNode, bufferSize: 4096, format: captureFormat, block: tapBlock
+                )
+            )
         }
     }
 

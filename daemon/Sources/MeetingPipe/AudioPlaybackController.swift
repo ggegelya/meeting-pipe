@@ -4,6 +4,7 @@
 import Combine
 import Foundation
 import MeetingPipeCore
+import os
 
 /// Local-file playback for Library detail tabs (TECH-A6 + TECH-A7). Wraps
 /// AVAudioEngine + AVAudioPlayerNode so the Transcript and Audio tabs share a
@@ -309,8 +310,20 @@ final class AudioPlaybackController: ObservableObject {
             guard myEpoch == epoch, let file = audioFile else { return }
             let format = file.processingFormat
             if connectedFormat != format {
-                guard await engineCall(site: "connect", { engine in engine.connect(format: format) }) else {
+                // REC29: on macOS 27 a refused connection comes back as an error. It fails this
+                // play the way a failed start does, and leaves `connectedFormat` unset so the
+                // next play reconnects rather than trusting a half-made graph.
+                let connectError = OSAllocatedUnfairLock<String?>(initialState: nil)
+                guard await engineCall(site: "connect", { engine in
+                    do { try engine.connect(format: format) } catch {
+                        connectError.withLock { $0 = error.localizedDescription }
+                    }
+                }) else {
                     return failPlayback(Self.outputTimeoutMessage, epoch: myEpoch)
+                }
+                if let message = connectError.withLock({ $0 }) {
+                    Log.writeLine("daemon", "playback: connect failed: \(message)")
+                    return failPlayback(message, epoch: myEpoch)
                 }
                 connectedFormat = format
             }
@@ -332,7 +345,16 @@ final class AudioPlaybackController: ObservableObject {
                 // Paused, seeked or reloaded while starting: whoever did that owns what
                 // happens next, and the idle stop they armed takes the engine down.
                 guard myEpoch == epoch else { return }
-                engine.play()
+                do {
+                    try engine.play()
+                } catch {
+                    // REC29: the engine is up but the player refused. Fail this play and arm
+                    // the idle stop, since nothing else will take a running engine down.
+                    Log.writeLine("daemon", "playback: play failed: \(error.localizedDescription)")
+                    failPlayback(error.localizedDescription, epoch: myEpoch)
+                    armIdleStop()
+                    return
+                }
                 rendering = true
                 isPlaying = true
                 loadError = nil

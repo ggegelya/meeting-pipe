@@ -57,13 +57,17 @@ enum GuardedTapInstall {
         /// `installTap` raised and the barrier caught it. The engine is condemned as of
         /// now, so this is the last tap it will be offered.
         case raised
+        /// REC29: the macOS 27 install reported failure as an error rather than a raise.
+        /// Handled exactly as `raised` (the engine is condemned, the caller takes the
+        /// fresh-engine path), kept apart only so the log says which of the two it was.
+        case failed
 
         var isInstalled: Bool { self == .installed }
 
         /// Whether the caller has to replace its engine before the next attempt can do
         /// anything but refuse. `MeetingRecorder` acts on this.
         var requiresFreshEngine: Bool {
-            self == .raised || self == .refusedCondemnedEngine
+            self == .raised || self == .failed || self == .refusedCondemnedEngine
         }
 
         /// The `reason` an event row gets for a failed device-change recovery, so the two
@@ -74,6 +78,7 @@ enum GuardedTapInstall {
             case .refusedFormat: return "tap_format_unusable"
             case .refusedCondemnedEngine: return "tap_engine_condemned"
             case .raised: return "tap_install_raised"
+            case .failed: return "tap_install_failed"
             }
         }
     }
@@ -98,6 +103,74 @@ enum GuardedTapInstall {
         site: String,
         engine: AVAudioEngine,
         installTap: () -> Void
+    ) -> Outcome {
+        // Not `withoutActuallyEscaping` into `.raising`: a raise unwinds past its release, and
+        // the escape check then traps (measured). The core takes a non-escaping body instead.
+        run(format: format, site: site, engine: engine) { installTap(); return nil }
+    }
+
+    /// The two shapes of `installTap` call, chosen once at the call site by
+    /// `inputTapInstaller` under a pure `#available` check and injectable as either in tests.
+    enum Installer {
+        /// macOS 27 and later: `__installTap(...error:block:)`, which reports failure as an error.
+        case throwing(() throws -> Void)
+        /// macOS 14 to 26: `installTap(onBus:bufferSize:format:block:)`, which raises.
+        case raising(() -> Void)
+    }
+
+    /// REC29: the `installTap` this OS has. On macOS 27 and later the SDK 27 call that returns
+    /// an error (the old one is deprecated there); below 27, the old one. Both go through the
+    /// same barrier in `install`, because the error variants do not promise never to raise:
+    /// measured 2026-11-17 on macOS 27.2, `__installTap` returned errors for a second tap on a
+    /// bus (-10863) and `connectNode` for a 0 Hz format (-10868), the cases that used to raise,
+    /// but `playAudio()` on a node with no engine still raised.
+    ///
+    /// `compiler(>=6.4)` is the SDK gate: the call does not exist in the SDK CI's macos-15
+    /// runner compiles against, and `#available` is a runtime check only. Swift 6.4 is the
+    /// toolchain that ships with SDK 27.
+    static func inputTapInstaller(
+        _ node: AVAudioNode, bufferSize: AVAudioFrameCount, format: AVAudioFormat,
+        block: @escaping AVAudioNodeTapBlock
+    ) -> Installer {
+        #if compiler(>=6.4)
+        if #available(macOS 27, *) {
+            return .throwing {
+                try node.__installTap(onBus: 0, bufferSize: bufferSize, format: format, error: (), block: block)
+            }
+        } else {
+            return .raising { node.installTap(onBus: 0, bufferSize: bufferSize, format: format, block: block) }
+        }
+        #else
+        return .raising { node.installTap(onBus: 0, bufferSize: bufferSize, format: format, block: block) }
+        #endif
+    }
+
+    /// Install a tap through the guard and the barrier with whichever `Installer` this OS takes.
+    static func install(
+        format: AVAudioFormat,
+        site: String,
+        engine: AVAudioEngine,
+        installer: Installer
+    ) -> Outcome {
+        run(format: format, site: site, engine: engine) {
+            switch installer {
+            case .raising(let call):
+                call()
+                return nil
+            case .throwing(let call):
+                do { try call() } catch { return error }
+                return nil
+            }
+        }
+    }
+
+    /// The guards, then `body` inside the barrier. `body` answers the error a throwing install
+    /// reported, or nil; a raise never returns through it.
+    private static func run(
+        format: AVAudioFormat,
+        site: String,
+        engine: AVAudioEngine,
+        body: () -> Error?
     ) -> Outcome {
         guard !isCondemned(engine) else {
             Log.writeLine(
@@ -127,7 +200,31 @@ enum GuardedTapInstall {
             return .refusedFormat
         }
 
-        guard let raise = MPRunCatchingObjCException(installTap) else { return .installed }
+        var thrown: Error?
+        let raise = MPRunCatchingObjCException { thrown = body() }
+        if raise == nil, let thrown {
+            // REC29: the same terminal handling as a caught raise, so both callers take the
+            // fresh-engine path they already take for one. A clean error leaves the engine in
+            // a defined state where a raise does not, but the race that produced it (a format
+            // moving under the install) is the same one, and REC15 measured that a fresh read
+            // on a fresh engine is what succeeds.
+            condemn(engine)
+            let detail = String(describing: thrown)
+            Log.writeLine(
+                "recorder",
+                "ERROR: installTap failed at \(site) with an error: \(detail) "
+                    + "(format \(format.sampleRate) Hz, \(format.channelCount) ch). The engine is "
+                    + "condemned and this tap is not retried on it."
+            )
+            Log.event(category: "recorder", action: "mic_tap_install_failed", attributes: [
+                "site": site,
+                "reason": detail,
+                "sample_rate": format.sampleRate,
+                "channels": Int(format.channelCount),
+            ])
+            return .failed
+        }
+        guard let raise else { return .installed }
 
         // Condemn first, log second. Everything below this line is best-effort reporting,
         // and the one thing that must not be skipped is making sure nobody hands this

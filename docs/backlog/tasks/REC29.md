@@ -2,9 +2,9 @@
 id: REC29
 title: macOS 27 deprecates the AVAudio tap, connect and play calls the capture and playback paths use, and its throwing tap API could replace the Objective-C barrier on 27 and later
 category: Recording
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-12 (upgrade review, owner approved): a scratch build at a macOS 27 floor warns on installTap(onBus:bufferSize:format:block:) in MicLevelMonitor and MeetingRecorder and on connect(_:to:format:) and play() in PlaybackEngine; the SDK 27 replacement installTap(...error:) throws instead of raising the NSException REC12's barrier catches. Adopt the error variants behind #available(macOS 27, *), keep the barrier below 27.
+comment: Shipped 2026-11-18: SDK 27 error variants for the mic tap (inside the barrier still), connect and play behind compiler(>=6.4) + #available(macOS 27), Outcome.failed takes the raise's fresh-engine path, 27-floor scratch build has 0 deprecations, ci-local green. Owed: the owner's live check, one recording with level metering and one Library playback on an installed build.
 ---
 
 # REC29: macOS 27 deprecates the AVAudio tap, connect and play calls the capture and playback paths use, and its throwing tap API could replace the Objective-C barrier on 27 and later
@@ -46,3 +46,5 @@ That matters here because REC12 added the `MeetingPipeObjC` target only because 
 - New tests use an injected tap installer that throws: the error path reaches the same mic-loss handling the barrier path reaches, and the barrier path is still taken when the availability branch is forced off.
 - `cd daemon && swift test` is green; `bash scripts/ci-local.sh daemon` is green.
 - A live check on the owner's Mac: one recording with mic level metering and one Library playback, logged in this file's progress line.
+
+**Progress (2026-11-18):** Measured on macOS 27.2 before building: `__installTap` returned -10863 for a second tap on a bus and `connectNode` -10868 for a 0 Hz format (the cases that used to raise), but `playAudio()` on a node with no engine still raised, so the 27 tap call runs inside the `@try` barrier too rather than replacing it; the spec's "could replace the barrier" did not survive the measurement. `GuardedTapInstall.Installer` (`.throwing` / `.raising`) is chosen by `inputTapInstaller` under a pure `#available`; a thrown error is the new `Outcome.failed` (condemns, `requiresFreshEngine`, `mic_tap_install_failed`, recovery reason `tap_install_failed`). The SDK gate is `#if compiler(>=6.4)` because CI's macos-15 runner lacks the SDK 27 symbols; the 27 branch is therefore compiled and tested only locally until CI moves (CI9). `PlaybackEngine.connect`/`play` now throw and fail the play; a refused play arms the idle stop. MicLevelMonitor was deleted by REC18 and is not touched. Tests: 5 new in `GuardedTapInstallTests` plus one real-node macOS 27 check, 2 in `InputDeviceRecoveryTests`, 2 in `AudioPlaybackControllerTests`. A scratch copy at `platforms: [.macOS("27.0")]` built with no `deprecated in macOS 27.0` warning; the floor-14 build shows no new warning in the touched files. Owner live check (one recording with metering, one Library playback) is not yet logged here.

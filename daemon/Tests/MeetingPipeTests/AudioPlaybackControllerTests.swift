@@ -299,6 +299,45 @@ final class AudioPlaybackControllerTests: XCTestCase {
         )
     }
 
+    // MARK: - REC29: the macOS 27 error returns
+
+    /// A refused connection fails the play like a failed start, never starts the engine, and
+    /// is not remembered as connected, so the next play reconnects.
+    func test_a_connect_that_throws_fails_the_play_and_the_next_play_reconnects() async throws {
+        let rig = Rig()
+        let playback = rig.controller()
+        playback.load(url: try wav("a", seconds: 3))
+        rig.engines[0].failConnect()
+        playback.play()
+        await playback.engineCallsSettled()
+        XCTAssertFalse(playback.isPlaying)
+        XCTAssertEqual(playback.loadError, "refused by the fake")
+        XCTAssertEqual(rig.engines[0].calls, ["connect"])
+
+        playback.play()
+        await playback.engineCallsSettled()
+        XCTAssertEqual(rig.engines[0].calls.filter { $0 == "connect" }.count, 2, "a refused graph is not trusted")
+    }
+
+    /// A refused play after a good start leaves the engine running, so the failure has to arm
+    /// the idle stop that takes it down.
+    func test_a_play_that_throws_fails_and_still_stops_the_engine_after_the_grace() async throws {
+        let rig = Rig()
+        let playback = rig.controller()
+        playback.load(url: try wav("a", seconds: 3))
+        rig.engines[0].failPlay()
+        playback.play()
+        await playback.engineCallsSettled()
+        XCTAssertFalse(playback.isPlaying)
+        XCTAssertEqual(playback.loadError, "refused by the fake")
+        XCTAssertEqual(rig.engines[0].calls, ["connect", "stopPlayer", "start", "play"])
+        XCTAssertEqual(rig.scheduler.pendingDelays, [AudioPlaybackController.idleStopGraceSeconds])
+
+        rig.scheduler.fireAll()
+        await playback.engineCallsSettled()
+        XCTAssertEqual(rig.engines[0].calls.suffix(2), ["stopPlayer", "stop"])
+    }
+
     // MARK: - Helpers
 
     /// A Float32 stereo 16 kHz WAV of a quiet tone.
@@ -395,7 +434,15 @@ private final class FakePlaybackEngine: PlaybackEngine {
         var playedFrames: AVAudioFramePosition? = 0
         var scheduledFrames: [AVAudioFrameCount] = []
         var completions: [@Sendable () -> Void] = []
+        var connectFails = false
+        var playFails = false
     }
+
+    struct Refused: Error, LocalizedError { var errorDescription: String? { "refused by the fake" } }
+
+    /// REC29: the macOS 27 `connectNode` / `playAudio()` error returns.
+    func failConnect() { state.withLock { $0.connectFails = true } }
+    func failPlay() { state.withLock { $0.playFails = true } }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
     private let behaviour: StartBehaviour
@@ -438,8 +485,14 @@ private final class FakePlaybackEngine: PlaybackEngine {
         state.withLock { $0.completions = []; $0.scheduledFrames = [] }
     }
 
-    func connect(format: AVAudioFormat) { record("connect") }
-    func play() { record("play") }
+    func connect(format: AVAudioFormat) throws {
+        record("connect")
+        if state.withLock({ $0.connectFails }) { throw Refused() }
+    }
+    func play() throws {
+        record("play")
+        if state.withLock({ $0.playFails }) { throw Refused() }
+    }
     func pause() { record("pause") }
 
     func schedule(_ buffer: AVAudioPCMBuffer, completion: @escaping @Sendable () -> Void) {

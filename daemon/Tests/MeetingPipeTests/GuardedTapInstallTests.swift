@@ -194,8 +194,9 @@ final class GuardedTapInstallTests: XCTestCase {
             GuardedTapInstall.Outcome.refusedFormat.recoveryReason,
             GuardedTapInstall.Outcome.refusedCondemnedEngine.recoveryReason,
             GuardedTapInstall.Outcome.raised.recoveryReason,
+            GuardedTapInstall.Outcome.failed.recoveryReason,
         ])
-        XCTAssertEqual(reasons.count, 3)
+        XCTAssertEqual(reasons.count, 4)
     }
 
     // MARK: - The sibling on the recording path
@@ -213,7 +214,13 @@ final class GuardedTapInstallTests: XCTestCase {
         let sources = try daemonSourceFiles()
         XCTAssertFalse(sources.isEmpty, "found no daemon sources to fence")
         for (path, text) in sources {
-            let calls = text.components(separatedBy: ".installTap(onBus:").count - 1
+            // REC29: `GuardedTapInstall.inputTapInstaller` is where both spellings live (the SDK 27
+            // `__installTap` and the deprecated one), and it only builds the closure `install`
+            // runs inside the barrier. Everywhere else, a tap call or an installer must be
+            // matched by a route through the guard.
+            guard path != "MeetingPipe/GuardedTapInstall.swift" else { continue }
+            let calls = text.components(separatedBy: "installTap(onBus:").count - 1
+                + text.components(separatedBy: "inputTapInstaller(").count - 1
             guard calls > 0 else { continue }
             let guarded = text.components(separatedBy: "GuardedTapInstall.install(").count - 1
             XCTAssertGreaterThanOrEqual(
@@ -238,6 +245,113 @@ final class GuardedTapInstallTests: XCTestCase {
             )
         }
     }
+
+    // MARK: - REC29: the macOS 27 install reports an error
+
+    private struct TapRefused: Error, CustomStringConvertible {
+        var description: String { "nullptr == Tap()" }
+    }
+
+    /// The SDK 27 install's error takes the raise's road: the engine is condemned and the
+    /// caller is told to replace it, so REC15's retry-once and mic-loss paths run unchanged.
+    func test_a_thrown_install_error_condemns_the_engine_like_a_raise() throws {
+        try withScratchLogs { dir in
+            let engine = AVAudioEngine()
+            let outcome = GuardedTapInstall.install(
+                format: healthy, site: "meeting_recorder", engine: engine,
+                installer: .throwing { throw TapRefused() }
+            )
+            XCTAssertEqual(outcome, .failed)
+            XCTAssertTrue(outcome.requiresFreshEngine)
+            XCTAssertFalse(outcome.isInstalled)
+            XCTAssertTrue(GuardedTapInstall.isCondemned(engine))
+            XCTAssertEqual(outcome.recoveryReason, "tap_install_failed")
+
+            let row = try XCTUnwrap(try rows(in: dir, action: "mic_tap_install_failed").first)
+            XCTAssertEqual(row["site"] as? String, "meeting_recorder")
+            XCTAssertEqual(row["reason"] as? String, "nullptr == Tap()")
+            XCTAssertTrue(try rows(in: dir, action: "mic_tap_install_raised").isEmpty)
+        }
+    }
+
+    func test_a_throwing_install_that_succeeds_is_installed() throws {
+        try withScratchLogs { _ in
+            let engine = AVAudioEngine()
+            let ran = OSAllocatedUnfairLockBox<Bool>(false)
+            let outcome = GuardedTapInstall.install(
+                format: healthy, site: "meeting_recorder", engine: engine,
+                installer: .throwing { ran.value = true }
+            )
+            XCTAssertEqual(outcome, .installed)
+            XCTAssertTrue(ran.value)
+            XCTAssertFalse(GuardedTapInstall.isCondemned(engine))
+        }
+    }
+
+    /// The error variant still runs inside the barrier: measured on macOS 27.2, `playAudio()`
+    /// on a node with no engine raises, so "returns an error" is not "never raises".
+    func test_a_throwing_install_that_raises_is_still_caught_by_the_barrier() throws {
+        try withScratchLogs { dir in
+            let engine = AVAudioEngine()
+            let outcome = GuardedTapInstall.install(
+                format: healthy, site: "meeting_recorder", engine: engine,
+                installer: .throwing { NSException(name: .genericException, reason: "boom", userInfo: nil).raise() }
+            )
+            XCTAssertEqual(outcome, .raised)
+            XCTAssertTrue(GuardedTapInstall.isCondemned(engine))
+            XCTAssertEqual(try rows(in: dir, action: "mic_tap_install_raised").count, 1)
+        }
+    }
+
+    /// The availability branch forced off: the pre-27 installer is the raising one, and the
+    /// barrier is what catches it.
+    func test_the_raising_installer_still_goes_through_the_barrier() throws {
+        try withScratchLogs { _ in
+            let engine = AVAudioEngine()
+            let outcome = GuardedTapInstall.install(
+                format: healthy, site: "meeting_recorder", engine: engine,
+                installer: .raising { NSException(name: .genericException, reason: "boom", userInfo: nil).raise() }
+            )
+            XCTAssertEqual(outcome, .raised)
+        }
+    }
+
+    /// The guards come before either installer: a condemned engine or a 0 Hz format never
+    /// reaches the SDK 27 call either.
+    func test_the_guards_run_ahead_of_the_throwing_installer() throws {
+        try withScratchLogs { _ in
+            let ran = OSAllocatedUnfairLockBox<Bool>(false)
+            let refused = GuardedTapInstall.install(
+                format: zeroSampleRate, site: "meeting_recorder", engine: AVAudioEngine(),
+                installer: .throwing { ran.value = true }
+            )
+            XCTAssertEqual(refused, .refusedFormat)
+            XCTAssertFalse(ran.value)
+        }
+    }
+
+    #if compiler(>=6.4)
+    /// The real SDK 27 call, on a real node: a second tap on one bus came back as an error
+    /// (-10863) rather than a raise, which is the premise the whole branch rests on. Compiled
+    /// only where the SDK has the call; CI's macos-15 runner does not.
+    func test_on_macOS_27_a_second_tap_on_a_bus_is_an_error_not_a_raise() throws {
+        guard #available(macOS 27, *) else { return }
+        try withScratchLogs { dir in
+            let engine = AVAudioEngine()
+            let mixer = engine.mainMixerNode
+            let format = mixer.outputFormat(forBus: 0)
+            func installer() -> GuardedTapInstall.Installer {
+                GuardedTapInstall.inputTapInstaller(mixer, bufferSize: 4096, format: format) { _, _ in }
+            }
+            guard case .throwing = installer() else { return XCTFail("macOS 27 takes the throwing call") }
+            XCTAssertEqual(GuardedTapInstall.install(format: format, site: "test", engine: engine, installer: installer()), .installed)
+            XCTAssertEqual(GuardedTapInstall.install(format: format, site: "test", engine: engine, installer: installer()), .failed)
+            XCTAssertEqual(try rows(in: dir, action: "mic_tap_install_failed").count, 1)
+            XCTAssertTrue(try rows(in: dir, action: "mic_tap_install_raised").isEmpty)
+            mixer.removeTap(onBus: 0)
+        }
+    }
+    #endif
 
     // MARK: - Helpers
 
