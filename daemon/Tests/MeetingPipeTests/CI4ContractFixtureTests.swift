@@ -252,6 +252,36 @@ final class CI4ContractFixtureTests: XCTestCase {
         }
     }
 
+    /// PIPE42: `modes.regulated_mode` is the one config key where the two trees
+    /// disagreeing is a privacy failure, so `ConfigStore` is checked against what
+    /// `Config.load` does with the same file, for every regulated-switch shape the
+    /// fixture carries. A file the pipeline refuses to run on must read as unparsed
+    /// and regulated here; a file it loads must read the same boolean, with nothing
+    /// refused. (Python refuses more than the switch, a misspelt sink for one, and
+    /// Swift loads those; they are not in the fixture.)
+    func test_regulated_mode_reads_what_the_pipeline_reads() throws {
+        let all = try cases("regulated-mode-golden")
+        XCTAssertGreaterThanOrEqual(all.count, 10, "fixture went vacuous")
+
+        for c in all {
+            let name = c["name"] as? String ?? "?"
+            let toml = try XCTUnwrap(c["toml"] as? String, name)
+            let loads = try XCTUnwrap(c["loads"] as? Bool, name)
+            let url = try tempDir().appendingPathComponent("config.toml")
+            try toml.write(to: url, atomically: true, encoding: .utf8)
+
+            let store = ConfigStore(configURL: url)
+            if loads {
+                let expected = try XCTUnwrap(c["regulated_mode"] as? Bool, name)
+                XCTAssertNil(store.parseError, "\(name): the pipeline loads this file")
+                XCTAssertEqual(store.regulatedMode, expected, "\(name): regulated mode")
+            } else {
+                XCTAssertNotNil(store.parseError, "\(name): the pipeline refuses this file")
+                XCTAssertTrue(store.regulatedMode, "\(name): a refused file reads regulated")
+            }
+        }
+    }
+
     /// A round-trip through the editor must not disturb what it does not model. The
     /// fixture case carrying `[fuzzy]` and an unknown `[future]` table is the one that
     /// matters: silently dropping either on the first term the user adds would turn a

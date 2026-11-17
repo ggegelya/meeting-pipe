@@ -260,7 +260,7 @@ struct ConfigParseErrorPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsSectionHeader("Settings unavailable",
-                caption: "MeetingPipe is running with regulated mode on and will not change the file until it parses.")
+                caption: "MeetingPipe is running with regulated mode on and will not change the file until it is fixed.")
             SettingsGroup {
                 SettingsRow(error.preferencesMessage,
                     sublabel: error.message,

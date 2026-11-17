@@ -237,6 +237,7 @@ digest_local_only = false
 # "obsidian", "filesystem", "lan" to fan out; each has its own section below and
 # is only consulted when it appears here. This is the GLOBAL list; a workflow's
 # own sink checkboxes (workflow editor) override it for the meetings it matches.
+# A name outside those four fails the load, before any summary is paid for.
 sinks = ["notion"]
 
 [notion]
@@ -294,6 +295,11 @@ host = ""
 
 [modes]
 # When true, pipeline writes local Markdown only and skips Notion entirely.
+# Keep it under this [modes] header and write it as true or false: a
+# `modes.regulated_mode = true` line added at the end of the file lands inside
+# whichever table comes last (so does a line above every table), and both the
+# app and the pipeline then refuse the file (the app reads regulated as on)
+# rather than run with it off (PIPE42).
 regulated_mode = false
 
 [mcp]

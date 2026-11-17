@@ -849,3 +849,42 @@ def test_mdfind_is_called_by_its_absolute_system_path(tmp_path, monkeypatch) -> 
     monkeypatch.setattr("mp.doctor.subprocess.run", run)
     assert _mdfind_app_bundles() == []
     assert seen[0][0] == "/usr/bin/mdfind"
+
+
+# ---------- config validation (PIPE42) ---------------------------------------
+
+
+def _doctor_config(monkeypatch, tmp_path: Path, text: str):
+    from mp import config as config_mod
+    from mp import doctor
+
+    path = tmp_path / "config.toml"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(doctor, "CONFIG_PATH", path)
+    monkeypatch.setattr(config_mod, "_WARNED_UNKNOWN", set())
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(tmp_path / "logs"))
+    return doctor.check_config()
+
+
+def test_doctor_fails_a_misplaced_section(capsys, monkeypatch, tmp_path: Path) -> None:
+    cfg = _doctor_config(monkeypatch, tmp_path, '[transcription]\nlanguage = "auto"\nmodes.regulated_mode = true\n')
+    out = capsys.readouterr().out
+    assert cfg is None
+    assert "[FAIL]" in out and "transcription.modes" in out
+
+
+def test_doctor_fails_a_misspelt_sink(capsys, monkeypatch, tmp_path: Path) -> None:
+    cfg = _doctor_config(monkeypatch, tmp_path, '[output]\nsinks = ["obsidan"]\n')
+    out = capsys.readouterr().out
+    assert cfg is None
+    assert "[FAIL]" in out and "obsidan" in out
+
+
+def test_doctor_warns_on_each_unknown_key(capsys, monkeypatch, tmp_path: Path) -> None:
+    cfg = _doctor_config(
+        monkeypatch, tmp_path, 'sinks = ["obsidian"]\n\n[summarization]\nbackedn = "local"\n'
+    )
+    out = capsys.readouterr().out
+    assert cfg is not None
+    assert "[WARN] unknown config key summarization.backedn" in out
+    assert "[WARN] unknown config key sinks" in out

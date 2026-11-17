@@ -661,6 +661,55 @@ final class ConfigStoreTests: XCTestCase {
     // `test_an_unsaved_ui_edit_survives_a_reopen_when_the_file_did_not_change`
     // in ConfigStoreHandEditTests: a parsed store now reloads an outside change.
 
+    // MARK: - PIPE42: a regulated switch the store cannot read as a boolean reads on
+
+    func test_a_non_boolean_regulated_mode_reads_regulated_and_refuses_saves() throws {
+        for literal in ["\"true\"", "\"false\"", "1", "0"] {
+            let url = try makeTempConfigURL()
+            try "[detection]\nmanual_hotkey = \"ctrl+option+m\"\n\n[modes]\nregulated_mode = \(literal)\n"
+                .write(to: url, atomically: true, encoding: .utf8)
+            let before = try Data(contentsOf: url)
+
+            let store = ConfigStore(configURL: url)
+            XCTAssertTrue(store.regulatedMode, literal)
+            let error = try XCTUnwrap(store.parseError, literal)
+            XCTAssertTrue(error.preferencesMessage.contains("regulated_mode"), error.preferencesMessage)
+            XCTAssertEqual(store.manualHotkey, "ctrl+option+m", "the rest of the file still reads")
+            store.regulatedMode = false
+            XCTAssertThrowsError(try store.saveNow(), literal)
+            XCTAssertEqual(try Data(contentsOf: url), before, "false is never saved over it")
+        }
+    }
+
+    func test_a_modes_table_nested_under_another_section_reads_regulated() throws {
+        let url = try makeTempConfigURL()
+        try "[transcription]\nlanguage = \"auto\"\nmodes.regulated_mode = true\n"
+            .write(to: url, atomically: true, encoding: .utf8)
+        let store = ConfigStore(configURL: url)
+        XCTAssertTrue(store.regulatedMode)
+        let error = try XCTUnwrap(store.parseError)
+        XCTAssertTrue(error.preferencesMessage.contains("transcription"), error.preferencesMessage)
+    }
+
+    func test_a_switch_appended_after_a_last_modes_table_or_above_every_table_reads_regulated() throws {
+        for text in ["[modes]\nregulated_mode = false\nmodes.regulated_mode = true\n",
+                     "regulated_mode = true\n\n[modes]\n"] {
+            let url = try makeTempConfigURL()
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            let store = ConfigStore(configURL: url)
+            XCTAssertNotNil(store.parseError, text)
+            XCTAssertTrue(store.regulatedMode, text)
+        }
+    }
+
+    func test_a_boolean_false_regulated_mode_reads_false() throws {
+        let url = try makeTempConfigURL()
+        try "[modes]\nregulated_mode = false\n".write(to: url, atomically: true, encoding: .utf8)
+        let store = ConfigStore(configURL: url)
+        XCTAssertNil(store.parseError)
+        XCTAssertFalse(store.regulatedMode)
+    }
+
     // MARK: - CONC8: the write half takes a string, and the two writers are ordered
 
     func test_the_write_half_writes_exactly_the_string_it_is_given() throws {

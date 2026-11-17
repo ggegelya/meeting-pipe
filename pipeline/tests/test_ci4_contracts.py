@@ -87,6 +87,14 @@ def test_glossary_fixture_matches_the_live_reader(tmp_path: Path) -> None:
     )
 
 
+def test_regulated_fixture_matches_the_live_loader(tmp_path: Path) -> None:
+    assert _generator().gen_regulated(tmp_path) == _committed("regulated-mode-golden.json"), (
+        "config.Config.load changed how it reads modes.regulated_mode; regenerate with "
+        "`cd pipeline && uv run python ../scripts/gen_contract_fixtures.py` and "
+        "mirror the change in Swift's ConfigStore, which must read the same files the same way"
+    )
+
+
 # --------------------------------------------------------------------------
 # Guard the guards: a vacuously-empty fixture must not read as agreement
 # --------------------------------------------------------------------------
@@ -98,6 +106,7 @@ def test_glossary_fixture_matches_the_live_reader(tmp_path: Path) -> None:
         ("publish-result-golden.json", 4),
         ("prefetch-progress-golden.json", 4),
         ("speaker-overlay-golden.json", 10),
+        ("regulated-mode-golden.json", 10),
     ],
 )
 def test_fixtures_are_not_vacuous(name: str, minimum: int) -> None:

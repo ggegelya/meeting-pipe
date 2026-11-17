@@ -557,6 +557,8 @@ Accessibility is missing, or the meeting app is one whose windows cannot be read
 
 Every pane in **Preferences** shows one row instead of its controls: "config.toml has a syntax error at line N". The settings file, `~/.config/meeting-pipe/config.toml`, was edited by hand and something in it no longer reads, often a missing bracket or quote on the line named. Nothing in it has been lost: the app will not save over a file it cannot read, so every setting you had is still there, waiting for the typo to be fixed. Until then the app plays safe. It runs as if **Regulated mode** were on, so nothing leaves your Mac, and every other setting sits at its default. Meetings still record, but their summaries fail until the file is fixed, because the summarizer reads the same file; once it reads again, **Retry** on the failed meeting picks it up. Click **Open in editor** on that row, fix the line it names and save; the panes come back with your settings in them a moment later (closing and reopening Preferences does the same).
 
+The same row can name **Regulated mode** instead of a line: the file reads, but its regulated switch is written as something other than `true` or `false`, or it sits outside its `[modes]` section, usually because `modes.regulated_mode = true` was added at the bottom of the file. The app treats that as on until you fix it, and summaries stop until then too. Put `regulated_mode = true` (or `false`) on its own line under a `[modes]` heading.
+
 ### Anything else
 
 Two families of failure are worth naming, because both read as the app being broken and neither is.

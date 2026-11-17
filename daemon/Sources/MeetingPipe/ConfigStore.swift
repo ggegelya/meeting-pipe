@@ -8,10 +8,15 @@ struct ConfigParseError: Error, Equatable {
     let message: String
     let line: Int?
     let column: Int?
+    /// The row's copy when the file parses but cannot be trusted (PIPE42: a
+    /// regulated switch that is not a boolean, or sits in the wrong table). Nil
+    /// for a syntax error, which gets the line-numbered sentence below.
+    var summary: String? = nil
 
     /// The one Preferences row shown in place of the panes while the file is
     /// unreadable. Derived here so the copy is testable without a view.
     var preferencesMessage: String {
+        if let summary { return summary }
         let at = line.map { " at line \($0)" } ?? ""
         return "config.toml has a syntax error\(at). Fix it in a text editor, then reopen Preferences."
     }
@@ -43,7 +48,8 @@ final class ConfigStore: ObservableObject {
 
     /// The document the store last read or wrote; a save starts from a fresh read
     /// of the file instead and makes that the new one, so unknown keys survive.
-    /// Empty while `parseError` is set.
+    /// Empty while a syntax error is set; a file whose regulated switch cannot be
+    /// read (PIPE42) keeps its parsed document, though nothing saves it.
     private var rawDocument = TOMLTable()
 
     /// The file's bytes as the store last agreed with them: what it loaded, or what
@@ -68,9 +74,11 @@ final class ConfigStore: ObservableObject {
         let values: [String: TOMLValue]
     }
 
-    /// Set when the file exists but does not parse (ARCH9). While set, saves are
-    /// refused and every value is its default except `regulatedMode`, which is
-    /// true. `reloadIfChangedOnDisk()` clears it once the file is fixed.
+    /// Set when the file exists but does not parse (ARCH9), or parses with a
+    /// regulated switch that cannot be read as a boolean (PIPE42). While set, saves
+    /// are refused and `regulatedMode` is true; after a syntax error every other
+    /// value is its default, after a PIPE42 problem the file's. `reloadIfChangedOnDisk()`
+    /// clears it once the file is fixed.
     @Published private(set) var parseError: ConfigParseError?
 
     /// Live values exposed to SwiftUI. didSet → schedule debounced save. The
@@ -320,13 +328,81 @@ final class ConfigStore: ObservableObject {
             return (TOMLTable(), ConfigParseError(message: "config.toml is not UTF-8 text", line: nil, column: nil))
         }
         do {
-            return (try TOMLTable(string: raw), nil)
+            let doc = try TOMLTable(string: raw)
+            // PIPE42: a regulated switch this store cannot read as a boolean is not
+            // read as off. The rest of the document still loads, so every other
+            // control shows the user's value, but saves are refused (nothing writes
+            // `false` over it) and `apply` reads regulated as on, the ARCH9 rule.
+            return (doc, regulatedModeProblem(in: doc))
         } catch let error as TOMLParseError {
             let at = error.source.begin
             return (TOMLTable(), ConfigParseError(message: error.description, line: at.line, column: at.column))
         } catch {
             return (TOMLTable(), ConfigParseError(message: String(describing: error), line: nil, column: nil))
         }
+    }
+
+    /// Why `modes.regulated_mode` cannot be read as written, or nil. `Config.load`
+    /// refuses the same files (pinned by `regulated-mode-golden.json`): a value that
+    /// is not a TOML boolean (`"true"`, `1`), and a `modes` table nested under
+    /// another, which is what `modes.regulated_mode = true` appended to the end of
+    /// the file becomes, since TOML binds a dotted key to the last open table.
+    static func regulatedModeProblem(in doc: TOMLTable) -> ConfigParseError? {
+        if doc["regulated_mode"] != nil {
+            return ConfigParseError(
+                message: "regulated_mode is outside the [modes] table",
+                line: nil, column: nil,
+                summary: "config.toml has regulated_mode above every table, where nothing reads it. "
+                    + "Move it under a [modes] header in a text editor; regulated mode stays on until then."
+            )
+        }
+        if let modes = doc["modes"] {
+            if let value = modes.table?["regulated_mode"], value.bool == nil {
+                return ConfigParseError(
+                    message: "modes.regulated_mode must be true or false",
+                    line: nil, column: nil,
+                    summary: "config.toml sets regulated_mode to something other than true or false. "
+                        + "Regulated mode stays on until it is fixed in a text editor."
+                )
+            }
+            if modes.table == nil {
+                return ConfigParseError(
+                    message: "modes must be a table",
+                    line: nil, column: nil,
+                    summary: "config.toml has a modes value that is not a [modes] table, so regulated_mode "
+                        + "cannot be read. Regulated mode stays on until it is fixed in a text editor."
+                )
+            }
+        }
+        // `modes` itself is walked too: a file whose last table is [modes] turns an
+        // appended `modes.regulated_mode = true` into `modes.modes.regulated_mode`.
+        for key in doc.keys {
+            if let path = nestedModes(in: doc[key], path: key) {
+                return ConfigParseError(
+                    message: "\(path) is a [modes] table nested under [\(key)]",
+                    line: nil, column: nil,
+                    summary: "config.toml has regulated_mode settings inside [\(key)], where nothing reads them. "
+                        + "Move them under their own [modes] header in a text editor; regulated mode stays on until then."
+                )
+            }
+        }
+        return nil
+    }
+
+    /// The dotted path of a `modes` table anywhere below `node` (tables and arrays
+    /// of tables), or nil.
+    private static func nestedModes(in node: TOMLValueConvertible?, path: String) -> String? {
+        if let table = node?.table {
+            for key in table.keys {
+                if key == "modes", table[key]?.table != nil { return "\(path).modes" }
+                if let found = nestedModes(in: table[key], path: "\(path).\(key)") { return found }
+            }
+        } else if let array = node?.array {
+            for index in 0..<array.count {
+                if let found = nestedModes(in: array[index], path: path) { return found }
+            }
+        }
+        return nil
     }
 
     /// Reload the file when it changed outside the app and the store has no save

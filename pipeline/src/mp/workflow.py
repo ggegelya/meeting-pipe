@@ -34,10 +34,10 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from . import events
-from .config import BACKENDS, Config, ExtraSectionSpec, effective_sinks, zero_egress
+from .config import BACKENDS, Config, ExtraSectionSpec, SinkName, effective_sinks, zero_egress
 
 log = logging.getLogger("mp.workflow")
 
@@ -220,7 +220,10 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
     if isinstance(sinks, list):
         clean = [s for s in sinks if isinstance(s, str) and s]
         if overlay.output.sinks != clean:
-            overlay.output.sinks = clean
+            # Not validated against `SinkName` here (PIPE42 validates config.toml at
+            # load): an unknown name from a sidecar still fails loudly, as a
+            # `PublisherBuildError` from the router, rather than being dropped.
+            overlay.output.sinks = cast("list[SinkName]", clean)
             changed.append(f"sinks={','.join(clean)}" if clean else "sinks=(none)")
 
     notion_db = meta.get("workflow_notion_database_id")

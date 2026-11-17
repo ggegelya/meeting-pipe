@@ -187,7 +187,10 @@ def test_build_publishers_unknown_name_raises() -> None:
     # Unknown sink first so the error fires before any other sink's
     # construction reads env (e.g. notion requires NOTION_TOKEN). The
     # raise-on-unknown contract is what's under test, not env handling.
-    cfg = Config.model_validate({"output": {"sinks": ["made-up"]}})
+    # Since PIPE42 config.toml cannot carry an unknown name (`Config.load` refuses
+    # it), so this is the workflow-sidecar path, which assigns without validating.
+    cfg = Config()
+    cfg.output.sinks = ["made-up"]  # type: ignore[list-item]
     with pytest.raises(PublisherBuildError):
         build_publishers(cfg)
 

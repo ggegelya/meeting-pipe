@@ -5,13 +5,14 @@ which is fine because both are read-only consumers — config is owned by the us
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tomllib
 from pathlib import Path
 from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, StrictBool
 
 
 def _expand(p: str) -> Path:
@@ -33,6 +34,25 @@ MANAGED_SECRET_KEYS = ("ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN", "OPENAI_
 BackendName = Literal[
     "anthropic", "local", "auto", "apple_intelligence", "claude_cli", "openai"
 ]
+
+
+# The sink names `publish_router._build_one` builds (PIPE42). `OutputCfg.sinks` is
+# typed with it, so a misspelt sink fails `Config.load` before any model call
+# instead of raising from the publish fan-out after the summary was paid for.
+# `test_config.py` pins it against `_build_one`'s own comparisons.
+SinkName = Literal["notion", "obsidian", "filesystem", "lan"]
+
+
+class ConfigError(ValueError):
+    """config.toml parses but says something the pipeline must not guess at (PIPE42).
+
+    Today that is one shape: a top-level section's table nested inside another
+    table, which is what `modes.regulated_mode = true` appended to the end of the
+    file becomes (TOML binds a dotted key to the last open table). Pydantic would
+    drop it without a word and regulated mode would stay off, so the load refuses,
+    the same posture as a file that does not parse: no run egresses on a config
+    whose regulated switch might be sitting in the wrong table.
+    """
 
 
 class Recording(BaseModel):
@@ -242,11 +262,15 @@ class OutputCfg(BaseModel):
     Default is `["notion"]` to preserve current single-sink behaviour
     for installs that do not opt into multi-sink config.
     """
-    sinks: list[str] = Field(default_factory=lambda: ["notion"])
+    sinks: list[SinkName] = Field(default_factory=lambda: ["notion"])
 
 
 class Modes(BaseModel):
-    regulated_mode: bool = False
+    # Strict (PIPE42): `"true"`, `"false"`, `1` and `0` refuse to load rather than
+    # being coerced. Lax mode read `"false"` as False here while the Swift store,
+    # which reads only a TOML boolean, fails closed and reads the same file as
+    # regulated; a refusal is fail-closed on both sides.
+    regulated_mode: StrictBool = False
     # Resolved per-meeting flag, set by the workflow overlay (mp.workflow) from
     # the sidecar's `workflow_nda_mode`. Not read from the global TOML; it rides
     # on the resolved Config so the egress guard (mp.egress_guard) can arm once
@@ -280,6 +304,14 @@ class Config(BaseModel):
     modes: Modes = Field(default_factory=Modes)
     mcp: MCPCfg = Field(default_factory=MCPCfg)
 
+    # Keys `load` found in a Python-owned section and no model declares (PIPE42),
+    # as `(section, key)`, `section` being `top_level` for a key outside any table.
+    _unknown_keys: list[tuple[str, str]] = PrivateAttr(default_factory=list)
+
+    @property
+    def unknown_keys(self) -> list[tuple[str, str]]:
+        return list(self._unknown_keys)
+
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
         path = path or CONFIG_PATH
@@ -287,11 +319,102 @@ class Config(BaseModel):
             return cls()
         with path.open("rb") as f:
             raw = tomllib.load(f)
+        if "regulated_mode" in raw:
+            # The switch above every table: nothing reads it there, and a warning
+            # alone would leave the run unregulated (PIPE42).
+            raise ConfigError(
+                "config.toml has `regulated_mode` above every table, where nothing reads it. "
+                "Move it under a [modes] header."
+            )
+        misplaced = _misplaced_section(raw, frozenset(cls.model_fields))
+        if misplaced is not None:
+            section = misplaced.rsplit(".", 1)[1]
+            raise ConfigError(
+                f"config.toml has a `{misplaced}` table, but `{section}` is a top-level section. "
+                f"This usually comes from a dotted key added at the end of the file, which lands "
+                f"under whichever table is open last. Move it under its own [{section}] header."
+            )
+        unknown = find_unknown_keys(raw)
+        _report_unknown(unknown)
         # Normalize tilde in output_dir if user wrote one.
         rec = raw.get("recording", {})
         if isinstance(rec.get("output_dir"), str):
             rec["output_dir"] = str(_expand(rec["output_dir"]))
-        return cls(**raw)
+        cfg = cls(**raw)
+        cfg._unknown_keys = unknown
+        return cfg
+
+
+def _misplaced_section(node: Any, sections: frozenset[str], path: tuple[str, ...] = ()) -> str | None:
+    """The dotted path of the first table below the top level whose name is a
+    top-level section name, walking tables and arrays of tables; None if none."""
+    if isinstance(node, list):
+        for item in node:
+            found = _misplaced_section(item, sections, path)
+            if found is not None:
+                return found
+        return None
+    if not isinstance(node, dict):
+        return None
+    for key, value in node.items():
+        here = (*path, key)
+        if path and key in sections and isinstance(value, dict):
+            return ".".join(here)
+        found = _misplaced_section(value, sections, here)
+        if found is not None:
+            return found
+    return None
+
+
+# The sections whose every key this pipeline models, so an undeclared key there is
+# almost certainly a typo that would otherwise be dropped in favour of the default
+# (PIPE42). `recording`, `detection` and `transcription` are not here: their
+# models tolerate legacy and Swift-owned keys on purpose (ARCH9, ADR 0007).
+_STRICT_SECTIONS: dict[str, type[BaseModel]] = {
+    "modes": Modes,
+    "summarization": Summarization,
+    "output": OutputCfg,
+    "notion": NotionCfg,
+    "obsidian": ObsidianCfg,
+    "filesystem": FilesystemCfg,
+    "lan": LanCfg,
+    "mcp": MCPCfg,
+}
+
+TOP_LEVEL = "top_level"
+
+_WARNED_UNKNOWN: set[tuple[str, str]] = set()
+"""Unknown keys already reported in this process: a run loads the config more than once."""
+
+
+def find_unknown_keys(raw: dict[str, Any]) -> list[tuple[str, str]]:
+    """`(section, key)` for every key in `raw` that no model declares, in the top
+    level and the Python-owned sections."""
+    out = [(TOP_LEVEL, key) for key in raw if key not in Config.model_fields]
+    for section, model in _STRICT_SECTIONS.items():
+        table = raw.get(section)
+        if isinstance(table, dict):
+            out.extend((section, key) for key in table if key not in model.model_fields)
+    return out
+
+
+def _report_unknown(unknown: list[tuple[str, str]]) -> None:
+    fresh = [item for item in unknown if item not in _WARNED_UNKNOWN]
+    if not fresh:
+        return
+    _WARNED_UNKNOWN.update(fresh)
+    names = ", ".join(key if section == TOP_LEVEL else f"{section}.{key}" for section, key in fresh)
+    logging.getLogger(__name__).warning(
+        "config.toml has keys nothing reads, so their defaults apply (check the spelling): %s", names
+    )
+    from . import events
+
+    for section, key in fresh:
+        try:
+            events.emit("pipeline", "config_unknown_key", section=section, key=key)
+        except OSError:
+            # An unwritable log is no reason to fail the config load; the warning stands.
+            break
 
 
 def zero_egress(cfg: Config) -> bool:
@@ -460,7 +583,7 @@ def extract_backend_flag(argv: list[str]) -> tuple[list[str], str | None]:
     return out, override
 
 
-def effective_sinks(cfg: Config) -> list[str]:
+def effective_sinks(cfg: Config) -> list[SinkName]:
     """The output sinks after the regulated/NDA egress clamp.
 
     Under `zero_egress` the one sink left is the filesystem sink (SEC18), whatever

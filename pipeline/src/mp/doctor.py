@@ -107,11 +107,16 @@ def check_config() -> Config | None:
         _warn("config.toml missing — using all defaults")
         return Config()
     try:
-        cfg = Config.load()
+        cfg = Config.load(CONFIG_PATH)
     except Exception as e:
+        # PIPE42: a misplaced section (`ConfigError`) and a misspelt sink or a
+        # non-boolean `regulated_mode` (pydantic) refuse to load, like a syntax error.
         _fail(f"config parse error: {e}")
         return None
     _ok(f"loaded {CONFIG_PATH}")
+    for section, key in cfg.unknown_keys:
+        name = key if section == "top_level" else f"{section}.{key}"
+        _warn(f"unknown config key {name}: nothing reads it, so its default applies (check the spelling)")
     _info(f"recording.output_dir = {cfg.recording.output_dir}")
     _info(f"output.sinks = {cfg.output.sinks}")
     _info(f"summarization.model = {cfg.summarization.model}")
