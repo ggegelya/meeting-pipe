@@ -64,7 +64,7 @@ dependencies = [
 # transport wiring to go untested on Linux. `scripts/install.sh` syncs the extra
 # so the owner's own install can serve.
 mcp = [
-    "mcp>=1.29,<2",
+    "mcp>=1.29,<3",
 ]
 dev = [
     "pytest>=8.0.0",
