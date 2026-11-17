@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034  # CI12: results are read inside the single-quoted `check` conditions, which shellcheck cannot see into
 # Gate matrix for scripts/uninstall.sh (DIST8): a plain uninstall must keep the
 # owner's own data (originals/ incl. held/, corrections/, auto_consent.json), and
 # --purge must list it and ask before deleting any of it.

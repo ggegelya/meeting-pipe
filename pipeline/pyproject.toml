@@ -110,7 +110,23 @@ target-version = "py311"
 # an upstream release gets to do for us: several of those families (DTZ naive
 # datetimes, BLE blind excepts, S) are behaviour questions, not formatting.
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F"]
+# CI12 adds S (flake8-bandit), so a new `shell=True`, pickle, `yaml.load` or `eval` fails the
+# build instead of relying on the security review reading the code by hand.
+select = ["E4", "E7", "E9", "F", "S"]
+ignore = [
+    "S603",  # subprocess with an argv list, never a shell
+    "S606",  # os.exec* with an argv list (`serve-local`), never a shell
+    "S607",  # bare executable names (`lsof`, `mdfind`): owned by SEC17
+    "S101",  # `assert` states retry-loop invariants, not input validation
+    "S110",  # deliberate best-effort `except: pass` (progress events)
+    "S404",  # importing subprocess is not a finding
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test fixtures: fake tokens and env-var names (S105/S106), literal /tmp paths that are only
+# strings and never opened (S108), a scratch chmod of a temp file (S103), and asserting that a
+# server refuses an all-interfaces bind (S104).
+"tests/**" = ["S103", "S104", "S105", "S106", "S108"]
 
 # TYPE1. Basic mode over src/ only: tests/ is full of deliberately-partial fakes
 # and would need its own pass. Ratcheting to strict is a later decision.

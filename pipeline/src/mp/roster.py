@@ -78,7 +78,7 @@ def _fingerprint(sample: list[float]) -> str:
     written for. An older writer that appends and evicts without knowing about
     `sources` leaves both lists the same length but shifted by one; without this
     the shifted entries would attribute a sample to the wrong meeting."""
-    return hashlib.sha1(json.dumps(sample).encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha1(json.dumps(sample).encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
 
 
 def _mean(vectors: list[list[float]]) -> list[float]:

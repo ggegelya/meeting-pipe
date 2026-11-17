@@ -102,6 +102,22 @@ truth_fences() {
     python3 scripts/truth_fences.py
     end
 
+    begin "Shell scripts: shellcheck (CI12)"
+    # Every tracked shell script at warning severity, taken from git so a new script is covered
+    # without editing a list. prune-worktrees.sh deletes directories and install.sh / rebuild.sh
+    # touch the keychain and ~/Applications: an unchecked cd or a mistyped variable there is the
+    # class of bug that swept a live worktree on 2026-07-24. Missing locally is a failure with the
+    # fix named, never a skip; the version is printed so a CI result compares with a local one.
+    if ! command -v shellcheck >/dev/null 2>&1; then
+        echo "::error::CI12: shellcheck not found. Install it with: brew install shellcheck"
+        echo "(Linux: apt-get install shellcheck; or put 'uvx --from shellcheck-py shellcheck' on PATH.)"
+        return 1
+    fi
+    shellcheck --version | sed -n 's/^version: /shellcheck /p'
+    git ls-files -z -- '*.sh' 'scripts/pre-commit' | xargs -0 shellcheck -S warning
+    echo "shellcheck -S warning: $(git ls-files -- '*.sh' 'scripts/pre-commit' | wc -l | tr -d ' ') scripts clean."
+    end
+
     begin "Keychain helper gates (SEC23)"
     bash scripts/test-keychain-migration.sh
     end
@@ -139,6 +155,12 @@ pipeline() {
         cd pipeline
         begin "Pipeline: install from the lock"
         uv sync --frozen --extra dev --extra mcp
+        end
+        begin "Pipeline: dependency advisories (CI12)"
+        # pip-audit at a pinned version through uvx over the lock's export, failing on any
+        # advisory not in scripts/pip-audit-allowlist.txt. Network is required, as it already is
+        # for the install above; an unreachable database fails the step rather than passing it.
+        bash ../scripts/pip-audit-check.sh
         end
         begin "Pipeline: ruff"
         $run ruff check src tests

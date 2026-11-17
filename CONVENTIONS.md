@@ -250,6 +250,8 @@ cd pipeline && uv run --extra dev ruff check src tests
 
 Any F401 (unused import) fails CI. Run locally before committing. Config in `pipeline/pyproject.toml`.
 
+CI12 added three security gates. Ruff selects `S` (flake8-bandit), so `shell=True`, pickle, `yaml.load` or `eval` fail the build; the ignores (argv-list subprocess, SEC17's bare executables, retry asserts, best-effort excepts) and the test-fixture per-file ignores each carry their reason in `pyproject.toml`, and a new one needs the same. `ci-local.sh`'s truth-fences job runs `shellcheck -S warning` over every tracked shell script (`git ls-files`), so a new script is covered with no list to edit; it fails with the install hint when `shellcheck` is missing (`brew install shellcheck`), and CI installs it explicitly. The pipeline job runs `scripts/pip-audit-check.sh`: pip-audit at a pinned version through `uvx` (nothing in `uv.lock`) over the lock's export, failing on any advisory not in `scripts/pip-audit-allowlist.txt`, where each line needs an id, the package, a date and a reason, and an unreachable advisory database fails rather than passes.
+
 ### Pyright checks the annotations (TYPE1)
 
 ```bash

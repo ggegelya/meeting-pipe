@@ -50,7 +50,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import local_server
 
-TOKEN_ENV = "MP_LOCAL_SERVER_TOKEN"
+TOKEN_ENV = "MP_LOCAL_SERVER_TOKEN"  # noqa: S105 - the variable's name, not a secret
 DEFAULT_MODEL_ALIAS = "default_model"
 
 #: A chat request is a transcript, so it can be large; this only bounds a

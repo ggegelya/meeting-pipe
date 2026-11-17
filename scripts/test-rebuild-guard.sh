@@ -170,7 +170,7 @@ grep -q "recording may be in progress" "$T/out.log" && fail "did not ask" || ok 
 expect_eq "the new binary is installed" "$(cat "$(app_bin "$T")")" "new build"
 [[ "$(inode "$(app_bin "$T")")" != "$old_inode" ]] && ok "the binary was renamed into place (new inode)" \
     || fail "the binary was renamed into place (new inode)"
-ls "$T/home/Applications/MeetingPipe.app/Contents/MacOS/" | grep -q '^\.MeetingPipe\.new' \
+compgen -G "$T/home/Applications/MeetingPipe.app/Contents/MacOS/.MeetingPipe.new*" >/dev/null \
     && fail "no temp file is left behind" || ok "no temp file is left behind"
 stop="$(first_line "$T" '^launchctl bootout')"
 uv_at="$(first_line "$T" '^uv ')"

@@ -152,8 +152,8 @@ def tail_server_log(max_chars: int = 800) -> str:
 # server reads it from this file. 0600, in Application Support (a log folder
 # travels in diagnostic bundles); a process that can read it already runs as the
 # owner. Clients also use it to *verify* the server: see `health_proof`.
-TOKEN_NAME = "mlx-server.token"
-TOKEN_ENV = "MP_LOCAL_SERVER_TOKEN"  # == local_model_server.TOKEN_ENV, which cannot be imported here
+TOKEN_NAME = "mlx-server.token"  # noqa: S105 - a file name, not a secret
+TOKEN_ENV = "MP_LOCAL_SERVER_TOKEN"  # noqa: S105 - a name; == local_model_server.TOKEN_ENV, which cannot be imported here
 HEALTH_PATH = "/health"
 
 
@@ -414,10 +414,10 @@ def is_owner_command(command: str | None) -> bool:
     if python_at is None:
         return False
     rest = tokens[python_at + 1:]
-    for i, token in enumerate(rest):
-        if token == "mp" and i > 0 and rest[i - 1] == "-m":
+    for i, arg in enumerate(rest):
+        if arg == "mp" and i > 0 and rest[i - 1] == "-m":
             return True
-        if token.endswith("/mp"):
+        if arg.endswith("/mp"):
             return True
     return False
 

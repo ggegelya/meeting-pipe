@@ -45,7 +45,14 @@ jobs:
         with:
           # tomllib is stdlib from 3.11; the script needs no other dependency.
           python-version: "3.12"
-      - name: Config keys, event categories, CLAUDE.md budgets, doc links
+      - name: Install shellcheck
+        # CI12: installed explicitly, like ffmpeg on the daemon job, rather than trusted from the
+        # runner image, and its version printed so this result compares with a local run.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck --version
+      - name: Config keys, event categories, CLAUDE.md budgets, doc links, shellcheck
         run: bash scripts/ci-local.sh truth-fences
 
   pipeline:

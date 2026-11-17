@@ -1,0 +1,3 @@
+# CI12: advisories accepted against packages pipeline/uv.lock pins, one per line:
+#   <advisory id> <package> <YYYY-MM-DD accepted> <why it is unreachable here>
+# A line with no reason fails the check. Empty since SEC31 (2026-11-16) cleared the lock.

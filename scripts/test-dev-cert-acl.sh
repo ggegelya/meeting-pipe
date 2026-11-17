@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034  # CI12: results are read inside the single-quoted `check` conditions, which shellcheck cannot see into
 # Gate matrix for the signing key's ACL (SEC17), against SCRATCH keychains.
 #
 # `ensure_dev_cert` must import a new key trusted for /usr/bin/codesign rather than any

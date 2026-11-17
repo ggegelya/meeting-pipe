@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034  # CI12: results are read inside the single-quoted `check` conditions, which shellcheck cannot see into
 # DYLD injection against a hardened and a non-hardened build (SEC17).
 #
 # Builds a tiny binary and a dylib whose constructor writes a marker file, signs the binary the

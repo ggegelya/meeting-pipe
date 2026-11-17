@@ -72,7 +72,7 @@ echo
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/auto1-appintents.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
-cd "$WORK"
+cd "$WORK" || exit 1
 
 # A minimal App Intent + AppShortcutsProvider, the shape AUTO1's GO build would ship
 # (one intent here stands in for the six meetingpipe:// verbs). No app runtime is linked;

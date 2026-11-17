@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Live-recording guard for rebuild.sh and install.sh (DIST9).
 #
 # A rebuild or reinstall relaunches the daemon, and a relaunch ends any meeting
@@ -41,7 +42,10 @@ live_recording_output_dir() {
             }
         ' "$config" 2>/dev/null)" || dir=""
     fi
+    # The literal tilde is the config default's own spelling; the case below expands it.
+    # shellcheck disable=SC2088
     [[ -n "$dir" ]] || dir="~/Documents/Meetings/raw"
+    # shellcheck disable=SC2088  # matching a literal tilde, not expanding one
     case "$dir" in
         "~") dir="$home" ;;
         "~/"*) dir="$home/${dir#\~/}" ;;
