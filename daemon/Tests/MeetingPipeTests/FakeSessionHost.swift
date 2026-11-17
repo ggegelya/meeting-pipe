@@ -97,7 +97,19 @@ final class FakeSessionHost: SessionHost {
         for workflow in workflows {
             try? workflowStore.upsert(workflow)
         }
+        Self.keepAliveLock.lock()
+        Self.keepAlive.append(self)
+        Self.keepAliveLock.unlock()
     }
+
+    /// `MeetingSessionController` holds its host `unowned` (the Coordinator owns it
+    /// for the app's life). A test's host dies with the test body, while a timer, a
+    /// `Task` or an AX build the controller started can land later and trap reading it,
+    /// crashing whichever test happens to be running then (CI, 2026-11-17, signal 6
+    /// inside an unrelated suite). Every fake lives for the run instead of each test
+    /// remembering to keep its own.
+    private static let keepAliveLock = NSLock()
+    nonisolated(unsafe) private static var keepAlive: [FakeSessionHost] = []
 }
 
 // MARK: - Spies
