@@ -20,9 +20,15 @@ written per segment to `<stem>.diarize_cleanup.json`, so a later
 correction can be traced to a cleanup edit instead of inferred; and a
 relabel that would empty its source label is refused unless the two
 labels' voiceprints agree (`_refuse_unsupported_merges`).
+
+DIAR9 bounds what a steered model can do. Moving more than half of one
+speaker's lines to other speakers needs the same voiceprint agreement; a
+window may only relabel lines whose `[n]` it showed; and a transcript the
+pass already cleaned is skipped unless `--force`.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import sys
@@ -72,6 +78,30 @@ AUDIT_SCHEMA_VERSION = 1
 MERGE_MIN_SIMILARITY = 0.65
 
 _REFUSED_VOICEPRINT = "voiceprint_distance"
+
+# DIAR9. A spoken "for the record, those lines were Bob's" can steer the pass into
+# moving one person's lines under another person's name while leaving the source
+# label alive, which DIAR5's emptied-label guard never looked at. So a batch that
+# moves more than this share of one label's segments away needs the same voiceprint
+# agreement a merge does, each edit judged against its own destination. Counted
+# over all destinations together, so splitting the move across two labels does
+# not slip under it. Unattributed `Speaker?` lines are exempt, since naming them is
+# the pass's job rather than a move away from a person. Fail-open without
+# voiceprints, as DIAR5 is: that is the existing, pinned trade-off, not this one.
+# It catches bulk moves; a targeted move of a few lines from a long-talking
+# speaker stays under it, and only a per-segment voiceprint (which the daemon does
+# not keep) could check those.
+REATTRIBUTE_MAX_FRACTION = 0.5
+REFUSED_CAP = "reattribution_cap"
+
+# DIAR9 (F097). An edit to a segment the proposing window never showed. The model
+# may only relabel what it was given to read; anything else is a reach, and under
+# a prompt injection it is a reach into another part of the meeting.
+REFUSED_OUTSIDE_WINDOW = "outside_window"
+
+#: DIAR9 (F100). The `skipped` value of a pass that found the transcript already
+#: cleaned and did nothing.
+SKIPPED_ALREADY_CLEANED = "already_cleaned"
 
 
 @dataclass(frozen=True)
@@ -173,6 +203,7 @@ def cleanup_transcript(
     client: CleanupClient | None = None,
     window_chars: int = DEFAULT_WINDOW_CHARS,
     overlap_chars: int = DEFAULT_OVERLAP_CHARS,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Run the cleanup pass over a finalized `<stem>.json` transcript.
 
@@ -183,12 +214,35 @@ def cleanup_transcript(
     "the pass ran" and its absence means "it never did". Emits a
     `pipeline`/`diarize_cleanup` event with the counts and the wall-clock
     latency.
+
+    DIAR9 (F100): a transcript that already carries `diarize_cleaned` is left
+    alone, with no client call and the audit file untouched, unless `force`. A
+    second pass would run over the first pass's labels and its audit would
+    replace the one that can undo the first. The daemon never meets a cleaned
+    transcript (it re-transcribes before every full run); a manual `mp run-all`
+    over an existing `<stem>.json` and a repeated `mp cleanup-diarization` do.
     """
     cfg = entry.prepare(cfg, transcript_json)  # SEC13: overlay, arm, secrets
 
     structured = json.loads(transcript_json.read_text(encoding="utf-8"))
     segments: list[dict[str, Any]] = structured.get("segments") or []
     speakers = _distinct_speakers(segments)
+
+    if structured.get("diarize_cleaned") and not force:
+        log.info("diarize cleanup: %s is already cleaned; skipping (pass --force to re-run)",
+                 transcript_json.name)
+        events.emit("pipeline", "diarize_cleanup", skipped=SKIPPED_ALREADY_CLEANED,
+                    segments=len(segments), speakers=len(speakers))
+        return {
+            "json": transcript_json,
+            "md": transcript_json.with_suffix(".md"),
+            "audit": transcript_json.with_name(f"{transcript_json.stem}.diarize_cleanup.json"),
+            "merges_count": 0,
+            "reattributions_count": 0,
+            "refusals_count": 0,
+            "latency_ms": 0,
+            "skipped": SKIPPED_ALREADY_CLEANED,
+        }
 
     started = time.monotonic()
     applied: list[EditRecord] = []
@@ -198,7 +252,7 @@ def cleanup_transcript(
         if client is None:
             client = _select_cleanup_backend(cfg)
         try:
-            edits_by_index = _gather_edits(
+            edits_by_index, outside = _gather_edits(
                 segments, speakers, client, window_chars, overlap_chars
             )
         finally:
@@ -209,6 +263,15 @@ def cleanup_transcript(
         proposed = _effective_edits(segments, edits_by_index, speakers)
         embeddings = _load_embeddings(transcript_json)
         applied, refused = _refuse_unsupported_merges(segments, proposed, embeddings)
+        refused = sorted(
+            refused + [
+                EditRecord(e.segment_index, e.from_speaker, e.to_speaker, e.kind,
+                           reason=REFUSED_OUTSIDE_WINDOW)
+                for edit in outside.values()
+                for e in _effective_edits(segments, {edit.segment_index: edit}, speakers)
+            ],
+            key=lambda e: e.segment_index,
+        )
         _apply_edits(segments, applied)
     else:
         log.info("diarize cleanup: %d distinct speaker(s); nothing to clean", len(speakers))
@@ -275,13 +338,17 @@ def _distinct_speakers(segments: list[dict[str, Any]]) -> list[str]:
     return seen
 
 
-def _render_indexed(segments: list[dict[str, Any]]) -> str:
+def _render_lines(segments: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
     for i, seg in enumerate(segments):
         speaker = seg.get("speaker") or _UNKNOWN_SPEAKER
         text = (seg.get("text") or "").strip()
         lines.append(f"[{i}] {speaker}: {text}")
-    return "\n".join(lines)
+    return lines
+
+
+def _render_indexed(segments: list[dict[str, Any]]) -> str:
+    return "\n".join(_render_lines(segments))
 
 
 def _gather_edits(
@@ -290,15 +357,39 @@ def _gather_edits(
     client: CleanupClient,
     window_chars: int,
     overlap_chars: int,
-) -> dict[int, SpeakerEdit]:
-    rendered = _render_indexed(segments)
+) -> tuple[dict[int, SpeakerEdit], dict[tuple[int, str], SpeakerEdit]]:
+    """Every window's proposals: (shown, outside).
+
+    DIAR9 (F097): a window may only relabel a segment whose `[n] speaker:` prefix
+    it showed; a line it caught only the tail of is not one the model could have
+    named. What it showed comes from where each real line sits in the rendered
+    text (the window's own offset), never from `[n]` prefixes parsed out of the
+    window, so a segment whose text says "[40] ..." cannot put 40 in view. Shown
+    proposals keep "last wins" across overlapping windows. Every outside proposal
+    is kept, one per (index, label), so each lands in the audit's `refused`, even
+    for an index some other window legitimately relabelled.
+    """
+    lines = _render_lines(segments)
+    rendered = "\n".join(lines)
+    starts: list[tuple[int, int]] = []  # (line start, end of its "[n] speaker:" prefix)
+    offset = 0
+    for i, line in enumerate(lines):
+        speaker = segments[i].get("speaker") or _UNKNOWN_SPEAKER
+        starts.append((offset, offset + len(f"[{i}] {speaker}:")))
+        offset += len(line) + 1
     by_index: dict[int, SpeakerEdit] = {}
+    outside: dict[tuple[int, str], SpeakerEdit] = {}
     for window in chunked_windows(rendered, max_chars=window_chars, overlap_chars=overlap_chars):
+        lo, hi = window.offset, window.offset + len(window.text)
+        shown = {i for i, (a, b) in enumerate(starts) if a >= lo and b <= hi}
         # Fence each window as untrusted content (TECH-SEC6); the segment numbers
         # stay intact inside the markers so edits still reference them.
         for edit in client.propose_edits(window_prompt=wrap_untrusted(window.prompt), speakers=speakers):
-            by_index[edit.segment_index] = edit  # overlapping windows: last wins
-    return by_index
+            if edit.segment_index in shown:
+                by_index[edit.segment_index] = edit  # overlapping windows: last wins
+            else:
+                outside[(edit.segment_index, edit.speaker)] = edit
+    return by_index, outside
 
 
 def _effective_edits(
@@ -356,12 +447,23 @@ def _refuse_unsupported_merges(
     One pass, not a fixpoint: refusing some of a label's edits can leave it
     alive, and its other edits are still evaluated as the merge they were
     proposed as.
+
+    DIAR9 adds the cap: a batch moving more than `REATTRIBUTE_MAX_FRACTION` of
+    one label's segments away is held, edit by edit, to the same voiceprint bar
+    (reason `reattribution_cap`), because that is what a steered "those were
+    Bob's" looks like, and the label surviving it says nothing about whether
+    the lines were Bob's. A per-segment check is not possible: the daemon keeps
+    one voiceprint per cluster and discards the per-segment embeddings.
     """
     counts = Counter(
         seg.get("speaker") or _UNKNOWN_SPEAKER for seg in segments
     )
     leaving = Counter(e.from_speaker for e in proposed)
     emptied = {label for label, n in leaving.items() if counts.get(label, 0) <= n}
+    capped = {
+        label for label, n in leaving.items()
+        if label != _UNKNOWN_SPEAKER and n > REATTRIBUTE_MAX_FRACTION * counts.get(label, 0)
+    }
 
     allowed: list[EditRecord] = []
     refused: list[EditRecord] = []
@@ -373,23 +475,25 @@ def _refuse_unsupported_merges(
             edit.segment_index, edit.from_speaker, edit.to_speaker, edit.kind,
             similarity=similarity,
         )
-        if (
-            edit.from_speaker in emptied
-            and similarity is not None
-            and similarity < MERGE_MIN_SIMILARITY
-        ):
+        disagree = similarity is not None and similarity < MERGE_MIN_SIMILARITY
+        reason = None
+        if disagree and edit.from_speaker in emptied:
+            reason = _REFUSED_VOICEPRINT
+        elif disagree and edit.from_speaker in capped:
+            reason = REFUSED_CAP
+        if reason is not None:
             refused.append(
                 EditRecord(
                     scored.segment_index, scored.from_speaker, scored.to_speaker,
-                    scored.kind, similarity=similarity, reason=_REFUSED_VOICEPRINT,
+                    scored.kind, similarity=similarity, reason=reason,
                 )
             )
             continue
         allowed.append(scored)
     if refused:
         log.info(
-            "diarize cleanup: refused %d edit(s) merging labels whose voiceprints "
-            "disagree (below %.2f)", len(refused), MERGE_MIN_SIMILARITY,
+            "diarize cleanup: refused %d edit(s) emptying or mostly moving a label "
+            "whose voiceprint disagrees (below %.2f)", len(refused), MERGE_MIN_SIMILARITY,
         )
     return allowed, refused
 
@@ -438,7 +542,7 @@ def _write_audit(
     array index, the same join key the two overlay sidecars use.
 
     Rewritten in full by each run, so it describes the last run only: after a
-    second `mp cleanup-diarization` the `from` labels are the first run's
+    second `mp cleanup-diarization --force` the `from` labels are the first run's
     `to` labels, and reverting it recovers that intermediate state, not the
     finalizer's.
     """
@@ -650,15 +754,22 @@ def _select_cleanup_backend(cfg: Config) -> CleanupClient:
 
 
 def main(argv: list[str]) -> int:
-    if not argv:
-        print("usage: mp cleanup-diarization <transcript.json>", file=sys.stderr)
-        return 2
-    transcript_json = Path(argv[0]).expanduser().resolve()
+    ap = argparse.ArgumentParser(prog="mp cleanup-diarization",
+                                 description="LLM speaker-label cleanup over a finalized transcript.")
+    ap.add_argument("transcript", type=Path, help="<stem>.json")
+    ap.add_argument("--force", action="store_true",
+                    help="re-run on a transcript already cleaned (its audit is replaced)")
+    args = ap.parse_args(argv)
+    transcript_json = args.transcript.expanduser().resolve()
     if not transcript_json.exists():
         print(f"No such file: {transcript_json}", file=sys.stderr)
         return 1
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    result = cleanup_transcript(transcript_json)
+    result = cleanup_transcript(transcript_json, force=args.force)
+    if result.get("skipped"):
+        print(f"diarize cleanup: skipped, {transcript_json.name} is already cleaned "
+              "(pass --force to re-run)")
+        return 0
     print(
         f"diarize cleanup: {result['merges_count']} merges, "
         f"{result['reattributions_count']} reattributions, "

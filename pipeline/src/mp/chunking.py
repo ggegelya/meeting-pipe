@@ -38,6 +38,9 @@ class ChunkedWindow:
     is_first: bool
     is_last: bool
     carry_summary: str | None = None
+    #: Where `text` starts in the transcript (DIAR9: which lines a window
+    #: showed is decided from real offsets, never by searching for the text).
+    offset: int = 0
 
     @property
     def prompt(self) -> str:
@@ -95,6 +98,7 @@ def chunked_windows(
             is_first=index == 0,
             is_last=is_last,
             carry_summary=carry_summary,
+            offset=start,
         )
         if is_last:
             return

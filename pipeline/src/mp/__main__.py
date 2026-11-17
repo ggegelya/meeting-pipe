@@ -40,7 +40,7 @@ Subcommands:
                               transcripts (with a gap marker), re-summarize, and
                               republish (upsert). The daemon soft-deletes the
                               fragments after a clean run (FEAT9).
-  cleanup-diarization <transcript.json>
+  cleanup-diarization <transcript.json> [--force]
                               LLM pass that merges same-speaker labels and
                               reattributes obvious mistakes, then rewrites
                               `<stem>.json`/.md (TECH-DIAR1)

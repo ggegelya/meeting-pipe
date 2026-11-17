@@ -512,10 +512,12 @@ What the LLM speaker-cleanup pass (`summarization.diarize_cleanup`, TECH-DIAR1) 
 
 Keyed by the segment's array index, the same join key the two overlay sidecars use. `similarity` is the cosine between the two labels' voiceprints from `<stem>.embeddings.json`, and it is **omitted rather than zeroed** when either label has no embedding, so "allowed because the voices are close" cannot be misread as "allowed because nothing could be measured". `kind` is the model's own word for the edit and nothing validates it; it is recorded for the trail and never acted on (see `pipeline/docs/gotchas.md`).
 
+`reason` on a refused edit is one of three: `voiceprint_distance` (the edits would empty the label, DIAR5), `reattribution_cap` (they move more than `REATTRIBUTE_MAX_FRACTION`, half, of one real label's segments away, counted over every destination, DIAR9), both only when the two labels' voiceprint similarity is below 0.65, and `outside_window` (the proposing window never showed that segment's `[n] speaker:` prefix, DIAR9; one record per index and label, even when another window legitimately relabelled that index; no `similarity`).
+
 Two invariants worth keeping:
 
 - **Written on every run of the pass, including the single-speaker no-op.** Presence means the pass ran; absence means it never did. Those two states have opposite readings for any later question about a meeting's labels, and the aggregate event counts cannot separate them.
-- **Rewritten in full, so it describes the last run only.** After a second `mp cleanup-diarization` the `from` labels are the first run's `to` labels, and `valid1_check.revert_cleanup` therefore recovers that intermediate transcript, not the finalizer's.
+- **Rewritten in full, so it describes the last run only.** After a second `mp cleanup-diarization --force` the `from` labels are the first run's `to` labels, and `valid1_check.revert_cleanup` therefore recovers that intermediate transcript, not the finalizer's. That is why, since DIAR9, a transcript already carrying `diarize_cleaned` is skipped without a model call or a rewrite unless `--force` is given; the skip still emits `pipeline`/`diarize_cleanup` with `skipped: "already_cleaned"`.
 
 It exists because the pass emitted only aggregate counts, so no owner correction could be traced to a cleanup edit rather than to a clustering mistake; DIAR5's own demonstration case had to be argued from two sidecars and could not be attributed from disk at all.
 
