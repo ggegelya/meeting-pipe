@@ -199,9 +199,10 @@ public final class PromotionEngine {
         case inMeeting(context: MeetingLifecycleContext, observed: Set<PrimarySignalKind>, states: SignalStates)
         /// `startedAt` is the hold's first doubt and never changes inside it; the host's cut is the
         /// mic release where process audio reported, the hold's start only where it did not (END21). `loneSince` is what the lone dwell counts from (END18): the hold's
-        /// start, moved to the moment a vetoer stopped reading live inside it and to every
-        /// declined revert, so the lone dwell needs the doubt to have stood unbroken for
-        /// `loneDwell`, not merely to have begun that long ago.
+        /// start, moved to the moment a vetoer stopped reading live inside it, to every declined
+        /// revert, and (END29 amendment) to a reading that lifted a `loneDwellRefused` refusal, so
+        /// the lone dwell needs the doubt to have stood unbroken for `loneDwell`, not merely to
+        /// have begun that long ago. Never moved earlier.
         case endingProvisional(
             context: MeetingLifecycleContext,
             leading: PrimarySignalKind,
@@ -400,6 +401,40 @@ public final class PromotionEngine {
         return pendingDeclinedRevert
     }
 
+    /// Whether a live Leave button refuses the lone dwell for this hold. Two refusals, one rule:
+    ///
+    /// END18: under a window-gone lead while nothing of another class has ended inside the hold:
+    /// that is a hold whose revert never reached the engine (F002, the healthy Leave button the
+    /// rescue re-armed without an emit), not a lone end. Only the Leave button, never the window,
+    /// contradicts its class-mate: the window reading is a title match, and Webex's matches its main
+    /// window after every call, so a window "present" under a Leave-invalid lead would hold a real
+    /// end for ever.
+    ///
+    /// END29: under a mic-led hold with no other class freshly ended. A headphone switch releases
+    /// the mic and keeps the call UI up; if the return never reaches the engine (DET8's
+    /// re-registration under an object the resolver does not follow), the lone dwell would end a
+    /// live call 12 minutes on and END21 would cut it back to the switch. A real leave takes the
+    /// Leave control away (it reads invalid, or a fresh window-gone pairs), which lifts this. No
+    /// Leave reading, no refusal: nothing then contradicts the release. The idle backstop stays the
+    /// ceiling. A Leave reading END18 declined in this hold is not that contradiction: it went
+    /// invalid inside the hold and came back untrusted, and END18 already lets the lone dwell run
+    /// from it.
+    ///
+    /// A function of the readings alone, so it can change only when a reading arrives; that is
+    /// where its lifting restarts the dwell (END29 amendment, 2026-11-17).
+    static func loneDwellRefused(leading: PrimarySignalKind, startedAt: Date, states: SignalStates) -> Bool {
+        let leave = states[.axLeaveButton]
+        let leadClassContradicted = leading != .axLeaveButton
+            && leading.evidenceClass == PrimarySignalKind.axLeaveButton.evidenceClass
+            && leave?.state == .live
+            && otherClassesEndedInside(states, excluding: leading, since: startedAt).isEmpty
+        let micLeadContradicted = leading.vetoesLoneEnd
+            && leave?.state == .live
+            && !(leave?.declined == true && (leave?.at ?? .distantPast) >= startedAt)
+            && !pairEdges(in: states, holdStartedAt: startedAt).keys.contains { $0 != leading.evidenceClass }
+        return leadClassContradicted || micLeadContradicted
+    }
+
     /// END18: the signals of evidence classes other than `kind`'s that read `.ended` and went so
     /// inside the hold that opened at `startedAt`. The lead itself counts when it is of another
     /// class: a mic-led hold is not undone by the Leave button reading healthy.
@@ -538,32 +573,13 @@ public final class PromotionEngine {
         let dwelled = Self.pairEdges(in: states, holdStartedAt: startedAt).values
             .filter { awake(from: $0, to: now) >= confirmDwell }
         let pairHeld = dwelled.count >= 2
-        // END18: the lone dwell counts from the last liveness reading, not the first doubt (D029),
-        // and it does not run at all while the Leave button reads live against a window-gone lead
-        // and nothing of another class has ended inside the hold: that is a hold whose revert never
-        // reached the engine (F002, the healthy Leave button the rescue re-armed without an emit),
-        // not a lone end. Only the Leave button, never the window, contradicts its class-mate: the
-        // window reading is a title match, and Webex's matches its main window after every call,
-        // so a window "present" under a Leave-invalid lead would hold a real end for ever.
-        let leadClassContradicted = leading != .axLeaveButton
-            && leading.evidenceClass == PrimarySignalKind.axLeaveButton.evidenceClass
-            && states[.axLeaveButton]?.state == .live
-            && Self.otherClassesEndedInside(states, excluding: leading, since: startedAt).isEmpty
-        // END29: nor while the Leave button reads live under a mic-led hold with no other class
-        // freshly ended. A headphone switch releases the mic and keeps the call UI up; if the
-        // return never reaches the engine (DET8's re-registration under an object the resolver
-        // does not follow), the lone dwell would end a live call 12 minutes on and END21 would cut
-        // it back to the switch. A real leave takes the Leave control away (it reads invalid, or a
-        // fresh window-gone pairs), which lifts this. No Leave reading, no refusal: nothing then
-        // contradicts the release. The idle backstop stays the ceiling. A Leave reading END18
-        // declined in this hold is not that contradiction: it went invalid inside the hold and
-        // came back untrusted, and END18 already lets the lone dwell run from it.
-        let leave = states[.axLeaveButton]
-        let micLeadContradicted = leading.vetoesLoneEnd
-            && leave?.state == .live
-            && !(leave?.declined == true && (leave?.at ?? .distantPast) >= startedAt)
-            && !Self.pairEdges(in: states, holdStartedAt: startedAt).keys.contains { $0 != leading.evidenceClass }
-        let loneHeld = !leadClassContradicted && !micLeadContradicted && awake(from: loneSince, to: now) >= loneDwell
+        // END18 and END29: the lone dwell counts from the last liveness reading, not the first
+        // doubt (D029), and it does not run at all while a live Leave button contradicts the hold
+        // (`loneDwellRefused`). When that contradiction lifts, `handleEndingProvisional` restarts
+        // the dwell from the lifting reading, so a refusal that held for longer than `loneDwell`
+        // cannot end a live call on the very next tick.
+        let loneHeld = !Self.loneDwellRefused(leading: leading, startedAt: startedAt, states: states)
+            && awake(from: loneSince, to: now) >= loneDwell
         guard pairHeld || loneHeld else { return nil }
 
         var confirmedBy = states
@@ -735,14 +751,22 @@ public final class PromotionEngine {
         states: inout SignalStates
     ) -> Decision? {
         guard event.context == context else { return nil }
+        // END29 amendment: a reading that lifts a refusal restarts the lone dwell from itself. The
+        // refusal is a level read, and the anchor used to stay put when it lifted, so a hold refused
+        // for 20 minutes ended on the next tick after one Leave flicker (a screen-share re-render)
+        // and END21 cut it back to the hold's start.
+        let refusedBefore = Self.loneDwellRefused(leading: leading, startedAt: startedAt, states: states)
         let previous = Self.record(event, in: &states)
+        let liftsRefusal = refusedBefore
+            && !Self.loneDwellRefused(leading: leading, startedAt: startedAt, states: states)
         switch event.state {
         case .unknown:
             // END17: a vetoer that stops reading live inside the hold restarts the lone dwell, as a
             // release does (END18), so END13's shape (a Leave-led hold under a live mic) cannot
             // confirm on the first tick after the mic turns unreadable. No revert, no verdict, and
             // not in `observed`, so a teardown confirm does not list it.
-            let anchor = (event.kind.vetoesLoneEnd && previous?.state == .live) ? event.timestamp : loneSince
+            let anchor = ((event.kind.vetoesLoneEnd && previous?.state == .live) || liftsRefusal)
+                ? max(loneSince, event.timestamp) : loneSince
             phase = .endingProvisional(
                 context: context, leading: leading,
                 startedAt: startedAt, loneSince: anchor, observed: observed, states: states
@@ -752,8 +776,10 @@ public final class PromotionEngine {
             observed.insert(event.kind)
             // END18 (D029): a vetoer that stops reading live inside the hold restarts the lone
             // dwell, so a hold that sat 12 minutes under a live mic cannot confirm on the first
-            // tick of a 2 s mic blip.
-            let anchor = (event.kind.vetoesLoneEnd && previous?.state == .live) ? event.timestamp : loneSince
+            // tick of a 2 s mic blip. END29: so does a reading that lifts a refusal. Forward only,
+            // so a late-drained reading with an older stamp cannot shorten the dwell.
+            let anchor = ((event.kind.vetoesLoneEnd && previous?.state == .live) || liftsRefusal)
+                ? max(loneSince, event.timestamp) : loneSince
             // END17: only a definitive signal ends a hold on arrival. A weak second signal used to
             // confirm here at once when it was cross-class (END6), and that is the path END15's
             // mic switch took on 2026-10-22: Teams released its input for a few seconds while the

@@ -1119,6 +1119,28 @@ final class PromotionEngineTests: XCTestCase {
         XCTAssertTrue(engine.hasPendingEndDeadline)
     }
 
+    /// END29 amendment, END18's side: with no process audio there is no pair route, so a window-led
+    /// hold refused by a live Leave for longer than `loneDwell` that then sees a real leave ends
+    /// `loneDwell` after the Leave goes (the lift), not on the next tick. The trade for the flicker.
+    func test_a_window_led_hold_lifted_after_the_lone_dwell_ends_a_lone_dwell_later_END29() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.shareableContentWindow, .ended, at: 10))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 10 + lone * 2)), "refused")
+        let leave = 10 + lone * 2 + 5
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: leave))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: leave + 0.25)), "not on the next tick")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: leave + lone - 1)))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: leave + lone))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "shareable_content_window_gone", confirmedBy: ["ax_leave_button_invalid", "lone_dwell"])
+            )
+        )
+    }
+
     /// The other direction is not a contradiction: a window still matching after the Leave button
     /// went invalid (Webex's title matcher keeps matching its main window after a call) does not
     /// hold a real end past the lone dwell.
@@ -1190,8 +1212,8 @@ final class PromotionEngineTests: XCTestCase {
         XCTAssertTrue(engine.hasPendingEndDeadline, "the hold stays open; the idle backstop is the ceiling")
     }
 
-    /// The same hold once the Leave button goes: the refusal lifts and the lone dwell decides as
-    /// before, counted from the release.
+    /// The same hold once the Leave button goes: the refusal lifts and the lone dwell decides, counted
+    /// from the lift (END29 amendment, 2026-11-17; it was counted from the release, 30 s earlier).
     func test_the_leave_going_invalid_lifts_the_refusal_END29() {
         let engine = PromotionEngine()
         _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
@@ -1200,9 +1222,9 @@ final class PromotionEngineTests: XCTestCase {
         _ = engine.confirmRecording()
         _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 900))
         _ = engine.ingest(event(.axLeaveButton, .ended, at: 930))
-        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 900 + lone - 1)))
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 930 + lone - 1)))
         XCTAssertEqual(
-            engine.tick(at: Date(timeIntervalSince1970: 900 + lone))?.verdict,
+            engine.tick(at: Date(timeIntervalSince1970: 930 + lone))?.verdict,
             .ended(
                 context: teamsContext,
                 reason: EndingReason(
@@ -1210,6 +1232,38 @@ final class PromotionEngineTests: XCTestCase {
                     confirmedBy: ["ax_leave_button_invalid", "lone_dwell"]
                 )
             )
+        )
+    }
+
+    /// END29 amendment (M1 of the 2026-11-17 review): the Leave button flickers invalid 20 minutes
+    /// into a refused mic-led hold, long after `loneDwell` would have run from the release. The
+    /// lift restarts the dwell, so the next tick does not end the call. Then the flicker returns:
+    /// END18 declines that reading (the mic ended inside the hold), a declined Leave no longer
+    /// refuses, and the dwell runs from the return. Pinned as the residual the owner is asked
+    /// about: the call still ends `loneDwell` after the flicker's return, cut back to the release.
+    func test_a_leave_flicker_after_the_lone_dwell_restarts_it_rather_than_ending_at_once_END29() {
+        let engine = PromotionEngine()
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 0))
+        _ = engine.ingest(event(.shareableContentWindow, .live, at: 0))
+        _ = engine.ingest(event(.processAudioIsRunningInput, .live, at: 0))
+        _ = engine.confirmRecording()
+        _ = engine.ingest(event(.processAudioIsRunningInput, .ended, at: 900))   // the switch, return missed
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 900 + 1200)), "refused while the Leave reads live")
+
+        _ = engine.ingest(event(.axLeaveButton, .ended, at: 2100))                // the screen-share re-render
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 2100.25)), "the lift restarts the dwell")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 2100 + 30)))
+
+        _ = engine.ingest(event(.axLeaveButton, .live, at: 2108.3))               // the flicker returns, declined
+        XCTAssertTrue(engine.hasPendingEndDeadline, "the hold is still open")
+        XCTAssertNil(engine.tick(at: Date(timeIntervalSince1970: 2108.3 + lone - 1)))
+        XCTAssertEqual(
+            engine.tick(at: Date(timeIntervalSince1970: 2108.3 + lone))?.verdict,
+            .ended(
+                context: teamsContext,
+                reason: EndingReason(leadingSignal: "process_audio_is_running_input_false", confirmedBy: ["lone_dwell"])
+            ),
+            "the residual: a declined return no longer refuses"
         )
     }
 
