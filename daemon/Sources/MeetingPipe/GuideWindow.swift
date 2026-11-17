@@ -4,9 +4,13 @@ import SwiftUI
 /// The read-only user-guide window (DOC11), opened from the menu bar's
 /// **Guide…**. One window at a time; re-opening brings it to front. Modeled on
 /// `DiagnosticsWindow`, including the `WindowActivationManager` handshake that
-/// keeps Cmd+Tab working while it is up.
+/// keeps Cmd+Tab working while it is up. Kept across closes (PERF29), so the
+/// SwiftUI tree is built once per process.
 final class GuideWindow {
     private var window: NSWindow?
+
+    /// The built window, for tests: PERF29 keeps it across closes, so a second `show()` after a close is the same instance.
+    var builtWindow: NSWindow? { window }
 
     func show() {
         let seq = UILatency.shared.action("open_window", surface: "guide")
@@ -17,6 +21,8 @@ final class GuideWindow {
             return
         }
 
+        // PERF29: start the parse before the view tree is built, so the two overlap.
+        GuideDocumentCache.shared.prewarm()
         let host = NSHostingController(rootView: MPControlAccent(GuideView()))
         let w = NSWindow(contentViewController: host)
         w.title = "MeetingPipe Guide"
@@ -34,8 +40,9 @@ final class GuideWindow {
         if w.frame.origin == .zero { w.center() }
         w.isReleasedWhenClosed = false
 
-        let delegate = GuideWindowDelegate { [weak self] closing in
-            self?.window = nil
+        // PERF29: kept across closes, as `LibraryWindow` does (`isReleasedWhenClosed` is already
+        // false), so a re-open is an order-front with the reader's scroll position intact.
+        let delegate = GuideWindowDelegate { closing in
             WindowActivationManager.shared.didCloseWindow(closing)
         }
         objc_setAssociatedObject(w, &Self.delegateKey, delegate, .OBJC_ASSOCIATION_RETAIN)

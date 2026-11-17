@@ -33,21 +33,24 @@ import SwiftUI
 ///   transcript and the summary use), the heading leads step, and the parser
 ///   lets a section heading own its own break.
 ///
-/// PERF13: the document's inline markdown is parsed once in `load()`
-/// (`GuideDocument.rendered`), never in `body`, and each rail row keeps its own
+/// PERF13: the document's inline markdown is parsed once (`GuideDocument.rendered`, now
+/// behind `GuideDocumentCache`, PERF29), never in `body`, and each rail row keeps its own
 /// hover state (`GuideRailRow`), so moving the pointer down the rail re-renders
 /// that row rather than re-evaluating, and re-parsing, the whole document. The
 /// stack stays non-lazy on purpose: the rail's mark reads every heading's offset,
 /// and a lazy stack reports none for the headings it has not realized.
 struct GuideView: View {
-    @State private var blocks: [GuideDocument.RenderedBlock] = []
-    @State private var sections: [GuideDocument.Section] = []
+    /// PERF29: seeded from the process-wide cache, which is empty when the first view is built
+    /// (the window is kept, so that is once per process) and filled by the `.task` below. The
+    /// seeding is insurance for a view built after the build finished.
+    @State private var blocks: [GuideDocument.RenderedBlock] = GuideDocumentCache.shared.cached?.blocks ?? []
+    @State private var sections: [GuideDocument.Section] = GuideDocumentCache.shared.cached?.sections ?? []
     /// The block indices `sections` points at, for `headingProbe`'s per-block check.
-    @State private var sectionIndices: Set<Int> = []
+    @State private var sectionIndices: Set<Int> = Set((GuideDocumentCache.shared.cached?.sections ?? []).map(\.blockIndex))
 
     /// Block index of the section the reader is currently inside, from
     /// `GuideDocument.currentSection` over the heading probes below.
-    @State private var current: Int?
+    @State private var current: Int? = GuideDocumentCache.shared.cached?.sections.first?.blockIndex
     /// The rail's jump target. Held here rather than in the rail so the two
     /// columns share one reader.
     @State private var jumpTarget: Int?
@@ -63,7 +66,7 @@ struct GuideView: View {
             document
         }
         .background(Color(MPColors.bg))
-        .onAppear(perform: load)
+        .task { if blocks.isEmpty { apply(await GuideDocumentCache.shared.loaded()) } }
     }
 
     // MARK: - Rail
@@ -297,14 +300,13 @@ struct GuideView: View {
         if resolved != current { current = resolved }
     }
 
-    /// The one parse, inline markdown included (PERF13).
-    private func load() {
-        let markdown = GuideDocument.bundledMarkdown() ?? GuideDocument.missingCopy
-        let parsed = GuideDocument.parse(markdown)
-        blocks = GuideDocument.rendered(parsed)
-        sections = GuideDocument.sections(of: parsed)
-        sectionIndices = Set(sections.map(\.blockIndex))
-        current = sections.first?.blockIndex
+    /// The parse is `GuideDocumentCache`'s (PERF13 parsed once per load, PERF29 once per process
+    /// and off main); this only takes the result.
+    private func apply(_ loaded: GuideDocumentCache.Loaded) {
+        blocks = loaded.blocks
+        sections = loaded.sections
+        sectionIndices = Set(loaded.sections.map(\.blockIndex))
+        current = loaded.sections.first?.blockIndex
     }
 }
 

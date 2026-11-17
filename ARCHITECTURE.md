@@ -268,7 +268,7 @@ One hop to the right file. Moved here from `daemon/CLAUDE.md` by DOC15: that fil
 | One instance only | `SingleInstanceGuard.swift` (UX54) |
 | Event log | `Logger.swift` (`Log.event` / `Log.writeLine` / `Log.main`, size-rotated) |
 | Diagnostics viewer (UX20) | `DiagnosticsWindow.swift`, `DiagnosticsView.swift`, `DiagnosticsLog.swift`, `DoctorRunner` |
-| User guide (DOC11) | `GuideWindow.swift`, `GuideView.swift`, `GuideDocument.swift` - text is `docs/GUIDE.md` and *only* that; never paste guide prose into Swift |
+| User guide (DOC11) | `GuideWindow.swift` (kept across closes, PERF29), `GuideView.swift`, `GuideDocument.swift`, `GuideDocumentCache.swift` (parsed once per process, off main) - text is `docs/GUIDE.md` and *only* that; never paste guide prose into Swift |
 | Clipboard share (FEAT16) | `RichTextShare.swift` (`RichTextShare` = the flavors + the pasteboard write; `MeetingShare` = what a meeting's two documents are), reached from `MeetingDetailView+Header.swift`'s `actionsMenu` |
 | Automation (`meetingpipe://` + App Intents) | `Automation/` (`AutomationCommand.swift`, `AutomationReference.swift`, `Coordinator+Automation.swift`, `TranscriptDeeplink.swift`, `MeetingPipeAppIntents.swift`), `AppDelegate.application(_:open:)` |
 
