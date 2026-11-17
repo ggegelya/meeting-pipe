@@ -8,8 +8,14 @@ import MeetingPipeCore
 extension Coordinator {
     // MARK: Menu actions
 
-    @objc func menuStart() { session.toggleManual() }
-    @objc func menuStop() { session.toggleManual() }
+    @objc func menuStart() {
+        UILatency.shared.action("menu_start", surface: "menu")
+        session.toggleManual()
+    }
+    @objc func menuStop() {
+        UILatency.shared.action("menu_stop", surface: "menu")
+        session.toggleManual()
+    }
 
     @objc func menuOpenLogs() {
         NSWorkspace.shared.open(Log.logsDir)

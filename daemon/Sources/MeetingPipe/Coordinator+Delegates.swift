@@ -105,8 +105,9 @@ extension Coordinator: NotifierDelegate {
     }
 
     func notifierDidRequestStopRecording(_ notifier: Notifier) {
+        UILatency.shared.action("notification_stop", surface: "notification")
         // One stop entry point shared with hotkey-stop and HUD-stop.
-        if case .recording = stateMachine.current { session.toggleManual() }
+        if case .recording = stateMachine.current { session.toggleManual() } else { UILatency.shared.discardPending() }
     }
 
     func notifierDidRequestKeepRecording(_ notifier: Notifier) {
@@ -120,6 +121,7 @@ extension Coordinator: NotifierDelegate {
         // state guard, clear the suppression the skip armed, record *with* the source) into
         // `recordAttached`, so the notification, the menu row, the hotkey, and the URL
         // scheme all take one path rather than four copies that can drift apart.
+        UILatency.shared.action("notification_record", surface: "notification")
         session.recordAttached(to: source, trigger: "notification")
     }
 }

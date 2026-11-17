@@ -31,6 +31,31 @@ final class MainThreadStallWatchdogTests: XCTestCase {
         XCTAssertEqual(StallDetector.decide(waitMs: 50, nowUptime: 101, lastEmitUptime: 100, suppressedSoFar: 2), .none)
     }
 
+    /// OBS7: the row names the last click and how long ago it ran.
+    func testStallRowCarriesTheLastUIActionWhenOneExists() {
+        let lock = NSLock()
+        var rows: [[String: Any]] = []
+        let wd = MainThreadStallWatchdog(
+            interval: 0.05, thresholdMs: 300,
+            lastUIAction: { (seq: 7, sinceMs: 412) },
+            emit: { attrs in lock.lock(); rows.append(attrs); lock.unlock() }
+        )
+        wd.start()
+        let warm = expectation(description: "warm")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { warm.fulfill() }
+        wait(for: [warm], timeout: 2)
+        let blocked = expectation(description: "blocked")
+        DispatchQueue.main.async { Thread.sleep(forTimeInterval: 0.4); blocked.fulfill() }
+        wait(for: [blocked], timeout: 3)
+        let after = expectation(description: "after")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { after.fulfill() }
+        wait(for: [after], timeout: 2)
+        wd.stop()
+        lock.lock(); defer { lock.unlock() }
+        XCTAssertEqual(rows.first?["last_ui_seq"] as? Int, 7)
+        XCTAssertEqual(rows.first?["since_ui_action_ms"] as? Int, 412)
+    }
+
     /// Blocks the main queue for 400 ms and sees exactly one row.
     func testBlockedMainQueueEmitsOneRow() {
         let lock = NSLock()

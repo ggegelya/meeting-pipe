@@ -567,6 +567,8 @@ final class Coordinator: NSObject {
 
         if let parsed = HotkeyManager.parse(liveManualHotkey) {
             hotkey.register(keyCode: parsed.keyCode, modifiers: parsed.modifiers) { [weak self] in
+                // OBS7: stamped before the hop, so the hop is inside the measurement.
+                UILatency.shared.action("hotkey_toggle", surface: "hotkey")
                 DispatchQueue.main.async { self?.session.toggleManual() }
             }
             Log.main.info("Hotkey registered: \(self.liveManualHotkey)")
@@ -581,6 +583,7 @@ final class Coordinator: NSObject {
             Log.main.warning("Force-stop hotkey matches manual hotkey - skipping second registration")
         } else if let parsed = HotkeyManager.parse(liveForceStopHotkey) {
             hotkey.register(keyCode: parsed.keyCode, modifiers: parsed.modifiers) { [weak self] in
+                UILatency.shared.action("hotkey_force_stop", surface: "hotkey")
                 DispatchQueue.main.async { self?.session.forceStop(reason: "hotkey") }
             }
             Log.main.info("Force-stop hotkey registered: \(self.liveForceStopHotkey)")

@@ -138,6 +138,9 @@ final class MeetingPromptWindow {
     /// the panel is down so a prompt raised with the mic already held starts lit.
     private var micBusy = false
 
+    /// OBS7: the click that is closing the panel, so the order-out row names it. Cleared by `dismiss`.
+    private var actionSeq: Int?
+
     /// DET18: whether the pointer is over the panel right now (for `prompt_dismissed`).
     var isPointerOver: Bool { panel != nil && hovered }
 
@@ -197,6 +200,8 @@ final class MeetingPromptWindow {
         // freeze on hover while the real one ran on (F011).
         dismissProgress?.start(timeoutSec: seconds)
         loadPrepCard()
+        // OBS7: the turn that presented the panel has committed. No click caused it (detection did).
+        UILatency.afterNextCommit { UILatency.shared.firstPaint(surface: "prompt", phase: "present", seq: nil) }
     }
 
     /// REC18: the discovery watcher's mic-busy signal, forwarded on every sample.
@@ -212,6 +217,10 @@ final class MeetingPromptWindow {
 
         guard let panel = panel else { return }
         self.panel = nil
+        let seq = actionSeq
+        actionSeq = nil
+        // OBS7: the panel leaving is the first visible state of a prompt click, Record included (the HUD follows later).
+        if let seq { UILatency.shared.feedback(seq: seq) }
         currentSource = nil
         prepCard = nil
         prepCardScroll = nil
@@ -221,6 +230,7 @@ final class MeetingPromptWindow {
         isExpanded = false
         guard animated else {
             panel.orderOut(nil)
+            UILatency.shared.firstPaint(surface: "prompt", phase: "order_out", seq: seq)
             return
         }
         NSAnimationContext.runAnimationGroup({ ctx in
@@ -229,6 +239,7 @@ final class MeetingPromptWindow {
             panel.animator().alphaValue = 0
         }, completionHandler: {
             panel.orderOut(nil)
+            UILatency.shared.firstPaint(surface: "prompt", phase: "order_out", seq: seq)
         })
     }
 
@@ -516,25 +527,45 @@ final class MeetingPromptWindow {
     // MARK: - Click handling
 
     fileprivate func handleRecord() {
-        guard let s = menuSource ?? currentSource else { return }
+        let seq = UILatency.shared.action("prompt_record", surface: "prompt")
+        guard let s = menuSource ?? currentSource else {
+            UILatency.shared.discard(seq: seq)
+            return
+        }
+        actionSeq = seq
         delegate?.meetingPrompt(self, didChooseRecord: s)
         dismiss()
     }
 
     fileprivate func handleSkip() {
-        guard let s = menuSource ?? currentSource else { return }
+        let seq = UILatency.shared.action("prompt_skip", surface: "prompt")
+        guard let s = menuSource ?? currentSource else {
+            UILatency.shared.discard(seq: seq)
+            return
+        }
+        actionSeq = seq
         delegate?.meetingPrompt(self, didChooseSkip: s)
         dismiss()
     }
 
     fileprivate func handleAlways() {
-        guard let s = menuSource ?? currentSource else { return }
+        let seq = UILatency.shared.action("prompt_always", surface: "prompt")
+        guard let s = menuSource ?? currentSource else {
+            UILatency.shared.discard(seq: seq)
+            return
+        }
+        actionSeq = seq
         delegate?.meetingPrompt(self, didChooseAlways: s)
         dismiss()
     }
 
     fileprivate func handleRecordBYO() {
-        guard let s = menuSource ?? currentSource else { return }
+        let seq = UILatency.shared.action("prompt_record_byo", surface: "prompt")
+        guard let s = menuSource ?? currentSource else {
+            UILatency.shared.discard(seq: seq)
+            return
+        }
+        actionSeq = seq
         delegate?.meetingPrompt(self, didChooseRecordBYO: s)
         dismiss()
     }

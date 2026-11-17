@@ -31,12 +31,14 @@ final class QuickFindWindow {
     }
 
     func show() {
+        let seq = UILatency.shared.action("open_window", surface: "quick_find")
         if let p = panel {
             p.center()
             p.makeKeyAndOrderFront(nil)
             // Deliberately no `WindowActivationManager` handshake: this is a floating panel, and a Dock icon plus a Cmd+Tab slot for a Cmd+K overlay would be noise (UX39).
             NSApp.activate()
             model.refresh()
+            UILatency.shared.trackWindowOpen("quick_find", cold: false, seq: seq, window: p)
             return
         }
         let view = QuickFindView(model: model)
@@ -65,6 +67,7 @@ final class QuickFindWindow {
         p.makeKeyAndOrderFront(nil)
         NSApp.activate()
         model.refresh()
+        UILatency.shared.trackWindowOpen("quick_find", cold: true, seq: seq, window: p)
     }
 
     func hide() {

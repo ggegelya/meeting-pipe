@@ -40,6 +40,7 @@ final class PreferencesWindow {
     /// forward, for the same reason `initial` is: the pane may already be on screen, in
     /// which case the published change is the only thing that moves it.
     func show(initial: PreferencesItem? = nil, vocabularyScope: String? = nil) {
+        let seq = UILatency.shared.action("open_window", surface: "preferences")
         // ARCH9: a config.toml fixed by hand since the last open clears the
         // parse-error row here; a store that parsed is left alone.
         store.reloadIfUnparsed()
@@ -53,6 +54,7 @@ final class PreferencesWindow {
         if let w = window {
             // Policy flip, deferred front + activate, and deminiaturize all live in the manager, which counts by window identity so a re-open of a minimized window cannot drift the count (UX39).
             WindowActivationManager.shared.showWindow(w)
+            UILatency.shared.trackWindowOpen("preferences", cold: false, seq: seq, window: w)
             return
         }
 
@@ -100,6 +102,7 @@ final class PreferencesWindow {
 
         self.window = w
         WindowActivationManager.shared.showWindow(w)
+        UILatency.shared.trackWindowOpen("preferences", cold: true, seq: seq, window: w)
     }
 
     private static var delegateKey: UInt8 = 0

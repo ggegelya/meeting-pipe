@@ -14,10 +14,13 @@ extension Coordinator {
         Log.event(category: "automation", action: "command", attributes: ["verb": command.verb, "source": source])
         switch command {
         case .toggle:
+            UILatency.shared.action("automation_toggle", surface: "automation")
             session.toggleManual()
         case .record(let byo):
+            UILatency.shared.action("automation_record", surface: "automation")
             startRecordingViaAutomation(byo: byo)
         case .stop:
+            UILatency.shared.action("automation_stop", surface: "automation")
             session.forceStop(reason: "url_scheme")
         case .openLibrary(let scope):
             openLibraryViaAutomation(scope: scope)
@@ -44,6 +47,7 @@ extension Coordinator {
     private func startRecordingViaAutomation(byo: Bool) {
         guard case .idle = stateMachine.current else {
             Log.event(category: "automation", action: "record_ignored", attributes: ["reason": "not_idle"])
+            UILatency.shared.discardPending()
             return
         }
         session.startManual(summaryMode: byo ? .byo : .auto, trigger: "automation")

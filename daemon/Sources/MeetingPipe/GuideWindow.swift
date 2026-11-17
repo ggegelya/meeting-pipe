@@ -9,9 +9,11 @@ final class GuideWindow {
     private var window: NSWindow?
 
     func show() {
+        let seq = UILatency.shared.action("open_window", surface: "guide")
         if let w = window {
             // The manager owns the policy flip, the deferred front + activate, and the deminiaturize, and counts by window identity (UX39).
             WindowActivationManager.shared.showWindow(w)
+            UILatency.shared.trackWindowOpen("guide", cold: false, seq: seq, window: w)
             return
         }
 
@@ -41,6 +43,7 @@ final class GuideWindow {
 
         self.window = w
         WindowActivationManager.shared.showWindow(w)
+        UILatency.shared.trackWindowOpen("guide", cold: true, seq: seq, window: w)
     }
 
     private static var delegateKey: UInt8 = 0

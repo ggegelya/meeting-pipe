@@ -1065,3 +1065,15 @@ The ceilings are measured, not guessed. One `-compression_level 8` FLAC encode o
 
 **`Task.detached` is not off-pool**, and neither is a plain `async` function: only a GCD queue, a dedicated thread or an actor is.
 
+
+## A click is only measurable if it was stamped at the entry point (OBS7)
+
+Until OBS7 nothing logged a click, so the 2026-11-13 responsiveness audit started every Record figure at the recorder's `start:` line, after an unlogged synchronous prefix, and could time no Library or Preferences action at all. `UILatency` stamps `ui_action` as the first line of each entry point and `ui_feedback` on the **next main turn** after the first visible state was set; a synchronous tail after the setter (P005/P047's HAL teardown after `hud.dismiss()`) is therefore inside `ms`, which a stamp at the setter would hide.
+
+**The click's name rides in `name`, never `action`.** `Log.event` writes the row type into `action` after copying the attributes, so an attribute called `action` is silently overwritten. The first draft of the spec named it `action`; the unit tests, which inject their own emitter, passed, and only a row read back from the real log shows the loss, which is why the wiring test asserts `name` on a row from `events.jsonl`.
+
+**Start and Stop setters do not know which click caused them.** A prompt Record, a hotkey and a menu row all end at the same `hud.present`, and a detection-driven start has no click at all. `feedbackForLatest(.start/.stop)` answers the newest unanswered click that can cause that phase and is younger than 30 s, so an automatic start is not answered by a stale Skip or window open (the opus review found exactly that pairing in the first draft, along with a first-paint row filed under the wrong click). Presses that will never get a visible state (a refused prompt pick, a press during Stopping, a cancelled start, a notification Stop while idle) `discard` themselves. What stays unfixed: a detection-driven start within 30 s of an unanswered start-capable click can still take it.
+
+**Not every opener can be built headless.** The controller half is a behavioural test over `FakeSessionHost`; `Coordinator` entry points and four of the five window openers are pinned by a source fence that each opens with its stamp (the `CoordinatorWiringFenceTests` precedent), and the Guide window runs a real cold-then-warm `show()`. `ms_to_key` counts from the click, not from the end of the build: stamping after the build made a cold open of a window that came up key read 0. One that never becomes key reports `null` after 5 s, and its observer is removed then.
+
+**Fence B (`truth_fences.py blockers`) is textual.** It cannot tell which thread a call lands on, so a hit inside a `Task.detached` is allowlisted with that reason rather than excused by the pattern. Counts are exact, so a second site in an allowlisted file fails.

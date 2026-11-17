@@ -55,6 +55,7 @@ script is the mechanical reader.
     python3 scripts/truth_fences.py claude     # CLAUDE.md size budget only
     python3 scripts/truth_fences.py links      # doc links + run-on entries only
     python3 scripts/truth_fences.py backlog    # task headers + INDEX.md freshness only
+    python3 scripts/truth_fences.py blockers   # OBS7: main-thread blockers in view/controller files only
 
 Stdlib only (tomllib, ast, re), so CI can run it without installing anything.
 
@@ -847,6 +848,118 @@ def check_backlog() -> bool:
     return fence.report()
 
 
+# --------------------------------------------------------------------------
+# Fence 6 (OBS7 "Fence B"): main-thread blockers in view and controller files
+# --------------------------------------------------------------------------
+
+# A synchronous wait or a blocking disk read in a view, window, pane, controller or menu builder
+# runs on the main thread unless something moved it, and the responsiveness audit
+# (2026-11-13) found the freezes in exactly those files. These patterns are textual: they
+# cannot see which thread a call lands on, so every hit is either removed or listed below with
+# the reason it is acceptable. A new hit fails the fence from the day it appears.
+BLOCKER_PATTERNS = {
+    "waitUntilExit": re.compile(r"\.waitUntilExit\("),
+    "DispatchQueue.main.sync": re.compile(r"DispatchQueue\.main\.sync\b"),
+    "semaphore/group wait": re.compile(r"\.wait\("),
+    "Data(contentsOf:)": re.compile(r"\bData\(contentsOf:"),
+    "contentsOfDirectory": re.compile(r"\bcontentsOfDirectory\b"),
+}
+# What "view and controller files" means, relative to `daemon/Sources/MeetingPipe`.
+BLOCKER_GLOBS = ("*View*.swift", "*Window*.swift", "*Controller*.swift", "*Pane*.swift", "*Menu*.swift")
+
+# (path relative to daemon/Sources/MeetingPipe, pattern name) -> (exact hit count, reason).
+# The count is exact on purpose: a second site in an allowlisted file fails rather than
+# riding on the first one's reason, and a listed site that was removed fails as stale.
+BLOCKER_ALLOWLIST: dict[tuple[str, str], tuple[int, str]] = {
+    ("DigestsView.swift", "contentsOfDirectory"): (
+        1, "DigestFile.scan, called only from a Task.detached in the digest reload"),
+    ("MeetingDetailView.swift", "Data(contentsOf:)"): (
+        2, "PublishURLs.notion/obsidian, called only from the Task.detached in reloadPublishURLs"),
+    ("MeetingDetailView+Header.swift", "Data(contentsOf:)"): (
+        1, "writeTitle reads the whole summary.json (or meta.json) on main when the user commits a "
+           "title with Return, and rewrites it atomically on main; known, not yet moved off main"),
+    ("Preferences/PreferencesView+Pipeline.swift", "waitUntilExit"): (
+        1, "off main inside the Task.detached of the prompt preview's load(), but that closure blocks "
+           "a cooperative-pool thread, which daemon/CLAUDE.md forbids; CONC5's ProcessRunner "
+           "replaces it, and this entry goes with that task"),
+}
+
+
+def _code_only(line: str) -> str:
+    """`line` without its `//` comment, leaving `//` inside a string literal alone."""
+    in_string = False
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if ch == "\\" and in_string:
+            i += 2
+            continue
+        if ch == '"':
+            in_string = not in_string
+        elif not in_string and line.startswith("//", i):
+            return line[:i]
+        i += 1
+    return line
+
+
+def blocker_hits(root: Path) -> dict[tuple[str, str], list[int]]:
+    """{(relative path, pattern name): [line numbers]} for every view/controller file under `root`."""
+    files: set[Path] = set()
+    for glob in BLOCKER_GLOBS:
+        files |= set(root.rglob(glob))
+    hits: dict[tuple[str, str], list[int]] = {}
+    for path in sorted(files):
+        rel = path.relative_to(root).as_posix()
+        in_block_comment = False
+        for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            line = raw
+            if in_block_comment:
+                if "*/" not in line:
+                    continue
+                line = line.split("*/", 1)[1]
+                in_block_comment = False
+            line = re.sub(r"/\*.*?\*/", "", line)
+            if "/*" in line:
+                in_block_comment = True
+                line = line.split("/*", 1)[0]
+            code = _code_only(line)
+            for name, pattern in BLOCKER_PATTERNS.items():
+                if pattern.search(code):
+                    hits.setdefault((rel, name), []).append(number)
+    return hits
+
+
+def check_blockers(
+    root: Path | None = None,
+    allowlist: dict[tuple[str, str], tuple[int, str]] | None = None,
+) -> bool:
+    fence = Fence("main-thread blockers")
+    root = root if root is not None else REPO / "daemon" / "Sources" / "MeetingPipe"
+    allowlist = BLOCKER_ALLOWLIST if allowlist is None else allowlist
+    hits = blocker_hits(root)
+
+    for key, (count, reason) in sorted(allowlist.items()):
+        if not reason.strip():
+            fence.fail(f"allowlist entry {key[0]} / {key[1]} has no reason")
+        found = len(hits.get(key, []))
+        if found == 0:
+            fence.fail(f"allowlist entry {key[0]} / {key[1]} is stale: the listed site is gone. Delete the entry.")
+        elif found != count:
+            fence.fail(
+                f"{key[0]}: {found} `{key[1]}` site(s) where the allowlist expects {count}. "
+                "Move the new one off main, or update the entry with its reason."
+            )
+    for (rel, name), lines in sorted(hits.items()):
+        if (rel, name) in allowlist:
+            continue
+        where = ", ".join(f"{rel}:{n}" for n in lines)
+        fence.fail(
+            f"`{name}` in a view or controller file ({where}). It blocks the main thread unless "
+            "something moved it off: move it, or allowlist it in BLOCKER_ALLOWLIST with the reason."
+        )
+    return fence.report()
+
+
 def main(argv: list[str]) -> int:
     which = argv[0] if argv else "both"
     print(f"CI5 truth fences ({which})")
@@ -861,8 +974,10 @@ def main(argv: list[str]) -> int:
         ok &= check_links()
     if which in ("both", "backlog"):
         ok &= check_backlog()
-    if which not in ("both", "config", "events", "claude", "links", "backlog"):
-        print("usage: truth_fences.py [both|config|events|claude|links|backlog]", file=sys.stderr)
+    if which in ("both", "blockers"):
+        ok &= check_blockers()
+    if which not in ("both", "config", "events", "claude", "links", "backlog", "blockers"):
+        print("usage: truth_fences.py [both|config|events|claude|links|backlog|blockers]", file=sys.stderr)
         return 2
     return 0 if ok else 1
 

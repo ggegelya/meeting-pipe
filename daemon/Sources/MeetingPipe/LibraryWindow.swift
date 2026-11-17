@@ -12,9 +12,11 @@ final class LibraryWindow {
     }
 
     func show() {
+        let seq = UILatency.shared.action("open_window", surface: "library")
         if let w = window {
             // The manager owns the whole dance (policy flip, deferred front + activate, deminiaturize) and counts by window identity, so a second click while the window is already up, or a click while it is minimized, cannot drift the count (UX39).
             WindowActivationManager.shared.showWindow(w)
+            UILatency.shared.trackWindowOpen("library", cold: false, seq: seq, window: w)
             return
         }
 
@@ -57,6 +59,7 @@ final class LibraryWindow {
 
         self.window = w
         WindowActivationManager.shared.showWindow(w)
+        UILatency.shared.trackWindowOpen("library", cold: true, seq: seq, window: w)
     }
 
     private static var delegateKey: UInt8 = 0

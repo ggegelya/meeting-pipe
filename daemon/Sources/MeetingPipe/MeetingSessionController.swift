@@ -446,6 +446,8 @@ final class MeetingSessionController: @unchecked Sendable {
         // END20: the toggle pressed while a start is coming up means stop, not a second start (which
         // `beginRecording` would ignore anyway), so it cancels the start in flight.
         if startLatch.cancel(by: "toggle") {
+            // OBS7: the start's HUD never comes, so neither click is waiting on one.
+            UILatency.shared.discardPending()
             Log.writeLine("daemon", "toggle during a start in flight → cancelling the start")
             return
         }
@@ -465,6 +467,7 @@ final class MeetingSessionController: @unchecked Sendable {
             // Mid-flush; a new start would race the await. END28: a toggle during a split's stop
             // means stop, so the split's prompt is not raised once it finishes.
             pendingSplit = nil
+            UILatency.shared.discardPending()  // OBS7: a press on a state that ignores it has no feedback
         }
     }
 
@@ -955,6 +958,8 @@ final class MeetingSessionController: @unchecked Sendable {
                     startedAt: Date(),
                     levelProvider: { [weak self] in self?.coordinator.audioRecorder.currentMicLevelDb() ?? -120 }
                 )
+                // OBS7: the HUD is the first visible state of a Start; `ms` is read on the next main turn.
+                UILatency.shared.feedbackForLatest(.start)
                 self.coordinator.notifications.notifyRecordingStarted(file: file)
                 // REC20 item 1: a start short of space still records, and says so on the HUD it
                 // just presented and in one notification. The recorder already logged the event.
@@ -1157,6 +1162,9 @@ final class MeetingSessionController: @unchecked Sendable {
         coordinator.stateMachine.setStopping(file: file, source: source, summaryMode: summaryMode)
         coordinator.statusUI.setStopping(file: file, source: source, summaryMode: summaryMode)
         coordinator.hud.dismiss()
+        // OBS7: the HUD fade is a Stop's first visible state. Read on the next main turn, so the
+        // lifecycle and mic-gate teardown below (P005/P047) is inside the number.
+        UILatency.shared.feedbackForLatest(.stop)
         disarmSystemLevelMirror()
         // Tear down per-meeting AX subscriptions; the verdict stream stays
         // open for the next meeting.

@@ -56,8 +56,9 @@ enum StallDetector {
 /// stall reports the last one, which describes the moment just before it began. The
 /// frontmost app is read off main at emission.
 ///
-/// OBS7's `last_ui_seq` is not attached: OBS7 has not landed, and this does not build a
-/// second sequence counter. It adds the two attributes when it does.
+/// OBS7: a row carries `last_ui_seq` and `since_ui_action_ms` from `UILatency`'s one sequence
+/// counter, read at emission (the newest click, and how long before the stall ended it ran), so a
+/// stall that began inside a click's handler names the click. Absent when no action has run.
 final class MainThreadStallWatchdog: @unchecked Sendable {
 
     /// How often a ping is posted. 20 to 50 ms was the amendment's range; 25 ms bounds the
@@ -73,6 +74,7 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
     private let thresholdMs: Double
     private let rateLimitSeconds: TimeInterval
     private let context: @Sendable () -> [String: Any]
+    private let lastUIAction: @Sendable () -> (seq: Int, sinceMs: Int)?
     private let emit: @Sendable (_ attributes: [String: Any]) -> Void
 
     // All below are confined to `queue`.
@@ -88,6 +90,7 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
         thresholdMs: Double = StallDetector.logThresholdMs,
         rateLimitSeconds: TimeInterval = StallDetector.rateLimitSeconds,
         context: @escaping @Sendable () -> [String: Any] = { [:] },
+        lastUIAction: @escaping @Sendable () -> (seq: Int, sinceMs: Int)? = { UILatency.shared.lastAction() },
         emit: @escaping @Sendable ([String: Any]) -> Void = { attrs in
             Log.event(category: "perf", action: "main_thread_stall", attributes: attrs)
         }
@@ -96,6 +99,7 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
         self.thresholdMs = thresholdMs
         self.rateLimitSeconds = rateLimitSeconds
         self.context = context
+        self.lastUIAction = lastUIAction
         self.emit = emit
     }
 
@@ -155,6 +159,10 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
             attrs["duration_ms"] = Int(waitMs.rounded())
             attrs["over_budget"] = overBudget
             attrs["suppressed"] = count
+            if let ui = lastUIAction() {
+                attrs["last_ui_seq"] = ui.seq
+                attrs["since_ui_action_ms"] = ui.sinceMs
+            }
             attrs["frontmost_app"] = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? NSNull()
             emit(attrs)
         }

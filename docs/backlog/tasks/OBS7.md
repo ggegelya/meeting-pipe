@@ -2,9 +2,9 @@
 id: OBS7
 title: No click, first-paint or window-open event exists, so click-to-feedback latency cannot be measured from the logs, and nothing fences main-thread blockers in view and controller code
 category: Observability
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). daemon/Sources has no os_signpost, OSSignposter or run-loop observer and no event at a prompt, HUD, menu or hotkey click or at a first paint, so the responsiveness audit timed Record from completion-side rows and could time no Library or Preferences action. Scope: ui_action at each entry point and ui_feedback at the first visible state (systemUptime ms, shared sequence), first-paint rows for HUD and prompt, window_opened with cold and ms_to_key, a read-only scripts/latency_report.py, and a main-thread blocker fence (Fence B) with a reasoned allowlist.
+comment: Shipped 2026-11-17 (items 1 to 5): `ui` rows via UILatency (ui_action/ui_feedback/first_paint/window_opened), stall rows carry last_ui_seq, scripts/latency_report.py, Fence B as `truth_fences.py blockers`. Owed: item 6 (P005/P047 HAL probe async) waits on an installed-HEAD week of HUD Stop ui_action to ui_feedback; the owner walkthrough.
 ---
 
 # OBS7: No click, first-paint or window-open event exists, so click-to-feedback latency cannot be measured from the logs, and nothing fences main-thread blockers in view and controller code
@@ -58,3 +58,5 @@ Every new row carries no meeting title, display name or text; `action`, `surface
 1. [session] Install the landing build on the work laptop (`./scripts/rebuild.sh`) and confirm a `ui_action` row appears on the first prompt Record.
 2. [owner] Use the app normally for a week: at least five prompted recordings, two hotkey or menu starts, and one open each of Library, Preferences and Guide. Cost: none beyond normal use.
 3. [session] Run `scripts/latency_report.py` on that week and paste the per-action table into this file; for HUD Stop, apply Scope item 6 only if `ui_action` to `ui_feedback` exceeds 16 ms at the median.
+
+**Progress (2026-11-17): items 1 to 5 shipped.** Deviations from the spec: the click name is `name` (`Log.event` owns the `action` key); Fence B is a `truth_fences.py blockers` check (HYG10's mechanism had not landed, and a Python check is pytest-able) with exact-count allowlist entries; `feedbackForLatest(.start/.stop)` pairs a visible state with a click that can cause it (spec said `feedback(seq:)` at the setter); the prompt leaving answers a prompt click; first paint is a run-loop observer after Core Animation's commit, not `viewDidMoveToWindow`; `ms_to_key` counts from the click. The Coordinator-side entry points and four of five window openers are pinned by a source fence rather than a behavioural test (a Coordinator cannot be built headless); the Guide window runs a real cold-then-warm `show()`. Item 6 is conditional on field timings and is not done. Added stamps beyond the spec list: `hotkey_force_stop`, `notification_record`.

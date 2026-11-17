@@ -221,6 +221,10 @@ final class RecordingHUDWindow {
             panel.animator().alphaValue = 1
         }
 
+        // OBS7: the turn that presented the HUD has committed. `seq` is the click that started the recording, if one did.
+        let paintSeq = UILatency.shared.recentActionSeq(.start)
+        UILatency.afterNextCommit { UILatency.shared.firstPaint(surface: "hud", phase: "present", seq: paintSeq) }
+
         // PERF26: 1 Hz, landing on whole seconds of the recording so the readout never skips one,
         // with a tolerance so the system can fold the tick into other wakeups. It was 2 Hz with no
         // tolerance, and every other tick wrote the same `m:ss`.
@@ -756,6 +760,7 @@ final class RecordingHUDWindow {
     }
 
     fileprivate func handleStop() {
+        UILatency.shared.action("hud_stop", surface: "hud")
         // TECH-DSN5: a firm trackpad detent for the consequential Stop action
         // (no-op without a Force Touch trackpad). Preserved from the old StopButton,
         // which fired it on press; the shared record key fires its action on click.
