@@ -52,7 +52,8 @@ check "its ACL lists an application list for sign, not <null>" \
     'security dump-keychain -a "$KC_T" 2>/dev/null | awk "/class: 0x00000010/{f=1} f&&/applications \\([1-9]/{n=1} END{exit !n}"'
 cp /usr/bin/true "$ROOT/t"
 check "codesign signs with it from the scratch keychain, prompt-free" \
-    'codesign --force --sign "MeetingPipe Dev" --keychain "$KC_T" "$ROOT/t" >/dev/null 2>&1'
+    'codesign --force --sign "MeetingPipe Dev" --keychain "$KC_T" "$ROOT/t" >"$ROOT/codesign.out" 2>&1 \
+        || { sed "s/^/        codesign: /" "$ROOT/codesign.out"; false; }'
 check "and the signature's leaf is the scratch certificate, not some other identity" \
     '[[ -n "$(cert_fp "$KC_T")" ]] && codesign -dvv "$ROOT/t" 2>&1 | grep -q "Authority=MeetingPipe Dev"'
 acl "$KC_T"; rc=$?
