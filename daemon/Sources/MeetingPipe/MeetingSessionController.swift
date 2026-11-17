@@ -966,7 +966,20 @@ final class MeetingSessionController: @unchecked Sendable {
                 // manual recordings and the prompt-answered-late race). An explicit start's
                 // engine reaches `.starting` only after this, once its build lands; the
                 // lifecycle consumer promotes that one (`confirmLateStartIfRecording`).
-                self.coordinator.lifecycleCoord.confirmRecording()
+                // END19 amendment: only this recording's own engine. Another app's `.starting`
+                // promoted here became the recording's engine for good (M2 of the 2026-11-17
+                // review); the build's engage replaces it instead. A source-less start keeps
+                // promoting what it finds, which END19 item 3 relies on.
+                let engaged = self.coordinator.lifecycleCoord.engagedBundleID
+                if let source, let engaged, engaged != source.bundleID {
+                    Log.event(category: "coordinator", action: "lifecycle_promotion_skipped", attributes: [
+                        "bundle_id": source.bundleID,
+                        "engaged_bundle_id": engaged,
+                        "reason": "other_app_engaged",
+                    ])
+                } else {
+                    self.coordinator.lifecycleCoord.confirmRecording()
+                }
                 // END28: from here on, a change of call splits this recording.
                 self.armCallIdentityWatch(file: file, source: source)
                 // END23: and a Teams recording stops 120 s into a mic release, whatever the engine says.
@@ -2413,6 +2426,24 @@ final class MeetingSessionController: @unchecked Sendable {
     func engageLifecycleIfNeeded(source: AppSource?, handles: MeetingAXHandleBuilder.Handles?) {
         assertMainQueue()
         guard let source = source else { return }
+        // END19 amendment (2026-11-17): engaged is not engaged for this recording. A discovery
+        // engage of another app (a named Meet tab winning a scan while a Teams call sat on offer)
+        // used to be kept as `already_engaged`, so the Teams recording ran on Chrome's engine: no
+        // Teams end detection, every Chrome end ignored as another app's, and a Chrome hold's cut
+        // left armed for the Teams stop. Tear it down and engage this source; with no handles
+        // there is no engine at all, which is still better than another app's. Ahead of END27's
+        // terminal branch, so another app's terminal engine is torn down too, never kept.
+        if let engaged = coordinator.lifecycleCoord.engagedBundleID, engaged != source.bundleID {
+            Log.event(category: "coordinator", action: "lifecycle_reengaged", attributes: [
+                "bundle_id": source.bundleID,
+                "reason": "other_app_at_start",
+                "engaged_bundle_id": engaged,
+                "has_handles": handles != nil,
+            ])
+            disengageLifecycle()
+            engageLifecycle(source: source, handles: handles)
+            return
+        }
         if coordinator.lifecycleCoord.isTerminal {
             Log.event(category: "coordinator", action: "lifecycle_reengaged", attributes: [
                 "bundle_id": source.bundleID,

@@ -470,6 +470,10 @@ public final class MeetingLifecycleCoordinator {
     /// with `disengage()` and would reset a healthy discovery-engaged session to `.idle`.
     public var isEngaged: Bool { activeAdapter != nil }
 
+    /// END19 amendment: which app's call the engaged adapter is following, nil when none is. A
+    /// record start compares it with its own source rather than keeping another app's engine.
+    public var engagedBundleID: String? { lock.withLock { engagedContext?.bundleID } }
+
     /// END27: engaged, and the engine has already published its terminal `.ended`. Such an engine
     /// ignores every later signal, so for a recording it is engaged and not working: a record
     /// start that finds one re-engages rather than keeping it. Read off the published verdict, so

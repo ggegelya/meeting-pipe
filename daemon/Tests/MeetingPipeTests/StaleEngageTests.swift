@@ -325,3 +325,109 @@ final class StaleEngageWiringFenceTests: XCTestCase {
         )
     }
 }
+
+/// END19 amendment (2026-11-17, M2 of the post-audit review): a record start for one app that finds
+/// another app's engine engaged replaces it instead of keeping it as `already_engaged`. The
+/// review's route: a Teams call on offer, a named Meet tab wins a scan and discovery engages Chrome,
+/// the owner clicks the Teams offer. Real controller, real coordinator and engine, two hand-driven
+/// adapters, and `EngageOffMainTests`' build.
+@MainActor
+final class ForeignEngageAtStartTests: XCTestCase {
+
+    private var tempDir: URL!
+    private var logs: URL!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("end19m2-\(UUID().uuidString)", isDirectory: true)
+        logs = tempDir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+    }
+
+    override func tearDownWithError() throws {
+        unsetenv("MEETINGPIPE_LOGS_DIR")
+        try? FileManager.default.removeItem(at: tempDir)
+        try super.tearDownWithError()
+    }
+
+    private let teams = AppSource(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams")
+    private let chromeContext = MeetingLifecycleContext(bundleID: "com.google.Chrome", kind: .browser, pid: 5151)
+
+    private func waitUntil(_ predicate: () -> Bool, _ what: String, file: StaticString = #filePath, line: UInt = #line) async {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if predicate() { return }
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("timed out waiting for \(what)", file: file, line: line)
+    }
+
+    private func rows(_ action: String) -> [[String: Any]] {
+        let text = (try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? ""
+        return text.split(separator: "\n").compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }.filter { $0["action"] as? String == action }
+    }
+
+    private func emit(_ adapter: EngageOffMainTests.CountingAdapter, _ kind: PrimarySignalKind, _ state: PrimarySignalState, _ context: MeetingLifecycleContext) {
+        adapter.sink?(PrimarySignalEvent(kind: kind, state: state, timestamp: Date(), context: context))
+    }
+
+    func test_aRecordStartOverAnotherAppsEngine_engagesItsOwn_andItsEndIsHonoured() async throws {
+        let host = FakeSessionHost(tempDir: tempDir)
+        host.recorderSpy.lastSystemFires = 1
+        host.recorderSpy.fileToReturn = tempDir.appendingPathComponent("20261117-110000.wav")
+        let chromeAdapter = StaleEngageSessionTests.ChromeAdapter()
+        let teamsAdapter = EngageOffMainTests.CountingAdapter()
+        host.lifecycleCoord = MeetingLifecycleCoordinator(adapters: [chromeAdapter, teamsAdapter])
+        let controller = MeetingSessionController(coordinator: host)
+        // Gated, so the commit runs before the record start's build lands, as it does when the AX
+        // walk is slow: the commit's promotion is then the only thing between Chrome's engine and
+        // the recording.
+        let build = EngageOffMainTests.GatedBuild(gated: true)
+        controller.engageSeams.buildHandles = { source, _ in build.build(source) }
+        controller.engageSeams.resolveStartingSource = { context in
+            AppSource(bundleID: context.bundleID, displayName: "Google Chrome", kind: .browser)
+        }
+
+        // Discovery engaged Chrome and its tab reads live: the engine is `.starting` for Chrome.
+        try host.lifecycleCoord.engage(context: chromeContext, handle: LifecycleAdapterHandle())
+        chromeAdapter.emit(.browserTabTitle, .live, chromeContext)
+        await waitUntil({ host.lifecycleCoord.current == .starting(context: self.chromeContext) }, "Chrome's starting")
+
+        // The click on the Teams offer.
+        controller.recordAttached(to: teams, trigger: "test")
+        await waitUntil({ !self.rows("lifecycle_promotion_skipped").isEmpty }, "the commit")
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(host.lifecycleCoord.current, .starting(context: chromeContext), "Chrome's engine is not promoted for the Teams recording")
+        build.gate.signal()
+        await waitUntil({ teamsAdapter.starts.count == 1 }, "the Teams engage")
+        if case .recording(_, let src?, _) = host.stateMachine.current {
+            XCTAssertEqual(src.bundleID, teams.bundleID)
+        } else {
+            XCTFail("recording the Teams call")
+        }
+        XCTAssertEqual(host.lifecycleCoord.engagedBundleID, teams.bundleID, "the recording's own adapter is engaged")
+        XCTAssertEqual(rows("lifecycle_promotion_skipped").first?["engaged_bundle_id"] as? String, chromeContext.bundleID)
+        let reengaged = try XCTUnwrap(rows("lifecycle_reengaged").first)
+        XCTAssertEqual(reengaged["reason"] as? String, "other_app_at_start")
+        XCTAssertEqual(reengaged["engaged_bundle_id"] as? String, chromeContext.bundleID)
+        XCTAssertTrue(rows("lifecycle_engage_skipped").allSatisfy { $0["reason"] as? String != "already_engaged" })
+
+        // The Teams engine follows the call and its end stops the recording.
+        controller.startConsumers()
+        defer { controller.shutdownConsumers() }
+        let recorded = try XCTUnwrap(teamsAdapter.starts.last.map {
+            MeetingLifecycleContext(bundleID: teams.bundleID, kind: .native, pid: $0.pid)
+        })
+        emit(teamsAdapter, .axLeaveButton, .live, recorded)
+        await waitUntil({ host.lifecycleCoord.current == .inMeeting(context: recorded) }, "the Teams promotion")
+        emit(teamsAdapter, .workspaceAppTerminated, .ended, recorded)
+        await waitUntil({ host.recorderSpy.stopCallCount == 1 }, "the honoured end")
+        XCTAssertTrue(rows("meeting_end_ignored_other_app").isEmpty)
+        await waitUntil({ host.stateMachine.current == .idle }, "the flush")
+    }
+}
