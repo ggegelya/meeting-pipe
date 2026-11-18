@@ -15,6 +15,12 @@ struct SummaryTab: View {
     /// FEAT10: an evidence chip was clicked; take the reader to that transcript
     /// row. The host owns the tab switch, since this tab cannot see the tab bar.
     var onJumpToTranscript: (Double) -> Void = { _ in }
+    /// UX98 + TECH-A16: the stem of an unkept candidate preview, held by `MeetingDetailView`
+    /// outside this tab's per-meeting identity, so navigating away still discards it.
+    @Binding var unkeptCandidateStem: String?
+
+    /// UX98: the meeting this tab shows right now, read after each await.
+    @State private var liveness = DetailLiveness()
 
     /// Loaded off-main on stem change. Caching avoids disk IO on the main thread, which pinned it during recording.
     @State private var loadedSummary: MeetingSummary? = nil
@@ -81,22 +87,12 @@ struct SummaryTab: View {
             await refreshPreviewEngine()
             await reloadSummary()
         }
-        .onChange(of: meeting.stem) { _, _ in
-            // Discard in-flight edits on stem change; applying old edits to the new row would be a footgun.
-            isEditing = false
-            editorModel = nil
-            saveError = nil
-            staleChoicePending = false
-            savedCue = false
-            // TECH-A16: drop any unkept candidate preview (and its sidecar) when
-            // navigating to another meeting.
-            if let s = candidateStem { libraryModel.discardCandidateSummary(stem: s) }
-            candidate = nil
-            candidateStem = nil
-            previewError = nil
-            showReprocess = false
-            promptDraft = ""
-        }
+        // UX98: this tab is rebuilt per meeting (`MeetingDetailView` gives its tab content
+        // `.id(meeting.stem)`), so every `@State` here, edits, paste text and an in-flight
+        // preview's flag included, starts fresh on a selection change; the old stem-change reset
+        // missed `previewing` and the paste fields. TECH-A16's discard of an unkept candidate
+        // moved to `MeetingDetailView`'s stem-change hook, which outlives this identity.
+        .tracksLiveStem(liveness, stem: meeting.stem)
         .onChange(of: editToken) { _, _ in
             // TECH-UI-5: the detail-pane menu requested summary editing.
             beginEditing()
@@ -209,15 +205,29 @@ struct SummaryTab: View {
     }
 
     private func runPreview(contextOverride: String? = nil, mode: MeetingLibraryService.PreviewMode) async {
+        let stem = meeting.stem
         previewError = nil
         previewing = true
-        let result = await libraryModel.previewSummary(stem: meeting.stem, contextOverride: contextOverride, mode: mode)
+        let result = await libraryModel.previewSummary(stem: stem, contextOverride: contextOverride, mode: mode)
         previewing = false
+        let succeeded: Bool
+        if case .success = result { succeeded = true } else { succeeded = false }
+        // UX98: the run can outlast the selection. Its candidate belongs to `stem`, never to
+        // whatever this pane shows now.
+        switch SummaryPreviewLanding.decide(ranFor: stem, succeeded: succeeded, liveness: liveness) {
+        case .land: break
+        case .discardOrphan(let orphan):
+            libraryModel.discardCandidateSummary(stem: orphan)
+            return
+        case .drop:
+            return
+        }
         switch result {
         case .success:
             if let loaded = MeetingSummary.load(from: candidateURL) {
                 candidate = loaded
-                candidateStem = meeting.stem
+                candidateStem = stem
+                unkeptCandidateStem = stem
                 candidateOnDevice = mode == .onDevice
                 showReprocess = false   // the candidate compare pane takes over
             } else {
@@ -335,6 +345,7 @@ struct SummaryTab: View {
         }
         candidate = nil
         candidateStem = nil
+        unkeptCandidateStem = nil
         Task { await reloadSummary() }   // pick up the promoted summary
     }
 
@@ -342,6 +353,7 @@ struct SummaryTab: View {
         libraryModel.discardCandidateSummary(stem: meeting.stem)
         candidate = nil
         candidateStem = nil
+        unkeptCandidateStem = nil
     }
 
     @ViewBuilder
@@ -455,7 +467,7 @@ struct SummaryTab: View {
     private func refreshPreviewEngine() async {
         let stem = meeting.stem
         let engine = await libraryModel.localPreviewEngine(stem: stem)
-        if meeting.stem == stem { localPreviewEngine = engine }
+        if liveness.accepts(stem, cancelled: Task.isCancelled) { localPreviewEngine = engine }
     }
 
     /// Loads `<stem>.summary.json` off-main. Called via `.task(id:)`; guards
@@ -471,7 +483,7 @@ struct SummaryTab: View {
         let parsed: MeetingSummary? = await Task.detached(priority: .userInitiated) {
             MeetingSummary.load(from: url)
         }.value
-        if meeting.stem == stem {
+        if liveness.accepts(stem, cancelled: Task.isCancelled) {
             loadedSummary = parsed
             loadedForStem = stem
             loadedSummaryMtime = mtime

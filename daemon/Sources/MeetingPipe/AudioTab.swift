@@ -24,6 +24,8 @@ struct AudioTab: View {
     }
 
     @State private var state: LoadState = .loading
+    /// UX98: the meeting this tab shows right now, read after the waveform await.
+    @State private var liveness = DetailLiveness()
     /// Zoom level. Discrete steps keep re-bin cost flat (we always render the same peak count; the view stretches them).
     @State private var zoom: ZoomLevel = .fit
 
@@ -56,11 +58,16 @@ struct AudioTab: View {
                 .padding(.vertical, 8)
         }
         .task(id: meeting.stem) {
-            await reload()
-            if let audio = meeting.audioURL {
-                playback.load(url: audio)
-            }
+            // UX98: a run cancelled by a selection change must not hand the shared player the
+            // meeting just left.
+            await AudioTabLoad.run(
+                audioURL: meeting.audioURL,
+                reloadWaveform: { await reload() },
+                isCancelled: { Task.isCancelled },
+                load: { playback.load(url: $0) }
+            )
         }
+        .tracksLiveStem(liveness, stem: meeting.stem)
     }
 
     @ViewBuilder
@@ -263,7 +270,7 @@ struct AudioTab: View {
                 return .failure(error)
             }
         }.value
-        guard meeting.stem == stem else { return }
+        guard liveness.accepts(stem, cancelled: Task.isCancelled) else { return }
         switch result {
         case .success(let peaks) where peaks.binCount == 0:
             state = .empty

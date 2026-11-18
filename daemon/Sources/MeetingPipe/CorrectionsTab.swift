@@ -14,10 +14,13 @@ struct CorrectionsTab: View {
     @State private var loading: Bool = true
     @State private var confirmingRevert: Bool = false
     @State private var revertError: String? = nil
+    /// UX98: the meeting this tab shows right now, read after the await.
+    @State private var liveness = DetailLiveness()
 
     var body: some View {
         content
             .task(id: meeting.stem) { await reload() }
+            .tracksLiveStem(liveness, stem: meeting.stem)
     }
 
     @ViewBuilder
@@ -210,14 +213,15 @@ struct CorrectionsTab: View {
         let data = await Task.detached(priority: .userInitiated) {
             CorrectionStore.readData(stem: stem)
         }.value
-        guard meeting.stem == stem else { return }
+        guard liveness.accepts(stem, cancelled: Task.isCancelled) else { return }
         record = data.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
         loadedForStem = stem
         loading = false
     }
 
     private func performRevert() {
-        guard let rec = record,
+        // UX98: only ever revert with this meeting's own record.
+        guard loadedForStem == meeting.stem, let rec = record,
               let original = rec["original_summary"] as? [String: Any] else {
             revertError = "Nothing to revert - record is missing the original summary."
             return

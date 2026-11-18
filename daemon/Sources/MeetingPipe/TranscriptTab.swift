@@ -297,6 +297,8 @@ struct TranscriptTab: View {
     @Binding var pendingSeek: Double?
 
     @State private var segments: [TranscriptSegment] = []
+    /// UX98: the meeting this tab shows right now, read after each await.
+    @State private var liveness = DetailLiveness()
     @State private var language: String? = nil
     @State private var diarizationNote: TranscriptDiarizationNote? = nil
     /// ASR12: corrections skipped on the last load because their line drifted.
@@ -398,6 +400,7 @@ struct TranscriptTab: View {
         .task(id: TranscriptReloadKey(stem: meeting.stem, revision: store.revision)) {
             await reload()
         }
+        .tracksLiveStem(liveness, stem: meeting.stem)
         .sheet(item: $editingSegment, onDismiss: {
             // FEAT12: raise the vocabulary offer only once the editor is off screen.
             if let offer = pendingVocabularyOffer {
@@ -820,7 +823,8 @@ struct TranscriptTab: View {
              roster: RosterProfile.people().map(\.name))
         }.value
         let result = loaded.transcript
-        guard meeting.stem == stem else { return }
+        // UX98: a load for the meeting just left, or one a newer reload superseded, writes nothing.
+        guard liveness.accepts(stem, cancelled: Task.isCancelled) else { return }
         segments = result?.segments ?? []
         language = result?.language
         diarizationNote = result?.diarizationNote

@@ -25,6 +25,11 @@ struct MeetingDetailView: View {
     /// revision bump caused by another meeting's write costs two `stat` calls
     /// instead of two JSON parses.
     @State var loadedPublishFingerprint: [Date?]? = nil
+    /// UX98: the meeting this (reused) view shows right now, read after the publish-URL await.
+    @State var liveness = DetailLiveness()
+    /// UX98 + TECH-A16: an unkept candidate preview `SummaryTab` produced. Held here because the
+    /// tab is rebuilt per meeting, so its own stem-change hook can no longer discard it.
+    @State var unkeptCandidateStem: String? = nil
 
     /// Persisted so reopening the window keeps the user's tab. A stem-keyed default would be over-engineered for a personal product.
     @AppStorage("MeetingDetailSelectedTab") var selectedTab: String = Tab.summary.rawValue
@@ -88,7 +93,12 @@ struct MeetingDetailView: View {
                     .padding(.vertical, 8)
             }
             Divider().overlay(Color(MPColors.borderStrong))
+            // UX98: one identity per meeting, so `SummaryTab`, `TranscriptTab` and `AudioTab`
+            // get fresh `@State` on every selection instead of carrying a preview, paste text or
+            // a late reload across. `playback` stays a `@StateObject` here, outside it, so UX78's
+            // header transport and the citation jump keep the player.
             tabContent
+                .id(meeting.stem)
         }
         .frame(minWidth: LibraryLayout.detailMinWidth)
         .onAppear {
@@ -103,6 +113,12 @@ struct MeetingDetailView: View {
             // the two audio-bearing tabs call `load`, so from Summary nothing would replace it and
             // the meeting you just left kept playing under the new title.
             playback.pause()
+            // TECH-A16 + UX98: drop the unkept candidate preview (and its sidecar) of the meeting
+            // just left. An in-flight one is discarded by `SummaryTab.runPreview` when it lands.
+            if let s = unkeptCandidateStem {
+                libraryModel.discardCandidateSummary(stem: s)
+                unkeptCandidateStem = nil
+            }
         }
         // PERF21: the Library window is kept (`isReleasedWhenClosed = false`), so closing it, or
         // leaving the meeting for Facts or a multi-select, does not release the player. Pausing
@@ -113,6 +129,7 @@ struct MeetingDetailView: View {
         .task(id: PublishURLsReloadKey(stem: meeting.stem, revision: store.revision)) {
             await reloadPublishURLs()
         }
+        .tracksLiveStem(liveness, stem: meeting.stem)
         .sheet(isPresented: $showCorrectionsSheet) { correctionsSheet }
     }
 
@@ -280,7 +297,8 @@ struct MeetingDetailView: View {
                 // Transcript tab already sees it in its `onAppear`.
                 pendingTranscriptSeek = time
                 selectedTab = Tab.transcript.rawValue
-            }
+            },
+            unkeptCandidateStem: $unkeptCandidateStem
         )
         .environmentObject(libraryModel)
     }
@@ -335,7 +353,7 @@ struct MeetingDetailView: View {
             )
         }.value
 
-        if meeting.stem == stem {
+        if liveness.accepts(stem, cancelled: Task.isCancelled) {
             cachedNotionURL = notion
             cachedObsidianURL = obsidian
             cachedLocalNote = local
