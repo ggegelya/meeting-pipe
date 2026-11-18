@@ -59,20 +59,3 @@ enum SummaryPreviewLanding: Equatable {
         return succeeded ? .discardOrphan(stem: stem) : .drop
     }
 }
-
-/// UX98: the Audio tab's per-meeting load, lifted out of its `.task(id:)` so a test can drive
-/// the order and the cancel guard. The player is shared with the header and the Transcript tab
-/// and outlives the tab, so a cancelled run must not hand it the meeting just left.
-enum AudioTabLoad {
-    @MainActor
-    static func run(
-        audioURL: URL?,
-        reloadWaveform: () async -> Void,
-        isCancelled: () -> Bool,
-        load: (URL) -> Void
-    ) async {
-        await reloadWaveform()
-        guard !isCancelled(), let audioURL else { return }
-        load(audioURL)
-    }
-}

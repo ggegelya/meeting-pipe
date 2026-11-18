@@ -940,12 +940,13 @@ struct DetailTransportRow: View {
         if let transport = DetailTransport.decide(
             loadedURL: playback.loadedURL,
             meetingAudioURL: meetingAudioURL,
-            isPlaying: playback.isPlaying,
+            // UX104: the intent, so the glyph turns at the click rather than when the engine starts.
+            isPlaying: playback.showsPause,
             currentTime: clock.currentTime,
             duration: playback.duration
         ) {
             HStack(spacing: 8) {
-                Button { playback.togglePlayPause() } label: {
+                Button { playback.pressPlayPause(surface: "detail_header") } label: {
                     Image(systemName: transport.systemImage)
                 }
                 .buttonStyle(.plain)

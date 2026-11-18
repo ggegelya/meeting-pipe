@@ -498,7 +498,7 @@ struct TranscriptTab: View {
     private func installRightClickPause() {
         guard rightClickMonitor == nil else { return }
         rightClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown]) { event in
-            if playback.isPlaying { playback.pause() }
+            if playback.showsPause { playback.pause() }
             return event
         }
     }
@@ -1583,9 +1583,9 @@ private struct PlaybackBar: View {
         } else {
             HStack(spacing: 10) {
                 Button {
-                    playback.togglePlayPause()
+                    playback.pressPlayPause(surface: "transcript")
                 } label: {
-                    Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
+                    Image(systemName: playback.showsPause ? "pause.fill" : "play.fill")
                         .frame(width: 18)
                 }
                 .keyboardShortcut(.space, modifiers: [])

@@ -78,6 +78,64 @@ final class DetailStateUX98Tests: XCTestCase {
         XCTAssertEqual(loaded, [URL(fileURLWithPath: "/tmp/A.wav")])
     }
 
+    // MARK: - UX104: load before the waveform, Play only over this meeting's file
+
+    func test_the_audio_tab_loads_the_file_before_the_waveform() async {
+        var order: [String] = []
+        await AudioTabLoad.run(
+            audioURL: URL(fileURLWithPath: "/tmp/A.wav"),
+            reloadWaveform: { order.append("waveform") },
+            isCancelled: { false },
+            load: { _ in order.append("load") }
+        )
+        XCTAssertEqual(order, ["load", "waveform"],
+                       "a Play pressed while the waveform loads must find this meeting's file")
+    }
+
+    func test_play_is_enabled_only_over_this_meetings_file() {
+        let a = URL(fileURLWithPath: "/tmp/A.wav")
+        let b = URL(fileURLWithPath: "/tmp/B.wav")
+        XCTAssertFalse(AudioTabLoad.playEnabled(loadedURL: nil, meetingAudioURL: a, showsPause: false))
+        XCTAssertFalse(AudioTabLoad.playEnabled(loadedURL: b, meetingAudioURL: a, showsPause: false), "the meeting just left")
+        XCTAssertFalse(AudioTabLoad.playEnabled(loadedURL: a, meetingAudioURL: nil, showsPause: false))
+        XCTAssertTrue(AudioTabLoad.playEnabled(loadedURL: a, meetingAudioURL: a, showsPause: false))
+    }
+
+    /// The file moved under the same stem while it played (wav to flac): the control must still
+    /// pause what it is drawing Pause over.
+    func test_play_stays_enabled_while_it_shows_pause() {
+        let wav = URL(fileURLWithPath: "/tmp/A.wav")
+        let flac = URL(fileURLWithPath: "/tmp/A.flac")
+        XCTAssertTrue(AudioTabLoad.playEnabled(loadedURL: wav, meetingAudioURL: flac, showsPause: true))
+    }
+
+    func test_a_moved_file_is_reloaded_once_nothing_plays() {
+        let wav = URL(fileURLWithPath: "/tmp/A.wav")
+        let flac = URL(fileURLWithPath: "/tmp/A.flac")
+        XCTAssertNil(AudioTabLoad.urlToReload(loadedURL: wav, meetingAudioURL: flac, showsPause: true),
+                     "never cut off what is playing")
+        XCTAssertEqual(AudioTabLoad.urlToReload(loadedURL: wav, meetingAudioURL: flac, showsPause: false), flac)
+        XCTAssertNil(AudioTabLoad.urlToReload(loadedURL: flac, meetingAudioURL: flac, showsPause: false))
+        XCTAssertNil(AudioTabLoad.urlToReload(loadedURL: wav, meetingAudioURL: nil, showsPause: false))
+    }
+
+    func test_every_play_surface_draws_the_intent() throws {
+        XCTAssertTrue(try source("Sources/MeetingPipe/AudioTab.swift").contains(#"playback.showsPause ? "pause.fill" : "play.fill""#))
+        XCTAssertTrue(try source("Sources/MeetingPipe/TranscriptTab.swift").contains(#"playback.showsPause ? "pause.fill" : "play.fill""#))
+        XCTAssertTrue(try source("Sources/MeetingPipe/MeetingDetailView+Header.swift").contains("isPlaying: playback.showsPause,"))
+        XCTAssertTrue(try source("Sources/MeetingPipe/AudioTab.swift")
+            .contains(".disabled(!AudioTabLoad.playEnabled("))
+    }
+
+    /// OBS7 leaves Play's `ui_action` mark to the task that changes the control: one per surface.
+    func test_every_play_surface_stamps_its_press() throws {
+        for (file, surface) in [("AudioTab", "audio_tab"), ("TranscriptTab", "transcript"),
+                                ("MeetingDetailView+Header", "detail_header")] {
+            XCTAssertTrue(try source("Sources/MeetingPipe/\(file).swift")
+                .contains("playback.pressPlayPause(surface: \"\(surface)\")"), file)
+        }
+    }
+
     // MARK: - Wiring fences
 
     private func source(_ relativePath: String) throws -> String {

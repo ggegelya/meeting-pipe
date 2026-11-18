@@ -41,6 +41,17 @@ final class AudioPlaybackController: ObservableObject {
     /// True while the player renders, and across a seek's re-anchor so the button does not
     /// flicker. False while a start is still in flight.
     @Published private(set) var isPlaying: Bool = false
+    /// The user asked for sound and has not asked to stop: playing, or a start in flight (UX104
+    /// published it, read-only). A start pays connect, anchor and a bounded `engine.start`, up to
+    /// the 8 s budget on a slow route and again after PERF21's idle stop, so a glyph that waited
+    /// for `isPlaying` showed Play over a start already under way and read a second press as Play.
+    @Published private(set) var wantsPlayback = false
+    /// A start is on its way and the player is not rendering yet.
+    var isStarting: Bool { wantsPlayback && !isPlaying }
+    /// What every Play control draws: Pause from the click on, Play again only once the intent is
+    /// gone (a pause, the end of the file, or a failed start through `failPlayback`), so the
+    /// control never shows Pause over silence for longer than a start can take.
+    var showsPause: Bool { isPlaying || isStarting }
     /// Last loaded URL. Avoids re-loading when the user re-opens the same meeting.
     @Published private(set) var loadedURL: URL? = nil
     /// Set when the file cannot be opened (corrupt wav, missing file, sandbox denial), or when
@@ -127,8 +138,6 @@ final class AudioPlaybackController: ObservableObject {
     /// Bumped by every change of intent (play, seek, pause, load). Queued engine work and
     /// buffer-completion callbacks bail when their captured epoch no longer matches.
     private var epoch: Int = 0
-    /// The user asked for sound and has not asked to stop: playing, or a start in flight.
-    private var wantsPlayback = false
     /// The player is rendering the current anchor, so the played-frame clock is meaningful.
     private var rendering = false
     /// A start on this engine returned `.started` and no stop has returned since, so its output
@@ -231,8 +240,22 @@ final class AudioPlaybackController: ObservableObject {
         armIdleStop()
     }
 
+    /// Branches on the intent, not on `isPlaying` (UX104): a press during a start is a Pause and
+    /// cancels it through the epoch, instead of a second Play that `play()` drops.
     func togglePlayPause() {
-        if isPlaying { pause() } else { play() }
+        if wantsPlayback { pause() } else { play() }
+    }
+
+    /// A Play control's press (OBS7): stamped at the entry point and answered on the next main
+    /// turn, since the glyph's state (`wantsPlayback`) is set synchronously by the toggle.
+    /// `surface` is `audio_tab`, `transcript` or `detail_header`.
+    /// A press that changed nothing (no file loaded) is left unanswered, like any OBS7 click
+    /// with no visible state.
+    func pressPlayPause(surface: String) {
+        let seq = UILatency.shared.action("play_toggle", surface: surface)
+        let before = wantsPlayback
+        togglePlayPause()
+        if wantsPlayback != before { UILatency.shared.feedback(seq: seq) }
     }
 
     /// Seek to time (seconds), clamped to file bounds to avoid stuck engine state.
@@ -302,7 +325,9 @@ final class AudioPlaybackController: ObservableObject {
         cancelIdleStop = nil
         epoch &+= 1
         let myEpoch = epoch
-        wantsPlayback = true
+        // Guarded because `@Published` fires on every set: a seek while playing re-anchors with
+        // the intent already true and should not re-render every observer for it.
+        if !wantsPlayback { wantsPlayback = true }
         rendering = false
         stopTimer()
         currentTime = t

@@ -339,6 +339,87 @@ final class AudioPlaybackControllerTests: XCTestCase {
         XCTAssertEqual(rig.engines[0].calls.suffix(2), ["stopPlayer", "stop"])
     }
 
+    // MARK: - UX104: the intent is published at the click
+
+    func test_a_blocked_start_shows_pause_at_once_and_plays_on_release() async throws {
+        let rig = Rig(firstStart: .park)
+        let playback = rig.controller()
+        parked.append(rig.engines[0])
+        playback.load(url: try wav("a", seconds: 3))
+        playback.play()
+        XCTAssertTrue(playback.isStarting, "true synchronously after play() returns")
+        XCTAssertFalse(playback.isPlaying)
+        XCTAssertTrue(playback.showsPause, "every Play control draws Pause from the click on")
+        try await waitUntil { rig.engines[0].calls.contains("start") }
+
+        rig.engines[0].releaseStart()
+        await playback.engineCallsSettled()
+        XCTAssertTrue(playback.isPlaying)
+        XCTAssertFalse(playback.isStarting)
+        XCTAssertTrue(playback.showsPause)
+    }
+
+    func test_a_start_that_times_out_shows_play_again_with_the_error() async throws {
+        let rig = Rig(firstStart: .park)
+        let playback = rig.controller(startBudget: 0.1)
+        parked.append(rig.engines[0])
+        playback.load(url: try wav("a", seconds: 3))
+        playback.play()
+        XCTAssertTrue(playback.isStarting)
+        await playback.engineCallsSettled()
+        XCTAssertFalse(playback.isStarting)
+        XCTAssertFalse(playback.isPlaying)
+        XCTAssertFalse(playback.showsPause, "never Pause over silence")
+        XCTAssertNotNil(playback.loadError)
+    }
+
+    func test_a_start_that_fails_shows_play_again_with_the_error() async throws {
+        let rig = Rig()
+        let playback = rig.controller()
+        playback.load(url: try wav("a", seconds: 3))
+        rig.engines[0].failConnect()
+        playback.play()
+        XCTAssertTrue(playback.isStarting)
+        await playback.engineCallsSettled()
+        XCTAssertFalse(playback.isStarting)
+        XCTAssertFalse(playback.isPlaying)
+        XCTAssertEqual(playback.loadError, "refused by the fake")
+    }
+
+    /// The second press a user makes when nothing seemed to happen means Pause, and it used to be
+    /// read as a Play that `play()` dropped, so audio began after the press that tried to stop it.
+    func test_a_toggle_during_a_blocked_start_cancels_it() async throws {
+        let rig = Rig(firstStart: .park)
+        let playback = rig.controller()
+        parked.append(rig.engines[0])
+        playback.load(url: try wav("a", seconds: 3))
+        playback.togglePlayPause()
+        try await waitUntil { rig.engines[0].calls.contains("start") }
+        playback.togglePlayPause()
+        XCTAssertFalse(playback.showsPause, "the second press reads as Pause at once")
+
+        rig.engines[0].releaseStart()
+        await playback.engineCallsSettled()
+        XCTAssertFalse(playback.isPlaying)
+        XCTAssertFalse(rig.engines[0].calls.contains("play"), "the start returned after the Pause, so nothing plays")
+    }
+
+    /// A seek while playing re-anchors with the intent already set; publishing it again would
+    /// re-render every observer for nothing.
+    func test_a_seek_while_playing_does_not_republish_the_intent() async throws {
+        let rig = Rig()
+        let playback = rig.controller()
+        playback.load(url: try wav("a", seconds: 3))
+        playback.play()
+        await playback.engineCallsSettled()
+        var intents: [Bool] = []
+        let sub = playback.$wantsPlayback.dropFirst().sink { intents.append($0) }
+        playback.seek(to: 1)
+        await playback.engineCallsSettled()
+        sub.cancel()
+        XCTAssertEqual(intents, [])
+    }
+
     // MARK: - Helpers
 
     /// A Float32 stereo 16 kHz WAV of a quiet tone.

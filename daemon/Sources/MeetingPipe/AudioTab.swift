@@ -59,7 +59,8 @@ struct AudioTab: View {
         }
         .task(id: meeting.stem) {
             // UX98: a run cancelled by a selection change must not hand the shared player the
-            // meeting just left.
+            // meeting just left. UX104: the file loads before the waveform, so Play works from
+            // the first frame of this tab.
             await AudioTabLoad.run(
                 audioURL: meeting.audioURL,
                 reloadWaveform: { await reload() },
@@ -68,6 +69,11 @@ struct AudioTab: View {
             )
         }
         .tracksLiveStem(liveness, stem: meeting.stem)
+        // UX104: a meeting's file can move under the same stem (the capture finishing at stop,
+        // a compress sweep turning wav into flac). Load it once nothing plays, or Play would stay
+        // disabled until the meeting is reselected.
+        .onChange(of: meeting.audioURL) { _, _ in reloadIfFileMoved() }
+        .onChange(of: playback.showsPause) { _, _ in reloadIfFileMoved() }
     }
 
     @ViewBuilder
@@ -163,13 +169,19 @@ struct AudioTab: View {
     @ViewBuilder
     private var transportControls: some View {
         Button {
-            playback.togglePlayPause()
+            playback.pressPlayPause(surface: "audio_tab")
         } label: {
-            Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
+            // UX104: Pause from the click on, not from when the engine answers.
+            Image(systemName: playback.showsPause ? "pause.fill" : "play.fill")
                 .frame(width: 18)
         }
         .keyboardShortcut(.space, modifiers: [])
         .buttonStyle(.borderless)
+        // UX104: never Play over a file that is not this meeting's (the player outlives the tab
+        // and can still hold the meeting just left); the same predicate as `DetailTransport`.
+        .disabled(!AudioTabLoad.playEnabled(
+            loadedURL: playback.loadedURL, meetingAudioURL: meeting.audioURL, showsPause: playback.showsPause
+        ))
         .help("Play or pause. The Space bar also toggles.")
 
         ElapsedTimecode(clock: playback.clock)
@@ -249,6 +261,14 @@ struct AudioTab: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
+    }
+
+    private func reloadIfFileMoved() {
+        if let url = AudioTabLoad.urlToReload(
+            loadedURL: playback.loadedURL, meetingAudioURL: meeting.audioURL, showsPause: playback.showsPause
+        ) {
+            playback.load(url: url)
+        }
     }
 
     @MainActor
@@ -502,5 +522,41 @@ enum WaveformTimecode {
             return String(format: "%d:%02d:%02d", h, m, s)
         }
         return String(format: "%d:%02d", m, s)
+    }
+}
+
+/// The Audio tab's per-meeting load and Play gate, lifted out of the view so a test can drive the
+/// order, the cancel guard and the enablement.
+enum AudioTabLoad {
+    /// UX104: `playback.load(url:)` runs before the waveform, since it is a synchronous file open
+    /// plus model state rather than an engine call, and a Play pressed during "Loading waveform"
+    /// used to find no file (dropped) or the previous meeting's (played under this title). UX98:
+    /// a run already cancelled by a selection change loads nothing, since the player is shared
+    /// with the header and the Transcript tab and outlives this tab.
+    @MainActor
+    static func run(
+        audioURL: URL?,
+        reloadWaveform: () async -> Void,
+        isCancelled: () -> Bool,
+        load: (URL) -> Void
+    ) async {
+        if !isCancelled(), let audioURL { load(audioURL) }
+        await reloadWaveform()
+    }
+
+    /// UX104: Play (and its Space shortcut) only over this meeting's own file, the predicate
+    /// `DetailTransport.decide` uses. Never disabled while it shows Pause: a control that cannot
+    /// stop the sound it is drawing is worse than one that plays the wrong file.
+    static func playEnabled(loadedURL: URL?, meetingAudioURL: URL?, showsPause: Bool) -> Bool {
+        if showsPause { return true }
+        guard let loadedURL, let meetingAudioURL else { return false }
+        return loadedURL == meetingAudioURL
+    }
+
+    /// The file to load when the meeting's audio moved under the same stem, or nil. Waits while
+    /// anything plays, so a compress sweep never cuts off what the owner is listening to.
+    static func urlToReload(loadedURL: URL?, meetingAudioURL: URL?, showsPause: Bool) -> URL? {
+        guard !showsPause, let meetingAudioURL, loadedURL != meetingAudioURL else { return nil }
+        return meetingAudioURL
     }
 }
