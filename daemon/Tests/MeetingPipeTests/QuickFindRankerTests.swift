@@ -157,9 +157,67 @@ final class QuickFindRankerTests: XCTestCase {
     // MARK: - Normalization
 
     func test_query_normalization_strips_whitespace_and_case() {
-        XCTAssertEqual(QuickFindRanker.normalizeQuery("  Hello WORLD  "), "hello world")
+        XCTAssertEqual(QuickFindRanker.normalizeQuery("  Hello WORLD  "), ["hello", "world"])
         XCTAssertNil(QuickFindRanker.normalizeQuery("   "))
         XCTAssertNil(QuickFindRanker.normalizeQuery(""))
+    }
+
+    // MARK: - UX103: a multi-word query is tokens, like the filter bar
+
+    func test_a_two_word_query_matches_a_title_holding_both_words_apart() {
+        let m = make(stem: "a", startedAt: daysAgo(0), summaryTitle: "Client sync over Zoom")
+        let out = QuickFindRanker.rank(query: "client zoom", in: [m], now: now)
+        XCTAssertEqual(out.map(\.meeting.stem), ["a"], "no FTS input: the in-memory field match alone finds it")
+        XCTAssertEqual(out.first?.hitField, "title")
+    }
+
+    func test_a_double_space_matches_the_same_meetings_as_one() {
+        let a = make(stem: "a", startedAt: daysAgo(0), summaryTitle: "Client zoom review")
+        let b = make(stem: "b", startedAt: daysAgo(1), summaryTitle: "Zoom call with client")
+        let c = make(stem: "c", startedAt: daysAgo(2), summaryTitle: "Unrelated")
+        let one = QuickFindRanker.rank(query: "client zoom", in: [a, b, c], now: now)
+        let two = QuickFindRanker.rank(query: "client  zoom", in: [a, b, c], now: now)
+        XCTAssertEqual(one, two)
+        XCTAssertEqual(Set(one.map(\.meeting.stem)), ["a", "b"])
+    }
+
+    func test_words_split_between_title_and_summary_match_at_the_lower_weight() {
+        let m = make(stem: "a", startedAt: daysAgo(400), summaryTitle: "Client sync",
+                     searchableText: "notes from the zoom call")
+        let out = QuickFindRanker.rank(query: "client zoom", in: [m], now: now)
+        XCTAssertEqual(out.first?.hitField, "summary")
+        XCTAssertEqual(out.first?.score, 20, "the summary's weight, plain, with no recency bonus at this age")
+    }
+
+    func test_a_token_found_in_no_field_drops_the_row() {
+        let m = make(stem: "a", startedAt: daysAgo(0), summaryTitle: "Client sync",
+                     searchableText: "notes from the call")
+        XCTAssertTrue(QuickFindRanker.rank(query: "client zoom", in: [m], now: now).isEmpty)
+    }
+
+    /// The filter bar's in-memory rule is every token in `searchableText`; Quick Find's summary
+    /// field is that same haystack, so whatever the filter bar finds, Quick Find finds.
+    func test_quick_find_finds_whatever_the_filter_bar_finds_in_memory() {
+        let m = make(stem: "a", startedAt: daysAgo(0), searchableText: "budget for the platform rollout")
+        let needles = MeetingFilterEngine.tokenize("rollout budget")
+        XCTAssertTrue(MeetingFilterEngine.matchesQuery(m, needles: needles, ftsMatches: nil))
+        XCTAssertEqual(QuickFindRanker.rank(query: "rollout budget", in: [m], now: now).map(\.meeting.stem), ["a"])
+    }
+
+    func test_a_one_word_query_scores_as_before() {
+        // The pre-UX103 tiers, pinned as numbers: prefix 1.5x, word start 1.2x, substring 1x.
+        let prefix = make(stem: "a", startedAt: daysAgo(400), summaryTitle: "Platform review")
+        let word = make(stem: "b", startedAt: daysAgo(400), summaryTitle: "Quarterly platform review")
+        let mid = make(stem: "c", startedAt: daysAgo(400), summaryTitle: "Multiplatform review")
+        let out = QuickFindRanker.rank(query: "platform", in: [prefix, word, mid], now: now)
+        XCTAssertEqual(out.map(\.score), [150, 120, 100])
+    }
+
+    func test_multi_token_tiers() {
+        XCTAssertEqual(QuickFindRanker.scoreField(tokens: ["client", "zoom"], haystack: "client sync over zoom", weight: 100), 150)
+        XCTAssertEqual(QuickFindRanker.scoreField(tokens: ["zoom", "client"], haystack: "client sync over zoom", weight: 100), 120)
+        XCTAssertEqual(QuickFindRanker.scoreField(tokens: ["lient", "zoom"], haystack: "client sync over zoom", weight: 100), 100)
+        XCTAssertNil(QuickFindRanker.scoreField(tokens: ["client", "teams"], haystack: "client sync over zoom", weight: 100))
     }
 
     // MARK: - UX16: FTS transcript matches
@@ -182,12 +240,12 @@ final class QuickFindRankerTests: XCTestCase {
     // MARK: - PERF20: the word-boundary tier is reachable
 
     func test_scoreField_has_three_tiers_prefix_word_boundary_substring() {
-        XCTAssertEqual(QuickFindRanker.scoreField(query: "plat", haystack: "platform review", weight: 100), 150)
-        XCTAssertEqual(QuickFindRanker.scoreField(query: "plat", haystack: "quarterly platform review", weight: 100), 120)
-        XCTAssertEqual(QuickFindRanker.scoreField(query: "plat", haystack: "acme (platform)", weight: 100), 120)
-        XCTAssertEqual(QuickFindRanker.scoreField(query: "plat", haystack: "multi-platform", weight: 100), 120)
-        XCTAssertEqual(QuickFindRanker.scoreField(query: "form", haystack: "quarterly platform review", weight: 100), 100)
-        XCTAssertNil(QuickFindRanker.scoreField(query: "budget", haystack: "quarterly platform review", weight: 100))
+        XCTAssertEqual(QuickFindRanker.scoreField(tokens: ["plat"], haystack: "platform review", weight: 100), 150)
+        XCTAssertEqual(QuickFindRanker.scoreField(tokens: ["plat"], haystack: "quarterly platform review", weight: 100), 120)
+        XCTAssertEqual(QuickFindRanker.scoreField(tokens: ["plat"], haystack: "acme (platform)", weight: 100), 120)
+        XCTAssertEqual(QuickFindRanker.scoreField(tokens: ["plat"], haystack: "multi-platform", weight: 100), 120)
+        XCTAssertEqual(QuickFindRanker.scoreField(tokens: ["form"], haystack: "quarterly platform review", weight: 100), 100)
+        XCTAssertNil(QuickFindRanker.scoreField(tokens: ["budget"], haystack: "quarterly platform review", weight: 100))
     }
 
     func test_a_word_start_match_outranks_a_mid_word_match() {

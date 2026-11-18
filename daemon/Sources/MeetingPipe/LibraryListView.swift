@@ -268,6 +268,11 @@ struct LibraryListView: View {
             sections: sections,
             order: sections.flatMap { $0.meetings.map(\.id) }
         )
+        // UX103: the batch pane acts on the selection, so a multi-selection keeps only what this
+        // derive leaves on screen. Here rather than in the root because this is where the visible
+        // list is known; every path that narrows it (search, chips, rail, folder) re-derives.
+        let visible = MeetingListSelection.pruned(selection, toVisible: filtered.map(\.id))
+        if visible != selection { selection = visible }
     }
 
     private struct DerivedList {

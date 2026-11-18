@@ -85,6 +85,16 @@ struct MeetingListSelection: Equatable {
         cursor = order.last
     }
 
+    /// UX103: a multi-selection narrowed to the rows the list shows. The batch pane acts on every
+    /// selected meeting, so a search, a chip or a rail switch that hides some of them must take
+    /// them out of the selection rather than leave Trash or Re-summarize aimed at rows nobody can
+    /// see. A single selection is left alone: Quick Find, a notification or a citation jump selects
+    /// one meeting without clearing the filter, and pruning it would undo the jump.
+    static func pruned(_ selection: Set<Meeting.ID>, toVisible visible: [Meeting.ID]) -> Set<Meeting.ID> {
+        guard selection.count > 1 else { return selection }
+        return selection.intersection(visible)
+    }
+
     /// The rendered sections: an "In progress" block of pinned meetings first, then each date
     /// group without the pinned ones (a meeting never renders twice), empty groups omitted.
     static func sections(pinned: [Meeting], groups: [MeetingGroup]) -> [(title: String, meetings: [Meeting])] {
