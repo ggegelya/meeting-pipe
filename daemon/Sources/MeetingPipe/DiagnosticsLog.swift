@@ -158,10 +158,11 @@ enum DiagnosticsLog {
         )
     }
 
-    /// The `k=v k=v` tail, sorted, skipping the three structural keys. Mirrors
+    /// The `k=v k=v` tail, sorted, skipping the three structural keys and OBS5's `launch_id`,
+    /// which is on every row. Mirrors
     /// `logs_cmd._format` on the Python side.
     static func formatDetail(_ obj: [String: Any]) -> String {
-        let skip: Set<String> = ["ts", "category", "action"]
+        let skip: Set<String> = ["ts", "category", "action", "launch_id"]
         return obj
             .filter { !skip.contains($0.key) }
             .sorted { $0.key < $1.key }

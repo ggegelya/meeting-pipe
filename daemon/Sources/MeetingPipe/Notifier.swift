@@ -112,8 +112,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(title: "Recording started", body: file.lastPathComponent)
     }
 
-    func notifyProcessing(file: URL) {
-        post(title: "Recording stopped", body: "Processing \(file.lastPathComponent)…")
+    /// OBS5: the title names the route that stopped the recording (`StopCause.notificationTitle`).
+    func notifyProcessing(file: URL, cause: StopCause) {
+        post(title: cause.notificationTitle, body: "Processing \(file.lastPathComponent)…")
     }
 
     /// Post the "meeting done" notification. If `stem`+`recordingsDir` are supplied and `<stem>.run.json` exists, surfaces a "Looks good" correction action.

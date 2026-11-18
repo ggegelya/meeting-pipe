@@ -90,3 +90,22 @@ enum StopCause: Equatable {
         }
     }
 }
+
+extension StopCause {
+    /// OBS5: the stop notification's title, naming the route that stopped the recording, so a
+    /// wrong automatic end is visible the moment it happens instead of in the log afterwards.
+    /// Every route used to post the same "Recording stopped". `docs/GUIDE.md` quotes these; change
+    /// both together.
+    var notificationTitle: String {
+        switch self {
+        case .userStop, .forceStop: return "You stopped the recording"
+        case .lifecycleEnd, .endedDuringStart: return "Recording stopped: the call ended"
+        case .cancelledDuringStart: return "Recording stopped as it started"
+        case .micRelease, .micReleaseCeiling: return "Recording stopped: the meeting app let go of the mic"
+        case .callChanged: return "Recording split: a new call started"
+        case .idleBackstop: return "Recording stopped: the meeting went quiet"
+        case .lowSpace: return "Recording stopped: the disk was almost full"
+        case .writerStalled: return "Recording stopped: the audio could not keep being saved"
+        }
+    }
+}

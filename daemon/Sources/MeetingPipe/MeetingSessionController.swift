@@ -1420,13 +1420,13 @@ final class MeetingSessionController: @unchecked Sendable {
                         )
                         self.coordinator.notifications.notifyError(MetaWriteFailure.heldReason)
                     } else {
-                        self.coordinator.notifications.notifyProcessing(file: file)
+                        self.coordinator.notifications.notifyProcessing(file: file, cause: cause)
                         self.coordinator.jobs.enqueue(file: file, summaryMode: summaryMode, redactionOwed: redactionOwed)
                     }
                     self.resetAfterStop(source: source)
                     return
                 }
-                self.coordinator.notifications.notifyProcessing(file: file)
+                self.coordinator.notifications.notifyProcessing(file: file, cause: cause)
                 self.coordinator.jobs.enqueue(file: file, summaryMode: summaryMode, redactionOwed: redactionOwed)
                 // Clean finish: the meta sidecar is now on disk and the job is
                 // enqueued, so drop the start-time recovery manifest. Kept on the

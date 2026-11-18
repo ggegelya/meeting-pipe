@@ -741,8 +741,22 @@ final class Coordinator: NSObject {
         notifier.notifyAccessibilityBlocked()
     }
 
+    /// OBS5: the hourly heartbeat, a `watchers` member. `beat` reads the state and the mic
+    /// holders on main when a beat is due.
+    lazy var heartbeat = HeartbeatTicker { [weak self] in self?.writeHeartbeat() }
+
+    private func writeHeartbeat() {
+        let held = micHolder.snapshot().filter { $0.value.level == .held }.map(\.key)
+        Log.event(category: "main", action: "heartbeat", attributes: Heartbeat.attributes(
+            uptimeSec: Int(ProcessInfo.processInfo.systemUptime - AppDelegate.launchUptime),
+            state: DetectionStateMachine.label(stateMachine.current),
+            micHeldBy: held
+        ))
+    }
+
     func shutdown() {
         Log.main.info("shutting down")
+        heartbeat.stop()
         // PIPE37: first, before anything here that can block, so the children
         // are signalled even if the recorder flush below runs into the ceiling.
         // Returns at once; a crash or the ceiling's `exit` is covered instead by
@@ -858,9 +872,13 @@ final class Coordinator: NSObject {
         for rec in result.ready {
             let modeLabel = rec.summaryMode == .byo ? "byo" : "auto"
             Log.writeLine("daemon", "recovered orphaned recording → \(rec.url.lastPathComponent) mode=\(modeLabel)")
+            // OBS5: a merge after a logged quit with this stem open is a shutdown's; any other is
+            // a crash's, a kill's or a power loss's.
+            let stem = rec.url.deletingPathExtension().lastPathComponent
             Log.event(category: "coordinator", action: "orphan_recording_recovered", attributes: [
                 "file": rec.url.lastPathComponent,
                 "summary_mode": modeLabel,
+                "stop_cause": LaunchRecord.orphanStopCause(stem: stem, previous: LaunchRecord.previous?.termination),
             ])
             // REC2 / AUD-6: route by the recorded summary mode so a crash-
             // interrupted BYO meeting produces a paste bundle, not an
@@ -1015,7 +1033,8 @@ final class Coordinator: NSObject {
         teamsRunning: teamsRunning,
         configRefresh: configRefresh,
         micHolder: micHolder,
-        sleepWake: sleepWake
+        sleepWake: sleepWake,
+        heartbeat: heartbeat
     )
 
     /// END22: a wake resets what the lifecycle engine believes until a signal re-reads; a display

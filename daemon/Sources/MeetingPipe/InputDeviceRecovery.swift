@@ -539,14 +539,34 @@ final class InputDeviceRecovery {
         cancelPendingRecoveryRetry()
         configurationRecoveryAttempts = 0
         unabandonMicCapture()
+        host.reportConfigurationChange(.resumed)
+        // OBS5: which mic took over. The device was named only at start (`input_device_resolved`),
+        // so a recovery onto the laptop mic after a headset dropped read the same as one back
+        // onto the headset. Re-resolved after the re-arm and after the resume is reported, so the
+        // HAL read cannot delay the resume; it is the device now bound.
+        let device = InputDeviceResolver.resolveDefaultInput()
         Log.event(category: "recorder", action: "configuration_change_recovered", attributes: [
             "live_sample_rate": liveFormat.sampleRate,
             "used_converter": usedConverter,
             "gap_frames": Int(padFrames),
             "pad_clamped": pad.clamped,
-        ])
-        Log.writeLine("recorder", "input device changed mid-recording - capture re-armed (\(padFrames) silent frames padded the gap)")
-        host.reportConfigurationChange(.resumed)
+        ].merging(Self.recoveredDeviceAttributes(device)) { own, _ in own })
+        Log.writeLine("recorder", "input device changed mid-recording - capture re-armed on \(Self.recoveredDeviceLabel(device)) (\(padFrames) silent frames padded the gap)")
+    }
+
+    /// OBS5: the re-resolved device's `InputDeviceIdentity.eventAttributes` under `device_` keys,
+    /// or `device_resolved: false` when no default input could be read.
+    static func recoveredDeviceAttributes(_ device: InputDeviceIdentity?) -> [String: Any] {
+        guard let device else { return ["device_resolved": false] }
+        var out: [String: Any] = ["device_resolved": true]
+        for (key, value) in device.eventAttributes { out["device_\(key)"] = value }
+        return out
+    }
+
+    /// The device as `recorder.log` names it.
+    static func recoveredDeviceLabel(_ device: InputDeviceIdentity?) -> String {
+        guard let device else { return "an unresolved input" }
+        return "\(device.name ?? "an unnamed input") (\(device.transport.rawValue))"
     }
 
     /// Surface a recovery failure, but only once per failure run so a

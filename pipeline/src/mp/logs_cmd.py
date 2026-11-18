@@ -98,7 +98,7 @@ def _format(ev: dict) -> str:
     ts = ev.get("ts", "?")
     cat = ev.get("category", "?")
     action = ev.get("action", "?")
-    skip = {"ts", "category", "action"}
+    skip = {"ts", "category", "action", "launch_id"}  # OBS5: on every daemon row, noise in a listing
     rest = {k: v for k, v in ev.items() if k not in skip}
     rest_str = " ".join(f"{k}={json.dumps(v, default=str)}" for k, v in sorted(rest.items()))
     return f"{ts}  {cat:<11} {action:<22} {rest_str}".rstrip()

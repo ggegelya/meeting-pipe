@@ -223,6 +223,9 @@ enum Log {
         dict["ts"] = isoFormatter.string(from: Date())
         dict["category"] = category
         dict["action"] = action
+        // OBS5: every row names the process that wrote it, so a launch's rows group without
+        // timestamp arithmetic and a row from before a crash cannot be read as after it.
+        dict["launch_id"] = LaunchRecord.launchID
         // The common case is already valid, so it never pays for the walk. The re-check after
         // coercion is load-bearing: `JSONSerialization.data` raises an Objective-C exception,
         // not a Swift error, on a value it cannot encode, and that would take the daemon down.

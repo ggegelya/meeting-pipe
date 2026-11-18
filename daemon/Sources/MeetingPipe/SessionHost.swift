@@ -123,7 +123,7 @@ protocol SessionStatusPresenting: AnyObject {
 /// User-facing notifications (`Notifier`).
 protocol SessionNotifying: AnyObject {
     func notifyRecordingStarted(file: URL)
-    func notifyProcessing(file: URL)
+    func notifyProcessing(file: URL, cause: StopCause)
     func notifyError(_ message: String)
     func notifySkippedMeeting(source: AppSource, origin: SkipOrigin)
     func notifyStillMeeting()

@@ -16,6 +16,9 @@ final class App {
             // outside PIPE11's job lane. A rejected instance exits inside this call, so it never
             // reaches the Keychain migration below, let alone the status item or any subsystem.
             SingleInstanceGuard.standDownIfPeerIsRunning()
+            // OBS5: what the previous process left, settled before anything here can crash, so
+            // a launch that dies before AppKit is up still reads as unclean to the next one.
+            LaunchRecord.begin()
             SecretsStore.migrateEnvFileIfPresent()
         }
         Secrets.seedModelDownloadToken()
@@ -131,6 +134,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Tag a rebuild-triggered launch before any other event, so dogfood analysis can exclude the TCC re-grant churn that follows each `--reset-tcc` cycle.
         RebuildTagger.runOnce()
+        // OBS5: the launch row, right after the rebuild tag, with what the previous process left.
+        LaunchRecord.recordLaunch()
 
         // Apply theme before any window is created so the first paint matches the user's choice. Library, Preferences, HUD, and prompt panel all read NSApp.effectiveAppearance.
         UISettings.shared.applyTheme()
@@ -263,7 +268,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// launch with no `terminating` row before it is a crash or a kill, readable from the log
     /// alone; the relaunch on 2026-10-18 was visible only in loginwindow's system log, because
     /// the two lines this path wrote went to os.Logger, which macOS does not persist.
-    static func recordTermination(reason: TerminationReason, relaunch: Bool, uptimeSec: Int, recordingOpen: Bool) {
+    static func recordTermination(
+        reason: TerminationReason, relaunch: Bool, uptimeSec: Int, recordingOpen: Bool,
+        recordingStem: String? = nil, logsDir: URL = Log.logsDir
+    ) {
+        // The marker first: the next launch's `previous_exit` and its orphan sweep's `stop_cause`
+        // read it (OBS5). A failed write costs those a precise answer, never the exit.
+        LaunchRecord.persist(
+            LaunchRecord.Termination(reason: reason.rawValue, recordingStem: recordingStem, launchID: LaunchRecord.launchID),
+            to: LaunchRecord.terminationURL(in: logsDir)
+        )
         Log.writeLine(
             "daemon",
             "terminating (\(reason.rawValue), relaunch=\(relaunch), up \(uptimeSec) s\(recordingOpen ? ", a recording open" : ""))"
@@ -313,7 +327,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 disableAutoRestart: UISettings.shared.disableAutoRestart
             ),
             uptimeSec: Int(ProcessInfo.processInfo.systemUptime - AppDelegate.launchUptime),
-            recordingOpen: coordinator?.recorder.isRecording ?? false
+            recordingOpen: coordinator?.recorder.isRecording ?? false,
+            recordingStem: coordinator?.recorder.currentFile?.deletingPathExtension().lastPathComponent
         )
         localModelPreloader.stop()
         coordinator?.shutdown()

@@ -33,17 +33,19 @@ final class SessionWatchers {
     let micHolder: Startable
     /// END22: wake, unlock and display-change notifications for the session layer.
     let sleepWake: Startable
+    /// OBS5: the hourly `main` / `heartbeat` row. Depends on nothing, so it starts last.
+    let heartbeat: Startable
 
     /// In start order. Discovery and call-teardown kept the order they had inline in
     /// `Coordinator.start()`; config refresh used to start after hotkey registration, which none of
     /// the three depends on. The Teams-running observer follows the watcher it drives.
-    var members: [Startable] { [discovery, callTeardown, teamsRunning, configRefresh, micHolder, sleepWake] }
+    var members: [Startable] { [discovery, callTeardown, teamsRunning, configRefresh, micHolder, sleepWake, heartbeat] }
 
     private(set) var hasStarted = false
 
     init(
         discovery: Startable, callTeardown: Startable, teamsRunning: Startable, configRefresh: Startable,
-        micHolder: Startable, sleepWake: Startable
+        micHolder: Startable, sleepWake: Startable, heartbeat: Startable
     ) {
         self.discovery = discovery
         self.callTeardown = callTeardown
@@ -51,6 +53,7 @@ final class SessionWatchers {
         self.configRefresh = configRefresh
         self.micHolder = micHolder
         self.sleepWake = sleepWake
+        self.heartbeat = heartbeat
     }
 
     static func production(
@@ -59,12 +62,13 @@ final class SessionWatchers {
         teamsRunning: TeamsRunningObserver,
         configRefresh: ConfigRefreshCoordinator,
         micHolder: MicHolderMonitor,
-        sleepWake: SleepWakeObserver
+        sleepWake: SleepWakeObserver,
+        heartbeat: HeartbeatTicker
     ) -> SessionWatchers {
         SessionWatchers(
             discovery: discovery, callTeardown: callTeardown,
             teamsRunning: teamsRunning, configRefresh: configRefresh, micHolder: micHolder,
-            sleepWake: sleepWake
+            sleepWake: sleepWake, heartbeat: heartbeat
         )
     }
 

@@ -15,9 +15,10 @@ final class SessionWatchersTests: XCTestCase {
 
     func testStartAllStartsEveryMemberOnce() {
         let (discovery, teardown, refresh, teams, micHolder, sleepWake) = (FakeWatcher(), FakeWatcher(), FakeWatcher(), FakeWatcher(), FakeWatcher(), FakeWatcher())
+        let heartbeat = FakeWatcher()
         let watchers = SessionWatchers(
             discovery: discovery, callTeardown: teardown, teamsRunning: teams, configRefresh: refresh, micHolder: micHolder,
-            sleepWake: sleepWake
+            sleepWake: sleepWake, heartbeat: heartbeat
         )
         XCTAssertFalse(watchers.hasStarted)
 
@@ -30,21 +31,23 @@ final class SessionWatchersTests: XCTestCase {
         XCTAssertEqual(teams.startCount, 1, "teams running observer")
         XCTAssertEqual(micHolder.startCount, 1, "mic-holder monitor (DET23)")
         XCTAssertEqual(sleepWake.startCount, 1, "sleep and wake observer (END22)")
+        XCTAssertEqual(heartbeat.startCount, 1, "hourly heartbeat (OBS5)")
     }
 
     /// `CallTeardownWatcher.start()` ignores a second call; the other two would double-register
     /// observers and sinks. The set takes the teardown watcher's behaviour for all three.
     func testASecondStartAllIsANoOp() {
         let (discovery, teardown, refresh, teams, micHolder, sleepWake) = (FakeWatcher(), FakeWatcher(), FakeWatcher(), FakeWatcher(), FakeWatcher(), FakeWatcher())
+        let heartbeat = FakeWatcher()
         let watchers = SessionWatchers(
             discovery: discovery, callTeardown: teardown, teamsRunning: teams, configRefresh: refresh, micHolder: micHolder,
-            sleepWake: sleepWake
+            sleepWake: sleepWake, heartbeat: heartbeat
         )
 
         watchers.startAll()
         watchers.startAll()
 
-        XCTAssertEqual([discovery, teardown, refresh, teams, micHolder, sleepWake].map(\.startCount), [1, 1, 1, 1, 1, 1])
+        XCTAssertEqual([discovery, teardown, refresh, teams, micHolder, sleepWake, heartbeat].map(\.startCount), [1, 1, 1, 1, 1, 1, 1])
     }
 
     /// The production set holds the three watchers END10 proved can be forgotten, by identity. Built
@@ -65,18 +68,21 @@ final class SessionWatchersTests: XCTestCase {
             workspaceCenter: NotificationCenter(), defaultCenter: NotificationCenter(), distributedCenter: NotificationCenter(),
             onWake: { _ in }, onDisplayChange: {}
         )
+        let heartbeat = HeartbeatTicker(schedule: { _, _ in {} }, beat: {})
         let watchers = SessionWatchers.production(
             discovery: discovery, callTeardown: teardown, teamsRunning: teams, configRefresh: refresh, micHolder: micHolder,
-            sleepWake: sleepWake
+            sleepWake: sleepWake, heartbeat: heartbeat
         )
 
-        XCTAssertEqual(watchers.members.count, 6)
+        XCTAssertEqual(watchers.members.count, 7)
         XCTAssertTrue(watchers.members[0] === discovery, "discovery watcher")
         XCTAssertTrue(watchers.members[1] === teardown, "call-teardown watcher")
         XCTAssertTrue(watchers.members[2] === teams, "teams running observer, after the watcher it drives")
         XCTAssertTrue(watchers.members[3] === refresh, "config refresh")
         XCTAssertTrue(watchers.members[4] === micHolder, "mic-holder monitor (DET23)")
         XCTAssertTrue(watchers.members[5] === sleepWake, "sleep and wake observer (END22)")
+        XCTAssertTrue(watchers.members[6] === heartbeat, "hourly heartbeat (OBS5)")
+        XCTAssertFalse(heartbeat.isRunning, "building the set must not start the heartbeat")
         XCTAssertFalse(teardown.isRunning, "building the set must not start anything")
     }
 
@@ -91,7 +97,7 @@ final class SessionWatchersTests: XCTestCase {
         )
         let watchers = SessionWatchers(
             discovery: FakeWatcher(), callTeardown: teardown, teamsRunning: FakeWatcher(), configRefresh: FakeWatcher(),
-            micHolder: FakeWatcher(), sleepWake: FakeWatcher()
+            micHolder: FakeWatcher(), sleepWake: FakeWatcher(), heartbeat: FakeWatcher()
         )
 
         watchers.startAll()

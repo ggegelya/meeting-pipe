@@ -146,9 +146,10 @@ final class LoggerConcurrencyPERF13Tests: XCTestCase {
     }
 
     func test_concurrent_writers_crossing_the_cap_rotate_once() throws {
-        // About 40 KB in all against a 30 KB cap: exactly one crossing. Without the lock two
-        // threads both passed the size check and shifted the generations twice.
-        setenv("MEETINGPIPE_LOG_MAX_BYTES", "\(30 * 1024)", 1)
+        // About 60 KB in all against a 45 KB cap: exactly one crossing. Without the lock two
+        // threads both passed the size check and shifted the generations twice. (It was 40 KB
+        // against 30 KB until OBS5 put a 36-character `launch_id` on every row.)
+        setenv("MEETINGPIPE_LOG_MAX_BYTES", "\(45 * 1024)", 1)
         let pad = String(repeating: "x", count: 40)
         DispatchQueue.concurrentPerform(iterations: 8) { writer in
             for i in 0..<50 {

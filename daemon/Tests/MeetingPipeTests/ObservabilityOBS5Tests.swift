@@ -46,8 +46,10 @@ final class ObservabilityOBS5Tests: XCTestCase {
     }
 
     /// Record, stop through `stop`, and return the `recording_stopped` row.
-    private func stoppedRow(_ stop: (MeetingSessionController) -> Void) async throws -> [String: Any] {
-        let host = FakeSessionHost(tempDir: tempDir)
+    private func stoppedRow(
+        _ stop: (MeetingSessionController) -> Void, host: FakeSessionHost? = nil
+    ) async throws -> [String: Any] {
+        let host = host ?? FakeSessionHost(tempDir: tempDir)
         host.recorderSpy.lastSystemFires = 1
         let file = tempDir.appendingPathComponent("\(UUID().uuidString).wav")
         host.recorderSpy.fileToReturn = file
@@ -105,6 +107,14 @@ final class ObservabilityOBS5Tests: XCTestCase {
         XCTAssertEqual(StopCause.lifecycleEnd.stopRoute, "lifecycle_end")
         XCTAssertEqual(StopCause.cancelledDuringStart(by: "toggle").attributes["cancelled_by"] as? String, "toggle")
         XCTAssertEqual(StopCause.callChanged.name, "call_changed")
+    }
+
+    /// OBS5 remainder: the stop notification is posted with the cause the row carries, so its
+    /// title names the route (`StopCause.notificationTitle`).
+    func test_the_stop_notification_is_posted_with_the_stops_cause() async throws {
+        let host = FakeSessionHost(tempDir: tempDir)
+        _ = try await stoppedRow({ $0.toggleManual(surface: .hud) }, host: host)
+        XCTAssertEqual(host.notifierSpy.processingCauses, [.userStop(surface: .hud, duringHold: false)])
     }
 
     // MARK: - terminating
