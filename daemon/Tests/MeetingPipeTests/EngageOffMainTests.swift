@@ -220,7 +220,7 @@ final class EngageOffMainTests: XCTestCase {
         XCTAssertEqual(build.calls, 1, "one build replaces the three a start used to run")
         XCTAssertEqual(eventRows(action: "micgate_attached").first?["via"] as? String, "build")
 
-        controller.stopRecording(file: host.recorderSpy.fileToReturn, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: host.recorderSpy.fileToReturn, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the stop to finish")
     }
 
@@ -249,7 +249,7 @@ final class EngageOffMainTests: XCTestCase {
         await waitUntil({ adapter.starts.count == 1 }, "the late build to engage the lifecycle")
         XCTAssertEqual(micGateStarts.count, 1, "the late build does not engage MicGate a second time")
 
-        controller.stopRecording(file: host.recorderSpy.fileToReturn, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: host.recorderSpy.fileToReturn, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the stop to finish")
     }
 
@@ -289,7 +289,7 @@ final class EngageOffMainTests: XCTestCase {
         XCTAssertEqual(attached.count, 2)
         XCTAssertEqual(attached.last?["via"] as? String, "build")
 
-        controller.stopRecording(file: second, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: second, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the second flush")
     }
 

@@ -49,6 +49,16 @@ final class PermissionsCenter: ObservableObject {
         case denied
         case notDetermined
         case unknown
+
+        /// The value `permission_changed` writes (OBS5).
+        var label: String {
+            switch self {
+            case .granted: return "granted"
+            case .denied: return "denied"
+            case .notDetermined: return "not_determined"
+            case .unknown: return "unknown"
+            }
+        }
     }
 
     @Published private(set) var microphone: Status = .unknown
@@ -261,7 +271,20 @@ final class PermissionsCenter: ObservableObject {
         status: Status
     ) {
         let prev = self[keyPath: keyPath]
+        // OBS5 (UI-13): an unchanged status changes nothing, so it publishes nothing. The assignment
+        // used to run regardless, so the Permissions pane re-rendered four times every 2 s poll.
+        guard prev != status else { return }
         self[keyPath: keyPath] = status
+        // OBS5: every transition, revocations included. Every status starts `.unknown`, so the first
+        // observation after launch is `at_launch`, not a grant the owner just made: the retired
+        // `permission_granted` row reported four months-old grants at every launch, and a revoked
+        // Screen Recording showed up only as a recording with no system audio.
+        var attributes: [String: Any] = ["kind": kind.rawValue, "from": prev.label, "to": status.label]
+        if prev == .unknown { attributes["at_launch"] = true }
+        Log.event(category: "coordinator", action: "permission_changed", attributes: attributes)
+        if prev != .unknown {
+            Log.writeLine("daemon", "permission \(kind.rawValue): \(prev.label) -> \(status.label)")
+        }
         if status == .granted && prev != .granted {
             permissionGranted.send(kind)
             // Drop the deferred hint once the kind flips on; no need to show "toggle on, then re-check" under a green row.

@@ -147,7 +147,7 @@ final class CallSplitSessionTests: XCTestCase {
         host.recorderSpy.fileToReturn = second
         controller.beginRecording(source: prompted, summaryMode: .auto)
         await waitUntil({ isRecording(host) }, "the second call to record")
-        controller.stopRecording(file: second, source: prompted, summaryMode: .auto)
+        controller.stopRecording(file: second, source: prompted, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the second flush")
         let secondMeta = try meta(for: second)
         XCTAssertEqual(secondMeta[MeetingMetaSidecar.splitFromKey] as? String, "20261112-172307")
@@ -190,7 +190,7 @@ final class CallSplitSessionTests: XCTestCase {
         host.recorderSpy.fileToReturn = next
         controller.beginRecording(source: AppSource(bundleID: teams.bundleID, displayName: teams.displayName, meetingTitle: "SSO sync"), summaryMode: .auto)
         await waitUntil({ isRecording(host) }, "the next recording")
-        controller.stopRecording(file: next, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: next, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "its flush")
         XCTAssertNil(try meta(for: next)[MeetingMetaSidecar.splitFromKey])
     }

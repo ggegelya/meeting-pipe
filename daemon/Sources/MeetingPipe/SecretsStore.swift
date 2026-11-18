@@ -216,6 +216,13 @@ final class SecretsStore: ObservableObject {
             }
         }
         if failed.isEmpty { didPersist.send() }
+        // OBS5: which account landed and whether it now holds a value. Never the value.
+        for account in settledSaved {
+            Log.event(category: "daemon", action: "secret_saved", attributes: [
+                "account": account,
+                "set": !(lastSnapshot[account] ?? "").isEmpty,
+            ])
+        }
         noteSaveOutcome(failed: failed, error: result)
         if !settledSaved.isEmpty {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in

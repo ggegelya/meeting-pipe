@@ -109,11 +109,13 @@ final class HeldEndStopRouteTests: XCTestCase {
         await theCallEnds(rig)
         let release = try XCTUnwrap(rig.host.lifecycleCoord.holdEvidence?.releasedAt)
         let startedAt = try XCTUnwrap(rig.host.recorderSpy.startedAt)
-        rig.controller.toggleManual()
+        rig.controller.toggleManual(surface: .menu)
         await finish(rig)
 
         let row = try XCTUnwrap(rows("held_end_trimmed").first)
         XCTAssertEqual(row["stop_route"] as? String, "toggle")
+        // OBS5: a hand Stop inside an open hold is told apart from a plain one.
+        XCTAssertEqual(rows("recording_stopped").first?["stop_cause"] as? String, "user_stop_during_hold")
         XCTAssertEqual(row["mode"] as? String, "suggested")
         XCTAssertEqual(row["limit_sec"] as? Double ?? .nan, release.timeIntervalSince(startedAt), accuracy: 0.01)
         XCTAssertNil(rig.host.recorderSpy.lastStopLimitSeconds ?? nil, "lossless: kept on disk, suggested")
@@ -126,7 +128,7 @@ final class HeldEndStopRouteTests: XCTestCase {
         let rig = try await recordIntoAHold(opener: .processAudioIsRunningInput)
         await waitUntil({ rig.host.lifecycleCoord.holdEvidence?.processAudio == .ended }, "the release")
         XCTAssertEqual(rig.host.lifecycleCoord.holdEvidence?.callWindowBacksRelease, false)
-        rig.controller.toggleManual()
+        rig.controller.toggleManual(surface: .menu)
         await finish(rig)
         XCTAssertTrue(rows("held_end_trimmed").isEmpty)
         XCTAssertNil(try meta(for: rig.file)[HeldEndTrim.metaKey])
@@ -182,7 +184,7 @@ final class HeldEndStopRouteTests: XCTestCase {
         await waitUntil({ rig.host.lifecycleCoord.holdEvidence?.callWindowBacksRelease == true }, "the evidence")
         let release = try XCTUnwrap(rig.host.lifecycleCoord.holdEvidence?.releasedAt)
         let startedAt = try XCTUnwrap(rig.host.recorderSpy.startedAt)
-        rig.controller.toggleManual()
+        rig.controller.toggleManual(surface: .menu)
         await finish(rig)
         let row = try XCTUnwrap(rows("held_end_trimmed").first)
         XCTAssertEqual(row["limit_sec"] as? Double ?? .nan, release.timeIntervalSince(startedAt), accuracy: 0.01)
@@ -197,7 +199,7 @@ final class HeldEndStopRouteTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 50_000_000)
         rig.adapter.emit(.processAudioIsRunningInput, .ended, context)   // the headphone switch
         await waitUntil({ rig.host.lifecycleCoord.holdEvidence?.callWindowBacksRelease == true }, "the evidence")
-        rig.controller.toggleManual()
+        rig.controller.toggleManual(surface: .menu)
         await finish(rig)
         XCTAssertEqual(rows("held_end_trimmed").first?["mode"] as? String, "suggested", "restorable")
     }

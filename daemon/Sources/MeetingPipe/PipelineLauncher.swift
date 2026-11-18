@@ -1653,6 +1653,46 @@ final class PipelineLauncher: PipelineDriver {
         backendOverride: String? = nil,
         configURL: URL = Config.defaultPath
     ) -> CloudSecretPolicy {
+        let run = resolveRun(for: meeting, backendOverride: backendOverride, configURL: configURL)
+        let onDeviceSummary = run.regulated || run.nda || run.backend == "local" || run.backend == "apple_intelligence"
+        return CloudSecretPolicy(
+            stripAnthropic: onDeviceSummary, stripNotion: run.regulated || run.nda,
+            stripOpenAI: onDeviceSummary, zeroEgress: run.regulated || run.nda
+        )
+    }
+
+    /// OBS5: the summarization backend a run of `meeting` is expected to use, and which setting
+    /// decided it: `regulated`, `nda` (the sidecar's NDA flag, or a sidecar that could not be read,
+    /// which fails closed), `override` (PIPE6's one-shot pick), `sidecar` (the workflow's pinned
+    /// backend) or `global`. Written on `pipeline_started` and `retry_requested`, so a run that
+    /// fails on a backend says which setting chose it; on 2026-10-16 a change to the global backend
+    /// did nothing for a meeting whose sidecar pinned another, and only file mtimes linked the two.
+    /// "Expected" because Python's `auto` may still fall back at run time. `cloudSecretPolicy`
+    /// reads the same resolution, so the two cannot drift.
+    static func expectedBackend(
+        for meeting: URL?,
+        backendOverride: String? = nil,
+        configURL: URL = Config.defaultPath
+    ) -> (backend: String, source: String) {
+        let run = resolveRun(for: meeting, backendOverride: backendOverride, configURL: configURL)
+        return (run.backend, run.source)
+    }
+
+    /// The attributes `expectedBackend` adds to a row.
+    static func expectedBackendAttributes(for meeting: URL?, backendOverride: String? = nil) -> [String: Any] {
+        let expected = expectedBackend(for: meeting, backendOverride: backendOverride)
+        return ["expected_backend": expected.backend, "backend_source": expected.source]
+    }
+
+    private struct ResolvedRun {
+        var regulated: Bool
+        var nda: Bool
+        var backend: String
+        var source: String
+    }
+
+    /// Regulated, then NDA, then the one-shot override, then the sidecar, then the global setting.
+    private static func resolveRun(for meeting: URL?, backendOverride: String?, configURL: URL) -> ResolvedRun {
         let config = ConfigStore(configURL: configURL)
         var regulated = config.regulatedMode
         let globalBackend = config.summarizationBackend
@@ -1674,12 +1714,11 @@ final class PipelineLauncher: PipelineDriver {
         // over the meeting's persisted backend, so keeping/stripping a token reflects
         // the engine actually about to run. It never wins over regulated: that still
         // forces local and strips both tokens, so the override cannot widen egress.
-        let backend = regulated ? "local" : (backendOverride ?? sidecarBackend ?? globalBackend)
-        let onDeviceSummary = regulated || nda || backend == "local" || backend == "apple_intelligence"
-        return CloudSecretPolicy(
-            stripAnthropic: onDeviceSummary, stripNotion: regulated || nda,
-            stripOpenAI: onDeviceSummary, zeroEgress: regulated || nda
-        )
+        if regulated { return ResolvedRun(regulated: true, nda: nda, backend: "local", source: "regulated") }
+        if nda { return ResolvedRun(regulated: false, nda: true, backend: "local", source: "nda") }
+        if let backendOverride { return ResolvedRun(regulated: false, nda: false, backend: backendOverride, source: "override") }
+        if let sidecarBackend { return ResolvedRun(regulated: false, nda: false, backend: sidecarBackend, source: "sidecar") }
+        return ResolvedRun(regulated: false, nda: false, backend: globalBackend, source: "global")
     }
 
     /// Which managed tokens a pipeline spawn is withheld (SEC5, widened by SEC18 from two booleans to

@@ -444,7 +444,8 @@ final class MeetingSessionController: @unchecked Sendable {
         beginRecording(source: source, summaryMode: .auto)
     }
 
-    func toggleManual() {
+    /// `surface` is the control that was pressed; on a stop it becomes the row's `stop_surface` (OBS5).
+    func toggleManual(surface: StopSurface) {
         assertMainQueue()
         // END20: the toggle pressed while a start is coming up means stop, not a second start (which
         // `beginRecording` would ignore anyway), so it cancels the start in flight.
@@ -465,7 +466,9 @@ final class MeetingSessionController: @unchecked Sendable {
             beginRecording(source: src, summaryMode: .auto)
         case .recording(let file, let src, let mode):
             pendingSplit = nil  // END28: a Stop is a Stop, not the first half of a split
-            stopRecording(file: file, source: src, summaryMode: mode, stopRoute: "toggle")
+            // OBS5: a Stop inside an open hold is the owner overruling (or beating) the end engine.
+            let cause = StopCause.userStop(surface: surface, duringHold: holdPolicy.isOpen)
+            stopRecording(file: file, source: src, summaryMode: mode, cause: cause)
         case .stopping:
             // Mid-flush; a new start would race the await. END28: a toggle during a split's stop
             // means stop, so the split's prompt is not raised once it finishes.
@@ -547,7 +550,7 @@ final class MeetingSessionController: @unchecked Sendable {
         ])
         switch coordinator.stateMachine.current {
         case .recording(let file, let src, let mode):
-            stopRecording(file: file, source: src, summaryMode: mode, stopRoute: reason)
+            stopRecording(file: file, source: src, summaryMode: mode, cause: .forced(reason: reason))
         case .prompting(let src):
             // Same as Skip: don't record, return to idle, and hold this call's prompt off for its
             // span (DET18) so the next discovery poll doesn't immediately re-prompt this meeting.
@@ -906,6 +909,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 if startOutcome != .commit {
                     self.cancelRecordStartBuild()
                     var retainCandidate = true
+                    var cause = StopCause.endedDuringStart
                     switch startOutcome {
                     case .endedDuringStart(let endReason):
                         // DET14 amendment: the same rule as a lifecycle end while recording.
@@ -916,6 +920,7 @@ final class MeetingSessionController: @unchecked Sendable {
                             "origin": startOrigin.rawValue,
                         ])
                     case .cancelled(let by):
+                        cause = .cancelledDuringStart(by: by)
                         Log.event(category: "coordinator", action: "recording_cancelled_during_start", attributes: [
                             "file": file.lastPathComponent,
                             "origin": startOrigin.rawValue,
@@ -926,7 +931,7 @@ final class MeetingSessionController: @unchecked Sendable {
                     }
                     self.stopRecording(
                         file: file, source: source, summaryMode: summaryMode, committed: false,
-                        retainCandidate: retainCandidate
+                        cause: cause, retainCandidate: retainCandidate
                     )
                     return
                 }
@@ -1117,10 +1122,11 @@ final class MeetingSessionController: @unchecked Sendable {
     /// bring-up: it is finalized and enqueued like any recording, but the coverage warnings below
     /// (no remote audio, short, silent mic) say nothing true about a capture a second long that
     /// nobody asked for.
-    /// `stopRoute` names who stopped it, for `held_end_trimmed` (END21); nil is a lifecycle end.
+    /// `cause` names why it stopped: `stop_cause` on `recording_stopped` (OBS5), and the route
+    /// `held_end_trimmed` reports (END21).
     func stopRecording(
         file: URL, source: AppSource?, summaryMode: SummaryMode,
-        committed: Bool = true, stopRoute: String? = nil, retainCandidate: Bool = true
+        committed: Bool = true, cause: StopCause, retainCandidate: Bool = true
     ) {
         assertMainQueue()
         // END21 item 3: a stop inside an open hold concludes it here, under the owner's rule of
@@ -1227,7 +1233,7 @@ final class MeetingSessionController: @unchecked Sendable {
                 "file": file.lastPathComponent,
                 "limit_sec": trimSeconds,
                 "mode": keepsHeldTail ? "suggested" : "truncated",
-                "stop_route": stopRoute ?? "lifecycle_end",
+                "stop_route": cause.stopRoute,
             ])
         }
         let stopClock = self.stopClock
@@ -1245,13 +1251,13 @@ final class MeetingSessionController: @unchecked Sendable {
             let producedUsableFinal = await recorder.stop(limitSeconds: keepsHeldTail ? nil : trimSeconds)
             self?.stopStallWatchdog.disarm()
             guard let self = self else { return }
-            Log.writeLine("daemon", "recording stopped → \(file.path)")
+            Log.writeLine("daemon", "recording stopped (\(cause.name)) → \(file.path)")
             Log.event(category: "coordinator", action: "recording_stopped", attributes: [
                 "file": file.lastPathComponent,
                 "bundle_id": source?.bundleID ?? "manual",
                 "system_audio_frames": recorder.lastSystemFires,
                 "produced_final": producedUsableFinal,
-            ])
+            ].merging(cause.attributes) { own, _ in own })
             // FEAT8/REC7: flush the flagged moments before the merge-outcome branch,
             // so a failed merge (intermediates kept for the orphan sweep) does not
             // discard them; the sidecar sits beside where the final will land.
@@ -1805,7 +1811,7 @@ final class MeetingSessionController: @unchecked Sendable {
               src?.bundleID == recBundle else { return }
         Log.event(category: "coordinator", action: "mic_in_use_stop", attributes: ["bundle_id": recBundle])
         Log.writeLine("daemon", "mic-in-use recording stopped: mic released (\(recBundle))")
-        stopRecording(file: file, source: src, summaryMode: mode, stopRoute: "mic_released")
+        stopRecording(file: file, source: src, summaryMode: mode, cause: .micRelease)
     }
 
     func handleMeetingStarted(source: AppSource) {
@@ -2043,7 +2049,7 @@ final class MeetingSessionController: @unchecked Sendable {
             // END13's retention: 20261022-150025 was a false end the owner rescued 22.9 s later by
             // pressing Record, and the retained candidate is what the restart attached to.
             stopRecording(
-                file: file, source: src, summaryMode: mode,
+                file: file, source: src, summaryMode: mode, cause: .lifecycleEnd,
                 retainCandidate: !reason.isDefinitive(forBundleID: src?.bundleID ?? bundleID)
             )
         case .prompting, .suppressed:
@@ -2421,7 +2427,7 @@ final class MeetingSessionController: @unchecked Sendable {
             "bundle_id": src?.bundleID ?? "manual",
             "file": file.lastPathComponent,
         ])
-        stopRecording(file: file, source: src, summaryMode: mode, stopRoute: "idle_backstop")
+        stopRecording(file: file, source: src, summaryMode: mode, cause: .idleBackstop)
     }
 
     /// User tapped "Keep recording" on the idle nudge: restart the countdown so the

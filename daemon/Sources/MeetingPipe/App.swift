@@ -104,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `reason`, which is the one string that says which precondition failed. Four
         // aborts were reconstructed without it; the fifth will not have to be.
         UncaughtExceptionLogger.install()
+        _ = AppDelegate.launchUptime  // OBS5: pin the launch instant for `terminating`'s uptime
 
         Log.main.info("MeetingPipe starting")
 
@@ -235,14 +236,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
         source.setEventHandler { [weak self] in
             Log.main.info("SIGTERM received - flushing recorder before exit")
-            self?.flushAndExit()
+            self?.flushAndExit(reason: .sigterm)
         }
         source.resume()
         sigtermSource = source
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        flushAndExit()
+        flushAndExit(reason: .quit)
+    }
+
+    /// OBS5: why this process is exiting, on the `daemon` / `terminating` row.
+    enum TerminationReason: String {
+        case quit, sigterm
+    }
+
+    /// When this process started, on the monotonic clock, for `terminating`'s `uptime_sec`.
+    /// Read once in `applicationDidFinishLaunching` so it is not first touched at quit.
+    static let launchUptime = ProcessInfo.processInfo.systemUptime
+
+    /// OBS5: the row a clean exit leaves, written before anything in the teardown can block. A
+    /// launch with no `terminating` row before it is a crash or a kill, readable from the log
+    /// alone; the relaunch on 2026-10-18 was visible only in loginwindow's system log, because
+    /// the two lines this path wrote went to os.Logger, which macOS does not persist.
+    static func recordTermination(reason: TerminationReason, relaunch: Bool, uptimeSec: Int, recordingOpen: Bool) {
+        Log.writeLine(
+            "daemon",
+            "terminating (\(reason.rawValue), relaunch=\(relaunch), up \(uptimeSec) s\(recordingOpen ? ", a recording open" : ""))"
+        )
+        Log.event(category: "daemon", action: "terminating", attributes: [
+            "reason": reason.rawValue,
+            "relaunch": relaunch,
+            "uptime_sec": uptimeSec,
+            "recording_open": recordingOpen,
+        ])
     }
 
     /// REC13(3): how long the whole termination path gets before the process exits
@@ -272,7 +299,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// SIGTERM), and that is the point of putting the ceiling here rather than inside
     /// the flush: bounding the flush's own internals, which REC13 also does, would not
     /// have saved that recording, because the flush never started.
-    private func flushAndExit() -> Never {
+    private func flushAndExit(reason: TerminationReason) -> Never {
+        AppDelegate.recordTermination(
+            reason: reason,
+            relaunch: AppDelegate.shouldRelaunchOnQuit(
+                override: AppDelegate.pendingRelaunchOverride,
+                disableAutoRestart: UISettings.shared.disableAutoRestart
+            ),
+            uptimeSec: Int(ProcessInfo.processInfo.systemUptime - AppDelegate.launchUptime),
+            recordingOpen: coordinator?.recorder.isRecording ?? false
+        )
         armTerminationCeiling()
         localModelPreloader.stop()
         coordinator?.shutdown()

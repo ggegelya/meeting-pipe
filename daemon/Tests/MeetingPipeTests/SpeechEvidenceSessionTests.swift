@@ -52,7 +52,7 @@ final class SpeechEvidenceSessionTests: XCTestCase {
         // A little wall time on the gate's clock, so the row's seconds are real.
         host.micGate.ingest(rmsDb: -70)
         try? await Task.sleep(nanoseconds: 250_000_000)
-        controller.stopRecording(file: file, source: source, summaryMode: .auto)
+        controller.stopRecording(file: file, source: source, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the stop")
         await waitUntil({ self.rows(host).count == 1 }, "the evidence row")
         try? await Task.sleep(nanoseconds: 100_000_000)

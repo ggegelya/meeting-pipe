@@ -107,7 +107,7 @@ extension Coordinator: NotifierDelegate {
     func notifierDidRequestStopRecording(_ notifier: Notifier) {
         UILatency.shared.action("notification_stop", surface: "notification")
         // One stop entry point shared with hotkey-stop and HUD-stop.
-        if case .recording = stateMachine.current { session.toggleManual() } else { UILatency.shared.discardPending() }
+        if case .recording = stateMachine.current { session.toggleManual(surface: .notification) } else { UILatency.shared.discardPending() }
     }
 
     func notifierDidRequestKeepRecording(_ notifier: Notifier) {
@@ -157,7 +157,7 @@ extension Coordinator: MeetingPromptDelegate {
 extension Coordinator: RecordingHUDDelegate {
     func recordingHUDDidRequestStop(_ hud: RecordingHUDWindow) {
         // One stop entry point shared with manual-stop and hotkey-stop.
-        session.toggleManual()
+        session.toggleManual(surface: .hud)
     }
 
     func recordingHUDDidRequestRetrySystemAudio(_ hud: RecordingHUDWindow) {

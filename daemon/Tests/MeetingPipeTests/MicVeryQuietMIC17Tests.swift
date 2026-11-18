@@ -265,7 +265,7 @@ final class MicVeryQuietSessionMIC17Tests: XCTestCase {
         await waitUntil({ if case .recording = host.stateMachine.current { return true }; return false }, "the meeting to record")
         await waitUntil({ controller.isMicQuietCheckArmed }, "the start to arm the quiet check")
 
-        controller.stopRecording(file: file, source: zoom, summaryMode: .auto)
+        controller.stopRecording(file: file, source: zoom, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the stop to finish")
         XCTAssertFalse(controller.isMicQuietCheckArmed)
         XCTAssertEqual(host.notifierSpy.micVeryQuiet.map(\.file), [file])

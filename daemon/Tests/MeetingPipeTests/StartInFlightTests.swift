@@ -141,7 +141,7 @@ final class StartInFlightTests: XCTestCase {
         await waitUntil({ host.stateMachine.current == .idle }, "the flush")
 
         let (sourceless, quietHost) = makeController()
-        await runParkedStart(quietHost, start: { sourceless.toggleManual() }) {
+        await runParkedStart(quietHost, start: { sourceless.toggleManual(surface: .menu) }) {
             sourceless.handleMeetingEnded(bundleID: "com.google.Chrome", reason: teamsEnd)
         }
         await waitUntil({ quietHost.stateMachine.current.isRecordingState }, "the source-less start to commit")
@@ -154,7 +154,7 @@ final class StartInFlightTests: XCTestCase {
 
     func test_aHotkeyStart_stoppedDuringTheBringUp_neverReachesRecording() async {
         let (controller, host) = makeController()
-        await runParkedStart(host, start: { controller.toggleManual() }) {
+        await runParkedStart(host, start: { controller.toggleManual(surface: .menu) }) {
             controller.forceStop(reason: "hotkey")
         }
         await waitUntil({ host.recorderSpy.stopCallCount == 1 }, "the fresh recording to stop")
@@ -171,8 +171,8 @@ final class StartInFlightTests: XCTestCase {
         // A start stopped as it comes up has captured no system audio yet; that is not the
         // "remote side missing" a finished recording warns about.
         host.recorderSpy.lastSystemFires = 0
-        await runParkedStart(host, start: { controller.toggleManual() }) {
-            controller.toggleManual()
+        await runParkedStart(host, start: { controller.toggleManual(surface: .menu) }) {
+            controller.toggleManual(surface: .menu)
         }
         await waitUntil({ host.recorderSpy.stopCallCount == 1 }, "the fresh recording to stop")
         neverCommitted(host)
@@ -212,7 +212,7 @@ final class StartInFlightTests: XCTestCase {
 
     func test_aStartingDuringAnIdleOriginBringUp_raisesNoPrompt() async {
         let (controller, host) = makeController()
-        await runParkedStart(host, start: { controller.toggleManual() }) {
+        await runParkedStart(host, start: { controller.toggleManual(surface: .menu) }) {
             controller.handleMeetingStarted(source: teams)
         }
         await waitUntil({ host.stateMachine.current.isRecordingState }, "the start to commit")

@@ -293,7 +293,8 @@ final class MeetingLibraryService {
             Log.writeLine("daemon", "retry publish → \(stem)")
             Log.event(category: "coordinator", action: "retry_requested", attributes: [
                 "stem": stem, "scope": "publish",
-            ].merging(trigger.attributes) { a, _ in a })
+            ].merging(trigger.attributes) { a, _ in a }
+             .merging(Self.retryBackendAttributes(stem: stem, in: dir)) { a, _ in a })
             PipelineFailureSidecar.clear(stem: stem, in: dir)
             // republishMeeting rewrites a publish-stage failure sidecar if the sinks fail again, so the row returns to the failed set rather than looking done.
             republishMeeting(stem: stem) { _ in }
@@ -302,7 +303,8 @@ final class MeetingLibraryService {
 
         if failure?.stage != .transcribe, Self.hasReusableTranscript(stem: stem, in: dir) {
             Log.event(category: "coordinator", action: "retry_requested",
-                      attributes: ["stem": stem, "scope": "summary"].merging(trigger.attributes) { a, _ in a })
+                      attributes: ["stem": stem, "scope": "summary"].merging(trigger.attributes) { a, _ in a }
+             .merging(Self.retryBackendAttributes(stem: stem, in: dir)) { a, _ in a })
             regenerateMeeting(stem: stem) { _ in }
             return .success(())
         }
@@ -318,7 +320,8 @@ final class MeetingLibraryService {
         Log.writeLine("daemon", "retry pipeline → \(stem)")
         Log.event(category: "coordinator", action: "retry_requested", attributes: [
             "stem": stem, "scope": "run_all",
-        ].merging(trigger.attributes) { a, _ in a })
+        ].merging(trigger.attributes) { a, _ in a }
+             .merging(Self.retryBackendAttributes(stem: stem, in: dir)) { a, _ in a })
         // Drop the failure sidecar immediately so the row leaves the failed set before the run finishes. The dispatcher writes a fresh sidecar if it fails again.
         PipelineFailureSidecar.clear(stem: stem, in: dir)
         // A held meeting's manifest also carries the summary mode it was recorded under, and since
@@ -1298,6 +1301,12 @@ final class MeetingLibraryService {
     }
 
     /// Copy summary markdown, transcript, summary JSON, and audio to a user-chosen folder. Missing files are silently skipped (best-effort sharing export, not archival). Returns file count.
+    /// OBS5: the backend a retry of `stem` is expected to run on, and which setting chose it.
+    static func retryBackendAttributes(stem: String, in dir: URL) -> [String: Any] {
+        let meeting = MeetingStore.finalRecordingURL(stem: stem, in: dir) ?? dir.appendingPathComponent("\(stem).wav")
+        return PipelineLauncher.expectedBackendAttributes(for: meeting)
+    }
+
     func exportMeeting(stem: String, to destination: URL) -> Result<Int, Error> {
         let dir = outputDir()
         let fm = FileManager.default

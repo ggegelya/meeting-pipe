@@ -98,7 +98,7 @@ extension MeetingSessionController {
                 ),
                 stem: stem
             )
-            stopRecording(file: file, source: source, summaryMode: mode, stopRoute: "call_changed")
+            stopRecording(file: file, source: source, summaryMode: mode, cause: .callChanged)
         }
     }
 

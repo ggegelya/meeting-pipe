@@ -585,7 +585,7 @@ final class Coordinator: NSObject {
             hotkey.register(keyCode: parsed.keyCode, modifiers: parsed.modifiers) { [weak self] in
                 // OBS7: stamped before the hop, so the hop is inside the measurement.
                 UILatency.shared.action("hotkey_toggle", surface: "hotkey")
-                DispatchQueue.main.async { self?.session.toggleManual() }
+                DispatchQueue.main.async { self?.session.toggleManual(surface: .hotkey) }
             }
             Log.main.info("Hotkey registered: \(self.liveManualHotkey)")
         } else {
@@ -662,10 +662,8 @@ final class Coordinator: NSObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] kind in
                 guard let self = self else { return }
+                // OBS5: `PermissionsCenter.commit` logs the transition as `permission_changed`.
                 Log.main.info("permission granted: \(kind.displayName) - re-evaluating detector")
-                Log.event(category: "coordinator", action: "permission_granted", attributes: [
-                    "kind": kind.rawValue,
-                ])
                 self.discoveryWatcher.refreshNow()
                 self.statusBar.refreshMenuForPermissionChange()
             }

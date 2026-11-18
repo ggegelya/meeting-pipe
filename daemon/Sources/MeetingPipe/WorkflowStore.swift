@@ -163,12 +163,34 @@ final class WorkflowStore: ObservableObject {
                 return clone
             }
         }
+        let previous = workflows.first(where: { $0.id == w.id })
         if let idx = workflows.firstIndex(where: { $0.id == w.id }) {
             workflows[idx] = w
         } else {
             workflows.append(w)
         }
         try persistAll()
+        // OBS5: which fields changed, by name only: a field's value can be a team context or a sink path.
+        let fields = previous.map { WorkflowStore.changedFields(from: $0, to: w) } ?? []
+        guard previous == nil || !fields.isEmpty else { return }
+        Log.event(category: "workflow", action: "workflow_saved", attributes: [
+            "workflow_id": w.id.uuidString,
+            "created": previous == nil,
+            "fields": fields,
+        ])
+    }
+
+    /// The stored properties whose value differs between two versions of a workflow, by name, sorted.
+    /// Read off `Mirror` so a new field is covered without a second list to keep in step.
+    static func changedFields(from old: Workflow, to new: Workflow) -> [String] {
+        let before = Dictionary(
+            Mirror(reflecting: old).children.compactMap { child in child.label.map { ($0, String(describing: child.value)) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return Mirror(reflecting: new).children.compactMap { child -> String? in
+            guard let label = child.label, before[label] != String(describing: child.value) else { return nil }
+            return label
+        }.sorted()
     }
 
     /// Replace an existing workflow. Returns false, changing nothing, when no workflow

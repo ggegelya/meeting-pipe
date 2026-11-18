@@ -441,10 +441,12 @@ final class SinkDispatcher: @unchecked Sendable {
         guard activeJob == nil, let next = processingJobs.first else { return }
         activeJob = next
         Log.writeLine("daemon", "pipeline starting -> \(next.file.lastPathComponent)")
+        var libraryBackend: String?
+        if case .libraryRun(let run) = next.kind { libraryBackend = run.backend }
         Log.event(category: "coordinator", action: "pipeline_started", attributes: [
             "file": next.file.lastPathComponent,
             "kind": next.kind.label,
-        ])
+        ].merging(PipelineLauncher.expectedBackendAttributes(for: next.file, backendOverride: libraryBackend)) { own, _ in own })
 
         // PIPE11: a Library re-run has a transcript already; re-running ASR over
         // it would be both wasteful and destructive (it re-derives the very keys

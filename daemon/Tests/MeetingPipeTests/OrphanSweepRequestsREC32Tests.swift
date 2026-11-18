@@ -155,7 +155,7 @@ final class OrphanSweepRequestsREC32Tests: XCTestCase {
         host.recorderSpy.fileToReturn = file
         controller.beginRecording(source: zoom, summaryMode: .auto)
         await waitUntil { if case .recording = host.stateMachine.current { return true }; return false }
-        controller.stopRecording(file: file, source: zoom, summaryMode: .auto)
+        controller.stopRecording(file: file, source: zoom, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil { host.stateMachine.current == .idle }
         _ = controller
         return host

@@ -86,6 +86,24 @@ final class SecretsStoreTests: XCTestCase {
         XCTAssertEqual(backend.stored("NOTION_TOKEN"), "ntn-new")
     }
 
+    /// OBS5: a landed save names the account and whether it holds a value, never the value.
+    func test_secret_saved_names_the_account_and_never_the_secret() throws {
+        let logs = FileManager.default.temporaryDirectory.appendingPathComponent("obs5-secret-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR"); try? FileManager.default.removeItem(at: logs) }
+        let store = SecretsStore(backend: InMemorySecretsBackend())
+        store.anthropicAPIKey = "sk-placeholder-secret"
+        try store.saveNow()
+        let raw = try String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)
+        let row = try XCTUnwrap(raw.split(separator: "\n").compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }.first { $0["action"] as? String == "secret_saved" })
+        XCTAssertEqual(row["account"] as? String, "ANTHROPIC_API_KEY")
+        XCTAssertEqual(row["set"] as? Bool, true)
+        XCTAssertFalse(raw.contains("sk-placeholder-secret"))
+    }
+
     func test_openai_key_round_trips() throws {
         // PROV1: the openai backend's key is a first-class managed secret.
         let backend = InMemorySecretsBackend(["OPENAI_API_KEY": "sk-openai-loaded"])

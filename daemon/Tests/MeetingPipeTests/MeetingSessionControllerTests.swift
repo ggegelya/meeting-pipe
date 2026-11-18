@@ -144,7 +144,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
 
         controller.beginRecording(source: zoom, summaryMode: .auto)
         await waitUntil({ host.stateMachine.current.isRecording }, "the meeting to record")
-        controller.stopRecording(file: file, source: zoom, summaryMode: .auto)
+        controller.stopRecording(file: file, source: zoom, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
         _ = controller
         return host
@@ -196,7 +196,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
         host.recorderSpy.fileToReturn = file
         controller.beginRecording(source: zoom, summaryMode: .auto)
         await waitUntil({ host.stateMachine.current.isRecording }, "the meeting to record")
-        controller.stopRecording(file: file, source: zoom, summaryMode: .auto)
+        controller.stopRecording(file: file, source: zoom, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
 
         XCTAssertEqual(host.jobsSpy.enqueued.count, 1)
@@ -223,7 +223,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
         controller.beginRecording(source: zoom, summaryMode: .byo)
         await waitUntil({ committed }, "the recording to commit")
         XCTAssertEqual(manifestAtCommit?.summaryMode, .byo, "the manifest has to exist when setRecording runs")
-        controller.stopRecording(file: file, source: zoom, summaryMode: .byo)
+        controller.stopRecording(file: file, source: zoom, summaryMode: .byo, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
     }
 
@@ -311,7 +311,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
         XCTAssertEqual(manifest.captureMode, .captureFirst)
 
         controller.toggleOffTheRecord()  // closing the span still owes its cut
-        controller.stopRecording(file: file, source: zoom, summaryMode: .byo)
+        controller.stopRecording(file: file, source: zoom, summaryMode: .byo, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
         XCTAssertEqual(host.jobsSpy.redactionOwed, [true], "the enqueued job carries redactionOwed")
         XCTAssertTrue(
@@ -338,7 +338,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
             RecordingManifest.load(forStem: stem, in: tempDir).parsed?.captureMode, .captureFirstRedact,
             "the manifest carries the capture mode from the start"
         )
-        controller.stopRecording(file: file, source: zoom, summaryMode: .auto)
+        controller.stopRecording(file: file, source: zoom, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
         XCTAssertEqual(host.jobsSpy.redactionOwed, [true])
     }

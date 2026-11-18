@@ -10,11 +10,11 @@ extension Coordinator {
 
     @objc func menuStart() {
         UILatency.shared.action("menu_start", surface: "menu")
-        session.toggleManual()
+        session.toggleManual(surface: .menu)
     }
     @objc func menuStop() {
         UILatency.shared.action("menu_stop", surface: "menu")
-        session.toggleManual()
+        session.toggleManual(surface: .menu)
     }
 
     @objc func menuOpenLogs() {

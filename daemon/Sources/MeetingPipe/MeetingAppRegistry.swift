@@ -42,13 +42,32 @@ struct MeetingAppRegistry {
     /// Parse the bundled TOML, then union an optional overlay on top. Missing / malformed
     /// overlay is ignored (defaults still load); a missing bundled resource degrades to empty
     /// lists, exactly as the scanner did before DET4.
+    ///
+    /// OBS5: each load writes `detector` / `registry_loaded` with the list sizes and what became of
+    /// the overlay (`absent`, `applied`, `rejected`). A rejected overlay also goes through
+    /// `Log.failure` with the parse error: README tells the owner to drop an overlay to fix a
+    /// missed meeting, and one TOML typo used to give the same miss with no line anywhere.
     static func load(overlayURL: URL?) -> MeetingAppRegistry {
         var lists = parse(tomlString: bundledTOMLString()) ?? Lists()
-        if let overlayURL,
-           let data = try? String(contentsOf: overlayURL, encoding: .utf8),
-           let overlay = parse(tomlString: data) {
-            lists.formUnion(overlay)
+        var overlayState = "absent"
+        if let overlayURL, FileManager.default.fileExists(atPath: overlayURL.path) {
+            do {
+                let data = try String(contentsOf: overlayURL, encoding: .utf8)
+                lists.formUnion(try parsed(TOMLTable(string: data)))
+                overlayState = "applied"
+            } catch {
+                overlayState = "rejected"
+                Log.failure(category: "detector", action: "registry_overlay_rejected", error: error, attributes: [
+                    "file": overlayURL.lastPathComponent,
+                ])
+            }
         }
+        Log.event(category: "detector", action: "registry_loaded", attributes: [
+            "native": lists.native.count,
+            "browser": lists.browsers.count,
+            "fragment": lists.urlFragments.count,
+            "overlay": overlayState,
+        ])
         return MeetingAppRegistry(
             nativeBundles: lists.native,
             browserBundles: lists.browsers,
@@ -85,6 +104,10 @@ struct MeetingAppRegistry {
 
     private static func parse(tomlString: String?) -> Lists? {
         guard let tomlString, let toml = try? TOMLTable(string: tomlString) else { return nil }
+        return parsed(toml)
+    }
+
+    private static func parsed(_ toml: TOMLTable) -> Lists {
         let native = toml["native"]?.table?["bundle_ids"]?.array?.compactMap { $0.string } ?? []
         let urls = toml["browser"]?.table?["url_fragments"]?.array?.compactMap { $0.string } ?? []
         let browsers = toml["browser"]?.table?["bundles"]?.table?["ids"]?.array?.compactMap { $0.string } ?? []

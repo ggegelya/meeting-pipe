@@ -57,12 +57,12 @@ final class UILatencyWiringTests: XCTestCase {
         controller.engageSeams.buildHandles = { _, _ in nil }
 
         let startSeq = UILatency.shared.action("hotkey_toggle", surface: "hotkey")
-        controller.toggleManual()
+        controller.toggleManual(surface: .menu)
         await waitUntil("the HUD to present") { host.hudSpy.presentCount == 1 }
         await waitUntil("the start's feedback") { self.rows("ui_feedback").contains { $0["seq"] as? Int == startSeq } }
 
         let stopSeq = UILatency.shared.action("hud_stop", surface: "hud")
-        controller.toggleManual()
+        controller.toggleManual(surface: .menu)
         await waitUntil("the stop's feedback") { self.rows("ui_feedback").contains { $0["seq"] as? Int == stopSeq } }
 
         for seq in [startSeq, stopSeq] {
@@ -111,7 +111,7 @@ final class UILatencyWiringTests: XCTestCase {
         // The hotkey stamps before the main-queue hop, so the hop is inside the measurement.
         let coordinator = try source("Coordinator.swift")
         let stamp = coordinator.range(of: "UILatency.shared.action(\"hotkey_toggle\"")
-        let hop = coordinator.range(of: "DispatchQueue.main.async { self?.session.toggleManual() }")
+        let hop = coordinator.range(of: "DispatchQueue.main.async { self?.session.toggleManual(surface: .hotkey) }")
         XCTAssertNotNil(stamp); XCTAssertNotNil(hop)
         if let stamp, let hop { XCTAssertLessThan(stamp.lowerBound, hop.lowerBound) }
         XCTAssertTrue(coordinator.contains("UILatency.shared.action(\"hotkey_force_stop\""))

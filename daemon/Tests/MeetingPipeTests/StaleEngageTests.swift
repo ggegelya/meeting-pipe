@@ -180,7 +180,7 @@ final class StaleEngageSessionTests: XCTestCase {
         controller.handleDiscovery(chrome)
         await waitUntil({ host.lifecycleCoord.isEngaged }, "the stale engage")
 
-        controller.toggleManual()
+        controller.toggleManual(surface: .menu)
         await waitUntil({ self.isRecording(host) }, "the hand start")
         adapter.emit(.browserTabTitle, .live, chromeContext)
         await waitUntil({ host.lifecycleCoord.current == .starting(context: chromeContext) }, "the late starting")
@@ -219,7 +219,7 @@ final class StaleEngageSessionTests: XCTestCase {
         controller.startConsumers()
         controller.handleDiscovery(chrome)
         await waitUntil({ host.lifecycleCoord.isEngaged }, "the stale engage")
-        controller.toggleManual()
+        controller.toggleManual(surface: .menu)
         await waitUntil({ self.isRecording(host) }, "the hand start")
 
         let reason = EndingReason(
@@ -243,7 +243,7 @@ final class StaleEngageSessionTests: XCTestCase {
         nda.flags.ndaMode = true
         nda.isDefault = true
         let (controller, host) = try await recordOverAForeignHeldEnd(workflows: [nda])
-        controller.toggleManual()
+        controller.toggleManual(surface: .menu)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush")
         controller.shutdownConsumers()
 
@@ -257,7 +257,7 @@ final class StaleEngageSessionTests: XCTestCase {
         var plain = Workflow(name: "Default")
         plain.isDefault = true
         let (controller, host) = try await recordOverAForeignHeldEnd(workflows: [plain])
-        controller.toggleManual()
+        controller.toggleManual(surface: .menu)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush")
         controller.shutdownConsumers()
 
@@ -277,7 +277,7 @@ final class StaleEngageSessionTests: XCTestCase {
         adapter.emit(.browserTabTitle, .live, chromeContext)
         await waitUntil({ host.lifecycleCoord.current == .starting(context: chromeContext) }, "starting")
 
-        controller.toggleManual()
+        controller.toggleManual(surface: .menu)
         await waitUntil({ host.lifecycleCoord.current == .inMeeting(context: chromeContext) }, "the start's promotion")
         controller.startConsumers()
         defer { controller.shutdownConsumers() }

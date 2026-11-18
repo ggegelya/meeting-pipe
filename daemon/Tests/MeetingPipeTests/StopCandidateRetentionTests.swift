@@ -78,12 +78,12 @@ final class StopCandidateRetentionTests: XCTestCase {
     }
 
     func test_a_user_stop_and_a_backstop_stop_still_retain_it() {
-        for route in ["toggle", "idle_backstop"] {
+        for (route, cause) in [("toggle", StopCause.userStop(surface: .menu, duringHold: false)), ("idle_backstop", .idleBackstop)] {
             let host = FakeSessionHost(tempDir: tempDir)
             let controller = MeetingSessionController(coordinator: host)
             let file = tempDir.appendingPathComponent("\(route).wav")
             host.stateMachine.setRecording(file: file, source: teams, summaryMode: .auto)
-            controller.stopRecording(file: file, source: teams, summaryMode: .auto, stopRoute: route)
+            controller.stopRecording(file: file, source: teams, summaryMode: .auto, cause: cause)
             XCTAssertEqual(host.stateMachine.liveSuppressedCandidate(), teams, route)
         }
     }

@@ -26,7 +26,7 @@ extension Coordinator {
         switch command {
         case .toggle:
             UILatency.shared.action("automation_toggle", surface: "automation")
-            session.toggleManual()
+            session.toggleManual(surface: .automation)
         case .record(let byo):
             UILatency.shared.action("automation_record", surface: "automation")
             startRecordingViaAutomation(byo: byo)

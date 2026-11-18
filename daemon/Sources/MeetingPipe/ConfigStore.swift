@@ -464,8 +464,19 @@ final class ConfigStore: ObservableObject {
     private func commit(_ write: PreparedWrite) {
         guard write.sequence > committedSequence else { return }
         committedSequence = write.sequence
+        let keys = Self.changedKeys(from: syncedValues, to: write.values)
         syncedBytes = Data(write.toml.utf8)
         syncedValues = write.values
+        // OBS5: names only, never a value: config values include paths and workflow names.
+        if !keys.isEmpty {
+            Log.event(category: "daemon", action: "config_saved", attributes: ["keys": keys])
+            Log.writeLine("daemon", "config.toml saved: \(keys.joined(separator: ", "))")
+        }
+    }
+
+    /// The dotted key paths (`summarization.backend`) whose value differs between two syncs, sorted.
+    static func changedKeys(from old: [String: TOMLValue], to new: [String: TOMLValue]) -> [String] {
+        Set(old.keys).union(new.keys).filter { !same(old[$0], new[$0]) }.sorted()
     }
 
     /// Assign every modeled value from one read. Shared by init and the reload

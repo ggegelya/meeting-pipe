@@ -116,7 +116,7 @@ final class InputDeviceHolderComparisonTests: XCTestCase {
         XCTAssertEqual(rows().last?["trigger"] as? String, "recorder_reconfigured")
         XCTAssertEqual(rows().last?["match"] as? String, "true")
 
-        controller.stopRecording(file: file, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: file, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the stop")
     }
 
@@ -127,7 +127,7 @@ final class InputDeviceHolderComparisonTests: XCTestCase {
         let file = await record(controller, host, "20261117-160000")
         await waitUntil({ self.rows().count == 1 }, "the start's row")
         controller.noteInputDeviceChanged(recovered: false)
-        controller.stopRecording(file: file, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: file, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the stop")
         try? await Task.sleep(nanoseconds: 150_000_000)
         XCTAssertEqual(rows().count, 1)

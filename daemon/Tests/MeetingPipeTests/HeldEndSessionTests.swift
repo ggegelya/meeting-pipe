@@ -70,7 +70,7 @@ final class HeldEndSessionTests: XCTestCase {
         controller.concludeTeardownHold(
             now: openedAt.addingTimeInterval(PromotionEngine.defaultConfirmDwell), conclusion: .engineEnd
         )
-        controller.stopRecording(file: file, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: file, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
     }
 
@@ -110,7 +110,7 @@ final class HeldEndSessionTests: XCTestCase {
         host.recorderSpy.fileToReturn = file
         controller.beginRecording(source: teams, summaryMode: .auto)
         await waitUntil({ host.stateMachine.current.isRecording }, "the meeting to record")
-        controller.stopRecording(file: file, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: file, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
 
         XCTAssertEqual(host.recorderSpy.lastStopLimitSeconds, .some(nil))
@@ -142,7 +142,7 @@ final class HeldEndSessionTests: XCTestCase {
         )
         XCTAssertFalse(host.micGate.isEndHeld, "a confirmed end clears it too")
 
-        controller.stopRecording(file: file, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: file, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
     }
 
@@ -169,7 +169,7 @@ final class HeldEndSessionTests: XCTestCase {
         XCTAssertTrue(host.micGate.isEndHeld)
 
         controller.releaseTeardownHold(rescued: true)
-        controller.stopRecording(file: file, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: file, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
     }
 
@@ -201,7 +201,7 @@ final class HeldEndSessionTests: XCTestCase {
 
         XCTAssertEqual(host.promptSpy.presentCount, 0, "a resume is not a prompt")
         XCTAssertNil(controller.resumeCandidate, "the way back is used once")
-        controller.stopRecording(file: second, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: second, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the second flush")
         XCTAssertEqual(try meta(for: second)[ResumeAfterEnd.metaKey] as? String, "20261024-130000")
     }
@@ -267,7 +267,7 @@ extension HeldEndSessionTests {
 
         let ticks = OSAllocatedUnfairLock(initialState: [1_000.0, 1_000.5, 1_001.75])
         controller.stopClock = { ticks.withLock { $0.count > 1 ? $0.removeFirst() : $0[0] } }
-        controller.stopRecording(file: file, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: file, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
 
         let rows = ((try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? "")

@@ -173,7 +173,7 @@ final class ChannelCoverageSessionREC30Tests: XCTestCase {
         let zoom = AppSource(bundleID: "us.zoom.xos", displayName: "Zoom")
         controller.beginRecording(source: zoom, summaryMode: .auto)
         await waitUntil({ if case .recording = host.stateMachine.current { return true }; return false }, "the meeting to record")
-        controller.stopRecording(file: file, source: zoom, summaryMode: .auto)
+        controller.stopRecording(file: file, source: zoom, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the stop to finish")
         return host
     }

@@ -528,7 +528,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         let teams = AppSource(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams")
         skipThenSight(controller, host, teams)
 
-        controller.toggleManual()
+        controller.toggleManual(surface: .menu)
         await waitUntil({ host.stateMachine.current.isRecording }, "the manual recording to start")
 
         // The bug DET7 fixes: this used to be `beginRecording(source: nil)`, so the meeting
@@ -539,7 +539,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
     func test_toggleManual_fromIdle_withoutACandidate_recordsGeneric() async {
         let (controller, host) = makeController()
 
-        controller.toggleManual()
+        controller.toggleManual(surface: .menu)
         await waitUntil({ host.stateMachine.current.isRecording }, "the manual recording to start")
 
         XCTAssertNil(host.statusBarSpy.recordings.last?.source,
@@ -553,7 +553,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         controller.handleScanReadings([teams.bundleID: .init(processAudio: false)])
         controller.handleScanReadings([teams.bundleID: .init(processAudio: false)])
 
-        controller.toggleManual()
+        controller.toggleManual(surface: .menu)
         await waitUntil({ host.stateMachine.current.isRecording }, "the manual recording to start")
 
         XCTAssertNil(host.statusBarSpy.recordings.last?.source)
@@ -619,7 +619,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         // 1) The first meeting records and ends. The real flush path is what arms the cooldown.
         controller.beginRecording(source: teams, summaryMode: .auto)
         await waitUntil({ host.stateMachine.current.isRecording }, "the first meeting to record")
-        controller.stopRecording(file: host.recorderSpy.fileToReturn, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: host.recorderSpy.fileToReturn, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
         XCTAssertTrue(host.stateMachine.isCoolingDown(bundleID: teams.bundleID, cooldownSec: 60))
 
@@ -658,7 +658,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
 
         controller.beginRecording(source: teams, summaryMode: .auto)
         await waitUntil({ host.stateMachine.current.isRecording }, "the meeting to record")
-        controller.stopRecording(file: host.recorderSpy.fileToReturn, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: host.recorderSpy.fileToReturn, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
 
         // The instant of the stop, before the flush has even finished: the slot is already live.
         XCTAssertEqual(
@@ -688,7 +688,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
 
         controller.beginRecording(source: teams, summaryMode: .auto)
         await waitUntil({ host.stateMachine.current.isRecording }, "the meeting to record")
-        controller.stopRecording(file: host.recorderSpy.fileToReturn, source: teams, summaryMode: .auto)
+        controller.stopRecording(file: host.recorderSpy.fileToReturn, source: teams, summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
 
         let afterGrace = Date().addingTimeInterval(DetectionStateMachine.cooldownCandidateGraceSec + 1)
@@ -866,7 +866,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         XCTAssertEqual(beforeStop.markers.first, afterFirst.markers.first, "a press rewrites the batch, it does not drop earlier flags")
         XCTAssertEqual(host.recorderSpy.stopCallCount, 0)
 
-        controller.stopRecording(file: file, source: source(), summaryMode: .auto)
+        controller.stopRecording(file: file, source: source(), summaryMode: .auto, cause: .lifecycleEnd)
         await waitUntil({ host.stateMachine.current == .idle }, "the flush to finish")
 
         let afterStop = try XCTUnwrap(MarkerFile.read(forFinal: file))

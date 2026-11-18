@@ -84,7 +84,7 @@ extension MeetingSessionController {
         // also stops the hold's timer and clears the HUD's Confirming end before the stop.
         releaseTeardownHold()
         pendingEndTrimAt = cutAt
-        stopRecording(file: file, source: source, summaryMode: mode, stopRoute: "mic_release_ceiling")
+        stopRecording(file: file, source: source, summaryMode: mode, cause: .micReleaseCeiling)
     }
 
     static func enginePhase(_ lifecycle: MeetingLifecycleCoordinator) -> String {
