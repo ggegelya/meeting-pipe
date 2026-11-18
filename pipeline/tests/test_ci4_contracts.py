@@ -95,6 +95,16 @@ def test_regulated_fixture_matches_the_live_loader(tmp_path: Path) -> None:
     )
 
 
+def test_summary_limits_fixture_matches_the_schema() -> None:
+    # PIPE54: Swift's MeetingSummary.titleMaxLength / summaryMaxItems / confidenceValues are
+    # asserted against the same file by SummaryLimitsTests.
+    assert _generator().gen_summary_limits() == _committed("summary-limits-golden.json"), (
+        "schemas.MeetingSummary's limits changed; regenerate with "
+        "`cd pipeline && uv run python ../scripts/gen_contract_fixtures.py` and "
+        "mirror the change in Swift's MeetingSummary constants"
+    )
+
+
 # --------------------------------------------------------------------------
 # Guard the guards: a vacuously-empty fixture must not read as agreement
 # --------------------------------------------------------------------------

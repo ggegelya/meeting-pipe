@@ -455,6 +455,10 @@ struct AppleIntelligenceSummarizer {
     }
 
     static func write(summary: MeetingSummary, transcriptMD: URL, suffix: String = "") throws {
+        // PIPE54: the model is asked for at most 5 bullets and a three-value confidence and nothing
+        // enforces either. Clamped once here, so the markdown and the JSON beside it agree and
+        // `mp publish` never rejects what the parse let through.
+        let summary = summary.clampedToSchema()
         let dir = transcriptMD.deletingLastPathComponent()
         let stem = transcriptMD.deletingPathExtension().lastPathComponent
         // `suffix` ("candidate") writes a preview sidecar (TECH-A16); empty for the live output.

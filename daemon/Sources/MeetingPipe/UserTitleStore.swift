@@ -7,6 +7,9 @@ enum UserTitleStore {
     enum WriteError: Error, Equatable {
         case metaUnreadable
         case writeFailed
+        /// PIPE54: longer than the summary schema's title limit, which every sink cuts to. The
+        /// fields stop at the limit; this is the backstop for any other caller.
+        case tooLong
     }
 
     /// The Summary editor's save, split in two (PIPE55): the summary that goes back to `summary.json` keeps the GENERATED title, and `rename` is what the owner typed when it differs, for `write`. A blank title field is not a rename (it would be a clear, which the Library's own field does). Pure, so the rule is testable without the view.
@@ -20,6 +23,9 @@ enum UserTitleStore {
     /// Set (or, with an empty `title`, clear) the rename for `stem`. The atomic write bumps the sidecar's mtime, so `MeetingStore`'s directory watcher re-scans the row on its own.
     @discardableResult
     static func write(title: String, stem: String, in dir: URL) -> Result<Void, WriteError> {
+        guard MeetingSummary.schemaLength(title.trimmingCharacters(in: .whitespacesAndNewlines)) <= MeetingSummary.titleMaxLength else {
+            return .failure(.tooLong)
+        }
         let url = MeetingMetaRead.url(stem: stem, in: dir)
         let existing: [String: Any]
         switch MeetingMetaRead.load(at: url) {

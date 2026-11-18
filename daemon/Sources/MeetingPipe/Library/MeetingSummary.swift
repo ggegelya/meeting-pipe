@@ -284,7 +284,10 @@ struct MeetingSummary: Decodable, Equatable {
     /// to "en". Used by the write paths (summary.json overwrite, correction record) so
     /// they keep the exact JSON shape rather than relying on encoder null behaviour.
     func jsonObject() -> [String: Any] {
-        let actionDicts: [[String: Any]] = actions
+        // PIPE54: every Swift write of `summary.json` passes through here, so the schema's limits
+        // are kept here too, as a backstop (`clampedToSchema`); the editor refuses before it.
+        let s = clampedToSchema()
+        let actionDicts: [[String: Any]] = s.actions
             .filter { !$0.task.trimmingCharacters(in: .whitespaces).isEmpty }
             .map { a in
                 var d: [String: Any] = [
@@ -309,22 +312,22 @@ struct MeetingSummary: Decodable, Equatable {
         // empty map rather than three empty lists. The key itself is always
         // written, matching the pydantic writer, which emits every modeled field.
         var sectionEvidence: [String: Any] = [:]
-        for (section, anchors) in evidence where anchors.contains(where: { !$0.isEmpty }) {
+        for (section, anchors) in s.evidence where anchors.contains(where: { !$0.isEmpty }) {
             sectionEvidence[section] = anchors.map { row in
                 row.map { ["quote": $0.quote, "t": $0.t] as [String: Any] }
             }
         }
         return [
-            "title": title,
-            "summary": summary,
-            "decisions": decisions,
+            "title": s.title,
+            "summary": s.summary,
+            "decisions": s.decisions,
             "actions": actionDicts,
-            "questions": questions,
-            "attendees": attendees,
-            "detected_language": detectedLanguage ?? "en",
+            "questions": s.questions,
+            "attendees": s.attendees,
+            "detected_language": s.detectedLanguage ?? "en",
             // WF7: preserve the workflow-defined sections through an edit (the
             // editor renders them read-only but must not drop them on save).
-            "extra_sections": extraSections.map { ["name": $0.name, "content": $0.content] },
+            "extra_sections": s.extraSections.map { ["name": $0.name, "content": $0.content] },
             "evidence": sectionEvidence,
         ]
     }

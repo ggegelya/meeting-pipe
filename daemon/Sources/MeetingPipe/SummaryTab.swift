@@ -554,7 +554,7 @@ struct SummaryTab: View {
     @ViewBuilder
     private var footerStatus: some View {
         if let err = saveError {
-            FailureNotice(failure: FailurePresentation(diagnostics: err, operation: .summary))
+            FailureNotice(failure: FailurePresentation(diagnostics: err, operation: .summary, title: "Not saved"))
                 .font(.caption)
                 .foregroundStyle(.mpWarning)
                 .lineLimit(2)
@@ -576,6 +576,11 @@ struct SummaryTab: View {
     /// On failure the user stays in edit with the inline warning; on success a
     /// brief cue shows, then the body crossfades back to the reader.
     private func save(model: CorrectionViewModel) {
+        // PIPE54: refuse an edit over the schema's limits with what to change; nothing is written.
+        if let refusal = model.schemaRefusal {
+            saveError = refusal
+            return
+        }
         guard persistEdit(model: model) else {
             saveError = "Could not save the correction. Check the file permissions and try again."
             return

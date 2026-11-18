@@ -15,9 +15,47 @@ import sys
 from pathlib import Path
 
 from . import entry
-from .publish_router import EXIT_PUBLISH_FAILED, fanout, publish_failed, publish_failure_reason, published_sinks
+from pydantic import ValidationError
+
+from .publish_router import (
+    EXIT_PUBLISH_FAILED,
+    build_publishers,
+    fanout,
+    publish_failed,
+    publish_failure_reason,
+    published_sinks,
+    record_pre_sink_failure,
+)
 
 log = logging.getLogger("mp.publish")
+
+
+def validation_message(error: ValidationError) -> str | None:
+    """PIPE54: one plain sentence naming the first schema limit `summary.json` breaks and what to
+    do about it, or None when the file is not a shape problem at all (it is not JSON, or not an
+    object), which stays an ordinary failure so Retry can regenerate a corrupt file."""
+    fix = "Edit the summary, then Republish."
+    for err in error.errors():
+        kind = err.get("type", "")
+        if kind in {"json_invalid", "model_type"}:
+            return None
+        loc = err.get("loc") or ()
+        ctx = err.get("ctx") or {}
+        value = err.get("input")
+        if loc == ("summary",) and kind == "too_long":
+            return (f"The summary has {ctx.get('actual_length')} bullets; "
+                    f"the limit is {ctx.get('max_length')}. {fix}")
+        if loc == ("title",) and kind == "string_too_long":
+            length = len(value) if isinstance(value, str) else "too many"
+            return (f"The title is {length} characters; "
+                    f"the limit is {ctx.get('max_length')}. {fix}")
+        if len(loc) == 3 and loc[0] == "actions" and loc[2] == "confidence":
+            # The value itself is not echoed: it is summary content, and this line lands in
+            # error.json and publish.json.
+            return f"Action {int(loc[1]) + 1}'s confidence must be low, medium or high. {fix}"
+    first = error.errors()[0] if error.errors() else {}
+    where = ".".join(str(p) for p in first.get("loc") or ()) or "the summary"
+    return f"The summary does not match its schema at {where}: {first.get('msg', 'invalid')}. {fix}"
 
 
 def main(argv: list[str]) -> int:
@@ -34,11 +72,25 @@ def main(argv: list[str]) -> int:
 
     stem = summary_json.name.removesuffix(".summary.json")
     transcript_md = summary_json.parent / f"{stem}.md"
-    pub = fanout(
-        summary_json=summary_json,
-        cfg=cfg,
-        transcript_md=transcript_md if transcript_md.exists() else None,
-    )
+    pubs = build_publishers(cfg)
+    try:
+        pub = fanout(
+            summary_json=summary_json,
+            cfg=cfg,
+            transcript_md=transcript_md if transcript_md.exists() else None,
+            publishers=pubs,
+        )
+    except ValidationError as error:
+        # PIPE54: the summary breaks a schema limit (an editor or the Apple summarizer wrote it),
+        # so no sink can run. That is a publish-stage outcome, exit 3, not a crash: an exit 1
+        # landed the row at stage `pipeline`, whose Retry re-summarized over the user's edit.
+        # Only here, not in `fanout`, which run-all, digest, merge and paste share.
+        message = validation_message(error)
+        if message is None:
+            raise
+        print(f"[FAIL] {message}", file=sys.stderr)
+        record_pre_sink_failure(summary_json, [p.name for p in pubs], message)
+        return EXIT_PUBLISH_FAILED
     failures = pub.get("failures") or []
     if failures:
         for name, err in failures:

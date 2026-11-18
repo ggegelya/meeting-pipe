@@ -2,9 +2,9 @@
 id: PIPE54
 title: Swift writes summary.json shapes the pipeline's schema rejects, and the exit 1 that follows makes Retry re-summarize over the user's edit
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). The Summary editor appends bullets with no cap, the title rename and editor title take any length, and the Apple summarizer writes whatever the model returned, while mp publish re-validates with pydantic (title 120, summary 10 items, confidence a Literal) and exits 1 on the ValidationError, so the row lands at stage pipeline and Retry runs regenerateMeeting, whose mp summarize overwrites the edited summary.json. Clamp or refuse at the Swift writers from limits pinned in a cross-tree fixture, and make mp publish report a pre-sink failure as a publish-stage exit naming the field.
+comment: Shipped 2026-11-18 (all three scope items). Limits pinned by summary-limits-golden.json; MeetingSummary.clampedToSchema behind jsonObject() and the Apple write; the editor caps bullets and the title and refuses an over-limit save; the rename field caps and UserTitleStore refuses; mp publish turns a field ValidationError into exit 3 with a [FAIL] line and a none-state publish.json. Owner: one Republish of an 11-bullet summary.json shows the limit line on the row and Retry republishes.
 ---
 
 # PIPE54: Swift writes summary.json shapes the pipeline's schema rejects, and the exit 1 that follows makes Retry re-summarize over the user's edit
@@ -50,3 +50,15 @@ Related: [ARCH10](./ARCH10.md) (new) plans one Swift writer, `SummaryDocument.up
 - A Swift test that a republish failing with exit 3 and that sidecar lands as stage `.publish`, and `retryMeeting` then republishes rather than calling `regenerateMeeting`.
 - `docs/GUIDE.md` section 10, "A meeting that failed", names the over-limit reason and the fix, in the same commit; `CONVENTIONS.md`'s publish-result section notes the pre-sink failure shape.
 - `cd daemon && swift test`, `cd pipeline && uv run --extra dev pytest -q`, ruff and pyright green, with the number of new tests in the commit body; `bash scripts/ci-local.sh` green.
+
+**Progress (2026-11-18): all three scope items shipped.**
+
+- Premise check: the title leg is stale. PIPE55 moved both title writers off `summary.json`: the rename (`MeetingDetailView.writeTitle`) and the editor's title field (`UserTitleStore.splitEditorTitle`) write `meta.json["user_title"]`, and `publish_notion.apply_meeting_title` cuts that to 120 through `model_copy`, which validates nothing. So a long title no longer fails a publish; it is silently cut at every sink. The cap still ships, because silent truncation is what this task's item 2 exists to stop: the rename field and the editor's title field stop at 120 with a note, and `UserTitleStore.write` refuses longer as the backstop (`.tooLong`).
+- Item 1: `scripts/gen_contract_fixtures.py` generates `summary-limits-golden.json` (a `contract` object, no cases) from `MeetingSummary.model_json_schema()`. `MeetingSummary.titleMaxLength`, `summaryMaxItems` and `confidenceValues` live in `daemon/Sources/MeetingPipe/Library/SummaryLimits.swift`, and `SummaryLimitsTests` reads the same file. The title counts Unicode scalars, as Python's `len` does.
+- Item 2: `clampedToSchema()` is the backstop under `jsonObject()`. It cuts to the first 10 bullets with their anchors, clamps the title, and maps confidence onto the enum, case-sensitively like `digest._clamp_confidence`. `AppleIntelligenceSummarizer.write` clamps once before rendering, so the markdown and the JSON agree. The editor never relies on the backstop: Add stops at 10, the section says "Up to 10.", and a summary already over the limit is refused at Save with what to remove (`CorrectionViewModel.schemaRefusal`), in the inline editor and the standalone window alike.
+- Item 3: `publish_cmd.main` catches a field `ValidationError` from `fanout`, prints `[FAIL] <sentence>`, records every resolved sink failed through the new public `publish_router.record_pre_sink_failure`, and exits 3. A file that is not JSON (`json_invalid`, `model_type`) still raises, so Retry can regenerate a corrupt file. On the Swift side `FailurePresentation`'s publish explanation takes that `[FAIL]` sentence (STOR14's shape, now `refusalSentence`), so the row says what to edit rather than "check the destination". The exit-3-lands-as-`.publish` and Retry-republishes legs were already pinned by `MeetingLibraryServiceTests` and stay green; `SummaryLimitsTests` adds the stage mapping for this stderr.
+- One consequence of the backstop, by design: a file already over the limit (Swift-written before this task) that is then rewritten by a write that is not the editor, such as ticking an action done, loses bullets 11 and on through `jsonObject()`. The editor refuses instead, and `mp publish` names the limit, so the only silent cut is on a file that could not publish anyway. The `[FAIL]` line for a confidence names the action, not its value, because the line lands in `error.json` and `publish.json`.
+- ARCH10's `SummaryDocument` has not landed, so the `writeTitle` refusal sits in `UserTitleStore`. Whichever of the two lands second keeps both.
+
+**Owner walkthrough (not yet offered for owner-verify).** Hand-edit a meeting's `summary.json` to 11 summary bullets, then Republish. The row shows a publish failure whose text names the 11 bullets and the limit of 10, and Retry publishing republishes without re-summarizing. In the editor, the Summary section's + stops at 10.
+

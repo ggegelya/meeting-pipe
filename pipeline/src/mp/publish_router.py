@@ -434,6 +434,21 @@ def _write_pending_marker(summary_json: Path) -> bool:
         return False
 
 
+def record_pre_sink_failure(summary_json: Path, sink_names: list[str], message: str) -> bool:
+    """PIPE54: record a publish that stopped before any sink ran, because the summary on disk
+    does not validate against `MeetingSummary`.
+
+    `fanout` wrote the `unknown` pending marker and then raised on the parse, so without this the
+    daemon reads `unknown`. Every resolved sink is recorded as failed with `message`, so the state
+    is the existing `"none"` and nothing new enters the CI4 vocabulary. Returns whether it landed.
+    """
+    result = {
+        "page_url": None,
+        "sinks": {name: {"error": message, "error_type": "ValidationError"} for name in sink_names},
+    }
+    return _write_publish_sidecar(summary_json, result)
+
+
 def _write_publish_sidecar(summary_json: Path, result: dict[str, Any]) -> bool:
     """Record this run's publish outcome next to the summary (PIPE1).
 

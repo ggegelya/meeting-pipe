@@ -335,16 +335,27 @@ extension MeetingDetailView {
     @ViewBuilder
     var titleField: some View {
         if isRenamingTitle {
-            TextField("Untitled meeting", text: $editingTitle)
-                .textFieldStyle(.plain)
-                .font(.mpTextLG.weight(.semibold))
-                .lineLimit(2)
-                .focused($titleFieldFocused)
-                .onSubmit { commitRename() }
-                .onExitCommand { cancelRename() }
-                .onChange(of: titleFieldFocused) { _, focused in
-                    if !focused && isRenamingTitle { commitRename() }
+            VStack(alignment: .leading, spacing: 2) {
+                TextField("Untitled meeting", text: $editingTitle)
+                    .textFieldStyle(.plain)
+                    .font(.mpTextLG.weight(.semibold))
+                    .lineLimit(2)
+                    .focused($titleFieldFocused)
+                    .onSubmit { commitRename() }
+                    .onExitCommand { cancelRename() }
+                    .onChange(of: titleFieldFocused) { _, focused in
+                        if !focused && isRenamingTitle { commitRename() }
+                    }
+                    // PIPE54: every sink takes a title of at most 120 characters, so the field
+                    // stops there and says so, rather than a sink cutting it silently.
+                    .onChange(of: editingTitle) { _, typed in
+                        let capped = MeetingSummary.clampTitle(typed)
+                        if capped != typed { editingTitle = capped }
+                    }
+                if let note = MeetingSummary.titleLimitNote(editingTitle) {
+                    Text(note).font(.mpTextXS).foregroundStyle(Color(MPColors.fgMuted))
                 }
+            }
         } else {
             Text(editingTitle.isEmpty ? "Untitled meeting" : editingTitle)
                 .font(.mpTextLG.weight(.semibold))

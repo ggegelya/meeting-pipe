@@ -87,6 +87,13 @@ final class CorrectionWindow {
             window?.performClose(nil)
         case .saveEdited(let model), .saveBad(let model):
             let verdict: CorrectionStore.Verdict = outcome.isBad ? .bad : .edited
+            // PIPE54: an edit over the schema's limits is refused with what to change, here as in
+            // the Library's inline editor, rather than recorded as a shape `mp publish` rejects.
+            if !outcome.isBad, let refusal = model.schemaRefusal {
+                Self.presentSaveError(stem: model.stem, error: NSError(
+                    domain: "MeetingPipe.Correction", code: 1, userInfo: [NSLocalizedDescriptionKey: refusal]))
+                return
+            }
             let corrected: [String: Any]? = outcome.isBad ? nil : model.makeCorrectedSummary().jsonObject()
             do {
                 switch try Self.performSave(
@@ -322,6 +329,28 @@ final class CorrectionViewModel: ObservableObject {
     var summaryJsonPath: String {
         (runMeta["summary_json_path"] as? String)
             ?? recordingsDir.appendingPathComponent("\(stem).summary.json").path
+    }
+
+    // MARK: Schema limits (PIPE54)
+
+    /// The Summary section's Add stops at the schema's bullet limit.
+    var canAddSummaryBullet: Bool { summary.count < MeetingSummary.summaryMaxItems }
+
+    /// Why Save is refused, or nil when the edit fits `MeetingSummary`'s schema. Nothing is cut on
+    /// the owner's behalf: a summary already over the limit (written before the editor capped it)
+    /// is refused with what to remove, so the backstop clamp in `jsonObject()` never drops a bullet
+    /// the owner can see.
+    var schemaRefusal: String? {
+        let bullets = Self.trimmed(summary).count
+        let limit = MeetingSummary.summaryMaxItems
+        if bullets > limit {
+            return "The summary has \(bullets) bullets; the limit is \(limit). Remove \(bullets - limit) before saving."
+        }
+        let length = MeetingSummary.schemaLength(title.trimmingCharacters(in: .whitespacesAndNewlines))
+        if length > MeetingSummary.titleMaxLength {
+            return "The title is \(length) characters; the limit is \(MeetingSummary.titleMaxLength). Shorten it before saving."
+        }
+        return nil
     }
 
     var headerTitle: String {

@@ -151,7 +151,10 @@ struct FailurePresentation: Equatable {
                 ?? "A speaker names, transcript corrections or flagged moments file for this meeting is there but can't be read, so nothing was summarized. Fix or remove it, then retry."
         case .publish:
             heading = provider.map { "Couldn't publish to \($0)" } ?? heading
-            explanation = "Check the destination in Preferences > Integrations, then retry publishing."
+            // PIPE54: `mp publish` refused the summary before any sink, and its `[FAIL]` line says
+            // which limit and what to edit; the destination is not the problem then.
+            explanation = Self.refusalSentence(diagnostics)
+                ?? "Check the destination in Preferences > Integrations, then retry publishing."
         case .unknown:
             explanation = "Retry when you are ready, or open Details to inspect the failure."
             if Self.isValidation(diagnostics) { explanation = diagnostics }
@@ -244,6 +247,12 @@ struct FailurePresentation: Equatable {
     /// line wins, capped, and anything that looks like a secret or a payload is refused.
     static func storageRefusal(_ diagnostics: String, operation: FailureMetadata.Operation) -> String? {
         guard operation == .storage else { return nil }
+        return refusalSentence(diagnostics)
+    }
+
+    /// The last `[FAIL] <sentence>` line in a stderr tail (STOR14's shape, which PIPE54's pre-sink
+    /// publish refusal shares), capped, refusing anything that looks like a secret or a payload.
+    static func refusalSentence(_ diagnostics: String) -> String? {
         let marker = "[FAIL] "
         guard let line = diagnostics.split(whereSeparator: \.isNewline).last(where: { $0.contains(marker) }),
               let start = line.range(of: marker)?.upperBound else { return nil }
@@ -254,6 +263,6 @@ struct FailurePresentation: Equatable {
 
     private static func isValidation(_ text: String) -> Bool {
         guard text.count <= 260, !text.contains("\n"), !text.contains("/"), !text.contains("{"), !text.contains("sk-") else { return false }
-        return ["Enter a ", "Choose a ", "Type a ", "Paste a ", "The name ", "A voice named ", "The default workflow ", "No transcript ", "No summary ", "No audio ", "No recording ", "Transcription is not available", "Speech models are not downloaded", "A stretch marked off the record", "Transcription did not finish", "Apple Intelligence did not answer", "This meeting's workflow settings could not be saved", "Regulated mode is on:", "Set NOTION_TOKEN in Preferences", "Database id is not a valid value.", "Database not found, or the integration is not connected"].contains { text.hasPrefix($0) }
+        return ["Enter a ", "Choose a ", "Type a ", "Paste a ", "The name ", "A voice named ", "The default workflow ", "No transcript ", "No summary ", "No audio ", "No recording ", "Transcription is not available", "Speech models are not downloaded", "A stretch marked off the record", "Transcription did not finish", "Apple Intelligence did not answer", "This meeting's workflow settings could not be saved", "Regulated mode is on:", "Set NOTION_TOKEN in Preferences", "Database id is not a valid value.", "Database not found, or the integration is not connected", "The summary has ", "The title is ", "Could not save "].contains { text.hasPrefix($0) }
     }
 }

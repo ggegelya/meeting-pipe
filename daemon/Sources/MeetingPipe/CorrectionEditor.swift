@@ -19,7 +19,8 @@ struct CorrectionEditorBody: View {
                 titleField
                 listSection(
                     title: "Summary", items: $model.summary,
-                    placeholder: "One summary bullet"
+                    placeholder: "One summary bullet",
+                    limit: MeetingSummary.summaryMaxItems
                 )
                 listSection(
                     title: "Decisions", items: $model.decisions,
@@ -54,13 +55,22 @@ struct CorrectionEditorBody: View {
             Text("Title").font(.headline)
             TextField("Meeting title", text: $model.title)
                 .textFieldStyle(.roundedBorder)
+                // PIPE54: the field stops at the schema's limit and says so.
+                .onChange(of: model.title) { _, typed in
+                    let capped = MeetingSummary.clampTitle(typed)
+                    if capped != typed { model.title = capped }
+                }
+            if let note = MeetingSummary.titleLimitNote(model.title) {
+                Text(note).font(.caption).foregroundStyle(Color(MPColors.fgSubtle))
+            }
         }
     }
 
     private func listSection(
         title: String,
         items: Binding<[String]>,
-        placeholder: String
+        placeholder: String,
+        limit: Int? = nil
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -73,6 +83,7 @@ struct CorrectionEditorBody: View {
                         .labelStyle(.iconOnly)
                 }
                 .buttonStyle(.borderless)
+                .disabled(limit.map { items.wrappedValue.count >= $0 } ?? false)
             }
             VStack(spacing: 6) {
                 ForEach(items.wrappedValue.indices, id: \.self) { i in
@@ -92,7 +103,17 @@ struct CorrectionEditorBody: View {
             if items.wrappedValue.isEmpty {
                 Text("No entries.").font(.caption).foregroundStyle(Color(MPColors.fgSubtle))
             }
+            if let limit, let note = Self.limitNote(count: items.wrappedValue.count, limit: limit) {
+                Text(note).font(.caption).foregroundStyle(Color(MPColors.fgSubtle))
+            }
         }
+    }
+
+    /// PIPE54: what a capped section says at or over its limit, nil below it.
+    static func limitNote(count: Int, limit: Int) -> String? {
+        if count > limit { return "Up to \(limit). Remove \(count - limit) to save." }
+        if count == limit { return "Up to \(limit)." }
+        return nil
     }
 
     private var actionsSection: some View {
