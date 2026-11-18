@@ -193,6 +193,13 @@ CLEANUP_TOOL: dict[str, Any] = {
 }
 
 
+class UnparsedCleanupReply(ValueError):
+    """A window's reply carried no edits object at all (OBS2): free text with no decodable JSON,
+    or an Anthropic reply with no `tool_use` block. Raised by the clients and counted by
+    `_gather_edits` as `parse_failed_windows`, so a model that could not be read no longer looks
+    identical to one that read the window and found nothing to fix. Never carries the reply."""
+
+
 @runtime_checkable
 class CleanupClient(Protocol):
     """Proposes speaker edits for one rendered transcript window."""
@@ -261,7 +268,7 @@ def cleanup_transcript(
     started = time.monotonic()
     applied: list[EditRecord] = []
     refused: list[EditRecord] = []
-    windows_done = windows_total = 0
+    windows_done = windows_total = parse_failed = 0
     deadline_hit = False
     if segments and len(speakers) >= 2:
         owns_client = client is None
@@ -280,6 +287,7 @@ def cleanup_transcript(
         edits_by_index, outside = gathered.by_index, gathered.outside
         windows_done, windows_total = gathered.windows_done, gathered.windows_total
         deadline_hit = gathered.deadline_hit
+        parse_failed = gathered.parse_failed
         proposed = _effective_edits(segments, edits_by_index, speakers)
         embeddings = _load_embeddings(transcript_json)
         applied, refused = _refuse_unsupported_merges(segments, proposed, embeddings)
@@ -318,11 +326,13 @@ def cleanup_transcript(
         applied=applied,
         refused=refused,
         latency_ms=latency_ms,
+        parse_failed_windows=parse_failed,
     )
 
     log.info(
-        "diarize cleanup: %d merges, %d reattributions, %d refused in %d ms",
-        merges, reattributions, len(refused), latency_ms,
+        "diarize cleanup: %d merges, %d reattributions, %d refused, %d of %d windows unparsed "
+        "in %d ms",
+        merges, reattributions, len(refused), parse_failed, windows_done, latency_ms,
     )
     events.emit(
         "pipeline", "diarize_cleanup",
@@ -336,6 +346,7 @@ def cleanup_transcript(
         windows_done=windows_done,
         windows_total=windows_total,
         deadline_hit=deadline_hit,
+        parse_failed_windows=parse_failed,
     )
     return {
         "json": transcript_json,
@@ -345,6 +356,7 @@ def cleanup_transcript(
         "reattributions_count": reattributions,
         "refusals_count": len(refused),
         "latency_ms": latency_ms,
+        "parse_failed_windows": parse_failed,
     }
 
 
@@ -380,6 +392,7 @@ class _Gathered(NamedTuple):
     windows_done: int
     windows_total: int
     deadline_hit: bool
+    parse_failed: int = 0
 
 
 def _gather_edits(
@@ -419,7 +432,7 @@ def _gather_edits(
     outside: dict[tuple[int, str], SpeakerEdit] = {}
     windows = list(chunked_windows(rendered, max_chars=window_chars, overlap_chars=overlap_chars))
     cutoff = None if deadline_sec is None else clock() + deadline_sec
-    done = 0
+    done = parse_failed = 0
     deadline_hit = False
     for window in windows:
         if cutoff is not None and clock() >= cutoff:
@@ -433,14 +446,21 @@ def _gather_edits(
         shown = {i for i, (a, b) in enumerate(starts) if a >= lo and b <= hi}
         # Fence each window as untrusted content (TECH-SEC6); the segment numbers
         # stay intact inside the markers so edits still reference them.
-        for edit in client.propose_edits(window_prompt=wrap_untrusted(window.prompt), speakers=speakers):
+        try:
+            proposed = client.propose_edits(window_prompt=wrap_untrusted(window.prompt),
+                                            speakers=speakers)
+        except UnparsedCleanupReply:
+            # OBS2: an unreadable reply proposes nothing, as before, but is counted.
+            proposed = []
+            parse_failed += 1
+        for edit in proposed:
             if edit.segment_index in shown:
                 by_index[edit.segment_index] = edit  # overlapping windows: last wins
             else:
                 outside[(edit.segment_index, edit.speaker)] = edit
         done += 1
         events.note_progress()  # PIPE53: a finished window is a unit of progress
-    return _Gathered(by_index, outside, done, len(windows), deadline_hit)
+    return _Gathered(by_index, outside, done, len(windows), deadline_hit, parse_failed)
 
 
 def _effective_edits(
@@ -582,6 +602,7 @@ def _write_audit(
     applied: list[EditRecord],
     refused: list[EditRecord],
     latency_ms: int,
+    parse_failed_windows: int = 0,
 ) -> Path:
     """Record what the pass changed, per segment, to `<stem>.diarize_cleanup.json`.
 
@@ -606,6 +627,9 @@ def _write_audit(
         "reattributions_count": sum(1 for e in applied if e.kind == "reattribute"),
         "refusals_count": len(refused),
         "latency_ms": latency_ms,
+        # OBS2: windows whose reply could not be read; "0 merges" means "nothing to fix" only
+        # when this is 0 too.
+        "parse_failed_windows": parse_failed_windows,
         "edits": [e.as_json() for e in applied],
         "refused": [e.as_json() for e in refused],
     }
@@ -635,7 +659,10 @@ def _parse_edits(obj: Any) -> list[SpeakerEdit]:
 
 def _parse_edits_from_text(text: str) -> list[SpeakerEdit]:
     """Extract the JSON object from a free-form local-model reply and
-    parse it. Reuses the summarizer's balanced-object scan."""
+    parse it. Reuses the summarizer's balanced-object scan.
+
+    Raises `UnparsedCleanupReply` when no candidate decodes (OBS2); a reply that decodes
+    but carries no usable edit is still an honest empty list."""
     from .summarize_local import _largest_balanced_json_object
 
     for candidate in (text.strip(), _largest_balanced_json_object(text)):
@@ -645,7 +672,7 @@ def _parse_edits_from_text(text: str) -> list[SpeakerEdit]:
             return _parse_edits(json.loads(candidate))
         except json.JSONDecodeError:
             continue
-    return []
+    raise UnparsedCleanupReply("cleanup reply carried no decodable JSON object")
 
 
 # ----- Prompt + schema framing -----
@@ -722,7 +749,7 @@ class AnthropicCleanupClient:
         )
         blocks = [b for b in response.content if b.type == "tool_use"]
         if not blocks:
-            return []
+            raise UnparsedCleanupReply("cleanup reply carried no tool_use block")
         return _parse_edits(blocks[0].input)
 
 

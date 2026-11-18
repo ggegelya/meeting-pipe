@@ -995,3 +995,68 @@ def test_identify_backend_is_gone() -> None:
     import mp.summarize as summarize_mod
 
     assert not hasattr(summarize_mod, "_identify_backend")
+
+
+# ----- OBS2: a run that fell back says so in the run sidecar -----
+
+
+def _auto_run_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cloud_raises: BaseException | None
+) -> dict[str, Any]:
+    import json
+
+    import mp.summarize as summarize_mod
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr("mp.events.emit", lambda *a, **k: None)
+
+    class _Anthropic:
+        def __init__(self, **_: Any) -> None: ...
+
+        def summarize(self, **_: Any) -> Any:
+            if cloud_raises is not None:
+                raise cloud_raises
+            return _sidecar_summary()
+
+    class _FakeLocal:
+        def __init__(self, **_: Any) -> None: ...
+
+        def __enter__(self) -> "_FakeLocal":
+            return self
+
+        def __exit__(self, *_: Any) -> None: ...
+
+        def summarize(self, **_: Any) -> Any:
+            return _sidecar_summary()
+
+    monkeypatch.setattr("mp.summarize.AnthropicSummaryClient", _Anthropic)
+    monkeypatch.setattr("mp.summarize_local.LocalSummaryClient", _FakeLocal)
+    cfg = _local_cfg(backend="auto")
+    md = _transcript(tmp_path)
+    out = summarize_mod.summarize(md, cfg=cfg, client=AutoFallbackClient(cfg))
+    summarize_mod.rewrite_run_sidecar(md, out)
+    return json.loads((tmp_path / f"{md.stem}.run.json").read_text(encoding="utf-8"))
+
+
+def test_an_auto_run_that_fell_back_on_a_rejected_key_records_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import anthropic
+    import httpx
+
+    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    rejected = anthropic.AuthenticationError(
+        "invalid x-api-key", response=httpx.Response(401, request=req), body=None
+    )
+    run = _auto_run_sidecar(tmp_path, monkeypatch, rejected)
+    assert run["backend"] == "local"
+    assert run["fallback_from"] == "anthropic"
+    assert run["fallback_cause"] == "rejected_key"
+
+
+def test_a_clean_cloud_run_writes_no_fallback_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _auto_run_sidecar(tmp_path, monkeypatch, None)
+    assert run["backend"] == "anthropic"
+    assert "fallback_from" not in run and "fallback_cause" not in run

@@ -472,6 +472,32 @@ def test_one_failing_extract_window_does_not_sink_the_run() -> None:
     assert summary is not None and summary.summary
 
 
+def test_a_failing_extract_window_is_counted_on_the_closing_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OBS2: the skip is logged and the run carries on, so only a count on the closing event
+    tells a run that lost a window from one that did not."""
+    rows: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(staged.events, "emit", lambda *a, **k: rows.append((a, k)))
+    long_transcript = _transcript(repeat=10)
+    script = _happy_script()
+    seen = {"n": 0}
+    inner = script.__call__
+
+    def flaky(*, messages, max_tokens, response_format=None):
+        if messages[0]["content"].startswith("You extract"):
+            seen["n"] += 1
+            if seen["n"] == 2:
+                raise RuntimeError("window 2 timed out")
+        return inner(messages=messages, max_tokens=max_tokens, response_format=response_format)
+
+    staged.run_staged(chat=flaky, transcript=long_transcript, target="en", max_tokens=4000)
+    closing = [k for a, k in rows if a == ("pipeline", "staged_local_summary")]
+    assert len(closing) == 1
+    assert closing[0]["windows_failed"] == 1
+    assert closing[0]["sections_failed"] == 0
+
+
 # ----- Assembly -----
 
 def test_attendees_and_language_are_derived_not_asked_for() -> None:

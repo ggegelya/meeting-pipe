@@ -656,6 +656,8 @@ def _run_all_inner(
             backend=s.get("backend", ""),
             model=s.get("model", ""),
             adapter_path=s.get("adapter_path", ""),
+            fallback_from=s.get("fallback_from"),
+            fallback_cause=s.get("fallback_cause"),
         )
         log.info("Wrote run sidecar: %s", sidecar)
     except Exception as e:  # noqa: BLE001

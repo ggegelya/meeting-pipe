@@ -51,7 +51,7 @@ def _cfg() -> Config:
     return Config.model_validate({"summarization": {"backend": "local", "local_model": "fake"}})
 
 
-def _echo_first_stem_engine(cfg, *, system_prompt, user_message, max_tokens, model=None):
+def _echo_first_stem_engine(cfg, *, system_prompt, user_message, max_tokens, model=None, operation="text"):
     """Fake engine that cites the first [stem] present in the packed context, i.e.
     behaves like a well-behaved model, so the verify path passes."""
     m = re.search(r"\[([\w-]+)\]", user_message)
@@ -77,7 +77,7 @@ def test_falls_back_to_top_source_when_model_cites_nothing_valid(
 ) -> None:
     _meeting(tmp_path, "20260101-0900", title="Budget", transcript="A: budget budget cut spend.")
 
-    def _hallucinating_engine(cfg, *, system_prompt, user_message, max_tokens, model=None):
+    def _hallucinating_engine(cfg, *, system_prompt, user_message, max_tokens, model=None, operation="text"):
         return EngineResult(text="Answer with a made-up [99999999-9999] source.", backend="local", model="fake")
 
     monkeypatch.setattr(ask.engine, "complete_text", _hallucinating_engine)
@@ -159,7 +159,7 @@ def test_the_retrieved_excerpts_reach_the_model_fenced(
     _meeting(tmp_path, "20260101-0900", title="Budget review", transcript="A: we cut the budget hard.")
     seen: list[tuple[str, str]] = []
 
-    def _capture(cfg, *, system_prompt, user_message, max_tokens, model=None):
+    def _capture(cfg, *, system_prompt, user_message, max_tokens, model=None, operation="text"):
         seen.append((system_prompt, user_message))
         return _echo_first_stem_engine(cfg, system_prompt=system_prompt, user_message=user_message,
                                        max_tokens=max_tokens, model=model)
@@ -231,7 +231,7 @@ def test_unreadable_ram_does_not_clamp(monkeypatch) -> None:
 def _packed_context_len(monkeypatch: pytest.MonkeyPatch, root: Path, tokens: int) -> int:
     captured: list[str] = []
 
-    def _capture(cfg, *, system_prompt, user_message, max_tokens, model=None):
+    def _capture(cfg, *, system_prompt, user_message, max_tokens, model=None, operation="text"):
         captured.append(user_message)
         return EngineResult(text="ok", backend="local", model="fake")
 
@@ -276,7 +276,7 @@ def test_the_embedder_is_released_before_the_answer_model_spawns(
 
     index = EmbeddingIndex.build(tmp_path, _Watched(dim=256))
 
-    def _engine(cfg, *, system_prompt, user_message, max_tokens, model=None):
+    def _engine(cfg, *, system_prompt, user_message, max_tokens, model=None, operation="text"):
         assert released, "the retrieval model must be gone before a second model loads"
         return EngineResult(text="answer [20260101-0900]", backend="local", model="fake")
 
@@ -400,7 +400,7 @@ def test_a_second_ask_reuses_the_index_and_says_nothing_new(
 
 # ----- PIPE12: the answer says which backend it substituted for -----
 
-def _substituting_engine(cfg, *, system_prompt, user_message, max_tokens, model=None):
+def _substituting_engine(cfg, *, system_prompt, user_message, max_tokens, model=None, operation="text"):
     """What `engine.complete_text` returns under `backend = "apple_intelligence"`:
     that backend is Swift-only and has no Python free-form path, so the local MLX
     model answers and the result says whose place it took."""

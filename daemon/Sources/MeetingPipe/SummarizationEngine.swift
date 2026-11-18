@@ -173,6 +173,28 @@ struct SummarizationEngine: Equatable {
         // Intelligence), which a vaguer sentence would leave them doubting.
         return "Answered \(ranEngine.namedRunPhrase), because \(requested.name) has no question-and-answer path."
     }
+
+    /// OBS2: the clause the provenance line appends when an `auto` run fell back to local,
+    /// from `<stem>.run.json`'s `fallback_from` and `fallback_cause` ("because Anthropic
+    /// rejected the key"). The cause is `failure_details.describe`'s typed vocabulary, mapped to a
+    /// short phrase; an unknown cause still says the engine failed rather than dropping the fact.
+    /// Nil when the run did not fall back, or fell from an engine this build cannot name.
+    static func fallbackClause(from: String?, cause: String?) -> String? {
+        guard let from = resolve(from) else { return nil }
+        let phrase: String
+        switch cause {
+        case "rejected_key":        phrase = "rejected the key"
+        case "expired_key":         phrase = "said the key expired"
+        case "credits", "quota":    phrase = "had no credit left"
+        case "model_rejected":      phrase = "rejected the model"
+        case "timeout":             phrase = "timed out"
+        case "connection":          phrase = "could not be reached"
+        case "rate_limit":          phrase = "was rate limiting"
+        case "service_unavailable": phrase = "was unavailable"
+        default:                    phrase = "failed"
+        }
+        return "because \(from.name) \(phrase)"
+    }
 }
 
 extension WorkflowBackend {

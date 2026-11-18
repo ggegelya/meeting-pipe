@@ -64,6 +64,8 @@ def write_run_sidecar(
     model: str,
     adapter_path: str = "",
     ts: str | None = None,
+    fallback_from: str | None = None,
+    fallback_cause: str | None = None,
 ) -> Path:
     """Snapshot the run that produced ``<stem>.summary.json``.
 
@@ -76,6 +78,11 @@ def write_run_sidecar(
     can be serving weights an earlier config selected, and attributing the
     summary to the current config would quietly launder that. ``adapter_path`` is
     "" for every backend but a local one serving a LoRA adapter.
+
+    ``fallback_from`` / ``fallback_cause`` (OBS2) are written only when an ``auto`` run dropped
+    to local on a cloud failure: the backend it fell from and the typed
+    ``failure_details.describe`` cause (``rejected_key``, ``credits``, ...). Both are absent on a
+    run that did not fall back, so their presence alone marks a degraded summary.
     """
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -88,6 +95,9 @@ def write_run_sidecar(
         "adapter_path": adapter_path,
         "ts": ts or _now_utc_iso(),
     }
+    if fallback_from and fallback_cause:
+        payload["fallback_from"] = fallback_from
+        payload["fallback_cause"] = fallback_cause
     out = recordings_dir / f"{stem}.run.json"
     try:
         storage.atomic_write_text(out, json.dumps(payload, indent=2, sort_keys=True))

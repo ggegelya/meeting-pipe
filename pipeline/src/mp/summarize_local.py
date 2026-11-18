@@ -882,12 +882,17 @@ class LocalSummaryClient:
             log.warning(
                 "language-correction retry did not parse (%s); keeping the first summary", e
             )
+            # OBS2: same action and shape as `summarize._verify_and_repair_language`.
+            events.emit("pipeline", "language_check", target=target,
+                        diverging=list(diverging), repair="unparsed")
             return summary
         still = divergent_sections(retried, target)
         log.info(
             "language-correction retry produced a summary; diverging sections now: %s",
             still or "none",
         )
+        events.emit("pipeline", "language_check", target=target, diverging=list(diverging),
+                    repair="still_divergent" if still else "ok")
         return retried
 
     def complete(

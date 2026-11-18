@@ -34,7 +34,7 @@ import sys
 import time
 from importlib import resources
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
 import anthropic
 from pydantic import ValidationError
@@ -98,6 +98,10 @@ class SummaryOutput(TypedDict):
     backend: str
     model: str
     adapter_path: str
+    # OBS2: present only when an `auto` run dropped to local on a cloud failure, so the run
+    # sidecar can say so; absent on a run that did not fall back.
+    fallback_from: NotRequired[str]
+    fallback_cause: NotRequired[str]
 
 # Retry only on transient failures. BadRequestError / AuthenticationError /
 # PermissionDeniedError / NotFoundError are caller bugs, so failing fast is right.
@@ -694,13 +698,20 @@ def summarize(
     backend_used: str = getattr(client, "backend_id", None) or "unknown"
     model_used = getattr(client, "model", None) or cfg.summarization.model
     log.info("Wrote %s and %s", json_path, md_path)
-    return SummaryOutput(
+    result = SummaryOutput(
         json=json_path,
         md=md_path,
         backend=backend_used,
         model=model_used,
         adapter_path=_identify_adapter(client),
     )
+    # OBS2: an `auto` run that fell back says what it fell back from and why, so the Library
+    # does not render a revoked key as a deliberate local choice.
+    fallback_cause = getattr(client, "last_fallback_cause", None)
+    if backend_used == "local" and isinstance(fallback_cause, str):
+        result["fallback_from"] = "anthropic"
+        result["fallback_cause"] = fallback_cause
+    return result
 
 
 def _verify_evidence(
@@ -776,15 +787,27 @@ def _verify_and_repair_language(
         )
     except Exception as e:  # a failed *repair* must never sink an already-valid summary
         log.warning("language repair call failed (%s); keeping the original summary", e)
+        _emit_language_check(target, diverging, "failed")
         return summary
     still = divergent_sections(repaired, target)
     if still:
         log.warning(
             "language repair still diverges (%s); keeping the original summary", still
         )
+        _emit_language_check(target, diverging, "still_divergent")
         return summary
     log.info("language repair produced a summary matching %r", target)
+    _emit_language_check(target, diverging, "ok")
     return repaired
+
+
+def _emit_language_check(target: str, diverging: list[str], repair: str) -> None:
+    """OBS2: one `pipeline.language_check` per summary whose sections diverged from the expected
+    language, carrying the section names and how the repair went (`ok`, `failed`,
+    `still_divergent`; the local client's own replay adds `unparsed`). A wrong-language summary
+    that shipped used to leave only a WARNING line. Section names only, never their text."""
+    events.emit("pipeline", "language_check", target=target, diverging=list(diverging),
+                repair=repair)
 
 
 def _identify_adapter(client: SummaryClient) -> str:
@@ -857,6 +880,9 @@ class AutoFallbackClient:
         self.last_used_backend: str | None = None
         self.last_used_model: str | None = None
         self.last_used_adapter_path: str = ""
+        # OBS2: the typed cause of the last drop to local, None when the cloud answered or no
+        # key was configured (a choice, not a degradation).
+        self.last_fallback_cause: str | None = None
         # LOCAL11: the (model, adapter) the local client reported *serving*, read
         # off it before the `with` block closes it. The configured pair is only a
         # fallback: a warm server we do not own can be serving older weights.
@@ -922,8 +948,13 @@ class AutoFallbackClient:
                 self._local_identity = _served_local_identity(fallback, self._cfg)
                 return out
 
-        result, backend = run_with_local_fallback(cloud=_cloud, local=_local, model=model)
+        causes: list[str] = []
+        result, backend = run_with_local_fallback(
+            cloud=_cloud, local=_local, model=model, operation="summary",
+            on_fallback=causes.append,
+        )
         self.last_used_backend = backend
+        self.last_fallback_cause = causes[-1] if causes else None
         if backend == "anthropic":
             self.last_used_model = model
             self.last_used_adapter_path = ""
@@ -1017,6 +1048,8 @@ def rewrite_run_sidecar(transcript_md: Path, out: SummaryOutput) -> None:
             backend=out["backend"],
             model=out["model"],
             adapter_path=out.get("adapter_path", ""),
+            fallback_from=out.get("fallback_from"),
+            fallback_cause=out.get("fallback_cause"),
         )
         if isinstance(publish_state, str):
             corrections.set_publish_state(written, publish_state)

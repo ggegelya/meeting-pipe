@@ -106,7 +106,7 @@ def test_collect_recent_decisions_filters_window_and_orders_newest_first(tmp_pat
 
 
 def _engine_ok(text: str):
-    def fn(cfg, *, system_prompt, user_message, max_tokens, model=None):
+    def fn(cfg, *, system_prompt, user_message, max_tokens, model=None, operation="text"):
         return EngineResult(text=text, backend="local", model="fake")
     return fn
 
@@ -148,7 +148,7 @@ def test_narrate_facts_tell_the_model_the_list_is_capped(
     ])
     seen: list[str] = []
 
-    def _capture(cfg, *, system_prompt, user_message, max_tokens, model=None):
+    def _capture(cfg, *, system_prompt, user_message, max_tokens, model=None, operation="text"):
         seen.append(user_message)
         return EngineResult(text="- b", backend="local", model="fake")
 
@@ -168,7 +168,7 @@ END = "<<<UNTRUSTED_TRANSCRIPT_END>>>"
 
 
 def _capturing_engine(seen: list[tuple[str, str]]):
-    def fn(cfg, *, system_prompt, user_message, max_tokens, model=None):
+    def fn(cfg, *, system_prompt, user_message, max_tokens, model=None, operation="text"):
         seen.append((system_prompt, user_message))
         return EngineResult(text="- b", backend="local", model="fake")
     return fn
@@ -496,7 +496,7 @@ def test_narrate_reaches_the_engine_with_a_local_config_when_pinned(
     _meeting(tmp_path, _stem(TODAY), title="M", actions=[_action("x", due="2026-06-01")])
     seen: list[str] = []
 
-    def _spy(cfg, *, system_prompt, user_message, max_tokens, model=None):
+    def _spy(cfg, *, system_prompt, user_message, max_tokens, model=None, operation="text"):
         seen.append(effective_backend(cfg))
         return EngineResult(text="- a theme", backend="local", model="fake")
 
@@ -513,7 +513,7 @@ def test_narrate_still_reaches_the_cloud_when_the_opt_out_is_off(
     _meeting(tmp_path, _stem(TODAY), title="M", actions=[_action("x", due="2026-06-01")])
     seen: list[str] = []
 
-    def _spy(cfg, *, system_prompt, user_message, max_tokens, model=None):
+    def _spy(cfg, *, system_prompt, user_message, max_tokens, model=None, operation="text"):
         seen.append(effective_backend(cfg))
         return EngineResult(text="- a theme", backend="anthropic", model="m")
 

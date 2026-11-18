@@ -546,7 +546,16 @@ extension MeetingDetailView {
     /// for an unknown backend so the row disappears entirely rather than showing
     /// an empty provenance line; a *known* backend always has a name now, which
     /// is what used to drop the row for an OpenAI meeting.
-    var provenanceLabel: String? { provenanceEngine?.qualified }
+    var provenanceLabel: String? {
+        guard let engine = provenanceEngine else { return nil }
+        // OBS2: an `auto` run that dropped to local names what it fell from and why.
+        if let fallback = SummarizationEngine.fallbackClause(
+            from: meeting.fallbackFrom, cause: meeting.fallbackCause
+        ) {
+            return "\(engine.qualified), \(fallback)"
+        }
+        return engine.qualified
+    }
 
     /// The model id rides only in the tooltip; the visible label stays readable.
     var provenanceTooltip: String? {

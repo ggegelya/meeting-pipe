@@ -24,6 +24,7 @@ from mp.diarize_cleanup import (
     LocalCleanupClient,
     SpeakerEdit,
     TextCleanupClient,
+    UnparsedCleanupReply,
     _apply_edits,
     _distinct_speakers,
     _effective_edits,
@@ -373,7 +374,78 @@ def test_parse_edits_coerces_bad_kind_and_drops_malformed() -> None:
 def test_parse_edits_from_text_recovers_embedded_json() -> None:
     text = 'sure! {"edits":[{"segment_index":0,"speaker":"speaker_0","kind":"merge"}]} done'
     assert _parse_edits_from_text(text) == [SpeakerEdit(0, "speaker_0", "merge")]
-    assert _parse_edits_from_text("no json at all") == []
+    # OBS2: a reply with no decodable JSON is a parse failure, not "nothing to fix".
+    with pytest.raises(UnparsedCleanupReply):
+        _parse_edits_from_text("no json at all")
+    # A reply that decodes but proposes nothing is still an honest empty list.
+    assert _parse_edits_from_text('{"edits": []}') == []
+
+
+# ----- OBS2: an unreadable reply is counted, not read as "nothing to fix" -----
+
+
+class _UnparsedClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def propose_edits(self, *, window_prompt: str, speakers: list[str]) -> list[SpeakerEdit]:
+        self.calls += 1
+        return _parse_edits_from_text("I could not decide, sorry.")
+
+
+def test_every_unparsed_window_is_counted_on_the_event_and_the_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _write_transcript(tmp_path)
+    emitted: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr("mp.diarize_cleanup.events.emit",
+                        lambda *a, **k: emitted.append((a, k)))
+    client = _UnparsedClient()
+    result = cleanup_transcript(p, cfg=Config(), client=client, window_chars=60,
+                                overlap_chars=0)
+
+    assert client.calls >= 2
+    assert result["merges_count"] == 0
+    assert result["parse_failed_windows"] == client.calls
+    ev = [k for (a, k) in emitted if a[:2] == ("pipeline", "diarize_cleanup")][0]
+    assert ev["parse_failed_windows"] == client.calls == ev["windows_done"]
+    assert ev["merges_count"] == 0
+    audit = json.loads((tmp_path / "20260516-0900.diarize_cleanup.json").read_text("utf-8"))
+    assert audit["parse_failed_windows"] == client.calls
+
+
+def test_a_clean_empty_reply_counts_no_parse_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _write_transcript(tmp_path)
+    emitted: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr("mp.diarize_cleanup.events.emit",
+                        lambda *a, **k: emitted.append((a, k)))
+    cleanup_transcript(p, cfg=Config(), client=_FakeClient([]))
+
+    ev = [k for (a, k) in emitted if a[:2] == ("pipeline", "diarize_cleanup")][0]
+    assert ev["parse_failed_windows"] == 0
+    audit = json.loads((tmp_path / "20260516-0900.diarize_cleanup.json").read_text("utf-8"))
+    assert audit["parse_failed_windows"] == 0
+
+
+def test_an_anthropic_reply_with_no_tool_use_block_is_unparsed() -> None:
+    from types import SimpleNamespace
+
+    client = AnthropicCleanupClient.__new__(AnthropicCleanupClient)
+    client._client = None
+    client._model = "claude-test"
+    client._max_tokens = 100
+    reply = SimpleNamespace(content=[SimpleNamespace(type="text", text="no tool call")])
+    import mp.summarize as summarize_mod
+
+    original = summarize_mod._create_message
+    summarize_mod._create_message = lambda *a, **k: reply  # type: ignore[assignment]
+    try:
+        with pytest.raises(UnparsedCleanupReply):
+            client.propose_edits(window_prompt="[0] speaker_0: hi", speakers=["speaker_0"])
+    finally:
+        summarize_mod._create_message = original  # type: ignore[assignment]
 
 
 # ----- Backend selection -----

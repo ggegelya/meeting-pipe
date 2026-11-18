@@ -550,6 +550,15 @@ def _dedupe(items: list[str]) -> list[int]:
 Chat = Callable[..., str]
 
 
+@dataclass
+class _Failures:
+    """OBS2: model calls a staged run skipped past. Each skip is logged and the run carries on,
+    so without this count the closing event read the same with or without them."""
+
+    windows: int = 0
+    sections: int = 0
+
+
 @dataclass(frozen=True)
 class StagedResult:
     """The staged summary plus per-stage counts, for the event log and the bench."""
@@ -616,9 +625,11 @@ def _run_staged(
         max_chars=window_chars(transcript),
         overlap_chars=_WINDOW_OVERLAP_CHARS,
     ))
-    facts = _extract(chat, windows, stage_tokens, keep_warm)
+    failures = _Failures()
+    facts = _extract(chat, windows, stage_tokens, keep_warm, failures)
     if not facts:
-        _decline("stage 1 extracted no facts", windows=len(windows))
+        _decline("stage 1 extracted no facts", windows=len(windows),
+                 windows_failed=failures.windows, sections_failed=failures.sections)
         return None
 
     result = _compose_and_verify(
@@ -629,9 +640,11 @@ def _run_staged(
         stage_tokens=stage_tokens,
         keep_warm=keep_warm,
         windows=len(windows),
+        failures=failures,
     )
     if result is None:
-        _decline("stage 2 composed no summary bullets", facts=len(facts))
+        _decline("stage 2 composed no summary bullets", facts=len(facts),
+                 windows_failed=failures.windows, sections_failed=failures.sections)
         return None
 
     events.emit(
@@ -641,6 +654,8 @@ def _run_staged(
         facts=result.facts,
         dropped_unanchored=result.dropped_unanchored,
         dropped_by_critic=result.dropped_by_critic,
+        windows_failed=failures.windows,
+        sections_failed=failures.sections,
     )
     log.info(
         "LOCAL14 staged: %d window(s) -> %d fact(s); dropped %d unanchored point(s) "
@@ -656,7 +671,11 @@ def _decline(reason: str, **attrs: Any) -> None:
 
 
 def _extract(
-    chat: Chat, windows: list[Any], stage_tokens: int, keep_warm: Callable[[], None] | None
+    chat: Chat,
+    windows: list[Any],
+    stage_tokens: int,
+    keep_warm: Callable[[], None] | None,
+    failures: _Failures | None = None,
 ) -> list[FactRow]:
     """Stage 1 over every window. A window that errors or yields nothing costs its
     own rows, never the run: extraction is the map, and a map that loses one slice
@@ -676,6 +695,8 @@ def _extract(
             )
         except Exception as e:
             log.warning("staged extract window %d failed (%s); skipping it", window.index, e)
+            if failures is not None:
+                failures.windows += 1
             continue
         facts.extend(parse_facts(reply))
         if len(facts) >= _MAX_FACTS_TOTAL:
@@ -693,6 +714,7 @@ def _compose_and_verify(
     stage_tokens: int,
     keep_warm: Callable[[], None] | None,
     windows: int,
+    failures: _Failures | None = None,
 ) -> StagedResult | None:
     """Stages 2 and 3. Composition first, then the deterministic checks, then the
     single critic pass over what survived them."""
@@ -700,7 +722,7 @@ def _compose_and_verify(
     for section in (*_TEXT_SECTIONS, "actions"):
         composed[section] = _compose(
             chat, section, facts, target, stage_tokens, keep_warm,
-            key="task" if section == "actions" else "text",
+            key="task" if section == "actions" else "text", failures=failures,
         )
     if not composed["summary"]:
         return None
@@ -711,7 +733,7 @@ def _compose_and_verify(
     )
     verified.sections["decisions"] = decisions
 
-    title = _compose_title(chat, facts, target, stage_tokens, keep_warm)
+    title = _compose_title(chat, facts, target, stage_tokens, keep_warm, failures)
     return StagedResult(
         summary=_assemble(verified, facts, title, transcript, target),
         windows=windows,
@@ -730,6 +752,7 @@ def _compose(
     keep_warm: Callable[[], None] | None,
     *,
     key: str,
+    failures: _Failures | None = None,
 ) -> list[ComposedPoint]:
     if keep_warm is not None:
         keep_warm()
@@ -747,6 +770,8 @@ def _compose(
         # One section failing must not sink the others; an empty section is a
         # legitimate value for all four of them.
         log.warning("staged compose of %s failed (%s); leaving it empty", section, e)
+        if failures is not None:
+            failures.sections += 1
         return []
     points = parse_points(reply, key=key)
     return points[:_MAX_SUMMARY_BULLETS] if section == "summary" else points
@@ -758,6 +783,7 @@ def _compose_title(
     target: str | None,
     stage_tokens: int,
     keep_warm: Callable[[], None] | None,
+    failures: _Failures | None = None,
 ) -> str:
     if keep_warm is not None:
         keep_warm()
@@ -772,6 +798,8 @@ def _compose_title(
         )
     except Exception as e:
         log.warning("staged compose of title failed (%s)", e)
+        if failures is not None:
+            failures.sections += 1
         return ""
     return parse_title(reply)
 

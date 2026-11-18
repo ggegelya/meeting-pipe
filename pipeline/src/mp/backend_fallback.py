@@ -55,7 +55,12 @@ def fallback_exceptions() -> tuple[type[BaseException], ...]:
 
 
 def run_with_local_fallback(
-    *, cloud: Callable[[], T], local: Callable[[], T], model: str | None = None
+    *,
+    cloud: Callable[[], T],
+    local: Callable[[], T],
+    model: str | None = None,
+    operation: str = "summary",
+    on_fallback: Callable[[str], None] | None = None,
 ) -> tuple[T, str]:
     """Run `cloud()`, falling back to `local()` on an unreachable-cloud failure.
 
@@ -70,6 +75,13 @@ def run_with_local_fallback(
     PIPE28: a 404 on the model id (retired or mistyped) is "the cloud is unwilling" too, so
     `auto` summarizes locally instead of failing; `model` is only there to name the rejected id
     in the event the fallback leaves, so a silent switch to local stays visible.
+
+    OBS2: every drop to local on a cloud failure emits `pipeline.backend_fallback` with the
+    typed cause (never the message text) and the `operation` that fell back (`summary`, `ask`,
+    `digest`), and hands the cause to `on_fallback` so the summarize path can record it in the
+    run sidecar. Before this the ladder left a WARNING line only, and a revoked key read in the
+    Library exactly like a deliberate local choice. The missing-key branch stays silent: no key
+    configured is a choice, not a degradation.
     """
     if not os.environ.get("ANTHROPIC_API_KEY", ""):
         log.info("ANTHROPIC_API_KEY not set; using local backend")
@@ -92,8 +104,29 @@ def run_with_local_fallback(
         # (summarize._create_message); a busy Anthropic should drop to local
         # rather than fail the whole run.
         log.warning("Anthropic backend failed (%s); falling back to local", e)
+        cause = _emit_fallback(e, operation=operation)
+        if on_fallback is not None:
+            on_fallback(cause)
 
     return local(), "local"
+
+
+def _emit_fallback(exc: BaseException, *, operation: str) -> str:
+    """Emit `backend_fallback` for one drop to local and return its typed cause (OBS2).
+
+    The fields come from `failure_details.describe`, the classifier the failure sidecar uses,
+    so a fallback and a failure name the same error the same way. Lazy import, as below."""
+    from . import events
+    from .failure_details import describe
+
+    details = describe(exc, operation=operation)
+    cause = str(details.get("cause", "unknown"))
+    events.emit(
+        "pipeline", "backend_fallback",
+        from_backend="anthropic", to_backend="local", operation=operation, cause=cause,
+        http_status=details.get("http_status"), request_id=details.get("request_id"),
+    )
+    return cause
 
 
 def is_billing_exhaustion(exc: BaseException) -> bool:

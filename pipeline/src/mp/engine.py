@@ -186,6 +186,8 @@ class AutoTextClient:
         self._model = model
         self.backend_id = "auto"
         self.model = model or cfg.summarization.model
+        # OBS2: which caller fell back, carried into `backend_fallback`; `complete_text` sets it.
+        self.operation = "text"
 
     def complete(self, *, system_prompt: str, user_message: str, max_tokens: int) -> str:
         def _cloud() -> tuple[str, str]:
@@ -205,7 +207,8 @@ class AutoTextClient:
                 client.close()
 
         (text, self.model), self.backend_id = run_with_local_fallback(
-            cloud=_cloud, local=_local, model=self._model or self._cfg.summarization.model
+            cloud=_cloud, local=_local, model=self._model or self._cfg.summarization.model,
+            operation=self.operation,
         )
         return text
 
@@ -217,8 +220,12 @@ def complete_text(
     user_message: str,
     max_tokens: int,
     model: str | None = None,
+    operation: str = "text",
 ) -> EngineResult:
     """Generate free-form assistant text under the resolved backend.
+
+    `operation` names the caller (`ask`, `digest`) in the `backend_fallback` event an `auto`
+    run leaves when it drops to local (OBS2).
 
     `effective_backend(cfg)` decides the backend after the regulated / NDA
     force-local rule, so a zero-egress config never reaches a cloud call here;
@@ -268,6 +275,8 @@ def complete_text(
     if row.build_text is None:
         raise EngineError(f"summarization.backend {backend!r} has no free-form text path")
     client = row.build_text(cfg, model)
+    if isinstance(client, AutoTextClient):
+        client.operation = operation
     try:
         text = client.complete(system_prompt=system_prompt, user_message=user_message,
                                max_tokens=max_tokens)

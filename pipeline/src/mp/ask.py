@@ -198,6 +198,7 @@ def answer_question(
         user_message=rag.rag_user(context, question),
         max_tokens=ANSWER_MAX_TOKENS,
         model=model,
+        operation="ask",
     )
 
     verified = rag.verify_citations(result.text, stems)

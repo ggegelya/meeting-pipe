@@ -1968,3 +1968,57 @@ def test_the_longer_reduce_turn_is_measured_against_the_budget() -> None:
     for group in groups:
         if len(group) >= 2:
             assert request_tokens(client._reduce_messages(group, None, prompt)) <= budget
+
+
+def _language_checks(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    rows: list[dict] = []
+    monkeypatch.setattr(
+        "mp.summarize_local.events.emit",
+        lambda *a, **k: rows.append(k) if a[:2] == ("pipeline", "language_check") else None,
+    )
+    return rows
+
+
+def test_a_language_retry_that_does_not_parse_emits_unparsed(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # OBS2: the local client's own repair is visible too. The first answer drifts to English,
+    # the replay is not JSON at all, so the first summary ships and the event says why.
+    host, port, server = fake_server
+    rows = _language_checks(monkeypatch)
+    calls = {"n": 0}
+
+    def builder(_: dict) -> dict:
+        calls["n"] += 1
+        content = json.dumps(_valid_summary_obj()) if calls["n"] == 1 else "not json"
+        return {"choices": [{"message": {"content": content}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    with LocalSummaryClient(
+        host=host, port=port, manage_subprocess=False, summary_language="uk"
+    ) as c:
+        c.summarize(system_prompt="Summarize.", transcript="A: привіт, є питання.",
+                    model="ignored", max_tokens=512)
+    assert [r["repair"] for r in rows] == ["unparsed"]
+    assert rows[0]["target"] == "uk" and rows[0]["diverging"]
+
+
+def test_a_clean_language_retry_emits_ok(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host, port, server = fake_server
+    rows = _language_checks(monkeypatch)
+    calls = {"n": 0}
+
+    def builder(_: dict) -> dict:
+        calls["n"] += 1
+        obj = _valid_summary_obj() if calls["n"] == 1 else _uk_summary_obj()
+        return {"choices": [{"message": {"content": json.dumps(obj)}}]}
+
+    server.builder = builder  # type: ignore[attr-defined]
+    with LocalSummaryClient(
+        host=host, port=port, manage_subprocess=False, summary_language="uk"
+    ) as c:
+        c.summarize(system_prompt="Summarize.", transcript="A: привіт, є питання.",
+                    model="ignored", max_tokens=512)
+    assert [r["repair"] for r in rows] == ["ok"]

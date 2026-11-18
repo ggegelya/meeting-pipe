@@ -90,6 +90,35 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(captured.first?.publishState, "partial")
     }
 
+    /// OBS2: the run sidecar's fallback keys reach the row, and are nil on a run without them.
+    func test_the_run_sidecar_fallback_keys_are_decoded() throws {
+        let dir = try tempDir()
+        let fell = "20260511-143110", clean = "20260511-153110"
+        for stem in [fell, clean] {
+            try writeFile(dir.appendingPathComponent("\(stem).wav"))
+            try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{\"title\":\"x\"}")
+        }
+        try writeFile(dir.appendingPathComponent("\(fell).run.json"),
+                      "{\"stem\":\"\(fell)\",\"backend\":\"local\",\"fallback_from\":\"anthropic\",\"fallback_cause\":\"rejected_key\"}")
+        try writeFile(dir.appendingPathComponent("\(clean).run.json"),
+                      "{\"stem\":\"\(clean)\",\"backend\":\"anthropic\"}")
+        let store = MeetingStore(recordingsDir: dir)
+        let exp = expectation(description: "scan")
+        var captured: [Meeting] = []
+        let cancel = store.$meetings.dropFirst().sink { meetings in
+            captured = meetings
+            exp.fulfill()
+        }
+        store.start()
+        wait(for: [exp], timeout: 2.0)
+        cancel.cancel()
+        let byStem = Dictionary(uniqueKeysWithValues: captured.map { ($0.stem, $0) })
+        XCTAssertEqual(byStem[fell]?.fallbackFrom, "anthropic")
+        XCTAssertEqual(byStem[fell]?.fallbackCause, "rejected_key")
+        XCTAssertNil(byStem[clean]?.fallbackFrom)
+        XCTAssertNil(byStem[clean]?.fallbackCause)
+    }
+
     func test_publish_state_prefers_publish_sidecar_over_stale_run_sidecar() throws {
         // PIPE14, the whole point of the task. A run-all that published nowhere
         // stamped `publish_state: none` on the run sidecar; the owner then ran a

@@ -628,7 +628,7 @@ Plain-language versions of the terms in this guide and in the app.
 
 **Context prompt.** The background you give the engine for every meeting in a workflow: who is usually there, what they do, what the team's words mean.
 
-**Backend, or engine.** The thing that writes the summary. Some run on your Mac and some are a service on the internet, and the app always says which: `Anthropic (cloud)`, `Local MLX (on-device)`, and so on. Transcription is never one of these; it always runs on your Mac. Which Anthropic model does the writing is **Anthropic model** in **Preferences ▸ Pipeline ▸ Summarization**.
+**Backend, or engine.** The thing that writes the summary. Some run on your Mac and some are a service on the internet, and the app always says which: `Anthropic (cloud)`, `Local MLX (on-device)`, and so on. Transcription is never one of these; it always runs on your Mac. When the engine is **Auto** and Anthropic could not be used for a meeting, that meeting's summary was written on your Mac instead, and the line under its title says why, for example `Local MLX (on-device), because Anthropic rejected the key`. Which Anthropic model does the writing is **Anthropic model** in **Preferences ▸ Pipeline ▸ Summarization**.
 
 **BYO.** "Bring your own summary." Record the meeting normally but ask no engine for a summary; paste your own afterwards and publish that.
 

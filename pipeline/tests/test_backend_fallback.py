@@ -163,8 +163,11 @@ def test_a_rejected_model_falls_back_to_local_and_leaves_an_event(
     assert run_with_local_fallback(cloud=cloud, local=lambda: "local", model="claude-gone-1") == (
         "local", "local"
     )
-    assert emitted == [(("pipeline", "model_rejected_fallback"),
-                        {"model": "claude-gone-1", "http_status": 404})]
+    assert emitted[0] == (("pipeline", "model_rejected_fallback"),
+                          {"model": "claude-gone-1", "http_status": 404})
+    # OBS2: every drop to local also leaves the one generic fallback row.
+    assert [a for a, _ in emitted][1:] == [("pipeline", "backend_fallback")]
+    assert emitted[1][1]["cause"] == "model_rejected"
 
 
 def test_a_404_that_is_not_about_the_model_still_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -185,3 +188,72 @@ def test_a_plain_400_still_raises_after_the_model_rule(monkeypatch: pytest.Monke
 
     with pytest.raises(anthropic.BadRequestError):
         run_with_local_fallback(cloud=cloud, local=lambda: "local")
+
+
+# ----- OBS2: a drop to local is an event, with a typed cause -----
+
+
+def _capture_events(monkeypatch: pytest.MonkeyPatch) -> list[tuple[tuple, dict]]:
+    emitted: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr("mp.events.emit", lambda *a, **k: emitted.append((a, k)))
+    return emitted
+
+
+def _fallbacks(emitted: list[tuple[tuple, dict]]) -> list[dict]:
+    return [k for a, k in emitted if a == ("pipeline", "backend_fallback")]
+
+
+@pytest.mark.parametrize(
+    ("exc", "cause", "operation"),
+    [
+        (_status_error(anthropic.AuthenticationError, 401), "rejected_key", "summary"),
+        (_credit_exhausted(), "credits", "digest"),
+        (anthropic.APIConnectionError(request=_REQ), "connection", "ask"),
+    ],
+    ids=["rejected_key", "credits", "connection"],
+)
+def test_each_fallback_emits_one_event_with_cause_and_operation(
+    monkeypatch: pytest.MonkeyPatch, exc: BaseException, cause: str, operation: str
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    emitted = _capture_events(monkeypatch)
+    causes: list[str] = []
+
+    def _cloud() -> str:
+        raise exc
+
+    assert run_with_local_fallback(
+        cloud=_cloud, local=lambda: "local", operation=operation, on_fallback=causes.append,
+    ) == ("local", "local")
+    rows = _fallbacks(emitted)
+    assert len(rows) == 1
+    assert rows[0]["from_backend"] == "anthropic"
+    assert rows[0]["to_backend"] == "local"
+    assert rows[0]["cause"] == cause
+    assert rows[0]["operation"] == operation
+    assert causes == [cause]
+    # Typed fields only: the error's message text never rides the event.
+    assert "message" not in rows[0] and "error" not in rows[0]
+
+
+def test_the_missing_key_branch_is_a_choice_and_emits_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    emitted = _capture_events(monkeypatch)
+    causes: list[str] = []
+    run_with_local_fallback(cloud=lambda: "cloud", local=lambda: "local",
+                            on_fallback=causes.append)
+    assert _fallbacks(emitted) == [] and causes == []
+
+
+def test_a_plain_bad_request_raises_and_emits_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    emitted = _capture_events(monkeypatch)
+
+    def cloud() -> str:
+        raise _status_error(anthropic.BadRequestError, 400)
+
+    with pytest.raises(anthropic.BadRequestError):
+        run_with_local_fallback(cloud=cloud, local=lambda: "local")
+    assert _fallbacks(emitted) == []

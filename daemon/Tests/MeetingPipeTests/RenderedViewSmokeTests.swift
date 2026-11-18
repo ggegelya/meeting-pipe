@@ -95,7 +95,26 @@ final class RenderedViewSmokeTests: XCTestCase {
         XCTAssertNil(detailView(backend: "anthropic", modelId: "").provenanceTooltip)
     }
 
-    private func detailView(backend: String?, modelId: String? = nil) -> MeetingDetailView {
+    /// OBS2: an `auto` run that dropped to local says so on the provenance line, and a run that
+    /// did not fall back keeps the plain label.
+    func test_provenanceLabel_names_a_fallback_and_its_cause() {
+        XCTAssertEqual(
+            detailView(backend: "local", fallbackFrom: "anthropic", fallbackCause: "rejected_key")
+                .provenanceLabel,
+            "Local MLX (on-device), because Anthropic rejected the key"
+        )
+        XCTAssertEqual(
+            detailView(backend: "local", fallbackFrom: "anthropic", fallbackCause: "something_new")
+                .provenanceLabel,
+            "Local MLX (on-device), because Anthropic failed"
+        )
+        XCTAssertEqual(detailView(backend: "local").provenanceLabel, "Local MLX (on-device)")
+    }
+
+    private func detailView(
+        backend: String?, modelId: String? = nil,
+        fallbackFrom: String? = nil, fallbackCause: String? = nil
+    ) -> MeetingDetailView {
         MeetingDetailView(store: MeetingStore(recordingsDir: URL(fileURLWithPath: "/tmp")), meeting: Meeting(
             stem: "s", startedAt: Date(),
             audioURL: URL(fileURLWithPath: "/tmp/s.wav"),
@@ -104,6 +123,7 @@ final class RenderedViewSmokeTests: XCTestCase {
             sourceBundleID: nil, sourceDisplayName: nil, sourceKind: nil,
             workflowName: nil, workflowColor: nil,
             durationSec: nil, backend: backend, modelId: modelId,
+            fallbackFrom: fallbackFrom, fallbackCause: fallbackCause,
             status: .done, failureReason: nil, failureStage: nil,
             searchableText: ""
         ))

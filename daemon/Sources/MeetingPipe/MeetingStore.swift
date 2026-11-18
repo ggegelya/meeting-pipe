@@ -50,6 +50,12 @@ struct Meeting: Identifiable, Hashable {
     let durationSec: TimeInterval?
     let backend: String?
     let modelId: String?
+    /// OBS2: `<stem>.run.json`'s `fallback_from` / `fallback_cause`, present only when an `auto`
+    /// run dropped to local on a cloud failure. The provenance line reads them so a revoked key
+    /// does not look like a deliberate local choice. Defaulted so test constructors need not
+    /// supply them.
+    var fallbackFrom: String? = nil
+    var fallbackCause: String? = nil
 
     let status: Status
 
@@ -1101,6 +1107,8 @@ final class MeetingStore: ObservableObject {
             durationSec: duration,
             backend: (run?["backend"] as? String),
             modelId: (run?["model"] as? String),
+            fallbackFrom: (run?["fallback_from"] as? String),
+            fallbackCause: (run?["fallback_cause"] as? String),
             status: status,
             failureReason: failure?.reason ?? (publishResult?.state == "partial" ? publishResult?.sinks.filter { !$0.ok }.compactMap(\.error).joined(separator: "\n\n") : nil),
             failureStage: failure?.stage.rawValue ?? (publishResult?.state == "partial" ? "publish" : nil),

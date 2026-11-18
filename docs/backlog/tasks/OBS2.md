@@ -2,9 +2,9 @@
 id: OBS2
 title: Degraded summaries are recorded as ordinary successes: an `auto` run that dropped to local on a rejected key, a failed language repair, and an unparseable speaker-cleanup reply leave no event and no field a reader can key on
 category: Observability
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (observability band, O7: PY-3, FB-3, PY-4): an auto run that fell to local on a rejected key or empty balance, a failed language repair and an unparseable cleanup reply all read as success, with a WARNING line and run.json backend local. backend_fallback event plus fallback_from and fallback_cause in run.json on the provenance line, language_check event, parse_failed_windows on diarize_cleanup. [Spec](./OBS2.md)
+comment: Shipped 2026-11-18: backend_fallback event (cause, operation, never the message) from the one auto ladder, fallback_from and fallback_cause in run.json and on the Library provenance line, language_check with ok/failed/still_divergent/unparsed, parse_failed_windows on diarize_cleanup and its audit, windows_failed and sections_failed on the staged events; pytest and swift tests cover each. Owed: the owner seeing the fallback provenance line on a real auto run with a rejected key or empty balance. [Spec](./OBS2.md)
 ---
 
 # OBS2: Degraded summaries are recorded as ordinary successes: an `auto` run that dropped to local on a rejected key, a failed language repair, and an unparseable speaker-cleanup reply leave no event and no field a reader can key on

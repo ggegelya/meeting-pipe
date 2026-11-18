@@ -833,3 +833,83 @@ def test_a_workflows_extra_sections_reach_a_long_local_meetings_merge(tmp_path: 
     )]
     assert reduces
     assert all("Risks register" in r["messages"][0]["content"] for r in reduces)
+
+
+# ----- OBS2: a language repair leaves one `language_check` event -----
+
+
+_EN_TRANSCRIPT = (
+    "# Transcript\n\n**A**: Let us review the sprint scope and the release plan.\n\n"
+    "**B**: We agreed to ship the migration on Friday after the regression pass.\n"
+)
+
+
+def _drifted() -> MeetingSummary:
+    return MeetingSummary(
+        title="Sprint review sync",
+        summary=["Reviewed the sprint scope and the release plan."],
+        decisions=["We will ship the migration on Friday."],
+        actions=[ActionItem(
+            task="Подготовить отчёт о регрессионном тестировании к пятнице.", owner=None,
+        )],
+        questions=["Нужно ли ограничивать размер расшифровки стенограммы?"],
+        attendees=["A", "B"],
+        detected_language="en",
+    )
+
+
+def _run_language_case(tmp_path: Path, monkeypatch, second) -> list[dict]:
+    transcript = tmp_path / "20260707-123334.md"
+    transcript.write_text(_EN_TRANSCRIPT, encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    rows: list[dict] = []
+    monkeypatch.setattr(
+        "mp.summarize.events.emit",
+        lambda *a, **k: rows.append(k) if a[:2] == ("pipeline", "language_check") else None,
+    )
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def summarize(self, **_):
+            self.calls += 1
+            if self.calls == 1:
+                return _drifted()
+            if isinstance(second, BaseException):
+                raise second
+            return second
+
+    summarize(transcript, cfg=Config(), client=_FakeClient())
+    return rows
+
+
+@pytest.mark.parametrize(
+    ("second", "repair"),
+    [
+        (RuntimeError("repair call blew up"), "failed"),
+        (_drifted(), "still_divergent"),
+        (_make_summary(), "ok"),
+    ],
+    ids=["failed", "still_divergent", "ok"],
+)
+def test_a_divergent_summary_emits_how_its_repair_went(tmp_path: Path, monkeypatch, second, repair):
+    rows = _run_language_case(tmp_path, monkeypatch, second)
+    assert [r["repair"] for r in rows] == [repair]
+    assert rows[0]["target"] == "en"
+    assert set(rows[0]["diverging"]) >= {"actions", "questions"}
+
+
+def test_a_matching_summary_emits_no_language_check(tmp_path: Path, monkeypatch):
+    transcript = tmp_path / "x.md"
+    transcript.write_text(_EN_TRANSCRIPT, encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    rows: list[tuple] = []
+    monkeypatch.setattr("mp.summarize.events.emit", lambda *a, **k: rows.append(a))
+
+    class _FakeClient:
+        def summarize(self, **_):
+            return _make_summary()
+
+    summarize(transcript, cfg=Config(), client=_FakeClient())
+    assert ("pipeline", "language_check") not in rows

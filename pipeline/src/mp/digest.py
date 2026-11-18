@@ -397,7 +397,8 @@ def narrate(cfg: Config, scope: ActionScope, decisions: list[RecentDecision],
     facts = wrap_untrusted(_format_facts(scope, decisions, today))
     try:
         result = engine.complete_text(
-            cfg, system_prompt=_NARRATE_SYSTEM, user_message=facts, max_tokens=400
+            cfg, system_prompt=_NARRATE_SYSTEM, user_message=facts, max_tokens=400,
+            operation="digest",
         )
         bullets = _parse_bullets(result.text)
         if bullets:
