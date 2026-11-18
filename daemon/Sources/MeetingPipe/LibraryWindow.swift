@@ -559,6 +559,22 @@ final class LibraryWindowModel: ObservableObject {
         library?.softDeleteMeeting(stem: stem) ?? .failure(Unwired.libraryUnavailable)
     }
 
+    /// UX100: read, clear and decide the pending selection and scope in one step, for
+    /// `LibraryRootView` to apply. Both values are cleared on every call, acted on or not, so
+    /// a repeat of the same stem or scope is a fresh edge; a pending Ask question the request
+    /// supersedes is dropped here too, so it cannot run on the next visit to the Ask rail.
+    func takePendingRequest() -> LibraryPendingRequest? {
+        let request = LibraryPendingRequest.decide(
+            pendingScope: pendingScope,
+            pendingSelection: pendingSelection,
+            hasPendingAsk: pendingAsk != nil
+        )
+        if pendingSelection != nil { pendingSelection = nil }
+        if pendingScope != nil { pendingScope = nil }
+        if request?.dropsPendingAsk == true { pendingAsk = nil }
+        return request
+    }
+
     /// STOR7: what a delete of `stem` would remove and leave, for the confirm.
     func locateFootprint(stem: String) -> MeetingFootprint {
         library?.locateFootprint(stem: stem) ?? MeetingFootprint()
@@ -671,8 +687,9 @@ struct LibraryRootView: View {
             meetingStore.start()
             recomputeCounts()
             reloadFacts()
-            // AUTO2: the deeplink that opened this window set its request before
+            // AUTO2 + UX100: the request that opened this window was set before
             // the view existed, so `onChange` never fired for it.
+            applyPendingRequest()
             resolveTranscriptJump()
         }
         .onDisappear {
@@ -703,19 +720,10 @@ struct LibraryRootView: View {
                 scope = .allMeetings
             }
         }
-        .onChange(of: model.pendingSelection) { _, stem in
-            guard let stem else { return }
-            // Quick Find can fire while a workflow scope is active; switch to All Meetings so the row is always visible.
-            scope = .allMeetings
-            meetingSelection = [stem]
-            model.pendingSelection = nil
-        }
-        .onChange(of: model.pendingScope) { _, newScope in
-            // AUTO1: a meetingpipe:// deeplink asked to open a specific rail.
-            guard let newScope else { return }
-            scope = newScope
-            model.pendingScope = nil
-        }
+        // Quick Find / a notification click (`pendingSelection`) and an AUTO1 deeplink
+        // (`pendingScope`) on a window that already exists. One consumer for both.
+        .onChange(of: model.pendingSelection) { _, _ in applyPendingRequest() }
+        .onChange(of: model.pendingScope) { _, _ in applyPendingRequest() }
         .onChange(of: model.pendingTranscriptJump) { _, _ in resolveTranscriptJump() }
         // UX33: entering a workflow scope drops the meeting selection, so the
         // workflow inspector is what the detail column shows. The rule itself is
@@ -782,6 +790,18 @@ struct LibraryRootView: View {
         model.coordinator?.preferencesWindow?.show(
             initial: VocabularyDeepLink.pane, vocabularyScope: workflowName
         )
+    }
+
+    // MARK: - Pending selection and scope (UX100)
+
+    /// Apply whatever a caller left on the model before showing the window: on appear (the
+    /// first show after a launch builds this view with the value already set) and on either
+    /// change. Both values are cleared on every attempt, acted on or not, so a repeat of the
+    /// same stem or scope is a fresh edge rather than an equal value `onChange` ignores.
+    private func applyPendingRequest() {
+        guard let request = model.takePendingRequest() else { return }
+        scope = request.scope
+        if let stem = request.selection { meetingSelection = [stem] }
     }
 
     // MARK: - Citation deeplinks (AUTO2)
