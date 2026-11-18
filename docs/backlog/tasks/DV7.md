@@ -2,9 +2,9 @@
 id: DV7
 title: Rename everywhere leaves the person's open actions behind, because action owners are matched against raw summary text the rename never touches
 category: Intelligence
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). DV3 (done) promised a roster rename reflects everywhere, but `PeopleRail.derive` matches each action's raw summary `owner` against the roster's new name while `RosterRename.carry` rewrites only speaker-label overlays, so a renamed person keeps their attended meetings and loses every open action and every owner-only meeting; the same label-match break makes Meeting time drop the owner's talk share once the mic-channel speaker is named in-app (G060). Scope: resolve action owners through former names kept on the roster entry, and match talk share on the raw label as well as the display name, with projection tests for both. [Spec](./DV7.md)
+comment: Shipped 2026-11-19. RosterStore.rename keeps former_names (deduped, new name removed; deviation: renaming back keeps the name being left on the list, so actions summarized under it are not orphaned), RosterProfile.Person.formerNames, PeopleRail.derive matches owners and attendance on current plus former names with current names winning, MeetingStats.talk decides mine on rowSpeaker's raw label as well as the resolved name. 15 new tests (Python 5, Swift 10). Owner still owes one live check: rename a person who owns open actions from the People rail and see them stay on the row.
 ---
 
 # DV7: Rename everywhere leaves the person's open actions behind, because action owners are matched against raw summary text the rename never touches

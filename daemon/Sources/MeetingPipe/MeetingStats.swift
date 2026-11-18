@@ -146,13 +146,23 @@ enum MeetingStats {
         for segment in segments {
             let seconds = segment.end - segment.start
             guard seconds > 0 else { continue }
-            guard let resolved = SpeakerLabelStore.displayLabel(for: segment, using: overlay) else {
+            // DV7 (G060): the row's identity before the overlay as well as after. Naming the
+            // mic-channel speaker (or a roster rename carried onto it) changes what the line
+            // resolves to, but not the raw label that says it is the owner's channel, and that
+            // label used to be discarded before this comparison. `rowSpeaker` is the one
+            // sanctioned row-speaker read, and it already puts a per-segment reassignment
+            // ahead of the raw id, so a line moved away from the owner stays theirs.
+            let row = MeetingCast.rowSpeaker(for: segment, overlay: overlay, voiceprintLabels: [])
+            guard let label = row.label else {
                 // No diarization on this line at all: not attributable either way.
                 talk.unattributedSec += seconds
                 continue
             }
-            let key = normalized(resolved)
-            if key == channelOwnerLabel || (!owner.isEmpty && key == owner) {
+            let resolved = row.assignedName ?? label
+            let identities = [label, resolved, row.displayName].map(normalized)
+            let isOwner = normalized(label) == channelOwnerLabel
+                || (!owner.isEmpty && identities.contains(owner))
+            if isOwner {
                 talk.mineSec += seconds
                 sawOwner = true
             } else if MeetingCast.isUnattributedLabel(resolved) {

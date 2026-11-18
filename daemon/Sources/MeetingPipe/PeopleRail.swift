@@ -103,24 +103,35 @@ enum PeopleRail {
     ) -> [Person] {
         guard !roster.isEmpty else { return [] }
         let ordered = meetings.sorted { $0.date > $1.date }
+        let currentNames = Set(roster.map { normalized($0.name) })
         return roster.map { entry in
-            let key = normalized(entry.name)
+            // DV7: every name the person has carried. A summary keeps the owner name it was
+            // written with and a rename never rewrites it, so matching the current name alone
+            // lost every open action the moment someone was renamed. A former name that is
+            // another enrolled person's current name stays theirs: current names win, so a
+            // swap or a reused name cannot fold two people into one row.
+            let own = normalized(entry.name)
+            let keys = Set(entry.formerNames.map(normalized))
+                .subtracting(currentNames)
+                .union([own])
             // Order is inherited from Facts (soonest due first, undated last), so
             // the two rails cannot sort one person's commitments differently.
             let owned = commitments.filter { cluster in
-                cluster.instances.contains { normalized($0.owner ?? "") == key }
+                cluster.instances.contains { keys.contains(normalized($0.owner ?? "")) }
             }
             // Only the restatements they are actually named on make a meeting
             // theirs. Widening this to every instance of an owned cluster would
             // put them in a meeting the sidecars never place them in.
             let ownedStems = Set(
                 owned.flatMap(\.instances)
-                    .filter { normalized($0.owner ?? "") == key }
+                    .filter { keys.contains(normalized($0.owner ?? "")) }
                     .map(\.stem)
             )
             var refs: [MeetingRef] = []
             for m in ordered {
-                let attended = m.people.contains { normalized($0) == key }
+                // The same set, so a meeting the rename's overlay carry skipped (an
+                // unwritable sidecar) still lists the person under their new name.
+                let attended = m.people.contains { keys.contains(normalized($0)) }
                 // Owning an action counts as being in the meeting: the summarizer
                 // names owners the diarizer never labelled, so attendance alone
                 // would hide meetings whose actions the rail is already showing.

@@ -248,6 +248,44 @@ final class MeetingStatsTests: XCTestCase {
         XCTAssertEqual(talk?.mineSec, 10)
     }
 
+    // MARK: - DV7 (G060): the raw label survives a naming
+
+    func test_dv7_a_named_mic_channel_still_counts_as_mine() {
+        let talk = MeetingStats.talk(
+            segments: [
+                segment(0, 0, 30, MeetingStats.channelOwnerLabel),
+                segment(1, 30, 40, "THEM-A"),
+            ],
+            overlay: SpeakerLabelStore.Overlay(labels: [MeetingStats.channelOwnerLabel: "Georgy"], segments: [:]),
+            ownerLabel: "Heorhii"
+        )
+        XCTAssertEqual(talk?.mineSec, 30)
+        XCTAssertEqual(talk?.theirsSec, 10)
+    }
+
+    func test_dv7_a_line_reassigned_away_from_the_mic_channel_is_theirs() {
+        let talk = MeetingStats.talk(
+            segments: [
+                segment(0, 0, 30, MeetingStats.channelOwnerLabel),
+                segment(1, 30, 40, MeetingStats.channelOwnerLabel),
+            ],
+            overlay: SpeakerLabelStore.Overlay(labels: [:], segments: [1: "Bob"]),
+            ownerLabel: ""
+        )
+        XCTAssertEqual(talk?.mineSec, 30)
+        XCTAssertEqual(talk?.theirsSec, 10)
+    }
+
+    func test_dv7_the_owners_baked_label_renamed_in_the_overlay_still_counts_as_mine() {
+        let talk = MeetingStats.talk(
+            segments: [segment(0, 0, 20, "Heorhii"), segment(1, 20, 40, "THEM-A")],
+            overlay: SpeakerLabelStore.Overlay(labels: ["Heorhii": "Georgy"], segments: [:]),
+            ownerLabel: "Heorhii"
+        )
+        XCTAssertEqual(talk?.mineSec, 20)
+        XCTAssertEqual(talk?.theirsSec, 20)
+    }
+
     func test_talk_falls_back_to_the_channel_assigned_mic_speaker() {
         // `label_me_speaker` leaves `speaker_user` in place when no display name
         // is configured, and that label is still ground truth for "me" (ADR 0009:

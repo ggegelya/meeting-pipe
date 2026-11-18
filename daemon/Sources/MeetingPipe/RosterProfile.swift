@@ -17,6 +17,10 @@ enum RosterProfile {
     struct Person: Equatable, Identifiable {
         let name: String
         let sampleCount: Int
+        /// DV7: names this person carried before a rename (`former_names`, written by
+        /// `mp roster rename`). Summaries keep the owner name they were written with, so
+        /// the People rail matches open actions on these too. `[]` when absent or malformed.
+        var formerNames: [String] = []
         var id: String { name }
     }
 
@@ -31,7 +35,12 @@ enum RosterProfile {
         return people
             .compactMap { entry -> Person? in
                 guard let name = entry["name"] as? String, !name.isEmpty else { return nil }
-                return Person(name: name, sampleCount: (entry["samples"] as? [Any])?.count ?? 0)
+                let former = (entry["former_names"] as? [Any])?
+                    .compactMap { $0 as? String }
+                    .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? []
+                return Person(
+                    name: name, sampleCount: (entry["samples"] as? [Any])?.count ?? 0, formerNames: former
+                )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }

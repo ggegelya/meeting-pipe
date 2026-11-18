@@ -9,8 +9,8 @@ final class PeopleRailTests: XCTestCase {
 
     // MARK: - Builders
 
-    private func person(_ name: String, samples: Int = 1) -> RosterProfile.Person {
-        RosterProfile.Person(name: name, sampleCount: samples)
+    private func person(_ name: String, samples: Int = 1, formerly: [String] = []) -> RosterProfile.Person {
+        RosterProfile.Person(name: name, sampleCount: samples, formerNames: formerly)
     }
 
     private func day(_ d: Int) -> Date {
@@ -104,6 +104,62 @@ final class PeopleRailTests: XCTestCase {
         )
         XCTAssertEqual(rows[0].meetings.map(\.stem), ["a"])
         XCTAssertEqual(rows[0].actions.map(\.representative.task), ["ship it"])
+    }
+
+    // MARK: - DV7: a rename keeps the person's actions
+
+    /// Summaries keep the owner name they were written with. Renamed after owning open
+    /// actions in three meetings, the person keeps all of them under the new name.
+    func test_dv7_a_renamed_person_keeps_their_open_actions() {
+        let rows = PeopleRail.derive(
+            roster: [person("Alicia", formerly: ["Alice"])],
+            meetings: [
+                meeting("a", day: 0, people: ["Alicia"]),
+                meeting("b", day: 1, people: ["Alicia"]),
+                meeting("c", day: 2, people: ["Alicia"]),
+            ],
+            commitments: commitments([
+                fact("a", day: 0, "send the deck", owner: "Alice"),
+                fact("b", day: 1, "book the room", owner: "alice"),
+                fact("c", day: 2, "call legal", owner: "Alice "),
+            ])
+        )
+        XCTAssertEqual(Set(rows[0].actions.map(\.representative.task)), ["send the deck", "book the room", "call legal"])
+    }
+
+    /// A meeting where they appear only as an action owner stays in their list.
+    func test_dv7_an_owner_only_meeting_stays_listed_after_a_rename() {
+        let rows = PeopleRail.derive(
+            roster: [person("Alicia", formerly: ["Alice"])],
+            meetings: [meeting("a", day: 0, people: ["THEM-A"])],
+            commitments: commitments([fact("a", day: 0, "ship it", owner: "Alice")])
+        )
+        XCTAssertEqual(rows[0].meetings.map(\.stem), ["a"])
+    }
+
+    /// Attendance goes through the same set, so a meeting whose overlay the rename's
+    /// carry skipped still lists the person.
+    func test_dv7_attendance_under_a_former_name_still_counts() {
+        let rows = PeopleRail.derive(
+            roster: [person("Alicia", formerly: ["Alice"])],
+            meetings: [meeting("a", day: 0, people: ["Alice"])]
+        )
+        XCTAssertEqual(rows[0].meetings.map(\.stem), ["a"])
+    }
+
+    /// Current names win: Bob's former name is Ann's current name, so "Ann" actions are
+    /// credited to Ann alone and the two never fold into one row.
+    func test_dv7_a_former_name_that_is_someone_elses_current_name_stays_theirs() {
+        let rows = PeopleRail.derive(
+            roster: [person("Ann"), person("Bob", formerly: ["Ann"])],
+            meetings: [meeting("a", day: 0)],
+            commitments: commitments([fact("a", day: 0, "file taxes", owner: "Ann")])
+        )
+        let ann = rows.first { $0.name == "Ann" }
+        let bob = rows.first { $0.name == "Bob" }
+        XCTAssertEqual(ann?.actions.count, 1)
+        XCTAssertEqual(bob?.actions.count, 0)
+        XCTAssertEqual(bob?.meetings.count, 0)
     }
 
     func test_a_meeting_is_listed_once_even_when_attended_and_owning() {

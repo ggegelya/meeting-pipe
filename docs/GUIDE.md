@@ -248,7 +248,7 @@ This changes labels only. It does not teach the app a new voice, so your saved v
 
 ### Managing the people you have named
 
-**Preferences ▸ Pipeline ▸ People** lists everyone you have named, with **Rename…** and **Remove**. Removing stops a voice being named automatically in future meetings and leaves past transcripts alone. Renaming carries: the past meetings naming that person follow the new name too.
+**Preferences ▸ Pipeline ▸ People** lists everyone you have named, with **Rename…** and **Remove**. Removing stops a voice being named automatically in future meetings and leaves past transcripts alone. Renaming carries: the past meetings naming that person follow the new name too, and so do the open actions summaries gave them under the old name.
 
 If the file that holds the people you have named gets damaged (a hand edit or a sync conflict), naming a speaker sets the damaged copy aside next to it, named `roster.json.corrupt-` and a date, and starts a fresh list instead of writing over it. If the file only cannot be read right now, naming refuses and changes nothing. `mp doctor` reports either case.
 

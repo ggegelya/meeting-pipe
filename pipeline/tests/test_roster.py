@@ -102,6 +102,68 @@ def test_rename_keeps_samples_and_centroids(tmp_path):
     assert roster.match(_axis(0, tilt=0.05, tilt_axis=2)) == "Alicia"
 
 
+def _entry(path, name):
+    people = json.loads(path.read_text(encoding="utf-8"))["people"]
+    return next(p for p in people if p["name"] == name)
+
+
+def test_dv7_rename_records_the_old_name(tmp_path):
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("Alice", _axis(0))
+    assert "former_names" not in _entry(path, "Alice")
+    assert roster.rename("Alice", "Alicia")
+    assert _entry(path, "Alicia")["former_names"] == ["Alice"]
+
+
+def test_dv7_a_second_rename_keeps_both_former_names(tmp_path):
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("Alice", _axis(0))
+    assert roster.rename("Alice", "Alicia")
+    assert roster.rename("Alicia", "Ali")
+    assert _entry(path, "Ali")["former_names"] == ["Alice", "Alicia"]
+
+
+def test_dv7_renaming_back_takes_the_name_off_the_list(tmp_path):
+    """Renaming back to a former name removes it from the list. The name being
+    left joins it, because actions may have been summarized under it while it
+    was current (a deliberate reading of the spec's "as before": dropping it
+    would orphan those actions, which is the bug DV7 fixes)."""
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("Alice", _axis(0))
+    before = _entry(path, "Alice")
+    assert roster.rename("Alice", "Alicia")
+    assert roster.rename("Alicia", "alice ")  # a former name, typed differently
+    after = _entry(path, "alice")
+    assert after["former_names"] == ["Alicia"]
+    assert "Alice" not in after["former_names"]
+    assert after["samples"] == before["samples"]
+    assert after["centroids"] == before["centroids"]
+
+
+def test_dv7_a_colliding_rename_writes_nothing(tmp_path):
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("Alice", _axis(0))
+    roster.enroll("Bob", _axis(1))
+    before = path.read_bytes()
+    assert roster.rename("Alice", "Bob") is False
+    assert path.read_bytes() == before
+
+
+def test_dv7_a_roster_without_former_names_loads_and_renames(tmp_path):
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("Alice", _axis(0))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["people"][0]["former_names"] = "not a list"  # malformed is read as none
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert RosterStore(path).rename("Alice", "Alicia")
+    assert _entry(path, "Alicia")["former_names"] == ["Alice"]
+
+
 def test_rename_absent_person_is_false(tmp_path):
     roster = RosterStore(tmp_path / "roster.json")
     roster.enroll("Alice", _axis(0))

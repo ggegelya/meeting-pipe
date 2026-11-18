@@ -40,6 +40,18 @@ final class RosterProfileTests: XCTestCase {
         XCTAssertEqual(RosterProfile.people(at: url), [RosterProfile.Person(name: "Cara", sampleCount: 0)])
     }
 
+    func test_dv7_former_names_read_from_the_field() {
+        let url = writeRoster(#"{"schema_version":1,"people":[{"name":"Alicia","samples":[[0.1]],"former_names":["Alice"," ",3]}]}"#)
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertEqual(RosterProfile.people(at: url).first?.formerNames, ["Alice"])
+    }
+
+    func test_dv7_former_names_are_empty_when_absent_or_malformed() {
+        let url = writeRoster(#"{"schema_version":1,"people":[{"name":"Bo","samples":[]},{"name":"Cy","samples":[],"former_names":"Cyrus"}]}"#)
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertEqual(RosterProfile.people(at: url).map(\.formerNames), [[], []])
+    }
+
     func test_nameless_and_empty_name_entries_are_dropped() {
         let url = writeRoster(#"{"schema_version":1,"people":[{"samples":[[0.1]]},{"name":"","samples":[]},{"name":"Dan","samples":[[0.1]]}]}"#)
         defer { try? FileManager.default.removeItem(at: url) }

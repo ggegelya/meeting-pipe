@@ -456,6 +456,7 @@ class RosterStore:
         if any(p.get("name") == new for p in people):
             return False
         person["name"] = new
+        _record_former_name(person, old=old, new=new)
         self._write(people)
         return True
 
@@ -464,3 +465,36 @@ class RosterStore:
         storage.ensure_private_dir(self.path.parent)
         payload = {"schema_version": _SCHEMA_VERSION, "people": people}
         storage.atomic_write_text(self.path, json.dumps(payload))
+
+
+def _name_key(name: str) -> str:
+    """Case- and whitespace-insensitive name identity, the rule Swift's
+    `PeopleRail.normalized` applies (trim, then lower-case)."""
+    return name.strip().lower()
+
+
+def _record_former_name(person: dict, *, old: str, new: str) -> None:
+    """DV7: keep the names a person has carried, so the Library can still credit
+    them with actions a summary wrote under an earlier name (summaries are the
+    engine's output and are never rewritten by a rename).
+
+    ``former_names`` is optional: absent on an entry never renamed, and readers
+    ignore unknown keys, so ``schema_version`` stays 1. Deduplicated by
+    `_name_key`; the new name is removed from it, so renaming back to a former
+    name takes that name off the list (the name it is leaving joins it, because
+    actions may have been summarized under it meanwhile). An empty list is
+    dropped rather than written."""
+    raw = person.get("former_names")
+    former = [n for n in raw if isinstance(n, str) and n.strip()] if isinstance(raw, list) else []
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in [*former, old.strip()]:
+        key = _name_key(name)
+        if key == _name_key(new) or key in seen:
+            continue
+        seen.add(key)
+        out.append(name.strip())
+    if out:
+        person["former_names"] = out
+    else:
+        person.pop("former_names", None)
