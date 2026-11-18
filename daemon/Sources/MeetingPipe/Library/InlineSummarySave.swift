@@ -51,10 +51,16 @@ enum InlineSummarySave {
             }
             live = MeetingSummary.applyingEdits(from: model.openedAs, to: edited, onto: current)
         }
+        // The record keeps what the owner typed as the title (PIPE55: the live file keeps the
+        // generated one, the rename goes to `meta.json`), so a title edit still reads as an edit
+        // in the Corrections sheet and the training corpus. `split.rename`, not the field's text,
+        // so a stale Keep never invents a title change.
+        var recorded = live
+        if let rename = split.rename { recorded.title = rename }
         do {
             // UX65's record, against what is on disk now when the owner kept the edits.
             _ = try CorrectionWindow.performSave(
-                model: model, verdict: .edited, corrected: live.jsonObject(),
+                model: model, verdict: .edited, corrected: recorded.jsonObject(),
                 resolveStale: { _ in staleChoice ?? .keep },
                 correctionsDirectoryOverride: correctionsDirectoryOverride
             )

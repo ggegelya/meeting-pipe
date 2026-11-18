@@ -144,4 +144,17 @@ final class InlineSummarySaveTests: XCTestCase {
         XCTAssertTrue(source.contains("CorrectionWindow.performSave("))
         XCTAssertFalse(source.contains("CorrectionStore.write("), "one record writer, not two")
     }
+
+    /// The record carries the typed title (what the owner corrected), the rename lands in
+    /// `meta.json`, and `summary.json` keeps the generated title (PIPE55).
+    func test_a_typed_title_reaches_the_record_and_the_rename_but_not_the_summary() throws {
+        let model = try openEditor()
+        model.title = "Quarterly planning"
+        XCTAssertEqual(save(model), .saved)
+        let corrected = try XCTUnwrap(try record()["corrected_summary"] as? [String: Any])
+        XCTAssertEqual(corrected["title"] as? String, "Quarterly planning")
+        XCTAssertEqual(MeetingSummary.load(from: summaryURL)?.title, "Generated")
+        guard case .loaded(let meta) = MeetingMetaRead.load(stem: "m", in: dir) else { return XCTFail("no meta.json") }
+        XCTAssertEqual(meta["user_title"] as? String, "Quarterly planning")
+    }
 }
