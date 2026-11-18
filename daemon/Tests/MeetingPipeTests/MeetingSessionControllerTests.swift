@@ -79,10 +79,6 @@ final class MeetingSessionControllerTests: XCTestCase {
 @MainActor
 final class MeetingSessionControllerMetaWriteTests: XCTestCase {
 
-    private final class NoopDriver: PipelineDriver {
-        func runAll(wav: URL, summaryMode: SummaryMode, completion: @escaping (Result<URL?, Error>) -> Void) {}
-    }
-
     private var tempDir: URL!
     private var logs: URL!
 
@@ -243,7 +239,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
         let dir = tempDir!
         let service = MeetingLibraryService(
             outputDir: { dir },
-            launcher: NoopDriver(),
+            launcher: FakePipelineDriver(),
             notifyError: { _ in },
             enqueue: { file, mode, _ in
                 sidecarAtEnqueue = MeetingMetaRead.load(stem: stem, in: dir).dictionary
@@ -270,7 +266,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
         var enqueued: [URL] = []
         let dir = tempDir!
         let service = MeetingLibraryService(
-            outputDir: { dir }, launcher: NoopDriver(), notifyError: { _ in },
+            outputDir: { dir }, launcher: FakePipelineDriver(), notifyError: { _ in },
             enqueue: { file, _, _ in enqueued.append(file) }
         )
         guard case .failure(let error) = service.retryMeeting(stem: stem) else {

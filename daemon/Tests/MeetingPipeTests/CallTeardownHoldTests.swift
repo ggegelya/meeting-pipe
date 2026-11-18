@@ -1,5 +1,6 @@
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 @testable import MeetingPipeCore
 
 /// END9 and END17, the wiring half. `CallTeardownOracleTests` pins the decision; these pin that the
@@ -52,19 +53,6 @@ final class CallTeardownHoldTests: XCTestCase {
     }
 
     /// Holds the watcher's next scheduled tick so a test steps the poll instead of racing a timer.
-    private final class ManualScheduler {
-        private var pending: (() -> Void)?
-        var schedule: CallTeardownWatcher.Scheduler {
-            { [weak self] _, action in
-                self?.pending = action
-                return { self?.pending = nil }
-            }
-        }
-        /// Repeating, as the watcher's timer is since END16: the action stays until cancelled.
-        func fire() {
-            pending?()
-        }
-    }
 
     private var scheduler = ManualScheduler()
 
@@ -90,7 +78,7 @@ final class CallTeardownHoldTests: XCTestCase {
             host.callTeardown.start()
 
             try appendToGeneration(logLines)
-            scheduler.fire()
+            scheduler.tick()
         }
         return (MeetingSessionController(coordinator: host), host)
     }
@@ -114,7 +102,7 @@ final class CallTeardownHoldTests: XCTestCase {
         try FileManager.default.setAttributes(
             [.modificationDate: Date().addingTimeInterval(-seconds)], ofItemAtPath: generationURL.path
         )
-        scheduler.fire()
+        scheduler.tick()
     }
 
     // MARK: - The defect
@@ -264,7 +252,7 @@ final class CallTeardownHoldTests: XCTestCase {
             controller.beginTeardownHold(context: context)
             controller.consultTeardownOracle()   // the same stamp: no row
             try appendToGeneration([teardownLine(secondsAgo: 0)])
-            scheduler.fire()
+            scheduler.tick()
             controller.consultTeardownOracle()   // confirms on the fresh line, and resolves
 
             let consults = rows("lifecycle_teardown_consult", in: logs)
@@ -311,7 +299,7 @@ final class CallTeardownHoldTests: XCTestCase {
         XCTAssertNotNil(controller.holdPolicy.hold, "the stale-looking mtime must not confirm on its own")
 
         try appendToGeneration([teardownLine(secondsAgo: 0.5)])
-        scheduler.fire()
+        scheduler.tick()
         controller.consultTeardownOracle()
 
         XCTAssertNil(controller.holdPolicy.hold, "the teardown belongs to this call and confirms it")

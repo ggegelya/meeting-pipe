@@ -30,7 +30,7 @@ final class QuickFindRefreshTests: XCTestCase {
     }
 
     /// Drain the store's scan queue, the main hop it queued, and the model's own main delivery.
-    private func settle(_ store: MeetingStore) {
+    private func drainScanQueue(_ store: MeetingStore) {
         let done = expectation(description: "settled")
         store.enqueueOnScanQueue { DispatchQueue.main.async { DispatchQueue.main.async { done.fulfill() } } }
         wait(for: [done], timeout: 5)
@@ -44,7 +44,7 @@ final class QuickFindRefreshTests: XCTestCase {
         let store = MeetingStore(recordingsDir: dir)
         let model = makeModel(store)
         model.refresh()
-        settle(store)
+        drainScanQueue(store)
         XCTAssertFalse(store.isWatching)
         XCTAssertTrue(store.hasLoadedOnce, "the open still scans")
         XCTAssertTrue(model.hasMeetingMatches)
@@ -64,12 +64,12 @@ final class QuickFindRefreshTests: XCTestCase {
         let store = MeetingStore(recordingsDir: dir)
         let model = makeModel(store)
         model.refresh()
-        settle(store)
+        drainScanQueue(store)
         let base = model.recomputeCount
 
         try addMeeting(hoursAgo: 1)
         store.refresh()
-        settle(store)
+        drainScanQueue(store)
         XCTAssertEqual(store.revision, 2)
         XCTAssertEqual(model.recomputeCount, base + 1)
     }
@@ -79,13 +79,13 @@ final class QuickFindRefreshTests: XCTestCase {
         let store = MeetingStore(recordingsDir: dir)
         let model = makeModel(store)
         model.refresh()
-        settle(store)
+        drainScanQueue(store)
         model.dismissed()
         let base = model.recomputeCount
 
         try addMeeting(hoursAgo: 1)
         store.refresh()
-        settle(store)
+        drainScanQueue(store)
         XCTAssertEqual(store.revision, 2)
         XCTAssertEqual(model.recomputeCount, base, "nobody can see a hidden panel's ranking")
 
@@ -100,12 +100,12 @@ final class QuickFindRefreshTests: XCTestCase {
         let store = MeetingStore(recordingsDir: dir)
         let model = makeModel(store)
         model.refresh()
-        settle(store)
+        drainScanQueue(store)
         model.setPresented(false)
 
         try addMeeting(hoursAgo: 1)
         store.refresh()
-        settle(store)
+        drainScanQueue(store)
         let base = model.recomputeCount
         model.setPresented(true)
         XCTAssertEqual(model.recomputeCount, base + 1)

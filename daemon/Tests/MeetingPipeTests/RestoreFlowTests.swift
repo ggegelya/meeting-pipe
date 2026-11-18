@@ -1,5 +1,6 @@
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// STOR5: the in-app restore, which is the most destructive button in the app.
 ///
@@ -10,45 +11,6 @@ import XCTest
 @MainActor
 final class RestoreFlowTests: XCTestCase {
 
-    /// Records what the flow asked for and parks each completion, so a test
-    /// decides when (and whether) an invocation lands.
-    private final class FakeDriver: PipelineDriver {
-        private(set) var previewed: [URL] = []
-        private(set) var restored: [URL] = []
-        private var previewCompletion: ((Result<RestorePlan, Error>) -> Void)?
-        private var restoreCompletion: ((Result<Void, Error>) -> Void)?
-
-        func runAll(wav: URL, summaryMode: SummaryMode, completion: @escaping (Result<URL?, Error>) -> Void) {}
-
-        func restorePreview(archive: URL, completion: @escaping (Result<RestorePlan, Error>) -> Void) {
-            previewed.append(archive)
-            previewCompletion = completion
-        }
-
-        func restore(archive: URL, completion: @escaping (Result<Void, Error>) -> Void) {
-            restored.append(archive)
-            restoreCompletion = completion
-        }
-
-        func landPreview(_ plan: RestorePlan) { previewCompletion?(.success(plan)) }
-        func failPreview(_ message: String) {
-            previewCompletion?(.failure(NSError(
-                domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: message]
-            )))
-        }
-        func landRestore() { restoreCompletion?(.success(())) }
-        func failRestore(_ message: String) {
-            restoreCompletion?(.failure(NSError(
-                domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: message]
-            )))
-        }
-    }
-
-    /// The flow hops to the main actor to publish each phase, so a test has to
-    /// let those hops run before reading one.
-    private func settle() async {
-        for _ in 0..<20 { await Task.yield() }
-    }
 
     // MARK: - The payload contract
 
@@ -280,16 +242,16 @@ final class RestoreFlowTests: XCTestCase {
     // MARK: - The two invocations
 
     func testPreviewIsTheOnlyThingAPickedArchiveStarts() async throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let flow = RestoreFlow(launcher: driver)
         let archive = URL(fileURLWithPath: "/Users/x/Backups/b.tar.gz")
 
         flow.preview(archive: archive)
         XCTAssertEqual(flow.phase, .previewing)
         driver.landPreview(try fixturePlan())
-        await settle()
+        if !(await waitUntil { flow.pendingPlan != nil }) { XCTFail("the plan never landed") }
 
-        XCTAssertEqual(driver.previewed, [archive])
+        XCTAssertEqual(driver.restorePreviewed, [archive])
         XCTAssertEqual(driver.restored, [], "a picked archive must not restore anything by itself")
         XCTAssertEqual(flow.pendingPlan, try fixturePlan())
     }
@@ -298,91 +260,91 @@ final class RestoreFlowTests: XCTestCase {
     /// rewrote nothing it can rely on, and says nothing.
     func testOnlyALandedRestoreReportsBack() async throws {
         var restored = 0
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let flow = RestoreFlow(launcher: driver, onRestored: { restored += 1 })
         flow.preview(archive: URL(fileURLWithPath: "/Users/x/Backups/b.tar.gz"))
         driver.landPreview(try fixturePlan())
-        await settle()
+        if !(await waitUntil { flow.pendingPlan != nil }) { XCTFail("the plan never landed") }
         flow.confirm()
         driver.failRestore("disk full")
-        await settle()
+        if !(await waitUntil { flow.hasFailed }) { XCTFail("the failure never landed") }
         XCTAssertEqual(restored, 0)
 
         flow.dismiss()
         flow.preview(archive: URL(fileURLWithPath: "/Users/x/Backups/b.tar.gz"))
         driver.landPreview(try fixturePlan())
-        await settle()
+        if !(await waitUntil { flow.pendingPlan != nil }) { XCTFail("the plan never landed") }
         flow.confirm()
         driver.landRestore()
-        await settle()
+        if !(await waitUntil { !flow.isBusy }) { XCTFail("the restore never finished") }
         XCTAssertEqual(restored, 1)
     }
 
     /// STOR16: a running restore is registered on the move guard, which outlives the Storage pane,
     /// so a move from the Recording pane is refused until the restore lands.
     func testARunningRestoreHoldsTheLibraryMove() async throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let moveGuard = LibraryMoveGuard()
         let flow = RestoreFlow(launcher: driver, moveGuard: moveGuard)
         flow.preview(archive: URL(fileURLWithPath: "/Users/x/Backups/b.tar.gz"))
         driver.landPreview(try fixturePlan())
-        await settle()
+        if !(await waitUntil { flow.pendingPlan != nil }) { XCTFail("the plan never landed") }
         XCTAssertNil(moveGuard.currentBusyReason, "the dry run writes nothing, so it holds nothing")
         flow.confirm()
         XCTAssertEqual(moveGuard.begin(), "a backup or restore is running")
         driver.landRestore()
-        await settle()
+        if !(await waitUntil { !flow.isBusy }) { XCTFail("the restore never finished") }
         XCTAssertNil(moveGuard.begin(), "free once the restore lands")
     }
 
     func testTheRealRunIsUnreachableWithoutAConfirmedPlan() async throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let flow = RestoreFlow(launcher: driver)
 
         // From idle: nothing to confirm, so nothing runs.
         flow.confirm()
-        await settle()
+        await yieldRunway()  // proving nothing ran
         XCTAssertEqual(driver.restored, [])
 
         // Mid-preview: still nothing, the plan has not landed.
         flow.preview(archive: URL(fileURLWithPath: "/Users/x/Backups/b.tar.gz"))
         flow.confirm()
-        await settle()
+        await yieldRunway()  // proving nothing ran
         XCTAssertEqual(driver.restored, [])
 
         driver.landPreview(try fixturePlan())
-        await settle()
+        if !(await waitUntil { flow.pendingPlan != nil }) { XCTFail("the plan never landed") }
         flow.confirm()
-        await settle()
+        if !(await waitUntil { !driver.restored.isEmpty }) { XCTFail("the confirm never reached the driver") }
         XCTAssertEqual(driver.restored.count, 1)
     }
 
     func testTheRealRunUsesTheArchiveThePlanDescribed() async throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let flow = RestoreFlow(launcher: driver)
 
         // The picker's URL and the plan's path are the same file, and taking it
         // from the plan is what makes that provable rather than assumed.
         flow.preview(archive: URL(fileURLWithPath: "/Users/x/Backups/b.tar.gz"))
         driver.landPreview(try fixturePlan())
-        await settle()
+        if !(await waitUntil { flow.pendingPlan != nil }) { XCTFail("the plan never landed") }
         flow.confirm()
-        await settle()
+        if !(await waitUntil { !driver.restored.isEmpty }) { XCTFail("the confirm never reached the driver") }
 
         XCTAssertEqual(driver.restored.map(\.path), [try fixturePlan().archive])
         XCTAssertEqual(flow.phase, .restoring(try fixturePlan()))
     }
 
     func testAFailedPreviewNeverReachesTheRealRun() async {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let flow = RestoreFlow(launcher: driver)
 
         flow.preview(archive: URL(fileURLWithPath: "/Users/x/Downloads/holiday.zip"))
         driver.failPreview("not a meeting-pipe backup")
-        await settle()
+        if !(await waitUntil { flow.hasFailed }) { XCTFail("the failure never landed") }
 
         flow.confirm()
-        await settle()
+        await yieldRunway()  // proving nothing ran
         XCTAssertEqual(driver.restored, [])
         XCTAssertTrue(flow.hasFailed)
         XCTAssertEqual(
@@ -391,43 +353,43 @@ final class RestoreFlowTests: XCTestCase {
     }
 
     func testCancellingTheConfirmRestoresNothing() async throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let flow = RestoreFlow(launcher: driver)
 
         flow.preview(archive: URL(fileURLWithPath: "/Users/x/Backups/b.tar.gz"))
         driver.landPreview(try fixturePlan())
-        await settle()
+        if !(await waitUntil { flow.pendingPlan != nil }) { XCTFail("the plan never landed") }
         flow.dismiss()
 
         XCTAssertEqual(flow.phase, .idle)
         XCTAssertNil(flow.pendingPlan)
         flow.confirm()
-        await settle()
+        await yieldRunway()  // proving nothing ran
         XCTAssertEqual(driver.restored, [])
     }
 
     func testASecondPreviewIsRefusedWhileOneIsOut() async throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let flow = RestoreFlow(launcher: driver)
 
         flow.preview(archive: URL(fileURLWithPath: "/Users/x/Backups/a.tar.gz"))
         flow.preview(archive: URL(fileURLWithPath: "/Users/x/Backups/b.tar.gz"))
-        await settle()
+        await yieldRunway()  // proving the second pick did not start a preview
 
-        XCTAssertEqual(driver.previewed.map(\.lastPathComponent), ["a.tar.gz"])
+        XCTAssertEqual(driver.restorePreviewed.map(\.lastPathComponent), ["a.tar.gz"])
     }
 
     func testALandedRestoreReportsWhatItRestored() async throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let flow = RestoreFlow(launcher: driver)
 
         flow.preview(archive: URL(fileURLWithPath: "/Users/x/Backups/b.tar.gz"))
         driver.landPreview(try fixturePlan())
-        await settle()
+        if !(await waitUntil { flow.pendingPlan != nil }) { XCTFail("the plan never landed") }
         flow.confirm()
         XCTAssertTrue(flow.isBusy, "a running restore has to block a backup")
         driver.landRestore()
-        await settle()
+        if !(await waitUntil { !flow.isBusy }) { XCTFail("the restore never finished") }
 
         XCTAssertFalse(flow.isBusy)
         XCTAssertFalse(flow.hasFailed)
@@ -438,15 +400,15 @@ final class RestoreFlowTests: XCTestCase {
     }
 
     func testAFailedRestoreSaysSoInTheFooter() async throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let flow = RestoreFlow(launcher: driver)
 
         flow.preview(archive: URL(fileURLWithPath: "/Users/x/Backups/b.tar.gz"))
         driver.landPreview(try fixturePlan())
-        await settle()
+        if !(await waitUntil { flow.pendingPlan != nil }) { XCTFail("the plan never landed") }
         flow.confirm()
         driver.failRestore("pipeline exited 1: no space left on device")
-        await settle()
+        if !(await waitUntil { flow.hasFailed }) { XCTFail("the failure never landed") }
 
         XCTAssertTrue(flow.hasFailed)
         XCTAssertEqual(

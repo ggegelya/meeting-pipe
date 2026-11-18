@@ -36,7 +36,7 @@ final class StorageJanitorTests: XCTestCase {
         .init(directory: URL(fileURLWithPath: "/tmp"), policies: [:], defaultWorkflowID: nil, liveStems: [])
     }
 
-    private func settle(_ janitor: StorageJanitor) {
+    private func waitForSweep(_ janitor: StorageJanitor) {
         let deadline = Date().addingTimeInterval(10)
         while janitor.isRunning, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
         XCTAssertFalse(janitor.isRunning, "the sweep never finished")
@@ -46,7 +46,7 @@ final class StorageJanitorTests: XCTestCase {
         let probe = Probe()
         let janitor = StorageJanitor(snapshot: { self.snapshot() }, steps: probe.steps())
         janitor.request()
-        settle(janitor)
+        waitForSweep(janitor)
         XCTAssertEqual(probe.log.withLock { $0 }, ["server", "originals", "retention"])
     }
 
@@ -55,7 +55,7 @@ final class StorageJanitorTests: XCTestCase {
         let janitor = StorageJanitor(snapshot: { self.snapshot() }, steps: probe.steps())
         janitor.request()
         janitor.request()
-        settle(janitor)
+        waitForSweep(janitor)
         XCTAssertFalse(probe.overlapped.withLock { $0 })
         XCTAssertEqual(probe.log.withLock { $0.filter { $0 == "retention" }.count }, 2, "the second request is one follow-up")
     }
@@ -69,7 +69,7 @@ final class StorageJanitorTests: XCTestCase {
         janitor.request()
         for _ in 0..<5 { janitor.request() }
         probe.gate.signal()
-        settle(janitor)
+        waitForSweep(janitor)
         XCTAssertEqual(probe.log.withLock { $0.filter { $0 == "retention" }.count }, 2)
         XCTAssertFalse(probe.overlapped.withLock { $0 })
         XCTAssertEqual(snapshots.withLock { $0 }, 2, "the follow-up takes its own fresh snapshot")

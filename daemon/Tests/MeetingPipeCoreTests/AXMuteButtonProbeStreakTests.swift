@@ -1,13 +1,21 @@
 import ApplicationServices
 import XCTest
 @testable import MeetingPipeCore
+import MeetingPipeTestSupport
 
 /// MIC20: an unreadable mute button costs the log one kept row and one summary row per streak,
 /// not one row a second; a re-resolve that finds nothing says so; and while an end is held the
 /// probe polls slowly and stays quiet, but still delivers a known read at once.
 final class AXMuteButtonProbeStreakTests: XCTestCase {
 
-    private static let catalogue: MuteLabels = { try! MuteLabelsLoader.loadDefault() }()
+    /// T13: loaded per test and thrown, not force-tried in a static initialiser: a trap there killed the
+    /// xctest process, so one broken resource bundle read as a crash with every later test unrun.
+    private var catalogue: MuteLabels!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        catalogue = try MuteLabelsLoader.loadDefault()
+    }
 
     private final class Box {
         var title: String? = "Unmute"   // .muted
@@ -22,7 +30,7 @@ final class AXMuteButtonProbeStreakTests: XCTestCase {
         rearmThreshold: Int = 100
     ) -> AXMuteButtonProbe {
         AXMuteButtonProbe(
-            app: "teams", axBus: AXObserverBus(), catalogue: Self.catalogue, eventLog: log,
+            app: "teams", axBus: AXObserverBus(), catalogue: catalogue, eventLog: log,
             probe: { _ in .init(title: box.title) },
             scheduler: scheduler, localeResolver: { "en" }, elementTimeout: { _ in },
             rearmThreshold: rearmThreshold, clock: { box.now }
@@ -137,21 +145,21 @@ final class AXMuteButtonProbeStreakTests: XCTestCase {
 
     func test_whileAnEndIsHeld_thePollStaysSlow_andWritesNoKeptRows_andClearingRestoresFast() {
         let box = Box(), log = RecordingEventLog()
-        let scheduler = AXMuteButtonProbeTests.IntervalScheduler()
-        let probe = makeProbe(box, log: log, scheduler: scheduler.scheduler)
+        let scheduler = ManualScheduler()
+        let probe = makeProbe(box, log: log, scheduler: scheduler.schedule)
         probe.start(pid: 1, bundleID: "com.microsoft.teams2", button: button())
-        XCTAssertEqual(scheduler.armed, [AXMuteButtonProbe.defaultPollInterval])
+        XCTAssertEqual(scheduler.scheduledDelays, [AXMuteButtonProbe.defaultPollInterval])
 
         probe.setEndHeld(true)
         box.title = nil
-        for _ in 0..<10 { scheduler.tick?() }
-        XCTAssertEqual(scheduler.armed.last, AXMuteButtonProbe.defaultSlowPollInterval, "held: slow despite unknown reads")
-        XCTAssertEqual(scheduler.armed.count, 2, "one move to slow, and it holds")
+        for _ in 0..<10 { scheduler.tick() }
+        XCTAssertEqual(scheduler.scheduledDelays.last, AXMuteButtonProbe.defaultSlowPollInterval, "held: slow despite unknown reads")
+        XCTAssertEqual(scheduler.scheduledDelays.count, 2, "one move to slow, and it holds")
         XCTAssertTrue(rows(log, "ax_mute_button_state_kept").isEmpty, "no kept rows while held")
 
         probe.setEndHeld(false)
-        scheduler.tick?()
-        XCTAssertEqual(scheduler.armed.last, AXMuteButtonProbe.defaultPollInterval, "the next unknown read is news again")
+        scheduler.tick()
+        XCTAssertEqual(scheduler.scheduledDelays.last, AXMuteButtonProbe.defaultPollInterval, "the next unknown read is news again")
         XCTAssertEqual(rows(log, "ax_mute_button_state_kept").count, 1, "a streak that outlives the hold writes its row then")
 
         probe.stop()
@@ -190,7 +198,7 @@ final class AXMuteButtonProbeStreakTests: XCTestCase {
     func test_micGate_forwardsTheHeldFlagToItsActiveAdapters_andStopClearsIt() throws {
         let adapter = HeldRecordingAdapter()
         let gate = MicGate(
-            catalogue: Self.catalogue, halBus: CoreAudioHALBus(), axBus: AXObserverBus(), adapters: [adapter]
+            catalogue: catalogue, halBus: CoreAudioHALBus(), axBus: AXObserverBus(), adapters: [adapter]
         )
         try gate.start(
             context: MeetingLifecycleContext(bundleID: "com.microsoft.teams2", kind: .native, pid: 1),
@@ -210,8 +218,8 @@ final class AXMuteButtonProbeStreakTests: XCTestCase {
     /// no-op default would swallow the flag and the probe would never back off.
     func test_nativeMuteAdapter_carriesTheHeldFlagToItsProbe() throws {
         let box = Box(), log = RecordingEventLog()
-        let scheduler = AXMuteButtonProbeTests.IntervalScheduler()
-        let adapter = NativeMuteAdapter(config: .teams, probe: makeProbe(box, log: log, scheduler: scheduler.scheduler))
+        let scheduler = ManualScheduler()
+        let adapter = NativeMuteAdapter(config: .teams, probe: makeProbe(box, log: log, scheduler: scheduler.schedule))
         try adapter.start(
             context: MeetingLifecycleContext(bundleID: "com.microsoft.teams2", kind: .native, pid: 1),
             handle: MicGateAdapterHandle(muteButton: button()),
@@ -219,8 +227,8 @@ final class AXMuteButtonProbeStreakTests: XCTestCase {
         )
         adapter.setEndHeld(true)
         box.title = nil
-        for _ in 0..<3 { scheduler.tick?() }
-        XCTAssertEqual(scheduler.armed.last, AXMuteButtonProbe.defaultSlowPollInterval)
+        for _ in 0..<3 { scheduler.tick() }
+        XCTAssertEqual(scheduler.scheduledDelays.last, AXMuteButtonProbe.defaultSlowPollInterval)
         XCTAssertTrue(rows(log, "ax_mute_button_state_kept").isEmpty)
     }
 }

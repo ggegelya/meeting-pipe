@@ -3,6 +3,7 @@ import os
 import Combine
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// PERF21: Library playback left the output IO running after a pause, the end of the file and a
 /// window close, and called its engine synchronously and unbounded on main. These drive the real
@@ -393,7 +394,7 @@ private final class Rig {
             engineCallBudgetSeconds: 5,
             idleStopGraceSeconds: AudioPlaybackController.idleStopGraceSeconds,
             scheduleOnce: { [scheduler] delay, action in
-                MainActor.assumeIsolated { scheduler.schedule(delay, action) }
+                MainActor.assumeIsolated { scheduler.register(delay, action) }
             },
             peaksLoader: peaksLoader
         )
@@ -402,27 +403,6 @@ private final class Rig {
 
 /// The injected clock for the idle stop: nothing fires until the test says so.
 @MainActor
-private final class ManualScheduler {
-    private var pending: [(id: Int, delay: TimeInterval, action: () -> Void)] = []
-    private var nextID = 0
-
-    var pendingDelays: [TimeInterval] { pending.map(\.delay) }
-
-    func schedule(_ delay: TimeInterval, _ action: @escaping () -> Void) -> () -> Void {
-        nextID += 1
-        let id = nextID
-        pending.append((id, delay, action))
-        return { [weak self] in
-            MainActor.assumeIsolated { self?.pending.removeAll { $0.id == id } }
-        }
-    }
-
-    func fireAll() {
-        let due = pending
-        pending = []
-        for entry in due { entry.action() }
-    }
-}
 
 /// Records every call, in order. `start` can park until the test releases it, standing in for a
 /// CoreAudio start wedged on a transitioning route.

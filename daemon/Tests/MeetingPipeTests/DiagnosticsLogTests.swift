@@ -7,17 +7,17 @@ import os
 /// (owner eyeball); this is the logic behind them.
 final class DiagnosticsLogTests: XCTestCase {
 
-    private func line(_ ts: String, _ category: String, _ action: String, _ attrs: [String: Any] = [:]) -> String {
+    private func line(_ ts: String, _ category: String, _ action: String, _ attrs: [String: Any] = [:]) throws -> String {
         var obj = attrs
         obj["ts"] = ts
         obj["category"] = category
         obj["action"] = action
-        let data = try! JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys])
+        let data = try JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys])
         return String(data: data, encoding: .utf8)!
     }
 
-    func test_parseLine_extracts_fields_and_sorted_detail() {
-        let raw = line("2026-07-11T10:00:00.000Z", "coordinator", "recording_started",
+    func test_parseLine_extracts_fields_and_sorted_detail() throws {
+        let raw = try line("2026-07-11T10:00:00.000Z", "coordinator", "recording_started",
                        ["summary_mode": "auto", "bundle_id": "us.zoom.xos"])
         let ev = DiagnosticsLog.parseLine(raw, id: 0)
         XCTAssertEqual(ev?.category, "coordinator")
@@ -27,7 +27,7 @@ final class DiagnosticsLogTests: XCTestCase {
         XCTAssertNotNil(ev?.date)
     }
 
-    func test_parseLine_rejects_blank_and_malformed() {
+    func test_parseLine_rejects_blank_and_malformed() throws {
         XCTAssertNil(DiagnosticsLog.parseLine("", id: 0))
         XCTAssertNil(DiagnosticsLog.parseLine("   ", id: 0))
         XCTAssertNil(DiagnosticsLog.parseLine("{not json", id: 0))
@@ -37,11 +37,11 @@ final class DiagnosticsLogTests: XCTestCase {
         let dir = try tempDir()
         // The two families interleave in time; each ascends within its own file.
         try write(dir.appendingPathComponent("events.jsonl"), [
-            line("1970-01-01T00:01:40.000Z", "detector", "started"),
-            line("1970-01-01T00:05:00.000Z", "detector", "ended"),
+            try line("1970-01-01T00:01:40.000Z", "detector", "started"),
+            try line("1970-01-01T00:05:00.000Z", "detector", "ended"),
         ])
         try write(dir.appendingPathComponent("pipeline_events.jsonl"), [
-            line("1970-01-01T00:03:20.000Z", "pipeline", "started"),
+            try line("1970-01-01T00:03:20.000Z", "pipeline", "started"),
         ])
         func actions(_ q: DiagnosticsQuery) -> [String] {
             DiagnosticsLog.load(logsDir: dir, query: q).events.map { "\($0.category).\($0.action)" }
@@ -85,10 +85,10 @@ final class DiagnosticsLogTests: XCTestCase {
         let base = dir.appendingPathComponent("events.jsonl")
         let now = Date()
         let old = now.addingTimeInterval(-3 * 3600)
-        try write(base, [line(iso(now.addingTimeInterval(-60)), "coordinator", "recent")])
+        try write(base, [try line(iso(now.addingTimeInterval(-60)), "coordinator", "recent")])
         for k in 1...2 {
             let g = Log.generationURL(base, k)
-            try write(g, [line(iso(old), "coordinator", "old\(k)")])
+            try write(g, [try line(iso(old), "coordinator", "old\(k)")])
             try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: g.path)
         }
         var opened: [String] = []
@@ -102,8 +102,8 @@ final class DiagnosticsLogTests: XCTestCase {
 
     func test_detail_is_built_only_for_returned_rows() throws {
         let dir = try tempDir()
-        let rows = (0..<10_000).map { i in
-            line(iso(Date(timeIntervalSince1970: TimeInterval(1_000_000 + i))), "detector", "tick", ["i": i])
+        let rows = try (0..<10_000).map { i in
+            try line(iso(Date(timeIntervalSince1970: TimeInterval(1_000_000 + i))), "detector", "tick", ["i": i])
         }
         try write(dir.appendingPathComponent("events.jsonl"), rows)
         var formatted = 0
@@ -125,9 +125,9 @@ final class DiagnosticsLogTests: XCTestCase {
         // The shape of the one torn row in the owner's log: a row's tail after a second write
         // overwrote its head.
         try write(dir.appendingPathComponent("events.jsonl"), [
-            line("2026-10-16T09:46:28.257Z", "coordinator", "state_change"),
+            try line("2026-10-16T09:46:28.257Z", "coordinator", "state_change"),
             #"n ","ts":"2026-10-16T09:46:28.265Z"}"#,
-            line("2026-10-16T09:46:28.265Z", "lifecycle", "idle"),
+            try line("2026-10-16T09:46:28.265Z", "lifecycle", "idle"),
         ])
         let result = DiagnosticsLog.load(logsDir: dir, query: .init())
         XCTAssertEqual(result.skipped, 1)
@@ -182,9 +182,9 @@ final class DiagnosticsLogTests: XCTestCase {
 
         let base = dir.appendingPathComponent("events.jsonl")
         // Newest event in the live base, older event in a rotated generation.
-        try (line("2026-07-11T10:05:00.000Z", "coordinator", "recording_stopped") + "\n")
+        try (try line("2026-07-11T10:05:00.000Z", "coordinator", "recording_stopped") + "\n")
             .data(using: .utf8)!.write(to: base)
-        try (line("2026-07-11T10:00:00.000Z", "coordinator", "recording_started") + "\n")
+        try (try line("2026-07-11T10:00:00.000Z", "coordinator", "recording_started") + "\n")
             .data(using: .utf8)!.write(to: Log.generationURL(base, 1))
 
         let events = DiagnosticsLog.load(logsDir: dir, since: nil, category: "coordinator", action: nil)

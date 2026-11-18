@@ -1,6 +1,7 @@
 import ApplicationServices
 import XCTest
 @testable import MeetingPipeCore
+import MeetingPipeTestSupport
 
 final class MeetingLifecycleCoordinatorTests: XCTestCase {
 
@@ -93,7 +94,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         let coordinator = MeetingLifecycleCoordinator(
             eventLog: log,
             adapters: [fake],
-            scheduler: scheduler.scheduler(),
+            scheduler: scheduler.schedule,
             clock: { now }
         )
 
@@ -149,7 +150,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         let scheduler = ManualScheduler()
         let coordinator = MeetingLifecycleCoordinator(
             adapters: [fake],
-            scheduler: scheduler.scheduler()
+            scheduler: scheduler.schedule
         )
 
         try coordinator.engage(
@@ -178,7 +179,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         let scheduler = ManualScheduler()
         let coordinator = MeetingLifecycleCoordinator(
             adapters: [fake],
-            scheduler: scheduler.scheduler()
+            scheduler: scheduler.schedule
         )
 
         try coordinator.engage(
@@ -210,7 +211,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         let coordinator = MeetingLifecycleCoordinator(
             eventLog: log,
             adapters: [FakeAdapter(bundleIDs: ["other.bundle"])],
-            scheduler: scheduler.scheduler()
+            scheduler: scheduler.schedule
         )
 
         try coordinator.engage(
@@ -225,7 +226,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         let scheduler = ManualScheduler()
         let coordinator = MeetingLifecycleCoordinator(
             adapters: [fake],
-            scheduler: scheduler.scheduler()
+            scheduler: scheduler.schedule
         )
 
         // No adapter engaged yet: the late-arm is absorbed, not crashed.
@@ -251,27 +252,27 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         var now = Date(timeIntervalSince1970: 0)
         let coordinator = MeetingLifecycleCoordinator(
             adapters: [fake],
-            scheduler: scheduler.scheduler(),
+            scheduler: scheduler.schedule,
             clock: { now }
         )
 
         try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
         flushEngine(coordinator)
         // PERF5: engaged but idle -> the periodic tick is not armed.
-        XCTAssertNil(scheduler.tick, "tick must not run before a provisional end")
+        XCTAssertFalse(scheduler.hasPending, "tick must not run before a provisional end")
 
         fake.emit(.init(kind: .shareableContentWindow, state: .live, timestamp: now, context: teamsContext))
         flushEngine(coordinator)
         coordinator.confirmRecording()
         flushEngine(coordinator)
         XCTAssertEqual(coordinator.current, .inMeeting(context: teamsContext))
-        XCTAssertNil(scheduler.tick, "tick stays disarmed through .starting / .inMeeting")
+        XCTAssertFalse(scheduler.hasPending, "tick stays disarmed through .starting / .inMeeting")
 
         now = Date(timeIntervalSince1970: 1)
         fake.emit(.init(kind: .shareableContentWindow, state: .ended, timestamp: now, context: teamsContext))
         flushEngine(coordinator)
         // PERF5: a provisional end arms the tick so a dwell can promote it.
-        XCTAssertNotNil(scheduler.tick, "tick arms when a provisional end is pending")
+        XCTAssertTrue(scheduler.hasPending, "tick arms when a provisional end is pending")
 
         now = Date(timeIntervalSince1970: 1 + PromotionEngine.defaultLoneDwell)
         coordinator.tick()
@@ -284,7 +285,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
             )
         )
         // PERF5: promoting to .ended disarms the tick again.
-        XCTAssertNil(scheduler.tick, "tick disarms once the end is confirmed")
+        XCTAssertFalse(scheduler.hasPending, "tick disarms once the end is confirmed")
     }
 
     func test_tick_disarms_when_provisional_end_reverts() throws {
@@ -293,7 +294,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         var now = Date(timeIntervalSince1970: 0)
         let coordinator = MeetingLifecycleCoordinator(
             adapters: [fake],
-            scheduler: scheduler.scheduler(),
+            scheduler: scheduler.schedule,
             clock: { now }
         )
         try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
@@ -305,7 +306,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         now = Date(timeIntervalSince1970: 1)
         fake.emit(.init(kind: .shareableContentWindow, state: .ended, timestamp: now, context: teamsContext))
         flushEngine(coordinator)
-        XCTAssertNotNil(scheduler.tick, "armed on the provisional end")
+        XCTAssertTrue(scheduler.hasPending, "armed on the provisional end")
 
         // The leading signal flips back to live before the debounce: the engine
         // returns to .inMeeting (flicker-absorb) and the tick must disarm (PERF5).
@@ -313,7 +314,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         fake.emit(.init(kind: .shareableContentWindow, state: .live, timestamp: now, context: teamsContext))
         flushEngine(coordinator)
         XCTAssertEqual(coordinator.current, .inMeeting(context: teamsContext))
-        XCTAssertNil(scheduler.tick, "tick disarms when the provisional end reverts")
+        XCTAssertFalse(scheduler.hasPending, "tick disarms when the provisional end reverts")
     }
 
     // MARK: - END11: engagement is observable, and a dropped arm is loud
@@ -377,7 +378,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         let fake = FakeAdapter()
         let scheduler = ManualScheduler()
         let coordinator = MeetingLifecycleCoordinator(
-            adapters: [fake], scheduler: scheduler.scheduler()
+            adapters: [fake], scheduler: scheduler.schedule
         )
         XCTAssertEqual(coordinator.liveCallSignal, .unknown, "no adapter engaged is no opinion")
 
@@ -410,7 +411,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
     func test_liveCallSignal_ignores_the_signals_in_the_leading_class() throws {
         let fake = FakeAdapter()
         let coordinator = MeetingLifecycleCoordinator(
-            adapters: [fake], scheduler: ManualScheduler().scheduler()
+            adapters: [fake], scheduler: ManualScheduler().schedule
         )
         try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
 
@@ -430,7 +431,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
     func test_liveCallSignal_clears_on_disengage_and_drops_a_zombie_event() throws {
         let fake = FakeAdapter()
         let coordinator = MeetingLifecycleCoordinator(
-            adapters: [fake], scheduler: ManualScheduler().scheduler()
+            adapters: [fake], scheduler: ManualScheduler().schedule
         )
         try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
         fake.emit(.init(
@@ -463,7 +464,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         let fake = FakeAdapter()
         let log = RecordingEventLog()
         let coordinator = MeetingLifecycleCoordinator(
-            eventLog: log, adapters: [fake], scheduler: ManualScheduler().scheduler(),
+            eventLog: log, adapters: [fake], scheduler: ManualScheduler().schedule,
             clock: { Date(timeIntervalSince1970: 0) }
         )
         try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
@@ -500,20 +501,20 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         let scheduler = ManualScheduler()
         let now = Date(timeIntervalSince1970: 0)
         let coordinator = MeetingLifecycleCoordinator(
-            eventLog: log, adapters: [fake], scheduler: scheduler.scheduler(), clock: { now }
+            eventLog: log, adapters: [fake], scheduler: scheduler.schedule, clock: { now }
         )
         try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
         fake.emit(.init(kind: .axLeaveButton, state: .live, timestamp: now, context: teamsContext))
         fake.emit(.init(kind: .shareableContentWindow, state: .ended, timestamp: now, context: teamsContext))
         flushEngine(coordinator)
         XCTAssertEqual(coordinator.current, .starting(context: teamsContext))
-        XCTAssertNotNil(scheduler.tick, "the grace is a deadline, so the tick arms")
+        XCTAssertTrue(scheduler.hasPending, "the grace is a deadline, so the tick arms")
         XCTAssertFalse(coordinator.isTerminal)
 
         fake.emit(.init(kind: .processAudioIsRunningInput, state: .live, timestamp: now, context: teamsContext))
         flushEngine(coordinator)
         XCTAssertEqual(coordinator.current, .starting(context: teamsContext))
-        XCTAssertNil(scheduler.tick)
+        XCTAssertFalse(scheduler.hasPending)
         let vetoes = log.entries.filter { $0.action == "end_vetoed" }
         XCTAssertEqual(vetoes.count, 1)
         XCTAssertEqual(vetoes.first?.attributes["vetoed_by"], "process_audio_is_running_input_false")
@@ -525,7 +526,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         let fake = FakeAdapter()
         let now = Date(timeIntervalSince1970: 0)
         let coordinator = MeetingLifecycleCoordinator(
-            adapters: [fake], scheduler: ManualScheduler().scheduler(), clock: { now }
+            adapters: [fake], scheduler: ManualScheduler().schedule, clock: { now }
         )
         XCTAssertFalse(coordinator.isTerminal, "nothing engaged is not terminal")
         try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
@@ -547,7 +548,7 @@ final class MeetingLifecycleCoordinatorTests: XCTestCase {
         let fake = FakeAdapter()
         let log = RecordingEventLog()
         let coordinator = MeetingLifecycleCoordinator(
-            eventLog: log, adapters: [fake], scheduler: ManualScheduler().scheduler(),
+            eventLog: log, adapters: [fake], scheduler: ManualScheduler().schedule,
             clock: { Date(timeIntervalSince1970: 0) }
         )
         try coordinator.engage(context: teamsContext, handle: LifecycleAdapterHandle())
@@ -639,16 +640,6 @@ private final class FakeAdapter: LifecycleAdapter {
     }
 }
 
-private final class ManualScheduler {
-    var tick: (() -> Void)?
-    func scheduler() -> MeetingLifecycleCoordinator.Scheduler {
-        return { _, action in
-            self.tick = action
-            return { self.tick = nil }
-        }
-    }
-}
-
 /// Drains the cold `AsyncStream` returned by the coordinator into a
 /// flat array. Used because the verdict stream finishes when the
 /// coordinator shuts down, so a one-shot collect is the cleanest
@@ -686,7 +677,7 @@ extension MeetingLifecycleCoordinatorTests {
         let coordinator = MeetingLifecycleCoordinator(
             eventLog: log,
             adapters: [fake],
-            scheduler: ManualScheduler().scheduler(),
+            scheduler: ManualScheduler().schedule,
             clock: { clocks.wall },
             uptime: { clocks.uptime },
             displaySettle: displaySettle

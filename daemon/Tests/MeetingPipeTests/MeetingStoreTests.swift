@@ -597,10 +597,10 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(stems, ["20240501-090000"])
     }
 
-    func test_unrecoveredFailureStems_age_clause_respects_injected_now() {
+    func test_unrecoveredFailureStems_age_clause_respects_injected_now() throws {
         // With `now` pinned just after the stem's start, the same WAV is still
         // within the staleness window, so it is not yet counted.
-        let started = try! XCTUnwrap(MeetingStore.parseStem("20240501-090000"))
+        let started = try XCTUnwrap(MeetingStore.parseStem("20240501-090000"))
         let stems = MeetingStore.unrecoveredFailureStems(
             fileNames: ["20240501-090000.wav"],
             now: started.addingTimeInterval(60)

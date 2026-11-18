@@ -1,6 +1,7 @@
 import ApplicationServices
 import XCTest
 @testable import MeetingPipeCore
+import MeetingPipeTestSupport
 
 final class AXLeaveButtonSignalTests: XCTestCase {
 
@@ -13,15 +14,6 @@ final class AXLeaveButtonSignalTests: XCTestCase {
     private func stubElement() -> AXUIElement {
         AXUIElementCreateSystemWide()
     }
-
-    private func manualScheduler(_ store: ManualScheduler) -> AXLeaveButtonSignal.Scheduler {
-        return { _, action in
-            store.tick = action
-            return { store.tick = nil }
-        }
-    }
-
-    final class ManualScheduler { var tick: (() -> Void)? }
 
     /// Hand-cranked clock for the fresh-walk throttle. `now: { clock.now }`
     /// lets a test fire poll ticks without real time passing, then advance past
@@ -41,7 +33,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
             axBus: bus,
             eventLog: log,
             probe: { _ in .healthy },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
@@ -58,14 +50,14 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let signal = AXLeaveButtonSignal(
             axBus: bus,
             probe: { _ in probeReturn },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
         signal.start(context: teamsContext, leaveButton: stubElement())
         probeReturn = .invalid
-        scheduler.tick?()
-        scheduler.tick?()
+        scheduler.tick()
+        scheduler.tick()
 
         XCTAssertEqual(observed, [.healthy, .invalid], "Healthy baseline, then the invalid edge fires exactly once")
     }
@@ -80,13 +72,13 @@ final class AXLeaveButtonSignalTests: XCTestCase {
             axBus: bus,
             eventLog: log,
             probe: { _ in probeReturn },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
         signal.start(context: teamsContext, leaveButton: stubElement())
         probeReturn = .invalid
-        scheduler.tick?()
+        scheduler.tick()
 
         XCTAssertEqual(observed, [.healthy, .invalid])
         XCTAssertTrue(log.entries.contains { entry in
@@ -103,7 +95,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
             axBus: bus,
             eventLog: log,
             probe: { _ in probeReturn },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
 
         signal.start(context: teamsContext, leaveButton: stubElement())
@@ -112,10 +104,10 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         // must collapse to the single edge, not one line per 1 Hz tick (which was
         // 66% of the 57 MB event log in the wild).
         probeReturn = .invalid
-        scheduler.tick?()
-        scheduler.tick?()
-        scheduler.tick?()
-        scheduler.tick?()
+        scheduler.tick()
+        scheduler.tick()
+        scheduler.tick()
+        scheduler.tick()
 
         let invalidEmits = log.entries.filter {
             $0.action == "ax_leave_button_state" && $0.attributes["state"] == "invalid"
@@ -129,7 +121,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let signal = AXLeaveButtonSignal(
             axBus: bus,
             probe: { _ in .healthy },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
 
         signal.start(context: teamsContext, leaveButton: stubElement())
@@ -149,7 +141,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let signal = AXLeaveButtonSignal(
             axBus: bus,
             probe: { _ in .healthy },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
@@ -168,7 +160,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let signal = AXLeaveButtonSignal(
             axBus: bus,
             probe: { _ in .healthy },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
@@ -191,7 +183,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let signal = AXLeaveButtonSignal(
             axBus: bus,
             probe: { _ in probeReturn },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
@@ -199,7 +191,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         // .invalid when the Leave button is destroyed.
         signal.armIfNeeded(context: teamsContext, leaveButton: stubElement())
         probeReturn = .invalid
-        scheduler.tick?()
+        scheduler.tick()
 
         XCTAssertEqual(observed, [.healthy, .invalid])
     }
@@ -216,7 +208,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let signal = AXLeaveButtonSignal(
             axBus: bus,
             probe: { _ in .healthy },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             now: { clock.now }
         )
         signal.onChange = { observed.append($0) }
@@ -233,7 +225,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         // throttled to the slow interval; advance past it before the adopting poll.
         resolverReturn = liveButton
         clock.advance(AXLeaveButtonSignal.defaultSlowPollInterval + 1)
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertTrue(signal.isArmed, "Self-armed once the resolver returns a live button")
         XCTAssertEqual(observed, [.healthy], "Adopting the late button emits the live baseline")
         XCTAssertEqual(bus.activeSubscriptionCount, 1)
@@ -250,7 +242,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let signal = AXLeaveButtonSignal(
             axBus: bus,
             probe: { _ in probeReturn },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             now: { clock.now }
         )
         signal.onChange = { observed.append($0) }
@@ -258,13 +250,13 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         signal.start(context: teamsContext, leaveButton: nil, resolveElement: { resolverReturn })
         resolverReturn = liveButton
         clock.advance(AXLeaveButtonSignal.defaultSlowPollInterval + 1)
-        scheduler.tick?()                      // self-arm walk adopts -> healthy baseline
+        scheduler.tick()                      // self-arm walk adopts -> healthy baseline
         XCTAssertEqual(observed, [.healthy])
 
         // Call ends: the adopted Leave button is destroyed. The end must still fire.
         // The healthy->invalid edge bypasses the throttle, so no clock advance needed.
         probeReturn = .invalid
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed, [.healthy, .invalid], "A self-armed signal still reports the end")
     }
 
@@ -275,13 +267,13 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let signal = AXLeaveButtonSignal(
             axBus: bus,
             probe: { _ in .healthy },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
         // Browser / AX-denied: no button, no resolver. The signal stays inert.
         signal.start(context: teamsContext, leaveButton: nil)
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertFalse(signal.isArmed)
         XCTAssertEqual(observed, [], "Nothing to watch and nothing to adopt: no emissions")
         XCTAssertEqual(bus.activeSubscriptionCount, 0)
@@ -302,7 +294,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
             axBus: bus,
             eventLog: log,
             probe: { element in CFEqual(element, liveButton) ? .healthy : .invalid },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
@@ -317,7 +309,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         XCTAssertTrue(log.entries.contains { $0.action == "ax_leave_button_rearmed" })
 
         // A later poll reads the swapped (live) element: still healthy, no flap.
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed, [.healthy])
     }
 
@@ -330,7 +322,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let signal = AXLeaveButtonSignal(
             axBus: bus,
             probe: { _ in .invalid },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
@@ -350,7 +342,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let signal = AXLeaveButtonSignal(
             axBus: bus,
             probe: { _ in .invalid },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
         signal.start(context: teamsContext, leaveButton: stubElement())
@@ -366,7 +358,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let signal = AXLeaveButtonSignal(
             axBus: bus,
             probe: { element in CFEqual(element, liveButton) ? .healthy : .invalid },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
@@ -397,7 +389,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let signal = AXLeaveButtonSignal(
             axBus: bus,
             probe: { _ in .healthy },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             now: { clock.now }
         )
 
@@ -411,13 +403,13 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         // Four fast (1 s) polls, all inside the 5 s slow interval: no new walk.
         for _ in 0..<4 {
             clock.advance(1)
-            scheduler.tick?()
+            scheduler.tick()
         }
         XCTAssertEqual(walkCount, 1, "No new full re-walk inside the slow interval")
 
         // Crossing the slow interval lets exactly one more walk through.
         clock.advance(2)
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(walkCount, 2, "One walk per slow interval, not one per tick")
     }
 
@@ -435,7 +427,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let signal = AXLeaveButtonSignal(
             axBus: bus,
             probe: { _ in .invalid },          // nothing is ever healthy
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             now: { clock.now }
         )
         signal.onChange = { observed.append($0) }
@@ -450,7 +442,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         // Sustained invalid across many fast polls inside the slow interval.
         for _ in 0..<4 {
             clock.advance(1)
-            scheduler.tick?()
+            scheduler.tick()
         }
         XCTAssertEqual(walkCount, 1, "Sustained-invalid polls do not re-walk every tick (the hang fix)")
         XCTAssertEqual(observed, [.invalid], "And do not re-emit")
@@ -474,7 +466,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
             probe: { element in
                 (resolverReturn.map { CFEqual(element, $0) } ?? false) ? .healthy : .invalid
             },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             now: { clock.now }
         )
         signal.onChange = { observed.append($0) }
@@ -495,7 +487,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         // re-renders: it stales to invalid and a fresh walk now resolves secondLive.
         clock.advance(1)
         resolverReturn = secondLive
-        scheduler.tick?()
+        scheduler.tick()
 
         XCTAssertEqual(walkCount, 2, "The invalid edge bypasses the throttle and re-walks")
         XCTAssertEqual(observed, [.healthy], "Recovery keeps it healthy: no false end despite the recent walk")
@@ -590,39 +582,26 @@ final class AXLeaveButtonSignalTests: XCTestCase {
 
     // MARK: - PERF19: the backoff holds in steady state
 
-    /// Records every interval the signal arms, so the cadence is visible.
-    final class IntervalScheduler {
-        var tick: (() -> Void)?
-        var armed: [TimeInterval] = []
-        var scheduler: AXLeaveButtonSignal.Scheduler {
-            return { [self] interval, action in
-                armed.append(interval)
-                tick = action
-                return { [weak self] in self?.tick = nil }
-            }
-        }
-    }
-
     /// Red against the PERF5 rule: a healthy button with a quiet destruction listener polled at
     /// 1 Hz all meeting, because quiet is what that edge-only listener is in steady state.
     func test_steady_healthy_polls_back_off_to_slow_and_stay_there() {
-        let scheduler = IntervalScheduler()
+        let scheduler = ManualScheduler()
         var probeReturn: AXLeaveButtonSignal.State = .healthy
         let signal = AXLeaveButtonSignal(
             axBus: AXObserverBus(),
             probe: { _ in probeReturn },
-            scheduler: scheduler.scheduler
+            scheduler: scheduler.schedule
         )
         signal.start(context: teamsContext, leaveButton: stubElement())
-        XCTAssertEqual(scheduler.armed, [AXLeaveButtonSignal.defaultPollInterval])
+        XCTAssertEqual(scheduler.scheduledDelays, [AXLeaveButtonSignal.defaultPollInterval])
 
-        for _ in 0..<20 { scheduler.tick?() }
-        XCTAssertEqual(scheduler.armed.last, AXLeaveButtonSignal.defaultSlowPollInterval)
-        XCTAssertEqual(scheduler.armed.count, 2, "one back-off, then slow holds")
+        for _ in 0..<20 { scheduler.tick() }
+        XCTAssertEqual(scheduler.scheduledDelays.last, AXLeaveButtonSignal.defaultSlowPollInterval)
+        XCTAssertEqual(scheduler.scheduledDelays.count, 2, "one back-off, then slow holds")
 
         probeReturn = .invalid   // a destruction the notification never delivered
-        scheduler.tick?()
-        XCTAssertEqual(scheduler.armed.last, AXLeaveButtonSignal.defaultPollInterval)
+        scheduler.tick()
+        XCTAssertEqual(scheduler.scheduledDelays.last, AXLeaveButtonSignal.defaultPollInterval)
     }
 
     // MARK: - END18
@@ -640,17 +619,17 @@ final class AXLeaveButtonSignalTests: XCTestCase {
             var probeReturn = start
             var observed: [AXLeaveButtonSignal.State] = []
             let signal = AXLeaveButtonSignal(
-                axBus: AXObserverBus(), probe: { _ in probeReturn }, scheduler: manualScheduler(scheduler)
+                axBus: AXObserverBus(), probe: { _ in probeReturn }, scheduler: scheduler.schedule
             )
             signal.onChange = { observed.append($0) }
             signal.start(context: teamsContext, leaveButton: stubElement())
             probeReturn = .unknown
-            scheduler.tick?()
-            scheduler.tick?()
+            scheduler.tick()
+            scheduler.tick()
             XCTAssertEqual(observed, [start], "from \(start): nothing emitted on an unknown read")
             XCTAssertEqual(signal.lastState, start)
             probeReturn = start
-            scheduler.tick?()
+            scheduler.tick()
             XCTAssertEqual(observed, [start], "and the same state afterwards is no edge")
         }
     }
@@ -661,7 +640,7 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let scheduler = ManualScheduler()
         var observed: [AXLeaveButtonSignal.State] = []
         let signal = AXLeaveButtonSignal(
-            axBus: AXObserverBus(), probe: { _ in .healthy }, scheduler: manualScheduler(scheduler)
+            axBus: AXObserverBus(), probe: { _ in .healthy }, scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
         signal.start(context: teamsContext, leaveButton: stubElement())
@@ -730,10 +709,10 @@ final class AXLeaveButtonSignalTests: XCTestCase {
         let signal = AXLeaveButtonSignal(
             axBus: AXObserverBus(),
             probe: { _ in flip.lock(); defer { flip.unlock() }; return state },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.start(context: teamsContext, leaveButton: stubElement())
-        let tick = scheduler.tick
+        let tick = scheduler.latest
         let fired = OSAllocatedCounter()
         let poller = DispatchQueue(label: "conc6.ax.poll")
         let done = expectation(description: "polls done")
@@ -768,17 +747,17 @@ extension AXLeaveButtonSignalTests {
             axBus: AXObserverBus(backend: RefusingAXBackend()),
             eventLog: log,
             probe: { _ in probeReturn },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
         signal.start(context: teamsContext, leaveButton: stubElement())
         XCTAssertEqual(log.entries.filter { $0.action == "ax_leave_button_arm_failed" }.count, 1)
-        XCTAssertNotNil(scheduler.tick, "the health poll is armed although the subscribe failed")
+        XCTAssertTrue(scheduler.hasPending, "the health poll is armed although the subscribe failed")
         XCTAssertEqual(observed, [.healthy], "the initial read still runs")
 
         probeReturn = .invalid
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed, [.healthy, .invalid], "the poll emits the invalid edge the notification never will")
         XCTAssertEqual(log.entries.filter { $0.action == "ax_leave_button_arm_failed" }.count, 1, "logged once, not per poll")
     }

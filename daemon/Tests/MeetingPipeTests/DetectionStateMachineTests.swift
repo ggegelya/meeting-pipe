@@ -1,5 +1,6 @@
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// Locks in the post-extraction contract for `DetectionStateMachine`:
 /// the typed transitions, the embedded cooldown facade, the prompt
@@ -309,16 +310,6 @@ final class DetectionStateMachineTests: XCTestCase {
 
     // MARK: - DET18: hover pauses the timer that acts
 
-    private final class ManualScheduler {
-        var pending: [(delay: TimeInterval, action: () -> Void, cancelled: Bool)] = []
-        func schedule(_ delay: TimeInterval, _ action: @escaping () -> Void) -> () -> Void {
-            pending.append((delay, action, false))
-            let index = pending.count - 1
-            return { [weak self] in self?.pending[index].cancelled = true }
-        }
-        var live: [(delay: TimeInterval, action: () -> Void, cancelled: Bool)] { pending.filter { !$0.cancelled } }
-    }
-
     /// Acceptance: hovering at 20 s and leaving at 50 s fires the timeout at 60 s, not 30 s.
     func test_hover_pauses_the_acting_timer_and_carries_the_remaining_time() {
         let clock = Clock()
@@ -328,20 +319,20 @@ final class DetectionStateMachineTests: XCTestCase {
         m.setPrompting(source: Self.teams)
         var firedAt: Date?
         m.startPromptTimeout(for: Self.teams, timeoutSec: 30) { firedAt = clock.now }
-        XCTAssertEqual(scheduler.live.map(\.delay), [30])
+        XCTAssertEqual(scheduler.pending.map(\.delay), [30])
 
         clock.advance(20)
         m.pausePromptTimeout()
-        XCTAssertEqual(scheduler.live.map(\.delay), [DetectionStateMachine.maxPromptPauseSec],
+        XCTAssertEqual(scheduler.pending.map(\.delay), [DetectionStateMachine.maxPromptPauseSec],
                        "the 30 s timer must not survive the hover; only the pause's cap is armed")
         XCTAssertTrue(m.isPromptTimeoutPaused)
 
         clock.advance(30)
         m.resumePromptTimeout()
-        XCTAssertEqual(scheduler.live.map(\.delay), [10], "10 s were left when the pointer arrived")
+        XCTAssertEqual(scheduler.pending.map(\.delay), [10], "10 s were left when the pointer arrived")
 
         clock.advance(10)
-        scheduler.live.first?.action()
+        scheduler.pending.first?.action()
         let fired = expectation(description: "the timeout acts")
         DispatchQueue.main.async { fired.fulfill() }
         wait(for: [fired], timeout: 1)
@@ -359,7 +350,7 @@ final class DetectionStateMachineTests: XCTestCase {
         m.pausePromptTimeout()
         m.resumePromptTimeout()
         m.resumePromptTimeout()
-        XCTAssertEqual(scheduler.live.map(\.delay), [30])
+        XCTAssertEqual(scheduler.pending.map(\.delay), [30])
     }
 
     /// A pause cannot hold the prompt up forever: the cap resumes it.
@@ -372,12 +363,12 @@ final class DetectionStateMachineTests: XCTestCase {
         clock.advance(5)
         m.pausePromptTimeout()
         clock.advance(DetectionStateMachine.maxPromptPauseSec)
-        scheduler.live.first?.action()
+        scheduler.pending.first?.action()
         let resumed = expectation(description: "the cap resumes")
         DispatchQueue.main.async { resumed.fulfill() }
         wait(for: [resumed], timeout: 1)
         XCTAssertFalse(m.isPromptTimeoutPaused)
-        XCTAssertEqual(scheduler.live.map(\.delay), [25])
+        XCTAssertEqual(scheduler.pending.map(\.delay), [25])
     }
 
     /// A fire already queued when the timer was paused in the same turn does not act.
@@ -387,7 +378,7 @@ final class DetectionStateMachineTests: XCTestCase {
         m.setPrompting(source: Self.teams)
         var fired = false
         m.startPromptTimeout(for: Self.teams, timeoutSec: 30) { fired = true }
-        let fire = scheduler.live.first?.action
+        let fire = scheduler.pending.first?.action
         fire?()
         m.pausePromptTimeout()
         let drained = expectation(description: "main drained")

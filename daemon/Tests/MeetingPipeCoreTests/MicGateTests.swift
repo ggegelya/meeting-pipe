@@ -108,27 +108,36 @@ final class MicGateDecideTests: XCTestCase {
 
 final class MicGateIntegrationTests: XCTestCase {
 
-    private static let catalogue: MuteLabels = {
-        try! MuteLabelsLoader.loadDefault()
-    }()
+    /// T13: loaded per test and thrown, not force-tried in a static initialiser: a trap there killed the
+    /// xctest process, so one broken resource bundle read as a crash with every later test unrun.
+    private var catalogue: MuteLabels!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        catalogue = try MuteLabelsLoader.loadDefault()
+    }
 
     private let teamsContext = MeetingLifecycleContext(
         bundleID: "com.microsoft.teams2", kind: .native, pid: 1234
     )
 
+    /// T13: this test used to assert nothing. A Teams context must start the Teams adapter, and
+    /// only it, even with the Zoom one listed first.
     func test_start_uses_matching_adapter_for_bundle_id() throws {
-        let halBus = CoreAudioHALBus()
-        let axBus = AXObserverBus()
-        let teams = NativeMuteAdapter(config: .teams, axBus: axBus, catalogue: Self.catalogue)
-        let zoom = NativeMuteAdapter(config: .zoom, axBus: axBus, catalogue: Self.catalogue)
+        let teams = FakeMuteAdapter(app: "teams", source: .ax, bundleIDs: ["com.microsoft.teams2"])
+        let zoom = FakeMuteAdapter(app: "zoom", source: .ax, bundleIDs: ["us.zoom.xos"])
         let gate = MicGate(
-            catalogue: Self.catalogue,
-            halBus: halBus,
-            axBus: axBus,
+            catalogue: catalogue,
+            halBus: CoreAudioHALBus(),
+            axBus: AXObserverBus(),
             adapters: [zoom, teams]
         )
         try gate.start(context: teamsContext, handle: MicGateAdapterHandle(muteButton: nil))
         gate.stop()
+
+        XCTAssertEqual(teams.startedContexts.map(\.bundleID), [teamsContext.bundleID])
+        XCTAssertEqual(zoom.starts, 0, "the Zoom adapter must never start for a Teams meeting")
+        XCTAssertEqual(teams.stops, 1)
     }
 
     func test_verdict_changes_emit_event_log_entry() throws {
@@ -136,7 +145,7 @@ final class MicGateIntegrationTests: XCTestCase {
         let halBus = CoreAudioHALBus()
         let axBus = AXObserverBus()
         let gate = MicGate(
-            catalogue: Self.catalogue, halBus: halBus, axBus: axBus, eventLog: log
+            catalogue: catalogue, halBus: halBus, axBus: axBus, eventLog: log
         )
         try gate.start(context: teamsContext, handle: MicGateAdapterHandle())
 
@@ -163,7 +172,7 @@ final class MicGateIntegrationTests: XCTestCase {
             ranOnCallerQueue = onCaller
             exp.fulfill()
         }
-        let gate = MicGate(catalogue: Self.catalogue, halBus: halBus, axBus: axBus, eventLog: log)
+        let gate = MicGate(catalogue: catalogue, halBus: halBus, axBus: axBus, eventLog: log)
         defer { gate.shutdown() }
 
         let caller = DispatchQueue(label: "test.micgate.caller")
@@ -188,7 +197,7 @@ final class MicGateIntegrationTests: XCTestCase {
     func test_injectAxMuteEvent_flips_verdict_to_muted_by_app() throws {
         let halBus = CoreAudioHALBus()
         let axBus = AXObserverBus()
-        let gate = MicGate(catalogue: Self.catalogue, halBus: halBus, axBus: axBus)
+        let gate = MicGate(catalogue: catalogue, halBus: halBus, axBus: axBus)
         try gate.start(context: teamsContext, handle: MicGateAdapterHandle())
         defer { gate.stop() }
 
@@ -215,18 +224,18 @@ final class MicGateIntegrationTests: XCTestCase {
     func test_clearAxMute_releases_a_latched_app_mute() throws {
         let halBus = CoreAudioHALBus()
         let axBus = AXObserverBus()
-        let gate = MicGate(catalogue: Self.catalogue, halBus: halBus, axBus: axBus)
+        let gate = MicGate(catalogue: catalogue, halBus: halBus, axBus: axBus)
         try gate.start(context: teamsContext, handle: MicGateAdapterHandle())
         defer { gate.stop() }
 
         gate.injectAxMuteEvent(
             AXMuteButtonProbe.Event(state: .muted, label: "Unmute", locale: "en")
         )
-        drainPublishQueue()
+        gate.debugDrainPublishQueue()
         XCTAssertEqual(gate.current, .mutedByApp(axLabel: "Unmute", locale: "en"))
 
         gate.clearAxMute()
-        drainPublishQueue()
+        gate.debugDrainPublishQueue()
         if case .mutedByApp = gate.current {
             XCTFail("clearAxMute must release the app-mute latch; got \(gate.current)")
         }
@@ -235,7 +244,7 @@ final class MicGateIntegrationTests: XCTestCase {
     /// `currentVadActive` (MIC10 part 2) is what the window watcher reads to detect a stale
     /// app-mute; it must reflect the fused HAL VAD, with `nil` (unsupported) reading as not active.
     func test_currentVadActive_reflects_the_fused_hal_vad() {
-        let gate = MicGate(catalogue: Self.catalogue, halBus: CoreAudioHALBus(), axBus: AXObserverBus())
+        let gate = MicGate(catalogue: catalogue, halBus: CoreAudioHALBus(), axBus: AXObserverBus())
         XCTAssertFalse(gate.currentVadActive, "unset halVad reads as not active")
         gate.debugUpdate { $0.halVad = true }
         XCTAssertTrue(gate.currentVadActive)
@@ -245,22 +254,21 @@ final class MicGateIntegrationTests: XCTestCase {
         XCTAssertFalse(gate.currentVadActive, "unsupported VAD reads as not active")
     }
 
-    /// The publish path is async on the gate's internal queue; wait a tick to drain.
-    private func drainPublishQueue() {
-        let exp = expectation(description: "drain")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { exp.fulfill() }
-        wait(for: [exp], timeout: 1.0)
-    }
 }
 
 final class MicGateConcurrencyTests: XCTestCase {
 
-    private static let catalogue: MuteLabels = {
-        try! MuteLabelsLoader.loadDefault()
-    }()
+    /// T13: loaded per test and thrown, not force-tried in a static initialiser: a trap there killed the
+    /// xctest process, so one broken resource bundle read as a crash with every later test unrun.
+    private var catalogue: MuteLabels!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        catalogue = try MuteLabelsLoader.loadDefault()
+    }
 
     private func makeGate() -> MicGate {
-        MicGate(catalogue: Self.catalogue, halBus: CoreAudioHALBus(), axBus: AXObserverBus())
+        MicGate(catalogue: catalogue, halBus: CoreAudioHALBus(), axBus: AXObserverBus())
     }
 
     /// Four signal sources funnel into one read-modify-write on `state` from

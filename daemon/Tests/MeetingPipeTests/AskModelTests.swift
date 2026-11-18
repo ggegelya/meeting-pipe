@@ -1,5 +1,6 @@
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// UX37: the Ask run lives on the model, not on the view that started it.
 ///
@@ -97,12 +98,6 @@ final class AskModelTests: XCTestCase {
         }
     }
 
-    /// Yield a few times where there is nothing to wait *for*: proving that
-    /// something did NOT happen needs the runway it would have happened in.
-    private func settle() async {
-        for _ in 0..<20 { await Task.yield() }
-    }
-
     private func answer(_ text: String, error: String? = nil) -> AskAnswer {
         AskAnswer(
             question: "q",
@@ -178,7 +173,7 @@ final class AskModelTests: XCTestCase {
     func testBlankQuestionNeverSpawns() async {
         model.question = "   \n "
         XCTAssertFalse(model.ask())
-        await settle()
+        await yieldRunway()
         XCTAssertTrue(runner.questions.isEmpty)
         XCTAssertFalse(model.isAsking)
     }
@@ -192,7 +187,7 @@ final class AskModelTests: XCTestCase {
         await pump { runner.isRunning }
 
         XCTAssertFalse(model.ask("second question"))
-        await settle()
+        await yieldRunway()
 
         XCTAssertEqual(runner.questions, ["first question"])
         XCTAssertEqual(model.inFlight?.question, "first question")
@@ -222,7 +217,7 @@ final class AskModelTests: XCTestCase {
         // Terminating the subprocess makes `runMP` report a non-zero exit. That
         // is the user's own kill coming back, and it must not land as an error.
         runner.deliver(.failure(RunnerError.killed))
-        await settle()
+        await yieldRunway()
 
         XCTAssertEqual(model.history.count, 1)
         XCTAssertEqual(model.latest?.wasCancelled, true)
@@ -286,7 +281,7 @@ final class AskModelTests: XCTestCase {
         // Unmount, then mount again mid-run: the same still-pending question
         // arrives a second time and must not spawn a second subprocess.
         model.acceptDeeplink(pending.question) { pending.question = nil }
-        await settle()
+        await yieldRunway()
         XCTAssertEqual(runner.questions.count, 1)
         XCTAssertNotNil(pending.question)
 
@@ -314,7 +309,7 @@ final class AskModelTests: XCTestCase {
     func testAURLDeeplinkPrefillsWithoutRunning() async {
         let pending = PendingBox("placeholder question")
         model.acceptDeeplink(pending.question, run: false) { pending.question = nil }
-        await settle()
+        await yieldRunway()
         XCTAssertEqual(model.question, "placeholder question")
         XCTAssertFalse(model.isAsking)
         XCTAssertTrue(runner.questions.isEmpty)
@@ -333,7 +328,7 @@ final class AskModelTests: XCTestCase {
         var consumed = false
         model.acceptDeeplink(nil) { consumed = true }
         model.acceptDeeplink("   ") { consumed = true }
-        await settle()
+        await yieldRunway()
         XCTAssertTrue(runner.questions.isEmpty)
         XCTAssertFalse(consumed)
         XCTAssertFalse(model.isAsking)

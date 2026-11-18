@@ -165,8 +165,8 @@ final class LogFailureTests: XCTestCase {
 
     /// Every os.Logger `.warning(` / `.error(` call in `sources` outside the allowlist, plus every
     /// allowlist entry that matched nothing. Pure, so a scratch string can drive it.
-    static func violations(in sources: [(String, String)]) -> (bare: [String], stale: [String]) {
-        let pattern = try! NSRegularExpression(pattern: #"\b(?:Log\.)?(?:main|detector|recorder)\.(?:warning|error)\("#)
+    static func violations(in sources: [(String, String)]) throws -> (bare: [String], stale: [String]) {
+        let pattern = try NSRegularExpression(pattern: #"\b(?:Log\.)?(?:main|detector|recorder)\.(?:warning|error)\("#)
         var used = Set<Int>()
         var bare: [String] = []
         for (path, text) in sources {
@@ -192,16 +192,16 @@ final class LogFailureTests: XCTestCase {
     func test_no_failure_goes_only_to_os_logger() throws {
         let sources = try daemonSourceFiles()
         XCTAssertGreaterThan(sources.count, 100)
-        let (bare, stale) = Self.violations(in: sources)
+        let (bare, stale) = try Self.violations(in: sources)
         XCTAssertEqual(bare, [], "a failure is never os.Logger alone (OBS1): use Log.failure, or add an allowlist entry with its reason")
         XCTAssertEqual(stale, [], "these allowlist entries match no call any more; delete them")
     }
 
-    func test_the_fence_catches_a_bare_call_outside_the_allowlist() {
+    func test_the_fence_catches_a_bare_call_outside_the_allowlist() throws {
         let scratch = [("MeetingPipe/Scratch.swift", "func f() {\n    Log.main.error(\"save failed\")\n}\n")]
-        XCTAssertEqual(Self.violations(in: scratch).bare, ["MeetingPipe/Scratch.swift:2"])
+        XCTAssertEqual(try Self.violations(in: scratch).bare, ["MeetingPipe/Scratch.swift:2"])
         let wrapped = [("MeetingPipe/Scratch.swift", "Log.recorder.warning(\n    \"x\"\n)\n")]
-        XCTAssertEqual(Self.violations(in: wrapped).bare, ["MeetingPipe/Scratch.swift:1"])
+        XCTAssertEqual(try Self.violations(in: wrapped).bare, ["MeetingPipe/Scratch.swift:1"])
     }
 
     // MARK: - Helpers

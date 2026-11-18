@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import MeetingPipeCore
+import MeetingPipeTestSupport
 
 /// END10: the watcher half of the call-teardown oracle.
 ///
@@ -34,22 +35,6 @@ final class CallTeardownWatcherTests: XCTestCase {
     /// Steps the poll by hand instead of racing a real timer. Repeating, as the production timer
     /// is since END16: `fire()` keeps the action until the cancel closure clears it, so a
     /// multi-fire test cannot go quietly vacuous after its first tick.
-    private final class ManualScheduler {
-        private let lock = NSLock()
-        private var pending: (() -> Void)?
-        private(set) var arms: [TimeInterval] = []
-        var schedule: CallTeardownWatcher.Scheduler {
-            { [self] interval, action in
-                lock.lock(); pending = action; arms.append(interval); lock.unlock()
-                return { [self] in lock.lock(); pending = nil; lock.unlock() }
-            }
-        }
-        func fire() {
-            lock.lock(); let action = pending; lock.unlock()
-            action?()
-        }
-        var hasPending: Bool { lock.lock(); defer { lock.unlock() }; return pending != nil }
-    }
 
     // MARK: - Item 2: the tail has to tick more than once
 
@@ -87,7 +72,7 @@ final class CallTeardownWatcherTests: XCTestCase {
         XCTAssertFalse(watcher.isRunning)
         XCTAssertFalse(scheduler.hasPending, "stop() must cancel the repeating timer, not only outrun it")
         let before = watcher.tickCount
-        scheduler.fire()
+        scheduler.tick()
         XCTAssertEqual(watcher.tickCount, before, "a fired tick after stop() must be dropped")
     }
 
@@ -107,7 +92,7 @@ final class CallTeardownWatcherTests: XCTestCase {
         XCTAssertTrue(watcher.snapshot().available, "a present log resolves available on tick 1")
 
         try FileManager.default.removeItem(at: url)
-        scheduler.fire()
+        scheduler.tick()
         XCTAssertTrue(
             watcher.snapshot().available,
             "one flap must not fail the oracle open: the longest observed run of consecutive "
@@ -124,7 +109,7 @@ final class CallTeardownWatcherTests: XCTestCase {
         )
         watcher.start()
         try FileManager.default.removeItem(at: url)
-        for _ in 0..<CallTeardownWatcher.unavailableAfterFailures { scheduler.fire() }
+        for _ in 0..<CallTeardownWatcher.unavailableAfterFailures { scheduler.tick() }
         XCTAssertFalse(
             watcher.snapshot().available,
             "a log that is genuinely gone still has to reach unavailable, or every end holds the cap"
@@ -140,11 +125,11 @@ final class CallTeardownWatcherTests: XCTestCase {
         )
         watcher.start()
         try FileManager.default.removeItem(at: url)
-        for _ in 0..<CallTeardownWatcher.unavailableAfterFailures { scheduler.fire() }
+        for _ in 0..<CallTeardownWatcher.unavailableAfterFailures { scheduler.tick() }
         XCTAssertFalse(watcher.snapshot().available)
 
         try writeGeneration("MSTeamsNM_SlimCore_2026-08-20_00-00-00.99.log")
-        scheduler.fire()
+        scheduler.tick()
         XCTAssertTrue(
             watcher.snapshot().available,
             "only the fall is damped; a resolve that worked is proof the log is back"
@@ -189,7 +174,7 @@ final class CallTeardownWatcherTests: XCTestCase {
             reason.contains("NSCocoaErrorDomain") || reason.contains("260"),
             "the row has to name the cause; 'it returned nothing' is what END10 item 4 removes, got: \(reason)"
         )
-        scheduler.fire()
+        scheduler.tick()
         XCTAssertEqual(
             events.entries.filter { $0.action == "call_teardown_source_missing" }.count, 1,
             "the same cause must not be re-emitted every tick"
@@ -304,9 +289,9 @@ final class CallTeardownWatcherTests: XCTestCase {
         let scheduler = ManualScheduler()
         let watcher = fakeWatcher(folder, scheduler: scheduler)
         watcher.start()
-        for _ in 0..<10 { scheduler.fire() }
+        for _ in 0..<10 { scheduler.tick() }
         XCTAssertEqual(watcher.tickCount, 11)
-        XCTAssertEqual(scheduler.arms.count, 1, "one repeating timer, not one per tick")
+        XCTAssertEqual(scheduler.scheduleCount, 1, "one repeating timer, not one per tick")
     }
 
     func testATickThatIsNotRelistingStatsOnlyTheTailedFile() throws {
@@ -319,12 +304,12 @@ final class CallTeardownWatcherTests: XCTestCase {
         watcher.start()   // first tick lists
         let (listings, stats) = (folder.listings, folder.stats)
         clock.set(clock.get().addingTimeInterval(1))
-        scheduler.fire()
+        scheduler.tick()
         XCTAssertEqual(folder.listings, listings, "no listing inside relistInterval")
         XCTAssertEqual(folder.stats - stats, 1, "one stat: the generation being tailed")
 
         clock.set(clock.get().addingTimeInterval(CallTeardownWatcher.relistInterval))
-        scheduler.fire()
+        scheduler.tick()
         XCTAssertEqual(folder.listings, listings + 1, "a listing once relistInterval has passed")
     }
 
@@ -371,18 +356,18 @@ final class CallTeardownWatcherTests: XCTestCase {
         let scheduler = ManualScheduler()
         let watcher = fakeWatcher(folder, scheduler: scheduler)
         watcher.start()
-        XCTAssertEqual(scheduler.arms, [CallTeardownWatcher.defaultPollInterval], "1 Hz until told otherwise")
+        XCTAssertEqual(scheduler.scheduledDelays, [CallTeardownWatcher.defaultPollInterval], "1 Hz until told otherwise")
         XCTAssertTrue(watcher.snapshot().available)
 
         watcher.setTeamsRunning(false)
-        XCTAssertEqual(scheduler.arms.last, CallTeardownWatcher.idlePollInterval)
+        XCTAssertEqual(scheduler.scheduledDelays.last, CallTeardownWatcher.idlePollInterval)
         XCTAssertEqual(watcher.currentPollInterval, CallTeardownWatcher.idlePollInterval)
         XCTAssertTrue(watcher.snapshot().available, "slowing down must not lapse the oracle")
 
         let ticks = watcher.tickCount
         let listings = folder.listings
         watcher.setTeamsRunning(true)
-        XCTAssertEqual(scheduler.arms.last, CallTeardownWatcher.defaultPollInterval)
+        XCTAssertEqual(scheduler.scheduledDelays.last, CallTeardownWatcher.defaultPollInterval)
         XCTAssertEqual(watcher.tickCount, ticks + 1, "a launch ticks at once, before any consult")
         XCTAssertEqual(folder.listings, listings + 1, "a launch lists, since a launch is when Teams rotates")
         XCTAssertTrue(watcher.snapshot().available)
@@ -410,18 +395,18 @@ final class CallTeardownWatcherTests: XCTestCase {
         watcher.start()
         // Half a line is read and carried before the failure, the rest is written during it.
         folder.append(Self.generation, "2026-11-12T14:32:40.100000+02:00 0x1 <INFO> SlimCoreModule::Window")
-        scheduler.fire()
+        scheduler.tick()
 
         folder.listingFails = true
         folder.statFails = true
         folder.append(Self.generation, "ContentProtec")
         clock.set(clock.get().addingTimeInterval(11))
-        scheduler.fire()
+        scheduler.tick()
         folder.listingFails = false
         folder.statFails = false
         folder.append(Self.generation, "tionProvider: UnregisterCall 406\n")
         clock.set(clock.get().addingTimeInterval(11))
-        scheduler.fire()
+        scheduler.tick()
         XCTAssertNotNil(watcher.snapshot().lastTeardownAt)
     }
 
@@ -436,7 +421,7 @@ final class CallTeardownWatcherTests: XCTestCase {
         folder.listingFails = true
         folder.append(Self.generation, Self.teardownLine)
         clock.set(clock.get().addingTimeInterval(11))
-        scheduler.fire()
+        scheduler.tick()
         XCTAssertNotNil(watcher.snapshot().lastTeardownAt)
         XCTAssertTrue(watcher.snapshot().available)
         XCTAssertEqual(events.entries.filter { $0.action == "call_teardown_source_missing" }.count, 1)
@@ -465,10 +450,10 @@ final class CallTeardownWatcherTests: XCTestCase {
         for _ in 0..<3 {
             folder.listingFails = true
             clock.set(clock.get().addingTimeInterval(11))
-            scheduler.fire()
+            scheduler.tick()
             folder.listingFails = false
             clock.set(clock.get().addingTimeInterval(11))
-            scheduler.fire()
+            scheduler.tick()
         }
         let missing = events.entries.filter { $0.action == "call_teardown_source_missing" }
         let recovered = events.entries.filter { $0.action == "call_teardown_source_recovered" }
@@ -480,7 +465,7 @@ final class CallTeardownWatcherTests: XCTestCase {
         // Past the hour the next failure reports again, carrying the two that were suppressed.
         clock.set(clock.get().addingTimeInterval(3600))
         folder.listingFails = true
-        scheduler.fire()
+        scheduler.tick()
         XCTAssertEqual(events.entries.filter { $0.action == "call_teardown_source_missing" }.last?.attributes["failures"], "3")
     }
 
@@ -496,15 +481,15 @@ final class CallTeardownWatcherTests: XCTestCase {
         watcher.start()
         folder.listingFails = true
         clock.set(clock.get().addingTimeInterval(11))
-        scheduler.fire()
+        scheduler.tick()
         for _ in 0..<5 {
             clock.set(clock.get().addingTimeInterval(1))
-            scheduler.fire()
+            scheduler.tick()
         }
         XCTAssertFalse(events.entries.contains { $0.action == "call_teardown_source_recovered" })
         folder.listingFails = false
         clock.set(clock.get().addingTimeInterval(5))
-        scheduler.fire()
+        scheduler.tick()
         let recovered = events.entries.filter { $0.action == "call_teardown_source_recovered" }
         XCTAssertEqual(recovered.count, 1)
         XCTAssertEqual(recovered.first?.attributes["outage_sec"], "10.0", "the outage runs to the listing that worked")
@@ -518,10 +503,10 @@ final class CallTeardownWatcherTests: XCTestCase {
         let watcher = fakeWatcher(folder, scheduler: scheduler, events: events)
         watcher.start()
         folder.append(Self.generation, Self.registerLine)
-        scheduler.fire()
+        scheduler.tick()
         XCTAssertNil(watcher.snapshot().lastTeardownAt, "a registration line must never read as a teardown")
         folder.append(Self.generation, Self.teardownLine)
-        scheduler.fire()
+        scheduler.tick()
 
         let rows = events.entries.filter { $0.action == "call_teardown_line" }
         XCTAssertEqual(rows.map { $0.attributes["kind"] }, ["register", "unregister"])

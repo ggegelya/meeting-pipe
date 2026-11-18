@@ -186,7 +186,7 @@ final class RedactionMarkerFailClosedREC21Tests: XCTestCase {
         var enqueued: [URL] = []
         let root = dir!
         let service = MeetingLibraryService(
-            outputDir: { root }, launcher: NoopDriver(), notifyError: { _ in },
+            outputDir: { root }, launcher: FakePipelineDriver(), notifyError: { _ in },
             enqueue: { file, _, _ in enqueued.append(file) }
         )
         guard case .failure(let error) = service.retryMeeting(stem: stem) else {
@@ -206,7 +206,7 @@ final class RedactionMarkerFailClosedREC21Tests: XCTestCase {
         var owed: [Bool] = []
         let root = dir!
         let service = MeetingLibraryService(
-            outputDir: { root }, launcher: NoopDriver(), notifyError: { _ in },
+            outputDir: { root }, launcher: FakePipelineDriver(), notifyError: { _ in },
             enqueue: { _, _, redactionOwed in owed.append(redactionOwed) }
         )
         XCTAssertNoThrow(try service.retryMeeting(stem: stem).get())
@@ -225,7 +225,7 @@ final class RedactionMarkerFailClosedREC21Tests: XCTestCase {
         var queued: [URL] = []
         let root = dir!
         let service = MeetingLibraryService(
-            outputDir: { root }, launcher: NoopDriver(), notifyError: { _ in },
+            outputDir: { root }, launcher: FakePipelineDriver(), notifyError: { _ in },
             enqueue: { _, _, _ in },
             enqueueRetranscribe: { file, _ in queued.append(file) }
         )
@@ -275,7 +275,4 @@ final class RedactionMarkerFailClosedREC21Tests: XCTestCase {
         XCTAssertThrowsError(try OffRecordMarker.write(forFinal: nowhere))
     }
 
-    private final class NoopDriver: PipelineDriver {
-        func runAll(wav: URL, summaryMode: SummaryMode, completion: @escaping (Result<URL?, Error>) -> Void) {}
-    }
 }

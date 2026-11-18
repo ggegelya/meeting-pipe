@@ -43,9 +43,14 @@ final class MuteSourceFusionRuleTests: XCTestCase {
 
 final class MicGateMuteFusionTests: XCTestCase {
 
-    private static let catalogue: MuteLabels = {
-        try! MuteLabelsLoader.loadDefault()
-    }()
+    /// T13: loaded per test and thrown, not force-tried in a static initialiser: a trap there killed the
+    /// xctest process, so one broken resource bundle read as a crash with every later test unrun.
+    private var catalogue: MuteLabels!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        catalogue = try MuteLabelsLoader.loadDefault()
+    }
 
     private let teams = MeetingLifecycleContext(
         bundleID: "com.microsoft.teams2", kind: .native, pid: 1234
@@ -55,7 +60,7 @@ final class MicGateMuteFusionTests: XCTestCase {
 
     private func makeGate(eventLog: EventLog = NoopEventLog(), adapters: [MicGateAdapter] = []) -> MicGate {
         MicGate(
-            catalogue: Self.catalogue,
+            catalogue: catalogue,
             halBus: CoreAudioHALBus(),
             axBus: AXObserverBus(),
             eventLog: eventLog,
@@ -70,7 +75,7 @@ final class MicGateMuteFusionTests: XCTestCase {
         let gate = makeGate()
         defer { gate.shutdown() }
         gate.injectAxMuteEvent(AXMuteButtonProbe.Event(state: .muted, label: "Unmute", locale: "en"))
-        drain()
+        gate.debugDrainPublishQueue()
         XCTAssertEqual(gate.current, .mutedByApp(axLabel: "Unmute", locale: "en"))
     }
 
@@ -82,14 +87,14 @@ final class MicGateMuteFusionTests: XCTestCase {
         defer { gate.shutdown() }
 
         gate.injectAxMuteEvent(logEvent(muted: true), source: .log)
-        drain()
+        gate.debugDrainPublishQueue()
         guard case .mutedByApp = gate.current else {
             return XCTFail("the log's `.muted` must drive the verdict; got \(gate.current)")
         }
 
         clock = clock.addingTimeInterval(1)
         gate.injectAxMuteEvent(AXMuteButtonProbe.Event(state: .unmuted, label: "Mute", locale: "en"))
-        drain()
+        gate.debugDrainPublishQueue()
         guard case .mutedByApp = gate.current else {
             return XCTFail("a fresh log reading must outrank the AX read; got \(gate.current)")
         }
@@ -105,10 +110,10 @@ final class MicGateMuteFusionTests: XCTestCase {
         defer { gate.shutdown() }
 
         gate.injectAxMuteEvent(logEvent(muted: true), source: .log)
-        drain()
+        gate.debugDrainPublishQueue()
         clock = clock.addingTimeInterval(MuteSourceFusion.defaultLogFreshness + 1)
         gate.injectAxMuteEvent(AXMuteButtonProbe.Event(state: .unmuted, label: "Mute", locale: "en"))
-        drain()
+        gate.debugDrainPublishQueue()
 
         if case .mutedByApp = gate.current {
             XCTFail("a stale log reading must not out-vote the AX read; got \(gate.current)")
@@ -122,16 +127,16 @@ final class MicGateMuteFusionTests: XCTestCase {
         defer { gate.shutdown() }
 
         gate.injectAxMuteEvent(logEvent(muted: true), source: .log)
-        drain()
+        gate.debugDrainPublishQueue()
         gate.clearAxMute()
-        drain()
+        gate.debugDrainPublishQueue()
         guard case .mutedByApp = gate.current else {
             return XCTFail("clear must not discard a fresh log reading; got \(gate.current)")
         }
 
         clock = clock.addingTimeInterval(MuteSourceFusion.defaultLogFreshness + 1)
         gate.clearAxMute()
-        drain()
+        gate.debugDrainPublishQueue()
         if case .mutedByApp = gate.current {
             XCTFail("clear must be honoured once the log is quiet; got \(gate.current)")
         }
@@ -176,14 +181,14 @@ final class MicGateMuteFusionTests: XCTestCase {
         try gate.start(context: teams, handle: MicGateAdapterHandle())
 
         logReader.send(logEvent(muted: true))
-        drain()
+        gate.debugDrainPublishQueue()
         guard case .mutedByApp = gate.current else {
             return XCTFail("a `.log` adapter must drive the verdict; got \(gate.current)")
         }
 
         // ... and it stamped the freshness, so the AX read is now the fallback.
         gate.injectAxMuteEvent(AXMuteButtonProbe.Event(state: .unmuted, label: "Mute", locale: "en"))
-        drain()
+        gate.debugDrainPublishQueue()
         guard case .mutedByApp = gate.current else {
             return XCTFail("the adapter's reading must gate the AX read; got \(gate.current)")
         }
@@ -197,39 +202,4 @@ final class MicGateMuteFusionTests: XCTestCase {
         )
     }
 
-    /// The publish path is async on the gate's internal queue; wait a tick to drain.
-    private func drain() {
-        let exp = expectation(description: "drain")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { exp.fulfill() }
-        wait(for: [exp], timeout: 1.0)
-    }
-}
-
-/// Counts starts/stops and replays events into whatever sink MicGate installed.
-private final class FakeMuteAdapter: MicGateAdapter {
-    let bundleIDs: Set<String> = ["com.microsoft.teams2"]
-    let app: String
-    let source: MuteReadingSource
-
-    private(set) var starts = 0
-    private(set) var stops = 0
-    private var sink: ((AXMuteButtonProbe.Event) -> Void)?
-
-    init(app: String, source: MuteReadingSource) {
-        self.app = app
-        self.source = source
-    }
-
-    func start(
-        context: MeetingLifecycleContext,
-        handle: MicGateAdapterHandle,
-        sink: @escaping (AXMuteButtonProbe.Event) -> Void
-    ) throws {
-        starts += 1
-        self.sink = sink
-    }
-
-    func stop() { stops += 1 }
-
-    func send(_ event: AXMuteButtonProbe.Event) { sink?(event) }
 }

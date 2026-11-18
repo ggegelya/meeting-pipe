@@ -73,10 +73,19 @@ let package = Package(
             // comment. `complete` mode stays out of scope (a separate decision).
             swiftSettings: [.unsafeFlags(["-strict-concurrency=targeted"])]
         ),
+        // T13: the test doubles and waits both test targets share. Not a test target and no XCTest
+        // import, because a plain `swift build` compiles every regular target and Command Line Tools
+        // have no XCTest. Foundation only, so neither app module is needed here; doubles that need
+        // one live in that target's `Support/` folder.
+        .target(
+            name: "MeetingPipeTestSupport",
+            path: "Tests/TestSupport"
+        ),
         .testTarget(
             name: "MeetingPipeTests",
             dependencies: [
                 "MeetingPipe",
+                "MeetingPipeTestSupport",
                 // Directly, so the barrier's own contract is pinned rather than only
                 // observed through GuardedTapInstall.
                 "MeetingPipeObjC"
@@ -88,7 +97,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MeetingPipeCoreTests",
-            dependencies: ["MeetingPipeCore"],
+            dependencies: ["MeetingPipeCore", "MeetingPipeTestSupport"],
             path: "Tests/MeetingPipeCoreTests",
             resources: [.process("Fixtures")]
         )

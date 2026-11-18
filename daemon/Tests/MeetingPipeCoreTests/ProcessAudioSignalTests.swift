@@ -1,6 +1,7 @@
 import CoreAudio
 import XCTest
 @testable import MeetingPipeCore
+import MeetingPipeTestSupport
 
 final class ProcessAudioSignalTests: XCTestCase {
 
@@ -9,15 +10,6 @@ final class ProcessAudioSignalTests: XCTestCase {
         kind: .native,
         pid: 1234
     )
-
-    private func manualScheduler(_ store: ManualScheduler) -> ProcessAudioSignal.Scheduler {
-        return { _, action in
-            store.tick = action
-            return { store.tick = nil }
-        }
-    }
-
-    final class ManualScheduler { var tick: (() -> Void)? }
 
     /// Stub resolver returning fixed fake process AudioObjects so the listener path can be
     /// exercised without live audio processes. The real resolver enumerates the HAL process
@@ -39,7 +31,7 @@ final class ProcessAudioSignalTests: XCTestCase {
             halBus: bus,
             eventLog: log,
             probe: { _, _ in true },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
@@ -54,13 +46,13 @@ final class ProcessAudioSignalTests: XCTestCase {
         let signal = ProcessAudioSignal(
             halBus: bus,
             probe: { _, _ in true },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
         try signal.start(context: teamsContext)
-        scheduler.tick?()
-        scheduler.tick?()
+        scheduler.tick()
+        scheduler.tick()
         XCTAssertEqual(observed, [true])
     }
 
@@ -72,13 +64,13 @@ final class ProcessAudioSignalTests: XCTestCase {
         let signal = ProcessAudioSignal(
             halBus: bus,
             probe: { _, _ in current },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
         try signal.start(context: teamsContext)
         current = false
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed, [true, false])
     }
 
@@ -92,13 +84,13 @@ final class ProcessAudioSignalTests: XCTestCase {
             halBus: bus,
             eventLog: log,
             probe: { _, _ in probeReturn },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
         try signal.start(context: teamsContext)
         probeReturn = nil
-        scheduler.tick?()
+        scheduler.tick()
 
         XCTAssertEqual(observed, [true], "nil probe must not emit a true/false transition")
         XCTAssertTrue(log.entries.contains { $0.action == "process_audio_unresolved" })
@@ -118,21 +110,21 @@ final class ProcessAudioSignalTests: XCTestCase {
             halBus: CoreAudioHALBus(),
             eventLog: log,
             probe: { _, _ in probeReturn.get() },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
         signal.onUnknown = { unknowns += 1 }
         try signal.start(context: teamsContext)
 
         probeReturn.set(nil)
-        scheduler.tick?()
-        scheduler.tick?()
+        scheduler.tick()
+        scheduler.tick()
         XCTAssertEqual(observed, [true])
         XCTAssertEqual(unknowns, 1)
         XCTAssertEqual(log.entries.filter { $0.action == "process_audio_input_unknown" }.count, 1)
 
         probeReturn.set(true)
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed, [true, true], "a reading after unknown is a fresh transition")
     }
 
@@ -147,7 +139,7 @@ final class ProcessAudioSignalTests: XCTestCase {
         let signal = ProcessAudioSignal(
             halBus: CoreAudioHALBus(),
             probe: { _, _ in probeReturn.get() },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
         signal.onUnknown = { unknowns += 1 }
@@ -168,7 +160,7 @@ final class ProcessAudioSignalTests: XCTestCase {
         let signal = ProcessAudioSignal(
             halBus: CoreAudioHALBus(),
             readObject: { objects.get().contains($0) ? false : nil },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             resolver: { _ in objects.get().isEmpty ? .unresolved(noErr) : .resolved(objects.get()) }
         )
         signal.onChange = { observed.append($0) }
@@ -177,7 +169,7 @@ final class ProcessAudioSignalTests: XCTestCase {
         XCTAssertEqual(observed, [false])
 
         objects.set([])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(unknowns, 0)
         XCTAssertEqual(observed, [false])
     }
@@ -193,7 +185,7 @@ final class ProcessAudioSignalTests: XCTestCase {
         let signal = ProcessAudioSignal(
             halBus: CoreAudioHALBus(),
             readObject: { $0 == 101 ? ownerReading.get() : false },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             resolver: { _ in resolves.mutate { $0 += 1 }; return .resolved([101, 102]) }
         )
         signal.onChange = { observed.append($0) }
@@ -203,7 +195,7 @@ final class ProcessAudioSignalTests: XCTestCase {
         let afterStart = resolves.get()
 
         ownerReading.set(nil)
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed, [true], "never a false")
         XCTAssertEqual(unknowns, 1)
         XCTAssertEqual(resolves.get(), afterStart + 1, "the streak re-resolved first")
@@ -220,7 +212,7 @@ final class ProcessAudioSignalTests: XCTestCase {
         let signal = ProcessAudioSignal(
             halBus: CoreAudioHALBus(),
             readObject: { $0 == 101 ? ownerReading.get() : false },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             resolver: { _ in .resolved(objects.get()) }
         )
         signal.onChange = { observed.append($0) }
@@ -229,7 +221,7 @@ final class ProcessAudioSignalTests: XCTestCase {
 
         ownerReading.set(nil)
         objects.set([102])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(unknowns, 0, "the re-resolve dropped the vanished owner before the reading settled")
         XCTAssertEqual(observed, [true, false])
     }
@@ -242,7 +234,7 @@ final class ProcessAudioSignalTests: XCTestCase {
         let signal = ProcessAudioSignal(
             halBus: CoreAudioHALBus(),
             readObject: { $0 == 101 ? ownerReading.get() : false },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             resolver: { _ in .resolved([101, 102]) }
         )
         signal.onChange = { observed.append($0) }
@@ -279,13 +271,13 @@ final class ProcessAudioSignalTests: XCTestCase {
             halBus: bus,
             eventLog: log,
             probe: { _, _ in nil },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
 
         try signal.start(context: teamsContext)
-        scheduler.tick?()
-        scheduler.tick?()
-        scheduler.tick?()
+        scheduler.tick()
+        scheduler.tick()
+        scheduler.tick()
 
         let unresolved = log.entries.filter { $0.action == "process_audio_unresolved" }
         XCTAssertEqual(unresolved.count, 1, "unresolved probe must log once per streak, not per tick")
@@ -302,15 +294,15 @@ final class ProcessAudioSignalTests: XCTestCase {
             halBus: bus,
             eventLog: log,
             probe: { _, _ in probeReturn },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
 
         try signal.start(context: teamsContext)   // unresolved streak 1 logs
-        scheduler.tick?()                          // still unresolved, no re-log
+        scheduler.tick()                          // still unresolved, no re-log
         probeReturn = true
-        scheduler.tick?()                          // resolves, clears the streak
+        scheduler.tick()                          // resolves, clears the streak
         probeReturn = nil
-        scheduler.tick?()                          // unresolved streak 2 logs
+        scheduler.tick()                          // unresolved streak 2 logs
 
         let unresolved = log.entries.filter { $0.action == "process_audio_unresolved" }
         XCTAssertEqual(unresolved.count, 2)
@@ -323,17 +315,17 @@ final class ProcessAudioSignalTests: XCTestCase {
         let signal = ProcessAudioSignal(
             halBus: bus,
             probe: { _, _ in true },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             resolver: stubResolver()
         )
         signal.onChange = { observed.append($0) }
         try signal.start(context: teamsContext)
         XCTAssertEqual(bus.activeSubscriptionCount, 1 + listListenerCount)
-        XCTAssertNotNil(scheduler.tick)
+        XCTAssertTrue(scheduler.hasPending)
 
         signal.stop()
         XCTAssertEqual(bus.activeSubscriptionCount, 0)
-        XCTAssertNil(scheduler.tick)
+        XCTAssertFalse(scheduler.hasPending)
 
         // `lastValue` is no longer readable from outside (CONC9), so pin its reset by behaviour: a
         // restart reports the same reading again rather than swallowing it as a repeat.
@@ -353,7 +345,7 @@ final class ProcessAudioSignalTests: XCTestCase {
             halBus: bus,
             eventLog: log,
             probe: { _, _ in true },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             resolver: { _ in .unresolved(-1) }
         )
         signal.onChange = { observed.append($0) }
@@ -365,7 +357,7 @@ final class ProcessAudioSignalTests: XCTestCase {
             "no per-object listener when nothing resolved, but the list listener still arms: a "
                 + "list change is how an app that was not running yet becomes resolvable"
         )
-        XCTAssertNotNil(scheduler.tick, "poll fallback still scheduled")
+        XCTAssertTrue(scheduler.hasPending, "poll fallback still scheduled")
         XCTAssertEqual(observed, [true], "initial poll evaluation still emits")
         XCTAssertTrue(log.entries.contains { $0.action == "process_audio_object_unresolved" })
     }
@@ -377,7 +369,7 @@ final class ProcessAudioSignalTests: XCTestCase {
         let signal = ProcessAudioSignal(
             halBus: bus,
             probe: { _, _ in true },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             resolver: stubResolver()
         )
         try signal.start(context: teamsContext)
@@ -392,7 +384,7 @@ final class ProcessAudioSignalTests: XCTestCase {
         let signal = ProcessAudioSignal(
             halBus: bus,
             probe: { _, _ in true },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             resolver: stubResolver([136, 141, 142])
         )
         try signal.start(context: teamsContext)
@@ -408,11 +400,11 @@ final class ProcessAudioSignalTests: XCTestCase {
         let signal = ProcessAudioSignal(
             halBus: bus,
             probe: { _, objects in seen.append(objects); return true },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             resolver: stubResolver([136, 141])
         )
         try signal.start(context: teamsContext)
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(seen, [[136, 141], [136, 141]])
     }
 
@@ -427,13 +419,13 @@ final class ProcessAudioSignalTests: XCTestCase {
         let signal = ProcessAudioSignal(
             halBus: bus,
             probe: { _, _ in nil },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             resolver: { _ in resolveCount += 1; return .resolved([136]) }
         )
 
         try signal.start(context: teamsContext)   // resolve #1 at start, #2 on the first nil
-        scheduler.tick?()
-        scheduler.tick?()
+        scheduler.tick()
+        scheduler.tick()
         XCTAssertEqual(resolveCount, 2, "one re-resolution per unresolved streak, not per tick")
     }
 
@@ -787,40 +779,27 @@ final class ProcessAudioSignalTests: XCTestCase {
 
     // MARK: - PERF19: the backoff holds in steady state
 
-    /// Records every interval the signal arms, so the cadence is visible.
-    final class IntervalScheduler {
-        var tick: (() -> Void)?
-        var armed: [TimeInterval] = []
-        var scheduler: ProcessAudioSignal.Scheduler {
-            return { [self] interval, action in
-                armed.append(interval)
-                tick = action
-                return { [weak self] in self?.tick = nil }
-            }
-        }
-    }
-
     /// Red against the PERF5 rule: a call in progress with a quiet `isRunningInput` listener
     /// polled at 1 Hz all meeting.
     func test_steady_input_backs_off_to_slow_and_an_unannounced_change_returns_fast() throws {
-        let scheduler = IntervalScheduler()
+        let scheduler = ManualScheduler()
         var running = true
         let signal = ProcessAudioSignal(
             halBus: CoreAudioHALBus(),
             probe: { _, _ in running },
-            scheduler: scheduler.scheduler,
+            scheduler: scheduler.schedule,
             resolver: stubResolver()
         )
         try signal.start(context: teamsContext)
-        XCTAssertEqual(scheduler.armed, [ProcessAudioSignal.defaultPollInterval])
+        XCTAssertEqual(scheduler.scheduledDelays, [ProcessAudioSignal.defaultPollInterval])
 
-        for _ in 0..<20 { scheduler.tick?() }
-        XCTAssertEqual(scheduler.armed.last, ProcessAudioSignal.defaultSlowPollInterval)
-        XCTAssertEqual(scheduler.armed.count, 2, "one back-off, then slow holds")
+        for _ in 0..<20 { scheduler.tick() }
+        XCTAssertEqual(scheduler.scheduledDelays.last, ProcessAudioSignal.defaultSlowPollInterval)
+        XCTAssertEqual(scheduler.scheduledDelays.count, 2, "one back-off, then slow holds")
 
         running = false   // the leave the listener dropped
-        scheduler.tick?()
-        XCTAssertEqual(scheduler.armed.last, ProcessAudioSignal.defaultPollInterval)
+        scheduler.tick()
+        XCTAssertEqual(scheduler.scheduledDelays.last, ProcessAudioSignal.defaultPollInterval)
         signal.stop()
     }
 
@@ -847,7 +826,7 @@ final class ProcessAudioSignalTests: XCTestCase {
             halBus: bus,
             eventLog: log,
             probe: { _, _ in true },
-            scheduler: manualScheduler(ManualScheduler()),
+            scheduler: ManualScheduler().schedule,
             resolver: resolver,
             oneShot: { delay, work in oneShot.delays.append(delay); oneShot.pending.append(work) },
             clock: { clock.get() }
@@ -954,7 +933,7 @@ final class ProcessAudioSignalTests: XCTestCase {
             halBus: bus,
             eventLog: log,
             probe: { _, resolved in resolved.contains(102) },
-            scheduler: manualScheduler(ManualScheduler()),
+            scheduler: ManualScheduler().schedule,
             resolver: { _ in .resolved(objects.get()) },
             oneShot: { _, work in oneShot.pending.append(work) }
         )
@@ -986,7 +965,7 @@ final class ProcessAudioSignalTests: XCTestCase {
                 if resolved.contains(102) { return true }
                 return vanished.get() ? nil : false
             },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             resolver: { _ in .resolved(objects.get()) }
         )
         signal.onChange = { observed.append($0) }
@@ -995,7 +974,7 @@ final class ProcessAudioSignalTests: XCTestCase {
 
         vanished.set(true)
         objects.set([102])
-        scheduler.tick?()
+        scheduler.tick()
 
         XCTAssertEqual(observed, [false, true])
         signal.stop()

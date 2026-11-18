@@ -5,7 +5,14 @@ import XCTest
 /// accounts which evidence held the verdict for the `speech_evidence` row.
 final class SpeechEvidenceTests: XCTestCase {
 
-    private static let catalogue: MuteLabels = { try! MuteLabelsLoader.loadDefault() }()
+    /// T13: loaded per test and thrown, not force-tried in a static initialiser: a trap there killed the
+    /// xctest process, so one broken resource bundle read as a crash with every later test unrun.
+    private var catalogue: MuteLabels!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        catalogue = try MuteLabelsLoader.loadDefault()
+    }
 
     private final class Clock {
         var now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -17,7 +24,7 @@ final class SpeechEvidenceTests: XCTestCase {
 
     private func makeGate(_ clock: Clock, vad: HALVoiceActivityProbe, log: EventLog = NoopEventLog()) -> MicGate {
         MicGate(
-            catalogue: Self.catalogue, halBus: CoreAudioHALBus(), axBus: AXObserverBus(), eventLog: log,
+            catalogue: catalogue, halBus: CoreAudioHALBus(), axBus: AXObserverBus(), eventLog: log,
             halVadProbe: vad,
             rmsGate: RMSGateProbe(clock: { clock.now }),
             speechDetector: FloorSpeechDetector(clock: { clock.now }),

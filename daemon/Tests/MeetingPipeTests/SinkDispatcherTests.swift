@@ -1,5 +1,6 @@
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// Locks in the post-extraction contract for `SinkDispatcher`:
 /// jobs are queued + flushed sequentially, the queue-depth callback
@@ -7,76 +8,8 @@ import XCTest
 /// via `onJobCompleted` on main.
 final class SinkDispatcherTests: XCTestCase {
 
-    /// Programmable in-memory pipeline driver. Each `runAll` call
-    /// records the file it was given and parks the completion until
-    /// the test resolves it. Lets us assert serialization (next job
-    /// doesn't start until the prior completion fires).
-    private final class FakeDriver: PipelineDriver {
-        private(set) var startedFiles: [URL] = []
-        private var completions: [(Result<URL?, Error>) -> Void] = []
-        /// Progress callback the dispatcher handed us for the active run (TECH-UX5).
-        private(set) var capturedProgress: ((PipelineProgress) -> Void)?
-        private(set) var cancelCalled = false
-
-        func runAll(
-            wav: URL,
-            summaryMode: SummaryMode,
-            completion: @escaping (Result<URL?, Error>) -> Void
-        ) {
-            runAll(wav: wav, summaryMode: summaryMode, onProgress: nil, completion: completion)
-        }
-
-        func runAll(
-            wav: URL,
-            summaryMode: SummaryMode,
-            onProgress: ((PipelineProgress) -> Void)?,
-            completion: @escaping (Result<URL?, Error>) -> Void
-        ) {
-            startedFiles.append(wav)
-            capturedProgress = onProgress
-            completions.append(completion)
-        }
-
-        func cancelActiveRun() { cancelCalled = true }
-
-        /// ASR3: `mp finalize` calls, kept apart from `runAll` so a test can
-        /// assert the re-transcribe tail never reaches summarize or publish.
-        private(set) var finalizedFiles: [URL] = []
-        private var finalizeCompletions: [(Result<Void, Error>) -> Void] = []
-
-        func finalize(wav: URL, completion: @escaping (Result<Void, Error>) -> Void) {
-            finalizedFiles.append(wav)
-            finalizeCompletions.append(completion)
-        }
-
-        func finishFinalize(_ result: Result<Void, Error>) {
-            guard !finalizeCompletions.isEmpty else { return }
-            finalizeCompletions.removeFirst()(result)
-        }
-
-        /// Resolve the head of the in-flight queue.
-        func finish(_ result: Result<URL?, Error>) {
-            guard !completions.isEmpty else { return }
-            let cb = completions.removeFirst()
-            cb(result)
-        }
-
-        /// Fire a progress heartbeat as if the subprocess emitted one.
-        func emitProgress(_ progress: PipelineProgress) {
-            capturedProgress?(progress)
-        }
-    }
-
     private let tmpA = URL(fileURLWithPath: "/tmp/mp-a.wav")
     private let tmpB = URL(fileURLWithPath: "/tmp/mp-b.wav")
-
-    /// Spin the run loop briefly so the `DispatchQueue.main.async`
-    /// inside the completion callback runs before assertions.
-    private func drainMain(_ timeout: TimeInterval = 0.5) {
-        let exp = expectation(description: "drain")
-        DispatchQueue.main.async { exp.fulfill() }
-        wait(for: [exp], timeout: timeout)
-    }
 
     // MARK: - Queue depth + serialization
 
@@ -102,7 +35,7 @@ final class SinkDispatcherTests: XCTestCase {
         }
     }
 
-    private func waitForPipelineStart(_ driver: FakeDriver, timeout: TimeInterval = 2.0) {
+    private func waitForPipelineStart(_ driver: FakePipelineDriver, timeout: TimeInterval = 2.0) {
         let exp = expectation(description: "pipeline launched")
         let deadline = Date().addingTimeInterval(timeout)
         func poll() {
@@ -117,7 +50,7 @@ final class SinkDispatcherTests: XCTestCase {
         wait(for: [exp], timeout: timeout + 0.5)
     }
 
-    private func makeDispatcher(_ driver: FakeDriver) -> SinkDispatcher {
+    private func makeDispatcher(_ driver: FakePipelineDriver) -> SinkDispatcher {
         SinkDispatcher(launcher: driver, makeTranscriptionRunner: { PassRunner() })
     }
 
@@ -131,7 +64,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_enqueue_starts_first_job_and_updates_depth() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var depths: [Int] = []
         dispatcher.onQueueActivityChanged = { depths.append($0.depth) }
@@ -147,7 +80,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_second_enqueue_does_not_start_until_first_completes() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
 
         let wavA = try makeTempWav()
@@ -182,7 +115,7 @@ final class SinkDispatcherTests: XCTestCase {
     // MARK: - Result fan-out
 
     func test_success_fans_out_via_onJobCompleted_on_main() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var completed: [(ProcessingJob, Result<URL?, Error>)] = []
         dispatcher.onJobCompleted = { completed.append(($0, $1)) }
@@ -194,7 +127,7 @@ final class SinkDispatcherTests: XCTestCase {
         waitForPipelineStart(driver)
         let pageURL = URL(string: "https://notion.so/x")!
         driver.finish(.success(pageURL))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(completed.count, 1)
         XCTAssertEqual(completed.first?.0.file, wav)
@@ -207,7 +140,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_pipeline_failure_advances_queue() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var completed: [(ProcessingJob, Result<URL?, Error>)] = []
         dispatcher.onJobCompleted = { completed.append(($0, $1)) }
@@ -224,7 +157,7 @@ final class SinkDispatcherTests: XCTestCase {
         dispatcher.enqueue(file: wavB, summaryMode: .auto)
         struct Boom: Error {}
         driver.finish(.failure(Boom()))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(completed.count, 1)
         XCTAssertEqual(completed.first?.0.file, wavA)
@@ -244,7 +177,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_queue_depth_callback_fires_for_completion_too() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var depths: [Int] = []
         dispatcher.onQueueActivityChanged = { depths.append($0.depth) }
@@ -255,7 +188,7 @@ final class SinkDispatcherTests: XCTestCase {
         dispatcher.enqueue(file: wav, summaryMode: .auto)
         waitForPipelineStart(driver)
         driver.finish(.success(nil))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         // Enqueue raises to 1; completion drains back to 0.
         XCTAssertTrue(depths.contains(1))
@@ -265,7 +198,7 @@ final class SinkDispatcherTests: XCTestCase {
     // MARK: - Live progress + cancel (TECH-UX5)
 
     func test_progress_heartbeat_fans_out_via_onActiveProgress() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var progress: [(String, PipelineProgress)] = []
         dispatcher.onActiveProgress = { progress.append(($0, $1)) }
@@ -276,7 +209,7 @@ final class SinkDispatcherTests: XCTestCase {
         dispatcher.enqueue(file: wav, summaryMode: .auto)
         waitForPipelineStart(driver)
         driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 12))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         // Three entries reach the row for one job since UX69 (the transcription
         // pass, the spawn, then this beat), so the heartbeat is the last rather
@@ -287,7 +220,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_cancel_active_job_terminates_the_run() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -299,7 +232,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_cancel_with_no_active_job_is_a_noop() {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         dispatcher.cancelActiveJob()
         XCTAssertFalse(driver.cancelCalled)
@@ -345,7 +278,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_runner_writes_sidecar_before_launching_pipeline() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
         let wav = try makeTempWav()
@@ -366,7 +299,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_runner_failure_skips_pipeline_and_fails_job() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         runner.shouldThrow = true
         let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
@@ -416,7 +349,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_pipeline_failure_writes_an_error_sidecar() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -425,7 +358,7 @@ final class SinkDispatcherTests: XCTestCase {
         waitForPipelineStart(driver)
         struct Boom: Error {}
         driver.finish(.failure(Boom()))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         let failure = PipelineFailureSidecar.read(
             stem: "clip", in: wav.deletingLastPathComponent()
@@ -449,7 +382,7 @@ final class SinkDispatcherTests: XCTestCase {
 
     /// Enqueue one job in `mode`, fail it with `error`, and return the store the dispatcher was given.
     private func failRun(_ error: Error, mode: SummaryMode = .auto) throws -> (AutoRetryStore, URL) {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         let store = autoRetryStore(wav)
@@ -457,7 +390,7 @@ final class SinkDispatcherTests: XCTestCase {
         dispatcher.enqueue(file: wav, summaryMode: mode)
         waitForPipelineStart(driver)
         driver.finish(.failure(error))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         return (store, wav)
     }
 
@@ -485,7 +418,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_a_failure_after_the_one_re_run_is_spent_is_not_marked_again() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -496,13 +429,13 @@ final class SinkDispatcherTests: XCTestCase {
         dispatcher.enqueue(file: wav, summaryMode: .auto)
         waitForPipelineStart(driver)
         driver.finish(.failure(reported(remedy: "retry")))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertTrue(store.pending().isEmpty, "the run-all fallback path of the re-run cannot loop")
         XCTAssertEqual(store.entries["clip"]?.state, .spent)
     }
 
     func test_a_run_that_succeeds_drops_its_pending_entry_and_keeps_a_spent_one() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -514,13 +447,13 @@ final class SinkDispatcherTests: XCTestCase {
         dispatcher.enqueue(file: wav, summaryMode: .auto)
         waitForPipelineStart(driver)
         driver.finish(.success(nil))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertNil(store.entries["clip"], "a finished run has nothing waiting")
         XCTAssertEqual(store.entries["other"]?.state, .spent, "a spent entry is the bound and stays")
     }
 
     func test_launch_failure_records_the_launch_stage() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -528,7 +461,7 @@ final class SinkDispatcherTests: XCTestCase {
         dispatcher.enqueue(file: wav, summaryMode: .auto)
         waitForPipelineStart(driver)
         driver.finish(.failure(PipelineLauncher.LaunchError.mpNotFound))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         let failure = PipelineFailureSidecar.read(
             stem: "clip", in: wav.deletingLastPathComponent()
@@ -538,7 +471,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_pipeline_success_clears_a_stale_error_sidecar() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -551,14 +484,14 @@ final class SinkDispatcherTests: XCTestCase {
         dispatcher.enqueue(file: wav, summaryMode: .auto)
         waitForPipelineStart(driver)
         driver.finish(.success(nil))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertNil(PipelineFailureSidecar.read(stem: "clip", in: dir),
                      "a successful run clears the stale failure sidecar")
     }
 
     func test_transcription_failure_writes_an_error_sidecar() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         runner.shouldThrow = true
         let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
@@ -582,7 +515,7 @@ final class SinkDispatcherTests: XCTestCase {
     // MARK: - SEC38: outcome rows name sinks and error classes, never a title or note path
 
     func test_pipeline_succeeded_logs_sinks_and_no_page_url_SEC38() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var completed = 0
         dispatcher.onJobCompleted = { _, _ in completed += 1 }
@@ -608,7 +541,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_pipeline_failed_logs_no_error_text_and_the_sidecar_keeps_it_SEC38() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var completed = 0
         dispatcher.onJobCompleted = { _, _ in completed += 1 }
@@ -666,7 +599,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// A `.full` job over an unreadable sidecar (a directory at the path, the dataless-iCloud
     /// shape) writes no transcript, never transcribes, fails at the transcribe stage and says why.
     func test_an_unreadable_sidecar_fails_a_full_job_with_no_transcript_SEC37() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
         var completed: [(ProcessingJob, Result<URL?, Error>)] = []
@@ -696,7 +629,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// A `.retranscribe` over an unreadable sidecar leaves the transcript it had byte for byte and
     /// tells its caller it failed.
     func test_an_unreadable_sidecar_fails_a_retranscribe_and_keeps_the_transcript_SEC37() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
         let wav = try makeTempWav()
@@ -719,7 +652,7 @@ final class SinkDispatcherTests: XCTestCase {
 
     /// A readable trim still cuts the transcript and logs the exclusion.
     func test_a_readable_trim_still_cuts_the_transcript_SEC37() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
         let wav = try makeTempWav()
@@ -741,7 +674,7 @@ final class SinkDispatcherTests: XCTestCase {
 
     /// No sidecar at all is no trim: the whole transcript is written.
     func test_no_sidecar_writes_the_full_transcript_SEC37() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
         let wav = try makeTempWav()
@@ -760,8 +693,8 @@ final class SinkDispatcherTests: XCTestCase {
 
     private func sec36Run(
         missing: [SpeechModel], meta: String?, globalRegulated: Bool = false, refused: Bool = true
-    ) throws -> (runner: FakeRunner, driver: FakeDriver, dir: URL, logs: URL, completed: Int) {
-        let driver = FakeDriver()
+    ) throws -> (runner: FakeRunner, driver: FakePipelineDriver, dir: URL, logs: URL, completed: Int) {
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         runner.missingModels = missing
         let dispatcher = SinkDispatcher(
@@ -786,7 +719,7 @@ final class SinkDispatcherTests: XCTestCase {
         return (runner, driver, dir, logs, completed.count)
     }
 
-    private func assertRefused(_ r: (runner: FakeRunner, driver: FakeDriver, dir: URL, logs: URL, completed: Int)) {
+    private func assertRefused(_ r: (runner: FakeRunner, driver: FakePipelineDriver, dir: URL, logs: URL, completed: Int)) {
         XCTAssertTrue(r.runner.calls.isEmpty, "a refused job never reaches transcribe")
         XCTAssertTrue(r.driver.startedFiles.isEmpty, "the pipeline is not invoked")
         XCTAssertFalse(FileManager.default.fileExists(atPath: r.dir.appendingPathComponent("clip.json").path))
@@ -834,14 +767,14 @@ final class SinkDispatcherTests: XCTestCase {
     // MARK: - SEC16: a failed redaction holds the meeting back
 
     private func makeHeldBackDispatcher(
-        _ driver: FakeDriver, _ runner: FakeRunner, originals: URL,
+        _ driver: FakePipelineDriver, _ runner: FakeRunner, originals: URL,
         redactor: @escaping @Sendable (URL) async -> MuteRedactor.Outcome
     ) -> SinkDispatcher {
         SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner }, redactor: { url, _ in await redactor(url) }, originalsDir: originals)
     }
 
     func test_a_failed_redaction_never_transcribes_or_publishes_and_moves_the_recording_out() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         let wav = try makeTempWav()
         let dir = wav.deletingLastPathComponent()
@@ -873,7 +806,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// SEC26: a promote whose restore also failed leaves the only copy in `originals/`, where the reaper
     /// would take it. The held-back path finds no WAV in the library and holds the originals copy.
     func test_a_held_back_job_whose_wav_was_not_restored_holds_the_originals_copy() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         let wav = try makeTempWav()
         let dir = wav.deletingLastPathComponent()
@@ -901,7 +834,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// SEC26: the redactor itself holds the aside copy after a failed restore, so the dispatcher finds
     /// nothing to move and must still report the hold rather than a recording left where it was.
     func test_a_hold_already_made_by_the_redactor_is_reported_as_kept() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         let wav = try makeTempWav()
         let dir = wav.deletingLastPathComponent()
@@ -926,7 +859,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// finish whose timeline write failed leaves only the `.offrecord` marker, and
     /// that marker alone is what makes the job fail closed.
     func test_a_lost_timeline_with_the_offrecord_marker_fails_closed_and_keeps_the_marker() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         let wav = try makeTempWav()
         let dir = wav.deletingLastPathComponent()
@@ -951,7 +884,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_a_successful_redaction_drops_the_offrecord_marker_and_runs_the_job() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         let wav = try makeTempWav()
         let dir = wav.deletingLastPathComponent()
@@ -1045,7 +978,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// one deliberate click, the second carrying "pipeline exited 15" captioned
     /// with a routine INFO line. Only the cancellation is a true record of it.
     func test_a_cancelled_job_logs_the_cancel_and_not_a_failure() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         let dir = wav.deletingLastPathComponent()
@@ -1060,7 +993,7 @@ final class SinkDispatcherTests: XCTestCase {
         waitForPipelineStart(driver)
         dispatcher.cancelActiveJob()
         driver.finish(.failure(PipelineLauncher.LaunchError.cancelled))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         let actions = try String(
             contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8
@@ -1078,7 +1011,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// Processing with nothing running, then ages into a `.failed` that names no
     /// reason at all; with it, the row is retryable straight away and says why.
     func test_a_cancelled_job_stays_retryable_with_an_honest_reason() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var completed: [(ProcessingJob, Result<URL?, Error>)] = []
         dispatcher.onJobCompleted = { completed.append(($0, $1)) }
@@ -1113,7 +1046,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// is the completion the dispatcher above deliberately reports nothing for,
     /// and while the clear rode the error surface it went quiet with the alarm.
     func test_a_cancelled_job_ends_the_rows_live_progress_entry() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var progress: [(String, PipelineProgress)] = []
         var ended = 0
@@ -1127,7 +1060,7 @@ final class SinkDispatcherTests: XCTestCase {
         driver.emitProgress(PipelineProgress(stage: "diarize_cleanup", elapsedSec: 20))
         dispatcher.cancelActiveJob()
         driver.finish(.failure(PipelineLauncher.LaunchError.cancelled))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(progress.last?.1.stage, "diarize_cleanup",
                        "there has to be a live entry for the row to be left holding")
@@ -1136,7 +1069,7 @@ final class SinkDispatcherTests: XCTestCase {
 
     /// The other two paths, so the clear is the job's and not the cancel's.
     func test_a_successful_job_ends_the_live_progress_entry_too() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var ended = 0
         dispatcher.onActiveProgressEnded = { ended += 1 }
@@ -1147,13 +1080,13 @@ final class SinkDispatcherTests: XCTestCase {
         waitForPipelineStart(driver)
         driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 12))
         driver.finish(.success(nil))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(ended, 1)
     }
 
     func test_a_genuine_failure_ends_the_live_progress_entry_too() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var ended = 0
         dispatcher.onActiveProgressEnded = { ended += 1 }
@@ -1164,14 +1097,14 @@ final class SinkDispatcherTests: XCTestCase {
         waitForPipelineStart(driver)
         driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 12))
         driver.finish(.failure(PipelineLauncher.LaunchError.nonZeroExit(1, "summarize blew up")))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(ended, 1)
     }
 
     /// A genuine failure is untouched by any of it.
     func test_an_uncancelled_failure_still_writes_the_pipeline_stage() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -1179,7 +1112,7 @@ final class SinkDispatcherTests: XCTestCase {
         dispatcher.enqueue(file: wav, summaryMode: .auto)
         waitForPipelineStart(driver)
         driver.finish(.failure(PipelineLauncher.LaunchError.nonZeroExit(1, "summarize blew up")))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         let failure = PipelineFailureSidecar.read(
             stem: "clip", in: wav.deletingLastPathComponent()
@@ -1217,7 +1150,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_configured_language_reaches_the_transcription_runner() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = LanguageRecordingRunner()
         let dispatcher = SinkDispatcher(
             launcher: driver, makeTranscriptionRunner: { runner }, languageHint: "uk"
@@ -1231,7 +1164,7 @@ final class SinkDispatcherTests: XCTestCase {
         // The pre-HYG2 behaviour was `languageHint: nil`, i.e. let the SDK detect.
         // "auto" resolves to the same nil `Language` in `FluidAudioRunner`, so an
         // untouched config transcribes exactly as it did before the wiring.
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = LanguageRecordingRunner()
         let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
         dispatcher.enqueue(file: try makeTempWav(), summaryMode: .auto)
@@ -1242,7 +1175,7 @@ final class SinkDispatcherTests: XCTestCase {
 
     // MARK: - Re-transcribe jobs (ASR3)
 
-    private func waitForFinalize(_ driver: FakeDriver, timeout: TimeInterval = 2.0) {
+    private func waitForFinalize(_ driver: FakePipelineDriver, timeout: TimeInterval = 2.0) {
         let exp = expectation(description: "finalize launched")
         let deadline = Date().addingTimeInterval(timeout)
         func poll() {
@@ -1258,7 +1191,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// finalize, and `run-all` (summarize + publish, the part that can cost
     /// money and rewrite a published page) is never reached.
     func test_retranscribe_runs_finalize_and_never_run_all() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -1271,7 +1204,7 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertTrue(driver.startedFiles.isEmpty, "a re-transcribe must not run summarize or publish")
 
         driver.finishFinalize(.success(()))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         guard case .success? = landed else { return XCTFail("expected the caller to be told it landed") }
         XCTAssertEqual(dispatcher.queueDepth, 0)
     }
@@ -1279,7 +1212,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// Re-transcribes share the one queue with recordings, so a batch can never
     /// put two transcription runs on the Neural Engine at once.
     func test_a_retranscribe_waits_behind_a_recording_job() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wavA = try makeTempWav()
         let wavB = try makeTempWav()
@@ -1328,7 +1261,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// same meeting at once and the surviving summary was whichever subprocess
     /// exited last. Sharing one lane is what makes that impossible.
     func test_a_library_run_waits_behind_an_active_recording_job() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -1346,9 +1279,9 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertEqual(dispatcher.queueDepth, 2)
 
         driver.finish(.success(nil))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertTrue(started, "the re-run starts once the lane frees up")
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertEqual(dispatcher.queueDepth, 0)
     }
 
@@ -1356,7 +1289,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// wasteful and destructive (it re-keys the overlays), so the transcription
     /// stage is skipped entirely and `mp run-all` is never reached.
     func test_a_library_run_never_transcribes_or_runs_run_all() {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
 
@@ -1374,7 +1307,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// Coalescing: a second identical request while one is still queued is
     /// dropped rather than run twice, and says so rather than failing silently.
     func test_an_identical_library_run_is_coalesced() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -1398,7 +1331,7 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertEqual(dispatcher.queueDepth, 2, "the duplicate was not enqueued")
 
         driver.finish(.success(nil))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertEqual(starts, 1)
     }
 
@@ -1406,7 +1339,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// have thrown away the 07:49 Anthropic re-run because a local one was
     /// still in flight, which is the opposite of what the owner wanted.
     func test_a_different_backend_is_a_different_ask() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -1427,7 +1360,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// than overlap, which is the cost of routing through the one lane: the
     /// machine only has one Neural Engine and one local model server anyway.
     func test_library_runs_for_different_stems_both_run_in_order() {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var order: [String] = []
         var finishers: [LibraryRunToken] = []
@@ -1443,14 +1376,14 @@ final class SinkDispatcherTests: XCTestCase {
 
         XCTAssertEqual(order, ["a"], "the second waits rather than racing the first")
         finishers.removeFirst().finish(.success(nil))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertEqual(order, ["a", "b"])
     }
 
     /// A failed re-run advances the queue like any other job, so one bad
     /// regenerate cannot wedge every later meeting behind it.
     func test_a_failed_library_run_advances_the_queue() {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var completed: [(ProcessingJob, Result<URL?, Error>)] = []
         dispatcher.onJobCompleted = { completed.append(($0, $1)) }
@@ -1459,7 +1392,7 @@ final class SinkDispatcherTests: XCTestCase {
         enqueueRun(dispatcher, regenerate("m")) { token in
             token.finish(.failure(Boom()))
         }
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(completed.count, 1)
         XCTAssertEqual(completed.first?.0.kind, .libraryRun(regenerate("m")))
@@ -1472,7 +1405,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// Queued work used to have no state at all: a second Reprocess click
     /// appended a duplicate that looked identical to a finished meeting.
     func test_pending_jobs_name_the_waiting_work() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -1494,7 +1427,7 @@ final class SinkDispatcherTests: XCTestCase {
 
     /// A not-yet-started job is removable, exactly once.
     func test_removePending_drops_the_job_once() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -1515,14 +1448,14 @@ final class SinkDispatcherTests: XCTestCase {
 
         // The removed job must not run when the lane frees up.
         driver.finish(.success(nil))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertFalse(started)
     }
 
     /// The active job is Cancel's business, not this one, so it is never offered
     /// as pending; and an id nobody knows is a no-op rather than a crash.
     func test_removePending_never_reaches_a_running_job() {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
 
         var token: LibraryRunToken?
@@ -1537,7 +1470,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// The caller of a dequeued run is awaiting an answer; without one its Task
     /// stays suspended for the life of the app.
     func test_a_dequeued_library_run_answers_its_caller() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -1561,7 +1494,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// A dequeued re-transcribe must not report success either: its caller would
     /// carry overlays onto a transcript that was never rewritten (ASR3).
     func test_a_dequeued_retranscribe_answers_with_a_failure() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wavA = try makeTempWav()
         let wavB = try makeTempWav()
@@ -1583,7 +1516,7 @@ final class SinkDispatcherTests: XCTestCase {
     // MARK: - The busy chip's only signal (UX28 leg c)
 
     func test_a_library_run_publishes_and_clears_its_busy_state() {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var runs: [LibraryRun?] = []
         dispatcher.onActiveLibraryRun = { runs.append($0) }
@@ -1595,21 +1528,21 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertEqual(runs.first ?? nil, regenerate("m", backend: "anthropic"))
 
         token?.finish(.success(nil))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertEqual(runs.count, 2)
         XCTAssertNil(runs.last ?? nil, "the chip clears when the run lands")
     }
 
     func test_a_failed_library_run_clears_its_busy_state_too() {
         // A chip that outlives its job is the same lie as no chip at all.
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var runs: [LibraryRun?] = []
         dispatcher.onActiveLibraryRun = { runs.append($0) }
         struct Boom: Error {}
 
         enqueueRun(dispatcher, regenerate("m")) { $0.finish(.failure(Boom())) }
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(runs.count, 2)
         XCTAssertNil(runs.last ?? nil)
@@ -1621,14 +1554,14 @@ final class SinkDispatcherTests: XCTestCase {
     /// job" is the whole rule and a per-kind exception is how it stopped being
     /// true the first time.
     func test_a_failed_library_run_ends_the_live_progress_entry_too() {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var ended = 0
         dispatcher.onActiveProgressEnded = { ended += 1 }
         struct Boom: Error {}
 
         enqueueRun(dispatcher, regenerate("m")) { $0.finish(.failure(Boom())) }
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(ended, 1)
     }
@@ -1637,7 +1570,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// run-all uses reaches it. The launcher's termination then completes the job
     /// as a normal retryable failure.
     func test_cancel_reaches_an_active_library_run() {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var token: LibraryRunToken?
         enqueueRun(dispatcher, regenerate("m")) { token = $0 }
@@ -1647,14 +1580,14 @@ final class SinkDispatcherTests: XCTestCase {
 
         struct Cancelled: Error {}
         token?.finish(.failure(Cancelled()))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertEqual(dispatcher.queueDepth, 0, "a cancelled re-run drains like any failure")
     }
 
     /// A failed finalize reaches the caller rather than being swallowed, and the
     /// queue still advances.
     func test_a_failed_finalize_is_reported_to_the_caller() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -1663,7 +1596,7 @@ final class SinkDispatcherTests: XCTestCase {
         dispatcher.enqueueRetranscribe(file: wav) { landed = $0 }
         waitForFinalize(driver)
         driver.finishFinalize(.failure(NSError(domain: "x", code: 1)))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         guard case .failure? = landed else { return XCTFail("expected the failure to surface") }
         XCTAssertEqual(dispatcher.queueDepth, 0)
@@ -1715,7 +1648,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     private func makeParkedDispatcher(
-        _ driver: FakeDriver, _ runner: TranscriptionRunner
+        _ driver: FakePipelineDriver, _ runner: TranscriptionRunner
     ) -> SinkDispatcher {
         SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
     }
@@ -1725,7 +1658,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// owner's run of `20260716-163031`, and no heartbeat is emitted here, so
     /// anything the row got arrived without one.
     func test_the_row_gets_an_entry_when_the_pipeline_subprocess_is_spawned() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher = makeDispatcher(driver)
         var progress: [(String, PipelineProgress)] = []
         dispatcher.onActiveProgress = { progress.append(($0, $1)) }
@@ -1734,7 +1667,7 @@ final class SinkDispatcherTests: XCTestCase {
 
         dispatcher.enqueue(file: wav, summaryMode: .auto)
         waitForPipelineStart(driver)
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(progress.last?.0, "clip")
         XCTAssertEqual(progress.last?.1.stage, SinkDispatcher.spawnedStage)
@@ -1746,7 +1679,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// pass, which is where 52.5 s of the owner's 58.6 s window went and the share
     /// that scales with meeting length.
     func test_the_row_gets_an_entry_when_the_transcription_pass_starts() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = ParkedRunner()
         let dispatcher = makeParkedDispatcher(driver, runner)
         var progress: [(String, PipelineProgress)] = []
@@ -1756,7 +1689,7 @@ final class SinkDispatcherTests: XCTestCase {
 
         dispatcher.enqueue(file: wav, summaryMode: .auto)
         wait(for: [runner.started], timeout: 2.0)
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertTrue(driver.startedFiles.isEmpty,
                       "the pipeline has not spawned yet, which is the whole point of this entry")
@@ -1764,14 +1697,14 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertEqual(progress.first?.1.stage, SinkDispatcher.transcribeStage)
 
         dispatcher.cancelActiveJob()
-        drainMain()
+        XCTAssertTrue(drainMainSync())
     }
 
     /// A re-transcribe is left out on purpose: it runs from a Library surface that
     /// shows its own progress and result (ASR3), so an entry here would render one
     /// run twice, and it is also why its Cancel is not offered.
     func test_a_retranscribe_publishes_no_row_entry() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = ParkedRunner()
         let dispatcher = makeParkedDispatcher(driver, runner)
         var progress: [(String, PipelineProgress)] = []
@@ -1781,12 +1714,12 @@ final class SinkDispatcherTests: XCTestCase {
 
         dispatcher.enqueueRetranscribe(file: wav) { _ in }
         wait(for: [runner.started], timeout: 2.0)
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertTrue(progress.isEmpty)
 
         dispatcher.cancelActiveJob()
-        drainMain()
+        XCTAssertTrue(drainMainSync())
     }
 
     /// Leg (b), the acceptance: a Cancel during the daemon's own pass stops the
@@ -1794,7 +1727,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// the marker is terminal and honest, and the job still completes as a failure,
     /// which is what keeps the row retryable.
     func test_a_cancel_during_transcription_lands_as_a_cancellation() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = ParkedRunner()
         let dispatcher = makeParkedDispatcher(driver, runner)
         var completed: [(ProcessingJob, Result<URL?, Error>)] = []
@@ -1827,7 +1760,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// no marker written, which is the shape that leaves a row in Processing until
     /// the 2 hour age fallback turns it into a `Failed` naming no reason at all.
     func test_a_cancel_that_lands_as_the_pass_finishes_still_stops_the_job() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = LateFinishRunner()
         let dispatcher = makeParkedDispatcher(driver, runner)
         var completed: [(ProcessingJob, Result<URL?, Error>)] = []
@@ -1856,7 +1789,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// `pipeline_failed` firing for a cancel; the pass has its own failure event and
     /// it stays quiet for exactly the same reason.
     func test_a_cancel_during_transcription_logs_no_failure() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = ParkedRunner()
         let dispatcher = makeParkedDispatcher(driver, runner)
         var completed: [(ProcessingJob, Result<URL?, Error>)] = []
@@ -1892,7 +1825,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// time over a row left rendering its last phase after a cancel, and the pass
     /// is now a writer of that same entry.
     func test_a_cancelled_transcription_ends_the_rows_live_progress_entry() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = ParkedRunner()
         let dispatcher = makeParkedDispatcher(driver, runner)
         var ended = 0
@@ -1991,7 +1924,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// the timeout reason, the event names the redact phase, nothing downstream runs for it,
     /// and the next queued job starts.
     func test_a_redaction_that_never_returns_fails_the_job_and_the_next_one_runs() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         let stuck = try makeTempWav()
         let next = try makeTempWav()
@@ -2045,7 +1978,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// Acceptance 2: a pass that ignores cancellation and never returns. The job fails with
     /// `phase` transcribe, and the next job runs on a freshly built runner.
     func test_a_stuck_pass_fails_the_job_and_the_next_job_gets_a_fresh_runner() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let stuckRunner = StuckRunner()
         openAtTearDown.append(stuckRunner.gate)
         let freshRunner = FakeRunner()
@@ -2088,7 +2021,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// the second job, no third starts beside it, and the abandoned stem gets no transcript, no
     /// pipeline, and keeps its timeout reason.
     func test_a_late_return_from_an_abandoned_pass_writes_nothing_and_starts_nothing() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let stuckRunner = StuckRunner()
         openAtTearDown.append(stuckRunner.gate)
         let freshRunner = FakeRunner()
@@ -2118,7 +2051,7 @@ final class SinkDispatcherTests: XCTestCase {
 
         stuckRunner.gate.open()
         // Give the late return every chance to do damage: its hop to main and anything after.
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         let settled = expectation(description: "settled")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { settled.fulfill() }
         wait(for: [settled], timeout: 2)
@@ -2139,7 +2072,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// The deadline's own cancel reaches a pass that honours it, and that pass's cancellation
     /// branch must not overwrite the timeout with "You cancelled this run".
     func test_a_cooperative_pass_cut_by_the_deadline_keeps_the_timeout_reason() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = ParkedRunner()
         let wav = try makeTempWav()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -2169,7 +2102,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// disarmed at the hand-off, so a pipeline running past the transcription allowance is not
     /// failed by it.
     func test_a_job_inside_its_deadline_hands_off_and_is_never_timed_out() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let wav = try makeTempWav()
         defer {
             try? FileManager.default.removeItem(at: wav.deletingLastPathComponent())
@@ -2235,7 +2168,7 @@ final class SinkDispatcherTests: XCTestCase {
     /// completed a pass, cold again after a stuck pass replaced it. Every other test injects a
     /// deadline that ignores its inputs, so this is the one that fails if the wiring goes.
     func test_the_deadline_is_tightened_from_the_header_and_follows_the_runners_warmth() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let wavs = try (0..<4).map { _ in try makeTempWav() }
         defer {
             for wav in wavs { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
@@ -2334,7 +2267,7 @@ extension SinkDispatcherTests {
     }
 
     func test_engineSucceeded_carriesTheCostAndTheMachineState_fromInjectedProviders_OBS10() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { runner })
         let uptime = Readings([100, 110.5])
@@ -2391,7 +2324,7 @@ extension SinkDispatcherTests {
     /// the 5 s timer never fires on its own (`tickSec` is an hour); the test calls `evaluateStall`.
     private final class StallRig {
         var now = Date(timeIntervalSince1970: 1_800_000_000)
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let dispatcher: SinkDispatcher
         var stalledCalls = 0
         var progress: [PipelineProgress] = []
@@ -2442,7 +2375,7 @@ extension SinkDispatcherTests {
         rig.now += 35  // past the old 30 s threshold, well inside the launch budget
         rig.dispatcher.evaluateStall()
         rig.driver.emitProgress(PipelineProgress(stage: "finalize", elapsedSec: 5, stageElapsedSec: 5))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         rig.now += 5
         rig.dispatcher.evaluateStall()
 
@@ -2469,13 +2402,13 @@ extension SinkDispatcherTests {
         let (rig, wav) = try startedStallRig()
         defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()) }
         rig.driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 5, stageElapsedSec: 5))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         rig.now += 31
         rig.dispatcher.evaluateStall()
         XCTAssertEqual(rig.stalledCalls, 1)
 
         rig.driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 40, stageElapsedSec: 40))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         rig.now += 31  // a second lapse in the same run; before PIPE53 the latched flag swallowed it
         rig.dispatcher.evaluateStall()
 
@@ -2490,7 +2423,7 @@ extension SinkDispatcherTests {
         for waited in stride(from: 5, through: 95, by: 5) {
             rig.now += 5
             rig.driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: waited, stageElapsedSec: waited))
-            drainMain()
+            XCTAssertTrue(drainMainSync())
             rig.dispatcher.evaluateStall()
         }
         XCTAssertEqual(rig.stalledPhases(), ["no_progress"])
@@ -2502,14 +2435,14 @@ extension SinkDispatcherTests {
         // Still stuck on the next beat: the row keeps saying so rather than being rebuilt healthy.
         rig.now += 5
         rig.driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 100, stageElapsedSec: 100))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertTrue(try XCTUnwrap(rig.progress.last).stalled)
         XCTAssertEqual(rig.stalledPhases(), ["no_progress"], "one flag per stall, not one per beat")
 
         // A model call returned: the stage clock drops back and the stall ends.
         rig.now += 5
         rig.driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: 105, stageElapsedSec: 2))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertFalse(try XCTUnwrap(rig.progress.last).stalled)
     }
 
@@ -2521,7 +2454,7 @@ extension SinkDispatcherTests {
         for call in 1...40 {
             rig.now += 20
             rig.driver.emitProgress(PipelineProgress(stage: "summarize", elapsedSec: call * 20))
-            drainMain()
+            XCTAssertTrue(drainMainSync())
             rig.dispatcher.evaluateStall()
         }
         XCTAssertEqual(rig.stalledCalls, 0)
@@ -2552,7 +2485,7 @@ extension SinkDispatcherTests {
     }
 
     func test_a_stuck_pass_that_returns_late_is_recorded_and_changes_nothing_else() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let stuckRunner = StuckRunner()
         openAtTearDown.append(stuckRunner.gate)
         let freshRunner = FakeRunner()
@@ -2594,7 +2527,7 @@ extension SinkDispatcherTests {
     }
 
     func test_a_redaction_that_returns_late_is_recorded_with_the_redact_phase() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runner = FakeRunner()
         let stuck = try makeNamedWav("late-redact.wav")
         let mine: Set<String> = ["late-redact.wav"]
@@ -2621,7 +2554,7 @@ extension SinkDispatcherTests {
     }
 
     func test_the_timeout_event_counts_the_abandoned_passes_still_out() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         let runners = [StuckRunner(), StuckRunner(), StuckRunner()]
         runners.forEach { openAtTearDown.append($0.gate) }
         var built = 0
@@ -2655,7 +2588,7 @@ extension SinkDispatcherTests {
     /// dispatcher keeps the runner it replaced alive. (A pass that never returns keeps it, which is
     /// the accepted cost the comment in `deadlineExpired` now spells out.)
     func test_a_replaced_runner_is_released_once_its_abandoned_pass_returns() throws {
-        let driver = FakeDriver()
+        let driver = FakePipelineDriver()
         weak var first: StuckRunner?
         var firstGate: Gate?
         var firstStarted: XCTestExpectation?

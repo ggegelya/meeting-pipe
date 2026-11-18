@@ -11,10 +11,10 @@ final class PipelineLauncherTests: XCTestCase {
         return url
     }
 
-    private func writeConfig(_ toml: String) -> URL {
+    private func writeConfig(_ toml: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("cfg-\(UUID().uuidString).toml")
-        try! toml.write(to: url, atomically: true, encoding: .utf8)
+        try toml.write(to: url, atomically: true, encoding: .utf8)
         return url
     }
 
@@ -200,18 +200,18 @@ final class PipelineLauncherTests: XCTestCase {
 
     // MARK: - TECH-SEC5: cloudSecretPolicy
 
-    func testPolicyMalformedConfigStripsBoth() {
+    func testPolicyMalformedConfigStripsBoth() throws {
         // ARCH9: a file that does not parse used to read `regulated = false` and keep
         // both tokens, even when the broken file said regulated. It fails closed now.
-        let cfg = writeConfig("[modes]\nregulated_mode = true\n[summarization\nbackend = \"anthropic\"\n")
+        let cfg = try writeConfig("[modes]\nregulated_mode = true\n[summarization\nbackend = \"anthropic\"\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
         let policy = PipelineLauncher.cloudSecretPolicy(for: nil, configURL: cfg)
         XCTAssertTrue(policy.stripAnthropic)
         XCTAssertTrue(policy.stripNotion)
     }
 
-    func testPolicyWellFormedCloudConfigKeepsBoth() {
-        let cfg = writeConfig("[modes]\nregulated_mode = false\n[summarization]\nbackend = \"anthropic\"\n")
+    func testPolicyWellFormedCloudConfigKeepsBoth() throws {
+        let cfg = try writeConfig("[modes]\nregulated_mode = false\n[summarization]\nbackend = \"anthropic\"\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
         let policy = PipelineLauncher.cloudSecretPolicy(for: nil, configURL: cfg)
         XCTAssertFalse(policy.stripAnthropic)
@@ -220,7 +220,7 @@ final class PipelineLauncherTests: XCTestCase {
 
     func testAppleContextReadsTheInjectedConfig() throws {
         // ARCH9: the Apple path used to parse a hard-coded ~/.config path of its own.
-        let cfg = writeConfig("[summarization]\nteam_context = \"FDA team\"\nsummary_language = \"de\"\n")
+        let cfg = try writeConfig("[summarization]\nteam_context = \"FDA team\"\nsummary_language = \"de\"\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
         let wav = FileManager.default.temporaryDirectory
             .appendingPathComponent("apple-\(UUID().uuidString).wav")
@@ -229,34 +229,34 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertEqual(resolved.summaryLanguage, "de")
     }
 
-    func testPolicyRegulatedStripsBoth() {
-        let cfg = writeConfig("[modes]\nregulated_mode = true\n")
+    func testPolicyRegulatedStripsBoth() throws {
+        let cfg = try writeConfig("[modes]\nregulated_mode = true\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
         let policy = PipelineLauncher.cloudSecretPolicy(for: nil, configURL: cfg)
         XCTAssertTrue(policy.stripAnthropic)
         XCTAssertTrue(policy.stripNotion)
     }
 
-    func testPolicyLocalBackendStripsAnthropicOnly() {
+    func testPolicyLocalBackendStripsAnthropicOnly() throws {
         // On-device summary, but a Notion publish is still intended: keep NOTION_TOKEN.
-        let cfg = writeConfig("[summarization]\nbackend = \"local\"\n")
+        let cfg = try writeConfig("[summarization]\nbackend = \"local\"\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
         let policy = PipelineLauncher.cloudSecretPolicy(for: nil, configURL: cfg)
         XCTAssertTrue(policy.stripAnthropic)
         XCTAssertFalse(policy.stripNotion)
     }
 
-    func testPolicyAnthropicBackendStripsNothing() {
-        let cfg = writeConfig("[summarization]\nbackend = \"anthropic\"\n")
+    func testPolicyAnthropicBackendStripsNothing() throws {
+        let cfg = try writeConfig("[summarization]\nbackend = \"anthropic\"\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
         let policy = PipelineLauncher.cloudSecretPolicy(for: nil, configURL: cfg)
         XCTAssertFalse(policy.stripAnthropic)
         XCTAssertFalse(policy.stripNotion)
     }
 
-    func testPolicyAppleIntelligenceStripsAnthropicOnly() {
+    func testPolicyAppleIntelligenceStripsAnthropicOnly() throws {
         // On-device summary (Apple), but a Notion publish is still allowed. (SEC review)
-        let cfg = writeConfig("[summarization]\nbackend = \"apple_intelligence\"\n")
+        let cfg = try writeConfig("[summarization]\nbackend = \"apple_intelligence\"\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
         let policy = PipelineLauncher.cloudSecretPolicy(for: nil, configURL: cfg)
         XCTAssertTrue(policy.stripAnthropic)
@@ -264,7 +264,7 @@ final class PipelineLauncherTests: XCTestCase {
     }
 
     func testPolicyNdaSidecarStripsBoth() throws {
-        let cfg = writeConfig("[summarization]\nbackend = \"anthropic\"\n")
+        let cfg = try writeConfig("[summarization]\nbackend = \"anthropic\"\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("mtg-\(UUID().uuidString)")
@@ -290,7 +290,7 @@ final class PipelineLauncherTests: XCTestCase {
     }
 
     func testPolicyUnparseableSidecarStripsBoth() throws {
-        let cfg = writeConfig("[summarization]\nbackend = \"anthropic\"\n")
+        let cfg = try writeConfig("[summarization]\nbackend = \"anthropic\"\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
         let (dir, wav) = try meetingDir("20261026-1000")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -303,7 +303,7 @@ final class PipelineLauncherTests: XCTestCase {
     func testPolicySidecarThatCannotBeReadStripsBoth() throws {
         // A directory in the sidecar's place: present, and its bytes out of reach, the shape of
         // the 2026-10-16 EDEADLK on a dataless iCloud file.
-        let cfg = writeConfig("[summarization]\nbackend = \"anthropic\"\n")
+        let cfg = try writeConfig("[summarization]\nbackend = \"anthropic\"\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
         let (dir, wav) = try meetingDir("20261026-1001")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -315,7 +315,7 @@ final class PipelineLauncherTests: XCTestCase {
     }
 
     func testPolicyMissingSidecarKeepsTheGlobalPosture() throws {
-        let cfg = writeConfig("[summarization]\nbackend = \"anthropic\"\n")
+        let cfg = try writeConfig("[summarization]\nbackend = \"anthropic\"\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
         let (dir, wav) = try meetingDir("20261026-1002")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -327,7 +327,7 @@ final class PipelineLauncherTests: XCTestCase {
     func testPolicySidecarRegulatedModeStripsBothWithGlobalRegulatedOff() throws {
         // FB-11: a meeting recorded under regulated mode, reprocessed after the global flag was
         // turned off. The sidecar still says regulated, so neither token reaches the child.
-        let cfg = writeConfig("[modes]\nregulated_mode = false\n[summarization]\nbackend = \"anthropic\"\n")
+        let cfg = try writeConfig("[modes]\nregulated_mode = false\n[summarization]\nbackend = \"anthropic\"\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
         let (dir, wav) = try meetingDir("20261026-1003")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -342,7 +342,7 @@ final class PipelineLauncherTests: XCTestCase {
         // PIPE6 gotcha: "Re-summarize with Anthropic" on a meeting whose persisted
         // backend is apple_intelligence must keep ANTHROPIC_API_KEY, or the re-run
         // fails with no key. The override wins over the sidecar backend.
-        let cfg = writeConfig("[summarization]\nbackend = \"anthropic\"\n")
+        let cfg = try writeConfig("[summarization]\nbackend = \"anthropic\"\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("mtg-\(UUID().uuidString)")
@@ -363,10 +363,10 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertFalse(overridden.stripNotion)
     }
 
-    func testPolicyBackendOverrideCannotWidenEgressUnderRegulated() {
+    func testPolicyBackendOverrideCannotWidenEgressUnderRegulated() throws {
         // PIPE6 + TECH-ARCH1: even an anthropic override is forced local under
         // regulated mode, so both tokens are still stripped.
-        let cfg = writeConfig("[modes]\nregulated_mode = true\n")
+        let cfg = try writeConfig("[modes]\nregulated_mode = true\n")
         defer { try? FileManager.default.removeItem(at: cfg) }
         let policy = PipelineLauncher.cloudSecretPolicy(
             for: nil, backendOverride: "anthropic", configURL: cfg

@@ -55,15 +55,15 @@ final class MeetingStoreScanCostTests: XCTestCase {
 
     /// Wait out everything queued on the scan queue, then the main-queue hop a scan queued
     /// before it, so a `refresh()` that publishes nothing has still finished.
-    private func settle(_ store: MeetingStore) {
+    private func drainScanQueue(_ store: MeetingStore) {
         let done = expectation(description: "scan queue drained")
         store.enqueueOnScanQueue { DispatchQueue.main.async { done.fulfill() } }
         wait(for: [done], timeout: 5)
     }
 
-    private func refreshAndSettle(_ store: MeetingStore) {
+    private func refreshAndDrain(_ store: MeetingStore) {
         store.refresh()
-        settle(store)
+        drainScanQueue(store)
     }
 
     // MARK: Item 2: the cancel handler closes its own descriptor
@@ -78,7 +78,7 @@ final class MeetingStoreScanCostTests: XCTestCase {
         let closedBox = ClosedDescriptors()
         store.watcherDescriptorClosed = { closedBox.append($0) }
         store.start()
-        settle(store)
+        drainScanQueue(store)
         let oldFD = try XCTUnwrap(store.watchedDescriptor)
 
         // Hold a scan in flight: the gate blocks the scan queue, and the refresh queues behind it.
@@ -90,8 +90,8 @@ final class MeetingStoreScanCostTests: XCTestCase {
         let newFD = try XCTUnwrap(store.watchedDescriptor)
         XCTAssertNotEqual(newFD, oldFD)
         gate.signal()
-        settle(store)
-        settle(store)   // the follow-up rescan the second start folded in
+        drainScanQueue(store)
+        drainScanQueue(store)   // the follow-up rescan the second start folded in
 
         XCTAssertEqual(closedBox.values, [oldFD], "the old source closes exactly its own descriptor")
         XCTAssertNotEqual(fcntl(newFD, F_GETFD), -1, "the live watcher's descriptor is still open")
@@ -138,7 +138,7 @@ final class MeetingStoreScanCostTests: XCTestCase {
         let cacheURL = try tempDir().appendingPathComponent("durations.json")
 
         let cold = MeetingStore(recordingsDir: dir, durationCacheURL: cacheURL)
-        settle(cold)
+        drainScanQueue(cold)
         let first = durations(cold.performScan(directory: dir))
         XCTAssertEqual(cold.transcriptDurationReads, 3)
         XCTAssertEqual(first[stems[0]], 1830.5)
@@ -147,7 +147,7 @@ final class MeetingStoreScanCostTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: cacheURL.path), "a scan that filled the cache writes it")
 
         let warm = MeetingStore(recordingsDir: dir, durationCacheURL: cacheURL)
-        settle(warm)
+        drainScanQueue(warm)
         let second = durations(warm.performScan(directory: dir))
         XCTAssertEqual(second, first)
         XCTAssertEqual(warm.transcriptDurationReads, 0, "a relaunch with a warm cache parses no transcript")
@@ -157,12 +157,12 @@ final class MeetingStoreScanCostTests: XCTestCase {
         let (dir, stems) = try durationFixture()
         let cacheURL = try tempDir().appendingPathComponent("durations.json")
         let cold = MeetingStore(recordingsDir: dir, durationCacheURL: cacheURL)
-        settle(cold)
+        drainScanQueue(cold)
         _ = cold.performScan(directory: dir)
 
         try setMtime(dir.appendingPathComponent("\(stems[0]).json"), Date().addingTimeInterval(-5))
         let warm = MeetingStore(recordingsDir: dir, durationCacheURL: cacheURL)
-        settle(warm)
+        drainScanQueue(warm)
         let rows = durations(warm.performScan(directory: dir))
         XCTAssertEqual(warm.transcriptDurationReads, 1, "only the touched transcript is re-read")
         XCTAssertEqual(rows[stems[0]], 1830.5)
@@ -181,7 +181,7 @@ final class MeetingStoreScanCostTests: XCTestCase {
         let cacheURL = try tempDir().appendingPathComponent("durations.json")
 
         let store = MeetingStore(recordingsDir: dir, durationCacheURL: cacheURL)
-        settle(store)
+        drainScanQueue(store)
         XCTAssertEqual(store.performScan(directory: dir).first?.durationSec ?? -1, 600, accuracy: 1)
         XCTAssertTrue(MeetingDurationCache.load(from: cacheURL).entries.isEmpty)
     }
@@ -191,7 +191,7 @@ final class MeetingStoreScanCostTests: XCTestCase {
         let (dir, _) = try durationFixture()
         let cacheURL = try tempDir().appendingPathComponent("durations.json")
         let store = MeetingStore(recordingsDir: dir, durationCacheURL: cacheURL)
-        settle(store)
+        drainScanQueue(store)
         _ = store.performScan(directory: dir)
         XCTAssertEqual(MeetingDurationCache.load(from: cacheURL).entries.count, 3)
 
@@ -261,7 +261,7 @@ final class MeetingStoreScanCostTests: XCTestCase {
 
     func test_the_first_scan_of_an_empty_library_publishes() throws {
         let store = MeetingStore(recordingsDir: try tempDir())
-        refreshAndSettle(store)
+        refreshAndDrain(store)
         XCTAssertEqual(store.revision, 1, "the indexer and the Library wait on the first revision")
         XCTAssertTrue(store.hasLoadedOnce)
     }
@@ -270,10 +270,10 @@ final class MeetingStoreScanCostTests: XCTestCase {
         let dir = try tempDir()
         _ = try doneMeeting(in: dir)
         let store = MeetingStore(recordingsDir: dir)
-        refreshAndSettle(store)
+        refreshAndDrain(store)
         XCTAssertEqual(store.revision, 1)
-        refreshAndSettle(store)
-        refreshAndSettle(store)
+        refreshAndDrain(store)
+        refreshAndDrain(store)
         XCTAssertEqual(store.revision, 1)
         XCTAssertEqual(store.meetings.count, 1)
     }
@@ -284,11 +284,11 @@ final class MeetingStoreScanCostTests: XCTestCase {
         let dir = try tempDir()
         let s = try doneMeeting(in: dir)
         let store = MeetingStore(recordingsDir: dir)
-        refreshAndSettle(store)
+        refreshAndDrain(store)
         let before = store.meetings
 
         try setMtime(dir.appendingPathComponent("\(s).md"), Date().addingTimeInterval(-30))
-        refreshAndSettle(store)
+        refreshAndDrain(store)
         XCTAssertEqual(store.meetings, before, "no Meeting field changed")
         XCTAssertEqual(store.revision, 2, "a file changed, so the pane's reload key moves")
     }
@@ -297,11 +297,11 @@ final class MeetingStoreScanCostTests: XCTestCase {
         let dir = try tempDir()
         try write(dir.appendingPathComponent("\(stem(hoursAgo: 1)).wav"))
         let store = MeetingStore(recordingsDir: dir)
-        refreshAndSettle(store)
+        refreshAndDrain(store)
         XCTAssertEqual(store.meetings.first?.status, .processing)
 
         store.now = { Date().addingTimeInterval(2 * 3600) }
-        refreshAndSettle(store)
+        refreshAndDrain(store)
         XCTAssertEqual(store.revision, 2)
         XCTAssertEqual(store.meetings.first?.status, .failed)
     }
@@ -313,11 +313,11 @@ final class MeetingStoreScanCostTests: XCTestCase {
         let dir = parent.appendingPathComponent("library", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let store = MeetingStore(recordingsDir: dir)
-        refreshAndSettle(store)
+        refreshAndDrain(store)
         XCTAssertTrue(store.lastScanListedDirectory)
 
         try FileManager.default.removeItem(at: dir)
-        refreshAndSettle(store)
+        refreshAndDrain(store)
         XCTAssertEqual(store.revision, 2)
         XCTAssertFalse(store.lastScanListedDirectory)
     }

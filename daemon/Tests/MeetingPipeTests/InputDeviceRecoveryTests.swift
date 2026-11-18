@@ -1,6 +1,7 @@
 import AVFoundation
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// ARCH8: the device-change recovery procedure, driven through `InputDeviceRecoveryHost` with a
 /// fake, so the paths that need a live recording run without an engine or the HAL. The idle-side
@@ -30,13 +31,6 @@ final class InputDeviceRecoveryTests: XCTestCase {
         NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: object ?? host.observedEngine)
     }
 
-    /// Lets the observer's explicit main hop and anything it enqueued run.
-    private func drainMainQueue() async {
-        let drained = expectation(description: "main queue drained")
-        DispatchQueue.main.async { drained.fulfill() }
-        await fulfillment(of: [drained], timeout: 2)
-    }
-
     // MARK: - The observer and the one-at-a-time guard
 
     func test_aConfigurationChangeWhileRecordingStartsARecovery() async {
@@ -62,7 +56,7 @@ final class InputDeviceRecoveryTests: XCTestCase {
         await fulfillment(of: [halted], timeout: 2)
 
         postConfigurationChange()
-        await drainMainQueue()
+        await drainMain()
 
         XCTAssertEqual(host.haltCalls, 1, "the guard on recoveryTask drops the second change")
     }
@@ -81,7 +75,7 @@ final class InputDeviceRecoveryTests: XCTestCase {
             await self.recovery.standDown()
             stoodDown = true
         }
-        await drainMainQueue()
+        await drainMain()
         XCTAssertFalse(stoodDown, "standDown returned while the recovery was still in flight")
 
         host.releaseHalt()
@@ -97,7 +91,7 @@ final class InputDeviceRecoveryTests: XCTestCase {
         await recovery.standDown()
 
         postConfigurationChange()
-        await drainMainQueue()
+        await drainMain()
 
         XCTAssertEqual(host.haltCalls, 0)
         XCTAssertNil(recovery.recoveryTask)
@@ -113,7 +107,7 @@ final class InputDeviceRecoveryTests: XCTestCase {
         recovery.armConfigurationChangeObserver()
 
         postConfigurationChange(on: old)
-        await drainMainQueue()
+        await drainMain()
         XCTAssertEqual(host.haltCalls, 0, "the old engine posts to nothing now")
 
         let halted = expectation(description: "the replacement is heard")

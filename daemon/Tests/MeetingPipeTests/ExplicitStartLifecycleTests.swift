@@ -1,6 +1,7 @@
 import AVFoundation
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 @testable import MeetingPipeCore
 
 /// END11: a recording started by hand had no end detection, so it ran until the owner stopped it.
@@ -38,10 +39,6 @@ final class ExplicitStartLifecycleTests: XCTestCase {
         AppSource(bundleID: bundleID, displayName: bundleID)
     }
 
-    private func settle() async {
-        for _ in 0..<50 { await Task.yield() }
-    }
-
     // MARK: - Item 4: an end belongs to the recording it names
 
     /// Red against `main`: `handleMeetingEnded`'s `.recording` branch called `stopRecording`
@@ -59,7 +56,7 @@ final class ExplicitStartLifecycleTests: XCTestCase {
             bundleID: "us.zoom.xos",
             reason: EndingReason(leadingSignal: "ax_leave_button_invalid")
         )
-        await settle()
+        await yieldRunway()  // proving the Zoom end stopped nothing
 
         XCTAssertEqual(
             host.recorderSpy.stopCallCount, 0,
@@ -79,7 +76,7 @@ final class ExplicitStartLifecycleTests: XCTestCase {
             bundleID: "com.microsoft.teams2",
             reason: EndingReason(leadingSignal: "ax_leave_button_invalid")
         )
-        await settle()
+        if !(await waitUntil { host.recorderSpy.stopCallCount == 1 }) { XCTFail("the end never stopped the recording") }
 
         XCTAssertEqual(
             host.recorderSpy.stopCallCount, 1,
@@ -100,7 +97,7 @@ final class ExplicitStartLifecycleTests: XCTestCase {
             bundleID: "com.microsoft.teams2",
             reason: EndingReason(leadingSignal: "ax_leave_button_invalid")
         )
-        await settle()
+        if !(await waitUntil { host.recorderSpy.stopCallCount == 1 }) { XCTFail("the end never stopped the recording") }
 
         XCTAssertEqual(host.recorderSpy.stopCallCount, 1)
     }

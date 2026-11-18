@@ -1,6 +1,7 @@
 import Combine
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// UX23: the search-index health state and its shared hint. Before this, `matchingStems` returned nil
 /// for both "index still building" and "SQLite could not open", so search degraded silently forever
@@ -64,11 +65,13 @@ final class SearchIndexerTests: XCTestCase {
         return index
     }
 
-    /// Let the `$revision` sink's main-queue delivery run, then wait out whatever it queued.
-    private func settle(_ indexer: SearchIndexer) {
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    /// Let the `$revision` sink's main-queue delivery run, then wait out whatever it queued, then
+    /// the main hop that publishes the result. Drains, not sleeps (T13): each step waits for the
+    /// work queued before it, not for a guessed time.
+    private func drainReconciles(_ indexer: SearchIndexer) {
+        XCTAssertTrue(drainMainSync())
         indexer.waitForQueuedReconciles()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertTrue(drainMainSync())
     }
 
     private func waitForFirstScan(_ store: MeetingStore) {
@@ -90,7 +93,7 @@ final class SearchIndexerTests: XCTestCase {
 
         let store = MeetingStore(recordingsDir: dir)
         let indexer = SearchIndexer(store: store, index: index)
-        settle(indexer)
+        drainReconciles(indexer)
 
         XCTAssertEqual(index.indexedSignatures().count, 3, "no scan has run, so nothing may be deleted")
         XCTAssertEqual(index.stats.transactions, before, "no write at all")
@@ -108,7 +111,7 @@ final class SearchIndexerTests: XCTestCase {
         let indexer = SearchIndexer(store: store, index: index)
         waitForFirstScan(store)
         XCTAssertFalse(store.lastScanListedDirectory)
-        settle(indexer)
+        drainReconciles(indexer)
 
         XCTAssertEqual(index.indexedSignatures().count, 3)
         XCTAssertEqual(indexer.health, .ready, "a skipped pass builds nothing, so the hint must not say it is indexing")
@@ -126,7 +129,7 @@ final class SearchIndexerTests: XCTestCase {
         XCTAssertEqual(indexer.health, .building)
         waitForFirstScan(store)
         XCTAssertTrue(store.lastScanListedDirectory)
-        settle(indexer)
+        drainReconciles(indexer)
 
         XCTAssertTrue(index.indexedSignatures().isEmpty, "the owner really emptied the library")
         XCTAssertEqual(indexer.health, .ready)
@@ -144,11 +147,11 @@ final class SearchIndexerTests: XCTestCase {
         let index = try XCTUnwrap(SearchIndex(url: dir.appendingPathComponent("index.sqlite")))
         let store = MeetingStore(recordingsDir: library)
         let indexer = SearchIndexer(store: store, index: index)
-        settle(indexer)
+        drainReconciles(indexer)
         XCTAssertEqual(indexer.health, .building, "the replayed launch value is not a reconcile")
 
         waitForFirstScan(store)
-        settle(indexer)
+        drainReconciles(indexer)
         XCTAssertEqual(indexer.health, .ready)
         XCTAssertEqual(indexer.matchingStems("budget"), ["20260301-100000"], "the transcript body is indexed")
     }

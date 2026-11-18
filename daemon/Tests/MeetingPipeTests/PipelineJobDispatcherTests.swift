@@ -9,10 +9,6 @@ import XCTest
 /// (the queue itself is covered by SinkDispatcherTests).
 final class PipelineJobDispatcherTests: XCTestCase {
 
-    private final class NoopDriver: PipelineDriver {
-        func runAll(wav: URL, summaryMode: SummaryMode, completion: @escaping (Result<URL?, Error>) -> Void) {}
-    }
-
     private final class PassRunner: TranscriptionRunner {
         let backendName = "pass"
         func transcribe(wavURL: URL, languageHint: String?) async throws -> TranscriptSidecar {
@@ -34,7 +30,7 @@ final class PipelineJobDispatcherTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        sink = SinkDispatcher(launcher: NoopDriver(), makeTranscriptionRunner: { PassRunner() })
+        sink = SinkDispatcher(launcher: FakePipelineDriver(), makeTranscriptionRunner: { PassRunner() })
         done = []
         errors = []
         activities = []
@@ -226,20 +222,12 @@ final class PipelineJobDispatcherTests: XCTestCase {
 
     // MARK: - PIPE37: quitting stops the supervised spawns
 
-    private final class CountingDriver: PipelineDriver {
-        var terminated = 0
-        var cancelled = 0
-        func runAll(wav: URL, summaryMode: SummaryMode, completion: @escaping (Result<URL?, Error>) -> Void) {}
-        func terminateSupervised() { terminated += 1 }
-        func cancelActiveRun() { cancelled += 1 }
-    }
-
     /// `Coordinator.shutdown` reaches the launcher through this chain
     /// (`CoordinatorWiringFenceTests` pins that it calls it). A quit is not a
     /// Cancel: it must not mark the lane's run cancelled, so the relaunch labels
     /// the meeting interrupted rather than cancelled.
     func test_terminateSupervised_reaches_the_launcher_and_cancels_nothing() {
-        let driver = CountingDriver()
+        let driver = FakePipelineDriver()
         let sink = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { PassRunner() })
         let dispatcher = PipelineJobDispatcher(
             sinkDispatcher: sink, onDone: { _, _, _ in }, onError: { _ in }, onQueueActivity: { _ in }

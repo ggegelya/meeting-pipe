@@ -1,6 +1,7 @@
 import AVFoundation
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// The first constructible coverage of the daemon's session spine (ARCH4).
 ///
@@ -63,12 +64,6 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         XCTFail("timed out waiting for \(what)", file: file, line: line)
     }
 
-    /// For the branches that return *before* spawning the Task. Nothing to await;
-    /// a yield only proves the synchronous path already ran.
-    private func settle() async {
-        await Task.yield()
-    }
-
     // MARK: - beginRecording: the permission gate
 
     func test_beginRecording_withoutMicPermission_refusesAndDeepLinksToPermissions() async {
@@ -76,7 +71,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         host.micAuthorizationStatus = .denied
 
         controller.beginRecording(source: source(), summaryMode: .auto)
-        await settle()
+        await yieldRunway()
 
         // A silent recording with an empty transcript is worse than no recording,
         // so the refusal is total: the recorder is never touched.
@@ -96,7 +91,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         host.micAuthorizationStatus = .notDetermined
 
         controller.beginRecording(source: source(), summaryMode: .auto)
-        await settle()
+        await yieldRunway()
 
         XCTAssertEqual(host.recorderSpy.startCallCount, 0)
         XCTAssertEqual(host.stateMachine.current, .idle)
@@ -109,7 +104,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         host.dryRun = true
 
         controller.beginRecording(source: source(), summaryMode: .auto)
-        await settle()
+        await yieldRunway()
 
         // Detection ran; the recorder and HUD deliberately did not, so a workday
         // logs as detection-only signals.
@@ -420,7 +415,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
 
         // 3) The mic releases: a whitelist recording must survive (its own end path governs it).
         controller.handleMicBusyBundle(nil)
-        await settle()
+        await yieldRunway()
         XCTAssertTrue(host.stateMachine.current.isRecording,
                       "a whitelist recording must not be mis-tagged as DET1 and mic-release-stopped")
     }
@@ -518,7 +513,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         await waitUntil({ host.stateMachine.current.isRecording }, "the first recording to start")
 
         controller.recordAttached(to: source("com.microsoft.teams2"), trigger: "notification")
-        await settle()
+        await yieldRunway()
 
         XCTAssertEqual(host.recorderSpy.startCallCount, 1, "a later meeting must not stack a start")
     }
@@ -761,7 +756,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
 
         // A second detection while already recording must not stack a start.
         controller.handleMeetingStarted(source: source("com.microsoft.teams2"))
-        await settle()
+        await yieldRunway()
 
         XCTAssertEqual(host.recorderSpy.startCallCount, 1)
         XCTAssertTrue(host.stateMachine.current.isRecording)
@@ -772,7 +767,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
     func test_toggleOffTheRecord_whenIdle_isANoOp() async {
         let (controller, host) = makeController()
         controller.toggleOffTheRecord()
-        await settle()
+        await yieldRunway()
         XCTAssertTrue(host.recorderSpy.offTheRecordStates.isEmpty, "no recorder toggle when idle")
         XCTAssertTrue(host.hudSpy.offTheRecordStates.isEmpty, "no HUD change when idle")
     }
@@ -784,7 +779,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
 
         controller.toggleOffTheRecord()   // on
         controller.toggleOffTheRecord()   // off
-        await settle()
+        await yieldRunway()
 
         // The toggle is idempotent per press and flips both the recorder and the HUD.
         XCTAssertEqual(host.recorderSpy.offTheRecordStates, [true, false])
@@ -798,7 +793,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
     func test_flagMoment_whenIdle_isANoOp() async {
         let (controller, host) = makeController()
         controller.flagMoment()
-        await settle()
+        await yieldRunway()
         XCTAssertEqual(
             host.hudSpy.acknowledgedFlagCounts, [],
             "nothing was flagged, so nothing is acknowledged"
@@ -816,7 +811,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
 
         controller.flagMoment()
         controller.flagMoment()
-        await settle()
+        await yieldRunway()
 
         XCTAssertEqual(host.hudSpy.acknowledgedFlagCounts, [1, 2], "each press acknowledges its own number")
         XCTAssertEqual(host.hudSpy.flagCount, 2, "and the control is left showing the total")
@@ -831,11 +826,11 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
             file: tempDir.appendingPathComponent("rec.wav"), source: source(), summaryMode: .auto
         )
         controller.flagMoment()
-        await settle()
+        await yieldRunway()
 
         host.stateMachine.setIdle()
         controller.flagMoment()
-        await settle()
+        await yieldRunway()
 
         XCTAssertEqual(
             host.hudSpy.acknowledgedFlagCounts, [1],
@@ -883,7 +878,7 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
         )
         controller.flagMoment()
         controller.flagMoment()
-        await settle()
+        await yieldRunway()
         XCTAssertEqual(host.hudSpy.flagCount, 2)
 
         // END20: `beginRecording` refuses while a recording is running, so the first one is over.

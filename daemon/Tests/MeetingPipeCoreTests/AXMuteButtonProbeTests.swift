@@ -1,6 +1,7 @@
 import ApplicationServices
 import XCTest
 @testable import MeetingPipeCore
+import MeetingPipeTestSupport
 
 final class AXMuteButtonProbeTests: XCTestCase {
 
@@ -11,9 +12,14 @@ final class AXMuteButtonProbeTests: XCTestCase {
         AXUIElementCreateApplication(pid)
     }
 
-    private static let catalogue: MuteLabels = {
-        try! MuteLabelsLoader.loadDefault()
-    }()
+    /// T13: loaded per test and thrown, not force-tried in a static initialiser: a trap there killed the
+    /// xctest process, so one broken resource bundle read as a crash with every later test unrun.
+    private var catalogue: MuteLabels!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        catalogue = try MuteLabelsLoader.loadDefault()
+    }
 
     private let teams2 = "com.microsoft.teams2"
 
@@ -27,7 +33,7 @@ final class AXMuteButtonProbeTests: XCTestCase {
         AXMuteButtonProbe(
             app: app,
             axBus: bus,
-            catalogue: Self.catalogue,
+            catalogue: catalogue,
             probe: probe,
             scheduler: scheduler,
             localeResolver: { locale }
@@ -150,7 +156,7 @@ final class AXMuteButtonProbeTests: XCTestCase {
     func test_consecutive_unknown_reresolves_the_element() throws {
         var resolveCalls = 0
         let probe = AXMuteButtonProbe(
-            app: "teams", axBus: AXObserverBus(), catalogue: Self.catalogue,
+            app: "teams", axBus: AXObserverBus(), catalogue: catalogue,
             probe: { _ in .init(title: "Mic is not available", help: nil, description: nil) },
             scheduler: { _, _ in {} }, localeResolver: { "en" }, rearmThreshold: 3
         )
@@ -169,7 +175,7 @@ final class AXMuteButtonProbeTests: XCTestCase {
         var label: String? = "Mic is not available" // .unknown
         var resolveCalls = 0
         let probe = AXMuteButtonProbe(
-            app: "teams", axBus: AXObserverBus(), catalogue: Self.catalogue,
+            app: "teams", axBus: AXObserverBus(), catalogue: catalogue,
             probe: { _ in .init(title: label, help: nil, description: nil) },
             scheduler: { _, _ in {} }, localeResolver: { "en" }, rearmThreshold: 3
         )
@@ -190,7 +196,7 @@ final class AXMuteButtonProbeTests: XCTestCase {
         var label: String? = "Unmute" // .muted
         var events: [AXMuteButtonProbe.Event] = []
         let probe = AXMuteButtonProbe(
-            app: "teams", axBus: AXObserverBus(), catalogue: Self.catalogue,
+            app: "teams", axBus: AXObserverBus(), catalogue: catalogue,
             probe: { _ in .init(title: label, help: nil, description: nil) },
             scheduler: { _, _ in {} }, localeResolver: { "en" }, rearmThreshold: 2
         )
@@ -227,7 +233,7 @@ final class AXMuteButtonProbeTests: XCTestCase {
     func test_productionQueue_pollReadsAndTheRearmWalk_runOffMain() {
         let threads = ThreadLog()
         let probe = AXMuteButtonProbe(
-            app: "teams", axBus: AXObserverBus(), catalogue: Self.catalogue,
+            app: "teams", axBus: AXObserverBus(), catalogue: catalogue,
             probe: { _ in
                 threads.note("read")
                 return .init(title: "Mic is not available")   // .unknown, so the streak re-arms
@@ -254,7 +260,7 @@ final class AXMuteButtonProbeTests: XCTestCase {
         let threads = ThreadLog()
         let backend = FiringAXBackend()
         let probe = AXMuteButtonProbe(
-            app: "teams", axBus: AXObserverBus(backend: backend), catalogue: Self.catalogue,
+            app: "teams", axBus: AXObserverBus(backend: backend), catalogue: catalogue,
             probe: { _ in threads.note("read"); return .init(title: "Unmute") },
             localeResolver: { "en" },
             elementTimeout: { _ in },
@@ -285,7 +291,7 @@ final class AXMuteButtonProbeTests: XCTestCase {
         let events = EventBox()
         let backend = FiringAXBackend()
         let probe = AXMuteButtonProbe(
-            app: "teams", axBus: AXObserverBus(backend: backend), catalogue: Self.catalogue,
+            app: "teams", axBus: AXObserverBus(backend: backend), catalogue: catalogue,
             probe: { _ in
                 entered.signal()
                 _ = gate.wait(timeout: .now() + 5)
@@ -319,7 +325,7 @@ final class AXMuteButtonProbeTests: XCTestCase {
         let log = RecordingEventLog()
         let events = EventBox()
         let probe = AXMuteButtonProbe(
-            app: "teams", axBus: AXObserverBus(), catalogue: Self.catalogue, eventLog: log,
+            app: "teams", axBus: AXObserverBus(), catalogue: catalogue, eventLog: log,
             probe: { _ in .init(title: "Mic is not available") },
             localeResolver: { "en" },
             elementTimeout: { _ in },
@@ -352,7 +358,7 @@ final class AXMuteButtonProbeTests: XCTestCase {
         let calls = Counter()
         let events = EventBox()
         let probe = AXMuteButtonProbe(
-            app: "teams", axBus: AXObserverBus(), catalogue: Self.catalogue,
+            app: "teams", axBus: AXObserverBus(), catalogue: catalogue,
             probe: { _ in
                 if calls.increment() == 1 {
                     entered.signal()
@@ -411,7 +417,7 @@ final class AXMuteButtonProbeTests: XCTestCase {
         let log = RecordingEventLog()
         var events: [AXMuteButtonProbe.Event] = []
         let probe = AXMuteButtonProbe(
-            app: "teams", axBus: AXObserverBus(backend: backend), catalogue: Self.catalogue, eventLog: log,
+            app: "teams", axBus: AXObserverBus(backend: backend), catalogue: catalogue, eventLog: log,
             probe: { _ in .init(title: "Unmute") },
             scheduler: { _, _ in {} }, localeResolver: { "en" }, elementTimeout: { _ in }
         )
@@ -434,7 +440,7 @@ final class AXMuteButtonProbeTests: XCTestCase {
         elementTimeout: @escaping AXMuteButtonProbe.ElementTimeout
     ) -> AXMuteButtonProbe {
         AXMuteButtonProbe(
-            app: "teams", axBus: AXObserverBus(), catalogue: Self.catalogue,
+            app: "teams", axBus: AXObserverBus(), catalogue: catalogue,
             probe: probe, scheduler: { _, _ in {} }, localeResolver: { "en" },
             elementTimeout: elementTimeout, rearmThreshold: 1
         )
@@ -442,38 +448,25 @@ final class AXMuteButtonProbeTests: XCTestCase {
 
     // MARK: - PERF19: the backoff holds in steady state
 
-    /// Records every interval the probe arms, so the cadence is visible.
-    final class IntervalScheduler {
-        var tick: (() -> Void)?
-        var armed: [TimeInterval] = []
-        var scheduler: AXMuteButtonProbe.Scheduler {
-            return { [self] interval, action in
-                armed.append(interval)
-                tick = action
-                return { [weak self] in self?.tick = nil }
-            }
-        }
-    }
-
     /// Red against the PERF5 rule: a steady mute state with quiet value/title listeners polled
     /// at 1 Hz all meeting.
     func test_steady_state_backs_off_to_slow_and_an_unknown_read_returns_fast() {
-        let scheduler = IntervalScheduler()
+        let scheduler = ManualScheduler()
         var title: String? = "Mute"
         let probe = makeProbe(
             probe: { _ in .init(title: title, help: nil, description: nil) },
-            scheduler: scheduler.scheduler
+            scheduler: scheduler.schedule
         )
         probe.start(pid: 1, bundleID: "com.microsoft.teams2", button: stubElement())
-        XCTAssertEqual(scheduler.armed, [AXMuteButtonProbe.defaultPollInterval])
+        XCTAssertEqual(scheduler.scheduledDelays, [AXMuteButtonProbe.defaultPollInterval])
 
-        for _ in 0..<20 { scheduler.tick?() }
-        XCTAssertEqual(scheduler.armed.last, AXMuteButtonProbe.defaultSlowPollInterval)
-        XCTAssertEqual(scheduler.armed.count, 2, "one back-off, then slow holds")
+        for _ in 0..<20 { scheduler.tick() }
+        XCTAssertEqual(scheduler.scheduledDelays.last, AXMuteButtonProbe.defaultSlowPollInterval)
+        XCTAssertEqual(scheduler.scheduledDelays.count, 2, "one back-off, then slow holds")
 
         title = nil   // unreadable: back to 1 Hz so the MIC6 re-resolve keeps its timing
-        scheduler.tick?()
-        XCTAssertEqual(scheduler.armed.last, AXMuteButtonProbe.defaultPollInterval)
+        scheduler.tick()
+        XCTAssertEqual(scheduler.scheduledDelays.last, AXMuteButtonProbe.defaultPollInterval)
     }
 }
 
@@ -546,35 +539,40 @@ private final class FiringAXBackend: AXObserverBus.Backend {
 
 final class MicGateAdapterTests: XCTestCase {
 
-    private static let catalogue: MuteLabels = {
-        try! MuteLabelsLoader.loadDefault()
-    }()
+    /// T13: loaded per test and thrown, not force-tried in a static initialiser: a trap there killed the
+    /// xctest process, so one broken resource bundle read as a crash with every later test unrun.
+    private var catalogue: MuteLabels!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        catalogue = try MuteLabelsLoader.loadDefault()
+    }
 
     private let teamsContext = MeetingLifecycleContext(
         bundleID: "com.microsoft.teams2", kind: .native, pid: 1234
     )
 
     func test_teams_adapter_routes_teams_bundle_ids() {
-        let adapter = NativeMuteAdapter(config: .teams, axBus: AXObserverBus(), catalogue: Self.catalogue)
+        let adapter = NativeMuteAdapter(config: .teams, axBus: AXObserverBus(), catalogue: catalogue)
         XCTAssertEqual(adapter.app, "teams")
         XCTAssertTrue(adapter.bundleIDs.contains("com.microsoft.teams2"))
     }
 
     func test_zoom_adapter_routes_zoom_bundle_id() {
-        let adapter = NativeMuteAdapter(config: .zoom, axBus: AXObserverBus(), catalogue: Self.catalogue)
+        let adapter = NativeMuteAdapter(config: .zoom, axBus: AXObserverBus(), catalogue: catalogue)
         XCTAssertEqual(adapter.app, "zoom")
         XCTAssertEqual(adapter.bundleIDs, ["us.zoom.xos"])
     }
 
     func test_slack_adapter_routes_slack_bundle_id() {
-        let adapter = NativeMuteAdapter(config: .slack, axBus: AXObserverBus(), catalogue: Self.catalogue)
+        let adapter = NativeMuteAdapter(config: .slack, axBus: AXObserverBus(), catalogue: catalogue)
         XCTAssertEqual(adapter.app, "slack")
         XCTAssertEqual(adapter.bundleIDs, ["com.tinyspeck.slackmacgap"])
     }
 
     func test_adapter_start_does_nothing_without_mute_button_handle() throws {
         let bus = AXObserverBus()
-        let adapter = NativeMuteAdapter(config: .teams, axBus: bus, catalogue: Self.catalogue)
+        let adapter = NativeMuteAdapter(config: .teams, axBus: bus, catalogue: catalogue)
         try adapter.start(
             context: teamsContext,
             handle: MicGateAdapterHandle(muteButton: nil),

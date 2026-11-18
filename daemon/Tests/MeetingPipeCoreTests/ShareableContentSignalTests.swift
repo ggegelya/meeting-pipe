@@ -1,5 +1,6 @@
 import XCTest
 @testable import MeetingPipeCore
+import MeetingPipeTestSupport
 
 final class ShareableContentSignalTests: XCTestCase {
 
@@ -11,19 +12,6 @@ final class ShareableContentSignalTests: XCTestCase {
         pid: 1234
     )
 
-    private func manualScheduler(_ store: ManualScheduler) -> ShareableContentSignal.Scheduler {
-        return { interval, action in
-            store.lastInterval = interval
-            store.tick = action
-            return { store.tick = nil }
-        }
-    }
-
-    final class ManualScheduler {
-        var tick: (() -> Void)?
-        var lastInterval: TimeInterval = 0
-    }
-
     func test_window_present_when_bundle_matches() {
         let scheduler = ManualScheduler()
         var observed: [Bool] = []
@@ -31,7 +19,7 @@ final class ShareableContentSignalTests: XCTestCase {
             probe: {
                 [Summary(bundleIdentifier: "com.microsoft.teams2", title: "Standup | Meeting")]
             },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
@@ -47,7 +35,7 @@ final class ShareableContentSignalTests: XCTestCase {
             probe: {
                 [Summary(bundleIdentifier: "us.zoom.xos", title: "Zoom")]
             },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
@@ -62,7 +50,7 @@ final class ShareableContentSignalTests: XCTestCase {
             probe: {
                 [Summary(bundleIdentifier: "com.microsoft.teams2", title: "Chat - Acme")]
             },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
@@ -80,13 +68,13 @@ final class ShareableContentSignalTests: XCTestCase {
         var observed: [Bool] = []
         let signal = ShareableContentSignal(
             probe: { windows },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
         signal.start(context: teamsContext)
         windows = []
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed, [true, false])
     }
 
@@ -98,19 +86,19 @@ final class ShareableContentSignalTests: XCTestCase {
         var windows: [Summary] = []
         let signal = ShareableContentSignal(
             probe: { windows },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
 
         signal.start(context: teamsContext)
-        XCTAssertEqual(scheduler.lastInterval, 1.0, "absent window")
+        XCTAssertEqual(scheduler.lastDelay, 1.0, "absent window")
 
         windows = [Summary(bundleIdentifier: "com.microsoft.teams2", title: "Standup")]
-        scheduler.tick?()
-        XCTAssertEqual(scheduler.lastInterval, 1.0, "present window: no 2 Hz tier any more")
+        scheduler.tick()
+        XCTAssertEqual(scheduler.lastDelay, 1.0, "present window: no 2 Hz tier any more")
 
         windows = []
-        scheduler.tick?()
-        XCTAssertEqual(scheduler.lastInterval, 1.0)
+        scheduler.tick()
+        XCTAssertEqual(scheduler.lastDelay, 1.0)
     }
 
     /// The two-tier mechanism still works for an injected pair, so a later split is a constant change.
@@ -119,16 +107,16 @@ final class ShareableContentSignalTests: XCTestCase {
         var windows: [Summary] = []
         let signal = ShareableContentSignal(
             probe: { windows },
-            scheduler: manualScheduler(scheduler),
+            scheduler: scheduler.schedule,
             activeInterval: 0.5,
             idleInterval: 1.0
         )
 
         signal.start(context: teamsContext)
-        XCTAssertEqual(scheduler.lastInterval, 1.0)
+        XCTAssertEqual(scheduler.lastDelay, 1.0)
         windows = [Summary(bundleIdentifier: "com.microsoft.teams2", title: "Standup")]
-        scheduler.tick?()
-        XCTAssertEqual(scheduler.lastInterval, 0.5)
+        scheduler.tick()
+        XCTAssertEqual(scheduler.lastDelay, 0.5)
     }
 
     func test_nil_probe_logs_unavailable_without_flapping() {
@@ -139,13 +127,13 @@ final class ShareableContentSignalTests: XCTestCase {
         let signal = ShareableContentSignal(
             eventLog: log,
             probe: { probeReturn },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
         signal.start(context: teamsContext)
         probeReturn = nil
-        scheduler.tick?()
+        scheduler.tick()
 
         XCTAssertEqual(observed, [true])
         XCTAssertTrue(log.entries.contains { $0.action == "shareable_content_unavailable" })
@@ -163,13 +151,13 @@ final class ShareableContentSignalTests: XCTestCase {
                  Summary(bundleIdentifier: "com.microsoft.teams2", title: "Placeholder Topic"),
                  Summary(bundleIdentifier: "com.microsoft.teams2", title: nil)]
             },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
 
         signal.start(context: teamsContext, titleMatch: { title in
             (title ?? "").lowercased().contains("meeting")
         })
-        scheduler.tick?()
+        scheduler.tick()
 
         let rows = log.entries.filter { $0.action == "shareable_content_no_match" }
         XCTAssertEqual(rows.count, 1, "an unchanged candidate list still emits once")
@@ -250,19 +238,19 @@ final class ShareableContentSignalTests: XCTestCase {
         let signal = ShareableContentSignal(
             eventLog: log,
             probe: { probeReturn },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         let unavailable = { log.entries.filter { $0.action == "shareable_content_unavailable" }.count }
 
         signal.start(context: teamsContext)   // nil #1
-        scheduler.tick?()                     // nil #2
-        scheduler.tick?()                     // nil #3
+        scheduler.tick()                     // nil #2
+        scheduler.tick()                     // nil #3
         XCTAssertEqual(unavailable(), 1, "one row per outage, not one per poll")
 
         probeReturn = [Summary(bundleIdentifier: "com.microsoft.teams2", title: "Standup")]
-        scheduler.tick?()
+        scheduler.tick()
         probeReturn = nil
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(unavailable(), 2, "a success ends the outage, so the next nil logs again")
     }
 
@@ -274,17 +262,17 @@ final class ShareableContentSignalTests: XCTestCase {
         var probeReturn: [Summary]? = nil
         let signal = ShareableContentSignal(
             probe: { probeReturn },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { observed.append($0) }
 
         signal.start(context: teamsContext)
-        XCTAssertNotNil(scheduler.tick, "a nil first probe arms the poll")
-        XCTAssertEqual(scheduler.lastInterval, ShareableContentSignal.idlePollInterval)
+        XCTAssertTrue(scheduler.hasPending, "a nil first probe arms the poll")
+        XCTAssertEqual(scheduler.lastDelay, ShareableContentSignal.idlePollInterval)
         XCTAssertNil(signal.lastValue)
 
         probeReturn = [Summary(bundleIdentifier: "com.microsoft.teams2", title: "Standup")]
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed, [true])
         XCTAssertEqual(signal.lastValue, true)
     }
@@ -396,7 +384,7 @@ final class ShareableContentSignalTests: XCTestCase {
         let signal = ShareableContentSignal(
             eventLog: log,
             probe: { windows.get() },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.onChange = { value in observed.mutate { $0.append(value) } }
         retained.append(signal)
@@ -414,9 +402,9 @@ final class ShareableContentSignalTests: XCTestCase {
         let windows = LockedBox([Summary(bundleIdentifier: teams2, title: "Weekly sync", windowID: 41, pid: 7)])
         let observed = LockedBox<[Bool]>([])
         let (_, scheduler) = identitySignal(windows, observed: observed)
-        scheduler.tick?()
+        scheduler.tick()
         windows.set([Summary(bundleIdentifier: teams2, title: "Weekly sync (2 people)", windowID: 41, pid: 7)])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed.get(), [true], "the locked call window must read present whatever its title becomes")
     }
 
@@ -433,7 +421,7 @@ final class ShareableContentSignalTests: XCTestCase {
             Summary(bundleIdentifier: teams2, title: "Chat | Acme", windowID: 12, pid: 7),
             Summary(bundleIdentifier: teams2, title: "Jane Doe", windowID: 99, pid: 7)
         ])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed.get(), [true, false])
         let locked = log.entries.first { $0.action == "shareable_content_window_locked" }
         XCTAssertEqual(locked?.attributes["count"], "1", "the main window's Chat | shape must not be locked beside a call window")
@@ -447,9 +435,9 @@ final class ShareableContentSignalTests: XCTestCase {
         let observed = LockedBox<[Bool]>([])
         let (_, scheduler) = identitySignal(windows, observed: observed)
         windows.set([])
-        scheduler.tick?()
+        scheduler.tick()
         windows.set([Summary(bundleIdentifier: teams2, title: "Weekly sync", windowID: 42, pid: 7)])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed.get(), [true, false], "no re-lock: a returning reading would revert a real end")
     }
 
@@ -461,9 +449,9 @@ final class ShareableContentSignalTests: XCTestCase {
         let observed = LockedBox<[Bool]>([])
         let (_, scheduler) = identitySignal(windows, observed: observed)
         windows.set([])
-        scheduler.tick?()
+        scheduler.tick()
         windows.set([call])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed.get(), [true, false, true])
     }
 
@@ -473,7 +461,7 @@ final class ShareableContentSignalTests: XCTestCase {
         let log = RecordingEventLog()
         let (_, scheduler) = identitySignal(windows, log: log, observed: observed)
         windows.set([Summary(bundleIdentifier: teams2, title: "Calendar")])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed.get(), [true, false])
         XCTAssertFalse(log.entries.contains { $0.action == "shareable_content_window_locked" })
     }
@@ -511,7 +499,7 @@ final class ShareableContentSignalTests: XCTestCase {
         let log = RecordingEventLog()
         let (_, scheduler) = identitySignal(windows, log: log, observed: observed)
         windows.set([Summary(bundleIdentifier: teams2, title: "Chat | Acme", windowID: 12, pid: 7)])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed.get(), [true, false], "the main window was locked beside the call window")
         XCTAssertEqual(log.entries.first { $0.action == "shareable_content_window_locked" }?.attributes["rank"], "1")
     }
@@ -528,7 +516,7 @@ final class ShareableContentSignalTests: XCTestCase {
             for processAudioLive in [false, true] {
                 let call = Summary(bundleIdentifier: teams2, title: "Weekly sync", windowID: 41, pid: 7)
                 let scheduler = ManualScheduler()
-                let signal = ShareableContentSignal(probe: { [call] }, scheduler: manualScheduler(scheduler))
+                let signal = ShareableContentSignal(probe: { [call] }, scheduler: scheduler.schedule)
                 retained.append(signal)
                 let readings = LockedBox<[Bool]>([])
                 signal.onChange = { value in readings.mutate { $0.append(value) } }
@@ -571,7 +559,7 @@ final class ShareableContentSignalTests: XCTestCase {
         log: RecordingEventLog, readings: LockedBox<[Reading]>, observed: LockedBox<[Bool]>
     ) -> ManualScheduler {
         let scheduler = ManualScheduler()
-        let signal = ShareableContentSignal(eventLog: log, probe: { windows.get() }, scheduler: manualScheduler(scheduler))
+        let signal = ShareableContentSignal(eventLog: log, probe: { windows.get() }, scheduler: scheduler.schedule)
         signal.onChange = { value in observed.mutate { $0.append(value) } }
         signal.onReading = { present, weak in readings.mutate { $0.append(Reading(present: present, weak: weak)) } }
         retained.append(signal)
@@ -596,7 +584,7 @@ final class ShareableContentSignalTests: XCTestCase {
         XCTAssertEqual(readings.get(), [Reading(present: true, weak: true)], "a main-window lock is weak")
 
         windows.set([main, call])
-        scheduler.tick?()
+        scheduler.tick()
         let relocked = log.entries.first { $0.action == "shareable_content_window_relocked" }
         XCTAssertEqual(relocked?.attributes["from_rank"], "2")
         XCTAssertEqual(relocked?.attributes["rank"], "0")
@@ -604,7 +592,7 @@ final class ShareableContentSignalTests: XCTestCase {
         XCTAssertEqual(observed.get(), [true], "present to present: `onChange` does not fire")
 
         windows.set([main])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(readings.get().last, Reading(present: false, weak: false), "the call window closing reads gone")
         XCTAssertEqual(observed.get(), [true, false])
     }
@@ -619,9 +607,9 @@ final class ShareableContentSignalTests: XCTestCase {
         let observed = LockedBox<[Bool]>([])
         let scheduler = rankedSignal(windows, context: teamsContext, config: .teams, log: log, readings: readings, observed: observed)
         windows.set([])
-        scheduler.tick?()
+        scheduler.tick()
         windows.set([Summary(bundleIdentifier: teams2, title: "Ana Lima", windowID: 55, pid: 7)])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed.get(), [true, false], "still gone")
         XCTAssertFalse(log.entries.contains { $0.action == "shareable_content_window_relocked" })
     }
@@ -635,9 +623,9 @@ final class ShareableContentSignalTests: XCTestCase {
         let readings = LockedBox<[Reading]>([])
         let scheduler = rankedSignal(windows, context: teamsContext, config: .teams, log: log, readings: readings, observed: LockedBox([]))
         windows.set([call, Summary(bundleIdentifier: teams2, title: "Ana Lima", windowID: 55, pid: 7)])
-        scheduler.tick?()
+        scheduler.tick()
         windows.set([Summary(bundleIdentifier: teams2, title: "Ana Lima", windowID: 55, pid: 7)])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(readings.get(), [Reading(present: true, weak: false), Reading(present: false, weak: false)])
         XCTAssertFalse(log.entries.contains { $0.action == "shareable_content_window_relocked" })
     }
@@ -650,7 +638,7 @@ final class ShareableContentSignalTests: XCTestCase {
         let readings = LockedBox<[Reading]>([])
         let scheduler = rankedSignal(windows, context: teamsContext, config: .teams, log: log, readings: readings, observed: LockedBox([]))
         windows.set([call, Summary(bundleIdentifier: teams2, title: "Ana Lima", windowID: 55, pid: 7)])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(readings.get(), [Reading(present: true, weak: false)])
         XCTAssertFalse(log.entries.contains { $0.action == "shareable_content_window_relocked" })
     }
@@ -667,7 +655,7 @@ final class ShareableContentSignalTests: XCTestCase {
         let scheduler = rankedSignal(windows, context: zoomContext, config: .zoom, log: log, readings: readings, observed: LockedBox([]))
         XCTAssertEqual(readings.get(), [Reading(present: true, weak: true)])
         windows.set([webinar, meeting])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(readings.get().last, Reading(present: true, weak: false))
     }
 
@@ -682,7 +670,7 @@ final class ShareableContentSignalTests: XCTestCase {
         observed: LockedBox<[Bool]>
     ) -> ManualScheduler {
         let scheduler = ManualScheduler()
-        let signal = ShareableContentSignal(eventLog: log, probe: { windows.get() }, scheduler: manualScheduler(scheduler))
+        let signal = ShareableContentSignal(eventLog: log, probe: { windows.get() }, scheduler: scheduler.schedule)
         signal.onChange = { value in observed.mutate { $0.append(value) } }
         retained.append(signal)
         signal.start(
@@ -731,7 +719,7 @@ final class ShareableContentSignalTests: XCTestCase {
         let observed = LockedBox<[Bool]>([])
         let scheduler = zoomSignal(windows, observed: observed)
         windows.set([Summary(bundleIdentifier: zoomApp, title: "Zoom Workplace", windowID: 5, pid: 8)])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed.get(), [true, false])
     }
 
@@ -740,9 +728,9 @@ final class ShareableContentSignalTests: XCTestCase {
         let observed = LockedBox<[Bool]>([])
         let scheduler = zoomSignal(windows, observed: observed)
         windows.set([])
-        scheduler.tick?()
+        scheduler.tick()
         windows.set([Summary(bundleIdentifier: zoomApp, title: "Zoom Meeting", windowID: 52, pid: 8)])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed.get(), [true, false])
     }
 
@@ -756,9 +744,9 @@ final class ShareableContentSignalTests: XCTestCase {
         let observed = LockedBox<[Bool]>([])
         let scheduler = zoomSignal(windows, observed: observed)
         windows.set([workplace])
-        scheduler.tick?()
+        scheduler.tick()
         windows.set([workplace, meeting])
-        scheduler.tick?()
+        scheduler.tick()
         XCTAssertEqual(observed.get(), [true, false, true])
     }
 
@@ -773,10 +761,10 @@ final class ShareableContentSignalTests: XCTestCase {
                 flip.lock(); present.toggle(); let now = present; flip.unlock()
                 return now ? [Summary(bundleIdentifier: "com.microsoft.teams2", title: "Standup | Meeting")] : []
             },
-            scheduler: manualScheduler(scheduler)
+            scheduler: scheduler.schedule
         )
         signal.start(context: teamsContext)
-        let tick = scheduler.tick
+        let tick = scheduler.latest
         let fired = OSAllocatedCounter()
         let poller = DispatchQueue(label: "conc6.poll")
         let done = expectation(description: "polls done")

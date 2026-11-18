@@ -192,7 +192,7 @@ final class SavedSearchTests: XCTestCase {
 
     // MARK: - Codable
 
-    func test_round_trips_through_json_with_every_field_set() {
+    func test_round_trips_through_json_with_every_field_set() throws {
         let original = SavedSearch(
             name: "Everything",
             base: .ndaOnly,
@@ -202,24 +202,24 @@ final class SavedSearchTests: XCTestCase {
             ),
             order: 7
         )
-        let data = try! JSONEncoder().encode(original)
-        let decoded = try! JSONDecoder().decode(SavedSearch.self, from: data)
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(SavedSearch.self, from: data)
         XCTAssertEqual(decoded, original)
     }
 
-    func test_date_range_encodes_a_stable_token_not_its_display_label() {
+    func test_date_range_encodes_a_stable_token_not_its_display_label() throws {
         // The rawValue doubles as the chip's menu label; rewording it must not orphan
         // a folder on disk, so the encoded form is the case-name token.
-        let data = try! JSONEncoder().encode(MeetingFilter(dateRange: .week))
+        let data = try JSONEncoder().encode(MeetingFilter(dateRange: .week))
         let json = String(data: data, encoding: .utf8)!
         XCTAssertTrue(json.contains("\"week\""), "expected the stable token, got \(json)")
         XCTAssertFalse(json.contains("Last 7 days"), "the display label must not be persisted")
     }
 
-    func test_unknown_date_range_token_degrades_to_all_time() {
+    func test_unknown_date_range_token_degrades_to_all_time() throws {
         // A hand-edited file should widen the folder, not drop it.
         let json = #"{"query":"x","dateRange":"fortnight"}"#.data(using: .utf8)!
-        let decoded = try! JSONDecoder().decode(MeetingFilter.self, from: json)
+        let decoded = try JSONDecoder().decode(MeetingFilter.self, from: json)
         XCTAssertEqual(decoded.dateRange, .all)
         XCTAssertEqual(decoded.query, "x")
     }

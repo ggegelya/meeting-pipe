@@ -1,5 +1,6 @@
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// Pins the post-extraction contract for `MeetingLibraryService`
 /// (TECH-H1-FINISH): the on-disk meeting operations behave exactly as
@@ -7,140 +8,9 @@ import XCTest
 /// the type is testable without a live daemon.
 final class MeetingLibraryServiceTests: XCTestCase {
 
-    /// Programmable in-memory pipeline driver. Records the inputs it is
-    /// handed and parks each completion so the test resolves it.
-    private final class FakeDriver: PipelineDriver {
-        private(set) var summarizeInputs: [URL] = []
-        /// PIPE6: the one-shot backend override forwarded into each summarize call.
-        private(set) var summarizeBackends: [String?] = []
-        private(set) var publishInputs: [URL] = []
-        private(set) var publishFromPasteInputs: [URL] = []
-        private(set) var previewInputs: [URL] = []
-        private(set) var applePreviewInputs: [URL] = []
-        /// TECH-FEAT7: the contextOverride forwarded into each preview call.
-        private(set) var previewContextOverrides: [String?] = []
-        private var summarizeCompletions: [(Result<Void, Error>) -> Void] = []
-        private var publishCompletions: [(Result<URL?, Error>) -> Void] = []
-        private var publishFromPasteCompletions: [(Result<Void, Error>) -> Void] = []
-        private var previewCompletions: [(Result<Void, Error>) -> Void] = []
-
-        func runAll(wav: URL, summaryMode: SummaryMode, completion: @escaping (Result<URL?, Error>) -> Void) {}
-
-        func summarizePreview(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void) {
-            previewInputs.append(transcriptMD)
-            previewContextOverrides.append(contextOverride)
-            previewCompletions.append(completion)
-        }
-
-        func summarizePreviewViaApple(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void) {
-            applePreviewInputs.append(transcriptMD)
-            previewContextOverrides.append(contextOverride)
-            previewCompletions.append(completion)
-        }
-
-        func finishPreview(_ result: Result<Void, Error>) {
-            guard !previewCompletions.isEmpty else { return }
-            previewCompletions.removeFirst()(result)
-        }
-
-        func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
-            summarize(transcriptMD: transcriptMD, backend: nil, completion: completion)
-        }
-
-        func summarize(transcriptMD: URL, backend: String?, completion: @escaping (Result<Void, Error>) -> Void) {
-            summarizeInputs.append(transcriptMD)
-            summarizeBackends.append(backend)
-            summarizeCompletions.append(completion)
-        }
-
-        func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void) {
-            publishInputs.append(summaryJSON)
-            publishCompletions.append(completion)
-        }
-
-        func publishFromPaste(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
-            publishFromPasteInputs.append(transcriptMD)
-            publishFromPasteCompletions.append(completion)
-        }
-
-        func finishSummarize(_ result: Result<Void, Error>) {
-            guard !summarizeCompletions.isEmpty else { return }
-            summarizeCompletions.removeFirst()(result)
-        }
-
-        func finishPublish(_ result: Result<URL?, Error>) {
-            guard !publishCompletions.isEmpty else { return }
-            publishCompletions.removeFirst()(result)
-        }
-
-        func finishPublishFromPaste(_ result: Result<Void, Error>) {
-            guard !publishFromPasteCompletions.isEmpty else { return }
-            publishFromPasteCompletions.removeFirst()(result)
-        }
-
-        private(set) var mergeInputs: [(primary: URL, fragments: [URL])] = []
-        private var mergeCompletions: [(Result<URL?, Error>) -> Void] = []
-
-        func mergeMeetings(primary: URL, fragments: [URL], completion: @escaping (Result<URL?, Error>) -> Void) {
-            mergeInputs.append((primary, fragments))
-            mergeCompletions.append(completion)
-        }
-
-        func finishMerge(_ result: Result<URL?, Error>) {
-            guard !mergeCompletions.isEmpty else { return }
-            mergeCompletions.removeFirst()(result)
-        }
-
-        private(set) var askInputs: [String] = []
-        private var askCompletions: [(Result<AskAnswer, Error>) -> Void] = []
-        /// UX37: how many times Ask's Cancel reached the driver.
-        private(set) var cancelAskCalls = 0
-
-        func ask(question: String, completion: @escaping (Result<AskAnswer, Error>) -> Void) {
-            askInputs.append(question)
-            askCompletions.append(completion)
-        }
-
-        func cancelAsk() { cancelAskCalls += 1 }
-
-        func finishAsk(_ result: Result<AskAnswer, Error>) {
-            guard !askCompletions.isEmpty else { return }
-            askCompletions.removeFirst()(result)
-        }
-
-        // FEAT3-UNDO roster plumbing.
-        private(set) var enrollInputs: [(name: String, label: String, noRelabel: Bool)] = []
-        private var enrollCompletions: [(Result<Void, Error>) -> Void] = []
-        private(set) var forgetInputs: [String] = []
-        // FEAT24: per-sample take-back. The stem is the anchor's, so a test can pin that
-        // the unenroll names THIS meeting and not another.
-        private(set) var unenrollInputs: [(name: String, label: String, stem: String)] = []
-        var unenrollResult: Result<Void, Error> = .success(())
-
-        func rosterUnenroll(name: String, label: String, wav: URL, completion: @escaping (Result<Void, Error>) -> Void) {
-            unenrollInputs.append((name, label, wav.deletingPathExtension().lastPathComponent))
-            completion(unenrollResult)
-        }
-
-        func rosterEnroll(name: String, label: String, wav: URL, noRelabel: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
-            enrollInputs.append((name, label, noRelabel))
-            enrollCompletions.append(completion)
-        }
-
-        func rosterForget(name: String, completion: @escaping (Result<Void, Error>) -> Void) {
-            forgetInputs.append(name)
-            completion(.success(()))
-        }
-
-        func finishEnroll(_ result: Result<Void, Error>) {
-            guard !enrollCompletions.isEmpty else { return }
-            enrollCompletions.removeFirst()(result)
-        }
-    }
-
     private var dir: URL!
     private var originalsDir: URL!
-    private var driver: FakeDriver!
+    private var driver: FakePipelineDriver!
     private var enqueued: [(URL, SummaryMode)] = []
     private var errors: [String] = []
     /// AI9: the correction pairs `reassignWorkflow` handed out, in order.
@@ -162,7 +32,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         originalsDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("mp-originals-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: originalsDir, withIntermediateDirectories: true)
-        driver = FakeDriver()
+        driver = FakePipelineDriver()
         enqueued = []
         errors = []
         corrections = []
@@ -213,12 +83,6 @@ final class MeetingLibraryServiceTests: XCTestCase {
         try data.write(to: dir.appendingPathComponent("\(stem).embeddings.json"))
     }
 
-    private func drainMain() {
-        let e = expectation(description: "drain")
-        DispatchQueue.main.async { e.fulfill() }
-        wait(for: [e], timeout: 1.0)
-    }
-
     // MARK: - reassign workflow (WF8)
 
     func test_retry_reuses_a_finalized_transcript_without_transcription() throws {
@@ -266,7 +130,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertNil(driver.summarizeBackends.first!)
         XCTAssertTrue(enqueued.isEmpty)
         driver.finishSummarize(.failure(PipelineLauncher.LaunchError.cancelled))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertTrue(errors.isEmpty)
         XCTAssertTrue(driver.publishInputs.isEmpty)
         XCTAssertEqual(PipelineFailureSidecar.read(stem: "m", in: dir)?.reason, SinkDispatcher.cancelledReason)
@@ -502,7 +366,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         driver.finishPublish(.failure(PipelineLauncher.LaunchError.nonZeroExit(
             PipelineLauncher.publishFailedExitCode, "every sink failed"
         )))
-        drainMainQueue()
+        XCTAssertTrue(drainMainSync())
 
         let failure = PipelineFailureSidecar.read(stem: "m", in: dir)
         XCTAssertEqual(failure?.stage, .publish)
@@ -515,16 +379,9 @@ final class MeetingLibraryServiceTests: XCTestCase {
 
         service.republishMeeting(stem: "m") { _ in }
         driver.finishPublish(.success(URL(string: "https://notion.so/p")))
-        drainMainQueue()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertNil(PipelineFailureSidecar.read(stem: "m", in: dir))
-    }
-
-    /// The service resolves every launcher completion back onto the main queue.
-    private func drainMainQueue() {
-        let drained = expectation(description: "drain")
-        DispatchQueue.main.async { drained.fulfill() }
-        wait(for: [drained], timeout: 1.0)
     }
 
     // MARK: - export
@@ -648,7 +505,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
 
         service.mergeMeetings(primaryStem: "a", fragmentStems: ["b", "c"]) { _ in }
         driver.finishMerge(.success(nil))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("b.wav").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("c.wav").path))
@@ -671,7 +528,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertEqual(driver.mergeInputs.first?.fragments.map(\.lastPathComponent), ["b.wav", "c.wav"])
 
         driver.finishMerge(.success(URL(string: "https://notion.example/merged")))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         guard case .success(let url)? = captured else { return XCTFail("expected success") }
         XCTAssertEqual(url?.absoluteString, "https://notion.example/merged")
@@ -686,7 +543,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         var captured: Result<URL?, Error>?
         service.mergeMeetings(primaryStem: "a", fragmentStems: ["b"]) { captured = $0 }
         driver.finishMerge(.failure(PipelineLauncher.LaunchError.nonZeroExit(1, "boom")))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         guard case .failure? = captured else { return XCTFail("expected failure") }
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: dir.appendingPathComponent("b.wav").path),
@@ -891,7 +748,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         // is still running (WF8 rewrites the same sidecar this re-reads).
         try writeMeta(nda: true)
         driver.finishSummarize(.success(()))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertTrue(driver.publishInputs.isEmpty, "the publish leg must not run under the new posture")
         guard case .success(let url)? = captured else { return XCTFail("expected a terminal success") }
@@ -913,7 +770,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         lane.startNext()
         try touch("m.meta.json", contents: "{not json")
         driver.finishSummarize(.success(()))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertTrue(driver.publishInputs.isEmpty, "an unreadable posture is not permission to publish")
         XCTAssertEqual(errors.count, 1)
@@ -929,7 +786,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         service.regenerateMeeting(stem: "m") { _ in }
         lane.startNext()
         driver.finishSummarize(.success(()))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(driver.publishInputs.count, 1)
         XCTAssertTrue(errors.isEmpty)
@@ -948,7 +805,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         service.regenerateMeeting(stem: "m") { _ in }
         lane.startNext()
         driver.finishSummarize(.success(()))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(driver.publishInputs.count, 1)
     }
@@ -968,7 +825,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         service.regenerateMeeting(stem: "m") { answer = $0 }
         lane.startNext()
         driver.finishSummarize(.failure(PipelineLauncher.LaunchError.cancelled))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertTrue(errors.isEmpty, "a deliberate Cancel raises no banner")
         XCTAssertTrue(driver.publishInputs.isEmpty, "a cancelled summarize does not chain into publish")
@@ -987,7 +844,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         service.regenerateMeeting(stem: "m") { _ in }
         lane.startNext()
         driver.finishSummarize(.failure(PipelineLauncher.LaunchError.nonZeroExit(1, "boom")))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(errors.count, 1)
         XCTAssertEqual(errors.first, "Couldn't create the summary")
@@ -1005,7 +862,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         service.republishMeeting(stem: "m") { _ in }
         lane.startNext()
         driver.finishPublish(.failure(PipelineLauncher.LaunchError.cancelled))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertTrue(errors.isEmpty)
         XCTAssertNil(PipelineFailureSidecar.read(stem: "m", in: dir),
@@ -1022,7 +879,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         driver.finishPublish(.failure(
             PipelineLauncher.LaunchError.nonZeroExit(PipelineLauncher.publishFailedExitCode, "no sinks")
         ))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(errors.count, 1)
         XCTAssertEqual(PipelineFailureSidecar.read(stem: "m", in: dir)?.stage, .publish)
@@ -1052,7 +909,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertTrue(SpeakerLabelStore.read(stem: "m", in: dir).labels.isEmpty)
 
         driver.finishEnroll(.success(()))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["THEM-A"], "Alice",
                        "a successful naming records the name in the reversible overlay")
         guard case .success? = captured else { return XCTFail("expected success") }
@@ -1104,7 +961,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertEqual(driver.enrollInputs.count, 1)
         XCTAssertEqual(driver.enrollInputs.first?.name, "Rana")
         driver.finishEnroll(.success(()))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["THEM-A"], "Rana")
         // FEAT24: the old name loses this meeting's sample only, never the whole person.
         XCTAssertEqual(driver.unenrollInputs.map(\.name), ["Aditya"])
@@ -1120,7 +977,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         var captured: Result<Void, Error>?
         service.renameSpeaker(stem: "m", label: "THEM-A", oldName: "Aditya", newName: "Rana") { captured = $0 }
         driver.finishEnroll(.success(()))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         guard case .success? = captured else { return XCTFail("the rename already took, so it is not a failed rename") }
         XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["THEM-A"], "Rana")
         XCTAssertEqual(driver.unenrollInputs.count, 1, "the take-back was attempted once")
@@ -1131,7 +988,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Aditya", stem: "m", in: dir)
         service.renameSpeaker(stem: "m", label: "THEM-A", oldName: "Aditya", newName: "Rana") { _ in }
         driver.finishEnroll(.failure(NSError(domain: "t", code: 1)))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertTrue(driver.unenrollInputs.isEmpty && driver.forgetInputs.isEmpty,
                       "the old person is untouched when the new name did not take")
         XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["THEM-A"], "Aditya")
@@ -1160,7 +1017,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         // The label reverts synchronously; <stem>.json was never rewritten, so the
         // original diarization label is fully restored.
         XCTAssertTrue(SpeakerLabelStore.read(stem: "m", in: dir).labels.isEmpty)
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertEqual(driver.unenrollInputs.count, 1)
         XCTAssertEqual(driver.unenrollInputs.first?.name, "Alice")
         XCTAssertEqual(driver.unenrollInputs.first?.label, "THEM-A")
@@ -1177,7 +1034,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         try writeEmbeddings(["Dana": [0.1]], stem: "m")
         _ = try SpeakerLabelStore.setLabel("Dana", to: "Danielle", stem: "m", in: dir)
         service.undoSpeakerNaming(stem: "m", label: "Dana", name: "Danielle") { _ in }
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertTrue(SpeakerLabelStore.read(stem: "m", in: dir).labels.isEmpty)
         XCTAssertEqual(driver.unenrollInputs.map(\.name), ["Danielle"])
         XCTAssertEqual(driver.unenrollInputs.map(\.stem), ["m"])
@@ -1190,7 +1047,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         driver.unenrollResult = .failure(NSError(domain: "t", code: 1))
         var captured: Result<Void, Error>?
         service.undoSpeakerNaming(stem: "m", label: "THEM-A", name: "Alice") { captured = $0 }
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertTrue(SpeakerLabelStore.read(stem: "m", in: dir).labels.isEmpty, "the display still reverts")
         guard case .failure? = captured else { return XCTFail("expected the failure to be surfaced") }
     }
@@ -1344,7 +1201,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
     /// PERF24: retry and delete each tell the status menu the failed set may have moved, on every
     /// exit. Both calls here are refused (no recording, no files), so nothing is enqueued or
     /// trashed, and the hook still fires: a recount costs one listing off main.
-    func test_retry_and_delete_report_that_the_failed_set_may_have_moved() {
+    func test_retry_and_delete_report_that_the_failed_set_may_have_moved() throws {
         var moved = 0
         let service = MeetingLibraryService(
             outputDir: { [unowned self] in self.dir },
@@ -1362,9 +1219,9 @@ final class MeetingLibraryServiceTests: XCTestCase {
 
     // MARK: - ask (AI3)
 
-    private func decodeAnswer(_ json: String) -> AskAnswer {
+    private func decodeAnswer(_ json: String) throws -> AskAnswer {
         // swiftlint:disable:next force_try
-        try! JSONDecoder().decode(AskAnswer.self, from: Data(json.utf8))
+        try JSONDecoder().decode(AskAnswer.self, from: Data(json.utf8))
     }
 
     func test_ask_empty_question_fails_without_invoking_driver() {
@@ -1374,12 +1231,12 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertTrue(driver.askInputs.isEmpty)
     }
 
-    func test_ask_forwards_trimmed_question_and_returns_answer() {
+    func test_ask_forwards_trimmed_question_and_returns_answer() throws {
         var captured: Result<AskAnswer, Error>?
         service.askMeetings(question: "  what about the budget?  ") { captured = $0 }
         XCTAssertEqual(driver.askInputs, ["what about the budget?"])
 
-        let answer = decodeAnswer(#"{"question":"q","answer":"We cut it.","citations":[{"stem":"20260101-0900","title":"Budget"}],"sources_considered":["20260101-0900"],"backend":"local","model":"m","verified":true,"empty":false,"error":null}"#)
+        let answer = try decodeAnswer(#"{"question":"q","answer":"We cut it.","citations":[{"stem":"20260101-0900","title":"Budget"}],"sources_considered":["20260101-0900"],"backend":"local","model":"m","verified":true,"empty":false,"error":null}"#)
         driver.finishAsk(.success(answer))
         let drained = expectation(description: "drain")
         DispatchQueue.main.async { drained.fulfill() }
@@ -1537,7 +1394,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
             segment(0, 20, "hi we shipped perfecta", "THEM-B"),
         ])
         finishRetranscribe()
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         guard case .success(let outcome)? = captured else { return XCTFail("expected success") }
         XCTAssertEqual(SpeakerLabelStore.read(stem: stem, in: dir).labels, ["THEM-B": "Alice"])
@@ -1560,7 +1417,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         var captured: Result<MeetingLibraryService.RetranscribeOutcome, Error>?
         service.retranscribeMeeting(stem: stem) { captured = $0 }
         finishRetranscribe(.failure(NSError(domain: "x", code: 1)))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         guard case .failure? = captured else { return XCTFail("expected failure") }
         XCTAssertEqual(SpeakerLabelStore.read(stem: stem, in: dir).labels, ["THEM-A": "Alice"])
@@ -1581,7 +1438,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
 
         try writeTranscript(stem, segments: [segment(0, 10, "hello", "THEM-A")])
         finishRetranscribe()
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(libraryRefreshes, 1)
     }
@@ -1597,7 +1454,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
 
         service.retranscribeMeeting(stem: stem) { _ in }
         finishRetranscribe(.failure(NSError(domain: "x", code: 1)))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         XCTAssertEqual(libraryRefreshes, 1)
     }
@@ -1619,7 +1476,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         var captured: Result<MeetingLibraryService.RetranscribeOutcome, Error>?
         service.retranscribeMeeting(stem: stem) { captured = $0 }
         finishRetranscribe()
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         guard case .success(let outcome)? = captured else { return XCTFail("expected success") }
         XCTAssertEqual(outcome.carried, 0)
@@ -1643,7 +1500,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         // The new transcript covers a completely different stretch of audio.
         try writeTranscript(stem, segments: [segment(100, 110, "later", "THEM-A")])
         finishRetranscribe()
-        drainMain()
+        XCTAssertTrue(drainMainSync())
 
         guard case .success(let outcome)? = captured else { return XCTFail("expected success") }
         XCTAssertEqual(outcome.dropped, 1)
@@ -1678,7 +1535,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         try touch("b.wav"); try touch("b.meta.json")
         service.mergeMeetings(primaryStem: "a", fragmentStems: ["b"]) { _ in }
         driver.finishMerge(.success(nil))
-        drainMain()
+        XCTAssertTrue(drainMainSync())
         XCTAssertNil(try meta("a")[HeldEndTrim.metaKey])
     }
 }

@@ -1,6 +1,7 @@
 import ApplicationServices
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 @testable import MeetingPipeCore
 
 /// Tests for `MeetingAXWindowWatcher`, the 1 Hz mute-state poller (rebuilt
@@ -15,32 +16,6 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
 
     /// Manual scheduler so tests step the poll instead of waiting on a Timer.
     /// Records the pending one-shot action; `fire()` runs it (which re-arms).
-    final class ManualScheduler {
-        private(set) var pending: (() -> Void)?
-        private(set) var lastDelay: TimeInterval?
-        private(set) var scheduleCount: Int = 0
-        private(set) var cancellations: Int = 0
-
-        func make() -> MeetingAXWindowWatcher.Scheduler {
-            return { [weak self] delay, action in
-                self?.lastDelay = delay
-                self?.pending = action
-                self?.scheduleCount += 1
-                return { [weak self] in
-                    if self?.pending != nil {
-                        self?.cancellations += 1
-                        self?.pending = nil
-                    }
-                }
-            }
-        }
-
-        func fire() {
-            let action = pending
-            pending = nil
-            action?()
-        }
-    }
 
     /// Scripted resolver: returns the next state-array per poll, repeating the
     /// last entry once the script is exhausted so re-arms stay defined.
@@ -182,13 +157,13 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let scheduler = ManualScheduler()
         let sink = EventSink()
         let log = RecordingEventLog()
-        let watcher = makeWatcher(resolver: resolver.make(), scheduler: scheduler.make(), sink: sink, log: log)
+        let watcher = makeWatcher(resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink, log: log)
 
         watcher.start()
 
         XCTAssertEqual(sink.events.map(\.state), [.unmuted])
         XCTAssertEqual(scheduler.lastDelay, 1.0)
-        XCTAssertNotNil(scheduler.pending) // re-armed
+        XCTAssertTrue(scheduler.hasPending) // re-armed
         XCTAssertTrue(log.entries.contains { $0.action == "mute_state_polled" })
     }
 
@@ -196,7 +171,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let resolver = ScriptedResolver([[.muted]]) // repeats .muted forever
         let scheduler = ManualScheduler()
         let sink = EventSink()
-        let watcher = makeWatcher(resolver: resolver.make(), scheduler: scheduler.make(), sink: sink)
+        let watcher = makeWatcher(resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink)
 
         watcher.start()
         XCTAssertEqual(sink.events.map(\.state), [.muted])
@@ -212,7 +187,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let resolver = ScriptedResolver([[.muted], [.muted], [.unmuted]])
         let scheduler = ManualScheduler()
         let sink = EventSink()
-        let watcher = makeWatcher(resolver: resolver.make(), scheduler: scheduler.make(), sink: sink)
+        let watcher = makeWatcher(resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink)
 
         watcher.start()       // .muted
         scheduler.fire()      // .muted (no emit)
@@ -225,19 +200,19 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let resolver = ScriptedResolver([[.unknown]])
         let scheduler = ManualScheduler()
         let sink = EventSink()
-        let watcher = makeWatcher(resolver: resolver.make(), scheduler: scheduler.make(), sink: sink)
+        let watcher = makeWatcher(resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink)
 
         watcher.start()
 
         XCTAssertTrue(sink.events.isEmpty, "an all-unknown read must not clobber MicGate")
-        XCTAssertNotNil(scheduler.pending, "poll keeps running so a later confident read is caught")
+        XCTAssertTrue(scheduler.hasPending, "poll keeps running so a later confident read is caught")
     }
 
     func test_start_polls_immediately_then_rearms() {
         let resolver = ScriptedResolver([[.muted]])
         let scheduler = ManualScheduler()
         let sink = EventSink()
-        let watcher = makeWatcher(resolver: resolver.make(), scheduler: scheduler.make(), sink: sink)
+        let watcher = makeWatcher(resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink)
 
         watcher.start()
         XCTAssertEqual(scheduler.scheduleCount, 1)
@@ -252,14 +227,14 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let resolver = ScriptedResolver([[.muted]])
         let scheduler = ManualScheduler()
         let sink = EventSink()
-        let watcher = makeWatcher(resolver: resolver.make(), scheduler: scheduler.make(), sink: sink)
+        let watcher = makeWatcher(resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink)
 
         watcher.start()
-        XCTAssertNotNil(scheduler.pending)
+        XCTAssertTrue(scheduler.hasPending)
 
         watcher.stop()
         XCTAssertEqual(scheduler.cancellations, 1)
-        XCTAssertNil(scheduler.pending)
+        XCTAssertFalse(scheduler.hasPending)
     }
 
     func test_disagreeing_buttons_emit_muted_under_the_regulated_gate() {
@@ -269,7 +244,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let scheduler = ManualScheduler()
         let sink = EventSink()
         let watcher = makeWatcher(
-            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink,
+            resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink,
             blindOnWindowDisagreement: { false }
         )
 
@@ -290,7 +265,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let sink = EventSink()
         let log = RecordingEventLog()
         let watcher = makeWatcher(
-            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink, log: log,
+            resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink, log: log,
             blindOnWindowDisagreement: { true }
         )
 
@@ -311,7 +286,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let sink = EventSink()
         let clears = ClearCounter()
         let watcher = makeWatcher(
-            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink, clears: clears,
+            resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink, clears: clears,
             blindClearThreshold: 3, blindOnWindowDisagreement: { true }
         )
 
@@ -334,7 +309,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let sink = EventSink()
         let clears = ClearCounter()
         let watcher = makeWatcher(
-            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink, clears: clears,
+            resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink, clears: clears,
             blindOnWindowDisagreement: { true }
         )
 
@@ -353,7 +328,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let sink = EventSink()
         let log = RecordingEventLog()
         let watcher = makeWatcher(
-            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink, log: log,
+            resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink, log: log,
             blindOnWindowDisagreement: { true }
         )
 
@@ -372,7 +347,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let sink = EventSink()
         let log = RecordingEventLog()
         let watcher = makeWatcher(
-            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink, log: log,
+            resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink, log: log,
             blindOnWindowDisagreement: { true }
         )
 
@@ -396,7 +371,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let clears = ClearCounter()
         let log = RecordingEventLog()
         let watcher = makeWatcher(
-            resolver: resolver.make(), scheduler: scheduler.make(),
+            resolver: resolver.make(), scheduler: scheduler.schedule,
             sink: sink, log: log, clears: clears, blindClearThreshold: 3
         )
 
@@ -419,7 +394,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let sink = EventSink()
         let clears = ClearCounter()
         let watcher = makeWatcher(
-            resolver: resolver.make(), scheduler: scheduler.make(),
+            resolver: resolver.make(), scheduler: scheduler.schedule,
             sink: sink, clears: clears, blindClearThreshold: 3
         )
 
@@ -440,7 +415,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let sink = EventSink()
         let clears = ClearCounter()
         let watcher = makeWatcher(
-            resolver: resolver.make(), scheduler: scheduler.make(),
+            resolver: resolver.make(), scheduler: scheduler.schedule,
             sink: sink, clears: clears, blindClearThreshold: 3
         )
 
@@ -463,7 +438,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let sink = EventSink()
         let clears = ClearCounter()
         let watcher = makeWatcher(
-            resolver: resolver.make(), scheduler: scheduler.make(),
+            resolver: resolver.make(), scheduler: scheduler.schedule,
             sink: sink, clears: clears, blindClearThreshold: 3
         )
 
@@ -480,7 +455,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let sink = EventSink()
         let clears = ClearCounter()
         let watcher = makeWatcher(
-            resolver: resolver.make(), scheduler: scheduler.make(),
+            resolver: resolver.make(), scheduler: scheduler.schedule,
             sink: sink, clears: clears, blindClearThreshold: 3
         )
 
@@ -506,7 +481,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let sink = EventSink()
         let stale = ContradictionCounter()
         let watcher = makeWatcher(
-            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink,
+            resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink,
             vadActive: { true }, staleContradictions: stale, contradictionDwellSeconds: 0
         )
 
@@ -523,7 +498,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let sink = EventSink()
         let stale = ContradictionCounter()
         let watcher = makeWatcher(
-            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink,
+            resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink,
             vadActive: { false }, staleContradictions: stale, contradictionDwellSeconds: 0
         )
 
@@ -542,7 +517,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let sink = EventSink()
         let stale = ContradictionCounter()
         let watcher = makeWatcher(
-            resolver: resolver.make(), scheduler: scheduler.make(), sink: sink,
+            resolver: resolver.make(), scheduler: scheduler.schedule, sink: sink,
             vadActive: { vad }, staleContradictions: stale, contradictionDwellSeconds: 0
         )
 
@@ -573,7 +548,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let scheduler = ManualScheduler()
         let sink = EventSink()
         let watcher = makeWatcher(
-            resolver: resolver, scheduler: scheduler.make(), sink: sink, walkQueue: walkQueue
+            resolver: resolver, scheduler: scheduler.schedule, sink: sink, walkQueue: walkQueue
         )
 
         watcher.start()  // dispatches the walk to walkQueue; must return without blocking
@@ -582,7 +557,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         // back and nothing has been consumed or re-armed yet.
         XCTAssertEqual(entered.wait(timeout: .now() + 2), .success, "the walk ran on the queue")
         XCTAssertTrue(sink.events.isEmpty, "poll() returned before the walk finished; caller not blocked")
-        XCTAssertNil(scheduler.pending, "no re-arm until the reading is delivered on main")
+        XCTAssertFalse(scheduler.hasPending, "no re-arm until the reading is delivered on main")
 
         // Let the walk finish; it hops the reading back to main. Pump main until it lands.
         release.signal()
@@ -598,7 +573,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         wait(for: [delivered], timeout: 2)
 
         XCTAssertEqual(sink.events.map(\.state), [.unmuted], "the unmute was consumed on main")
-        XCTAssertNotNil(scheduler.pending, "the next tick re-armed after delivery")
+        XCTAssertTrue(scheduler.hasPending, "the next tick re-armed after delivery")
     }
 
     func test_stop_during_an_in_flight_walk_drops_the_late_delivery() {
@@ -615,7 +590,7 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         let scheduler = ManualScheduler()
         let sink = EventSink()
         let watcher = makeWatcher(
-            resolver: resolver, scheduler: scheduler.make(), sink: sink, walkQueue: walkQueue
+            resolver: resolver, scheduler: scheduler.schedule, sink: sink, walkQueue: walkQueue
         )
 
         watcher.start()
@@ -630,6 +605,6 @@ final class MeetingAXWindowWatcherTests: XCTestCase {
         wait(for: [settled], timeout: 2)
 
         XCTAssertTrue(sink.events.isEmpty, "a walk delivered after stop() must not emit")
-        XCTAssertNil(scheduler.pending, "a stopped watcher must not re-arm")
+        XCTAssertFalse(scheduler.hasPending, "a stopped watcher must not re-arm")
     }
 }

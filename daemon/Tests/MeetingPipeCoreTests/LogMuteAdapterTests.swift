@@ -1,5 +1,6 @@
 import XCTest
 @testable import MeetingPipeCore
+import MeetingPipeTestSupport
 
 /// MIC8. Every fixture line here is **verbatim** from the owner's own
 /// `MSTeamsNM_SlimCore_2026-07-31_20-32-53.21.log`, so the parser is pinned against
@@ -328,7 +329,7 @@ final class LogMuteAdapterTests: XCTestCase {
     private final class Rig {
         let adapter: LogMuteAdapter
         let log = RecordingEventLog()
-        private let scheduler = LogTickScheduler()
+        private let scheduler = ManualScheduler()
         private(set) var events: [MuteLabels.State] = []
 
         init(directory: TempDir) throws {
@@ -349,23 +350,7 @@ final class LogMuteAdapterTests: XCTestCase {
             }
         }
 
-        func step() { scheduler.step() }
-    }
-}
-
-/// One-shot scheduler driver: holds the pending tick and runs it on demand.
-private final class LogTickScheduler {
-    private var pending: (() -> Void)?
-
-    lazy var schedule: LogMuteAdapter.Scheduler = { [weak self] _, action in
-        self?.pending = action
-        return { [weak self] in self?.pending = nil }
-    }
-
-    func step() {
-        let action = pending
-        pending = nil
-        action?()
+        func step() { scheduler.fire() }
     }
 }
 

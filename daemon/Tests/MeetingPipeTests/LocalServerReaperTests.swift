@@ -12,19 +12,19 @@ final class LocalServerReaperTests: XCTestCase {
         ownerPID: Any? = 1111,
         model: String? = "mlx-community/Qwen2.5-7B-Instruct-4bit",
         port: Int? = 8765
-    ) -> Data {
+    ) throws -> Data {
         var obj: [String: Any] = ["schema_version": 1, "spawned_at": 1_770_000_000.0]
         if let pid { obj["pid"] = pid }
         if let ownerPID { obj["owner_pid"] = ownerPID }
         if let model { obj["model"] = model }
         if let port { obj["port"] = port }
-        return try! JSONSerialization.data(withJSONObject: obj)
+        return try JSONSerialization.data(withJSONObject: obj)
     }
 
     // MARK: - Marker decode
 
-    func testParsesAWellFormedMarker() {
-        let marker = LocalServerReaper.parseMarker(markerData())
+    func testParsesAWellFormedMarker() throws {
+        let marker = LocalServerReaper.parseMarker(try markerData())
         XCTAssertEqual(marker, LocalServerReaper.Marker(
             pid: 4242,
             ownerPID: 1111,
@@ -33,13 +33,13 @@ final class LocalServerReaperTests: XCTestCase {
         ))
     }
 
-    func testMarkerWithoutPidsIsUnusable() {
-        XCTAssertNil(LocalServerReaper.parseMarker(markerData(pid: nil)))
-        XCTAssertNil(LocalServerReaper.parseMarker(markerData(ownerPID: nil)))
+    func testMarkerWithoutPidsIsUnusable() throws {
+        XCTAssertNil(LocalServerReaper.parseMarker(try markerData(pid: nil)))
+        XCTAssertNil(LocalServerReaper.parseMarker(try markerData(ownerPID: nil)))
     }
 
-    func testMarkerWithNonIntegerPidIsUnusable() {
-        XCTAssertNil(LocalServerReaper.parseMarker(markerData(pid: "nope")))
+    func testMarkerWithNonIntegerPidIsUnusable() throws {
+        XCTAssertNil(LocalServerReaper.parseMarker(try markerData(pid: "nope")))
     }
 
     func testMalformedJSONIsNilNotACrash() {
@@ -47,9 +47,9 @@ final class LocalServerReaperTests: XCTestCase {
         XCTAssertNil(LocalServerReaper.parseMarker(Data()))
     }
 
-    func testOptionalFieldsFallBackWithoutFailingTheDecode() {
+    func testOptionalFieldsFallBackWithoutFailingTheDecode() throws {
         // The pid pair is what we act on; a marker missing cosmetics is still actionable.
-        let marker = LocalServerReaper.parseMarker(markerData(model: nil, port: nil))
+        let marker = LocalServerReaper.parseMarker(try markerData(model: nil, port: nil))
         XCTAssertEqual(marker?.model, "unknown")
         XCTAssertEqual(marker?.port, 0)
     }
