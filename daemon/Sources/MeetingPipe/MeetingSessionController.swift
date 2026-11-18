@@ -120,6 +120,11 @@ final class MeetingSessionController: @unchecked Sendable {
     /// STOR16: a start that arrived while a library move ran, replayed when the move finishes.
     /// Latest wins: a second press while held replaces the first.
     private(set) var heldStart: (source: AppSource?, summaryMode: SummaryMode)?
+    /// When the first press of the held start arrived. A later press replaces what is replayed but
+    /// not this, since the meeting's opening has been going unrecorded since the first one.
+    private var heldSince: Date?
+    /// The clock the held start's wait is measured on. Tests move it.
+    var heldStartClock: () -> Date = { Date() }
     private var activeResumedFrom: String?
 
     /// END28: which call the running recording is of (`CallIdentityTracker`), its 2 s read timer,
@@ -724,9 +729,15 @@ final class MeetingSessionController: @unchecked Sendable {
         assertMainQueue()
         guard let held = heldStart else { return }
         heldStart = nil
+        // The owner asked to see what a hold cost (2026-11-18): the seconds of meeting that went
+        // unrecorded, so a cross-volume move that ever ate a real opening shows up in the log.
+        let waited = heldSince.map { max(0, heldStartClock().timeIntervalSince($0)) } ?? 0
+        heldSince = nil
+        Log.writeLine("daemon", "beginRecording released after a library move: waited \(String(format: "%.1f", waited)) s")
         Log.event(category: "coordinator", action: "recording_start_released", attributes: [
             "reason": "library_move",
             "bundle_id": held.source?.bundleID ?? "manual",
+            "waited_ms": Int((waited * 1000).rounded()),
         ])
         beginRecording(source: held.source, summaryMode: held.summaryMode)
     }
@@ -750,12 +761,13 @@ final class MeetingSessionController: @unchecked Sendable {
     func beginRecording(source: AppSource?, summaryMode: SummaryMode) {
         assertMainQueue()
         coordinator.stateMachine.cancelPromptTimeout()
-        // STOR16 (option b, the spec's proposal; the owner's choice is still pending): while the library folder is being moved, no capture
+        // STOR16 (option b, the owner's decision of 2026-11-18): while the library folder is being moved, no capture
         // file may open under the old root or the new one. Defer the start, before anything below
         // consumes routing state, and replay it unchanged when the move ends. The opening of the
         // meeting is lost for the move's length: milliseconds for a same-volume rename.
         if coordinator.libraryMoveInProgress {
             heldStart = (source, summaryMode)
+            if heldSince == nil { heldSince = heldStartClock() }
             Log.writeLine("daemon", "beginRecording held: a library move is running")
             Log.event(category: "coordinator", action: "recording_start_held", attributes: [
                 "reason": "library_move",

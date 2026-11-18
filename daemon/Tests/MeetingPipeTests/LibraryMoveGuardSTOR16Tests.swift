@@ -192,6 +192,30 @@ final class LibraryMoveGuardSTOR16Tests: XCTestCase {
         XCTAssertEqual(host.recorderSpy.startCallCount, 1, "the held start goes ahead once the move ends")
     }
 
+    /// The owner's ask with decision (b): the release row says how long the start waited, measured
+    /// from the first press, so a cross-volume move that cost a real opening is visible.
+    func test_the_release_logs_how_long_the_start_waited_from_the_first_press() async throws {
+        let host = FakeSessionHost(tempDir: base)
+        host.recorderSpy.fileToReturn = lib.appendingPathComponent("20261118-120000.wav")
+        let controller = MeetingSessionController(coordinator: host)
+        var now = Date(timeIntervalSince1970: 1_800_000_000)
+        controller.heldStartClock = { now }
+        host.libraryMoveInProgress = true
+        controller.beginRecording(source: nil, summaryMode: .auto)
+        now += 2
+        controller.beginRecording(source: nil, summaryMode: .auto)   // a second press: latest wins
+        now += 40.25
+        host.libraryMoveInProgress = false
+        controller.releaseHeldStart()
+
+        let url = Log.logsDir.appendingPathComponent("events.jsonl")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let line = try XCTUnwrap(text.split(separator: "\n").last { $0.contains("\"recording_start_released\"") })
+        let row = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+        let attrs = (row["attributes"] as? [String: Any]) ?? row
+        XCTAssertEqual(attrs["waited_ms"] as? Int, 42_250)
+    }
+
     func test_the_coordinator_releases_held_starts_when_a_move_finishes() throws {
         let sources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

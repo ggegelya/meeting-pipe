@@ -4,7 +4,7 @@ title: The library move checks for in-flight work only at plan time and only fro
 category: Storage
 status: partial
 priority: P2
-comment: Shipped 2026-11-18 - LibraryMoveGuard asks the recorder's owned stems and the lane's queue depth at plan, switch and execute, claims the move in the same main-actor turn, recording starts are deferred and replayed (option b, the spec's proposal, taken while the owner's answer was pending), busy gate gains moveRunning, file fallback tests every mic.wav and counts from the newest write; 10 new tests. Owner owes confirming option (b) over (a) or (c). [Spec](./STOR16.md)
+comment: Shipped 2026-11-18 - LibraryMoveGuard asks the recorder's owned stems and the lane's queue depth at plan, switch and execute, claims the move in the same main-actor turn, recording starts are deferred and replayed (option b, the owner's decision of 2026-11-18; `recording_start_released` logs `waited_ms`), busy gate gains moveRunning, file fallback tests every mic.wav and counts from the newest write; 10 new tests. Owner owes closing it. [Spec](./STOR16.md)
 ---
 
 # STOR16: The library move checks for in-flight work only at plan time and only from file heuristics, then executes unguarded after its confirm
