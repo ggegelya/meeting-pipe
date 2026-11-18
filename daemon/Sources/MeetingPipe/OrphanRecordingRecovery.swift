@@ -52,7 +52,8 @@ enum OrphanRecordingRecovery {
     }
 
     /// Enumerate directory and return orphan stems eligible for recovery (one
-    /// contentsOfDirectory call). Returns [] on error.
+    /// contentsOfDirectory call). Returns [] on error, and since STOR11 says so through
+    /// `LibraryUnreadableReporter` (site `orphan_recovery`), once per state change.
     ///
     /// `excludingStems` are the stems the recorder owns: REC6 runs this sweep after
     /// every job completion, not only at launch, so a live recording's in-flight
@@ -75,16 +76,22 @@ enum OrphanRecordingRecovery {
         now: Date = Date(),
         excludingStems: Set<String> = [],
         sweep: Sweep = .launch,
-        staleReport: StaleOrphanReport = .process
+        staleReport: StaleOrphanReport = .process,
+        reporter: LibraryUnreadableReporter = .shared
     ) -> [String] {
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else {
+        let entries: [URL]
+        do {
+            entries = try fm.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            reporter.note(LibraryRootState.classify(error), site: "orphan_recovery")
             return []
         }
+        reporter.note(.readable, site: "orphan_recovery")
         let candidates = detectOrphanStems(fileNames: entries.map { $0.lastPathComponent })
             .filter { !excludingStems.contains($0) }
         return candidates.filter { stem in

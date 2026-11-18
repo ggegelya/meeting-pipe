@@ -1519,12 +1519,17 @@ final class MeetingLibraryService {
     /// year of meetings is thousands of entries in a folder that may sync to iCloud: never on
     /// the main thread, and not per menu rebuild. The directory is resolved by the caller on
     /// main because `outputDir()` reads `ConfigStore`.
-    static func failedMeetingCount(in dir: URL) -> Int {
-        guard let names = try? FileManager.default.contentsOfDirectory(
-            atPath: dir.path
-        ) else {
+    static func failedMeetingCount(in dir: URL, reporter: LibraryUnreadableReporter = .shared) -> Int {
+        let names: [String]
+        do {
+            names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        } catch {
+            // STOR11: the row still disappears (there is no count to show), but the reason is
+            // logged, once per state change rather than once per menu open.
+            reporter.note(LibraryRootState.classify(error), site: "failed_count")
             return 0
         }
+        reporter.note(.readable, site: "failed_count")
         return MeetingStore.unrecoveredFailureStems(fileNames: names).count
     }
 

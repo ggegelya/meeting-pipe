@@ -591,6 +591,15 @@ def check_library_growth(library: Path, free: int | None, now: datetime | None =
         _ok(f"{label}; at that rate the free space lasts about {int(days)} days")
 
 
+def _unlistable_reason(path: Path) -> str | None:
+    """Why `path` cannot be listed, or None when it can (STOR11)."""
+    try:
+        with os.scandir(path):
+            return None
+    except OSError as exc:
+        return exc.strerror or type(exc).__name__
+
+
 def check_storage(cfg: Config | None, home: Path | None = None, now: datetime | None = None) -> None:
     """Report what meeting-pipe is holding on disk (STOR1).
 
@@ -612,11 +621,20 @@ def check_storage(cfg: Config | None, home: Path | None = None, now: datetime | 
 
     library = cfg.recording.output_dir
     _info(f"library = {library}")
+    unlistable = _unlistable_reason(library) if library.exists() else None
     if not library.exists():
         _info("library does not exist yet; nothing recorded so far")
-    library_bytes = storage.bytes_on_disk(library)
-    digests_bytes = storage.bytes_on_disk(storage.digests_dir(library))
-    _ok(f"library {storage.human_bytes(library_bytes)} (digests {storage.human_bytes(digests_bytes)})")
+    if unlistable is not None:
+        # STOR11: `bytes_on_disk` walks with rglob, which yields nothing for a folder it cannot list,
+        # so an unreadable library printed `[ok] library 0 B`. Say so instead, and report no size.
+        _warn(
+            f"library {library} cannot be listed ({unlistable}); its size is not measured and the app shows "
+            "no meetings until it can read the folder (a Files and Folders denial in Privacy & Security, or wrong permissions)"
+        )
+    else:
+        library_bytes = storage.bytes_on_disk(library)
+        digests_bytes = storage.bytes_on_disk(storage.digests_dir(library))
+        _ok(f"library {storage.human_bytes(library_bytes)} (digests {storage.human_bytes(digests_bytes)})")
 
     originals_dir = storage.originals_dir(home)
     held_bytes = storage.bytes_on_disk(originals_dir / "held")
@@ -646,7 +664,11 @@ def check_storage(cfg: Config | None, home: Path | None = None, now: datetime | 
         else:
             _ok(f"free disk {storage.human_bytes(free)}")
 
-    check_library_growth(library, free, now=now)
+    if unlistable is None:
+        check_library_growth(library, free, now=now)
+    else:
+        # `library_growth` iterates the folder and raised PermissionError here, which ended doctor.
+        _info("library growth not projected: the library cannot be listed")
 
     check_last_backup(home=home)
     check_user_stores(home=home)

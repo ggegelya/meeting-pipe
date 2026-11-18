@@ -322,6 +322,23 @@ def test_check_storage_tolerates_a_library_that_does_not_exist_yet(capsys, tmp_p
     assert "does not exist yet" in out
 
 
+def test_check_storage_warns_on_a_library_it_cannot_list(capsys, tmp_path, monkeypatch) -> None:
+    # STOR11: rglob yields nothing for a folder it cannot list, so this printed `[ok] library 0 B`.
+    library = tmp_path / "raw"
+    library.mkdir()
+    (library / "20260101-120000.wav").write_bytes(b"x" * 1000)
+    monkeypatch.setattr("mp.storage.free_bytes", lambda _p: 500 * 1000 ** 3)
+    library.chmod(0)
+    try:
+        check_storage(_storage_cfg(library), home=tmp_path)
+    finally:
+        library.chmod(0o700)
+    out = capsys.readouterr().out
+    assert "[WARN] library" in out and "cannot be listed" in out
+    assert "library 0 B" not in out
+    assert "[ OK ] library" not in out
+
+
 def test_check_storage_without_config_warns_and_returns(capsys) -> None:
     check_storage(None)
     assert "[WARN] config did not load" in capsys.readouterr().out

@@ -22,6 +22,9 @@ enum OrphanScan {
     struct Report: Equatable {
         let wavsWithoutRow: [WavWithoutRow]
         let rowsWithoutWav: [RowWithoutWav]
+        /// Whether the directory listed (STOR11). Anything but `.readable` means the empty lists
+        /// above are "not looked", not "nothing found".
+        var rootState: LibraryRootState = .readable
 
         var isEmpty: Bool {
             wavsWithoutRow.isEmpty && rowsWithoutWav.isEmpty
@@ -72,12 +75,17 @@ enum OrphanScan {
     /// Read directory once, group by stem, run detect. Returns empty report on error.
     static func scan(directory: URL) -> Report {
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else {
-            return Report(wavsWithoutRow: [], rowsWithoutWav: [])
+        let entries: [URL]
+        do {
+            entries = try fm.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            // STOR11: an empty report with the reason, so doctor does not read a failed listing
+            // as "no orphans".
+            return Report(wavsWithoutRow: [], rowsWithoutWav: [], rootState: LibraryRootState.classify(error))
         }
         var byStem: [String: [URL]] = [:]
         for url in entries {

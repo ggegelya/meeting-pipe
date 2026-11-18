@@ -884,7 +884,13 @@ final class Coordinator: NSObject {
     /// final (enqueued by `recoverOrphanedRecordings`) is never seen here.
     private func reconcileStrandedJobs() {
         let dir = liveOutputDir
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+        let names: [String]
+        do {
+            names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+            LibraryUnreadableReporter.shared.note(.readable, site: "stranded_jobs")
+        } catch {
+            // STOR11: still an early return, but no longer a silent one.
+            LibraryUnreadableReporter.shared.note(LibraryRootState.classify(error), site: "stranded_jobs")
             return
         }
         for stem in StrandedJobRecovery.detect(fileNames: names) {

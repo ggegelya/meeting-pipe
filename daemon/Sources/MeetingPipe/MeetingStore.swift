@@ -259,6 +259,8 @@ final class MeetingStore: ObservableObject {
     /// True between `start()` and `stop()`: the Library wants live updates, so a watcher that could
     /// not attach (missing root) is retried after the next scan that lists the root.
     private var wantsWatching = false
+    /// The errno of the last watcher `open` that failed, so the failure is logged once per change.
+    private var watcherOpenFailure: Int32?
     private let scanQueue = DispatchQueue(
         label: "com.meetingpipe.MeetingStore.scan",
         qos: .userInitiated
@@ -476,7 +478,20 @@ final class MeetingStore: ObservableObject {
             )
         }
         let fd = open(recordingsDir.path, O_EVTONLY)
-        guard fd >= 0 else { return }
+        guard fd >= 0 else {
+            // STOR11: said once per errno, not once per attempt; the next scan that lists the root
+            // re-attempts the attach (see `refresh`), so live updates resume when access returns.
+            let code = errno
+            if watcherOpenFailure != code {
+                watcherOpenFailure = code
+                Log.failure(
+                    category: "coordinator", action: "library_watch_failed",
+                    reason: String(cString: strerror(code)), attributes: ["errno": Int(code)]
+                )
+            }
+            return
+        }
+        watcherOpenFailure = nil
         let src = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd,
             eventMask: [.write, .delete, .rename, .extend],
@@ -519,16 +534,19 @@ final class MeetingStore: ObservableObject {
     func performScan(directory: URL) -> [Meeting] {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
-        guard let entries = try? fm.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles]
-        ) else {
+        let entries: [URL]
+        do {
+            entries = try fm.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: keys,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
             scanCache.removeAll()
             scanListingSucceeded = false
-            scanRootState = LibraryRootState.afterFailedListing(
-                exists: fm.fileExists(atPath: directory.path)
-            )
+            // STOR11: missing and unreadable are told apart by the listing's own error, so a folder
+            // that cannot be read is named in the Library rather than shown as an empty one.
+            scanRootState = LibraryRootState.classify(error)
             lastScanSignatures = [:]
             lastScanCorrectionsModified = nil
             // The duration cache is deliberately left alone: an unreadable root is not an empty

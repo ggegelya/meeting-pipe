@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Chronological meeting list, narrowed by the rail scope and filter chips, grouped by relative date. Auto-refreshes via the directory watcher.
@@ -58,6 +59,23 @@ struct LibraryListView: View {
                     message: "It may have been moved, renamed, or be on a drive that is not connected. Choose the folder that holds your recordings.",
                     actionTitle: "Choose folder…",
                     action: { libraryModel.chooseLibraryFolder() }
+                )
+            case .unreadableRoot(let path, let reason, let permission):
+                // STOR11: a folder that is there and cannot be read is not an empty library.
+                LibraryListEmptyState(
+                    systemImage: "lock.trianglebadge.exclamationmark",
+                    title: "Can't read your recordings folder at \(path): \(reason)",
+                    message: permission
+                        ? "MeetingPipe needs access to this folder. Allow it under Files and Folders in Privacy & Security; the Library updates once it can read the folder."
+                        : "Nothing has been deleted. Check the folder in Finder; the Library updates once it can read it.",
+                    actionTitle: permission ? "Open Privacy & Security" : "Reveal in Finder",
+                    action: {
+                        if permission {
+                            LibraryRootRemedy.openPrivacySettings()
+                        } else {
+                            NSWorkspace.shared.activateFileViewerSelecting([store.recordingsDir])
+                        }
+                    }
                 )
             case .none:
                 VStack(spacing: 0) {

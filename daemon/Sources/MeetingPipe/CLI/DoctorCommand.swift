@@ -95,6 +95,7 @@ enum DoctorCommand {
         out.append(Probe(name: "pipeline.binary", run: { probePipelineBinary() }))
         out.append(Probe(name: "pipeline.roundtrip", run: { probePipelineRoundtrip() }))
         out.append(Probe(name: "events.writable", run: { probeEventsWritable() }))
+        out.append(Probe(name: "library.readable", run: { probeLibraryReadable() }))
         out.append(Probe(name: "library.orphans", run: { probeOrphans() }))
         out.append(Probe(name: "search.index", run: { probeSearchIndex() }))
         return out
@@ -119,6 +120,7 @@ enum DoctorCommand {
         }
         out.append(Probe(name: "app.resources", run: { probeResources() }))
         out.append(Probe(name: "events.writable", run: { probeEventsWritable() }))
+        out.append(Probe(name: "library.readable", run: { probeLibraryReadable() }))
         out.append(Probe(name: "library.orphans", run: { probeOrphans() }))
         out.append(Probe(name: "search.index", run: { probeSearchIndex() }))
         return out
@@ -326,9 +328,22 @@ enum DoctorCommand {
     }
 
     /// Surface recordings the library can't pair with a row, and rows with no wav. `.warn` only - orphans don't block daily use but the message gives a cleanup starting point.
-    static func probeOrphans() -> ProbeResult {
-        let dir = resolveRecordingsDir()
+    static func probeOrphans(dir: URL = resolveRecordingsDir()) -> ProbeResult {
         let report = OrphanScan.scan(directory: dir)
+        switch report.rootState {
+        case .readable:
+            break
+        case .missing:
+            return ProbeResult(
+                name: "library.orphans", status: .warn,
+                message: "skipped: the library folder \(dir.path) does not exist."
+            )
+        case .unreadable(_, let reason):
+            return ProbeResult(
+                name: "library.orphans", status: .warn,
+                message: "skipped: library unreadable (\(reason)) at \(dir.path)."
+            )
+        }
         if report.isEmpty {
             return ProbeResult(
                 name: "library.orphans",
@@ -341,6 +356,28 @@ enum DoctorCommand {
             status: .warn,
             message: formatOrphanMessage(report, dir: dir)
         )
+    }
+
+    /// STOR11: whether the library root can be listed at all. Every other library probe, and the
+    /// Library window, reads a failed listing as something; this one says which.
+    static func probeLibraryReadable(dir: URL = resolveRecordingsDir()) -> ProbeResult {
+        switch LibraryRootState.probe(dir) {
+        case .readable:
+            return ProbeResult(name: "library.readable", status: .ok, message: "\(dir.path) can be listed.")
+        case .missing:
+            return ProbeResult(
+                name: "library.readable", status: .warn,
+                message: "\(dir.path) does not exist. Nothing has been recorded there yet, or the folder was moved, renamed or is on a drive that is not connected."
+            )
+        case .unreadable(let code, let reason):
+            let fix = (code == EPERM || code == EACCES)
+                ? " Allow MeetingPipe under System Settings > Privacy & Security > Files and Folders."
+                : ""
+            return ProbeResult(
+                name: "library.readable", status: .fail,
+                message: "Can't read \(dir.path): \(reason) (errno \(code)). The Library shows no meetings while this lasts.\(fix)"
+            )
+        }
     }
 
     static func formatOrphanMessage(_ report: OrphanScan.Report, dir: URL) -> String {
