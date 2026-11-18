@@ -2,9 +2,9 @@
 id: PIPE45
 title: A redaction that lands after the PIPE36 deadline makes the suggested Retry hold the meeting back and overwrite the kept original with the redacted copy
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). PIPE36 (done) does not hold for a redaction that finishes late: `MuteRedactor.redactIfNeeded` returns `timeline_missing` on the surviving `.offrecord` marker before it reaches its kept-original check, so the Retry the timeout row suggests holds the meeting back and `MuteRedactor.quarantine` deletes the kept full recording and moves the redacted WAV over it; a quit between `.redacted` and the marker removal leaves the same state with no deadline involved. Code-derived, not yet reachable in the field (no installed build carries PIPE36). Run the kept-original check before the missing-timeline arm and never let a quarantine replace an existing file, pinned with the real redactor and quarantine.
+comment: Code shipped under SEC26 (kept-original check ahead of the timeline_missing arm; quarantine into held/ never replaces); 2026-11-18 added the pinning tests (late disk state, owed-marker variants, SEC16 identical carve-out, quit between .redacted and marker removal with real ffmpeg, late return then Retry through the dispatcher) and fixed the stale comment. Owed - the owner's live check only; nothing else.
 ---
 
 # PIPE45: A redaction that lands after the PIPE36 deadline makes the suggested Retry hold the meeting back and overwrite the kept original with the redacted copy
@@ -80,3 +80,12 @@ Related:
   - Second job: the same stem enqueued again, with `MuteRedactor.redactIfNeeded(wav:originalsDir:)` as its redactor. It reaches the runner, `.offrecord` is removed, the kept original's bytes equal the fixture's full recording, and no `recording_held_back` is emitted.
   - The redactor must be the real one so the test can fail at HEAD.
 - `cd daemon && swift build` and `swift test` green, with N new tests named in the commit body; `bash scripts/ci-local.sh` green.
+
+**Progress (2026-11-18): premises re-checked at HEAD `fad9d977`.** Scope items 1 and 2 were already in the tree: SEC26 added the kept-original check inside the owed arm, ahead of `fail(.timelineMissing)`, and made `MuteRedactor.quarantine` land in `originals/held/` and take a `<stem>.held-<n>.wav` name rather than replace anything (a deliberate departure from this spec's "throw when `dest` exists": it never overwrites either way, and it keeps the recording instead of leaving it in the scanned tree). What this commit adds is the proof, since SEC26 shipped one test of it:
+
+- `MuteRedactorTests` (5, `_PIPE45`): the late disk state returns `.redacted` with both files byte-unchanged and no `mute_redaction_failed`; the same for a `.capturemode` and a `redactionOwed` recording; a byte-identical aside copy still fails `timeline_missing`; a real-ffmpeg pass followed by a retry with `.offrecord` left behind (the quit case); `quarantine` never touches the kept original.
+- `SinkDispatcherTests`: a first job whose redaction outlives a short deadline and then does the on-disk work, then a Retry through the real `redactIfNeeded`: it reaches the runner, `.offrecord` goes, the kept original is still the full bytes, and no `recording_held_back` is logged.
+- Disabling the kept-original check turns 4 of the 5 redactor tests and the dispatcher test red (the other two pin behaviour that holds either way).
+- The late-return comment in `runDaemonTranscription` now names the real mechanism.
+
+Owed by the owner: none beyond the usual. Not reachable in the field until an off-the-record span coincides with a redaction past its deadline.

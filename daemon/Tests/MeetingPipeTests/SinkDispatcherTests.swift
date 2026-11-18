@@ -1,4 +1,5 @@
 import XCTest
+import os
 @testable import MeetingPipe
 import MeetingPipeTestSupport
 
@@ -1973,6 +1974,71 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertEqual(events.first?["runner_warm"] as? Bool, false)
         XCTAssertTrue(events.first?["audio_seconds"] is NSNull, "an empty fixture has no readable header")
         XCTAssertNotNil(events.first?["elapsed_sec"] as? Double)
+    }
+
+    /// PIPE45: a redaction that finishes AFTER its job's deadline did the cut (full recording aside,
+    /// redacted bytes in place, timeline reaped) but left `.offrecord`. The Retry the timeout row
+    /// suggests runs the REAL redactor, which must read that as done: the job proceeds, the marker goes,
+    /// the kept original stays the full recording, and nothing is held back.
+    func test_a_redaction_that_lands_after_the_deadline_does_not_hold_the_retry_back_PIPE45() throws {
+        let driver = FakePipelineDriver()
+        let runner = FakeRunner()
+        let wav = try makeTempWav()
+        let dir = wav.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: dir); unsetenv("MEETINGPIPE_LOGS_DIR") }
+        let logs = try isolatedLogs(dir)
+        let originals = dir.appendingPathComponent("originals", isDirectory: true)
+        let kept = originals.appendingPathComponent("clip.wav")
+        let fullBytes = Data("the full recording".utf8)
+        let redactedBytes = Data("redacted".utf8)
+        try fullBytes.write(to: wav)
+        try OffRecordMarker.write(forFinal: wav)
+        MuteTimelineFile.write(spans: [MuteTimeline.Span(startSec: 0, endSec: 1, source: .manual)], forFinal: wav)
+        let gate = Gate()
+        openAtTearDown.append(gate)
+        let passes = OSAllocatedUnfairLock(initialState: 0)
+        let landed = OSAllocatedUnfairLock(initialState: false)
+        let dispatcher = SinkDispatcher(
+            launcher: driver,
+            makeTranscriptionRunner: { runner },
+            redactor: { url, _ in
+                let pass = passes.withLock { n -> Int in n += 1; return n }
+                if pass == 1 {
+                    // The wedged first pass: outlives the deadline, then does the real on-disk work.
+                    await gate.wait()
+                    try? FileManager.default.createDirectory(at: originals, withIntermediateDirectories: true)
+                    try? FileManager.default.moveItem(at: url, to: kept)
+                    try? redactedBytes.write(to: url)
+                    try? FileManager.default.removeItem(at: MuteTimelineFile.url(forFinal: url))
+                    landed.withLock { $0 = true }
+                    return .redacted
+                }
+                return await MuteRedactor.redactIfNeeded(wav: url, originalsDir: originals)
+            },
+            originalsDir: originals,
+            transcriptionDeadline: Self.shortDeadline
+        )
+        var completed: [(ProcessingJob, Result<URL?, Error>)] = []
+        dispatcher.onJobCompleted = { completed.append(($0, $1)) }
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitUntil { completed.count >= 1 }
+        guard case .failure(let error)? = completed.first?.1 else { return XCTFail("expected the deadline failure") }
+        XCTAssertEqual((error as? SinkDispatcher.TranscriptionTimedOut)?.phase, .redact)
+        gate.open()
+        waitUntil { landed.withLock { $0 } }
+        waitUntil { OffRecordMarker.exists(forFinal: wav) && FileManager.default.fileExists(atPath: kept.path) }
+        XCTAssertTrue(OffRecordMarker.exists(forFinal: wav), "the abandoned pass writes nothing, so the marker is still there")
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)  // the Retry
+        waitForPipelineStart(driver)
+
+        XCTAssertEqual(runner.calls, [wav], "the retry reached transcription")
+        XCTAssertFalse(OffRecordMarker.exists(forFinal: wav), "the retry's normal path removed the marker")
+        XCTAssertEqual(try Data(contentsOf: kept), fullBytes, "the kept original is still the full recording")
+        XCTAssertEqual(try Data(contentsOf: wav), redactedBytes)
+        let events = (try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? ""
+        XCTAssertFalse(events.contains("recording_held_back"), events)
     }
 
     /// Acceptance 2: a pass that ignores cancellation and never returns. The job fails with

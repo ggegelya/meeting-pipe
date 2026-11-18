@@ -190,6 +190,116 @@ final class MuteRedactorTests: XCTestCase {
         XCTAssertEqual(outcome, .redacted)
     }
 
+    // MARK: - PIPE45: a redaction that landed late must survive its own retry
+
+    /// The whole disk state a late redaction leaves (the full recording aside, redacted bytes at the
+    /// canonical path, the timeline reaped, `.offrecord` still there). The retry must change nothing
+    /// and must not report a failure.
+    func test_a_late_redactions_disk_state_is_redacted_and_leaves_both_files_untouched_PIPE45() async throws {
+        let (dir, wav) = try makeRecording()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let logs = dir.appendingPathComponent("logs")
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+        let originals = dir.appendingPathComponent("originals")
+        try FileManager.default.createDirectory(at: originals, withIntermediateDirectories: true)
+        let kept = originals.appendingPathComponent("rec.wav")
+        try writeStereoWav(at: kept, seconds: 2.0, left: 0.9, right: 0.9)  // the full recording
+        let keptBytes = try Data(contentsOf: kept)
+        let redactedBytes = try Data(contentsOf: wav)
+        XCTAssertNotEqual(keptBytes, redactedBytes)
+        try OffRecordMarker.write(forFinal: wav)
+        XCTAssertNil(MuteTimelineFile.read(forFinal: wav), "the pass reaped its timeline")
+
+        let outcome = await MuteRedactor.redactIfNeeded(wav: wav, originalsDir: originals)
+
+        XCTAssertEqual(outcome, .redacted)
+        XCTAssertEqual(try Data(contentsOf: kept), keptBytes, "the full recording is not replaced")
+        XCTAssertEqual(try Data(contentsOf: wav), redactedBytes, "the redacted WAV is not touched")
+        let events = (try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? ""
+        XCTAssertFalse(events.contains("mute_redaction_failed"), events)
+    }
+
+    /// The other two ways the cut was owed (SEC16 / REC21) read the same after a late redaction.
+    func test_a_late_redaction_is_redacted_for_every_owed_marker_PIPE45() async throws {
+        for owed in ["capturemode", "redactionOwed"] {
+            let (dir, wav) = try makeRecording()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let originals = dir.appendingPathComponent("originals")
+            try FileManager.default.createDirectory(at: originals, withIntermediateDirectories: true)
+            try writeStereoWav(at: originals.appendingPathComponent("rec.wav"), seconds: 2.0, left: 0.9, right: 0.9)
+            if owed == "capturemode" {
+                try CaptureMode.captureFirstRedact.marker
+                    .write(to: wav.deletingPathExtension().appendingPathExtension("capturemode"), atomically: true, encoding: .utf8)
+            }
+
+            let outcome = await MuteRedactor.redactIfNeeded(
+                wav: wav, redactionOwed: owed == "redactionOwed", originalsDir: originals)
+
+            XCTAssertEqual(outcome, .redacted, owed)
+        }
+    }
+
+    /// SEC16's carve-out, pinned beside PIPE45's: an aside copy that is byte-identical to the WAV
+    /// means the full recording was copied back by hand, so it is NOT the redacted artifact.
+    func test_a_byte_identical_aside_copy_still_fails_timeline_missing_PIPE45() async throws {
+        let (dir, wav) = try makeRecording()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let originals = dir.appendingPathComponent("originals")
+        try FileManager.default.createDirectory(at: originals, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: wav, to: originals.appendingPathComponent("rec.wav"))
+        try OffRecordMarker.write(forFinal: wav)
+
+        let outcome = await MuteRedactor.redactIfNeeded(wav: wav, originalsDir: originals)
+
+        XCTAssertEqual(outcome, .failed(.timelineMissing))
+    }
+
+    /// A quit between `.redacted` and the marker removal, through the real redactor and ffmpeg: the
+    /// second pass sees the reaped timeline and a surviving `.offrecord`, and must not hold back.
+    func test_a_quit_between_redacted_and_marker_removal_does_not_hold_the_retry_back_PIPE45() async throws {
+        try requireFFmpeg()
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("redact-\(UUID().uuidString)")
+        let originals = dir.appendingPathComponent("originals")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let wav = dir.appendingPathComponent("rec.wav")
+        try writeStereoWavTwoRegions(at: wav, seconds: 1.0, splitSec: 0.5, micFirst: 0.002, micSecond: 0.5, system: 0.5)
+        let fullBytes = try Data(contentsOf: wav)
+        try OffRecordMarker.write(forFinal: wav)
+        MuteTimelineFile.write(spans: [MuteTimeline.Span(startSec: 0.0, endSec: 0.5, source: .manual)], forFinal: wav)
+
+        let first = await MuteRedactor.redactIfNeeded(wav: wav, originalsDir: originals)
+        XCTAssertEqual(first, .redacted)
+        XCTAssertTrue(OffRecordMarker.exists(forFinal: wav), "the quit: the job never reached the marker removal")
+        let redactedBytes = try Data(contentsOf: wav)
+
+        let retry = await MuteRedactor.redactIfNeeded(wav: wav, originalsDir: originals)
+
+        XCTAssertEqual(retry, .redacted)
+        XCTAssertEqual(try Data(contentsOf: originals.appendingPathComponent("rec.wav")), fullBytes)
+        XCTAssertEqual(try Data(contentsOf: wav), redactedBytes)
+    }
+
+    /// The overwrite itself: whatever reaches `quarantine`, the kept original beside it is never the
+    /// file that gets replaced (it used to delete `dest`, which was that path).
+    func test_quarantine_never_replaces_the_kept_original_PIPE45() throws {
+        let (dir, wav) = try makeRecording()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let originals = dir.appendingPathComponent("originals")
+        try FileManager.default.createDirectory(at: originals, withIntermediateDirectories: true)
+        let kept = originals.appendingPathComponent("rec.wav")
+        try writeStereoWav(at: kept, seconds: 2.0, left: 0.9, right: 0.9)
+        let keptBytes = try Data(contentsOf: kept)
+        let redactedBytes = try Data(contentsOf: wav)
+
+        let dest = try MuteRedactor.quarantine(wav, in: originals)
+
+        XCTAssertEqual(try Data(contentsOf: kept), keptBytes, "the full recording is untouched")
+        XCTAssertEqual(try Data(contentsOf: dest), redactedBytes)
+        XCTAssertNotEqual(dest, kept)
+    }
+
     func test_every_held_back_reason_reads_as_an_explanation_not_a_retry() {
         for reason in MuteRedactor.FailureReason.allCases {
             let text = SinkDispatcher.heldBackReason(reason)

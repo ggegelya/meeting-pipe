@@ -562,8 +562,8 @@ final class SinkDispatcher: @unchecked Sendable {
         }
         guard proceed else {
             // A redaction that landed after the deadline leaves the MIC14 marker in place;
-            // the retry's redactor finds the work already done (its own idempotency check)
-            // and the marker goes then.
+            // the retry's redactor finds the work already done (the kept-original check that runs
+            // before its missing-timeline arm, SEC26/PIPE45) and the marker goes then.
             logLateReturn(job)
             return
         }
