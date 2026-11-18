@@ -19,8 +19,8 @@ final class StoreNoticeSTOR9Tests: XCTestCase {
             .write(to: notices, atomically: true, encoding: .utf8)
 
         PipelineLauncher.deliverNotices(from: notices)
-        XCTAssertTrue(StoreFiles.waitUntil { posted.count == 1 })
-        XCTAssertTrue(posted.first?.contains("roster.json.corrupt-") == true)
+        // Matched on content: a notice another suite queued on main can land in this handler too.
+        XCTAssertTrue(StoreFiles.waitUntil { posted.contains { $0.contains("roster.json.corrupt-") } })
         XCTAssertFalse(FileManager.default.fileExists(atPath: notices.path))
     }
 
@@ -33,8 +33,7 @@ final class StoreNoticeSTOR9Tests: XCTestCase {
         try StoreFiles.garbage.write(to: SpeakerLabelStore.path(stem: "m", in: dir))
 
         try SpeakerLabelStore.setLabel("THEM-A", to: "Alice", stem: "m", in: dir)
-        XCTAssertTrue(StoreFiles.waitUntil { posted.count == 1 })
-        XCTAssertTrue(posted.first?.contains("m.speaker_labels.json.corrupt-") == true)
+        XCTAssertTrue(StoreFiles.waitUntil { posted.contains { $0.contains("m.speaker_labels.json.corrupt-") } })
     }
 
     func test_the_quarantine_name_matches_pythons() throws {

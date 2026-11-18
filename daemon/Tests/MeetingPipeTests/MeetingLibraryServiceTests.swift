@@ -1489,6 +1489,30 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertTrue(enqueued.isEmpty)
     }
 
+    /// STOR9: an overlay the carry cannot read stops the re-transcribe before the transcript is
+    /// replaced, so its names are never left indexed against a renumbered transcript.
+    func test_stor9_retranscribe_refuses_over_an_unreadable_or_malformed_overlay() throws {
+        let stem = "20260101-0900"
+        try touch("\(stem).wav")
+        let labels = SpeakerLabelStore.path(stem: stem, in: dir)
+        try Data(#"{"schema_version": 1, "labels": {"THEM-A": "Alice"}}"#.utf8).write(to: labels)
+        StoreFiles.lock(labels, in: self)
+        var captured: Result<MeetingLibraryService.RetranscribeOutcome, Error>?
+        service.retranscribeMeeting(stem: stem) { captured = $0 }
+        guard case .failure(let error)? = captured else { return XCTFail("expected a refusal") }
+        XCTAssertTrue(error is StoreRefusal)
+        XCTAssertTrue(retranscribed.isEmpty, "nothing queued, the transcript is untouched")
+
+        StoreFiles.unlock(labels)
+        try StoreFiles.garbage.write(to: TranscriptCorrectionStore.path(stem: stem, in: dir))
+        captured = nil
+        service.retranscribeMeeting(stem: stem) { captured = $0 }
+        guard case .failure? = captured else { return XCTFail("a malformed corrections file refuses too") }
+        XCTAssertTrue(retranscribed.isEmpty)
+        XCTAssertTrue(StoreFiles.corruptCopies(of: TranscriptCorrectionStore.path(stem: stem, in: dir)).isEmpty,
+                      "a carry refuses rather than quarantine")
+    }
+
     /// The acceptance criterion: an in-app speaker name and a text edit survive
     /// a re-transcribe that renumbered the segments and relabelled the clusters.
     func test_retranscribe_carries_the_overlays_onto_the_new_transcript() throws {

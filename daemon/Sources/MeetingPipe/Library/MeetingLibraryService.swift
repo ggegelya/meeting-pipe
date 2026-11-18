@@ -509,8 +509,25 @@ final class MeetingLibraryService {
             break
         }
         let before = Self.transcriptAnchors(stem: stem, in: dir)
-        let overlay = SpeakerLabelStore.read(stem: stem, in: dir)
-        let corrections = TranscriptCorrectionStore.read(stem: stem, in: dir)
+        // STOR9: the carry re-anchors both overlays onto the new segment numbering, so a sidecar it
+        // cannot read must stop the re-transcribe before `<stem>.json` is replaced. Read fail-open,
+        // it carried nothing and stayed on disk indexed against the old numbering, so its names and
+        // edits would land on the wrong lines once it read again.
+        let overlay: SpeakerLabelStore.Overlay
+        let corrections: [Int: TranscriptCorrectionStore.Correction]
+        do {
+            overlay = try StoreGuard.valueForCarry(
+                SpeakerLabelStore.load(stem: stem, in: dir), empty: .empty,
+                url: SpeakerLabelStore.path(stem: stem, in: dir), store: "speaker_labels"
+            )
+            corrections = try StoreGuard.valueForCarry(
+                TranscriptCorrectionStore.load(stem: stem, in: dir), empty: [:],
+                url: TranscriptCorrectionStore.path(stem: stem, in: dir), store: "transcript_corrections"
+            )
+        } catch {
+            completion(.failure(error))
+            return
+        }
 
         Log.writeLine("daemon", "re-transcribe requested → \(stem)")
         Log.event(category: "coordinator", action: "retranscribe_started", attributes: [

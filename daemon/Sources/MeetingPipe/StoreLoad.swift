@@ -80,6 +80,20 @@ enum StoreGuard {
         }
     }
 
+    /// A per-meeting overlay an operation will re-anchor (a re-transcribe): both broken kinds refuse,
+    /// since quarantining would drop the owner's edits from the carry and leave them on the wrong
+    /// lines. Missing is empty.
+    static func valueForCarry<T>(_ load: StoreLoad<T>, empty: T, url: URL, store: String) throws -> T {
+        switch load {
+        case .loaded(let value): return value
+        case .missing: return empty
+        case .unreadable(let error): throw refuse(url: url, error: error, store: store, pathKind: .library)
+        case .unparseable(let error):
+            report(store: store, pathKind: .library, reason: "unparseable", outcome: "refused", error: error)
+            throw StoreRefusal(file: url.lastPathComponent, reason: "it is not valid JSON")
+        }
+    }
+
     /// A store loaded once at launch whose load failed (STOR9), before its next mutation: read the
     /// file again and continue from what that says. A file that reads now is adopted (the failure
     /// was retryable, and the in-memory list is the empty fallback, not the owner's data); an
@@ -88,16 +102,21 @@ enum StoreGuard {
     static func recoverForWrite<T>(
         reread: StoreLoad<T>, empty: T, url: URL, store: String, pathKind: PathKind
     ) -> T? {
-        try? valueForWrite(reread, empty: empty, url: url, store: store, pathKind: pathKind)
+        do {
+            return try valueForWrite(reread, empty: empty, url: url, store: store, pathKind: pathKind)
+        } catch {
+            // These stores' mutators return quietly, so the refusal is said here; a throwing
+            // writer's caller says it instead, and one notice per refusal is enough.
+            StoreNotice.post(error.localizedDescription)
+            return nil
+        }
     }
 
     /// Record and return the refusal for an unreadable store.
     static func refuse(url: URL, error: Error, store: String, pathKind: PathKind) -> StoreRefusal {
         let reason = String(cString: strerror(LibraryRootState.posixCode(of: error)))
         report(store: store, pathKind: pathKind, reason: errnoName(of: error), outcome: "refused", error: error)
-        let refusal = StoreRefusal(file: url.lastPathComponent, reason: reason)
-        StoreNotice.post(refusal.errorDescription ?? "")
-        return refusal
+        return StoreRefusal(file: url.lastPathComponent, reason: reason)
     }
 
     /// Move an unparseable store aside and tell the owner where it went. Throws (and changes

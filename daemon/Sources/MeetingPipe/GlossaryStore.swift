@@ -88,6 +88,8 @@ final class GlossaryStore: ObservableObject {
     @Published private(set) var readError: String?
     /// One `store_unreadable` row per held error, not one per pane switch.
     private var readErrorReported = false
+    /// The event's `reason` for the held error: `unparseable`, or the errno's name.
+    private var readErrorReason = "unparseable"
 
     /// What the rows were last loaded from or saved as (STOR9 item 9, G012). A save applies only
     /// the difference between the rows and these onto a fresh read of the file, so a term another
@@ -131,9 +133,13 @@ final class GlossaryStore: ObservableObject {
         switch GlossaryStore.readDocument(at: fileURL) {
         case .loaded(let loaded): doc = loaded
         case .missing: doc = TOMLTable()
-        case .unparseable(let error), .unreadable(let error):
+        case .unparseable(let error):
             doc = TOMLTable()
             self.readError = GlossaryStore.readErrorText(fileURL, error)
+        case .unreadable(let error):
+            doc = TOMLTable()
+            self.readError = GlossaryStore.readErrorText(fileURL, error)
+            self.readErrorReason = StoreGuard.errnoName(of: error)
         }
         self.rawDocument = doc
         self.globalTerms = GlossaryStore.terms(in: doc["terms"]?.table)
@@ -160,6 +166,7 @@ final class GlossaryStore: ObservableObject {
         case .missing: doc = TOMLTable()
         case .unparseable(let error), .unreadable(let error):
             readError = GlossaryStore.readErrorText(fileURL, error)
+            readErrorReason = GlossaryStore.eventReason(error)
             return
         }
         isInitialized = false
@@ -377,6 +384,7 @@ final class GlossaryStore: ObservableObject {
         case .unparseable(let error), .unreadable(let error):
             let message = GlossaryStore.readErrorText(fileURL, error)
             readError = message
+            readErrorReason = GlossaryStore.eventReason(error)
             reportRefusal(GlossaryReadRefusal(message: message))
             throw GlossaryReadRefusal(message: message)
         }
@@ -413,7 +421,7 @@ final class GlossaryStore: ObservableObject {
     private func reportRefusal(_ refusal: GlossaryReadRefusal) {
         guard !readErrorReported else { return }
         readErrorReported = true
-        StoreGuard.report(store: "glossary", pathKind: .config, reason: "unreadable", outcome: "refused", error: refusal)
+        StoreGuard.report(store: "glossary", pathKind: .config, reason: readErrorReason, outcome: "refused", error: refusal)
     }
 
     /// `glossary.toml` read as a document: missing, parsed, or the reason it is not.
@@ -424,6 +432,12 @@ final class GlossaryStore: ObservableObject {
             }
             return try TOMLTable(string: raw)
         }
+    }
+
+    /// `unparseable` for a parse error, the errno's name for an I/O one (CONVENTIONS' vocabulary).
+    static func eventReason(_ error: Error) -> String {
+        let code = LibraryRootState.posixCode(of: error)
+        return (error is StoreShapeError || code == EIO) && !(error is CocoaError) ? "unparseable" : StoreGuard.errnoName(of: error)
     }
 
     static func readErrorText(_ url: URL, _ error: Error) -> String {
