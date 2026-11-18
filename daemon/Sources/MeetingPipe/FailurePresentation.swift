@@ -8,6 +8,8 @@ struct FailureMetadata: Codable, Equatable, Hashable {
         case syncedTarget = "synced_target"
         case overlayUnreadable = "overlay_unreadable"
         case modelRejected = "model_rejected"
+        /// UX94: config.toml does not parse, or the pipeline's load refused a value in it.
+        case config
 
         /// Causes whose fix is in Preferences > Pipeline rather than Integrations. One place, so
         /// the Ask, Digest and Library settings buttons cannot disagree about a new cause (PIPE28).
@@ -66,7 +68,7 @@ struct FailureMetadata: Codable, Equatable, Hashable {
         if let provider = value.provider, !providers.contains(provider) { value.provider = nil }
         if let status = value.httpStatus, !(100...599).contains(status) { value.httpStatus = nil }
         value.requestID = safeRequestID(value.requestID)
-        if let remedy = value.remedy, !["billing", "integrations", "model", "retry"].contains(remedy) { value.remedy = nil }
+        if let remedy = value.remedy, !["billing", "integrations", "model", "retry", "config"].contains(remedy) { value.remedy = nil }
         return value
     }
 
@@ -162,6 +164,11 @@ struct FailurePresentation: Equatable {
             heading = "This meeting's edits can't be read"
             explanation = Self.overlayRefusal(diagnostics)
                 ?? "A speaker names, transcript corrections or flagged moments file for this meeting is there but can't be read, so nothing was summarized. Fix or remove it, then retry."
+        case .config:
+            // UX94: the line or the key comes from the pipeline's own message in the stderr tail
+            // (`config.toml does not parse at line 2, column 1.`); the sidecar carries neither.
+            heading = "Settings file has a syntax error"
+            explanation = Self.configFix(diagnostics)
         case .publish:
             heading = provider.map { "Couldn't publish to \($0)" } ?? heading
             // PIPE54: `mp publish` refused the summary before any sink, and its `[FAIL]` line says
@@ -200,6 +207,19 @@ struct FailurePresentation: Equatable {
         }
     }
 
+    /// UX94: what to fix in config.toml, from `mp.config.ConfigUnreadableError`'s message.
+    static func configFix(_ diagnostics: String) -> String {
+        if let match = diagnostics.range(of: #"does not parse at line (\d+)"#, options: .regularExpression) {
+            let digits = diagnostics[match].split(separator: " ").last.map(String.init) ?? ""
+            if let line = Int(digits) { return "Fix line \(line) of config.toml, then retry." }
+        }
+        if let match = diagnostics.range(of: #"has an invalid `[A-Za-z0-9_.]+` setting"#, options: .regularExpression) {
+            let key = diagnostics[match].split(separator: "`").dropFirst().first.map(String.init) ?? ""
+            if !key.isEmpty { return "Check the \(key) setting in config.toml, then retry." }
+        }
+        return "Fix config.toml, then retry."
+    }
+
     /// The sentence `summarize.refuse_unreadable_overlays` writes, picked out of the stderr tail.
     static func overlayRefusal(_ diagnostics: String) -> String? {
         diagnostics.split(whereSeparator: \.isNewline)
@@ -225,6 +245,7 @@ struct FailurePresentation: Equatable {
         switch metadata.cause {
         case .missingKey, .rejectedKey, .expiredKey, .publish, .syncedTarget: return "Open Integrations"
         case .modelMissing, .memory, .modelRejected: return "Model settings"
+        case .config: return "Open Preferences"
         default: return nil
         }
     }

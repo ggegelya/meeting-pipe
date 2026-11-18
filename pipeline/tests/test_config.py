@@ -5,15 +5,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tomllib
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from mp import config as config_mod
 from mp.config import (
     Config,
     ConfigError,
+    ConfigUnreadableError,
     effective_backend,
     effective_sinks,
     load_secrets,
@@ -175,8 +176,10 @@ def test_a_regulated_switch_that_is_not_a_boolean_refuses_to_load(
     # Pydantic's lax mode read "true" and 1 as True and "false" as False, while the
     # Swift store read every one of them as false and then saved false over it.
     path = _write(tmp_path, f"[modes]\nregulated_mode = {literal}\n")
-    with pytest.raises(ValidationError):
+    # UX94: refused as the typed config error, naming the key and not the value.
+    with pytest.raises(ConfigUnreadableError) as raised:
         Config.load(path)
+    assert raised.value.key == "modes.regulated_mode"
 
 
 def test_an_unknown_summarization_key_loads_with_defaults_warns_once_and_emits(
@@ -231,8 +234,9 @@ def test_legacy_keys_in_the_tolerant_sections_say_nothing(tmp_path: Path, isolat
 
 def test_a_misspelt_sink_fails_at_load(tmp_path: Path, isolated: Path) -> None:
     path = _write(tmp_path, '[output]\nsinks = ["obsidan"]\n')
-    with pytest.raises(ValidationError, match="obsidan"):
+    with pytest.raises(ConfigUnreadableError, match=r"output\.sinks") as raised:
         Config.load(path)
+    assert "obsidan" not in str(raised.value), "the key, never the value"
 
 
 def test_known_sinks_load(tmp_path: Path, isolated: Path) -> None:
@@ -256,3 +260,34 @@ def test_the_sink_vocabulary_matches_what_the_router_builds() -> None:
         and isinstance(node.comparators[0], ast.Constant)
     }
     assert set(typing.get_args(config_mod.SinkName)) == compared
+
+
+# --- UX94: a config.toml that does not load is one typed error naming the line or the key ---
+
+
+def test_a_toml_syntax_error_names_its_line_and_column(tmp_path: Path, isolated: Path) -> None:
+    path = _write(tmp_path, "[recording]\noutput_dir = \n")
+    with pytest.raises(ConfigUnreadableError) as raised:
+        Config.load(path)
+    assert (raised.value.line, raised.value.column) == (2, 14)
+    assert "line 2" in str(raised.value)
+    assert raised.value.__cause__ is None and raised.value.__suppress_context__
+
+
+def test_a_value_of_the_wrong_type_names_the_key_and_never_the_value(tmp_path: Path, isolated: Path) -> None:
+    path = _write(tmp_path, '[summarization]\nmax_tokens = "x-secret-ish"\n')
+    with pytest.raises(ConfigUnreadableError) as raised:
+        Config.load(path)
+    assert raised.value.key == "summarization.max_tokens"
+    assert "x-secret-ish" not in str(raised.value)
+    assert raised.value.__suppress_context__, "pydantic's text quotes the value, so it is not chained"
+
+
+def test_a_missing_file_still_loads_defaults(tmp_path: Path, isolated: Path) -> None:
+    assert Config.load(tmp_path / "absent.toml").recording.output_dir
+
+
+def test_the_position_is_read_from_a_3_11_message() -> None:
+    # 3.11 carries no lineno, so the message parse is the path that has to work there.
+    error = tomllib.TOMLDecodeError("Invalid value (at line 7, column 3)")
+    assert config_mod._toml_position(error) == (7, 3)

@@ -503,6 +503,9 @@ final class StatusBarController {
             staleRecordingCount: staleRecordingCount,
             finishSetupTitle: finishSetupTitle,
             unsavedSetting: coordinator?.configStore?.saveError != nil || coordinator?.secretsStore?.saveError != nil,
+            configUnreadable: coordinator?.configStore.flatMap { store in
+                store.parseError == nil ? nil : (store.recordingRootUnknown ? .recordingsPaused : .syntaxError)
+            },
             scheduledRunTitle: scheduledRunTitle,
             relaunchAfterQuit: UISettings.shared.relaunchAfterQuit,
             agentJob: LaunchRecord.runsAsAgentJob,
@@ -538,6 +541,9 @@ final class StatusBarController {
         menuIsOpen = true
         // The menu delegate runs on main; the assertion is the checked fact (CONC12).
         MainActor.assumeIsolated { PermissionsCenter.shared.refreshMenuRelevantSync() }
+        // UX94: a fix made in an editor clears the row at the next open, not only at a Preferences
+        // visit. Only while the file is broken, so an open on a healthy file reads nothing.
+        if let store = coordinator?.configStore, store.parseError != nil { store.reloadIfChangedOnDisk() }
         populateMenu(menu, state: lastMenuState)
         refreshLaunchAgentState()
         refreshFailedMeetingCount()
@@ -804,7 +810,7 @@ final class StatusBarController {
         case .modelDownload:                             return .download
         case .permissionConsequence, .screenRecordingShortcut: return .permissions
         case .accessibilityDegraded:                     return .accessibility
-        case .failedMeetings, .staleRecordings, .unsavedSetting, .scheduledRunFailed: return .failedMeetings
+        case .failedMeetings, .staleRecordings, .unsavedSetting, .configUnreadable, .scheduledRunFailed: return .failedMeetings
         case .finishSetup:                               return .finishSetup
         case .startRecording, .recordSuppressedMeeting, .stopRecording: return .transport
         case .quitWithoutRelaunch:                       return .quit
@@ -901,6 +907,10 @@ final class StatusBarController {
 
         // UX91: Preferences carries the reason and Try again above every pane.
         case .unsavedSetting(let title):
+            menu.addItem(actionRow(title: title, action: #selector(Coordinator.menuPreferences)))
+
+        // UX94: Preferences shows the parse-error pane, with the line and Open in editor.
+        case .configUnreadable(let title):
             menu.addItem(actionRow(title: title, action: #selector(Coordinator.menuPreferences)))
 
         // `.suppressed` is the skip-latch display over an idle state machine (see
@@ -1025,6 +1035,7 @@ final class StatusBarController {
         case .permissions:   return #selector(Coordinator.menuPreferencesPermissions)
         case .integrations:  return #selector(Coordinator.menuPreferencesIntegrations)
         case .downloadModel: return #selector(Coordinator.menuFinishSetupDownloadModel)
+        case .preferences:   return #selector(Coordinator.menuPreferences)
         }
     }
 

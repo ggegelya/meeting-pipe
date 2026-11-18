@@ -257,3 +257,15 @@ def test_a_404_or_403_that_is_not_about_a_model_is_unchanged():
     assert describe(other_404, operation="summary")["cause"] == "unknown"
     key_403 = _status(anthropic.PermissionDeniedError, 403, "forbidden", err_type="permission_error")
     assert describe(key_403, operation="summary")["cause"] == "unknown"
+
+
+def test_an_unreadable_config_is_its_own_cause_with_the_config_remedy():
+    from pathlib import Path
+
+    from mp.config import ConfigUnreadableError
+    from mp.failure_details import describe
+
+    payload = describe(ConfigUnreadableError(Path("/x/config.toml"), line=2, column=1), operation="summary")
+    assert (payload["cause"], payload["remedy"]) == ("config", "config")
+    unrelated = describe(RuntimeError("synthetic"), operation="summary")
+    assert (unrelated["cause"], unrelated["remedy"]) == ("unknown", "retry")

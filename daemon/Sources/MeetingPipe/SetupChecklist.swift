@@ -30,6 +30,8 @@ enum SetupChecklist {
         case integrations
         /// Start the local-model download on the shared supervisor (UX21).
         case downloadModel
+        /// Preferences, whose parse-error pane names the line (UX94).
+        case preferences
     }
 
     /// A single unmet setup item. `notion` carries which half is missing so the
@@ -39,9 +41,13 @@ enum SetupChecklist {
         case anthropicKey
         case notion(needsToken: Bool, needsDatabase: Bool)
         case localModel
+        /// UX94: config.toml does not parse.
+        case configUnreadable
 
         var title: String {
             switch self {
+            case .configUnreadable:
+                return "Fix the settings file (config.toml)"
             case .permissions:
                 return "Grant macOS permissions"
             case .anthropicKey:
@@ -60,6 +66,7 @@ enum SetupChecklist {
             case .permissions:            return .permissions
             case .anthropicKey, .notion:  return .integrations
             case .localModel:             return .downloadModel
+            case .configUnreadable:       return .preferences
             }
         }
     }
@@ -87,6 +94,8 @@ enum SetupChecklist {
         var localModelMissing: Bool
         /// Any required TCC permission is missing (`StatusBarModel.hasPendingPermissionIssue`).
         var hasPermissionIssue: Bool
+        /// UX94: config.toml does not parse.
+        var configUnreadable: Bool
 
         init(
             regulatedMode: Bool = false,
@@ -98,7 +107,8 @@ enum SetupChecklist {
             notionTokenPresent: Bool = true,
             notionDatabaseIdPresent: Bool = true,
             localModelMissing: Bool = false,
-            hasPermissionIssue: Bool = false
+            hasPermissionIssue: Bool = false,
+            configUnreadable: Bool = false
         ) {
             self.regulatedMode = regulatedMode
             self.globalBackend = globalBackend
@@ -110,6 +120,7 @@ enum SetupChecklist {
             self.notionDatabaseIdPresent = notionDatabaseIdPresent
             self.localModelMissing = localModelMissing
             self.hasPermissionIssue = hasPermissionIssue
+            self.configUnreadable = configUnreadable
         }
     }
 
@@ -117,6 +128,11 @@ enum SetupChecklist {
 
     static func decide(_ i: Inputs) -> [Item] {
         var items: [Item] = []
+
+        // UX94: first, because every other item reads a file the app cannot read.
+        if i.configUnreadable {
+            items.append(.configUnreadable)
+        }
 
         // Permissions are always relevant; they gate recording itself.
         if i.hasPermissionIssue {

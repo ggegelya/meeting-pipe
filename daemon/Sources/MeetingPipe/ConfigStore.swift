@@ -91,7 +91,37 @@ final class ConfigStore: ObservableObject {
 
     /// Live values exposed to SwiftUI. didSet → schedule debounced save. The
     /// declared values are placeholders: `apply(_:)` assigns every one in init.
-    @Published var outputDirPath: String = "" { didSet { scheduleSave() } }
+    @Published var outputDirPath: String = "" {
+        didSet {
+            // F056: a library chosen in the app is the last known good one too.
+            if isInitialized, parseError == nil { lastGoodOutputDir.set(outputDirPath) }
+            scheduleSave()
+        }
+    }
+
+    /// UX94 / F056: where the last file that parsed put the recordings, kept outside config.toml so a
+    /// file that stops parsing does not move the library to the default. Injected for tests.
+    struct LastGoodOutputDir {
+        var get: () -> String?
+        var set: (String) -> Void
+
+        static let key = "lastGoodOutputDir"
+        /// `UserDefaults.standard`, except under XCTest, where nothing is remembered.
+        static var live: LastGoodOutputDir {
+            if Log.isRunningUnderTests { return LastGoodOutputDir(get: { nil }, set: { _ in }) }
+            return LastGoodOutputDir(
+                get: { UserDefaults.standard.string(forKey: key) },
+                set: { UserDefaults.standard.set($0, forKey: key) }
+            )
+        }
+    }
+
+    private let lastGoodOutputDir: LastGoodOutputDir
+
+    /// F056: the file does not parse, nothing remembers where the library was, and no old default
+    /// holds files, so `outputDirPath` is a guess. A recording start is refused rather than landing
+    /// in a folder the Library does not show (`recording_blocked`, reason `config_unreadable`).
+    @Published private(set) var recordingRootUnknown = false
     @Published var autoConsentApps: [String] = [] { didSet { scheduleSave() } }
     /// Apple's VoIP DSP on the mic path. Off by default: VPIO drops the HAL
     /// gain system-wide so other clients hear the user quietly. Applies next
@@ -296,10 +326,12 @@ final class ConfigStore: ObservableObject {
 
     init(configURL: URL = Config.defaultPath,
          writeQueue: DispatchQueue = DebouncedSaver.makeQueue(label: "com.meetingpipe.configstore.write"),
-         legacyHasEntries: @escaping (String) -> Bool = LibraryDefaultPin.defaultHasEntries) {
+         legacyHasEntries: @escaping (String) -> Bool = LibraryDefaultPin.defaultHasEntries,
+         lastGoodOutputDir: LastGoodOutputDir = .live) {
         self.configURL = configURL
         self.writeQueue = writeQueue
         self.legacyHasEntries = legacyHasEntries
+        self.lastGoodOutputDir = lastGoodOutputDir
         let file = Self.read(configURL)
         apply(file)
         markSynced(bytes: file.bytes)
@@ -432,6 +464,11 @@ final class ConfigStore: ObservableObject {
         guard !saver.isScheduled, queuedWrites.isEmpty else { return }
         let file = Self.read(configURL)
         guard file.bytes != syncedBytes || (file.parseError != nil) != (parseError != nil) else { return }
+        // UX94: a state change is an event (a fix in an editor, or a file newly broken by hand).
+        let wasBroken = parseError != nil
+        defer {
+            if wasBroken != (parseError != nil) { Self.recordParseState(parseError) }
+        }
         let current = currentValues()
         let unsaved = current.filter { !Self.same($0.value, syncedValues[$0.key]) }
         reapply(file)
@@ -446,6 +483,22 @@ final class ConfigStore: ObservableObject {
             isInitialized = true
         }
         didPersist.send()
+    }
+
+    /// UX94: `daemon/config_parse_failed` with the position (never the message, which can quote the
+    /// file), or `config_parse_recovered`. Both also write a `daemon.log` line.
+    static func recordParseState(_ error: ConfigParseError?) {
+        if let error {
+            var attributes: [String: Any] = [:]
+            if let line = error.line { attributes["line"] = line }
+            if let column = error.column { attributes["column"] = column }
+            Log.failure(category: "daemon", action: "config_parse_failed",
+                        reason: "config.toml does not parse; running with regulated mode on and saves refused",
+                        attributes: attributes)
+        } else {
+            Log.event(category: "daemon", action: "config_parse_recovered", attributes: [:])
+            Log.writeLine("daemon", "config.toml parses again")
+        }
     }
 
     /// Adopt a fresh read as the store's whole state: values, document and sync.
@@ -500,8 +553,22 @@ final class ConfigStore: ObservableObject {
         let mcp = doc["mcp"]?.table
 
         // STOR6: a missing key falls to the old default while it holds files (`LibraryDefaultPin`).
-        self.outputDirPath = rec?["output_dir"]?.string
-            ?? LibraryDefaultPin.effectiveDefault(LibraryDefaultPin.recordings, hasEntries: legacyHasEntries)
+        // F056: a file that does not parse keeps the library the last parsed file named; with
+        // nothing remembered it falls to STOR6's default, and a start is refused when that default
+        // is not one the owner's library is known to be in (`recordingRootUnknown`).
+        let stor6Default = LibraryDefaultPin.effectiveDefault(LibraryDefaultPin.recordings, hasEntries: legacyHasEntries)
+        if file.parseError == nil {
+            let path = rec?["output_dir"]?.string ?? stor6Default
+            self.outputDirPath = path
+            lastGoodOutputDir.set(path)
+            self.recordingRootUnknown = false
+        } else if let remembered = lastGoodOutputDir.get() {
+            self.outputDirPath = remembered
+            self.recordingRootUnknown = false
+        } else {
+            self.outputDirPath = stor6Default
+            self.recordingRootUnknown = !legacyHasEntries(LibraryDefaultPin.recordings.legacy)
+        }
         self.autoConsentApps = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string })
             ?? ConfigDefaults.autoConsentApps
         self.voiceProcessing = rec?["voice_processing"]?.bool ?? ConfigDefaults.voiceProcessing

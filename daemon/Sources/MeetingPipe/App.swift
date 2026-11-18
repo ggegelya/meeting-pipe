@@ -201,7 +201,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // ConfigStore is the one reader of config.toml (ARCH9): it powers Preferences and produces the daemon's launch-time Config. A file that does not parse fails closed (regulated, no saves) instead of being replaced by defaults on the next Preferences edit.
         let store = ConfigStore()
         if let parseError = store.parseError {
-            Log.failure(category: "daemon", action: "config_unreadable", reason: "config.toml cannot be read (a syntax error runs on defaults, a PIPE42 regulated-switch problem on the file's values), with regulated mode on and saves refused: \(parseError.message)")
+            // UX94: the position only; the message can quote the file's content.
+            ConfigStore.recordParseState(parseError)
         } else {
             Log.main.info("Loaded config from \(Config.defaultPath.path)")
         }

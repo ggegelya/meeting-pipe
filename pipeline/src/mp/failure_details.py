@@ -10,7 +10,7 @@ import anthropic
 import httpcore
 import httpx
 
-from .config import MissingSecretError
+from .config import ConfigError, MissingSecretError
 from .storage import atomic_write_text
 
 OPERATIONS = {"summary", "ask", "digest", "publish", "transcribe", "processing", "rename_voice",
@@ -101,6 +101,10 @@ def describe(error: BaseException, *, operation: str, provider: str | None = Non
         cause = "missing_key"
         provider = {"ANTHROPIC_API_KEY": "anthropic", "OPENAI_API_KEY": "openai",
                     "NOTION_TOKEN": "notion"}.get(secret.name)
+    elif first(ConfigError) is not None:
+        # UX94: config.toml does not parse, or says something the load refuses (PIPE42). A retry
+        # fails the same way until the file is fixed, so the remedy is the file.
+        cause = "config"
     elif provider == "anthropic" and status == 400 and "your credit balance is too low" in message:
         cause = "credits"
     elif code in {"insufficient_quota", "billing_hard_limit_reached", "credit_balance_too_low"}:
@@ -136,7 +140,7 @@ def describe(error: BaseException, *, operation: str, provider: str | None = Non
     remedy = {"credits": "billing", "quota": "billing", "missing_key": "integrations",
               "rejected_key": "integrations", "expired_key": "integrations", "synced_target": "integrations",
               "memory": "model",
-              "model_missing": "model", "model_rejected": "model"}.get(cause, "retry")
+              "model_missing": "model", "model_rejected": "model", "config": "config"}.get(cause, "retry")
     result: dict = {"schema_version": 1, "cause": cause,
                     "operation": operation if operation in OPERATIONS else "processing", "remedy": remedy}
     if provider in PROVIDERS:

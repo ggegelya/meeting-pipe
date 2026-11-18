@@ -156,6 +156,16 @@
       "cause": "unknown"
     },
     {
+      "name": "config",
+      "payload": {
+        "schema_version": 1,
+        "cause": "config",
+        "operation": "summary",
+        "remedy": "config"
+      },
+      "cause": "config"
+    },
+    {
       "name": "synced_target",
       "payload": {
         "schema_version": 1,

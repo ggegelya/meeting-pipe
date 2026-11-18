@@ -71,6 +71,10 @@ protocol SessionHost: AnyObject {
     var libraryMoveInProgress: Bool { get }
     var micAuthorizationStatus: AVAuthorizationStatus { get }
     var liveOutputDir: URL { get }
+    /// UX94 / F056: config.toml does not parse and nothing says where the library is.
+    var recordingRootUnknown: Bool { get }
+    /// Opens Preferences, whose parse-error pane names the line (UX94).
+    func menuPreferences()
     var liveAutoConsentApps: [String] { get }
     /// UX97: the prompt's "Always for <app>" adds the bundle to the same list `liveAutoConsentApps`
     /// reads and Preferences renders, so it shows there with a remove tag. It used to go to a second

@@ -224,6 +224,9 @@ struct MeetingDetailView: View {
                 settings: {
                     if problem.metadata.cause.opensModelSettings {
                         libraryModel.coordinator?.preferencesWindow?.show(initial: .pipeline)
+                    } else if problem.metadata.cause == .config {
+                        // UX94: Preferences shows the parse-error pane, which names the line.
+                        libraryModel.coordinator?.menuPreferences()
                     } else { libraryModel.coordinator?.menuPreferencesIntegrations() }
                 }, downloadModel: { libraryModel.coordinator?.downloadLocalModelNow() })
             if case .inFlight(let label) = canRetry {

@@ -894,7 +894,8 @@ def test_doctor_fails_a_misspelt_sink(capsys, monkeypatch, tmp_path: Path) -> No
     cfg = _doctor_config(monkeypatch, tmp_path, '[output]\nsinks = ["obsidan"]\n')
     out = capsys.readouterr().out
     assert cfg is None
-    assert "[FAIL]" in out and "obsidan" in out
+    # UX94: the load names the dotted key, never the value (a value can be a path or an id).
+    assert "[FAIL]" in out and "output.sinks" in out
 
 
 def test_doctor_warns_on_each_unknown_key(capsys, monkeypatch, tmp_path: Path) -> None:

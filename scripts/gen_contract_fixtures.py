@@ -542,7 +542,7 @@ def gen_regulated(tmp: Path) -> str:
 def gen_failures() -> str:
     import anthropic
     import httpx
-    from mp.config import MissingSecretError
+    from mp.config import ConfigUnreadableError, MissingSecretError
     from mp.failure_details import describe
     from mp.publish_router import SyncedTargetError
     from mp.summarize import OverlayUnreadable
@@ -573,6 +573,13 @@ def gen_failures() -> str:
                         ("model_missing", RuntimeError("not in the local HuggingFace cache")),
                         ("unknown", RuntimeError("synthetic unknown failure"))]:
         cases.append({"name": name, "payload": describe(error, operation="summary"), "cause": name})
+    # UX94: a config.toml that does not parse.
+    cases.append({
+        "name": "config",
+        "payload": describe(ConfigUnreadableError(Path("/synthetic/config.toml"), line=2, column=1),
+                            operation="summary"),
+        "cause": "config",
+    })
     cases.append({
         "name": "synced_target",
         "payload": describe(SyncedTargetError("filesystem", Path("/synthetic/synced"), "Dropbox"),

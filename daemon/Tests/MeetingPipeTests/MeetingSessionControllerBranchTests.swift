@@ -66,6 +66,21 @@ final class MeetingSessionControllerBranchTests: XCTestCase {
 
     // MARK: - beginRecording: the permission gate
 
+    /// UX94 / F056: config.toml does not parse and nothing says where the library is, so a start is
+    /// refused rather than recording into a folder the Library will not show once the file is fixed.
+    func test_beginRecording_with_an_unknown_library_root_refuses_UX94() async {
+        let (controller, host) = makeController()
+        host.recordingRootUnknown = true
+
+        controller.beginRecording(source: source(), summaryMode: .auto)
+        await yieldRunway()
+
+        XCTAssertEqual(host.recorderSpy.startCallCount, 0)
+        XCTAssertEqual(host.notifierSpy.errorOperations, [.recording])
+        XCTAssertEqual(host.menuPreferencesCallCount, 1)
+        XCTAssertEqual(host.stateMachine.current, .idle)
+    }
+
     func test_beginRecording_withoutMicPermission_refusesAndDeepLinksToPermissions() async {
         let (controller, host) = makeController()
         host.micAuthorizationStatus = .denied

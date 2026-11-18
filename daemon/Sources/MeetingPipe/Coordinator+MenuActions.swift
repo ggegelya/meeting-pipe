@@ -330,7 +330,8 @@ extension Coordinator {
                 microphone: mic,
                 screenRecording: screen,
                 accessibility: ax
-            ))
+            )),
+            configUnreadable: configStore?.parseError != nil
         )
     }
 }

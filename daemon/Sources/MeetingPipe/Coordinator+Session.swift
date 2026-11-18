@@ -13,6 +13,8 @@ extension Coordinator {
     // the MeetingSessionController (TECH-ARCH2) via `coordinator.liveX` and by
     // the startup wiring in Coordinator.
 
+    var recordingRootUnknown: Bool { configStore?.recordingRootUnknown ?? false }
+
     var liveOutputDir: URL {
         guard let raw = configStore?.outputDirPath else { return config.recording.outputDir }
         let expanded = (raw as NSString).expandingTildeInPath

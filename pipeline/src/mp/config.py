@@ -12,7 +12,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, Field, PrivateAttr, StrictBool
+from pydantic import BaseModel, Field, PrivateAttr, StrictBool, ValidationError
 
 
 def _expand(p: str) -> Path:
@@ -83,6 +83,44 @@ class ConfigError(ValueError):
     the same posture as a file that does not parse: no run egresses on a config
     whose regulated switch might be sitting in the wrong table.
     """
+
+
+class ConfigUnreadableError(ConfigError):
+    """config.toml does not parse, or parses into a value the model refuses (UX94).
+
+    One typed error for both, so `failure_details.describe` can give it its own cause (`config`)
+    and the daemon can say which line or key to fix, instead of an unknown failure whose Retry
+    fails the same way until the file is fixed. The message names the position or the dotted key,
+    never a value: a value can be a path, a database id or a workflow name the owner chose.
+    """
+
+    def __init__(self, path: Path, *, line: int | None = None, column: int | None = None,
+                 key: str | None = None) -> None:
+        self.path = path
+        self.line = line
+        self.column = column
+        self.key = key
+        if key is not None:
+            message = f"config.toml has an invalid `{key}` setting."
+        elif line is not None:
+            where = f"at line {line}" + (f", column {column}" if column is not None else "")
+            message = f"config.toml does not parse {where}."
+        else:
+            message = "config.toml does not parse."
+        super().__init__(message)
+
+
+_TOML_POSITION = re.compile(r"\(at line (\d+), column (\d+)\)")
+
+
+def _toml_position(error: tomllib.TOMLDecodeError) -> tuple[int | None, int | None]:
+    """The line and column of a TOML syntax error. Python 3.11 keeps them only in the message
+    (`Invalid value (at line 2, column 1)`); later versions also carry `lineno` / `colno`."""
+    line, column = getattr(error, "lineno", None), getattr(error, "colno", None)
+    if isinstance(line, int):
+        return line, column if isinstance(column, int) else None
+    match = _TOML_POSITION.search(str(error))
+    return (int(match.group(1)), int(match.group(2))) if match else (None, None)
 
 
 class Recording(BaseModel):
@@ -352,7 +390,12 @@ class Config(BaseModel):
                 empty["recording"]["output_dir"] = str(_expand(empty["recording"]["output_dir"]))
             return cls(**empty)
         with path.open("rb") as f:
-            raw = tomllib.load(f)
+            try:
+                raw = tomllib.load(f)
+            except tomllib.TOMLDecodeError as e:
+                line, column = _toml_position(e)
+                # `from None`: the decoder's own text is position-only today, but nothing promises it.
+                raise ConfigUnreadableError(path, line=line, column=column) from None
         if "regulated_mode" in raw:
             # The switch above every table: nothing reads it there, and a warning
             # alone would leave the run unregulated (PIPE42).
@@ -375,7 +418,14 @@ class Config(BaseModel):
         rec = raw.get("recording", {})
         if isinstance(rec.get("output_dir"), str):
             rec["output_dir"] = str(_expand(rec["output_dir"]))
-        cfg = cls(**raw)
+        try:
+            cfg = cls(**raw)
+        except ValidationError as e:
+            # The dotted location of the first refusal, never its input: pydantic's own text quotes
+            # the value, so it is dropped (`from None`) rather than chained into the traceback.
+            first = e.errors()[0] if e.errors() else {}
+            key = ".".join(str(part) for part in first.get("loc", ())) or None
+            raise ConfigUnreadableError(path, key=key) from None
         cfg._unknown_keys = unknown
         return cfg
 

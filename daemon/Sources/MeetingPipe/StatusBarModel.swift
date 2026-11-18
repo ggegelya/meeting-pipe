@@ -57,6 +57,8 @@ enum StatusBarModel {
         case finishSetup(title: String)
         /// UX91: a Preferences change did not reach `config.toml` or the Keychain.
         case unsavedSetting(title: String)
+        /// UX94: config.toml does not parse. Opens Preferences, whose pane names the line.
+        case configUnreadable(title: String)
         /// STOR10: a scheduled backup or digest failed, or the backup fell behind. Opens
         /// Preferences ▸ Storage; stays until the next success.
         case scheduledRunFailed(title: String)
@@ -98,6 +100,8 @@ enum StatusBarModel {
         var finishSetupTitle: String?
         /// UX91: `ConfigStore.saveError` or `SecretsStore.saveError` is set.
         var unsavedSetting: Bool
+        /// UX94: nil while config.toml parses.
+        var configUnreadable: ConfigUnreadable?
         /// STOR10: the scheduled-run row's title (`LastBackup.menuTitle`), read off main, or nil.
         var scheduledRunTitle: String?
         /// UX82: the relaunch-after-quit preference (opt-in since 2026-11-18).
@@ -143,6 +147,7 @@ enum StatusBarModel {
             staleRecordingCount: Int = 0,
             finishSetupTitle: String? = nil,
             unsavedSetting: Bool = false,
+            configUnreadable: ConfigUnreadable? = nil,
             scheduledRunTitle: String? = nil,
             relaunchAfterQuit: Bool = true,
             agentJob: Bool = true,
@@ -166,6 +171,7 @@ enum StatusBarModel {
             self.staleRecordingCount = staleRecordingCount
             self.finishSetupTitle = finishSetupTitle
             self.unsavedSetting = unsavedSetting
+            self.configUnreadable = configUnreadable
             self.scheduledRunTitle = scheduledRunTitle
             self.relaunchAfterQuit = relaunchAfterQuit
             self.agentJob = agentJob
@@ -317,6 +323,9 @@ enum StatusBarModel {
         if i.unsavedSetting {
             rows.append(.unsavedSetting(title: unsavedSettingTitle))
         }
+        if let state = i.configUnreadable {
+            rows.append(.configUnreadable(title: configUnreadableTitle(state)))
+        }
         if let title = i.scheduledRunTitle {
             rows.append(.scheduledRunFailed(title: title))
         }
@@ -425,6 +434,21 @@ enum StatusBarModel {
 
     /// UX91: the one row for a Preferences change that did not reach its store.
     static let unsavedSettingTitle = "⚠ A setting was not saved - open Preferences"
+
+    /// UX94: how the settings file is unreadable, as far as the menu says.
+    enum ConfigUnreadable: Equatable {
+        /// It does not parse; the app runs on the last library it knew, regulated, saves refused.
+        case syntaxError
+        /// It does not parse and nothing says where the library is, so recordings are refused (F056).
+        case recordingsPaused
+    }
+
+    static func configUnreadableTitle(_ state: ConfigUnreadable) -> String {
+        switch state {
+        case .syntaxError: return "⚠ Settings file has a syntax error - open Preferences"
+        case .recordingsPaused: return "⚠ Settings file has a syntax error - recordings paused until it is fixed"
+        }
+    }
 
     /// The failed-pipeline row's title, or nil when there is nothing to show.
     /// Backed by the durable error sidecar, so a notification missed under Focus

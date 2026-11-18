@@ -857,6 +857,20 @@ final class MeetingSessionController: @unchecked Sendable {
             return
         }
 
+        // UX94 / F056: with an unreadable config.toml and nothing remembered, the recordings folder is
+        // a guess; a recording there would vanish from the Library once the file is fixed.
+        if coordinator.recordingRootUnknown {
+            Log.event(category: "coordinator", action: "recording_blocked", attributes: ["reason": "config_unreadable"])
+            coordinator.notifications.notifyError(
+                "Recordings are paused until config.toml is fixed: it has a syntax error, and MeetingPipe cannot tell where your recordings go.",
+                operation: .recording, title: nil
+            )
+            coordinator.menuPreferences()
+            coordinator.stateMachine.setIdle()
+            coordinator.statusUI.setIdle()
+            return
+        }
+
         if coordinator.dryRun {
             // Detection ran but we deliberately skip the recorder/HUD and
             // return to .idle, so a workday logs as detection-only signals.
