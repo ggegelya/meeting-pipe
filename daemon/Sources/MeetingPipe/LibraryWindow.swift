@@ -224,10 +224,13 @@ final class LibraryWindowModel: ObservableObject {
         coordinator: Coordinator? = nil,
         recordingsDir: URL,
         savedSearchesURL: URL = SavedSearchStore.defaultURL,
-        durationCacheURL: URL? = nil
+        durationCacheURL: URL? = nil,
+        creatableRoot: URL? = nil
     ) {
         self.coordinator = coordinator
-        self.meetingStore = MeetingStore(recordingsDir: recordingsDir, durationCacheURL: durationCacheURL)
+        self.meetingStore = MeetingStore(
+            recordingsDir: recordingsDir, durationCacheURL: durationCacheURL, creatableRoot: creatableRoot
+        )
         self.savedSearches = SavedSearchStore(url: savedSearchesURL)
     }
 
@@ -278,6 +281,12 @@ final class LibraryWindowModel: ObservableObject {
 
     func openPreferences() {
         coordinator?.menuPreferences()
+    }
+
+    /// UX89: the missing-root state's **Choose folder…**. The Coordinator owns the panel and the
+    /// config write; the store follows through the `output_dir` subscription.
+    func chooseLibraryFolder() {
+        coordinator?.chooseLibraryFolder()
     }
 
     /// Bridge one `MeetingLibraryService` completion call into `async` (ARCH5).

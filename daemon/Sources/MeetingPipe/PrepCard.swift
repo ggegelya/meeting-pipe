@@ -131,9 +131,10 @@ struct PrepCard: Equatable, Sendable {
 /// a workflow with no meetings walks the whole library, and the prompt panel is
 /// raised on the main queue at meeting-detection time.
 final class PrepCardStore {
-    private let recordingsDir: URL
+    /// Read at each lookup, so a re-rooted library (UX89) is the one scanned.
+    private let recordingsDir: () -> URL
 
-    init(recordingsDir: URL) {
+    init(recordingsDir: @escaping () -> URL) {
         self.recordingsDir = recordingsDir
     }
 
@@ -144,7 +145,7 @@ final class PrepCardStore {
             completion(nil)
             return
         }
-        let dir = recordingsDir
+        let dir = recordingsDir()
         let id = workflow.id.uuidString
         let name = workflow.name
         DispatchQueue.global(qos: .userInitiated).async {

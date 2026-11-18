@@ -251,10 +251,12 @@ const PWGeneralPane = () => (
 const PWRecordingPane = () => (
   <div>
     <PWSectionHeader title="Recording" caption="How audio is captured to disk, and which apps record automatically."/>
-    <PWGroup label="Audio" footer="Recordings are stereo 16 kHz WAV: your mic on the left channel, system audio on the right.">
+    <PWGroup label="Audio" footer="Recordings are stereo 16 kHz WAV: your mic on the left channel, system audio on the right. Move library takes your recordings with it; Use another folder leaves them where they are.">
+      {/* UX89: read-only path; the root changes only through a confirmed move or switch. */}
       <PWStackRow first label="Output directory">
-        <PWField value="~/Documents/Meetings/raw" mono/>
-        <PWSmallButton>Choose…</PWSmallButton>
+        <span style={{ fontFamily: "var(--mp-font-mono)", fontSize: 12, flex: 1 }}>~/Documents/Meetings/raw</span>
+        <PWSmallButton>Move library…</PWSmallButton>
+        <PWSmallButton>Use another folder…</PWSmallButton>
         <PWIconButton name="external" title="Reveal in Finder"/>
       </PWStackRow>
     </PWGroup>

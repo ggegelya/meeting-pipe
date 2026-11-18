@@ -237,7 +237,28 @@ final class MeetingStore: ObservableObject {
     /// carries it to main beside the result.
     private var scanListingSucceeded: Bool = false
 
-    private let recordingsDir: URL
+    /// What the last published scan found at the root (UX89): the Library names a missing root
+    /// instead of showing the first-run empty list. Published in the same block as `meetings`.
+    @Published private(set) var rootState: LibraryRootState = .readable
+    /// `performScan`'s record of the root state. `scanQueue` only, carried to main by `refresh`.
+    private var scanRootState: LibraryRootState = .readable
+
+    /// The library root. Main-confined; it moves only through `reroot(to:)` (UX89), which is how a
+    /// confirmed move, a confirmed "Use another folder" and a hand edit of `output_dir` reach the
+    /// Library without a relaunch. A scan captures it before hopping to `scanQueue`.
+    private(set) var recordingsDir: URL
+    /// Bumped by every re-root, so a scan of the old root that is still in flight never publishes.
+    private var rootGeneration = 0
+    /// The one root `attachWatcher` may create when it is missing: the first-run default (UX89).
+    /// Any other missing root is a typo, an unmounted volume or a moved library, and is shown as
+    /// missing rather than silently replaced by an empty folder. Nil never creates.
+    private let creatableRoot: URL?
+    /// Roots this store has re-rooted away from. Never recreated, even if one is the default:
+    /// recreating a root the app just moved the library out of is F058.
+    private var departedRoots: Set<URL> = []
+    /// True between `start()` and `stop()`: the Library wants live updates, so a watcher that could
+    /// not attach (missing root) is retried after the next scan that lists the root.
+    private var wantsWatching = false
     private let scanQueue = DispatchQueue(
         label: "com.meetingpipe.MeetingStore.scan",
         qos: .userInitiated
@@ -271,6 +292,7 @@ final class MeetingStore: ObservableObject {
     /// equal snapshots mean a publish would wake every revision consumer for nothing.
     struct ScanSnapshot: Equatable {
         let listedDirectory: Bool
+        var rootState: LibraryRootState = .readable
         let signatures: [String: [String: Date]]
         let correctionsModified: Date?
         let meetings: [Meeting]
@@ -323,9 +345,10 @@ final class MeetingStore: ObservableObject {
         scanQueue.async(execute: work)
     }
 
-    init(recordingsDir: URL, durationCacheURL: URL? = nil) {
+    init(recordingsDir: URL, durationCacheURL: URL? = nil, creatableRoot: URL? = nil) {
         self.recordingsDir = recordingsDir
         self.durationCacheURL = durationCacheURL
+        self.creatableRoot = creatableRoot
         if let durationCacheURL {
             scanQueue.async { [weak self] in
                 let loaded = MeetingDurationCache.load(from: durationCacheURL)
@@ -343,7 +366,39 @@ final class MeetingStore: ObservableObject {
     /// is the only caller: it owns the watcher and stops it on disappear. A surface that wants a
     /// fresh list once (Quick Find) calls `refresh()`, or nothing would ever stop the watcher.
     func start() {
+        wantsWatching = true
         attachWatcher()
+        refresh()
+    }
+
+    /// Point the store at a new library root (UX89). Stops watching the old root before anything
+    /// touches the new one, forgets every cached row (a moved library keeps its mtimes, so the cache
+    /// would otherwise serve rows whose `audioURL` names the old root), and rescans. `hasLoadedOnce`
+    /// drops until the new root's first scan lands, which shows the spinner and keeps the search
+    /// indexer from reconciling against anything in between. The old root is never recreated.
+    func reroot(to newRoot: URL) {
+        let newRoot = newRoot.standardizedFileURL
+        let oldRoot = recordingsDir.standardizedFileURL
+        guard newRoot != oldRoot else { return }
+        detachWatcher()
+        debounceWork?.cancel()
+        debounceWork = nil
+        departedRoots.insert(oldRoot)
+        departedRoots.remove(newRoot)
+        recordingsDir = newRoot
+        rootGeneration &+= 1
+        hasLoadedOnce = false
+        scanQueue.async { [weak self] in
+            guard let self else { return }
+            self.scanCache.removeAll()
+            self.lastPublishedScan = nil
+            self.lastScanSignatures = [:]
+            self.lastScanCorrectionsModified = nil
+        }
+        Log.event(category: "coordinator", action: "library_rerooted", attributes: [
+            "root_exists": FileManager.default.fileExists(atPath: newRoot.path),
+        ])
+        if wantsWatching { attachWatcher() }
         refresh()
     }
 
@@ -357,11 +412,13 @@ final class MeetingStore: ObservableObject {
         }
         scanRunning = true
         let dir = recordingsDir
+        let generation = rootGeneration
         scanQueue.async { [weak self] in
             guard let self = self else { return }
             let result = self.performScan(directory: dir)
             let snapshot = ScanSnapshot(
                 listedDirectory: self.scanListingSucceeded,
+                rootState: self.scanRootState,
                 signatures: self.lastScanSignatures,
                 correctionsModified: self.lastScanCorrectionsModified,
                 meetings: result
@@ -369,12 +426,25 @@ final class MeetingStore: ObservableObject {
             let publishes = ScanSnapshot.publishes(snapshot, after: self.lastPublishedScan)
             if publishes { self.lastPublishedScan = snapshot }
             DispatchQueue.main.async {
-                if publishes {
-                    self.lastScanListedDirectory = snapshot.listedDirectory
-                    self.meetings = result
-                    self.revision &+= 1
+                // A scan of a root this store has since left publishes nothing (UX89); the re-root
+                // already queued the rescan of the new one, which runs as the pending follow-up.
+                let current = generation == self.rootGeneration
+                if current {
+                    if publishes {
+                        self.lastScanListedDirectory = snapshot.listedDirectory
+                        self.rootState = snapshot.rootState
+                        self.meetings = result
+                        self.revision &+= 1
+                    }
+                    if !self.hasLoadedOnce { self.hasLoadedOnce = true }
+                    // A root that was missing when the Library opened gets its watcher once a scan
+                    // lists it (the first recording creates it), so live updates need no reopen.
+                    if snapshot.listedDirectory, self.wantsWatching, self.watcher == nil {
+                        self.attachWatcher()
+                    }
+                } else {
+                    self.pendingRescan = true
                 }
-                if !self.hasLoadedOnce { self.hasLoadedOnce = true }
                 self.scanRunning = false
                 if self.pendingRescan {
                     self.pendingRescan = false
@@ -386,6 +456,7 @@ final class MeetingStore: ObservableObject {
 
     /// Tear down the directory watcher. Paired with `start()` so the LibraryWindow can suspend scanning while hidden. Without this the watcher fires rescans into an invisible tree, dragging the main queue along (the model is not released when the window closes).
     func stop() {
+        wantsWatching = false
         detachWatcher()
         debounceWork?.cancel()
         debounceWork = nil
@@ -395,10 +466,15 @@ final class MeetingStore: ObservableObject {
 
     private func attachWatcher() {
         if watcher != nil { return }
-        try? FileManager.default.createDirectory(
-            at: recordingsDir,
-            withIntermediateDirectories: true
-        )
+        if LibraryRootState.mayCreate(
+            root: recordingsDir, creatableRoot: creatableRoot, departed: departedRoots,
+            exists: FileManager.default.fileExists(atPath: recordingsDir.path)
+        ) {
+            try? FileManager.default.createDirectory(
+                at: recordingsDir,
+                withIntermediateDirectories: true
+            )
+        }
         let fd = open(recordingsDir.path, O_EVTONLY)
         guard fd >= 0 else { return }
         let src = DispatchSource.makeFileSystemObjectSource(
@@ -450,6 +526,9 @@ final class MeetingStore: ObservableObject {
         ) else {
             scanCache.removeAll()
             scanListingSucceeded = false
+            scanRootState = LibraryRootState.afterFailedListing(
+                exists: fm.fileExists(atPath: directory.path)
+            )
             lastScanSignatures = [:]
             lastScanCorrectionsModified = nil
             // The duration cache is deliberately left alone: an unreadable root is not an empty
@@ -457,6 +536,7 @@ final class MeetingStore: ObservableObject {
             return []
         }
         scanListingSucceeded = true
+        scanRootState = .readable
         let now = self.now()
 
         // Group files by stem (substring before the first '.'). One O(N) pass.

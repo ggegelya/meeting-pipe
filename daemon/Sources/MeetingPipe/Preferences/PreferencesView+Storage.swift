@@ -14,7 +14,6 @@ struct StorageSectionView: View {
     @StateObject private var stats: StorageStatsStore
 
     @State private var confirmingEviction = false
-    @State private var pendingMove: LibraryMover.Plan?
 
     // STOR3: backup-now state. The launcher persists across renders so an in-flight
     // backup reports back; it also self-retains its subprocess, so this is belt-and-braces.
@@ -85,23 +84,8 @@ struct StorageSectionView: View {
         } message: {
             Text(ModelEviction.confirmMessage(for: stats.stats?.evictableModels ?? []))
         }
-        .confirmationDialog(
-            "Move the library?",
-            isPresented: Binding(get: { pendingMove != nil }, set: { if !$0 { pendingMove = nil } }),
-            titleVisibility: .visible
-        ) {
-            if let plan = pendingMove {
-                Button("Move \(plan.fileCount) files (\(byteText(plan.bytes)))") {
-                    pendingMove = nil
-                    Task { await stats.executeMove(plan) }
-                }
-            }
-            Button("Cancel", role: .cancel) { pendingMove = nil }
-        } message: {
-            if let plan = pendingMove {
-                Text("\(plan.source.path)\nmoves to\n\(plan.destination.path)")
-            }
-        }
+        // UX89: Move library and Use another folder confirm through the shared dialogs.
+        .libraryRootDialogs(stats)
         // STOR5: the confirm the dry run earned. Everything it says comes from
         // the plan `mp restore --dry-run --json` just produced, so the counts are
         // this archive's against this disk, not a generic warning.
@@ -152,7 +136,7 @@ struct StorageSectionView: View {
                         if stats.isPlanningMove {
                             ProgressView().controlSize(.small)
                         }
-                        Button("Move library…") { chooseNewLibraryRoot() }
+                        Button("Move library…") { LibraryRootPanels.chooseMoveDestination(stats: stats) }
                             .buttonStyle(.mpGhost)
                             .disabled(stats.isPlanningMove)
                     }
@@ -167,27 +151,12 @@ struct StorageSectionView: View {
                 }
             }
         } else if stats.moveError != nil {
-            SettingsGroup("Cloud sync") {
-                SettingsRow("Move failed", sublabel: stats.moveError, alignTop: true, showsDivider: false) {
+            SettingsGroup("Recordings folder") {
+                SettingsRow("Not changed", sublabel: stats.moveError, alignTop: true, showsDivider: false) {
                     EmptyView()
                 }
             }
         }
-    }
-
-    /// Ask for a destination, plan the move, and hand the plan to the confirmation
-    /// dialog. Nothing on disk changes until the user confirms.
-    private func chooseNewLibraryRoot() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        panel.message = "Pick a folder outside every cloud-sync folder. Your recordings folder keeps its name inside it."
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
-        // PERF13: measured off main; the button stays disabled until the plan lands.
-        Task { pendingMove = await stats.planMove(to: destination) }
     }
 
     // MARK: Groups
@@ -195,10 +164,7 @@ struct StorageSectionView: View {
     private var libraryGroup: some View {
         SettingsGroup("Library") {
             SettingsRow("Recordings folder", sublabel: store.outputDirPath) {
-                Button("Reveal in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([libraryURL])
-                }
-                .buttonStyle(.mpGhost)
+                LibraryRootButtons(stats: stats)
             }
             SettingsRow("Total size",
                 sublabel: "Recordings, transcripts, summaries, and every sidecar.") {
@@ -516,10 +482,6 @@ struct StorageSectionView: View {
     }
 
     // MARK: Copy
-
-    private var libraryURL: URL {
-        URL(fileURLWithPath: (store.outputDirPath as NSString).expandingTildeInPath)
-    }
 
     private var audioSublabel: String {
         guard let stats = stats.stats, stats.flacBytes > 0 else {

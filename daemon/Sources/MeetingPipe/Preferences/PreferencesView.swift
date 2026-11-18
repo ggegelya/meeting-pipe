@@ -147,7 +147,7 @@ struct PreferencesView: View {
         case .general:
             GeneralSectionView(store: store, onLaunchAtLoginStatus: onLaunchAtLoginStatus)
         case .recording:
-            RecordingSectionView(store: store)
+            RecordingSectionView(store: store, workflowStore: workflows)
         case .prompt:
             PromptSectionView(store: store)
         case .pipeline:

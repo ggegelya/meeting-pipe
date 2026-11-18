@@ -19,6 +19,12 @@ final class StorageStatsStore: ObservableObject {
     /// True while a move plan is being measured (PERF13). The Move library button is disabled
     /// meanwhile, so a second pick cannot start a second walk of the library.
     @Published private(set) var isPlanningMove = false
+    /// UX89: a folder the user picked under **Use another folder…**, waiting on the confirmation
+    /// that says the current library stays where it is. Nothing is written until `confirmSwitch()`.
+    @Published private(set) var pendingSwitch: URL?
+    /// A measured move waiting on its confirmation. Here rather than on a view since UX89, because
+    /// the Recording and Storage panes both offer **Move library…** over one store.
+    @Published var pendingMove: LibraryMover.Plan?
 
     /// `LibraryMover.plan`, injectable so a test can see which thread runs it.
     typealias MovePlanner = @Sendable (_ source: URL, _ destinationParent: URL) throws -> LibraryMover.Plan
@@ -149,20 +155,64 @@ final class StorageStatsStore: ObservableObject {
         }
     }
 
+    /// Plan a move to `destinationParent` and hold it for the confirmation dialog.
+    func requestMove(to destinationParent: URL) async {
+        pendingSwitch = nil
+        if let plan = await planMove(to: destinationParent) { pendingMove = plan }
+    }
+
     /// Execute a confirmed plan, then repoint `[recording] output_dir` at the new
     /// root. Config comes last: if the move fails, the daemon keeps writing where
-    /// the recordings still are.
+    /// the recordings still are. A settings file that cannot be written refuses the move
+    /// up front (UX89): a library moved with no config to follow it is a library nothing finds.
     func executeMove(_ plan: LibraryMover.Plan) async {
+        if configStore.parseError != nil {
+            moveError = LibraryRootChange.unwritableConfig
+            return
+        }
         do {
             try await Task.detached(priority: .userInitiated) {
                 try LibraryMover.execute(plan)
             }.value
-            configStore.outputDirPath = plan.destination.path
+            LibraryRootChange.pointAt(plan.destination, configStore: configStore)
             moveError = nil
         } catch {
             moveError = error.localizedDescription
         }
         await rescan()
+    }
+
+    /// **Use another folder…** (UX89): check, then hold the pick for confirmation. Refused while a
+    /// recording or a pipeline job is in flight, for the same reason a move is: either one is
+    /// writing into the current root, and the rest of its life would look in the new one.
+    func requestSwitch(to folder: URL) async {
+        moveError = nil
+        pendingSwitch = nil
+        let source = libraryURL
+        let reason = await Task.detached(priority: .userInitiated) {
+            LibraryMover.inFlightReason(in: source)
+        }.value
+        if let reason {
+            moveError = LibraryMover.MoveError.busy(reason).localizedDescription
+            return
+        }
+        if folder.standardizedFileURL == source.standardizedFileURL {
+            moveError = "That is already the recordings folder."
+            return
+        }
+        pendingSwitch = folder
+    }
+
+    /// The confirmation's accept. The only place a switch writes `output_dir`.
+    func confirmSwitch() async {
+        guard let folder = pendingSwitch else { return }
+        pendingSwitch = nil
+        LibraryRootChange.pointAt(folder, configStore: configStore)
+        await rescan()
+    }
+
+    func cancelSwitch() {
+        pendingSwitch = nil
     }
 
     /// `ByteCountFormatter`, matching the Raw files tab's readout so two surfaces
@@ -172,5 +222,22 @@ final class StorageStatsStore: ObservableObject {
         formatter.allowedUnits = [.useKB, .useMB, .useGB]
         formatter.countStyle = .file
         return formatter.string(fromByteCount: Int64(bytes))
+    }
+}
+
+/// The one write of a changed library root (UX89). Saved at once rather than on the 0.5 s debounce:
+/// after a completed move, a quit inside the debounce would relaunch onto a root that no longer exists.
+@MainActor
+enum LibraryRootChange {
+    static let unwritableConfig =
+        "Can't change the recordings folder: the settings file could not be read, so the change could not be saved."
+
+    static func pointAt(_ folder: URL, configStore: ConfigStore) {
+        configStore.outputDirPath = folder.path
+        do {
+            try configStore.saveNow()
+        } catch {
+            Log.writeLine("daemon", "WARN: library root changed but config.toml was not saved: \(error.localizedDescription)")
+        }
     }
 }

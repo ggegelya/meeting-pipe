@@ -4,6 +4,13 @@ import SwiftUI
 struct RecordingSectionView: View {
     @ObservedObject var store: ConfigStore
     @State private var newConsentBundleID: String = ""
+    /// UX89: the library root changes only through this store's confirmed move or switch.
+    @StateObject private var stats: StorageStatsStore
+
+    init(store: ConfigStore, workflowStore: WorkflowStore) {
+        self.store = store
+        _stats = StateObject(wrappedValue: StorageStatsStore(configStore: store, workflowStore: workflowStore))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -11,25 +18,26 @@ struct RecordingSectionView: View {
                 caption: "How audio is captured to disk, and which apps record automatically.")
 
             SettingsGroup("Audio") {
+                // UX89: a read-only path. A free-text field here saved a half-typed path 0.5 s after a
+                // keystroke and re-pointed recordings, backups, Ask and digests at it.
                 SettingsStackRow("Output directory", showsDivider: false) {
-                    TextField("", text: $store.outputDirPath)
-                        .textFieldStyle(.roundedBorder)
+                    Text(store.outputDirPath)
                         .font(.system(.body, design: .monospaced))
-                    Button("Choose…") { chooseOutputDir() }
-                        .buttonStyle(.mpGhost)
-                    Button {
-                        revealOutputDir()
-                    } label: {
-                        Image(systemName: "arrow.up.right.square")
-                    }
-                    .buttonStyle(.mpIcon)
-                    .help("Reveal in Finder")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    LibraryRootButtons(stats: stats)
                 }
             } footer: {
                 // The sample-rate picker lived here until HYG2. Capture is a
                 // deliberate 16 kHz constant (what Parakeet TDT consumes), so the
                 // control offered a choice nothing honored.
-                Text("Recordings are stereo 16 kHz WAV: your mic on the left channel, system audio on the right.")
+                if let error = stats.moveError {
+                    FailureNotice(failure: FailurePresentation(diagnostics: error, operation: .storage, title: "Couldn't change the recordings folder")).foregroundStyle(.mpDanger)
+                } else {
+                    Text("Recordings are stereo 16 kHz WAV: your mic on the left channel, system audio on the right. Move library takes your recordings with it; Use another folder leaves them where they are.")
+                }
             }
 
             SettingsGroup("Microphone") {
@@ -74,6 +82,7 @@ struct RecordingSectionView: View {
                 Text("When the daemon detects audio from these apps, recording starts without showing the prompt.")
             }
         }
+        .libraryRootDialogs(stats)
     }
 
     private func addBundle() {
@@ -81,24 +90,6 @@ struct RecordingSectionView: View {
         guard !trimmed.isEmpty, !store.autoConsentApps.contains(trimmed) else { return }
         store.autoConsentApps.append(trimmed)
         newConsentBundleID = ""
-    }
-
-    private func chooseOutputDir() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Choose"
-        if panel.runModal() == .OK, let url = panel.url {
-            store.outputDirPath = url.path
-        }
-    }
-
-    private func revealOutputDir() {
-        let expanded = (store.outputDirPath as NSString).expandingTildeInPath
-        let url = URL(fileURLWithPath: expanded)
-        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 }
 

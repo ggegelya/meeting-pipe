@@ -35,14 +35,31 @@ struct LibraryListView: View {
         var generation: Int = 0
     }
 
+    private var placeholder: LibraryListPlaceholder {
+        LibraryListPlaceholder.decide(
+            hasLoadedOnce: store.hasLoadedOnce, isEmpty: store.meetings.isEmpty,
+            rootState: store.rootState, root: store.recordingsDir
+        )
+    }
+
     var body: some View {
         Group {
-            if !store.hasLoadedOnce {
+            switch placeholder {
+            case .loading:
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if store.meetings.isEmpty {
+            case .firstRun:
                 LibraryEmptyState()
-            } else {
+            case .missingRoot(let path):
+                // UX89: a configured root that is not there is not a first run.
+                LibraryListEmptyState(
+                    systemImage: "folder.badge.questionmark",
+                    title: "Your recordings folder is not at \(path)",
+                    message: "It may have been moved, renamed, or be on a drive that is not connected. Choose the folder that holds your recordings.",
+                    actionTitle: "Choose folder…",
+                    action: { libraryModel.chooseLibraryFolder() }
+                )
+            case .none:
                 VStack(spacing: 0) {
                     scopeHeader
                     Divider()

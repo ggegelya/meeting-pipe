@@ -110,6 +110,8 @@ final class Coordinator: NSObject {
     let dryRun: Bool = (ProcessInfo.processInfo.environment["MEETING_PIPE_DRY_RUN"] == "1")
 
     var permissionGrantedCancellable: AnyCancellable?
+    /// UX89: re-roots the Library when `output_dir` changes. See `wireLibraryRoot()`.
+    var libraryRootCancellable: AnyCancellable?
 
     init(
         config: Config,
@@ -152,19 +154,24 @@ final class Coordinator: NSObject {
         Log.event(category: "transcription", action: "engine_resolved", attributes: [
             "engine": sinkDispatcher.transcriptionBackendName,
         ])
-        // Snapshot the recordings dir at init for the library root; a live
-        // change needs a daemon restart for the library window (rare).
-        let recordingsDir: URL = {
+        // The library root the Library opens on. It follows a live change (UX89): the
+        // `$outputDirPath` subscription below re-roots the same store, so the search indexer and
+        // every view observing it carry over, and the prep cards read the live value per lookup.
+        let bootConfig = config
+        let liveRoot: () -> URL = { [weak configStore] in
             if let raw = configStore?.outputDirPath {
                 return URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
             }
-            return config.recording.outputDir
-        }()
-        self.prepCards = PrepCardStore(recordingsDir: recordingsDir)
+            return bootConfig.recording.outputDir
+        }
+        let recordingsDir = liveRoot()
+        self.prepCards = PrepCardStore(recordingsDir: liveRoot)
         // PERF22: the real duration cache is passed here, never defaulted in the model or the store,
         // so a headless test store keeps its durations in memory and never touches the real cache.
+        // UX89: only the first-run default may be created when missing.
         let libraryModel = LibraryWindowModel(
-            recordingsDir: recordingsDir, durationCacheURL: MeetingDurationCache.defaultURL()
+            recordingsDir: recordingsDir, durationCacheURL: MeetingDurationCache.defaultURL(),
+            creatableRoot: URL(fileURLWithPath: (ConfigDefaults.outputDirPath as NSString).expandingTildeInPath)
         )
         // UX16: the FTS5 search index, built over the same store. Attached here (not in the model's
         // init) so headless tests never touch the real cache and fall back to in-memory search.
@@ -644,6 +651,8 @@ final class Coordinator: NSObject {
         preferencesWindow?.onLibraryRestored = { [weak self] in
             self?.statusBar.refreshFailedMeetingCount()
         }
+
+        wireLibraryRoot()
 
         // Re-evaluate detection the moment Mic/Accessibility flip on, so a
         // daemon restarted mid-meeting (the typical AX-grant flow) doesn't
