@@ -78,12 +78,14 @@ def _restore_sigterm_disposition():
 
 @pytest.fixture(autouse=True)
 def _private_server_marker(monkeypatch, tmp_path_factory):
-    """`local_server.marker_path()` defaults to the real `~/Library/Logs/
+    """`local_server.marker_path()` used to default to the real `~/Library/Logs/
     MeetingPipe/mlx-server.json`, and `LocalSummaryClient` calls it with no
     `home`, so any test that spawns, closes, or reuses a server through the
     client wrote, rewrote or deleted the developer's live marker, the one the
-    daemon's reaper acts on. Default it to a per-test directory; a test that
-    passes `home` explicitly still gets exactly the path it asked for (PIPE22)."""
+    daemon's reaper acts on (PIPE22). Since T9 the default follows
+    `events.logs_dir`, whose pytest redirect is one dir shared by the session;
+    this keeps each test's marker private. A test that passes `home` explicitly
+    still gets exactly the path it asked for."""
     from mp import local_server
 
     home = tmp_path_factory.mktemp("marker-home")

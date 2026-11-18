@@ -54,4 +54,35 @@ final class FailureProcessTests: XCTestCase {
         wait(for: [runAll], timeout: 20)
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("synthetic.error.json").path))
     }
+
+    /// T9: the Python child's own `pipeline.log` follows `MEETINGPIPE_LOGS_DIR`. A launcher
+    /// spawn sets `MP_PIPELINE_LOG_OWNER=daemon` and the child writes no file (PERF13), so
+    /// this runs the fixture the way a hand-run `mp run-all` does, without the flag: before
+    /// T9 that path opened the real `~/Library/Logs/MeetingPipe/pipeline.log` and every
+    /// `swift test` appended 2,000 `synthetic frame` lines to the owner's log.
+    func test_a_hand_run_childs_pipeline_log_lands_in_meetingpipe_logs_dir() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let python = root.appendingPathComponent("pipeline/.venv/bin/python3")
+        guard FileManager.default.isExecutableFile(atPath: python.path) else {
+            throw XCTSkip("Requires the pipeline development environment for the cross-process check")
+        }
+        let script = try XCTUnwrap(Bundle.module.url(forResource: "failure-process", withExtension: "py"))
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let wav = dir.appendingPathComponent("synthetic.wav")
+        try Data().write(to: wav)
+        let process = Process()
+        process.executableURL = python
+        process.arguments = [script.path, "run-all", wav.path]
+        process.environment = ["PATH": "/usr/bin:/bin", "PYTHONPATH": root.appendingPathComponent("pipeline/src").path,
+                               "MEETINGPIPE_LOGS_DIR": dir.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 1)
+        let log = try String(contentsOf: dir.appendingPathComponent("pipeline.log"), encoding: .utf8)
+        XCTAssertTrue(log.contains("synthetic frame"), "the child's text log must land in MEETINGPIPE_LOGS_DIR")
+    }
 }

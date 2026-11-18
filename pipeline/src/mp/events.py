@@ -105,7 +105,9 @@ _REAL_STEM = re.compile(r"^\d{8}-\d{6}$")
 #: Keys naming the meeting a row belongs to. Deliberately excludes ``path``: on a
 #: ``prefetch`` row that is a model-cache path, and treating it as a stem would drop a
 #: real event.
-_MEETING_KEYS = ("file", "stem", "wav", "meeting")
+#: ``primary`` and ``fragments`` are the merge rows' keys (T9): ``meetings_merged`` and
+#: ``meetings_merge_resumed`` name no other meeting, and ``fragments`` is a list of stems.
+_MEETING_KEYS = ("file", "stem", "wav", "meeting", "primary", "fragments")
 
 
 def is_test_residue(event: dict[str, Any]) -> bool:
@@ -137,9 +139,10 @@ def is_test_residue(event: dict[str, Any]) -> bool:
             return True
     for key in _MEETING_KEYS:
         value = event.get(key)
-        if isinstance(value, str) and value:
-            if not _REAL_STEM.match(PurePosixPath(value).name.split(".")[0]):
-                return True
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, str) and item:
+                if not _REAL_STEM.match(PurePosixPath(item).name.split(".")[0]):
+                    return True
     return False
 
 

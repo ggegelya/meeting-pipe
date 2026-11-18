@@ -101,9 +101,14 @@ _ADAPTER_FLAG = "--adapter-path"
 
 
 def marker_path(home: Path | None = None) -> Path:
-    """`~/Library/Logs/MeetingPipe/mlx-server.json`, beside the logs."""
-    base = (home or Path.home()) / "Library" / "Logs" / "MeetingPipe"
-    return base / MARKER_NAME
+    """`~/Library/Logs/MeetingPipe/mlx-server.json`, beside the logs.
+
+    With no `home` it routes through `events.logs_dir` (T9), so
+    `MEETINGPIPE_LOGS_DIR` and the pytest redirect apply; an explicit `home`
+    keeps the old `<home>/Library/Logs/MeetingPipe` shape its tests pin."""
+    if home is None:
+        return events.logs_dir() / MARKER_NAME
+    return home / "Library" / "Logs" / "MeetingPipe" / MARKER_NAME
 
 
 def server_log_path() -> Path:

@@ -102,3 +102,16 @@ def test_render_empty_does_not_crash():
     out = dogfood_report.render_markdown(dogfood_report.build_report([], []))
     assert "MeetingPipe dogfood report" in out
     assert "(no events in range)" in out
+
+
+def test_the_mirror_agrees_with_mp_events_on_the_merge_rows():
+    # T9: the stdlib mirror keeps step with `mp.events.is_test_residue`.
+    from mp import events
+
+    rows = [
+        {"action": "meetings_merged", "primary": "x", "fragments": ["y"]},
+        {"action": "meetings_merged", "primary": "20260714-193655", "fragments": ["20260714-195012"]},
+        {"action": "meetings_merge_resumed", "primary": "20260714-193655", "fragments": ["20260714-195012", "m"]},
+    ]
+    assert [dogfood_report._is_test_residue(r) for r in rows] == [events.is_test_residue(r) for r in rows]
+    assert [events.is_test_residue(r) for r in rows] == [True, False, True]

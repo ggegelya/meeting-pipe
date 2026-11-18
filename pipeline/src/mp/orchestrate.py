@@ -174,7 +174,9 @@ def _configure_logging() -> None:
     if os.environ.get(PIPELINE_LOG_OWNER_ENV) == "daemon":
         return
 
-    logs_dir = Path(os.path.expanduser("~/Library/Logs/MeetingPipe"))
+    # T9: through `events.logs_dir`, so `MEETINGPIPE_LOGS_DIR` and the pytest
+    # redirect hold for the text log exactly as for the event log.
+    logs_dir = events.logs_dir()
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_file = logs_dir / "pipeline.log"
     log_file.touch(exist_ok=True)

@@ -1814,7 +1814,7 @@ def test_sigterm_during_a_local_summarize_leaves_no_server_and_no_marker(tmp_pat
     fake server in its own session, a real signal; `HOME` and the log dir point
     at `tmp_path`, so the developer's own marker is never read or written."""
     posted = tmp_path / "posted"
-    marker = tmp_path / "Library" / "Logs" / "MeetingPipe" / "mlx-server.json"
+    marker = tmp_path / "mlx-server.json"  # T9: the marker follows MEETINGPIPE_LOGS_DIR
     env = {
         **os.environ,
         "HOME": str(tmp_path),

@@ -1405,9 +1405,12 @@ def test_main_returns_the_publish_failed_exit_code(tmp_path: Path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _redirect_home(monkeypatch, tmp_path: Path) -> Path:
-    """Point `~` at `tmp_path` and hand back the log dir that implies."""
+    """Point `~` and the logs dir at `tmp_path` and hand back the log dir. Since T9
+    `_configure_logging` asks `events.logs_dir`, so the env var is what moves it."""
     monkeypatch.setattr("os.path.expanduser", lambda p: p.replace("~", str(tmp_path), 1))
-    return tmp_path / "Library" / "Logs" / "MeetingPipe"
+    logs_dir = tmp_path / "Library" / "Logs" / "MeetingPipe"
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(logs_dir))
+    return logs_dir
 
 
 def _install_root_logger(monkeypatch, logger: logging.Logger) -> None:

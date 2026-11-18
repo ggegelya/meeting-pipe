@@ -63,7 +63,7 @@ def _log_files(path: Path) -> list[Path]:
 
 REAL_ENGINE = "fluidaudio"
 _REAL_STEM = re.compile(r"^\d{8}-\d{6}$")
-_MEETING_KEYS = ("file", "stem", "wav", "meeting")
+_MEETING_KEYS = ("file", "stem", "wav", "meeting", "primary", "fragments")
 
 
 def _is_test_residue(event: dict) -> bool:
@@ -85,9 +85,10 @@ def _is_test_residue(event: dict) -> bool:
             return True
     for key in _MEETING_KEYS:
         value = event.get(key)
-        if isinstance(value, str) and value:
-            if not _REAL_STEM.match(PurePosixPath(value).name.split(".")[0]):
-                return True
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, str) and item:
+                if not _REAL_STEM.match(PurePosixPath(item).name.split(".")[0]):
+                    return True
     return False
 
 

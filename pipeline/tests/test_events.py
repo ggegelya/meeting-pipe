@@ -213,3 +213,16 @@ def test_analyze_detection_pairs_session_across_rotation(tmp_path):
     raw = [ev for p in events.log_generations(base) for ev in ad.iter_events(p)]
     sessions = ad.pair_sessions(raw)
     assert len(sessions) == 1
+
+
+def test_is_test_residue_reads_the_merge_rows_keys():
+    # T9: `meetings_merged` names its meetings as `primary` and a `fragments` list.
+    assert events.is_test_residue({"action": "meetings_merged", "primary": "x", "fragments": ["y"]})
+    assert not events.is_test_residue(
+        {"action": "meetings_merged", "primary": "20260714-193655", "fragments": ["20260714-195012"]}
+    )
+    # One fixture stem among real ones still marks the row.
+    assert events.is_test_residue(
+        {"action": "meetings_merge_resumed", "primary": "20260714-193655",
+         "fragments": ["20260714-195012", "m"]}
+    )

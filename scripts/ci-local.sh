@@ -275,14 +275,41 @@ daemon() {
     )
 }
 
+# T9: a suite must leave the owner's real logs folder exactly as it found it. Both suites
+# wrote there for months (85 percent of one laptop's pipeline.log was `synthetic frame`
+# fixture output), and the only detector was the owner reading the log. Records size and
+# mtime of every file under it before a suite and fails if any changed after. Read-only;
+# a no-op where the folder does not exist, which is every CI runner. MP_REAL_LOGS_DIR
+# exists for the fence's own red check, never to point it somewhere else in normal use.
+# A false red is possible if the installed app records or runs a meeting while the suite
+# runs: the listing names the file, so re-run when the app was busy.
+REAL_LOGS_DIR="${MP_REAL_LOGS_DIR:-$HOME/Library/Logs/MeetingPipe}"
+logs_snapshot() {
+    [ -d "$REAL_LOGS_DIR" ] || return 0
+    find "$REAL_LOGS_DIR" -type f -exec stat -f '%z %m %N' {} + | sort
+}
+guard_real_logs() {
+    local before after
+    before="$(logs_snapshot)"
+    "$@"
+    after="$(logs_snapshot)"
+    begin "Real logs folder untouched by $1 (T9)"
+    if [ "$before" != "$after" ]; then
+        echo "FAIL: the $1 suite changed files under $REAL_LOGS_DIR (size mtime path):" >&2
+        diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") >&2 || true
+        exit 1
+    fi
+    end
+}
+
 run_job() {
     case "$1" in
         design-tokens) design_tokens ;;
         truth-fences) truth_fences ;;
-        pipeline) pipeline ;;
-        daemon) daemon ;;
+        pipeline) guard_real_logs pipeline ;;
+        daemon) guard_real_logs daemon ;;
         fences) design_tokens; truth_fences ;;
-        all) design_tokens; truth_fences; pipeline; daemon ;;
+        all) design_tokens; truth_fences; guard_real_logs pipeline; guard_real_logs daemon ;;
         *)
             echo "unknown job: $1 (expected all, fences, design-tokens, truth-fences, pipeline, daemon)" >&2
             exit 2
