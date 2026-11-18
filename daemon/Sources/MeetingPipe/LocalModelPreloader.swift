@@ -96,7 +96,7 @@ final class LocalModelPreloader {
             )
         ) else { return }
         guard let mp = PipelineLauncher.findMP() else {
-            Log.main.warning("local model preload: no `mp` binary found; skipping")
+            Log.failure(category: "main", action: "local_model_preload_failed", reason: "no `mp` binary found", attributes: ["model": localModel])
             return
         }
 
@@ -128,7 +128,7 @@ final class LocalModelPreloader {
                 "adapter_path": adapterPath,
             ])
         } catch {
-            Log.main.warning("local model preload: spawn failed: \(error.localizedDescription)")
+            Log.failure(category: "main", action: "local_model_preload_failed", error: error, attributes: ["model": localModel])
         }
     }
 

@@ -72,7 +72,9 @@ final class AutoRetryStore {
             if FileManager.default.fileExists(atPath: resolved.path) {
                 // Unreadable, not absent: keep it aside rather than let the next save overwrite the spent
                 // entries that make the bound hold.
-                Log.main.warning("AutoRetryStore: unreadable \(resolved.lastPathComponent), moved aside")
+                Log.failure(category: "coordinator", action: "auto_retry_store_unreadable", reason: "unreadable, moved aside", attributes: [
+                    "file": resolved.lastPathComponent,
+                ])
                 let aside = resolved.appendingPathExtension("corrupt")
                 try? FileManager.default.removeItem(at: aside)
                 try? FileManager.default.moveItem(at: resolved, to: aside)

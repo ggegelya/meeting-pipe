@@ -104,6 +104,81 @@ enum Log {
     /// Blocks until every `writeLineAsync` queued before this call is on disk. For tests.
     static func drainAsyncWrites() { asyncWriteQueue.sync {} }
 
+    // MARK: - Failures (OBS1)
+
+    /// The cap on a failure row's `error` text, matching PIPE19's `stage_failed` `message`.
+    static let failureDescriptionCap = 300
+
+    /// A failure is never os.Logger alone (OBS1): the unified log stores the reason as
+    /// `<private>`, keeps about a week, and is not what Diagnostics, `mp logs` or `mp doctor`
+    /// read. This writes an `events.jsonl` row (the caller's attributes plus `error`,
+    /// `error_domain`, `error_code`), a `<file>.log` sentence, and one os.Logger `.error` whose
+    /// action, domain and code are public and whose description stays private.
+    ///
+    /// `describe: false` keeps the description out of both files, leaving domain and code,
+    /// for an error whose text can quote meeting content (SEC38): a path the owner named.
+    static func failure(
+        category: String,
+        action: String,
+        error: Error,
+        attributes: [String: Any] = [:],
+        file: String = "daemon",
+        describe: Bool = true
+    ) {
+        let ns = error as NSError
+        record(
+            category: category, action: action,
+            description: describe ? ns.localizedDescription : nil,
+            domain: ns.domain, code: ns.code,
+            attributes: attributes, file: file
+        )
+    }
+
+    /// A failure with no `Error` to bridge (`mp` not found, a watchdog's kill): the same row,
+    /// with `reason` as the description and no domain or code.
+    static func failure(
+        category: String,
+        action: String,
+        reason: String,
+        attributes: [String: Any] = [:],
+        file: String = "daemon"
+    ) {
+        record(
+            category: category, action: action, description: reason,
+            domain: nil, code: nil, attributes: attributes, file: file
+        )
+    }
+
+    private static func record(
+        category: String,
+        action: String,
+        description: String?,
+        domain: String?,
+        code: Int?,
+        attributes: [String: Any],
+        file: String
+    ) {
+        var attributes = attributes
+        let text = description.map { capped($0) }
+        if let text { attributes["error"] = text }
+        if let domain { attributes["error_domain"] = domain }
+        if let code { attributes["error_code"] = code }
+        event(category: category, action: action, attributes: attributes)
+
+        let codeTag = domain.map { " [\($0) \(code ?? 0)]" } ?? ""
+        writeLine(file, "\(action): \(text ?? "(description withheld)")\(codeTag)")
+
+        let logger = file == "recorder" ? recorder : main
+        let publicDomain = domain ?? "-"
+        let publicCode = code ?? 0
+        logger.error("\(action, privacy: .public) [\(publicDomain, privacy: .public) \(publicCode, privacy: .public)]: \(text ?? "")")
+    }
+
+    private static func capped(_ text: String) -> String {
+        guard text.count > failureDescriptionCap else { return text }
+        return String(text.prefix(failureDescriptionCap - 1)) + "…"
+    }
+
     /// Write one JSON object per line to `events.jsonl` for `jq`-based post-hoc analysis.
     ///
     /// A value JSON cannot hold is coerced rather than dropping the event (PERF13), matching

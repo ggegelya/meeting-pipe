@@ -153,7 +153,9 @@ final class ProcessOutputDrain: Sendable {
         errHandle.readabilityHandler = nil
         process.terminationHandler = nil
         if timedOut {
-            Log.main.warning("process drain: a pipe stayed open \(Int(Self.postExitCeiling)) s past the child's exit (a grandchild holds it); finishing with what was read")
+            Log.failure(category: "daemon", action: "process_drain_pipe_held", reason: "a pipe stayed open past the child's exit (a grandchild holds it); finishing with what was read", attributes: [
+                "ceiling_sec": Int(Self.postExitCeiling),
+            ])
         }
         onFinished(status, tail)
     }

@@ -42,7 +42,7 @@ enum WorkflowMigrator {
             ])
             return true
         } catch {
-            Log.main.error("WorkflowMigrator: failed to seed General workflow: \(error.localizedDescription)")
+            Log.failure(category: "workflow", action: "migrator_seed_failed", error: error)
             return false
         }
     }

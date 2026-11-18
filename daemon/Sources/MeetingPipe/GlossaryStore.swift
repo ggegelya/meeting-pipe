@@ -91,7 +91,7 @@ final class GlossaryStore: ObservableObject {
             case .success:
                 self?.saveError = nil
             case .failure(let error):
-                Log.main.error("GlossaryStore persist failed: \(String(describing: error))")
+                Log.failure(category: "daemon", action: "glossary_save_failed", error: error)
                 self?.saveError = error.localizedDescription
             }
         }

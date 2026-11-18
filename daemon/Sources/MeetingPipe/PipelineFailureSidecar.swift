@@ -72,7 +72,7 @@ enum PipelineFailureSidecar {
                 withJSONObject: payload,
                 options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
               ) else {
-            Log.main.warning("PipelineFailureSidecar: could not serialize failure for \(stem)")
+            Log.failure(category: "coordinator", action: "failure_sidecar_write_failed", reason: "the failure could not be serialized", attributes: ["stem": stem])
             return nil
         }
         let final = url(forStem: stem, in: dir)
@@ -87,9 +87,7 @@ enum PipelineFailureSidecar {
             try data.write(to: final, options: .atomic)
             return final
         } catch {
-            Log.main.warning(
-                "PipelineFailureSidecar: write failed for \(stem): \(error.localizedDescription)"
-            )
+            Log.failure(category: "coordinator", action: "failure_sidecar_write_failed", error: error, attributes: ["stem": stem])
             return nil
         }
     }
@@ -121,9 +119,7 @@ enum PipelineFailureSidecar {
         do {
             try FileManager.default.removeItem(at: target)
         } catch {
-            Log.main.warning(
-                "PipelineFailureSidecar: clear failed for \(stem): \(error.localizedDescription)"
-            )
+            Log.failure(category: "coordinator", action: "failure_sidecar_clear_failed", error: error, attributes: ["stem": stem])
         }
     }
 

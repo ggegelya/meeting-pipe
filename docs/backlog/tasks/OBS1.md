@@ -2,9 +2,9 @@
 id: OBS1
 title: 51 of the daemon's 60 warning and error sites log only to os.Logger, which stores their reason as `<private>` and never writes it to `~/Library/Logs/MeetingPipe`
 category: Observability
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (observability band, O4: SW-4, FB-5, LG-2): 51 of 60 daemon warning and error sites go only to os.Logger, which redacts the reason and writes no file, so a failed Keychain, config, meta-sidecar or schedule save leaves no trace. Add Log.failure (event with error domain and code, writeLine, os.Logger), migrate the sites, fence bare calls; the band's shared primitive. [Spec](./OBS1.md)
+comment: Shipped 2026-11-18 - Log.failure (event with error, error_domain, error_code, plus a <file>.log line and a public-action os.Logger error), 37 failure sites migrated, LogFailureTests fences bare os.Logger warning/error calls behind a reasoned allowlist, truth_fences events reads Log.failure. Owner still owes confirming on the installed build that a real failed save or schedule install leaves its `_failed` row in events.jsonl.
 ---
 
 # OBS1: 51 of the daemon's 60 warning and error sites log only to os.Logger, which stores their reason as `<private>` and never writes it to `~/Library/Logs/MeetingPipe`
@@ -64,3 +64,5 @@ The cost is concrete. On 2026-10-16 the 09:46:34Z meeting failed with `$ANTHROPI
 - One test per migrated store family drives its failure branch with a fake (an unwritable directory, a failing Keychain shim) and asserts the row exists: SecretsStore, ConfigStore, PipelineFailureSidecar, SavedSearchStore, WorkflowStore. N new tests in the commit body.
 - `python3 scripts/truth_fences.py events` green, and red on a scratch `Log.failure(category: "nope", ...)`.
 - `cd daemon && swift build && swift test` green; `bash scripts/ci-local.sh` green.
+
+**Progress (2026-11-18):** shipped. Deviation from the spec, recorded here: SEC38 landed after this was filed and says an error's free text can quote meeting content, so the helper takes `describe: false` to keep the description out of both files (domain and code only, the REC21 `orphan_quarantine_failed` shape); the export copy uses it, since its destination is a folder the owner named. The spec's SecretsStore and ConfigStore sites were already recorded by UX91 (`daemon/config_save_failed`) and WorkflowStore's unreadable file by `workflow/load_skipped`, so they are allowlisted as paired rather than re-emitted. Seven sites the spec did not list were migrated too (`SearchIndexer` reconcile skip, `AutoRetry` unreadable store, `MeetingStore` duration cache, `ProcessOutputDrain` held pipe, `MeetingAppRegistry`, the `SystemAudioCapture` stopCapture pair, the config parse error). `MicLevelMonitor` no longer has a site.

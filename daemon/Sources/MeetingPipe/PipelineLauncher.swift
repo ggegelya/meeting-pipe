@@ -1395,7 +1395,7 @@ final class PipelineLauncher: PipelineDriver {
         do {
             try data.write(to: out, options: .atomic)
         } catch {
-            Log.main.warning("FEAT6: failed to write Apple run sidecar: \(error.localizedDescription)")
+            Log.failure(category: "coordinator", action: "apple_run_sidecar_write_failed", error: error, attributes: ["stem": stem])
         }
     }
 
@@ -1566,7 +1566,10 @@ final class PipelineLauncher: PipelineDriver {
         watchdog.setEventHandler {
             guard p.isRunning else { return }
             timedOut.set()
-            Log.main.warning("mp \(args.first ?? "") exceeded \(Int(timeout / 60)) min - terminating")
+            Log.failure(category: "coordinator", action: "pipeline_watchdog_killed", reason: "mp exceeded its ceiling; terminating", attributes: [
+                "subcommand": args.first ?? "",
+                "timeout_min": Int(timeout / 60),
+            ])
             p.terminate()
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30) {
                 if p.isRunning { kill(p.processIdentifier, SIGKILL) }

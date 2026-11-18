@@ -104,7 +104,7 @@ enum RosterRename {
                 try SpeakerLabelStore.replace(overlay: next, stem: stem, in: directory)
                 touched += 1
             } catch {
-                Log.main.warning("roster rename carry failed for \(stem): \(error.localizedDescription)")
+                Log.failure(category: "library", action: "roster_rename_carry_failed", error: error, attributes: ["stem": stem])
             }
         }
         return touched

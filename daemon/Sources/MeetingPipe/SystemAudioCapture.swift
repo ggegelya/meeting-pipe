@@ -326,7 +326,7 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
             do {
                 try await stream.stopCapture()
             } catch {
-                Log.recorder.warning("SCStream late stopCapture: \(error.localizedDescription)")
+                Log.failure(category: "recorder", action: "system_stop_capture_failed", error: error, attributes: ["late": true], file: "recorder")
             }
         }
         return completion
@@ -357,7 +357,7 @@ final class SystemAudioCapture: NSObject, @unchecked Sendable {
         do {
             try await live.stopCapture()
         } catch {
-            Log.recorder.warning("SCStream stopCapture: \(error.localizedDescription)")
+            Log.failure(category: "recorder", action: "system_stop_capture_failed", error: error, attributes: ["late": false], file: "recorder")
         }
     }
 

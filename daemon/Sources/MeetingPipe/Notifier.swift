@@ -100,7 +100,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     func requestAuthorization() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
             if let error = error {
-                Log.main.warning("Notification auth error: \(error.localizedDescription)")
+                Log.failure(category: "daemon", action: "notification_auth_failed", error: error)
             }
             Log.main.info("Notification auth granted: \(granted)")
         }

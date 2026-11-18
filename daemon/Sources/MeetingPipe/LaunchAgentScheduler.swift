@@ -76,7 +76,7 @@ enum LaunchAgentScheduler {
         label: String, arguments: [String], schedule: Schedule, logBasename: String
     ) -> Bool {
         guard let mp = PipelineLauncher.findMP() else {
-            Log.main.error("LaunchAgentScheduler: mp not found; cannot install \(label)")
+            Log.failure(category: "daemon", action: "schedule_install_failed", reason: "mp not found", attributes: ["label": label])
             return false
         }
         let dict = plistDictionary(
@@ -94,7 +94,7 @@ enum LaunchAgentScheduler {
             let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
             try data.write(to: url, options: .atomic)
         } catch {
-            Log.main.error("LaunchAgentScheduler: could not write \(url.path): \(String(describing: error))")
+            Log.failure(category: "daemon", action: "schedule_install_failed", error: error, attributes: ["label": label])
             return false
         }
         // Re-bootstrap so a schedule change takes effect: bootout the old (may be absent),
@@ -126,7 +126,9 @@ enum LaunchAgentScheduler {
             p.waitUntilExit()
             return p.terminationStatus == 0
         } catch {
-            Log.main.error("LaunchAgentScheduler: launchctl \(args.first ?? "") failed: \(String(describing: error))")
+            Log.failure(category: "daemon", action: "schedule_launchctl_failed", error: error, attributes: [
+                "subcommand": args.first ?? "",
+            ])
             return false
         }
     }

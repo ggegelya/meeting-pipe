@@ -60,7 +60,7 @@ struct MeetingAppRegistry {
     private static func bundledTOMLString() -> String? {
         guard let url = Bundle.appResources.url(forResource: "meeting_apps", withExtension: "toml"),
               let data = try? String(contentsOf: url, encoding: .utf8) else {
-            Log.detector.warning("meeting_apps.toml not found; using empty lists")
+            Log.failure(category: "detector", action: "meeting_apps_missing", reason: "meeting_apps.toml not found in the app bundle; using empty lists")
             return nil
         }
         return data

@@ -259,7 +259,9 @@ struct ProcessLaunchctl: LaunchctlRunning {
             try process.run()
             let watchdog = DispatchWorkItem {
                 guard process.isRunning else { return }
-                Log.main.error("launchctl \(arguments.first ?? "") exceeded its ceiling; terminating")
+                Log.failure(category: "daemon", action: "launchctl_timed_out", reason: "launchctl exceeded its ceiling; terminating", attributes: [
+                    "subcommand": arguments.first ?? "",
+                ])
                 process.terminate()
             }
             DispatchQueue.global(qos: .userInitiated)
@@ -272,7 +274,9 @@ struct ProcessLaunchctl: LaunchctlRunning {
                 output: String(data: data, encoding: .utf8) ?? ""
             )
         } catch {
-            Log.main.error("launchctl \(arguments.first ?? "") could not spawn: \(String(describing: error))")
+            Log.failure(category: "daemon", action: "launchctl_spawn_failed", error: error, attributes: [
+                "subcommand": arguments.first ?? "",
+            ])
             return LaunchctlResult(status: -1, output: String(describing: error))
         }
     }

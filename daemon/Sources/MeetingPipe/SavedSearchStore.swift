@@ -43,7 +43,9 @@ final class SavedSearchStore: ObservableObject {
                 .sorted(by: Self.orderComparator)
         } catch {
             // A corrupt or hand-broken file must not take the Library down with it.
-            Log.main.warning("SavedSearchStore: ignoring unreadable \(self.url.lastPathComponent): \(error.localizedDescription)")
+            Log.failure(category: "library", action: "saved_searches_unreadable", error: error, attributes: [
+                "file": self.url.lastPathComponent,
+            ])
             searches = []
         }
     }
@@ -125,7 +127,7 @@ final class SavedSearchStore: ObservableObject {
                 )
                 try data.write(to: target, options: .atomic)
             } catch {
-                Log.main.warning("SavedSearchStore: write failed: \(error.localizedDescription)")
+                Log.failure(category: "library", action: "saved_searches_write_failed", error: error)
             }
         }
     }

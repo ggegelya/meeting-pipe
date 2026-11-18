@@ -868,7 +868,7 @@ final class MeetingStore: ObservableObject {
             try durationCache.write(to: url)
             persistedDurationCache = durationCache
         } catch {
-            Log.main.warning("duration cache write failed at \(url.path): \(error.localizedDescription)")
+            Log.failure(category: "library", action: "duration_cache_write_failed", error: error)
         }
     }
 

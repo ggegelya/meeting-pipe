@@ -66,7 +66,9 @@ final class SearchIndexer: ObservableObject {
     convenience init(store: MeetingStore, indexURL: URL = SearchIndexer.defaultIndexURL()) {
         let opened = SearchIndex(url: indexURL)
         if opened == nil {
-            Log.main.warning("Search index could not open at \(indexURL.path); search falls back to titles/summaries only.")
+            Log.failure(category: "library", action: "search_index_open_failed", reason: "the search index could not open; search falls back to titles and summaries only", attributes: [
+                "file": indexURL.lastPathComponent,
+            ])
         }
         self.init(store: store, index: opened)
     }
@@ -153,9 +155,9 @@ final class SearchIndexer: ObservableObject {
             }
             changed = !actions.isEmpty
         } else {
-            Log.main.warning(
-                "Search index reconcile skipped: the library scan listed nothing and could not read the recordings folder; keeping \(indexed.count) indexed meetings."
-            )
+            Log.failure(category: "library", action: "search_index_reconcile_skipped", reason: "the library scan listed nothing and could not read the recordings folder; keeping the index", attributes: [
+                "indexed": indexed.count,
+            ])
         }
         // A completed pass against a scanned store, including a skipped one (nothing is being built,
         // so "Indexing transcripts…" would be untrue), leaves `.building`.

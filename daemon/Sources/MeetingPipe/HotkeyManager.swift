@@ -23,7 +23,7 @@ final class HotkeyManager {
         var ref: EventHotKeyRef?
         let status = RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &ref)
         guard status == noErr, let ref = ref else {
-            Log.main.warning("RegisterEventHotKey failed: \(status)")
+            Log.failure(category: "daemon", action: "hotkey_register_failed", error: NSError(domain: NSOSStatusErrorDomain, code: Int(status)))
             return nil
         }
         slots[id] = Slot(ref: ref, handler: handler)

@@ -230,7 +230,7 @@ final class ModelDownloadSupervisor {
 
     private func spawn(modelId: String) {
         guard let mp = invocation() else {
-            Log.main.warning("model prefetch: no `mp` binary found; skipping")
+            Log.failure(category: "daemon", action: "model_prefetch_failed", reason: "no `mp` binary found", attributes: ["model": modelId])
             state = .failed(modelId: modelId, error: "mp binary not found")
             return
         }
@@ -289,7 +289,7 @@ final class ModelDownloadSupervisor {
             try p.run()
             process = p
         } catch {
-            Log.main.error("model prefetch spawn failed: \(error.localizedDescription)")
+            Log.failure(category: "daemon", action: "model_prefetch_spawn_failed", error: error, attributes: ["model": modelId])
             state = .failed(modelId: modelId, error: error.localizedDescription)
             currentModelId = nil
         }

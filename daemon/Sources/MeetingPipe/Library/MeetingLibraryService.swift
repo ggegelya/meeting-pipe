@@ -1246,7 +1246,9 @@ final class MeetingLibraryService {
             do {
                 try fm.trashItem(at: url, resultingItemURL: &trashedURL)
             } catch {
-                Log.main.warning("trashItem failed for \(url.lastPathComponent): \(error.localizedDescription)")
+                Log.failure(category: "library", action: "trash_failed", error: error, attributes: [
+                    "stem": stem, "file": url.lastPathComponent, "kind": "artifact",
+                ])
                 if firstFailure == nil { firstFailure = error }
             }
         }
@@ -1263,7 +1265,9 @@ final class MeetingLibraryService {
                 try fm.trashItem(at: original, resultingItemURL: &trashedURL)
                 originalTrashed = true
             } catch {
-                Log.main.warning("trashItem failed for kept original \(original.lastPathComponent): \(error.localizedDescription)")
+                Log.failure(category: "library", action: "trash_failed", error: error, attributes: [
+                    "stem": stem, "file": original.lastPathComponent, "kind": "original",
+                ])
                 if firstFailure == nil { firstFailure = error }
             }
         }
@@ -1274,7 +1278,9 @@ final class MeetingLibraryService {
             do {
                 try fm.trashItem(at: held, resultingItemURL: &trashedURL)
             } catch {
-                Log.main.warning("trashItem failed for held recording \(held.lastPathComponent): \(error.localizedDescription)")
+                Log.failure(category: "library", action: "trash_failed", error: error, attributes: [
+                    "stem": stem, "file": held.lastPathComponent, "kind": "held",
+                ])
                 if firstFailure == nil { firstFailure = error }
             }
         }
@@ -1315,7 +1321,10 @@ final class MeetingLibraryService {
                 try fm.copyItem(at: src, to: dst)
                 copied += 1
             } catch {
-                Log.main.warning("export copy failed: \(name) → \(error.localizedDescription)")
+                // The destination is a folder the owner named, which the description quotes (SEC38).
+                Log.failure(category: "library", action: "export_copy_failed", error: error, attributes: [
+                    "stem": stem, "file": name,
+                ], describe: false)
             }
         }
         Log.event(category: "coordinator", action: "meeting_exported", attributes: [

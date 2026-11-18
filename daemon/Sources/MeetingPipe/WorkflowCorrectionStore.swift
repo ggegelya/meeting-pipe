@@ -57,9 +57,9 @@ final class WorkflowCorrectionStore {
         } catch {
             // A corrupt or hand-broken file must not take detection down with it;
             // the worst case is a prompt that stops suggesting.
-            Log.main.warning(
-                "WorkflowCorrectionStore: ignoring unreadable \(self.url.lastPathComponent): \(error.localizedDescription)"
-            )
+            Log.failure(category: "workflow", action: "correction_store_unreadable", error: error, attributes: [
+                "file": self.url.lastPathComponent,
+            ])
             corrections = []
         }
     }
@@ -113,7 +113,7 @@ final class WorkflowCorrectionStore {
                 )
                 try data.write(to: target, options: .atomic)
             } catch {
-                Log.main.warning("WorkflowCorrectionStore: write failed: \(error.localizedDescription)")
+                Log.failure(category: "workflow", action: "correction_store_write_failed", error: error)
             }
         }
     }

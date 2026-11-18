@@ -601,7 +601,7 @@ struct SummaryTab: View {
                 "stem": model.stem,
             ])
         } catch {
-            Log.main.warning("CorrectionStore.write failed: \(error.localizedDescription)")
+            Log.failure(category: "library", action: "summary_correction_write_failed", error: error, attributes: ["stem": model.stem])
             return false
         }
 
