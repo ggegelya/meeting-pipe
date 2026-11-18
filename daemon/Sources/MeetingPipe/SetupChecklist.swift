@@ -43,11 +43,15 @@ enum SetupChecklist {
         case localModel
         /// UX94: config.toml does not parse.
         case configUnreadable
+        /// UX92: Notifications denied or banners off.
+        case notifications
 
         var title: String {
             switch self {
             case .configUnreadable:
                 return "Fix the settings file (config.toml)"
+            case .notifications:
+                return "Turn on notifications"
             case .permissions:
                 return "Grant macOS permissions"
             case .anthropicKey:
@@ -67,6 +71,7 @@ enum SetupChecklist {
             case .anthropicKey, .notion:  return .integrations
             case .localModel:             return .downloadModel
             case .configUnreadable:       return .preferences
+            case .notifications:          return .permissions
             }
         }
     }
@@ -96,6 +101,8 @@ enum SetupChecklist {
         var hasPermissionIssue: Bool
         /// UX94: config.toml does not parse.
         var configUnreadable: Bool
+        /// UX92: Notifications denied, or authorized with banners off.
+        var notificationsOff: Bool
 
         init(
             regulatedMode: Bool = false,
@@ -108,7 +115,8 @@ enum SetupChecklist {
             notionDatabaseIdPresent: Bool = true,
             localModelMissing: Bool = false,
             hasPermissionIssue: Bool = false,
-            configUnreadable: Bool = false
+            configUnreadable: Bool = false,
+            notificationsOff: Bool = false
         ) {
             self.regulatedMode = regulatedMode
             self.globalBackend = globalBackend
@@ -121,6 +129,7 @@ enum SetupChecklist {
             self.localModelMissing = localModelMissing
             self.hasPermissionIssue = hasPermissionIssue
             self.configUnreadable = configUnreadable
+            self.notificationsOff = notificationsOff
         }
     }
 
@@ -137,6 +146,11 @@ enum SetupChecklist {
         // Permissions are always relevant; they gate recording itself.
         if i.hasPermissionIssue {
             items.append(.permissions)
+        }
+
+        // UX92: optional, so it is its own item rather than part of `.permissions`.
+        if i.notificationsOff {
+            items.append(.notifications)
         }
 
         // The Anthropic key is relevant only when a cloud summary path can run.

@@ -308,9 +308,9 @@ extension Coordinator {
     /// Nil stores (headless/test) read as "configured", so no phantom items.
     func setupChecklistInputs() -> SetupChecklist.Inputs {
         // Called from the menu open, on main; the assertion makes `PermissionsCenter`'s isolation the checked fact (CONC12).
-        let (mic, screen, ax) = MainActor.assumeIsolated {
+        let (mic, screen, ax, notificationsOff) = MainActor.assumeIsolated {
             let center = PermissionsCenter.shared
-            return (center.microphone, center.screenRecording, center.accessibility)
+            return (center.microphone, center.screenRecording, center.accessibility, center.notificationsOff)
         }
         let globalBackend = configStore?.summarizationBackend ?? "anthropic"
         let workflows = workflowStore.workflows
@@ -331,7 +331,8 @@ extension Coordinator {
                 screenRecording: screen,
                 accessibility: ax
             )),
-            configUnreadable: configStore?.parseError != nil
+            configUnreadable: configStore?.parseError != nil,
+            notificationsOff: notificationsOff
         )
     }
 }

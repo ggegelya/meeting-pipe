@@ -72,7 +72,9 @@ public final class IdleStopBackstop {
     /// Nil turns the gap rule off, for a feed that samples sparsely on purpose (the unit tests'
     /// model). Production passes `defaultMaxSampleGap`, since it feeds about once a second.
     private let maxSampleGap: TimeInterval?
-    private var didNotify: Bool = false
+    /// Whether the nudge fired for the current silent streak. UX92: the HUD reads it, so audio
+    /// returning (which resets it) clears "stopping soon" without a callback of its own.
+    public private(set) var didNotify: Bool = false
 
     /// Granola stops after ~15 min of no new audio, Otter after ~10. 15 min default.
     public static let defaultAutoStopSeconds: TimeInterval = 900

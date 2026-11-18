@@ -87,6 +87,9 @@ enum DoctorCommand {
             Probe(name: "accessibility.trusted", run: { probeAXTrust() }),
             Probe(name: "permission.screen_recording", run: { probeScreenRecording() }),
             Probe(name: "permission.microphone", run: { probeMicrophone() }),
+            // UX92: the CLI process has no reading of its own (`NotificationAuthReading.latest` is
+            // the daemon's), so it says unknown rather than guessing.
+            Probe(name: "permission.notifications", run: { probeNotifications(NotificationAuthReading.latest.withLock { $0 }) }),
         ]
         for bundleID in knownMeetingBundleIDs {
             out.append(Probe(name: "ax.app.\(bundleID)") { probeAppReachable(bundleID: bundleID) })
@@ -114,6 +117,8 @@ enum DoctorCommand {
             Probe(name: "accessibility.trusted", run: { probeAXTrust() }),
             Probe(name: "permission.screen_recording", run: { probeScreenRecording() }),
             Probe(name: "permission.microphone", run: { probeMicrophone() }),
+            // UX92: the in-app sheet runs in the daemon, which holds the app's own reading.
+            Probe(name: "permission.notifications", run: { probeNotifications(NotificationAuthReading.latest.withLock { $0 }) }),
         ]
         for bundleID in knownMeetingBundleIDs {
             out.append(Probe(name: "ax.app.\(bundleID)") { probeAppReachable(bundleID: bundleID) })
@@ -175,6 +180,25 @@ enum DoctorCommand {
                 message: "ScreenCaptureKit not prewarmed yet; daemon may not have run since reboot."
             )
         }
+    }
+
+    /// UX92: WARN when Notifications are denied or banners are off; unknown (not a guess) when this
+    /// process holds no reading, which is the `MeetingPipe doctor` CLI.
+    static func probeNotifications(_ reading: NotificationAuthReading?) -> ProbeResult {
+        let name = "permission.notifications"
+        guard let reading else {
+            return ProbeResult(name: name, status: .ok,
+                               message: "unknown from the command line; the in-app doctor (Preferences ▸ Integrations ▸ Run doctor…) reads it.")
+        }
+        if reading.status == "denied" {
+            return ProbeResult(name: name, status: .warn,
+                               message: "Notifications denied: failure notices and the still-meeting warning will not reach you. System Settings → Notifications → MeetingPipe.")
+        }
+        if reading.alertsEnabled == false {
+            return ProbeResult(name: name, status: .warn,
+                               message: "Notifications allowed but banners are off: nothing will show. System Settings → Notifications → MeetingPipe.")
+        }
+        return ProbeResult(name: name, status: .ok, message: "Notifications \(reading.status).")
     }
 
     static func probeMicrophone() -> ProbeResult {

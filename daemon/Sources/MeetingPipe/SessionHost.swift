@@ -209,6 +209,8 @@ protocol SessionHUDPresenting: AnyObject {
     /// while a dwell or a definitive signal decides. Without a surface, a hold that runs to the
     /// 12 minute lone dwell is a bug report rather than an observation.
     func setConfirmingEnd(_ on: Bool)
+    /// UX92: the silence backstop nudged; the recording stops on schedule unless audio returns.
+    func setStoppingSoon(_ on: Bool)
 
     /// REC16: show or clear the persistent "Mic lost" state after an unrecoverable capture
     /// failure. Persistent rather than a one-shot notification, because the recording keeps

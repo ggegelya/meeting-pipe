@@ -367,6 +367,8 @@ final class SpyHUD: SessionHUDPresenting {
     func setOffTheRecord(_ on: Bool) { offTheRecordStates.append(on) }
     var confirmingEndStates: [Bool] = []
     func setConfirmingEnd(_ on: Bool) { confirmingEndStates.append(on) }
+    var stoppingSoonStates: [Bool] = []
+    func setStoppingSoon(_ on: Bool) { stoppingSoonStates.append(on) }
 
     /// REC16: every push, so a test can tell a persistent state from a one-shot.
     private(set) var micCaptureLostStates: [Bool] = []

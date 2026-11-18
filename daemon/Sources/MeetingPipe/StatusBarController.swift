@@ -486,9 +486,9 @@ final class StatusBarController {
     /// also gave `titleState`; `setStopping` was the one exception and its `.idle` is gone.
     private func menuInputs(state: AppState, finishSetupTitle: String?) -> StatusBarModel.Inputs {
         // Main only (every caller is a menu open or a main-queue repopulate); the assertion makes `PermissionsCenter`'s isolation the checked fact (CONC12).
-        let (mic, screen, ax) = MainActor.assumeIsolated {
+        let (mic, screen, ax, notificationsOff) = MainActor.assumeIsolated {
             let center = PermissionsCenter.shared
-            return (center.microphone, center.screenRecording, center.accessibility)
+            return (center.microphone, center.screenRecording, center.accessibility, center.notificationsOff)
         }
         return StatusBarModel.Inputs(
             state: state,
@@ -503,6 +503,7 @@ final class StatusBarController {
             staleRecordingCount: staleRecordingCount,
             finishSetupTitle: finishSetupTitle,
             unsavedSetting: coordinator?.configStore?.saveError != nil || coordinator?.secretsStore?.saveError != nil,
+            notificationsOff: notificationsOff,
             configUnreadable: coordinator?.configStore.flatMap { store in
                 store.parseError == nil ? nil : (store.recordingRootUnknown ? .recordingsPaused : .syntaxError)
             },

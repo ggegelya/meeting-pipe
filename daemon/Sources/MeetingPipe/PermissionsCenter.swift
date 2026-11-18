@@ -4,6 +4,7 @@ import AVFoundation
 import Combine
 import CoreGraphics
 import Foundation
+import os
 import UserNotifications
 
 /// Published state for the four TCC permissions the daemon touches. Main-actor isolated (CONC12): under tools 5.9 a non-isolated `async` method runs on the generic executor, so before this every refresh and request committed its `@Published` writes from the cooperative pool. A new `async` probe added here inherits the isolation, so `commit` provably runs on main from every entry point.
@@ -39,7 +40,7 @@ final class PermissionsCenter: ObservableObject {
             case .accessibility:
                 return "Required to notice a meeting at all: it reads the meeting app's windows and call controls. Without it, nothing is detected and nothing auto-stops."
             case .notifications:
-                return "Used for processing-done, mic-only-fallback, and still-meeting prompts."
+                return "Used for every failure notice, the warning before a silent recording is stopped, a recording that could not start or had to stop, and the processing-done and mic-only notices. Optional, but without it those reach you only in the menu bar and the Library."
             }
         }
     }
@@ -65,6 +66,17 @@ final class PermissionsCenter: ObservableObject {
     @Published private(set) var screenRecording: Status = .unknown
     @Published private(set) var accessibility: Status = .unknown
     @Published private(set) var notifications: Status = .unknown
+    /// UX92: whether MeetingPipe's banners are on. Authorized with alerts turned off delivers
+    /// nothing visible, so it counts as off for the menu line and Finish setup. Nil until read.
+    @Published private(set) var notificationAlertsEnabled: Bool?
+
+    /// UX92: denied, or authorized with alerts off. What the menu line and Finish setup read.
+    var notificationsOff: Bool {
+        NotificationAuthReading.isOff(status: notifications, alertsEnabled: notificationAlertsEnabled)
+    }
+
+    /// UX92: the last reading logged, so `notification_auth` is written on a change only.
+    private var lastNotificationReading: NotificationAuthReading?
 
     /// Kinds where the last `request*` call could not prompt and fell through to System Settings. Drives the "toggle MeetingPipe on, then Re-check" hint; cleared on grant or Re-check click.
     @Published private(set) var deferredToSettings: Set<Kind> = []
@@ -149,6 +161,19 @@ final class PermissionsCenter: ObservableObject {
     func refreshNotifications() async {
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
+        // UX92: banners off reads the same as denied to the owner, so it is read beside the grant.
+        let alerts: Bool? = switch settings.alertSetting {
+        case .enabled: true
+        case .disabled: false
+        default: nil
+        }
+        let reading = NotificationAuthReading(status: settings.authorizationStatus, alertsEnabled: alerts)
+        if reading != lastNotificationReading {
+            lastNotificationReading = reading
+            notificationAlertsEnabled = alerts
+            NotificationAuthReading.latest.withLock { $0 = reading }
+            Log.event(category: "daemon", action: "notification_auth", attributes: reading.attributes)
+        }
         let new: Status
         switch settings.authorizationStatus {
         case .authorized, .provisional, .ephemeral:
@@ -314,4 +339,42 @@ final class PermissionsCenter: ObservableObject {
         case .notifications:   commit(\.notifications, kind: kind, status: status)
         }
     }
+}
+
+/// UX92: one Notifications reading, the grant and whether banners are on. Pure, so the menu line,
+/// Finish setup, the `notification_auth` row and the doctor probe read one rule.
+struct NotificationAuthReading: Equatable, Sendable {
+    /// `granted`, `denied`, `not_determined` or `provisional`.
+    let status: String
+    let alertsEnabled: Bool?
+
+    init(status: UNAuthorizationStatus, alertsEnabled: Bool?) {
+        switch status {
+        case .authorized, .ephemeral: self.status = "granted"
+        case .provisional: self.status = "provisional"
+        case .denied: self.status = "denied"
+        case .notDetermined: self.status = "not_determined"
+        @unknown default: self.status = "not_determined"
+        }
+        self.alertsEnabled = alertsEnabled
+    }
+
+    init(status: String, alertsEnabled: Bool?) {
+        self.status = status
+        self.alertsEnabled = alertsEnabled
+    }
+
+    var isOff: Bool { status == "denied" || alertsEnabled == false }
+
+    var attributes: [String: Any] {
+        ["status": status, "alerts": alertsEnabled.map { $0 ? "enabled" : "disabled" } ?? "unknown"]
+    }
+
+    static func isOff(status: PermissionsCenter.Status, alertsEnabled: Bool?) -> Bool {
+        status == .denied || alertsEnabled == false
+    }
+
+    /// The daemon's latest reading, for the in-app doctor sheet, whose probes run off main. Nil in
+    /// the `MeetingPipe doctor` process, which has no reading of its own and says so.
+    static let latest = OSAllocatedUnfairLock<NotificationAuthReading?>(initialState: nil)
 }

@@ -519,7 +519,7 @@ Recording can also be driven from Shortcuts, Raycast, or a Stream Deck through t
 
 **Preferences ▸ Integrations ▸ Run doctor…** is the one check that covers everything: permissions, whether each meeting app is reachable, your keys, your publishing destinations, the on-device model, and how much space the library is using. It names what is broken rather than making you infer it. Run it first for anything you cannot immediately explain.
 
-The menu bar's **Finish setup** row is the shorter version, present only while something is genuinely missing, with each item linking straight to its fix. When it is gone, you are set up.
+The menu bar's **Finish setup** row is the shorter version, present only while something is genuinely missing, with each item linking straight to its fix. It lists **Turn on notifications** when MeetingPipe's notifications are off or its banners are turned off. When it is gone, you are set up.
 
 ### The Diagnostics window
 
@@ -573,7 +573,7 @@ The app already ships on **More distinct**, because separating too eagerly is th
 
 ### Nothing recorded at all
 
-Open **Preferences ▸ Permissions** and check all four. Accessibility is the one that catches people out: macOS decides whether to trust an app when it launches and does not re-check, so after granting it you have to restart the app (**Restart MeetingPipe** in the menu bar) before it does anything. Until then it reads as granted and has no effect.
+Open **Preferences ▸ Permissions** and check all four. Notifications is the one that only costs you warnings: recording works without it, but failure notices and the "Still meeting?" warning before a silent recording stops will not reach you, and the menu bar says "⚠ Notifications off" while it is off (or while its banners are turned off in System Settings). Accessibility is the one that catches people out: macOS decides whether to trust an app when it launches and does not re-check, so after granting it you have to restart the app (**Restart MeetingPipe** in the menu bar) before it does anything. Until then it reads as granted and has no effect.
 
 You can always record by hand with `⌃⌥M` while you sort it out.
 
@@ -608,7 +608,7 @@ Otherwise, the app could not keep saving the audio, so it stopped the recording 
 
 If the recording panel reads **Confirming end**, the app has noticed the call probably ended and is making sure: it stops within a minute when a second sign agrees, or after 12 minutes when none does, and the extra minutes are left out of your notes (see [Stopping](#stopping) for exactly where the cut falls). It keeps going for as long as Teams holds your microphone, because that is the surest sign the call is still up, and a Teams recording stops two minutes after Teams lets go of it. See [Stopping](#stopping). Otherwise:
 
-Accessibility is missing, or the meeting app is one whose windows cannot be read. There is a backstop: after a long stretch of silence the recording stops itself, and partway through that stretch you get a "Still meeting?" notification with a Stop button. `⌃⌥⇧M` stops it immediately. The length of that stretch is the **Mic-only silence backstop** slider in **Preferences ▸ Prompt**. The stretch only counts while the other side of the call can be heard: if the recording panel says **System audio not captured**, the far side is not reaching the recording, and the backstop waits rather than treating your muted mic as an empty call. The app retries once by itself; if the notice stays, **Retry system audio** on the panel is the fix, and the backstop picks up again once audio is flowing.
+Accessibility is missing, or the meeting app is one whose windows cannot be read. There is a backstop: after a long stretch of silence the recording stops itself, and partway through that stretch you get a "Still meeting?" notification with a Stop button, and the recording panel reads **No audio, stopping soon** until you choose **Keep recording**, someone speaks, or it stops, so the warning is there even when notifications are off or held back by Focus. `⌃⌥⇧M` stops it immediately. The length of that stretch is the **Mic-only silence backstop** slider in **Preferences ▸ Prompt**. The stretch only counts while the other side of the call can be heard: if the recording panel says **System audio not captured**, the far side is not reaching the recording, and the backstop waits rather than treating your muted mic as an empty call. The app retries once by itself; if the notice stays, **Retry system audio** on the panel is the fix, and the backstop picks up again once audio is flowing.
 
 ### Preferences says your last change was not saved
 

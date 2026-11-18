@@ -100,12 +100,16 @@ enum HUDStateLabel {
         case subtle
     }
 
+    /// UX92: the label while the silence backstop is about to stop the recording.
+    static let stoppingSoonText = "No audio, stopping soon"
+
     static func resolve(
         micCaptureLost: Bool,
         lowSpace: String?,
         writerBehind: Bool = false,
         micVeryQuiet: Bool = false,
         offRecord: Bool,
+        stoppingSoon: Bool = false,
         confirmingEnd: Bool,
         starting: Bool = false
     ) -> (text: String, tone: Tone) {
@@ -118,6 +122,9 @@ enum HUDStateLabel {
         // running-out, above the deliberate states; the owner can still fix it mid-call.
         if micVeryQuiet { return (MicCoverageCopy.hudLabel, .alert) }
         if offRecord { return ("Off the record", .alert) }
+        // UX92: the silence backstop nudged and will stop the recording on schedule. Off the record
+        // and every loss above outrank it; it outranks a held end, which is only why we still run.
+        if stoppingSoon { return (stoppingSoonText, .alert) }
         if confirmingEnd { return ("Confirming end", .subtle) }
         // UX106: a start in flight. Nothing above can be set before the recording commits.
         if starting { return (StatusBarModel.startingLabel, .muted) }
@@ -351,6 +358,7 @@ final class RecordingHUDWindow {
         lowSpaceText = nil
         writerBehind = false
         confirmingEnd = false
+        stoppingSoon = false
         // MIC17: and the quiet-mic state, which is about one recording's device and level.
         micVeryQuiet = false
         micVeryQuietDevice = nil
@@ -501,6 +509,8 @@ final class RecordingHUDWindow {
     /// END9: whether a held end is being confirmed. Stored since REC20 so the label can be
     /// resolved from all four states at once rather than by whichever setter ran last.
     private var confirmingEnd = false
+    /// UX92: the silence backstop's nudge fired; cleared by Keep recording, a sound, or the stop.
+    private var stoppingSoon = false
 
     /// REC20: show or clear the low-space countdown. Idempotent, main-queue only, no resize: the
     /// longest form fits the shared pill width (`HUDPanelGeometryTests`).
@@ -517,6 +527,7 @@ final class RecordingHUDWindow {
             writerBehind: writerBehind,
             micVeryQuiet: micVeryQuiet,
             offRecord: isOffTheRecord,
+            stoppingSoon: stoppingSoon,
             confirmingEnd: confirmingEnd,
             starting: isStarting
         )
@@ -557,6 +568,14 @@ final class RecordingHUDWindow {
     /// captured seconds, and hiding it would misrepresent a recording that is genuinely running.
     /// `fgSubtle` is the quietest token that still clears DSN3's 4.5:1 contrast floor, which
     /// `fgFaint` does not (it measures about 2.8:1).
+    /// UX92: show or clear "No audio, stopping soon". The nudge used to be a notification only, so
+    /// under Focus, with notifications off, or while presenting, nothing warned before the backstop
+    /// ended a live recording. A label and colour change, no new card, the `setConfirmingEnd` way.
+    func setStoppingSoon(_ on: Bool) {
+        stoppingSoon = on
+        applyStateLabel()
+    }
+
     func setConfirmingEnd(_ on: Bool) {
         // Every other label owner outranks this one: it is only about why we are still capturing
         // (`HUDStateLabel`).

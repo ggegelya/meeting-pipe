@@ -74,6 +74,18 @@ final class IdleStopBackstopTests: XCTestCase {
 
     // MARK: - Nudge horizon
 
+    /// UX92: the HUD reads `didNotify`, so audio returning clears "stopping soon" by itself.
+    func test_didNotify_is_set_by_the_nudge_and_cleared_by_audio_UX92() {
+        let b = IdleStopBackstop(notifySeconds: 60, autoStopSeconds: 900)
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        b.ingest(verdict: silent(), systemChannel: .live(hasAudio: false), at: t0)
+        XCTAssertFalse(b.didNotify)
+        b.ingest(verdict: silent(), systemChannel: .live(hasAudio: false), at: t0.addingTimeInterval(61))
+        XCTAssertTrue(b.didNotify)
+        b.ingest(verdict: silent(), systemChannel: .live(hasAudio: true), at: t0.addingTimeInterval(62))
+        XCTAssertFalse(b.didNotify)
+    }
+
     func test_nudge_fires_once_before_the_auto_stop() {
         let b = backstop(notify: 480, autoStop: 900)
         var notifyCount = 0

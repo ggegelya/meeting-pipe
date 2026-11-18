@@ -100,6 +100,8 @@ enum StatusBarModel {
         var finishSetupTitle: String?
         /// UX91: `ConfigStore.saveError` or `SecretsStore.saveError` is set.
         var unsavedSetting: Bool
+        /// UX92: Notifications denied, or authorized with banners off.
+        var notificationsOff: Bool
         /// UX94: nil while config.toml parses.
         var configUnreadable: ConfigUnreadable?
         /// STOR10: the scheduled-run row's title (`LastBackup.menuTitle`), read off main, or nil.
@@ -147,6 +149,7 @@ enum StatusBarModel {
             staleRecordingCount: Int = 0,
             finishSetupTitle: String? = nil,
             unsavedSetting: Bool = false,
+            notificationsOff: Bool = false,
             configUnreadable: ConfigUnreadable? = nil,
             scheduledRunTitle: String? = nil,
             relaunchAfterQuit: Bool = true,
@@ -171,6 +174,7 @@ enum StatusBarModel {
             self.staleRecordingCount = staleRecordingCount
             self.finishSetupTitle = finishSetupTitle
             self.unsavedSetting = unsavedSetting
+            self.notificationsOff = notificationsOff
             self.configUnreadable = configUnreadable
             self.scheduledRunTitle = scheduledRunTitle
             self.relaunchAfterQuit = relaunchAfterQuit
@@ -433,6 +437,8 @@ enum StatusBarModel {
     static let accessibilityOffTitle = "⚠ Accessibility off - meetings are not detected"
 
     /// UX91: the one row for a Preferences change that did not reach its store.
+    static let notificationsOffTitle = "⚠ Notifications off: failures and the still-meeting warning will not reach you"
+
     static let unsavedSettingTitle = "⚠ A setting was not saved - open Preferences"
 
     /// UX94: how the settings file is unreadable, as far as the menu says.
@@ -501,6 +507,11 @@ enum StatusBarModel {
         }
         if i.screenRecording == .denied || i.screenRecordingCaptureDenied {
             out.append("⚠ Screen Recording off: the call audio will not be recorded (mic only)")
+        }
+        // UX92: optional, so it never sets `hasPendingPermissionIssue`, but every failure notice
+        // and the warning before the silence backstop stops a recording ride on it.
+        if i.notificationsOff {
+            out.append(notificationsOffTitle)
         }
         return out
     }

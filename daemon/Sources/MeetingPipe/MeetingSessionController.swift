@@ -303,6 +303,7 @@ final class MeetingSessionController: @unchecked Sendable {
                     self.latestVerdict = verdict
                     self.coordinator.audioRecorder.setMicGateVerdict(verdict)
                     self.coordinator.silenceBackstop.ingest(verdict: verdict, systemChannel: self.backstopSystemChannel())
+                    self.syncStoppingSoon()
                 }
             }
         }
@@ -2244,6 +2245,7 @@ final class MeetingSessionController: @unchecked Sendable {
             self.noteHolderDevicesTick()
             guard let verdict = self.latestVerdict else { return }
             self.coordinator.silenceBackstop.ingest(verdict: verdict, systemChannel: self.backstopSystemChannel())
+            self.syncStoppingSoon()
         }
     }
 
@@ -2454,6 +2456,22 @@ final class MeetingSessionController: @unchecked Sendable {
         Log.writeLine("daemon", "idle: surfacing 'still meeting?' banner")
         Log.event(category: "coordinator", action: "silence_notified")
         coordinator.notifications.notifyStillMeeting()
+        // UX92: the HUD says it too; a banner alone is lost under Focus or with notifications off.
+        setStoppingSoon(true)
+    }
+
+    /// UX92: whether the HUD currently says "No audio, stopping soon".
+    private var stoppingSoonShown = false
+
+    private func setStoppingSoon(_ on: Bool) {
+        guard on != stoppingSoonShown else { return }
+        stoppingSoonShown = on
+        coordinator.hud.setStoppingSoon(on)
+    }
+
+    /// UX92: after a backstop sample, clear the HUD state once audio has reset the nudge.
+    private func syncStoppingSoon() {
+        if stoppingSoonShown, !coordinator.silenceBackstop.didNotify { setStoppingSoon(false) }
     }
 
     /// REC20 item 2: one low-space update from the recorder's free-space watch, on main. The label
@@ -2523,6 +2541,7 @@ final class MeetingSessionController: @unchecked Sendable {
         guard case .recording = coordinator.stateMachine.current else { return }
         Log.event(category: "coordinator", action: "silence_keep_recording")
         coordinator.silenceBackstop.keepAlive()
+        setStoppingSoon(false)
     }
 
     // MARK: - MicGate engage (TECH-G-MIC + TECH-C13)
@@ -2532,6 +2551,9 @@ final class MeetingSessionController: @unchecked Sendable {
     func resetMicGateBackstop() {
         assertMainQueue()
         coordinator.silenceBackstop.reset()
+        // UX92: a fresh recording starts without the previous one's nudge (the HUD resets its own
+        // state at dismiss; this keeps the controller's mirror in step).
+        stoppingSoonShown = false
         latestSystemLevelDb = -120
         latestVerdict = nil
     }

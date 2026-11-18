@@ -90,6 +90,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     var recordingsDir: () -> URL? = { nil }
     /// This session's failure presentations, for the full Details. A click after a relaunch rebuilds
     /// one from `userInfo` (`FailureNotificationPayload`). Evicted oldest first.
+    /// UX92: every notice goes through this, which records whether the system took it.
+    private let poster = NotificationPoster(center: UNUserNotificationCenter.current())
     private var failures = InsertionOrderedStore<(FailurePresentation, String?)>(capacity: 30)
 
     override init() {
@@ -104,6 +106,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                 Log.failure(category: "daemon", action: "notification_auth_failed", error: error)
             }
             Log.main.info("Notification auth granted: \(granted)")
+            // UX92: the reading (with whether banners are on) goes to the log and the menu.
+            Task { @MainActor in await PermissionsCenter.shared.refreshNotifications() }
         }
     }
 
@@ -154,12 +158,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             content.categoryIdentifier = Self.doneCorrectableLocalCategory
         } else {
             // Nothing to open and nothing to grade: a plain terminal banner.
-            post(title: copy.title, body: copy.body)
+            post(title: copy.title, body: copy.body, kind: .done)
             return
         }
 
         let req = UNNotificationRequest(identifier: id, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        poster.post(req, kind: .done, stem: stem)
     }
 
     /// A run that finished but intentionally produced no summary: no speech, or a
@@ -169,7 +173,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// path posted for these (the recording was neither regulated nor
     /// summarized).
     func notifyEmptySkip(reason: EmptyReason) {
-        post(title: reason.notificationTitle, body: reason.notificationBody)
+        post(title: reason.notificationTitle, body: reason.notificationBody, kind: .done)
     }
 
     /// UX90: the run left a paste bundle and no summary (BYO, or a meeting past the long-meeting
@@ -184,7 +188,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         let req = UNNotificationRequest(
             identifier: NotificationRouter.pasteReadyIDPrefix + UUID().uuidString, content: content, trigger: nil
         )
-        UNUserNotificationCenter.current().add(req)
+        poster.post(req, kind: .done, stem: stem)
     }
 
     /// True when `<stem>.run.json` exists (pipeline produced a gradeable summary). Skipped paths (no_speech, byo, too_long) never write the run sidecar, so the correction action is correctly disabled for them.
@@ -222,7 +226,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.categoryIdentifier = NotificationRouter.failureCategory
         content.userInfo = FailureNotificationPayload.userInfo(failure: failure, stem: stem, message: message)
         content.sound = .default
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
+        poster.post(UNNotificationRequest(identifier: id, content: content, trigger: nil), kind: .failure, stem: stem)
     }
 
     /// Posted once per launch when meetings still have no summary a day or more after they failed and nothing is
@@ -234,10 +238,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.body = "They failed a day or more ago. Open the Library to retry."
         content.categoryIdentifier = NotificationRouter.failureCategory
         content.userInfo = [FailureNotificationPayload.stemKey: oldestStem]
-        UNUserNotificationCenter.current().add(UNNotificationRequest(
+        poster.post(UNNotificationRequest(
             identifier: NotificationRouter.failureIDPrefix + "unresolved-" + UUID().uuidString,
             content: content, trigger: nil
-        ))
+        ), kind: .failure, stem: oldestStem)
     }
 
     /// Posted when a detected meeting is not recorded (UX10 / AUD-12, extended by DET7).
@@ -271,7 +275,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             content: content,
             trigger: nil
         )
-        UNUserNotificationCenter.current().add(req)
+        poster.post(req, kind: .skipLate)
     }
 
     /// Posted by the idle backstop (TECH-END3) after a long VAD-silent stretch. "Keep recording" (and a plain banner tap) restart the idle countdown; "Stop recording" ends it now. For a native meeting still tracked live, the auto-stop stands down on its own and this nudge just re-surfaces.
@@ -286,7 +290,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             content: content,
             trigger: nil
         )
-        UNUserNotificationCenter.current().add(req)
+        poster.post(req, kind: .stillMeeting)
     }
 
     /// Posted at startup when Accessibility TCC is missing. Without it every window and control probe returns nothing, so native meetings (Teams / Zoom / Webex / Slack) are never detected at all and browser tabs never become candidates: the prompt does not appear, nothing records itself, and nothing auto-ends because nothing started (DET11, correcting the end-detection-only claim this banner shipped with). Action button opens System Settings -> Accessibility.
@@ -297,7 +301,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.categoryIdentifier = Self.accessibilityCategory
         content.sound = .default
         let req = UNNotificationRequest(identifier: "perm-accessibility-startup", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        poster.post(req, kind: .accessibility)
     }
 
     /// Posted at startup when Screen Recording TCC is denied; recordings will be mic-only until the user grants it. Action button opens System Settings.
@@ -308,7 +312,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.categoryIdentifier = Self.permCategory
         content.sound = .default
         let req = UNNotificationRequest(identifier: "perm-startup", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        poster.post(req, kind: .capture)
     }
 
     /// Posted when a recording stops with no system-audio samples. Stronger than the startup banner because the user just lost half a meeting. `permissionState` shapes the message - `.unknown` is included (not just `.denied`) because a fresh launch with no prewarm silently produced mic-only recordings with no surface (regression: May 5 18:30 recording).
@@ -340,7 +344,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             ? NotificationRouter.micOnlyIDPrefix
             : "perm-stop-"
         let req = UNNotificationRequest(identifier: "\(prefix)\(file.lastPathComponent)", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        poster.post(req, kind: .capture)
     }
 
     /// The system-audio (SCStream) capture died part-way through a recording and did not
@@ -360,7 +364,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.body = "The other side of the call stopped being captured part-way through, so the recording is mic-only from that point. See ~/Library/Logs/MeetingPipe/recorder.log for SCStream errors."
         content.sound = .default
         let req = UNNotificationRequest(identifier: "sysaudio-interrupted-\(file.lastPathComponent)", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        poster.post(req, kind: .capture)
     }
 
     /// REC30: the far side's stream ended healthy, but the recording is missing it for a stretch:
@@ -373,7 +377,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.body = "About \(missing) of the other side of the call was not captured, so the recording is mic-only for that stretch. See ~/Library/Logs/MeetingPipe/recorder.log for SCStream errors."
         content.sound = .default
         let req = UNNotificationRequest(identifier: "sysaudio-partial-\(file.lastPathComponent)", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        poster.post(req, kind: .capture)
     }
 
     /// Posted when a finished recording holds materially less audio than the meeting it
@@ -390,7 +394,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.body = "Only \(audio) of audio was saved for a \(wallclock) recording. Play it back before you rely on it, and see ~/Library/Logs/MeetingPipe/recorder.log for capture errors."
         content.sound = .default
         let req = UNNotificationRequest(identifier: "short-recording-\(file.lastPathComponent)", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        poster.post(req, kind: .capture)
     }
 
     /// Posted when the mic channel stayed at the noise floor across an un-muted stretch while
@@ -403,7 +407,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.body = "The other side was captured, but your microphone stayed silent. Check System Settings, Sound, Input - the wrong input device may be selected."
         content.sound = .default
         let req = UNNotificationRequest(identifier: "mic-silent-\(file.lastPathComponent)", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        poster.post(req, kind: .mic)
     }
 
     /// MIC17: the mic carried the call, but almost none of it reached a speech level, so the
@@ -415,7 +419,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.body = MicCoverageCopy.quietBody(device: device)
         content.sound = .default
         let req = UNNotificationRequest(identifier: "mic-quiet-\(file.lastPathComponent)", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        poster.post(req, kind: .mic)
     }
 
     /// Posted before a recording starts when the OS default input we are about to capture sits
@@ -427,7 +431,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.body = "Another app appears to be using a different microphone than the one MeetingPipe will record. Check System Settings, Sound, Input if your voice should be captured."
         content.sound = .default
         let req = UNNotificationRequest(identifier: "input-mismatch-\(Int(Date().timeIntervalSince1970))", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        poster.post(req, kind: .mic)
     }
 
     /// SEC18: a zero-egress recording is starting over a library a sync client owns. Reads the
@@ -454,7 +458,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                     identifier: "\(NotificationRouter.librarySyncedIDPrefix)\(Int(Date().timeIntervalSince1970))",
                     content: content, trigger: nil
                 )
-                UNUserNotificationCenter.current().add(req)
+                self.poster.post(req, kind: .info)
             }
         }
     }
@@ -468,14 +472,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func notifyLowSpace(title: String, body: String) {
-        post(title: title, body: body)
+        post(title: title, body: body, kind: .capture)
     }
 
     /// Posted when a mid-recording input device change was recovered; capture continued with a short silent gap.
     func notifyCaptureRecovered() {
         post(
             title: "Input device changed",
-            body: "MeetingPipe switched to the new input device and kept recording. There is a short gap where the device changed."
+            body: "MeetingPipe switched to the new input device and kept recording. There is a short gap where the device changed.",
+            kind: .capture
         )
     }
 
@@ -483,7 +488,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     func notifyCaptureLost() {
         post(
             title: "Microphone capture stopped",
-            body: "The input device changed and MeetingPipe could not resume the microphone. Stop and restart the recording to capture the rest."
+            body: "The input device changed and MeetingPipe could not resume the microphone. Stop and restart the recording to capture the rest.",
+            kind: .capture
         )
     }
 
@@ -493,17 +499,19 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     func notifyEngineCallsExhausted() {
         post(
             title: "Restart MeetingPipe to keep recording",
-            body: "The Mac's audio system stopped responding to MeetingPipe several times, so it has stopped asking rather than freeze. Quit and reopen MeetingPipe before your next meeting."
+            body: "The Mac's audio system stopped responding to MeetingPipe several times, so it has stopped asking rather than freeze. Quit and reopen MeetingPipe before your next meeting.",
+            kind: .capture
         )
     }
 
-    private func post(title: String, body: String) {
+    /// UX92: `kind` says what the notice is for the post record; never its text.
+    private func post(title: String, body: String, kind: NotificationKind = .info) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
         let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        poster.post(req, kind: kind)
     }
 
     // MARK: Categories
