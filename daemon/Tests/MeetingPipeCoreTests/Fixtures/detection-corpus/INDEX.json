@@ -13,6 +13,7 @@
     "teams_native_end15_mic_switch_audio_first.json",
     "teams_native_end29_switch_return_missed.json",
     "teams_native_end29_minimised_switch_return_missed.json",
+    "teams_native_end29_switch_return_missed_leave_flickers.json",
     "teams_native_end14_lone_window_gone.json",
     "teams_native_end13_cap_with_live_mic.json",
     "teams_native_end9_blank_tree.json",

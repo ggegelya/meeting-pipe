@@ -1,0 +1,35 @@
+{
+  "scenario": "teams_native_end29_switch_return_missed_leave_flickers",
+  "description": "END29 amendment, synthetic, code-derived (not seen in the field): Teams releases its input for a headphone switch at 900 s and the mic's return never reaches the engine. The call runs on with the Leave button and the window live, and the Leave element flickers invalid twice (a screen-share re-render: 8.3 s at 2100 s, 38.3 s at 3000 s, the reliability audit's measured lengths). END18 declines each return because the mic ended inside the hold. Before the owner's answer of 2026-11-18 the lone dwell ran from the first return and ended the call at 2828.3 s, cut back to the switch; now a declined Leave that has read live for confirmDwell refuses again, and the call never ends on the lone dwell.",
+  "engine": "promotion",
+  "origin": "synthetic",
+  "expected_outcome": "no_end",
+  "context": {
+    "bundle_id": "com.microsoft.teams2",
+    "kind": "native",
+    "pid": 1234
+  },
+  "events": [
+    {"t": 0.0, "kind": "ax_leave_button", "state": "live"},
+    {"t": 0.1, "kind": "shareable_content_window", "state": "live"},
+    {"t": 0.2, "kind": "process_audio_is_running_input_false", "state": "live"},
+    {"t": 900.0, "kind": "process_audio_is_running_input_false", "state": "ended"},
+    {"t": 2100.0, "kind": "tick"},
+    {"t": 2100.0, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 2100.25, "kind": "tick"},
+    {"t": 2108.3, "kind": "ax_leave_button", "state": "live"},
+    {"t": 2168.3, "kind": "tick"},
+    {"t": 2828.3, "kind": "tick"},
+    {"t": 3000.0, "kind": "ax_leave_button", "state": "ended"},
+    {"t": 3000.25, "kind": "tick"},
+    {"t": 3038.3, "kind": "ax_leave_button", "state": "live"},
+    {"t": 3098.3, "kind": "tick"},
+    {"t": 3758.3, "kind": "tick"},
+    {"t": 5198.3, "kind": "tick"}
+  ],
+  "expected_verdicts": [
+    {"after": "events[0]", "verdict": "starting"},
+    {"after": "events[0]", "verdict": "in_meeting"},
+    {"after": "events[3]", "verdict": "ending_provisional", "leading": "process_audio_is_running_input_false"}
+  ]
+}

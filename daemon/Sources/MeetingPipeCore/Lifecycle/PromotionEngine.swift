@@ -233,7 +233,8 @@ public final class PromotionEngine {
         let at: Date
         /// END14 amendment: a `.live` reading whose revert END18 declined. END18 already ruled it
         /// untrusted (a teardown read of the Leave button passing as healthy), so `pairEdges` does
-        /// not let it contradict the class-mates that had gone ended before it.
+        /// not let it contradict the class-mates that had gone ended before it, and
+        /// `loneDwellRefused` lets it refuse only once it has stood for `confirmDwell` (END29).
         var declined = false
         /// END24 amendment: a `.live` reading from a weak window lock. It does not contradict a
         /// class-mate's edge; a change of strength alone updates it without restamping `at`.
@@ -424,22 +425,31 @@ public final class PromotionEngine {
     /// live call 12 minutes on and END21 would cut it back to the switch. A real leave takes the
     /// Leave control away (it reads invalid, or a fresh window-gone pairs), which lifts this. No
     /// Leave reading, no refusal: nothing then contradicts the release. The idle backstop stays the
-    /// ceiling. A Leave reading END18 declined in this hold is not that contradiction: it went
-    /// invalid inside the hold and came back untrusted, and END18 already lets the lone dwell run
-    /// from it.
+    /// ceiling. A Leave reading END18 declined in this hold is not that contradiction at first: it
+    /// went invalid inside the hold and came back untrusted, and END18 lets the lone dwell run from
+    /// it. Once it has read live for `confirmDwell` it refuses again (the owner's answer of
+    /// 2026-11-18, "Yes, refuse again"), so a live call survives any number of Leave flickers
+    /// inside a missed-return switch. The cost the owner accepted: a real leave whose Leave control
+    /// flickers back live after the mic went waits for the idle backstop (Zoom) or END23's
+    /// mic-release ceiling (Teams).
     ///
-    /// A function of the readings alone, so it can change only when a reading arrives; that is
-    /// where its lifting restarts the dwell (END29 amendment, 2026-11-17).
-    static func loneDwellRefused(leading: PrimarySignalKind, startedAt: Date, states: SignalStates) -> Bool {
+    /// It lifts only when a reading arrives (every term that can turn it off is a reading); the
+    /// one term that moves with time, a declined Leave standing for `confirmDwell`, can only turn
+    /// it on. That is why `handleEndingProvisional` is the one place a lift restarts the dwell
+    /// (END29 amendment, 2026-11-17), and why it evaluates this at the reading's own stamp.
+    func loneDwellRefused(leading: PrimarySignalKind, startedAt: Date, states: SignalStates, at now: Date) -> Bool {
         let leave = states[.axLeaveButton]
         let leadClassContradicted = leading != .axLeaveButton
             && leading.evidenceClass == PrimarySignalKind.axLeaveButton.evidenceClass
             && leave?.state == .live
-            && otherClassesEndedInside(states, excluding: leading, since: startedAt).isEmpty
+            && Self.otherClassesEndedInside(states, excluding: leading, since: startedAt).isEmpty
+        let declinedUnsettled = leave.map { reading in
+            reading.declined && reading.at >= startedAt && awake(from: reading.at, to: now) < confirmDwell
+        } ?? false
         let micLeadContradicted = leading.vetoesLoneEnd
             && leave?.state == .live
-            && !(leave?.declined == true && (leave?.at ?? .distantPast) >= startedAt)
-            && !pairEdges(in: states, holdStartedAt: startedAt).keys.contains { $0 != leading.evidenceClass }
+            && !declinedUnsettled
+            && !Self.pairEdges(in: states, holdStartedAt: startedAt).keys.contains { $0 != leading.evidenceClass }
         return leadClassContradicted || micLeadContradicted
     }
 
@@ -589,7 +599,7 @@ public final class PromotionEngine {
         // (`loneDwellRefused`). When that contradiction lifts, `handleEndingProvisional` restarts
         // the dwell from the lifting reading, so a refusal that held for longer than `loneDwell`
         // cannot end a live call on the very next tick.
-        let loneHeld = !Self.loneDwellRefused(leading: leading, startedAt: startedAt, states: states)
+        let loneHeld = !loneDwellRefused(leading: leading, startedAt: startedAt, states: states, at: now)
             && awake(from: loneSince, to: now) >= loneDwell
         guard pairHeld || loneHeld else { return nil }
 
@@ -766,10 +776,10 @@ public final class PromotionEngine {
         // refusal is a level read, and the anchor used to stay put when it lifted, so a hold refused
         // for 20 minutes ended on the next tick after one Leave flicker (a screen-share re-render)
         // and END21 cut it back to the hold's start.
-        let refusedBefore = Self.loneDwellRefused(leading: leading, startedAt: startedAt, states: states)
+        let refusedBefore = loneDwellRefused(leading: leading, startedAt: startedAt, states: states, at: event.timestamp)
         let previous = Self.record(event, in: &states)
         let liftsRefusal = refusedBefore
-            && !Self.loneDwellRefused(leading: leading, startedAt: startedAt, states: states)
+            && !loneDwellRefused(leading: leading, startedAt: startedAt, states: states, at: event.timestamp)
         switch event.state {
         case .unknown:
             // END17: a vetoer that stops reading live inside the hold restarts the lone dwell, as a
