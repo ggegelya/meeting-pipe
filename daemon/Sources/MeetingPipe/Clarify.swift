@@ -115,6 +115,8 @@ enum Clarify {
                   newText != line else { return nil }
             return .correctLine(segmentIndex: segmentIndex, newText: newText)
         case .everyMeeting:
+            // FEAT25: the disabled button and the refusal are one rule.
+            guard ruleCheck(heard: heard, canonical: intended, lines: []).isAllowed else { return nil }
             return .addTerm(
                 heard: heard,
                 canonical: intended,
@@ -192,6 +194,148 @@ struct ClarifyTarget: Identifiable {
     let start: TimeInterval
     /// The meeting's workflow, for the rule path's default scope.
     let workflowName: String?
+    /// FEAT25: the meeting's displayed lines (corrections already overlaid), so the rule path
+    /// can preview how many lines a rule would change here. This meeting only, not a library scan.
+    var lines: [String] = []
 
     var id: Int { segmentIndex }
+}
+
+// MARK: - The rule check (FEAT25)
+
+extension Clarify {
+
+    /// What a vocabulary rule would be, before it is written: the key exactly as
+    /// `glossary.toml` will store it, how many of this meeting's lines it would change, and
+    /// either why it is refused or what to look at twice.
+    ///
+    /// A rule is global and permanent in the way that matters (every transcript finalized
+    /// under it is written that way), and `mp.glossary` folds the key and matches it
+    /// `\b(<key>)\b` case-insensitively, so a pronoun typed as the heard side and an acronym
+    /// as the intended one rewrites that pronoun in every future meeting. Both confirm
+    /// surfaces that write a rule (Clarify's "Always fix this", FEAT12's offer sheet) read
+    /// this one check, so they cannot disagree about what is allowed.
+    struct RuleCheck: Equatable {
+        /// The heard side as it will be stored: `VocabularyCandidate.trimPunctuation`'d.
+        let key: String
+        /// Lines of this meeting the rule would match, by `containsTerm` (the pipeline's rule).
+        let matchesHere: Int
+        let refusal: Refusal?
+        let warnings: [Warning]
+
+        var isAllowed: Bool { refusal == nil }
+        /// The two sides differ only in case (folded equal). Allowed: FEAT12's capitalisation fix.
+        var isCaseOnly: Bool { warnings.contains(.caseOnly) }
+
+        enum Refusal: Equatable {
+            case empty
+            /// No word character at the key's first or last position, so `\b...\b` can
+            /// never match it in prose (a language name with a trailing `+`).
+            case noWordEdge
+            /// A single common English word (`stopWords`).
+            case commonWord
+
+            var message: String {
+                switch self {
+                case .empty:
+                    return "Type the words as they were heard."
+                case .noWordEdge:
+                    return "This can't be a rule: it starts or ends with a symbol, so it would never match anything. Fix this line only instead."
+                case .commonWord:
+                    return "This is a common word, so a rule would change it in every meeting. Fix this line only instead."
+                }
+            }
+        }
+
+        enum Warning: Equatable {
+            /// Only capitalisation differs, so every spelling of the word becomes this one.
+            case caseOnly
+            /// One or two characters match inside a lot of ordinary text.
+            case shortKey
+
+            var message: String {
+                switch self {
+                case .caseOnly:
+                    return "Only the capitals change, so every match of this word, however it is written, will be written this way."
+                case .shortKey:
+                    return "This is very short, so it may match more than you expect."
+                }
+            }
+        }
+
+        /// "Saved as "key", matches N lines in this meeting."
+        var summary: String {
+            let lines = matchesHere == 1 ? "1 line" : "\(matchesHere) lines"
+            return "Saved as \"\(key)\". Matches \(lines) in this meeting."
+        }
+    }
+
+    /// English only, and documented as such: pronouns, articles, auxiliaries, and the common
+    /// prepositions and conjunctions, plus "yes", "no" and "not" (beyond the spec's categories,
+    /// on the same reasoning: one-word answers and negation occur in nearly every meeting). Compared folded, against a single-token key. A word not
+    /// on this list is not thereby safe; the match count is the other half of the check.
+    static let stopWords: Set<String> = [
+        // pronouns
+        "i", "me", "my", "mine", "myself", "we", "us", "our", "ours", "you", "your", "yours",
+        "he", "him", "his", "she", "her", "hers", "it", "its", "they", "them", "their", "theirs",
+        "this", "that", "these", "those", "who", "whom", "whose", "what", "which",
+        // articles
+        "a", "an", "the",
+        // auxiliaries
+        "am", "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
+        "have", "has", "had", "will", "would", "shall", "should", "can", "could",
+        "may", "might", "must",
+        // prepositions
+        "of", "in", "on", "at", "to", "for", "with", "by", "from", "about", "as", "into",
+        "over", "under", "up", "down", "out", "off", "through", "after", "before",
+        // conjunctions
+        "and", "or", "but", "so", "if", "then", "than", "because", "nor", "yet", "while",
+        // the two answers
+        "yes", "no", "not",
+    ]
+
+    static func ruleCheck(heard rawHeard: String, canonical rawCanonical: String, lines: [String]) -> RuleCheck {
+        let key = VocabularyCandidate.trimPunctuation(rawHeard)
+        let canonical = rawCanonical.trimmingCharacters(in: .whitespacesAndNewlines)
+        // One compiled regex for every line: this runs on each keystroke in the sheet.
+        let matches: Int
+        if !key.isEmpty, let regex = wordRegex(key) {
+            matches = lines.filter { line in
+                regex.firstMatch(in: line, options: [], range: NSRange(line.startIndex..<line.endIndex, in: line)) != nil
+            }.count
+        } else {
+            matches = 0
+        }
+        var warnings: [RuleCheck.Warning] = []
+        if !key.isEmpty, key != canonical, key.lowercased() == canonical.lowercased() {
+            warnings.append(.caseOnly)
+        }
+        if (1...2).contains(key.count) { warnings.append(.shortKey) }
+
+        let refusal: RuleCheck.Refusal?
+        if key.isEmpty {
+            refusal = .empty
+        } else if !isWordCharacter(key.first) || !isWordCharacter(key.last) {
+            refusal = .noWordEdge
+        } else if !key.contains(where: \.isWhitespace), stopWords.contains(key.lowercased()) {
+            refusal = .commonWord
+        } else {
+            refusal = nil
+        }
+        return RuleCheck(key: key, matchesHere: matches, refusal: refusal, warnings: warnings)
+    }
+
+    /// `\w` as `\b` reads it: a letter, a digit or an underscore.
+    private static func isWordCharacter(_ c: Character?) -> Bool {
+        guard let c else { return false }
+        return c.isLetter || c.isNumber || c == "_"
+    }
+
+    /// FEAT12's offer sheet: Add is enabled only on an allowed key, a non-empty correct
+    /// spelling, and two sides that are not identical. Pure so the enablement is pinned.
+    static func offerCanAdd(heard: String, canonical: String) -> Bool {
+        let check = ruleCheck(heard: heard, canonical: canonical, lines: [])
+        let right = canonical.trimmingCharacters(in: .whitespacesAndNewlines)
+        return check.isAllowed && !right.isEmpty && check.key != right
+    }
 }

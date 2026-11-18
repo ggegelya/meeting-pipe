@@ -2,9 +2,9 @@
 id: FEAT25
 title: Clarify's 'Always fix this' accepts common words and case-only pairs as global rules, and stores a normalised key the user never sees
 category: Transcription
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). The rule path refuses only empty or identical sides, so a pronoun-to-acronym fix becomes a global rule rewriting every future transcript, a key that can never match is saved silently, and the trimmed key is never shown; FEAT12's offer sheet writes the same file with even fewer checks; not observed in the field (no correction events in the window). One pure rule check shared by both sheets: refuse stop-words and keys with no word-character edge, warn on case-only and very short keys, show the saved key and a match count over this meeting.
+comment: Shipped 2026-11-19. Clarify.ruleCheck (stored key, matches over this meeting's displayed lines, refusals for a single English stop-word and a key without a word-character edge, warnings for case-only and 1-2 character keys) gates Clarify.plan's rule path and FEAT12's offer sheet (Clarify.offerCanAdd also refuses identical sides; the sheet writes the trimmed key); RuleCheckNotes shows key, count, warnings and refusal on both sheets; ClarifyTarget and VocabularyOffer carry the meeting's lines; vocabulary_term_added gains matches_here and case_only. Stop list adds yes/no/not beyond the spec's categories. 8 new tests. Owner still owes one live check: open Clarify a word on a line, pick Always fix this with 'it' to 'IT' (refused with the reason) and a product name's capitalisation (allowed, count shown).
 ---
 
 # FEAT25: Clarify's 'Always fix this' accepts common words and case-only pairs as global rules, and stores a normalised key the user never sees

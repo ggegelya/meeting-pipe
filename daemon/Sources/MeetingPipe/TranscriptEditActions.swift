@@ -23,7 +23,7 @@ struct TranscriptEditActions {
     /// writes the correction overlay and never `glossary.toml`; "Always fix this" writes the term
     /// and never the overlay. `lineOriginal` is the pipeline's text for a segment index, nil when
     /// the line is no longer on screen.
-    func apply(_ plan: Clarify.Plan, lineOriginal: (Int) -> String?) -> String? {
+    func apply(_ plan: Clarify.Plan, lineOriginal: (Int) -> String?, lines: [String] = []) -> String? {
         switch plan {
         case .correctLine(let index, let newText):
             guard let original = lineOriginal(index) else {
@@ -31,7 +31,7 @@ struct TranscriptEditActions {
             }
             return saveLine(segmentIndex: index, pipelineOriginal: original, newText: newText)
         case .addTerm(let heard, let canonical, let workflow, _):
-            return addTerm(heard: heard, canonical: canonical, workflow: workflow)
+            return addTerm(heard: heard, canonical: canonical, workflow: workflow, lines: lines)
         }
     }
 
@@ -79,7 +79,9 @@ struct TranscriptEditActions {
     /// FEAT12: the confirmed half of "Add to Vocabulary", through `GlossaryStore.addTerm`, the same
     /// append the Preferences editor's rows ride, so there is no second writer of `glossary.toml`.
     /// The store is built here so the document it merges into is read at confirm time.
-    func addTerm(heard: String, canonical: String, workflow: String?) -> String? {
+    /// `lines` is the meeting's displayed lines, for FEAT25's `matches_here`; empty when the
+    /// caller has none (a count of 0 then, never a guess).
+    func addTerm(heard: String, canonical: String, workflow: String?, lines: [String] = []) -> String? {
         do {
             try GlossaryStore(fileURL: glossaryURL).addTerm(heard: heard, canonical: canonical, workflow: workflow)
         } catch {
@@ -98,6 +100,11 @@ struct TranscriptEditActions {
             "heard_len": heard.count,
             "canonical_len": canonical.count,
         ]
+        // FEAT25: the reach preview the sheet showed, and whether only capitals changed. Counts
+        // and a bool, so SEC14's split holds: the words stay verbose-only below.
+        let check = Clarify.ruleCheck(heard: heard, canonical: canonical, lines: lines)
+        attributes["matches_here"] = check.matchesHere
+        attributes["case_only"] = check.isCaseOnly
         if UISettings.shared.verboseLogging {
             attributes["heard"] = heard
             attributes["canonical"] = canonical

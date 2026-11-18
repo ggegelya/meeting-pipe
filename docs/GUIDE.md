@@ -186,7 +186,7 @@ You will usually notice the problem while reading a transcript, so fix it there:
 The choice is the important part, because the two do very different amounts:
 
 - **Fix this line only** changes that one line, in this one meeting, and nothing else. You can change it back from the same menu.
-- **Always fix this** adds the pair to your Vocabulary, so every transcript finished from then on is written the corrected way, including meetings you have not recorded yet. Because a term only reaches an existing meeting through a rebuild, this option also offers to **re-transcribe this meeting afterwards**; tick it and the meeting you are looking at comes back corrected. Leave it off and this meeting keeps the words it has until you rebuild it yourself.
+- **Always fix this** adds the pair to your Vocabulary, so every transcript finished from then on is written the corrected way, including meetings you have not recorded yet. Because a term only reaches an existing meeting through a rebuild, this option also offers to **re-transcribe this meeting afterwards**; tick it and the meeting you are looking at comes back corrected. Leave it off and this meeting keeps the words it has until you rebuild it yourself. Under the choice the box shows the term exactly as it will be saved (outer quotes and commas trimmed) and how many lines of this meeting it would change, so you can see its reach before it applies everywhere. It refuses a single common word (a pronoun such as *it*, an article, a word like *and* or *is*), since a rule would change that word in every meeting, and a term that starts or ends with a symbol, which could never match; use **Fix this line only** for those. It also points out when only the capitals differ (every spelling of the word will then be written your way) and when the term is one or two letters long.
 
 Nothing at all is written until you press one of those buttons. That is deliberate: a garble you cannot decode is safe to open, read, and walk away from, and walking away is often the right answer.
 
@@ -194,7 +194,7 @@ Nothing at all is written until you press one of those buttons. That is delibera
 
 The other way round works too. Right-click a line, pick **Edit text**, correct the word, and save. If the fix was one word (or two words next to each other), a small box offers to remember the pair, already filled in with what was heard and what you typed. Check the two sides, and press **Add**.
 
-Nothing is written until you press Add, and both sides stay editable until you do. A bigger rewrite deliberately produces no offer at all, rather than guessing at a pair that would be wrong.
+Nothing is written until you press Add, and both sides stay editable until you do. The box shows the same saved form, line count and warnings as **Clarify a word…**, and refuses the same common words and symbol-edged terms, as well as a pair whose two sides are the same. A bigger rewrite deliberately produces no offer at all, rather than guessing at a pair that would be wrong.
 
 ### Adding a term the direct way
 

@@ -116,6 +116,9 @@ struct VocabularyOffer: Identifiable {
     /// lands beside that client's other terms, or nil (the global `[terms]` table) when
     /// the meeting matched no workflow. The user can still switch it before confirming.
     let defaultScope: String?
+    /// FEAT25: the meeting's displayed lines, for the sheet's match count. Filled where the
+    /// offer is built (`TranscriptTab`); empty in a context with no transcript in hand.
+    var lines: [String] = []
 
     var id: String { "\(pair.heard)\u{1F}\(pair.canonical)\u{1F}\(defaultScope ?? "")" }
 

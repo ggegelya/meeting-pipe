@@ -99,6 +99,11 @@ struct ClarifySheet: View {
                     .foregroundStyle(Color(MPColors.fgMuted))
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if destination == .everyMeeting {
+                // FEAT25: the saved form, its reach in this meeting, what to look at twice,
+                // and why the button is off when it is.
+                RuleCheckNotes(check: Clarify.ruleCheck(heard: heard, canonical: intended, lines: target.lines))
+            }
             if let lineHint {
                 Text(lineHint)
                     .font(.mpTextXS)
@@ -204,5 +209,31 @@ struct ClarifySheet: View {
     private func submit() {
         guard let plan else { return }
         error = onConfirm(plan)
+    }
+}
+
+/// FEAT25: what a vocabulary rule would be before it is written, in the muted caption style
+/// Clarify's `lineHint` uses. Shared by Clarify's "Always fix this" and FEAT12's offer sheet,
+/// so both say the same thing about the same pair. Renders nothing until there is a key.
+struct RuleCheckNotes: View {
+    let check: Clarify.RuleCheck
+
+    var body: some View {
+        if !check.key.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                if let refusal = check.refusal {
+                    // Refused: what would be saved is moot, so only the reason is shown.
+                    Text(refusal.message)
+                } else {
+                    Text(check.summary)
+                    ForEach(check.warnings, id: \.message) { warning in
+                        Text(warning.message)
+                    }
+                }
+            }
+            .font(.mpTextXS)
+            .foregroundStyle(Color(MPColors.fgMuted))
+            .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

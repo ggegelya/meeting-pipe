@@ -618,7 +618,8 @@ struct TranscriptTab: View {
                         speakerName: speaker.displayName,
                         speakerColorIndex: MeetingCast.colorIndex(for: speaker, in: cast),
                         start: seg.start,
-                        workflowName: meeting.workflowName
+                        workflowName: meeting.workflowName,
+                        lines: segments.map(\.text)
                     )
                 },
                 onName: { label in namingTarget = NamingTarget(label: label) },
@@ -681,6 +682,8 @@ struct TranscriptTab: View {
                 edited: edited,
                 workflowName: meeting.workflowName
             )
+            // FEAT25: the preview seam, the lines as displayed (this edit already patched in).
+            pendingVocabularyOffer?.lines = segments.map(\.text)
         }
         return nil
     }
@@ -701,7 +704,7 @@ struct TranscriptTab: View {
         // this keeps only what the View owns: the row patch, closing the sheet, the rebuild.
         if let message = editActions.apply(plan, lineOriginal: { index in
             segments.first(where: { $0.index == index })?.text
-        }) {
+        }, lines: segments.map(\.text)) {
             return message
         }
         clarifyTarget = nil
@@ -776,7 +779,7 @@ struct TranscriptTab: View {
     private func addVocabularyTerm(heard: String, canonical: String, workflow: String?) -> String? {
         // Deliberately not closing a sheet here: this is the writer, and the two callers
         // own their own presentation.
-        editActions.addTerm(heard: heard, canonical: canonical, workflow: workflow)
+        editActions.addTerm(heard: heard, canonical: canonical, workflow: workflow, lines: segments.map(\.text))
     }
 
     @ViewBuilder
@@ -1534,6 +1537,7 @@ private struct VocabularyOfferSheet: View {
                 .font(.caption)
                 .foregroundStyle(Color(MPColors.fgMuted))
                 .fixedSize(horizontal: false, vertical: true)
+            RuleCheckNotes(check: check)
             if let error {
                 FailureNotice(failure: FailurePresentation(diagnostics: error, operation: .processing, title: "Couldn't save this correction"))
                     .font(.mpTextXS)
@@ -1547,21 +1551,26 @@ private struct VocabularyOfferSheet: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Add", action: submit)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!isLive)
+                    .disabled(!canAdd)
             }
         }
         .padding(20)
         .frame(minWidth: 420, idealWidth: 460)
     }
 
-    /// Mirrors `GlossaryTerm.isLive`: a row the pipeline would actually read.
-    private var isLive: Bool {
-        !heard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !canonical.isEmpty
+    /// FEAT25: the same rule check Clarify's "Always fix this" reads, over this meeting's lines.
+    private var check: Clarify.RuleCheck {
+        Clarify.ruleCheck(heard: heard, canonical: canonical, lines: offer.lines)
     }
 
+    /// FEAT25: refuses what Clarify refuses, plus identical sides (this sheet's fields are
+    /// editable, so the derive step's own refusal is no longer the last word).
+    private var canAdd: Bool { Clarify.offerCanAdd(heard: heard, canonical: canonical) }
+
     private func submit() {
-        guard isLive else { return }
-        error = onAdd(heard.trimmingCharacters(in: .whitespacesAndNewlines), canonical, scope)
+        guard canAdd else { return }
+        // The trimmed key, as Clarify writes it, so both surfaces store one form.
+        error = onAdd(check.key, canonical.trimmingCharacters(in: .whitespacesAndNewlines), scope)
     }
 }
 
