@@ -13,6 +13,7 @@ pipeline. The text log captures any I/O error.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -47,19 +48,43 @@ def _generation_path(path: Path, k: int) -> Path:
 def rotate_if_needed(path: Path) -> None:
     """Rename-rotate ``path`` when it reaches the size cap. ``path`` -> ``path.1``,
     shifting older generations up and dropping the oldest, so a log family self-bounds
-    at ~``(_LOG_GENERATIONS + 1) * cap``. Atomic renames, so a concurrent writer that
-    loses the race just appends to a fresh file. Call before opening for append."""
+    at ~``(_LOG_GENERATIONS + 1) * cap``. Call before opening for append.
+
+    F212 (OBS9): the check and the renames run under an exclusive ``flock`` on a sibling
+    ``<name>.lock``, and the size is re-read inside it. They used to be an unlocked
+    stat-then-rename reached from the main thread, the ``mp-progress`` heartbeat thread
+    and every concurrent ``mp`` process, so two callers that both passed the check rotated
+    twice (the second shifted the first's fresh generation up and dropped the oldest) and,
+    with the base not yet recreated, raised on its rename and lost the caller's row. A
+    missing base is nothing to rotate, and nothing here raises. The append itself stays
+    outside the lock: it is ``O_APPEND``, so a write after a rename lands in a new base.
+    """
     try:
         if path.stat().st_size < _max_log_bytes():
             return
     except OSError:
         return
-    _generation_path(path, _LOG_GENERATIONS).unlink(missing_ok=True)
-    for k in range(_LOG_GENERATIONS - 1, 0, -1):
-        src = _generation_path(path, k)
-        if src.exists():
-            src.replace(_generation_path(path, k + 1))
-    path.replace(_generation_path(path, 1))
+    try:
+        fd = os.open(f"{path}.lock", os.O_WRONLY | os.O_CREAT, 0o600)
+    except OSError:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            if path.stat().st_size < _max_log_bytes():
+                return  # another caller rotated while this one waited
+        except OSError:
+            return  # the base is gone: nothing to rotate
+        _generation_path(path, _LOG_GENERATIONS).unlink(missing_ok=True)
+        for k in range(_LOG_GENERATIONS - 1, 0, -1):
+            src = _generation_path(path, k)
+            if src.exists():
+                src.replace(_generation_path(path, k + 1))
+        path.replace(_generation_path(path, 1))
+    except OSError as e:
+        _log.warning("log rotation of %s failed: %s", path.name, e)
+    finally:
+        os.close(fd)  # releases the flock
 
 
 def log_generations(path: Path) -> list[Path]:

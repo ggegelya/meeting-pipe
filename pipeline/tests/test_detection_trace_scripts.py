@@ -486,3 +486,31 @@ def test_a_stop_no_logged_end_caused_ends_the_trace():
                          leading_signal="ax_leave_button_invalid", confirmed_by=["lone_dwell"]))
     trace, _ = _extract(rows, "2026-10-22T12:14:50Z", "2026-10-22T12:15:30Z")
     assert trace["until"] == 40.0
+
+
+# ------------------------------------------------------------------ OBS9
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+
+def test_a_log_split_across_both_families_extracts_as_the_single_file_did(tmp_path: Path):
+    """OBS9 moved `call_teardown_source_missing` into `diagnostics.jsonl`; `_load` reads both."""
+    rows = _end15_log()[:6] + [
+        _row("2026-10-22T12:14:52.000Z", "coordinator", "call_teardown_source_missing", reason="x", failures=1),
+        _row("2026-10-22T12:14:55.000Z", "coordinator", "call_teardown_source_recovered", outage_sec=3.0, failures=3),
+    ]
+    single = tmp_path / "single"
+    split = tmp_path / "split"
+    single.mkdir()
+    split.mkdir()
+    _write_jsonl(single / "events.jsonl", rows)
+    diagnostic = [r for r in rows if r["action"] == "call_teardown_source_missing"]
+    _write_jsonl(split / "events.jsonl", [r for r in rows if r not in diagnostic])
+    _write_jsonl(split / "diagnostics.jsonl", diagnostic)
+
+    loaded_single = extract._load(single / "events.jsonl")
+    loaded_split = extract._load(split / "events.jsonl")
+    assert loaded_split == loaded_single
+    window = ("2026-10-22T12:14:50Z", "2026-10-22T12:15:00Z")
+    assert _extract(loaded_split, *window) == _extract(loaded_single, *window)

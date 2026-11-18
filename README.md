@@ -563,9 +563,10 @@ Everything lives under `~/Library/Logs/MeetingPipe/`:
 - `pipeline.log`: summarization and publishing (transcription runs in the daemon, not here)
 - `events.jsonl`: structured Swift-side events, one JSON object per line
 - `pipeline_events.jsonl`: structured Python-side events
-- `launchd.{out,err}.log` — daemon stdout/stderr
+- `diagnostics.jsonl`: the daemon's high-volume rows (audio-device subscriptions, process-audio lookups, a Teams log folder it could not read), kept apart so they cannot push the meeting history out of `events.jsonl`
+- `launchd.{out,err}.log`: daemon stdout/stderr
 
-The event logs and the four text logs self-bound by size: each rotates to `foo.1.ext` (then `.2`, `.3`) at ~5 MiB and drops the oldest, so the directory never grows without bound. `mp logs` reads across the rotated generations, so a postmortem query still spans the recent window, and says `N unparseable lines skipped` on stderr when a line in them is damaged (the Diagnostics window shows the same count), so a missing row is visible rather than silent. `pipeline.log` gets each run's output exactly once: the daemon writes it, and an `mp` it spawned no longer writes a second copy. `tail -F ~/Library/Logs/MeetingPipe/*.log` is the fastest way to debug live. For postmortem queries against a workday's worth of detection or pipeline events, use `mp logs`:
+The event logs and the four text logs self-bound by size: each rotates to `foo.1.ext` (then `.2`, `.3`) at ~5 MiB and drops the oldest, so the directory never grows without bound. `diagnostics.jsonl` keeps one rotated file, and the daemon rotates the two launchd logs when it starts. `mp logs` reads across the rotated generations, so a postmortem query still spans the recent window, and says `N unparseable lines skipped` on stderr when a line in them is damaged (the Diagnostics window shows the same count), so a missing row is visible rather than silent. `pipeline.log` gets each run's output exactly once: the daemon writes it, and an `mp` it spawned no longer writes a second copy. `tail -F ~/Library/Logs/MeetingPipe/*.log` is the fastest way to debug live. For postmortem queries against a workday's worth of detection or pipeline events, use `mp logs`:
 
 ```bash
 mp logs --since 1h                                  # everything in the last hour

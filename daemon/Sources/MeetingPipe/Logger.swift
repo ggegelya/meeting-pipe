@@ -190,6 +190,35 @@ enum Log {
         action: String,
         attributes: [String: Any] = [:]
     ) {
+        guard let line = eventLine(category: category, action: action, attributes: attributes) else { return }
+        append(line, to: logsDir.appendingPathComponent("events.jsonl"))
+    }
+
+    /// OBS9: the diagnostics family. A high-volume row whose only use is investigating a storm (HAL
+    /// subscribe churn, process-audio resolution, a teardown source missing) goes to
+    /// `diagnostics.jsonl`, same envelope as `event`, so it can no longer rotate lifecycle,
+    /// recorder and pipeline rows out of `events.jsonl`: three such families were 79.5 percent of
+    /// its bytes and held its history to 46 days. The family keeps `diagnosticGenerations`
+    /// rotated files, fewer than `events.jsonl`; it is allowed to be short.
+    static func diagnostic(
+        category: String,
+        action: String,
+        attributes: [String: Any] = [:]
+    ) {
+        guard let line = eventLine(category: category, action: action, attributes: attributes) else { return }
+        append(line, to: logsDir.appendingPathComponent(diagnosticsFile), generations: diagnosticGenerations)
+    }
+
+    static let diagnosticsFile = "diagnostics.jsonl"
+    /// The resident agent's `StandardErrorPath` and `StandardOutPath`
+    /// (`scripts/launchd.plist.template`), which launchd writes and nothing else bounds; rotated at
+    /// launch (OBS9).
+    static let launchdOwnedLogs = ["launchd.err.log", "launchd.out.log"]
+    static let diagnosticGenerations = 1
+
+    /// One JSON line with the shared envelope (`ts`, `category`, `action`), or nil when it
+    /// cannot be encoded even after coercion.
+    private static func eventLine(category: String, action: String, attributes: [String: Any]) -> Data? {
         var dict: [String: Any] = attributes
         dict["ts"] = isoFormatter.string(from: Date())
         dict["category"] = category
@@ -202,11 +231,11 @@ enum Log {
               let json = try? JSONSerialization.data(
                 withJSONObject: payload, options: [.sortedKeys, .withoutEscapingSlashes]
               ) else {
-            return
+            return nil
         }
         var line = json
         line.append(0x0A) // newline
-        append(line, to: logsDir.appendingPathComponent("events.jsonl"))
+        return line
     }
 
     /// `attributes` with every value JSON cannot hold replaced by one it can. A top-level
@@ -304,9 +333,9 @@ enum Log {
     /// has reached the size cap. `PipelineLauncher.runMP` writes `pipeline.log` through this
     /// too, one call per output chunk, so concurrent spawns and a rotation mid-run cannot
     /// overwrite or strand each other's bytes. Empty `data` just creates the file (0600).
-    static func append(_ data: Data, to url: URL) {
+    static func append(_ data: Data, to url: URL, generations: Int = maxLogGenerations) {
         let failure: Int32? = writer.withLock { _ in
-            rotateLocked(url)
+            rotateLocked(url, generations: generations)
             return appendLocked(data, path: url.path)
         }
         if let failure { reportFailedAppend(url, errno: failure) }
@@ -380,16 +409,16 @@ enum Log {
     /// line there is that every writer opens per write with `O_APPEND | O_CREAT`, so a write
     /// after a rename lands in a new base file rather than at a stale offset in the old one.
     static func rotateIfNeeded(_ url: URL) {
-        writer.withLock { _ in rotateLocked(url) }
+        writer.withLock { _ in rotateLocked(url, generations: maxLogGenerations) }
     }
 
-    private static func rotateLocked(_ url: URL) {
+    private static func rotateLocked(_ url: URL, generations: Int) {
         let fm = FileManager.default
         guard let attrs = try? fm.attributesOfItem(atPath: url.path),
               let size = attrs[.size] as? UInt64,
               size >= maxLogBytes else { return }
-        try? fm.removeItem(at: generationURL(url, maxLogGenerations))
-        var k = maxLogGenerations - 1
+        try? fm.removeItem(at: generationURL(url, generations))
+        var k = generations - 1
         while k >= 1 {
             let src = generationURL(url, k)
             if fm.fileExists(atPath: src.path) {

@@ -1046,4 +1046,8 @@ final class LogEventAdapter: EventLog {
     func emit(category: String, action: String, attributes: [String: Any]) {
         Log.event(category: category, action: action, attributes: attributes)
     }
+
+    func emitDiagnostic(category: String, action: String, attributes: [String: Any]) {
+        Log.diagnostic(category: category, action: action, attributes: attributes)
+    }
 }

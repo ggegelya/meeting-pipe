@@ -75,6 +75,52 @@ def test_emit_rotates_at_cap(tmp_path, monkeypatch):
     assert not events._generation_path(target, events._LOG_GENERATIONS + 1).exists()
 
 
+def test_concurrent_rotations_rotate_once_and_drop_no_generation(tmp_path, monkeypatch):
+    """F212 (OBS9): callers that all pass the size check at once rotate exactly once."""
+    import threading
+
+    monkeypatch.setenv("MEETINGPIPE_LOG_MAX_BYTES", "100")
+    p = tmp_path / "pipeline_events.jsonl"
+    p.write_text("base" * 50)
+    events._generation_path(p, 1).write_text("g1")
+    events._generation_path(p, 2).write_text("g2")
+    barrier = threading.Barrier(8)
+
+    def rotate() -> None:
+        barrier.wait()
+        events.rotate_if_needed(p)
+
+    threads = [threading.Thread(target=rotate) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert events._generation_path(p, 1).read_text() == "base" * 50
+    assert events._generation_path(p, 2).read_text() == "g1"
+    assert events._generation_path(p, 3).read_text() == "g2"
+    assert not p.exists()
+
+
+def test_emit_writes_its_row_when_the_base_vanishes_between_check_and_rename(tmp_path, monkeypatch):
+    """Another process rotated first: the base is gone by the time the lock is held."""
+    target = tmp_path / "pipeline_events.jsonl"
+    monkeypatch.setattr(events, "_events_path", lambda: target)
+    monkeypatch.setenv("MEETINGPIPE_LOG_MAX_BYTES", "100")
+    target.write_text("x" * 200)
+    real_flock = events.fcntl.flock
+
+    def rotated_elsewhere(fd: int, op: int) -> None:
+        target.replace(events._generation_path(target, 1))
+        real_flock(fd, op)
+
+    monkeypatch.setattr(events.fcntl, "flock", rotated_elsewhere)
+    events.emit("test", "survives", n=1)
+    rows = [json.loads(line) for line in target.read_text().splitlines()]
+    assert [r["action"] for r in rows] == ["survives"]
+    assert events._generation_path(target, 1).read_text() == "x" * 200
+
+
 def test_logs_cmd_reads_across_generations(tmp_path, monkeypatch):
     from mp import logs_cmd
 
@@ -89,6 +135,17 @@ def test_logs_cmd_reads_across_generations(tmp_path, monkeypatch):
     actions = [e["action"] for e in logs_cmd._iter_events()]
     assert "new" in actions
     assert "old" in actions
+
+
+def test_logs_cmd_reads_the_diagnostics_family(tmp_path, monkeypatch):
+    """OBS9: the daemon's high-volume rows moved to `diagnostics.jsonl`; `mp logs` shows them."""
+    from mp import logs_cmd
+
+    monkeypatch.setattr(logs_cmd, "LOGS_DIR", tmp_path)
+    (tmp_path / "diagnostics.jsonl").write_text(
+        json.dumps({"ts": "2026-07-11T10:00:00Z", "category": "halbus", "action": "subscribed"}) + "\n"
+    )
+    assert [e["action"] for e in logs_cmd._iter_events()] == ["subscribed"]
 
 
 def test_logs_cmd_reports_one_skipped_torn_line(tmp_path, monkeypatch, capsys):

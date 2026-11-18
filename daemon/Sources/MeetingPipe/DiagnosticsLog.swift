@@ -42,7 +42,9 @@ struct DiagnosticsResult: Equatable {
 /// its timestamp, category and action before anything else is built, a family stops once it
 /// has `displayLimit` matches, and `detail` is formatted only for the rows actually returned.
 enum DiagnosticsLog {
-    static let sources = ["events.jsonl", "pipeline_events.jsonl"]
+    /// OBS9: `diagnostics.jsonl` holds the daemon's high-volume rows (HAL subscribe churn,
+    /// process-audio resolution, a teardown source missing), split out of `events.jsonl`.
+    static let sources = ["events.jsonl", "pipeline_events.jsonl", Log.diagnosticsFile]
 
     /// The most rows a load returns, newest first. Each family stops reading once it holds
     /// this many matches, so the cap bounds the parse as well as the render (PERF13: it used

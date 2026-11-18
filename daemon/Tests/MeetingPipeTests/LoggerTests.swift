@@ -306,4 +306,34 @@ final class LoggerConcurrencyPERF13Tests: XCTestCase {
         XCTAssertEqual(lines.count, 1_000)
         XCTAssertEqual(Set(lines).count, 1_000)
     }
+
+    // MARK: - OBS9 diagnostics family
+
+    func test_diagnostic_rows_rotate_their_own_family_and_leave_events_alone() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("mp-diag-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        setenv("MEETINGPIPE_LOGS_DIR", dir.path, 1)
+        setenv("MEETINGPIPE_LOG_MAX_BYTES", "400", 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR"); unsetenv("MEETINGPIPE_LOG_MAX_BYTES") }
+
+        Log.event(category: "lifecycle", action: "obs9_kept")
+        for i in 0..<50 {
+            Log.diagnostic(category: "halbus", action: "subscribed", attributes: ["n": i, "pad": String(repeating: "x", count: 40)])
+        }
+        Log.event(category: "lifecycle", action: "obs9_kept_too")
+
+        let events = dir.appendingPathComponent("events.jsonl")
+        XCTAssertEqual(Log.logGenerations(events).map(\.lastPathComponent), ["events.jsonl"])
+        let text = try String(contentsOf: events, encoding: .utf8)
+        XCTAssertTrue(text.contains("obs9_kept\"") && text.contains("obs9_kept_too"))
+        XCTAssertFalse(text.contains("subscribed"))
+
+        let diagnostics = dir.appendingPathComponent(Log.diagnosticsFile)
+        XCTAssertEqual(
+            Log.logGenerations(diagnostics).map(\.lastPathComponent), ["diagnostics.1.jsonl", "diagnostics.jsonl"],
+            "the diagnostics family keeps \(Log.diagnosticGenerations) rotated generation"
+        )
+    }
 }

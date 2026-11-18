@@ -52,6 +52,11 @@ public final class MicGate {
     private let continuation: AsyncStream<MicGateVerdict>.Continuation
     private let lock = NSLock()
     private var lastVerdict: MicGateVerdict = .uncertain(reasons: ["not_started"])
+    /// OBS9: the last verdict written as a `verdict_changed` row (nil after a stop, so a new
+    /// recording's first verdict is written), and the changes since the last `verdict_churn`.
+    /// Both confined to `publishQueue`.
+    private var lastLoggedVerdict: MicGateVerdict?
+    private var churn = VerdictChurn()
     // Serial queue that owns the dedupe lock, the eventLog.emit, and the
     // verdict-stream yield. Tagged with a specific key so a DEBUG assertion can
     // prove the events.jsonl write never runs on the audio render thread.
@@ -201,6 +206,16 @@ public final class MicGate {
         for adapter in activeAdapters { adapter.stop() }
         activeAdapters.removeAll()
         endHeld = false
+        // OBS9: the churn counted so far is written at stop, and the next recording's first
+        // verdict is written whatever this one's last was.
+        let at = now()
+        publishQueue.async { [weak self] in
+            guard let self else { return }
+            self.lastLoggedVerdict = nil
+            if let churn = self.churn.drain(at: at, force: true) {
+                self.eventLog.emit(category: "micgate", action: "verdict_churn", attributes: churn)
+            }
+        }
         lock.withLock {
             state = MicGate.feedingDetectorState
             lastLogReadingAt = nil
@@ -427,20 +442,29 @@ public final class MicGate {
         publishQueue.async { [weak self, continuation] in
             guard let self else { return }
             self.evidence?.observe(state: state, halVadSupported: halVadSupported, verdict: verdict, at: time)
-            let shouldEmit: Bool = self.lock.withLock {
-                if verdict == self.lastVerdict { return false }
-                self.lastVerdict = verdict
-                return true
+            let previous: MicGateVerdict? = self.lock.withLock {
+                if verdict == self.lastVerdict { return nil }
+                defer { self.lastVerdict = verdict }
+                return self.lastVerdict
             }
-            guard shouldEmit else { return }
+            guard let previous else { return }
             #if DEBUG
             assert(
                 DispatchQueue.getSpecific(key: MicGate.publishQueueKey) != nil,
                 "MicGate.eventLog.emit must run on publishQueue, never the audio render thread (TECH-CONC1)"
             )
             #endif
-            let attrs = self.attributes(for: verdict)
-            self.eventLog.emit(category: "micgate", action: "verdict_changed", attributes: attrs)
+            // OBS9: a row only when what the verdict does changed; a reason swap is counted.
+            let logged = VerdictChurn.changesEffect(from: self.lastLoggedVerdict, to: verdict)
+            self.churn.note(previous: previous, next: verdict, logged: logged, at: time)
+            if logged {
+                self.lastLoggedVerdict = verdict
+                let attrs = self.attributes(for: verdict)
+                self.eventLog.emit(category: "micgate", action: "verdict_changed", attributes: attrs)
+            }
+            if let churn = self.churn.drain(at: time, force: false) {
+                self.eventLog.emit(category: "micgate", action: "verdict_churn", attributes: churn)
+            }
             continuation.yield(verdict)
         }
     }

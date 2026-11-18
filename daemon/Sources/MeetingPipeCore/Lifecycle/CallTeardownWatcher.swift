@@ -359,7 +359,7 @@ public final class CallTeardownWatcher {
             }
             guard let report else { return }
             if let missing = report.missing {
-                self.eventLog.emit(
+                self.eventLog.emitDiagnostic(
                     category: "coordinator", action: "call_teardown_source_missing",
                     attributes: ["family": self.family, "reason": missing.cause, "failures": missing.failures]
                 )

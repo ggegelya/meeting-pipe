@@ -2,9 +2,9 @@
 id: OBS9
 title: The event log's retention is set by noise: four 5 MiB files kept 45.9 days, and everything before 2026-09-29 is gone, including two crash days
 category: Observability
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). Log rotates events.jsonl at four files of 5 MiB, and three chatter families are 79.5 percent of its bytes, so the work laptop kept 45.9 days and lost every event from 2026-05-18 to 2026-09-29 (two crash days, 40 of 113 meetings); the rest is about 34.4 KB a day, roughly 600 days in the same files. Scope: high-volume diagnostic rows to their own rotating family so lifecycle, recorder and pipeline rows keep a long history, a bound on launchd.err.log, a locked Python rotation (F212), and verdict_changed logged only when the audio-passing or mute side changes.
+comment: Shipped 2026-11-18 - diagnostics.jsonl family (Log.diagnostic, EventLog.emitDiagnostic) takes HAL subscribe churn, process_audio_object_* and call_teardown_source_missing; readers follow; launchd logs rotated at launch; Python rotation flock-locked (F212); verdict_changed on effect only plus verdict_churn. Owner still owes the two-week read of the oldest events.*.jsonl timestamp and events.jsonl's daily byte rate on the installed build.
 ---
 
 # OBS9: The event log's retention is set by noise: four 5 MiB files kept 45.9 days, and everything before 2026-09-29 is gone, including two crash days
@@ -56,3 +56,5 @@ Sources: the field finding "Rotation is driven by noise: 45.9 days kept, everyth
 ## Owner walkthrough
 
 1. [session] After two weeks on the landing build, report the first timestamp of the oldest `events.*.jsonl` generation and the daily byte rate of `events.jsonl` against the 34.4 KB a day above.
+
+**Progress (2026-11-18):** shipped all five scope items. Decisions not in the spec: `subscribe_attempt` moves with `subscribed` and `unsubscribed` (the HAL family the field counted); the failure rows (`subscribe_failed`, `unsubscribe_failed`, `call_teardown_source_recovered`) stay in `events.jsonl`; `launchd.out.log` is rotated beside `launchd.err.log`; `diagnostics.jsonl` keeps one rotated generation. Item 5 reads "RMS open and close transitions" as counted into `verdict_churn` while still written when they change the effect (hot to `silent_by_rms` changes whether audio passes, which matters under the regulated gate); only same-effect swaps are suppressed. `mp logs` and the Diagnostics window read the new family too.

@@ -183,6 +183,7 @@ final class CallTeardownWatcherTests: XCTestCase {
         watcher.start()
         let rows = events.entries.filter { $0.action == "call_teardown_source_missing" }
         XCTAssertEqual(rows.count, 1, "one row per distinct cause, not one per tick")
+        XCTAssertEqual(events.diagnosticActions, ["call_teardown_source_missing"], "OBS9: a diagnostics.jsonl row")
         let reason = try XCTUnwrap(rows.first?.attributes["reason"])
         XCTAssertTrue(
             reason.contains("NSCocoaErrorDomain") || reason.contains("260"),

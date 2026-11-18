@@ -115,3 +115,46 @@ def test_the_mirror_agrees_with_mp_events_on_the_merge_rows():
     ]
     assert [dogfood_report._is_test_residue(r) for r in rows] == [events.is_test_residue(r) for r in rows]
     assert [events.is_test_residue(r) for r in rows] == [True, False, True]
+
+
+def test_verdict_churn_is_summed():
+    daemon = [
+        _ev("micgate", "verdict_churn", reason_swaps=4, rms_opens=1, rms_closes=2, window_sec=60),
+        _ev("micgate", "verdict_churn", reason_swaps=3, rms_opens=0, rms_closes=0, window_sec=12),
+    ]
+    report = dogfood_report.build_report(daemon, [])
+    assert report["micgate"]["verdict_churn"] == {"reason_swaps": 7, "rms_opens": 1, "rms_closes": 2}
+    assert "Unlogged churn" in dogfood_report.render_markdown(report)
+
+
+def test_a_log_split_across_both_daemon_families_reports_as_the_single_file_did(tmp_path):
+    """OBS9: `call_teardown_source_missing` and the HAL chatter now live in `diagnostics.jsonl`."""
+    import json
+
+    stem = "20260601-100000.wav"
+    rows = [
+        _ev("lifecycle", "in_meeting", ts="2026-06-01T10:00:00Z"),
+        _ev("halbus", "subscribed", ts="2026-06-01T10:00:01Z"),
+        _ev("coordinator", "call_teardown_source_missing", ts="2026-06-01T10:00:02Z", reason="x"),
+        _ev("coordinator", "recording_started", ts="2026-06-01T10:00:03Z", file=stem),
+        _ev("signal", "process_audio_object_resolved", ts="2026-06-01T10:00:04Z"),
+    ]
+    moved = {"subscribed", "call_teardown_source_missing", "process_audio_object_resolved"}
+
+    def write(path, items):
+        path.write_text("".join(json.dumps(r) + "\n" for r in items), encoding="utf-8")
+
+    (tmp_path / "single").mkdir()
+    (tmp_path / "split").mkdir()
+    write(tmp_path / "single" / "events.jsonl", rows)
+    write(tmp_path / "split" / "events.jsonl", [r for r in rows if r["action"] not in moved])
+    write(tmp_path / "split" / "diagnostics.jsonl", [r for r in rows if r["action"] in moved])
+
+    def report(base):
+        events = base / "events.jsonl"
+        daemon = dogfood_report._load(events, None, files=dogfood_report._daemon_files(events))
+        daemon.sort(key=lambda e: str(e.get("ts", "")))
+        return dogfood_report.build_report(daemon, [])
+
+    assert report(tmp_path / "split") == report(tmp_path / "single")
+    assert report(tmp_path / "split")["detection"]["coordinator"]["call_teardown_source_missing"] == 1

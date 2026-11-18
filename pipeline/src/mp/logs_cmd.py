@@ -3,6 +3,7 @@
 Sources:
   ~/Library/Logs/MeetingPipe/events.jsonl          (Swift daemon)
   ~/Library/Logs/MeetingPipe/pipeline_events.jsonl (Python pipeline)
+  ~/Library/Logs/MeetingPipe/diagnostics.jsonl     (Swift daemon, high-volume rows, OBS9)
 
 Filters: --since, --category, --action. Each event is one JSON object;
 this command applies filters in Python so the user does not have to
@@ -25,7 +26,7 @@ from typing import Iterable, Iterator
 from . import events as events_mod
 
 LOGS_DIR = Path(os.path.expanduser("~/Library/Logs/MeetingPipe"))
-SOURCES = ("events.jsonl", "pipeline_events.jsonl")
+SOURCES = ("events.jsonl", "pipeline_events.jsonl", "diagnostics.jsonl")
 
 
 def _parse_since(s: str) -> datetime:

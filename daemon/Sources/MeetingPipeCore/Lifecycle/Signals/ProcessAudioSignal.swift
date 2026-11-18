@@ -357,7 +357,7 @@ public final class ProcessAudioSignal {
                     "reason": reresolve.reason
                 ])
             } else {
-                eventLog.emit(category: "signal", action: "process_audio_object_resolved", attributes: [
+                eventLog.emitDiagnostic(category: "signal", action: "process_audio_object_resolved", attributes: [
                     "bundle_id": context.bundleID,
                     "pid": Int(context.pid),
                     "object_count": objects.count
@@ -384,7 +384,7 @@ public final class ProcessAudioSignal {
                     "backoff_sec": backoff
                 ])
             } else {
-                eventLog.emit(category: "signal", action: "process_audio_object_unresolved", attributes: [
+                eventLog.emitDiagnostic(category: "signal", action: "process_audio_object_unresolved", attributes: [
                     "bundle_id": context.bundleID,
                     "pid": Int(context.pid),
                     "osstatus": Int(status),

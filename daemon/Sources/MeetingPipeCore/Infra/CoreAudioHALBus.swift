@@ -123,7 +123,7 @@ public final class CoreAudioHALBus {
     /// On `queue`. Registers the backend listener for `address` and logs the attempt and its outcome.
     private func registerBackendListener(_ address: Address) throws {
         let attemptAttrs = addressAttributes(address)
-        eventLog.emit(category: "halbus", action: "subscribe_attempt", attributes: attemptAttrs)
+        eventLog.emitDiagnostic(category: "halbus", action: "subscribe_attempt", attributes: attemptAttrs)
         nextEpoch += 1
         let epoch = nextEpoch
         do {
@@ -131,7 +131,7 @@ public final class CoreAudioHALBus {
                 queue.async { self?.deliver(address, epoch: epoch) }
             })
             listeners[address] = Listener(epoch: epoch, remove: remove, handlers: [:])
-            eventLog.emit(category: "halbus", action: "subscribed", attributes: attemptAttrs)
+            eventLog.emitDiagnostic(category: "halbus", action: "subscribed", attributes: attemptAttrs)
         } catch let busError as BusError {
             var attrs = attemptAttrs
             if case .backendFailed(let status) = busError {
@@ -193,7 +193,7 @@ public final class CoreAudioHALBus {
             "selector": fourCC(address.selector)
         ]
         if status == noErr {
-            eventLog.emit(category: "halbus", action: "unsubscribed", attributes: attrs)
+            eventLog.emitDiagnostic(category: "halbus", action: "unsubscribed", attributes: attrs)
         } else {
             attrs["osstatus"] = Int(status)
             attrs["osstatus_4cc"] = fourCC(UInt32(bitPattern: status))

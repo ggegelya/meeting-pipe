@@ -470,12 +470,13 @@ def check_config() -> bool:
 # --------------------------------------------------------------------------
 
 # OBS1: `Log.failure(` writes an event row too, so its category and action are fenced alike.
-SWIFT_EMIT = re.compile(r'(?:Log\.event|Log\.failure|\.emit)\(\s*category:\s*"([a-z_]+)"')
+# OBS9: `Log.diagnostic(` and `.emitDiagnostic(` write `diagnostics.jsonl`, same envelope.
+SWIFT_EMIT = re.compile(r'(?:Log\.event|Log\.failure|Log\.diagnostic|\.emit|\.emitDiagnostic)\(\s*category:\s*"([a-z_]+)"')
 # Scoped to the emit call, NOT a bare `action:` label: `LibraryError.noTranscript`
 # also takes an `action:` and its value is a human sentence ("re-run"), which a
 # loose regex reports as a convention violation forever.
 SWIFT_EMIT_ACTION = re.compile(
-    r'(?:Log\.event|Log\.failure|\.emit)\(\s*category:\s*"[a-z_]+",\s*action:\s*([^\n]*?),\s*(?:attributes|error|reason):'
+    r'(?:Log\.event|Log\.failure|Log\.diagnostic|\.emit|\.emitDiagnostic)\(\s*category:\s*"[a-z_]+",\s*action:\s*([^\n]*?),\s*(?:attributes|error|reason):'
 )
 STRING_LITERAL = re.compile(r'"([^"\\]*)"')
 # Python's `events.emit("category", "action", ...)`, tolerating a newline after
@@ -566,7 +567,7 @@ CONTENT_KEY_ALLOWLIST: dict[str, str] = {
 # Interpolations a daemon.log line may not carry.
 WRITELINE_DENYLIST = ("meetingTitle", "pageURL")
 
-SWIFT_EMIT_CALL = re.compile(r"(?:Log\.event|Log\.failure|\.emit)\(\s*category:")
+SWIFT_EMIT_CALL = re.compile(r"(?:Log\.event|Log\.failure|Log\.diagnostic|\.emit|\.emitDiagnostic)\(\s*category:")
 SWIFT_ATTR_ASSIGN = re.compile(r'attributes\["([a-z_]+)"\]\s*=')
 PY_EMIT_CALL = re.compile(r"events\.emit\(")
 WRITELINE_CALL = re.compile(r"Log\.writeLine\(")

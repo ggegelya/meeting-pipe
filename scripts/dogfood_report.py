@@ -92,9 +92,19 @@ def _is_test_residue(event: dict) -> bool:
     return False
 
 
-def _load(path: Path, since: datetime | None) -> list[dict]:
+DIAGNOSTICS = "diagnostics.jsonl"
+
+
+def _daemon_files(path: Path) -> list[Path]:
+    """OBS9: the daemon's rows are two families. `diagnostics.jsonl` beside `events.jsonl`
+    holds the high-volume ones (HAL subscribe churn, process-audio resolution,
+    `call_teardown_source_missing`), which used to share `events.jsonl`."""
+    return _log_files(path) + _log_files(path.with_name(DIAGNOSTICS))
+
+
+def _load(path: Path, since: datetime | None, *, files: list[Path] | None = None) -> list[dict]:
     events: list[dict] = []
-    for source in _log_files(path):
+    for source in (files if files is not None else _log_files(path)):
         for line in source.read_text(encoding="utf-8", errors="ignore").splitlines():
             line = line.strip()
             if not line:
@@ -169,6 +179,12 @@ def build_report(daemon_events: list[dict], pipeline_events: list[dict]) -> dict
         for e in daemon_events
         if _is(e, "micgate", "verdict_changed")
     )
+    # OBS9: reason swaps and RMS opens and closes that wrote no `verdict_changed` row.
+    micgate_churn = Counter()
+    for e in daemon_events:
+        if _is(e, "micgate", "verdict_churn"):
+            for key in ("reason_swaps", "rms_opens", "rms_closes"):
+                micgate_churn[key] += int(e.get(key, 0) or 0)
 
     run_skipped_reason = Counter(
         str(e.get("reason", "unknown"))
@@ -216,7 +232,7 @@ def build_report(daemon_events: list[dict], pipeline_events: list[dict]) -> dict
             "ended_by_leading_signal": dict(ended_by_signal),
             "coordinator": dict(coordinator),
         },
-        "micgate": {"verdict_changed": dict(micgate_verdicts)},
+        "micgate": {"verdict_changed": dict(micgate_verdicts), "verdict_churn": dict(micgate_churn)},
         "pipeline": {
             "runs": pipeline_runs,
             "skipped_by_reason": dict(run_skipped_reason),
@@ -255,6 +271,7 @@ def render_markdown(report: dict) -> str:
     lines.append("")
     lines.append("## Mic gate")
     lines.append(f"Verdict transitions:\n{_fmt_counter(report['micgate']['verdict_changed'])}")
+    lines.append(f"Unlogged churn:\n{_fmt_counter(report['micgate']['verdict_churn'])}")
     lines.append("")
     lines.append("## Pipeline")
     runs = pipe["runs"]
@@ -299,7 +316,9 @@ def main(argv: list[str]) -> int:
         print(f"error: could not parse --since {args.since!r}", file=sys.stderr)
         return 2
 
-    report = build_report(_load(args.events, since), _load(args.pipeline_events, since))
+    daemon = _load(args.events, since, files=_daemon_files(args.events))
+    daemon.sort(key=lambda e: str(e.get("ts", "")))
+    report = build_report(daemon, _load(args.pipeline_events, since))
     rendered = json.dumps(report, indent=2) if args.json else render_markdown(report)
 
     if args.out is not None:

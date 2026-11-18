@@ -30,3 +30,11 @@ def test_a_failure_action_is_read_with_error_or_reason_after_it():
 def test_a_denied_key_passed_through_the_helper_fails():
     src = 'Log.failure(category: "library", action: "x_failed", error: e, attributes: [\n    "title": t,\n])\n'
     assert fences.content_key_hits({"Foo.swift": src}, {}) == ["Foo.swift:1: event attribute `title`"]
+
+
+def test_a_diagnostic_row_is_fenced_like_an_event():
+    """OBS9: `Log.diagnostic(` and `.emitDiagnostic(` write `diagnostics.jsonl`, same rules."""
+    src = 'eventLog.emitDiagnostic(category: "halbus", action: "subscribed", attributes: [\n    "title": t,\n])\n'
+    assert fences.SWIFT_EMIT.findall(src) == ["halbus"]
+    assert fences.content_key_hits({"Foo.swift": src}, {}) == ["Foo.swift:1: event attribute `title`"]
+    assert fences.SWIFT_EMIT.findall('Log.diagnostic(category: "nope", action: "x")') == ["nope"]

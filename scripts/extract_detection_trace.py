@@ -137,8 +137,10 @@ def _log_files(path: Path) -> list[Path]:
 
 
 def _load(path: Path) -> list[dict]:
+    """Both daemon families, merged by time: OBS9 moved `call_teardown_source_missing` (and
+    the HAL and process-audio chatter) into `diagnostics.jsonl` beside `events.jsonl`."""
     events: list[dict] = []
-    for source in _log_files(path):
+    for source in _log_files(path) + _log_files(path.with_name("diagnostics.jsonl")):
         for line in source.read_text(encoding="utf-8", errors="replace").splitlines():
             line = line.strip()
             if not line:

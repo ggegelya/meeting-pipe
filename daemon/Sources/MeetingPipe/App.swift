@@ -110,6 +110,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Tighten any pre-existing 0644 log files to 0600 once at startup (SEC11);
         // new files are already created 0600. The logs carry verbatim meeting titles.
         Log.tightenLogPermissions()
+        // OBS9: launchd writes these from the agent plist and nothing else bounds them. They were
+        // opened before this process started, so this run keeps writing to the renamed generation
+        // and the next spawn gets a fresh base; a check per launch is enough for files that grow
+        // only on a crash or a stray stderr write.
+        for name in Log.launchdOwnedLogs {
+            Log.rotateIfNeeded(Log.logsDir.appendingPathComponent(name))
+        }
 
         // Ceiling on every synchronous Accessibility IPC this process makes. The
         // detection signals read the meeting app's AX tree with blocking
