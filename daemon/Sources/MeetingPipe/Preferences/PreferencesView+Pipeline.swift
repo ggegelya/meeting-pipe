@@ -570,7 +570,7 @@ struct PipelineSectionView: View {
     private var speakerSeparationSublabel: String {
         let base = "If two different people keep getting one name, choose More distinct; "
             + "if one person is split across several, choose Merge more. Read at startup, "
-            + "so it applies once the daemon relaunches (Quit from the menu bar), to new "
+            + "so it applies once MeetingPipe restarts (Restart MeetingPipe in the menu bar), to new "
             + "recordings and to Re-transcribe… on a meeting you already have."
         let value = store.diarizationClusteringThreshold
         guard SpeakerSeparation.id(forValue: value) == SpeakerSeparation.customId else {

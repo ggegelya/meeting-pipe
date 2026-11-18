@@ -83,6 +83,7 @@ final class ObservabilityOBS5LaunchTests: XCTestCase {
         XCTAssertEqual(row["commit"] as? String, "unknown", "unknown until DIST6 stamps the plist")
         XCTAssertEqual(row["pipeline_commit"] as? String, "unknown")
         XCTAssertEqual(row["previous_exit"] as? String, "first_launch")
+        XCTAssertEqual(row["agent_job"] as? Bool, false, "the test runner is not the launch agent's job")
         XCTAssertEqual(row["pid"] as? Int, Int(ProcessInfo.processInfo.processIdentifier))
         XCTAssertEqual(rows.count, 2)
         for row in rows {

@@ -7,6 +7,16 @@ import SwiftUI
 struct OnboardingStepPermissions: View {
     @ObservedObject private var perms = PermissionsCenter.shared
     @State private var inFlight: PermissionsCenter.Kind?
+    /// UX82 item 4: relaunch and come back to this step; nil when no launch agent would answer.
+    var relaunch: (() -> Void)? = nil
+
+    /// The Accessibility row's notice. One sentence per case, so it never names a button that
+    /// is not there.
+    static func accessibilityNotice(canRelaunch: Bool) -> String {
+        canRelaunch
+            ? "After granting, relaunch MeetingPipe for it to take effect. Setup comes back to this step."
+            : "After granting, quit MeetingPipe and open it again for it to take effect."
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -43,10 +53,14 @@ struct OnboardingStepPermissions: View {
                     // caches AX trust per-process at launch), documented in the
                     // Preferences footnote; say so where the grant happens too, or
                     // it reads as granted but does nothing until the next launch.
-                    Text("After granting, quit and reopen MeetingPipe for it to take effect.")
+                    Text(Self.accessibilityNotice(canRelaunch: relaunch != nil))
                         .font(.mpTextXS)
                         .foregroundStyle(.mpWarning)
                         .fixedSize(horizontal: false, vertical: true)
+                    if let relaunch {
+                        Button("Relaunch MeetingPipe", action: relaunch)
+                            .controlSize(.small)
+                    }
                 }
             }
             Spacer()

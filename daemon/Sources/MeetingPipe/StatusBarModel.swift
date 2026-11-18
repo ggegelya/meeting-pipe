@@ -100,7 +100,11 @@ enum StatusBarModel {
         var unsavedSetting: Bool
         /// STOR10: the scheduled-run row's title (`LastBackup.menuTitle`), read off main, or nil.
         var scheduledRunTitle: String?
-        var disableAutoRestart: Bool
+        /// UX82: the relaunch-after-quit preference (opt-in since 2026-11-18).
+        var relaunchAfterQuit: Bool
+        /// UX82: this process is the launch agent's job (`LaunchRecord.runsAsAgentJob`). A copy
+        /// opened by hand after a Quit is not, and nothing answers its relaunch request.
+        var agentJob: Bool
         /// UX55: whether the `com.meetingpipe.daemon` launch agent is enabled, which is
         /// whether anything is left that *could* relaunch the app after a quit
         /// (`LaunchAtLoginService.status().isOn`). A second input to the quit row, not a
@@ -140,7 +144,8 @@ enum StatusBarModel {
             finishSetupTitle: String? = nil,
             unsavedSetting: Bool = false,
             scheduledRunTitle: String? = nil,
-            disableAutoRestart: Bool = false,
+            relaunchAfterQuit: Bool = true,
+            agentJob: Bool = true,
             launchAgentEnabled: Bool = true,
             suppressedCandidateAppName: String? = nil,
             suppressedIsOffer: Bool = false,
@@ -162,7 +167,8 @@ enum StatusBarModel {
             self.finishSetupTitle = finishSetupTitle
             self.unsavedSetting = unsavedSetting
             self.scheduledRunTitle = scheduledRunTitle
-            self.disableAutoRestart = disableAutoRestart
+            self.relaunchAfterQuit = relaunchAfterQuit
+            self.agentJob = agentJob
             self.launchAgentEnabled = launchAgentEnabled
             self.suppressedCandidateAppName = suppressedCandidateAppName
             self.suppressedIsOffer = suppressedIsOffer
@@ -376,8 +382,19 @@ enum StatusBarModel {
     /// A *missing* agent reads as not enabled and gets the same answer for the same
     /// reason, since nothing can relaunch the app then either.
     static func offersQuitWithoutRelaunch(_ i: Inputs) -> Bool {
-        !i.disableAutoRestart && i.launchAgentEnabled
+        i.relaunchAfterQuit && i.launchAgentEnabled && i.agentJob
     }
+
+    /// UX82: whether to offer "Restart MeetingPipe". Once Quit stops relaunching by default it is
+    /// the one honest path behind every "applies after a restart" line, and it works only while
+    /// the agent can bring the app back: a requested relaunch is a non-zero exit, which nothing
+    /// answers when the agent is disabled or this copy was opened by hand rather than by it.
+    static func offersRestart(_ i: Inputs) -> Bool {
+        i.launchAgentEnabled && i.agentJob
+    }
+
+    /// UX82: the restart row's title, read by the menu and the copy that points at it.
+    static let restartTitle = "Restart MeetingPipe"
 
     /// The start row's title (DET7). `StatusBarController.populateMenu` builds its
     /// `NSMenuItem`s by hand rather than from `rows`, so the copy lives here and both

@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Combine
+import os
 
 @main
 final class App {
@@ -18,7 +19,11 @@ final class App {
             SingleInstanceGuard.standDownIfPeerIsRunning()
             // OBS5: what the previous process left, settled before anything here can crash, so
             // a launch that dies before AppKit is up still reads as unclean to the next one.
-            LaunchRecord.begin()
+            let previous = LaunchRecord.begin()
+            // UX82 item 2: count a launch that followed a crash; past the threshold, start in the
+            // safe idle mode below instead of the app, so launchd stops respawning a crash.
+            let breaker = CrashLoopBreaker.evaluate(logsDir: Log.logsDir, previousExit: previous.exit)
+            if breaker.tripped { AppDelegate.safeModeLaunchCount = breaker.count }
             SecretsStore.migrateEnvFileIfPresent()
         }
         Secrets.seedModelDownloadToken()
@@ -52,18 +57,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// lifetime (REC2 / AUD-6).
     private var sigtermSource: DispatchSourceSignal?
 
-    /// One-shot relaunch override for the next quit (TECH-UX7). `nil` defers to
-    /// the `disableAutoRestart` preference; `false` forces a no-relaunch quit
-    /// (the "Quit (do not relaunch)" menu item). Reset implicitly by process exit.
-    static var pendingRelaunchOverride: Bool? = nil
-
-    /// Whether quitting should ask the LaunchAgent to relaunch us (TECH-UX7).
-    /// Pure so it is unit-testable; the override wins, else the preference
-    /// (default = relaunch). The LaunchAgent uses `KeepAlive = { SuccessfulExit
-    /// = false }`, so a non-zero exit relaunches and exit 0 quits fully.
-    static func shouldRelaunchOnQuit(override: Bool?, disableAutoRestart: Bool) -> Bool {
-        override ?? !disableAutoRestart
+    /// One-shot relaunch override for the next quit (TECH-UX7). `nil` defers to the
+    /// relaunch-after-quit preference; `false` forces a no-relaunch quit ("Quit (do not
+    /// relaunch)"), `true` a requested relaunch ("Restart MeetingPipe", onboarding's Relaunch,
+    /// safe mode's normal start). Lock-backed since UX82 (F165): the SIGTERM queue and the
+    /// termination ceiling read it off main.
+    static var pendingRelaunchOverride: Bool? {
+        get { relaunchOverride.withLock { $0 } }
+        set { relaunchOverride.withLock { $0 = newValue } }
     }
+    private static let relaunchOverride = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+
+    /// Whether quitting should ask the LaunchAgent to relaunch us (TECH-UX7). Pure so it is
+    /// unit-testable; the override wins, else the preference, which is off by default since
+    /// UX82 (the owner's "Quit means quit", 2026-11-18).
+    static func shouldRelaunchOnQuit(override: Bool?, relaunchAfterQuit: Bool) -> Bool {
+        override ?? relaunchAfterQuit
+    }
+
+    /// UX82 item 1: the exit status of a requested relaunch. The agent's `KeepAlive =
+    /// { SuccessfulExit = false }` answers any non-zero exit, so this one is chosen to say
+    /// "asked for" (sysexits' `EX_TEMPFAIL`): a crash dies by a signal and an `exit(1)` is a
+    /// failure, and neither is this. Beside `SingleInstanceGuard.standDownExitStatus`, which
+    /// must stay 0 for the same agent.
+    static let relaunchExitStatus: Int32 = 75
+
+    /// The status a quit exits with: 0 when it means quit, `relaunchExitStatus` when it asks
+    /// the agent for a relaunch.
+    static func exitStatus(relaunch: Bool) -> Int32 {
+        relaunch ? relaunchExitStatus : EXIT_SUCCESS
+    }
+
+    /// The relaunch decision from any thread: the lock-backed override and the stored preference,
+    /// never `UISettings.shared` (main-owned), so the SIGTERM queue and a ceiling firing behind a
+    /// wedged main can both resolve it (UX82 F165).
+    static func resolvedRelaunch() -> Bool {
+        shouldRelaunchOnQuit(override: pendingRelaunchOverride, relaunchAfterQuit: UISettings.storedRelaunchAfterQuit())
+    }
+
+    /// UX82 item 2: set by `App.main` when the crash-loop breaker tripped; this launch then starts
+    /// `SafeModeController` instead of the app. Written once before `NSApplication` runs.
+    static var safeModeLaunchCount: Int? {
+        get { safeModeCount.withLock { $0 } }
+        set { safeModeCount.withLock { $0 = newValue } }
+    }
+    private static let safeModeCount = OSAllocatedUnfairLock<Int?>(initialState: nil)
+    private var safeMode: SafeModeController?
 
     /// AUTO1: handle a `meetingpipe://` deeplink (a Shortcuts "Open URL" action,
     /// Raycast, Stream Deck, or `open meetingpipe://...`). Launch Services delivers
@@ -136,6 +175,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         RebuildTagger.runOnce()
         // OBS5: the launch row, right after the rebuild tag, with what the previous process left.
         LaunchRecord.recordLaunch()
+
+        // UX82 item 2: a tripped crash-loop breaker starts the safe idle mode and nothing else,
+        // so none of the subsystems a start-time crash would come from runs. Quit still goes
+        // through `flushAndExit` (no coordinator, so it only writes the row and the marker).
+        if let count = AppDelegate.safeModeLaunchCount {
+            let safe = SafeModeController(launchCount: count)
+            safe.start()
+            safeMode = safe
+            installTerminationSignalHandler()
+            return
+        }
 
         // Apply theme before any window is created so the first paint matches the user's choice. Library, Preferences, HUD, and prompt panel all read NSApp.effectiveAppearance.
         UISettings.shared.applyTheme()
@@ -237,19 +287,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// launchd and `kill` send SIGTERM, whose default disposition terminates the
     /// process WITHOUT running `applicationWillTerminate`, so an in-flight
     /// recording's intermediates were never flushed (REC2 / AUD-6). Ignore the
-    /// default action and handle SIGTERM on a main-queue dispatch source so the
-    /// recorder is flushed synchronously before we exit with the LaunchAgent-keyed
-    /// status the quit path uses.
+    /// default action and handle the signal ourselves so the recorder is flushed
+    /// before we exit with the status the quit path uses.
+    ///
+    /// UX82 F165: the source runs on its own serial queue, not main, and arms REC13's ceiling
+    /// there before handing the flush to main. On main, a main thread already wedged when the
+    /// signal arrived never ran the handler, so the ceiling was never armed and the default
+    /// disposition was gone: a hand `kill` did nothing, and launchd's SIGKILL came with no flush
+    /// and no row.
     private func installTerminationSignalHandler() {
         signal(SIGTERM, SIG_IGN)
-        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        source.setEventHandler { [weak self] in
-            Log.main.info("SIGTERM received - flushing recorder before exit")
-            self?.flushAndExit(reason: .sigterm)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: AppDelegate.terminationSignalQueue)
+        source.setEventHandler {
+            AppDelegate.armTerminationCeiling()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    Log.main.info("SIGTERM received - flushing recorder before exit")
+                    (NSApp.delegate as? AppDelegate)?.flushAndExit(reason: .sigterm)
+                }
+            }
         }
         source.resume()
         sigtermSource = source
     }
+
+    /// UX82 F165: the queue the SIGTERM source runs on, never main.
+    static let terminationSignalQueue = DispatchQueue(label: "com.meetingpipe.sigterm", qos: .userInitiated)
 
     func applicationWillTerminate(_ notification: Notification) {
         flushAndExit(reason: .quit)
@@ -275,7 +338,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The marker first: the next launch's `previous_exit` and its orphan sweep's `stop_cause`
         // read it (OBS5). A failed write costs those a precise answer, never the exit.
         LaunchRecord.persist(
-            LaunchRecord.Termination(reason: reason.rawValue, recordingStem: recordingStem, launchID: LaunchRecord.launchID),
+            LaunchRecord.Termination(
+                reason: reason.rawValue, recordingStem: recordingStem, launchID: LaunchRecord.launchID, relaunch: relaunch
+            ),
             to: LaunchRecord.terminationURL(in: logsDir)
         )
         Log.writeLine(
@@ -318,53 +383,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the flush: bounding the flush's own internals, which REC13 also does, would not
     /// have saved that recording, because the flush never started.
     private func flushAndExit(reason: TerminationReason) -> Never {
-        // REC13: the ceiling first, so nothing after it (the logger's lock included) can hold the exit.
-        armTerminationCeiling()
+        // REC13: the ceiling first, so nothing after it (the logger's lock included) can hold the
+        // exit. Idempotent (UX82 F165): the SIGTERM path armed it already on its own queue.
+        AppDelegate.armTerminationCeiling()
         AppDelegate.recordTermination(
             reason: reason,
-            relaunch: AppDelegate.shouldRelaunchOnQuit(
-                override: AppDelegate.pendingRelaunchOverride,
-                disableAutoRestart: UISettings.shared.disableAutoRestart
-            ),
+            relaunch: AppDelegate.resolvedRelaunch(),
             uptimeSec: Int(ProcessInfo.processInfo.systemUptime - AppDelegate.launchUptime),
             recordingOpen: coordinator?.recorder.isRecording ?? false,
             recordingStem: coordinator?.recorder.currentFile?.deletingPathExtension().lastPathComponent
         )
         localModelPreloader.stop()
         coordinator?.shutdown()
-        let relaunch = AppDelegate.shouldRelaunchOnQuit(
-            override: AppDelegate.pendingRelaunchOverride,
-            disableAutoRestart: UISettings.shared.disableAutoRestart
-        )
-        exit(relaunch ? EXIT_FAILURE : EXIT_SUCCESS)
+        exit(AppDelegate.exitStatus(relaunch: AppDelegate.resolvedRelaunch()))
     }
 
     /// Arm the termination ceiling on a global queue, so it fires whatever the main
-    /// thread is doing. The exit code is resolved here, before `shutdown()` runs,
-    /// for two reasons: nothing in `shutdown()` touches `pendingRelaunchOverride` or
-    /// `disableAutoRestart`, so it is the same answer either way, and reading
-    /// main-owned settings from the timer's thread after main has wedged is exactly
-    /// the kind of call that would make the backstop need a backstop.
+    /// thread is doing. Once per process (UX82 F165): `applicationWillTerminate` and the SIGTERM
+    /// source both arm it, and the second arm is a no-op, so two quits schedule one ceiling.
+    /// Callable from any thread: the exit status is resolved when it fires, from the
+    /// lock-backed override and the stored preference, never from main-owned state, which a
+    /// ceiling firing behind a wedged main cannot safely read.
     ///
     /// Exiting mid-flush loses only whatever the writers had not drained yet. The
     /// capture intermediates are append-only and already on disk, and the
     /// `.recovery.json` manifest is written at start, so the next launch's orphan
     /// sweep merges and publishes what landed. That is strictly more than the
     /// `kill -9` this replaces, which is what actually happened on 2026-08-14.
-    private func armTerminationCeiling() {
-        let relaunch = AppDelegate.shouldRelaunchOnQuit(
-            override: AppDelegate.pendingRelaunchOverride,
-            disableAutoRestart: UISettings.shared.disableAutoRestart
-        )
-        let ceiling = AppDelegate.terminationCeilingSeconds
+    ///
+    /// UX82 item 3: `_exit`, not `exit`. `exit` runs `atexit` handlers and C++ static
+    /// destructors on this thread while main may still be inside `shutdown()` and the audio
+    /// render threads are live, which can turn a wedged quit into a crash report. Both log lines
+    /// before it are synchronous appends, so skipping the handlers loses nothing.
+    /// - Returns: whether this call armed it (false when it was already armed).
+    @discardableResult
+    static func armTerminationCeiling() -> Bool {
+        guard ceilingLatch.claim() else { return false }
+        let ceiling = terminationCeilingSeconds
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + ceiling) {
+            let relaunch = AppDelegate.resolvedRelaunch()
             Log.writeLine("daemon", "WARN: termination did not finish within \(Int(ceiling))s - forcing exit; the orphan sweep recovers any in-flight recording on the next launch")
             Log.event(category: "daemon", action: "termination_ceiling_exceeded", attributes: [
                 "ceiling_s": ceiling,
                 "relaunch": relaunch,
             ])
             guard AppDelegate.terminationCeilingExits else { return }
-            exit(relaunch ? EXIT_FAILURE : EXIT_SUCCESS)
+            _exit(AppDelegate.exitStatus(relaunch: relaunch))
+        }
+        return true
+    }
+
+    /// The ceiling's arm-once latch. A test claims a fresh `OnceLatch`, never this one: arming the
+    /// real ceiling inside the test runner would `_exit` it nine seconds later.
+    static let ceilingLatch = OnceLatch()
+}
+
+/// UX82 F165: true for the first `claim()` and false for every later one, from any thread.
+final class OnceLatch: Sendable {
+    private let claimed = OSAllocatedUnfairLock(initialState: false)
+
+    func claim() -> Bool {
+        claimed.withLock { taken -> Bool in
+            defer { taken = true }
+            return !taken
         }
     }
 }

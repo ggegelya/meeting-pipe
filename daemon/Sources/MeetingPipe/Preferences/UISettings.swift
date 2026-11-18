@@ -43,9 +43,19 @@ final class UISettings: ObservableObject {
         didSet { UserDefaults.standard.set(preloadLocalModelAtLaunch, forKey: Keys.preloadLocalModelAtLaunch) }
     }
 
-    /// Opt-out of relaunch-on-quit (TECH-UX7). Default OFF: quitting relaunches via the LaunchAgent so the menu-bar app comes back. When ON, "Quit" means quit. The `AppDelegate` reads this to pick the process exit code the LaunchAgent's `KeepAlive = { SuccessfulExit = false }` keys off (non-zero relaunches, zero does not).
-    @Published var disableAutoRestart: Bool {
-        didSet { UserDefaults.standard.set(disableAutoRestart, forKey: Keys.disableAutoRestart) }
+    /// Opt-in relaunch-after-quit (UX82, the owner's "Quit means quit" of 2026-11-18). Default OFF: Quit exits 0 and the
+    /// LaunchAgent's `KeepAlive = { SuccessfulExit = false }` leaves it down. ON: Quit exits with
+    /// `AppDelegate.relaunchExitStatus` and the agent brings the app back. A new key, not the old
+    /// `mp.ui.disableAutoRestart` inverted: under TECH-UX7 a stored `false` there was the default
+    /// toggled twice, not a choice to relaunch, so it is not carried over.
+    @Published var relaunchAfterQuit: Bool {
+        didSet { UserDefaults.standard.set(relaunchAfterQuit, forKey: Keys.relaunchAfterQuit) }
+    }
+
+    /// The stored preference, readable from any thread (UX82 F165: the SIGTERM queue and the
+    /// termination ceiling resolve the exit status off main, where `shared` must not be touched).
+    static func storedRelaunchAfterQuit(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: Keys.relaunchAfterQuit)
     }
 
     /// Opt-in (TECH-DSN5): play one short system tone when a meeting finishes processing (the summary is ready). Default OFF so the app stays silent unless asked; never plays during a call. The done notification's sound is separate and may be suppressed by Focus, so this is the reliable audible "done" cue for those who want it.
@@ -119,7 +129,7 @@ final class UISettings: ObservableObject {
         static let verboseLogging = "mp.ui.verboseLogging"
         static let playbackChannelMode = "mp.ui.playbackChannelMode"
         static let preloadLocalModelAtLaunch = "mp.ui.preloadLocalModelAtLaunch"
-        static let disableAutoRestart = "mp.ui.disableAutoRestart"
+        static let relaunchAfterQuit = "mp.ui.relaunchAfterQuit"
         static let playCompletionTone = "mp.ui.playCompletionTone"
         static let digestScheduleEnabled = "mp.ui.digestScheduleEnabled"
         static let digestWeekday = "mp.ui.digestWeekday"
@@ -141,7 +151,7 @@ final class UISettings: ObservableObject {
             rawValue: d.string(forKey: Keys.playbackChannelMode) ?? ""
         ) ?? .default
         self.preloadLocalModelAtLaunch = d.bool(forKey: Keys.preloadLocalModelAtLaunch)
-        self.disableAutoRestart = d.bool(forKey: Keys.disableAutoRestart)
+        self.relaunchAfterQuit = d.bool(forKey: Keys.relaunchAfterQuit)
         self.playCompletionTone = d.bool(forKey: Keys.playCompletionTone)
         self.digestScheduleEnabled = d.bool(forKey: Keys.digestScheduleEnabled)
         // `object(forKey:)` so a never-set key falls to the default instead of 0.

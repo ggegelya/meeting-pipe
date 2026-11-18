@@ -148,11 +148,8 @@ struct GeneralSectionView: View {
                     isOn: launchAtLoginBinding)
                     .disabled(launchAtLogin.isBusy)
                 SettingsToggleRow("Relaunch after quitting",
-                    sublabel: "On: Quit restarts MeetingPipe in the menu bar. Off: Quit fully closes it. Either way a crash still auto-recovers.",
-                    isOn: Binding(
-                        get: { !ui.disableAutoRestart },
-                        set: { ui.disableAutoRestart = !$0 }
-                    ),
+                    sublabel: "Off: Quit closes MeetingPipe until you open it again or log in. On: Quit restarts it in the menu bar. Either way, a copy started at login comes back after a crash, and Restart MeetingPipe in the menu bar restarts it on purpose.",
+                    isOn: $ui.relaunchAfterQuit,
                     showsDivider: false)
             } footer: {
                 if let error = launchAtLogin.status.error {

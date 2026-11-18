@@ -504,7 +504,8 @@ final class StatusBarController {
             finishSetupTitle: finishSetupTitle,
             unsavedSetting: coordinator?.configStore?.saveError != nil || coordinator?.secretsStore?.saveError != nil,
             scheduledRunTitle: scheduledRunTitle,
-            disableAutoRestart: UISettings.shared.disableAutoRestart,
+            relaunchAfterQuit: UISettings.shared.relaunchAfterQuit,
+            agentJob: LaunchRecord.runsAsAgentJob,
             launchAgentEnabled: launchAgentEnabled,
             suppressedCandidateAppName: coordinator?.stateMachine.liveSuppressedCandidate()?.displayName,
             suppressedIsOffer: suppressedIsOffer,
@@ -748,6 +749,12 @@ final class StatusBarController {
         menu.addItem(prefs)
 
         menu.addItem(.separator())
+        // UX82: a requested relaunch, offered while the agent can answer it.
+        if StatusBarModel.offersRestart(inputs), let coordinator = coordinator {
+            let restart = NSMenuItem(title: StatusBarModel.restartTitle, action: #selector(Coordinator.menuRestart), keyEquivalent: "")
+            restart.target = coordinator
+            menu.addItem(restart)
+        }
         menu.addItem(NSMenuItem(title: "Quit MeetingPipe", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         // TECH-UX7 / UX55: the one-off quit that does not relaunch, offered only while
         // something could actually relaunch us. `StatusBarModel` owns that rule, so the

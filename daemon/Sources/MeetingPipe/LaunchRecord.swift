@@ -28,6 +28,9 @@ enum LaunchRecord {
         let recordingStem: String?
         /// The launch that wrote it; a marker from any other launch is not the previous exit.
         let launchID: String
+        /// UX82 item 1: the exit asked the agent for a relaunch (`AppDelegate.relaunchExitStatus`).
+        /// Optional so a marker written before UX82 still decodes.
+        var relaunch: Bool? = nil
     }
 
     /// What this launch learned about the previous one, settled once by `begin`.
@@ -47,13 +50,18 @@ enum LaunchRecord {
     /// subcommand). The orphan sweep reads it for `stop_cause`.
     static var previous: Previous? { settled.withLock { $0 } }
 
-    /// `previous_exit`: the persisted reason when the previous launch wrote one, `unclean` when a
-    /// previous launch is on record and it did not (a crash, a kill, a power loss), and
-    /// `first_launch` when none is.
+    /// `previous_exit`: `relaunch` when the previous launch asked the agent for a relaunch (UX82
+    /// item 1), else its persisted reason (`quit`, `sigterm`); `unclean` when a previous launch is
+    /// on record and left no marker (a crash, a kill, a power loss); `first_launch` when none is.
+    /// Only `unclean` counts toward `CrashLoopBreaker`.
     static func previousExit(termination: Termination?, previousLaunchID: String?) -> String {
-        guard let previousLaunchID else { return termination?.reason ?? "first_launch" }
+        guard let previousLaunchID else { return termination.map(exitName) ?? "first_launch" }
         guard let termination, termination.launchID == previousLaunchID else { return "unclean" }
-        return termination.reason
+        return exitName(termination)
+    }
+
+    private static func exitName(_ termination: Termination) -> String {
+        termination.relaunch == true ? "relaunch" : termination.reason
     }
 
     /// `orphan_recording_recovered`'s `stop_cause`: `shutdown` when the stem was the recording open
@@ -99,16 +107,30 @@ enum LaunchRecord {
 
     /// The `launched` row's attributes (`launch_id` is stamped by `Log`, so it is not here).
     static func launchedAttributes(
-        pid: Int32, cdhash: String?, commit: String?, pipelineCommit: String?, previousExit: String
+        pid: Int32, cdhash: String?, commit: String?, pipelineCommit: String?, previousExit: String,
+        agentJob: Bool = false
     ) -> [String: Any] {
         [
             "pid": Int(pid),
+            "agent_job": agentJob,
             "cdhash": cdhash ?? "unknown",
             "commit": commit ?? "unknown",
             "pipeline_commit": pipelineCommit ?? "unknown",
             "previous_exit": previousExit,
         ]
     }
+
+    /// UX82: whether this process is the launch agent's job, the only kind whose non-zero exit
+    /// anything answers. launchd names a job's service in `XPC_SERVICE_NAME` (the label); a copy
+    /// opened by hand gets Launch Services' `application.<bundle>.<n>.<n>` instead. After a Quit
+    /// (exit 0, the default since UX82) and a reopen by hand, the running copy is not supervised:
+    /// a requested relaunch would just quit it, and a crash would not bring it back.
+    static func isAgentJob(environment: [String: String], label: String = LaunchAtLoginService.label) -> Bool {
+        environment["XPC_SERVICE_NAME"] == label
+    }
+
+    /// This process, read once.
+    static let runsAsAgentJob = isAgentJob(environment: ProcessInfo.processInfo.environment)
 
     /// The build commits DIST6 item 2 is to stamp into the app's Info.plist; `unknown` until it does.
     static let commitInfoKey = "MPBuildCommit"
@@ -126,7 +148,8 @@ enum LaunchRecord {
             cdhash: cdhash,
             commit: info[commitInfoKey] as? String,
             pipelineCommit: info[pipelineCommitInfoKey] as? String,
-            previousExit: exit
+            previousExit: exit,
+            agentJob: runsAsAgentJob
         ))
     }
 }

@@ -11,9 +11,11 @@
     <string>{{INSTALL_PREFIX}}/MeetingPipe.app/Contents/MacOS/MeetingPipe</string>
   </array>
 
-  <!-- Auto-start at login. Relaunch only on a non-zero exit: a clean quit
-       (exit 0) means "quit fully" (TECH-UX7), while a crash or the
-       relaunch-on-quit path (non-zero exit) brings the menu-bar app back. -->
+  <!-- Auto-start at login. Relaunch only on a non-zero exit: a quit exits 0 and
+       stays down (UX82, "Quit means quit"), a requested relaunch exits 75
+       (AppDelegate.relaunchExitStatus) and a crash dies by a signal, and both of
+       those bring the menu-bar app back. The app breaks its own crash loops
+       (CrashLoopBreaker), since launchd has no window to say so in. -->
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -22,7 +24,7 @@
     <false/>
   </dict>
 
-  <!-- Don't fork-bomb if we're crashing on launch. -->
+  <!-- Don't fork-bomb if we're crashing on launch; CrashLoopBreaker stops the loop. -->
   <key>ThrottleInterval</key>
   <integer>10</integer>
 

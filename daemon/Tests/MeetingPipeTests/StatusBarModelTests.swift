@@ -290,7 +290,21 @@ final class StatusBarModelTests: XCTestCase {
     }
 
     func test_quit_without_relaunch_is_hidden_when_auto_restart_is_off() {
-        XCTAssertEqual(M.rows(.init(state: .idle, disableAutoRestart: true)), [.startRecording])
+        XCTAssertEqual(M.rows(.init(state: .idle, relaunchAfterQuit: false)), [.startRecording])
+    }
+
+    /// UX82: "Restart MeetingPipe" is offered whenever the agent can answer a requested relaunch,
+    /// whatever the relaunch-after-quit preference says, and never when it cannot.
+    func test_restart_is_offered_exactly_while_the_launch_agent_is_on() {
+        XCTAssertTrue(M.offersRestart(.init(state: .idle, relaunchAfterQuit: false, launchAgentEnabled: true)))
+        XCTAssertTrue(M.offersRestart(.init(state: .idle, relaunchAfterQuit: true, launchAgentEnabled: true)))
+        XCTAssertFalse(M.offersRestart(.init(state: .idle, relaunchAfterQuit: false, launchAgentEnabled: false)))
+        XCTAssertFalse(
+            M.offersRestart(.init(state: .idle, relaunchAfterQuit: true, agentJob: false, launchAgentEnabled: true)),
+            "a copy opened by hand after a Quit is not the agent's job: a relaunch request would just quit it"
+        )
+        XCTAssertFalse(M.offersQuitWithoutRelaunch(.init(state: .idle, relaunchAfterQuit: true, agentJob: false, launchAgentEnabled: true)))
+        XCTAssertEqual(M.restartTitle, "Restart MeetingPipe")
     }
 
     /// UX55: the case the preference alone could not see. UX42 made the launch agent the
@@ -306,7 +320,7 @@ final class StatusBarModelTests: XCTestCase {
     func test_quit_without_relaunch_needs_the_preference_and_the_agent() {
         func offered(autoRestart: Bool, agent: Bool) -> Bool {
             M.rows(.init(state: .idle,
-                         disableAutoRestart: !autoRestart,
+                         relaunchAfterQuit: autoRestart,
                          launchAgentEnabled: agent))
                 .contains(.quitWithoutRelaunch)
         }
@@ -345,8 +359,10 @@ final class StatusBarModelTests: XCTestCase {
                       "the icon must come from the model, not a per-setter assignment")
         XCTAssertTrue(controller.contains("launchAtLogin.status().isOn"),
                       "the launch-agent state has to be read for the model to be given it")
-        XCTAssertFalse(controller.contains("if !UISettings.shared.disableAutoRestart"),
+        XCTAssertFalse(controller.contains("if UISettings.shared.relaunchAfterQuit"),
                       "the preference-only condition is the defect UX55 removed")
+        XCTAssertTrue(controller.contains("StatusBarModel.offersRestart("),
+                      "UX82: the restart row's presence comes from the model")
     }
 
     /// The Screen Recording deep link sits under the screen-recording consequence

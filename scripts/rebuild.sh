@@ -110,7 +110,8 @@ trap 'warn "The daemon was stopped and not restarted. Start it with: open \"$APP
 # Both branches boot the agent out. With launch at login off the toggle has only
 # disabled the label (UX42 never boots out), so a daemon launchd started earlier
 # is still a loaded KeepAlive job, and the SIGTERM path exits non-zero to ask for
-# a relaunch: a pkill alone would have launchd respawn it into the bundle being
+# a relaunch whenever Relaunch after quitting is on (UX82), and a crash mid-write
+# does too: a pkill alone would have launchd respawn it into the bundle being
 # written. A bootout of a label that is not loaded is a no-op.
 launchctl bootout "gui/$UID/$LAUNCHD_LABEL" 2>/dev/null || true
 if [[ "$LOGIN_AGENT_OFF" == 1 ]]; then

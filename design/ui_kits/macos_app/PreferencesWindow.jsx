@@ -236,7 +236,7 @@ const PWGeneralPane = () => (
     </PWGroup>
     <PWGroup label="Startup" footer="Launch at login enables or disables the com.meetingpipe.daemon launch agent, the one thing that actually starts MeetingPipe when you log in. Turning it off leaves the app you are using alone; it just does not come back at the next login. Relaunch after quitting is that same agent's work, so with launch at login off, a MeetingPipe you opened yourself stays closed when you quit it.">
       <PWToggleRow first on label="Launch at login" sublabel="MeetingPipe will start automatically when you log in."/>
-      <PWToggleRow on={false} label="Relaunch after quitting" sublabel="On: Quit restarts MeetingPipe in the menu bar. Off: Quit fully closes it. Either way a crash still auto-recovers."/>
+      <PWToggleRow on={false} label="Relaunch after quitting" sublabel="Off: Quit closes MeetingPipe until you open it again or log in. On: Quit restarts it in the menu bar. Either way, a copy started at login comes back after a crash, and Restart MeetingPipe in the menu bar restarts it on purpose."/>
     </PWGroup>
     <PWGroup label="Sound">
       <PWToggleRow first on={false} label="Play a tone when a meeting finishes" sublabel="A short system tone when the summary is ready. Off by default, and never during a call."/>
@@ -325,7 +325,7 @@ const PWPipelinePane = () => (
       <PWRow label="Summary" sublabel="Output language for the Notion summary."><PWMenuPicker value="Match transcript"/></PWRow>
     </PWGroup>
     <PWGroup label="Speaker labels" footer="These change how voices are told apart, not what they are called. If a speaker is simply named wrong, fix that meeting in its Transcript tab (right-click a speaker); reach for these when two different people keep sharing one label, or one person is split across several.">
-      <PWRow first alignTop label="Speaker separation" sublabel="If two different people keep getting one name, choose More distinct; if one person is split across several, choose Merge more. Read at startup, so it applies once the daemon relaunches (Quit from the menu bar), to new recordings and to Re-transcribe… on a meeting you already have.">
+      <PWRow first alignTop label="Speaker separation" sublabel="If two different people keep getting one name, choose More distinct; if one person is split across several, choose Merge more. Read at startup, so it applies once MeetingPipe restarts (Restart MeetingPipe in the menu bar), to new recordings and to Re-transcribe… on a meeting you already have.">
         <PWSegmented options={["More distinct", "Balanced", "Merge more"]} selected={1}/>
       </PWRow>
       <PWToggleRow on={false} label="Clean up speaker labels after transcription" sublabel="An extra model call per multi-speaker meeting: after transcription the model merges labels that are one person and fixes obvious mis-attributions. Applies to meetings recorded from now on; neither Re-transcribe… nor Re-summarize runs it over a meeting you already have. It follows your summarization backend, so a regulated or NDA meeting runs it on this Mac instead."/>
@@ -409,7 +409,7 @@ const PW_PERMISSIONS = [
 const PWPermissionsPane = () => (
   <div>
     <PWSectionHeader title="Permissions" caption="The four TCC permissions the daemon needs. None of these send anything off your machine." trailing={<PWSmallButton><span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><Icon name="refresh" size={12}/> Re-check</span></PWSmallButton>}/>
-    <PWGroup footer="Granting Accessibility from System Settings requires a daemon restart for the change to take effect - macOS caches the trust verdict per-process at launch.">
+    <PWGroup footer="Granting Accessibility from System Settings takes effect after a restart (Restart MeetingPipe in the menu bar) - macOS caches the trust verdict per-process at launch.">
       {PW_PERMISSIONS.map((p, i) => (
         <div key={p.name} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderTop: i === 0 ? "none" : "1px solid var(--mp-border-faint)" }}>
           <div style={{ width: 32, height: 32, borderRadius: "var(--mp-radius-sm)", background: "var(--mp-bg-sunk)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--mp-fg-muted)", flexShrink: 0 }}><Icon name={p.icon} size={16}/></div>

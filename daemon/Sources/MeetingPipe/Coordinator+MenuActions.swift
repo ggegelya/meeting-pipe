@@ -214,7 +214,15 @@ extension Coordinator {
             toggleRecording: { [weak self] in self?.menuStart() },
             isRecording: { [weak self] in self?.recorder.isRecording ?? false },
             localModelPreflight: localModelPreflight,
-            onFinish: { [weak self] in self?.onboardingDidComplete() }
+            onFinish: { [weak self] in self?.onboardingDidComplete() },
+            // UX82 item 4: offered only while something answers a requested relaunch: this copy is
+            // the launch agent's job (a hand-opened one is not) and the agent is enabled (the
+            // status bar's cached reading).
+            relaunchToPermissions: LaunchRecord.runsAsAgentJob && statusBar.launchAgentEnabled ? {
+                OnboardingResume.persist(step: OnboardingResume.permissionsStep)
+                AppDelegate.pendingRelaunchOverride = true
+                NSApp.terminate(nil)
+            } : nil
         ))
         onboardingController = controller
         controller.show()
@@ -274,6 +282,14 @@ extension Coordinator {
     /// LaunchAgent relaunch even when the auto-restart preference is on.
     @objc func menuQuitWithoutRelaunch() {
         AppDelegate.pendingRelaunchOverride = false
+        NSApp.terminate(nil)
+    }
+
+    /// "Restart MeetingPipe" (UX82): a requested relaunch, whatever the relaunch-after-quit
+    /// preference says. The agent answers the dedicated exit status; the next launch reads it as
+    /// a clean exit, so the crash-loop breaker never counts it.
+    @objc func menuRestart() {
+        AppDelegate.pendingRelaunchOverride = true
         NSApp.terminate(nil)
     }
 

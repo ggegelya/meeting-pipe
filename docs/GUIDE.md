@@ -459,9 +459,9 @@ Click the menu-bar icon and these keys are shown beside their rows. Most of them
 | `⌘K` | Quick Find… |
 | `⌘,` | Preferences… |
 | `⌘Q` | Quit MeetingPipe |
-| `⌥⌘Q` | Quit (do not relaunch) |
+| `⌥⌘Q` | Quit (do not relaunch), only with **Relaunch after quitting** on |
 
-**Quit MeetingPipe** is not the one that closes it for good: with launch-at-login on, the app comes back a few seconds later. **Quit (do not relaunch)** is the one that really stops it, and it is only in the menu while something could actually bring the app back. Turn off either **Relaunch after quitting** or **Launch at login** (both under Preferences ▸ General ▸ Startup) and the row goes away, because from then on plain **Quit MeetingPipe** already closes it for good.
+**Quit MeetingPipe** closes it until you open it again or log in next. **Restart MeetingPipe**, just above it, closes it and brings it straight back, which is what to pick when something says it applies after a restart (an Accessibility grant, a speaker-separation change). The restart row is there only when the login helper (launch at login) started the copy you are running, at login or through an earlier restart, since that helper is what brings the app back. After a Quit, a copy you open again yourself is not one it started, so the row is gone until the next login: quit and open MeetingPipe again by hand instead. If you would rather Quit always came back, turn on **Relaunch after quitting** under Preferences ▸ General ▸ Startup; **Quit (do not relaunch)** then appears for the one time you want it closed. A copy the helper started also comes back by itself after a crash, and if it keeps crashing within a minute of starting it stops trying and waits in the menu bar with a warning sign: **Try a Normal Start** in its menu starts it again once you are ready. A copy you opened yourself is not watched that way until the next login.
 
 ### In a window
 
@@ -555,7 +555,7 @@ The app already ships on **More distinct**, because separating too eagerly is th
 
 ### Nothing recorded at all
 
-Open **Preferences ▸ Permissions** and check all four. Accessibility is the one that catches people out: macOS decides whether to trust an app when it launches and does not re-check, so after granting it you have to quit and reopen the app before it does anything. Until then it reads as granted and has no effect.
+Open **Preferences ▸ Permissions** and check all four. Accessibility is the one that catches people out: macOS decides whether to trust an app when it launches and does not re-check, so after granting it you have to restart the app (**Restart MeetingPipe** in the menu bar) before it does anything. Until then it reads as granted and has no effect.
 
 You can always record by hand with `⌃⌥M` while you sort it out.
 
@@ -567,7 +567,7 @@ The meetings are still there; the app has lost permission to open the folder the
 
 ### The recording has only one side of the call
 
-- **Only your voice.** Screen Recording is missing, or was granted after the app started. Grant it, then quit and reopen the app.
+- **Only your voice.** Screen Recording is missing, or was granted after the app started. Grant it, then pick **Restart MeetingPipe** in the menu bar.
 - **Only the other people.** Your Mac's default input is not the microphone you are talking into, which usually means idle Bluetooth headphones. Set the right input in **System Settings ▸ Sound ▸ Input** before recording. There is deliberately no microphone picker in the app; it follows the system setting. The app notices this case and flags it on the meeting, and the Audio tab always names which microphone a recording used.
 - **You, but very quietly.** The microphone works but records you far too softly, often the built-in one with its input level low. After about five minutes of a call where your voice has barely reached a speaking level, the recording panel reads **Mic very quiet** instead of **Recording**; point at it to see which microphone it means, and click it to make it go away. When the recording stops you also get a notification saying the same. If you were talking, open **System Settings ▸ Sound ▸ Input**, raise that microphone's input level or choose another one, and carry on. If you hardly spoke in that meeting, you can ignore it.
 - **The other people are missing for part of it.** A notification at the end, **Part of the other side is missing**, says roughly how long. The other side's audio started late or stopped early, often after a brief loss of system audio that recovered by itself, so your own voice is all there is for that stretch. Nothing needs fixing for the next meeting unless it keeps happening; if it does, **Diagnostics…** in the menu bar shows which side was short and why.

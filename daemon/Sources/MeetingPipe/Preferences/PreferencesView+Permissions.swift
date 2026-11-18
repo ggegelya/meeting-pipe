@@ -76,7 +76,7 @@ struct PermissionsSectionView: View {
                 .padding(.top, 4)
                 .padding(.bottom, 22)
 
-            Text("Granting Accessibility from System Settings requires a daemon restart for the change to take effect - macOS caches the trust verdict per-process at launch.")
+            Text("Granting Accessibility from System Settings takes effect after a restart (Restart MeetingPipe in the menu bar) - macOS caches the trust verdict per-process at launch.")
                 .font(.mpTextSM)
                 .foregroundStyle(Color(MPColors.fgMuted))
                 .padding(.leading, 2)

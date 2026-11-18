@@ -11,6 +11,29 @@ enum OnboardingGate {
     static func reset() { UserDefaults.standard.set(false, forKey: key) }
 }
 
+/// UX82 item 4: the step a requested relaunch from onboarding comes back to. macOS reads
+/// Accessibility trust once per process (UX21), so granting it during onboarding needs a
+/// relaunch, which used to land the user back on Welcome. Only the Permissions step resumes:
+/// the later steps hold their choices in memory (WF9), and resuming into them is not attempted.
+enum OnboardingResume {
+    static let key = "mp.onboarding.resumeStep"
+    static let permissionsStep = 1
+
+    /// Record the step to come back to. `synchronize` because the process exits right after,
+    /// and a defaults write otherwise reaches cfprefsd asynchronously.
+    static func persist(step: Int, defaults: UserDefaults = .standard) {
+        defaults.set(step, forKey: key)
+        defaults.synchronize()
+    }
+
+    /// The step to open at, once: the Permissions step when one was persisted, else Welcome (0).
+    /// Clears what it read, so a later launch starts at Welcome again.
+    static func take(defaults: UserDefaults = .standard) -> Int {
+        defer { defaults.removeObject(forKey: key) }
+        return defaults.integer(forKey: key) == permissionsStep ? permissionsStep : 0
+    }
+}
+
 /// Dependencies the onboarding flow needs from the app, injected so the window
 /// stays decoupled from the Coordinator.
 struct OnboardingDependencies {
@@ -31,6 +54,9 @@ struct OnboardingDependencies {
     /// ScreenCaptureKit and re-read permission state in the startup burst's place
     /// (the burst is gated off during onboarding).
     let onFinish: () -> Void
+    /// UX82 item 4: a requested relaunch back to the Permissions step, or nil when nothing would
+    /// answer it (the launch agent is off, so only a hand reopen works and the copy says that).
+    var relaunchToPermissions: (() -> Void)? = nil
 }
 
 /// Hosts the 4-step first-run flow in a borderless-titlebar window (TECH-UX1).
@@ -50,7 +76,7 @@ final class OnboardingWindowController {
             NSApp.activate()
             return
         }
-        let root = OnboardingRootView(deps: deps) { [weak self] in
+        let root = OnboardingRootView(deps: deps, initialStep: OnboardingResume.take()) { [weak self] in
             OnboardingGate.markCompleted()
             // UX21: stands in for the startup TCC burst that `Coordinator.start()`
             // gated off while onboarding was open (prewarm + refresh, not a re-prompt).
@@ -84,7 +110,13 @@ struct OnboardingRootView: View {
     let deps: OnboardingDependencies
     let onComplete: () -> Void
 
-    @State private var step = 0
+    @State private var step: Int
+
+    init(deps: OnboardingDependencies, initialStep: Int = 0, onComplete: @escaping () -> Void) {
+        self.deps = deps
+        self.onComplete = onComplete
+        _step = State(initialValue: initialStep)
+    }
     /// WF9: the workflow step's pick and the row it created, held here because the
     /// `switch step` below rebuilds that step on every Back/Continue. Held in the step's
     /// own `@State`, the created id died on each round trip and the next pick appended a
@@ -110,7 +142,7 @@ struct OnboardingRootView: View {
             Group {
                 switch step {
                 case 0: OnboardingStepWelcome()
-                case 1: OnboardingStepPermissions()
+                case 1: OnboardingStepPermissions(relaunch: deps.relaunchToPermissions)
                 case 2: OnboardingStepWorkflow(
                     workflowStore: deps.workflowStore,
                     localModelPreflight: deps.localModelPreflight,
