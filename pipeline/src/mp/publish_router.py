@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import events, storage
+from .corrections import report_sidecar_write_failed
 from .transcript_corrections import publish_text
 from .config import Config, effective_sinks, zero_egress
 from .schemas import MeetingSummary
@@ -42,6 +43,9 @@ EXIT_PUBLISH_FAILED = 3
 #: Run-scoped result sidecar. Rewritten on every fanout, so it is never stale.
 PUBLISH_SIDECAR_SUFFIX = ".publish.json"
 PUBLISH_SIDECAR_SCHEMA_VERSION = 1
+#: The `state` of the marker `fanout` writes before any sink runs (PIPE34). A run whose final
+#: write then fails leaves this, never the previous run's outcome. Swift badges it like `none`.
+PUBLISH_STATE_UNKNOWN = "unknown"
 
 
 class PublisherBuildError(RuntimeError):
@@ -228,6 +232,15 @@ def fanout(
     happens before the patch boundary.
     """
     pubs = publishers if publishers is not None else build_publishers(cfg)
+    # PIPE34: before any sink runs, replace the previous run's outcome with an `unknown`
+    # marker, so a final write that fails cannot leave the old outcome looking current.
+    if not _write_pending_marker(summary_json):
+        reason = f"{publish_sidecar_path(summary_json).name} could not be replaced or removed"
+        log.error("publish aborted before any sink ran: %s", reason)
+        return {
+            "page_id": None, "page_url": None, "sinks": {}, "failures": [("publish.json", reason)],
+            "sidecar_write_failed": True,
+        }
     log.debug("publish: configured sinks=%s, built=%s",
               ",".join(cfg.output.sinks) or "(none)", ",".join(p.name for p in pubs) or "(none)")
     if not pubs:
@@ -250,7 +263,8 @@ def fanout(
             "regulated": cfg.modes.regulated_mode,
             "no_sinks_configured": not effective_sinks(cfg),
         }
-        _write_publish_sidecar(summary_json, result)
+        if not _write_publish_sidecar(summary_json, result):
+            result["sidecar_write_failed"] = True
         return result
 
     summary = MeetingSummary.model_validate_json(
@@ -300,7 +314,11 @@ def fanout(
         "sinks": per_sink,
         "failures": failures,
     }
-    _write_publish_sidecar(summary_json, out)
+    if not _write_publish_sidecar(summary_json, out):
+        # PIPE34: the sinks ran, but the outcome is not on disk, so the daemon would read the
+        # `unknown` marker. That is a failed publish (exit 3): Republish records it, and each
+        # sink that landed kept its own sidecar, so the retry updates rather than duplicates.
+        out["sidecar_write_failed"] = True
     return out
 
 
@@ -359,6 +377,20 @@ def all_sinks_failed(result: dict[str, Any]) -> bool:
     )
 
 
+def publish_failed(result: dict[str, Any]) -> bool:
+    """The exit-3 test every fanout caller applies (PIPE1, PIPE34): every sink failed, or the
+    outcome could not be recorded in `<stem>.publish.json`, which leaves the daemon an
+    `unknown` marker (or, if even that failed, nothing) instead of this run's result."""
+    return all_sinks_failed(result) or bool(result.get("sidecar_write_failed"))
+
+
+def publish_failure_reason(result: dict[str, Any]) -> str:
+    """One line naming why `publish_failed` holds, for the caller's log and stderr."""
+    if result.get("sidecar_write_failed") and not all_sinks_failed(result):
+        return f"the publish outcome could not be recorded in {PUBLISH_SIDECAR_SUFFIX.lstrip('.')}"
+    return "; ".join(f"{name}: {err}" for name, err in result.get("failures", [])) or "every sink failed"
+
+
 def published_sinks(result: dict[str, Any]) -> list[str]:
     """The sinks that landed, by name, sorted: what the logs carry instead of ``page_url`` (SEC38).
 
@@ -374,12 +406,41 @@ def publish_sidecar_path(summary_json: Path) -> Path:
     return summary_json.parent / f"{stem}{PUBLISH_SIDECAR_SUFFIX}"
 
 
-def _write_publish_sidecar(summary_json: Path, result: dict[str, Any]) -> None:
+def _write_pending_marker(summary_json: Path) -> bool:
+    """Replace `<stem>.publish.json` with an `unknown` marker before any sink runs (PIPE34).
+
+    True when the old outcome is gone: the marker landed, or it could not be written but
+    the old file was removed. False only when neither happened, and the caller must not
+    publish, since the outcome could not be recorded either way.
+    """
+    path = publish_sidecar_path(summary_json)
+    payload = {
+        "schema_version": PUBLISH_SIDECAR_SCHEMA_VERSION,
+        "state": PUBLISH_STATE_UNKNOWN,
+        "page_url": None,
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "sinks": {},
+    }
+    try:
+        storage.atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
+        return True
+    except OSError as e:
+        report_sidecar_write_failed("publish", e)
+    try:
+        path.unlink(missing_ok=True)
+        return True
+    except OSError as e:
+        log.error("previous publish sidecar could not be removed either: %s", e)
+        return False
+
+
+def _write_publish_sidecar(summary_json: Path, result: dict[str, Any]) -> bool:
     """Record this run's publish outcome next to the summary (PIPE1).
 
     Rewritten on every fanout, so the daemon reading it always sees the run that
-    just finished. Atomic, and best-effort: a write failure is logged but never
-    turns a successful publish into a failed one. The daemon degrades to "no page
+    just finished. Atomic. Returns whether it landed: since PIPE34 a failed write is
+    a failed publish, because what is left on disk is the pending marker `fanout`
+    wrote first (`unknown`), not this run's outcome. The daemon degrades to "no page
     URL" when the file is absent (every `run-all` short-circuit leaves none).
     """
     sinks = result.get("sinks") or {}
@@ -405,4 +466,6 @@ def _write_publish_sidecar(summary_json: Path, result: dict[str, Any]) -> None:
     try:
         storage.atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
     except OSError as e:
-        log.warning("publish sidecar write failed: %s", e)
+        report_sidecar_write_failed("publish", e)
+        return False
+    return True

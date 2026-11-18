@@ -60,6 +60,7 @@ enum AudioRetention {
     static func isSettled(status: Meeting.Status, publishState: String?) -> Bool {
         guard status == .done else { return false }
         return publishState != "none" && publishState != "partial"
+            && publishState != PublishResult.unknownState  // PIPE34: not recorded is not settled
     }
 
     /// Pure policy: what to do with each candidate. No filesystem access, so it is

@@ -289,6 +289,7 @@ struct MeetingRow: View, Equatable {
         case .empty:            return .revealRecording
         case .done:
             if meeting.publishState == "none"    { return .publish }
+            if meeting.publishState == PublishResult.unknownState { return .publish }  // PIPE34
             if meeting.publishState == "partial" { return .retryPublish }
             if meeting.publishState == "local"   { return nil }
             if meeting.needsRepublish            { return .republish }
@@ -670,6 +671,10 @@ struct DonePublishBadge: Equatable {
         case "local":
             return DonePublishBadge(kind: .ready, label: "Ready",
                                     help: "Kept in the Library; this workflow publishes nowhere.")
+        case PublishResult.unknownState:
+            // PIPE34: badged like "none", since nothing on disk says where it landed.
+            return DonePublishBadge(kind: .warning, label: "Unpublished",
+                                    help: "Publish outcome unknown: the last publish could not record where it landed. Republish to find out.")
         default:
             // "full", or nil for a row that never reached publish.
             return DonePublishBadge(kind: .ready, label: "Ready", help: nil)

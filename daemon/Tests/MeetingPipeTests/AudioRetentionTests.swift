@@ -201,7 +201,7 @@ final class AudioRetentionTests: XCTestCase {
 
     func test_isSettled_is_the_exact_complement_of_needsYou_for_terminal_rows() {
         let cases: [(Meeting.Status, String?)] = [
-            (.done, "full"), (.done, nil), (.done, "none"), (.done, "partial"), (.done, "local"),
+            (.done, "full"), (.done, nil), (.done, "none"), (.done, "partial"), (.done, "local"), (.done, "unknown"),
             (.failed, nil), (.manualPasteReady, nil), (.empty, nil),
             (.processing, nil), (.recording, nil),
         ]

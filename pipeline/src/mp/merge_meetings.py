@@ -44,8 +44,8 @@ from .config import Config
 from .markdown import render_markdown
 from .publish_router import (
     EXIT_PUBLISH_FAILED,
-    all_sinks_failed,
     fanout as publish_fanout,
+    publish_failed,
 )
 from .services import SummaryClient
 from .summarize import refuse_unreadable_overlays, summarize
@@ -499,7 +499,7 @@ def merge_meetings(
     s = summarize(md_path, cfg=cfg, client=client)
     pub = publish_fanout(summary_json=s["json"], cfg=cfg, transcript_md=md_path)
     result = {"primary": str(primary_audio), "summary_json": str(s["json"]), **pub}
-    if all_sinks_failed(pub):
+    if publish_failed(pub):
         result["publish_failed"] = True
     return result
 

@@ -128,7 +128,7 @@ def test_publish_payload_shape(case: dict) -> None:
     payload = case["payload"]
     assert set(payload) == {"schema_version", "state", "page_url", "ts", "sinks"}
     assert payload["schema_version"] == 1
-    assert payload["state"] in {"full", "partial", "none", "local"}
+    assert payload["state"] in {"full", "partial", "none", "local", "unknown"}
     assert payload["page_url"] is None or isinstance(payload["page_url"], str)
     assert isinstance(payload["sinks"], dict)
     for sink in payload["sinks"].values():
@@ -168,11 +168,11 @@ def test_publish_state_and_exit_three_stay_distinct() -> None:
     assert EXIT_PUBLISH_FAILED == 3
 
 
-def test_publish_state_vocabulary_is_exactly_four_values() -> None:
-    """Six Swift sites branch on these literals; a fifth value is a deliberate,
-    cross-tree change, never a widening (WF10 added `local`)."""
+def test_publish_state_vocabulary_is_exactly_five_values() -> None:
+    """Six Swift sites branch on these literals; a new value is a deliberate,
+    cross-tree change, never a widening (WF10 added `local`, PIPE34 `unknown`)."""
     doc = json.loads(_committed("publish-result-golden.json"))
-    assert sorted(doc["contract"]["publish_states"]) == ["full", "local", "none", "partial"]
+    assert sorted(doc["contract"]["publish_states"]) == ["full", "local", "none", "partial", "unknown"]
 
 
 # --------------------------------------------------------------------------

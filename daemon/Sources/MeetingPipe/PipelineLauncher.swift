@@ -320,7 +320,7 @@ extension PipelineDriver {
     }
 }
 
-/// This run's publish outcome, read from `<stem>.publish.json` (PIPE1). Written fresh by `publish_router.fanout` on every run, so unlike the per-sink sidecars it can never be a leftover from a previous one. Absent whenever the pipeline short-circuited before publish (no speech, BYO, too long, Apple hand-off), which reads as "nothing published, nothing failed".
+/// This run's publish outcome, read from `<stem>.publish.json` (PIPE1). Written fresh by `publish_router.fanout` on every run, so unlike the per-sink sidecars it is never a leftover from a previous one: since PIPE34 the previous outcome is replaced by an `unknown` marker before any sink runs, and a final write that fails leaves that marker, not the old file. Absent whenever the pipeline short-circuited before publish (no speech, BYO, too long, Apple hand-off), which reads as "nothing published, nothing failed".
 struct PublishResult: Equatable {
     /// One sink this run actually ran, and how it went.
     struct SinkOutcome: Equatable {
@@ -332,7 +332,7 @@ struct PublishResult: Equatable {
         var failure: FailureMetadata? = nil
     }
 
-    /// `"full"`, `"partial"`, `"none"` (every sink failed, or none of the configured ones ran), or `"local"` (no sink configured at all, WF10).
+    /// `"full"`, `"partial"`, `"none"` (every sink failed, or none of the configured ones ran), `"local"` (no sink configured at all, WF10), or `"unknown"` (PIPE34: the pending marker, the outcome was not recorded).
     let state: String
     /// The page URL of the first successful sink that produced one. Nil for a local-only workflow, and nil when no page-producing sink succeeded.
     let pageURL: URL?
@@ -352,9 +352,17 @@ struct PublishResult: Equatable {
     /// The run sidecar survives as a fallback for one reason: it predates PIPE1's publish sidecar, so meetings recorded before that shipped carry a `publish_state` and no `publish.json` at all. It is never *preferred*, because it cannot be fresher than the sidecar every fanout rewrites.
     ///
     /// Both absent is nil, which is what a never-published row and a run that short-circuited before publish (no speech, BYO, too long, Apple hand-off) both are.
+    ///
+    /// `"unknown"` (PIPE34) is the marker `fanout` writes before any sink runs. It is left in place
+    /// when the final write fails, and it wins over `run.json` like any other state: the run sidecar
+    /// cannot know an outcome the publish sidecar could not record.
     static func resolveState(publish: PublishResult?, runPublishState: String?) -> String? {
         publish?.state ?? runPublishState
     }
+
+    /// PIPE34: the publish ran, or was about to, and its outcome is not on disk. Every surface
+    /// treats it like `"none"`: unsettled, in Needs you, offering Republish, naming no destination.
+    static let unknownState = "unknown"
 
     static func load(stem: String, in dir: URL) -> PublishResult? {
         let url = dir.appendingPathComponent("\(stem).publish.json")

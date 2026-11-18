@@ -127,7 +127,9 @@ final class CI4ContractFixtureTests: XCTestCase {
 
         // WF10 added "local": no sink was configured at all (a workflow saved
         // with no destinations), so the meeting is kept in the Library by design.
-        XCTAssertEqual(states, ["full", "partial", "none", "local"])
+        // PIPE34 added "unknown": the marker written before any sink runs, left in
+        // place when the final write fails. Unsettled, like "none".
+        XCTAssertEqual(states, ["full", "partial", "none", "local", "unknown"])
 
         // Pin the semantics too, not just the spelling: "full" is a finished
         // publish and "local" a finished meeting that was never meant to publish;

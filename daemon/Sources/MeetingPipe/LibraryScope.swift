@@ -190,6 +190,7 @@ enum LibraryScope: Hashable {
                 return true
             case .done:
                 return meeting.publishState == "none" || meeting.publishState == "partial"
+                    || meeting.publishState == PublishResult.unknownState  // PIPE34
             default:
                 return false
             }

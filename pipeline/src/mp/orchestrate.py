@@ -56,8 +56,9 @@ from .markdown import render_markdown
 from .markers import flagged_moments_block
 from .publish_router import (
     EXIT_PUBLISH_FAILED,
-    all_sinks_failed,
     fanout as publish_fanout,
+    publish_failed,
+    publish_failure_reason,
     publish_state,
     published_sinks,
 )
@@ -315,6 +316,7 @@ def run_all(
     # shell-invoked `mp run-all` against wavs that have no sidecar.
     cfg = entry.prepare(cfg, wav)
     storage.sweep_stale_temps(wav.parent, wav.stem)  # PIPE30: a killed writer's leftovers
+    _clear_stale_apple_sentinel(wav)
     if backend is not None:
         cfg = with_backend_override(cfg, backend)
         log.info("run-all: one-shot backend override -> %s", backend)
@@ -466,6 +468,21 @@ def _check_too_long(wav: Path, t: dict[str, Path], md_text: str, cfg: Config) ->
                 transcript_chars=len(md_text), threshold=threshold,
                 bundle=str(bundle))
     return _skip_result(t, "too_long", manual_bundle=str(bundle))
+
+
+def _clear_stale_apple_sentinel(wav: Path) -> None:
+    """PIPE34 (F054): remove a `<stem>.apple_pending.json` an earlier run left.
+
+    Only the daemon consumes the sentinel, so a hand-run `mp run-all` on the Apple backend,
+    or a run killed after writing it, leaves one behind; a later run-all that succeeds on
+    another backend then exits 0 and the daemon diverts it into an on-device re-summarize.
+    Cleared at start, the only sentinel left after this run is one this run wrote.
+    """
+    sentinel = wav.parent / f"{wav.stem}.apple_pending.json"
+    try:
+        sentinel.unlink(missing_ok=True)
+    except OSError as e:
+        log.warning("stale apple_pending sentinel could not be removed: %s", e)
 
 
 def _check_apple_handoff(wav: Path, t: dict[str, Path], md_text: str, cfg: Config) -> dict | None:
@@ -679,9 +696,9 @@ def _run_all_inner(
     # completed run either: say so in the event log and let `main` exit non-zero.
     # Reporting `run_completed` here is what let the daemon clear the failure
     # sidecar and announce a meeting that never landed anywhere.
-    if all_sinks_failed(pub):
-        reason = "; ".join(f"{name}: {err}" for name, err in pub.get("failures", []))
-        log.error("publish failed on every sink: %s", reason)
+    if publish_failed(pub):
+        reason = publish_failure_reason(pub)
+        log.error("publish failed: %s", reason)
         events.emit("pipeline", "run_failed", wav=str(wav), stage="publish",
                     error=reason, error_type="PublishFailed")
         return {**result, "publish_failed": True}

@@ -120,12 +120,21 @@ PUBLISH_CASES: list[tuple[str, dict[str, Any]]] = [
 PUBLISH_KEYS = {"schema_version", "state", "page_url", "ts", "sinks"}
 
 
+#: PIPE34: the marker `fanout` writes before any sink runs, and what a run whose final write
+#: failed leaves on disk. Written by its own writer, not from a fanout result.
+PENDING_MARKER_CASE = "unknown_pending_marker_before_sinks"
+
+
 def gen_publish(tmp: Path) -> str:
     cases: list[dict[str, Any]] = []
-    for name, result in PUBLISH_CASES:
+    for name, result in [*PUBLISH_CASES, (PENDING_MARKER_CASE, None)]:
         summary_json = tmp / f"{name}.summary.json"
         summary_json.write_text("{}", encoding="utf-8")
-        publish_router._write_publish_sidecar(summary_json, result)
+        if result is None:
+            publish_router._write_pending_marker(summary_json)
+            result = {"sinks": {}}
+        else:
+            publish_router._write_publish_sidecar(summary_json, result)
         written = json.loads(
             publish_router.publish_sidecar_path(summary_json).read_text(encoding="utf-8")
         )
@@ -174,6 +183,7 @@ def gen_publish(tmp: Path) -> str:
             publish_router.publish_state({"sinks": {"a": {}, "b": {"error": "x"}}}),
             publish_router.publish_state({"sinks": {"a": {"error": "x"}}}),
             publish_router.publish_state({"sinks": {}, "no_sinks_configured": True}),
+            publish_router.PUBLISH_STATE_UNKNOWN,
         }
     )
     return _envelope(
@@ -182,7 +192,9 @@ def gen_publish(tmp: Path) -> str:
         "_write_publish_sidecar; do not hand-edit. `ts` is replaced by a fixed "
         "sentinel because the writer stamps the wall clock, and its real format "
         "is asserted at generation time instead. `contract.publish_states` is the "
-        "complete vocabulary Swift branches on. Swift reads this via "
+        "complete vocabulary Swift branches on; `unknown` (PIPE34) is the marker "
+        "written before any sink runs, left in place when the final write fails. "
+        "Swift reads this via "
         "PipelineLauncher.PublishResult.load.",
         cases,
         contract={"publish_states": vocabulary, "keys": sorted(PUBLISH_KEYS)},

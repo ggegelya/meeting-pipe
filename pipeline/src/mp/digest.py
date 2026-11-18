@@ -522,14 +522,16 @@ def main(argv: list[str]) -> int:
     published = False
     publish_failed = False
     if args.publish:
-        from .publish_router import all_sinks_failed, fanout
+        from .publish_router import fanout
+        from .publish_router import publish_failed as outcome_failed
         pub = fanout(summary_json=json_path, cfg=cfg, transcript_md=None)
         published = True
         # PIPE8: honour the exit-3 contract every other fanout caller respects
         # (run-all / publish / publish-from-paste / merge), so a digest that
         # landed nowhere fails the run rather than reporting success. Zero sinks
-        # configured is not a failure (`all_sinks_failed` is False there).
-        publish_failed = all_sinks_failed(pub)
+        # configured is not a failure (`all_sinks_failed` is False there). PIPE34: an
+        # outcome that could not be recorded fails it too.
+        publish_failed = outcome_failed(pub)
 
     # AI10: `actions` is what the digest renders; the two totals say what it was
     # bounded down from, so a run that hid 900 items is visible in the event log.

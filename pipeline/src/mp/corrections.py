@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import storage
+from . import events, storage
 
 log = logging.getLogger("mp.corrections")
 
@@ -89,8 +89,32 @@ def write_run_sidecar(
         "ts": ts or _now_utc_iso(),
     }
     out = recordings_dir / f"{stem}.run.json"
-    storage.atomic_write_text(out, json.dumps(payload, indent=2, sort_keys=True))
+    try:
+        storage.atomic_write_text(out, json.dumps(payload, indent=2, sort_keys=True))
+    except Exception as exc:
+        # PIPE34: a write that failed outright leaves the previous run's sidecar, which the
+        # daemon would read as this run's engine and time. No sidecar reads as "unknown engine,
+        # not correctable", which is honest. `atomic_write_text` already removed its temp.
+        report_sidecar_write_failed("run", exc)
+        try:
+            out.unlink(missing_ok=True)
+        except OSError as unlink_exc:
+            log.warning("stale run sidecar could not be removed either: %s", unlink_exc)
+        raise
     return out
+
+
+def report_sidecar_write_failed(file: str, exc: BaseException) -> None:
+    """`pipeline` / `sidecar_write_failed` (PIPE34): a per-run sidecar did not land.
+
+    `file` is `run` or `publish`; `error` is the exception type and `errno` its
+    code, never a path (SEC38: the stem is the meeting's start time, not content,
+    but the path names the library's folder).
+    """
+    code = getattr(exc, "errno", None)
+    log.warning("%s sidecar write failed: %s", file, exc)
+    events.emit("pipeline", "sidecar_write_failed", file=file, error=type(exc).__name__,
+                errno=code if isinstance(code, int) else None)
 
 
 def write_empty_marker(
@@ -124,14 +148,24 @@ def set_publish_state(sidecar_path: Path, publish_state: str) -> None:
 
     The run sidecar is written before publish (it snapshots backend + model);
     once `fanout` returns, this merges a ``publish_state`` key so the Library can
-    badge a partial or failed publish. Atomic and best-effort: a missing or
-    unreadable sidecar is a no-op.
+    badge a partial or failed publish. Atomic and best-effort: a missing sidecar is
+    a no-op, and since PIPE34 a present one that will not read is a WARNING rather
+    than a silent return, and a failed write is reported before it is raised.
     """
-    payload = storage.read_json_object(sidecar_path)
+    read = storage.load_json_object(sidecar_path)
+    if read.state == "missing":
+        return
+    payload = read.data if read.state == "ok" else None
     if payload is None:
+        log.warning("run sidecar %s is present but unreadable (%s); publish_state not recorded",
+                    sidecar_path.name, read.reason or read.state)
         return
     payload["publish_state"] = publish_state
-    storage.atomic_write_text(sidecar_path, json.dumps(payload, indent=2, sort_keys=True))
+    try:
+        storage.atomic_write_text(sidecar_path, json.dumps(payload, indent=2, sort_keys=True))
+    except Exception as exc:
+        report_sidecar_write_failed("run", exc)
+        raise
 
 
 def read_run_sidecar(path: Path) -> dict[str, Any] | None:

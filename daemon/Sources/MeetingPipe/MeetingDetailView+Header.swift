@@ -315,6 +315,10 @@ extension MeetingDetailView {
             if meeting.publishState == "none" {
                 return ("exclamationmark.circle", Color(MPColors.warning600), "Not published yet.")
             }
+            if meeting.publishState == PublishResult.unknownState {
+                // PIPE34: the publish ran, but its outcome could not be written down.
+                return ("questionmark.circle", Color(MPColors.warning600), "Publish outcome unknown. Republish to record it.")
+            }
             if meeting.publishState == "partial" {
                 return nil
             }

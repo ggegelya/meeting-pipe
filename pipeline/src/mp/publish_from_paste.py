@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import entry, storage
 from .config import Config
-from .publish_router import EXIT_PUBLISH_FAILED, all_sinks_failed, fanout
+from .publish_router import EXIT_PUBLISH_FAILED, fanout, publish_failed, publish_failure_reason
 from .schemas import ActionItem, ExtraSection, MeetingSummary
 from .markdown import deeplink_stem, render_summary_md
 
@@ -296,8 +296,8 @@ def main(argv: list[str]) -> int:
     # Same honest-failure contract as `run-all` and `mp publish` (PIPE1): the
     # daemon's paste box treats a zero exit as "published" and clears the failure
     # sidecar, so an all-sinks-failed paste must not exit zero.
-    if all_sinks_failed(result):
-        log.error("publish-from-paste failed on every sink")
+    if publish_failed(result):
+        log.error("publish-from-paste failed: %s", publish_failure_reason(result))
         return EXIT_PUBLISH_FAILED
     return 0
 

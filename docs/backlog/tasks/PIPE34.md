@@ -2,9 +2,9 @@
 id: PIPE34
 title: A failed write of the run or publish sidecar leaves the previous run's file in place, and the daemon reads it as this run's outcome
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (observability band, O20: PY-5, FB-8): run.json and publish.json write failures only log a WARNING, so a stale sidecar keeps the old backend attribution, the UX41 staleness ts and the Unpublished badge, and blocks retention. Unlink a stale run.json on failure, write an unknown publish marker before sinks run, a failed final write exits 3, Swift reads unknown, sidecar_write_failed event. [Spec](./PIPE34.md) Amended 2026-11-13 by the audit band: a leftover `<stem>.apple_pending.json` from a hand-run or killed run-all diverts a later successful run-all to an on-device re-summarize once the backend has changed, so run_all removes a stale sentinel at start (F054).
+comment: Shipped 2026-11-18 - write_run_sidecar removes a stale run.json when its write fails, fanout writes an unknown marker before any sink and a failed final write exits 3 through publish_failed at all five callers, Swift reads unknown like none, sidecar_write_failed event, stale apple_pending cleared at run start, CI4 fixture regenerated; 12 pytest + 3 Swift tests. Nothing owed but closing; the failure needs a library-volume I/O error to reach live. [Spec](./PIPE34.md)
 ---
 
 # PIPE34: a failed write of `<stem>.run.json` or `<stem>.publish.json` leaves the previous run's sidecar in place, and the daemon reads it as this run's outcome
