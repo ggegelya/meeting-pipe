@@ -43,6 +43,7 @@ struct MeetingRow: View, Equatable {
     let onRepublish: () async -> Void
     let onRegenerate: () async -> Void
     let onRetry: () -> Result<Void, Error>
+    /// Confirms, then deletes (STOR7: the confirm needs the located footprint).
     let onSoftDelete: () -> Void
     let onExport: (URL) -> Result<Int, Error>
     let onCancelProcessing: () -> Void
@@ -573,10 +574,10 @@ struct MeetingRow: View, Equatable {
         }
     }
 
+    /// The confirm lives in `onSoftDelete` (`LibraryDialogs.confirmAndSoftDelete`, STOR7), which
+    /// needs the library model to locate what the delete would remove.
     private func promptDelete() {
-        if LibraryDialogs.confirmSoftDelete(meetingTitle: meeting.displayTitle) {
-            onSoftDelete()
-        }
+        onSoftDelete()
     }
 
     private func presentAlert(title: String, message: String) {

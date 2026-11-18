@@ -15,6 +15,9 @@ struct BatchActionsPane: View {
 
     @State private var state: BatchState = .idle
     @State private var confirmingDelete: Bool = false
+    /// STOR7: the confirm's body, from the selection's located footprints, built when the
+    /// confirm opens rather than on every render (it lists the library).
+    @State private var deleteConfirmBody: String = ""
     @State private var cancelRequested: Bool = false
     /// Where the merged content landed, shown after a successful merge (FEAT9).
     @State private var mergeNote: String?
@@ -62,9 +65,7 @@ struct BatchActionsPane: View {
                 Button("Cancel", role: .cancel) { }
             },
             message: {
-                Text("Every sidecar (audio, transcript, summary) for these meetings goes to the system Trash. "
-                     + LibraryDialogs.trashRecoveryNote
-                     + SoftDeleteTally.skipNote(count: meetings.count - deletableCount))
+                Text(deleteConfirmBody + SoftDeleteTally.skipNote(count: meetings.count - deletableCount))
             }
         )
         .alert(
@@ -411,7 +412,12 @@ struct BatchActionsPane: View {
                             .font(.mpTextXS)
                             .foregroundStyle(Color(MPColors.fgSubtle))
                         Spacer()
-                        Button("Move to Trash") { confirmingDelete = true }
+                        Button("Move to Trash") {
+                            deleteConfirmBody = MeetingFootprint.batchConfirmText(
+                                libraryModel.locateFootprints(stems: meetings.map(\.stem))
+                            )
+                            confirmingDelete = true
+                        }
                             .buttonStyle(.mpDanger)
                             .disabled(isRunning || deletableCount == 0)
                     }

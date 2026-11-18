@@ -131,16 +131,24 @@ final class StorageStatsStore: ObservableObject {
         guard let evictable = stats?.evictableModels
             .filter({ $0.directory.lastPathComponent.caseInsensitiveCompare(nowConfigured) != .orderedSame }),
             !evictable.isEmpty else { return }
-        let directories = evictable.map(\.directory)
-        let bytes = evictable.reduce(0) { $0 + $1.bytes }
-        await Task.detached(priority: .userInitiated) {
-            for dir in directories {
-                try? FileManager.default.removeItem(at: dir)
+        let candidates = evictable.map { (directory: $0.directory, bytes: $0.bytes) }
+        // STOR7 (SW-18): count what was actually removed. This logged every candidate's bytes as
+        // freed before any removal, over a `try?` loop.
+        let removed: [(directory: URL, bytes: Int)] = await Task.detached(priority: .userInitiated) {
+            candidates.filter { candidate in
+                do {
+                    try FileManager.default.removeItem(at: candidate.directory)
+                    return true
+                } catch {
+                    Log.failure(category: "coordinator", action: "model_evict_failed", error: error, describe: false)
+                    return false
+                }
             }
         }.value
         Log.event(category: "coordinator", action: "models_evicted", attributes: [
-            "count": directories.count,
-            "bytes_freed": bytes,
+            "count": removed.count,
+            "bytes_freed": removed.reduce(0) { $0 + $1.bytes },
+            "failed": candidates.count - removed.count,
         ])
         await rescan()
     }

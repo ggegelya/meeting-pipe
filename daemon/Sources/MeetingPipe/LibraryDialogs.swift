@@ -20,18 +20,31 @@ enum LibraryDialogs {
     /// drifted.
     static let trashRecoveryNote = "You can restore from there until the Trash is emptied."
 
-    /// Confirm moving one meeting's whole sidecar set to the Trash.
+    /// Confirm moving one meeting to the Trash. `body` is `MeetingFootprint.confirmText` (STOR7),
+    /// which names what goes and what stays; it replaced "Every file for this meeting goes".
     /// Returns true when the user chose Move to Trash.
-    static func confirmSoftDelete(meetingTitle: String) -> Bool {
+    static func confirmSoftDelete(meetingTitle: String, body: String) -> Bool {
         let alert = NSAlert()
         alert.messageText = "Move \(meetingTitle) to Trash?"
-        alert.informativeText =
-            "Every file for this meeting (audio, transcript, summary, sidecars) goes to the Trash. "
-            + trashRecoveryNote
+        alert.informativeText = body
         alert.addButton(withTitle: "Move to Trash")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// The two single-meeting delete surfaces (the list row, the detail header): locate, confirm
+    /// with what will actually go and stay, delete, and say so when the delete fails or is refused.
+    /// Both used to drop the result with `_ =`, so a failed trash was silent (STOR7).
+    @MainActor
+    static func confirmAndSoftDelete(meetingTitle: String, stem: String, model: LibraryWindowModel) {
+        let footprint = model.locateFootprint(stem: stem)
+        guard confirmSoftDelete(meetingTitle: meetingTitle, body: footprint.confirmText) else { return }
+        if case .failure(let error) = model.softDeleteMeeting(stem: stem) {
+            FailureDialog.show(FailurePresentation(
+                error: error, operation: .storage, title: "Couldn't move \(meetingTitle) to the Trash"
+            ))
+        }
     }
 
     /// Confirm deleting one workflow from a rail row (UX32). Returns true when the user

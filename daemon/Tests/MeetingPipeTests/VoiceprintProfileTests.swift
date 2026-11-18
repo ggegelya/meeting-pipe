@@ -39,4 +39,21 @@ final class VoiceprintProfileTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
         XCTAssertEqual(VoiceprintProfile.meetingsLearned(at: url), 0)
     }
+
+    /// STOR7 (SW-18): a failed removal of the biometric file is a failure, and the count stays.
+    func test_a_reset_that_cannot_remove_the_file_fails_and_keeps_the_count() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vp-ro-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("voiceprint.json")
+        try #"{"embedding":[0.1],"meetings":2}"#.write(to: url, atomically: true, encoding: .utf8)
+        XCTAssertEqual(chmod(dir.path, 0o500), 0)
+        defer { chmod(dir.path, 0o700); try? FileManager.default.removeItem(at: dir) }
+
+        guard case .failure = VoiceprintProfile.reset(at: url) else { return XCTFail("expected a failure") }
+        XCTAssertEqual(VoiceprintProfile.meetingsLearned(at: url), 2)
+    }
+
+    func test_a_reset_with_nothing_to_remove_succeeds() {
+        guard case .success = VoiceprintProfile.reset(at: tempURL()) else { return XCTFail("nothing to forget is success") }
+    }
 }

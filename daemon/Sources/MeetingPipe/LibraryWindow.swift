@@ -553,10 +553,20 @@ final class LibraryWindowModel: ObservableObject {
         library?.retryMeeting(stem: stem) ?? .failure(Unwired.libraryUnavailable)
     }
 
-    /// Move every sidecar for a stem to the Trash.
+    /// Move a meeting to the Trash (STOR7: with its grading and local published copies).
     @discardableResult
     func softDeleteMeeting(stem: String) -> Result<Void, Error> {
         library?.softDeleteMeeting(stem: stem) ?? .failure(Unwired.libraryUnavailable)
+    }
+
+    /// STOR7: what a delete of `stem` would remove and leave, for the confirm.
+    func locateFootprint(stem: String) -> MeetingFootprint {
+        library?.locateFootprint(stem: stem) ?? MeetingFootprint()
+    }
+
+    /// STOR7: the batch confirm's footprints, one library listing for the selection.
+    func locateFootprints(stems: [String]) -> [MeetingFootprint] {
+        library?.locateFootprints(stems: stems) ?? []
     }
 
     /// Rewrite a meeting's workflow assignment (WF8). Returns the result so the caller

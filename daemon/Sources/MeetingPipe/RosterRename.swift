@@ -40,8 +40,23 @@ enum RosterRename {
         return (trimmed.isEmpty || trimmed == currentName) ? nil : trimmed
     }
 
+    /// What a rename's carry did across the library (STOR7, SW-18): `failed` meetings kept the
+    /// old name because their speaker-label overlay could not be rewritten.
+    struct Outcome: Equatable {
+        var carried: Int
+        var failed: Int
+
+        /// The callers' line when some meetings kept the old name; nil when none did.
+        var keptOldNameNote: String? {
+            guard failed > 0 else { return nil }
+            return failed == 1
+                ? "1 meeting kept the old name: its speaker labels could not be rewritten."
+                : "\(failed) meetings kept the old name: their speaker labels could not be rewritten."
+        }
+    }
+
     /// Rename `old` to `new`, then carry the name across the library. `completion`
-    /// runs on the main queue with the number of meetings the carry touched.
+    /// runs on the main queue with what the carry did.
     ///
     /// Threading: the carry itself runs on the launcher's completion thread (a
     /// `Process.terminationHandler`, never main), because it reads and rewrites a
@@ -51,18 +66,20 @@ enum RosterRename {
         to new: String,
         launcher: PipelineDriver,
         recordingsDir: URL? = ConfigStore().config.recording.outputDir,
-        completion: @escaping (Result<Int, Error>) -> Void
+        completion: @escaping (Result<Outcome, Error>) -> Void
     ) {
         Log.event(category: "coordinator", action: "roster_rename_requested",
                   attributes: ["old": old, "new": new])
         launcher.rosterRename(old: old, new: new) { result in
             switch result {
             case .success:
-                let touched = recordingsDir.map { carry(from: old, to: new, in: $0) } ?? 0
+                let outcome = recordingsDir.map { carryCounting(from: old, to: new, in: $0) }
+                    ?? Outcome(carried: 0, failed: 0)
                 DispatchQueue.main.async {
                     Log.event(category: "coordinator", action: "roster_rename_done",
-                              attributes: ["old": old, "new": new, "meetings_carried": touched])
-                    completion(.success(touched))
+                              attributes: ["old": old, "new": new, "meetings_carried": outcome.carried,
+                                           "meetings_failed": outcome.failed])
+                    completion(.success(outcome))
                 }
             case .failure(let error):
                 DispatchQueue.main.async {
@@ -79,10 +96,15 @@ enum RosterRename {
     /// unwritable sidecar does not abort the rest.
     @discardableResult
     static func carry(from old: String, to new: String, in directory: URL) -> Int {
+        carryCounting(from: old, to: new, in: directory).carried
+    }
+
+    /// `carry`, counting the meetings whose overlay could not be rewritten too.
+    static func carryCounting(from old: String, to new: String, in directory: URL) -> Outcome {
         let key = PeopleRail.normalized(old)
-        guard key != PeopleRail.normalized(new), !PeopleRail.normalized(new).isEmpty else { return 0 }
+        guard key != PeopleRail.normalized(new), !PeopleRail.normalized(new).isEmpty else { return Outcome(carried: 0, failed: 0) }
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path)
-        else { return 0 }
+        else { return Outcome(carried: 0, failed: 0) }
         // A meeting is a candidate if it has either sidecar the resolution reads.
         let stems = Set(
             names
@@ -91,6 +113,7 @@ enum RosterRename {
         )
 
         var touched = 0
+        var failed = 0
         for stem in stems.sorted() {
             let overlay = SpeakerLabelStore.read(stem: stem, in: directory)
             let attendees = MeetingSummary.load(
@@ -104,9 +127,10 @@ enum RosterRename {
                 try SpeakerLabelStore.replace(overlay: next, stem: stem, in: directory)
                 touched += 1
             } catch {
+                failed += 1
                 Log.failure(category: "library", action: "roster_rename_carry_failed", error: error, attributes: ["stem": stem])
             }
         }
-        return touched
+        return Outcome(carried: touched, failed: failed)
     }
 }

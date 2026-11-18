@@ -495,7 +495,8 @@ struct LibraryListView: View {
                     ?? .failure(NSError(domain: "LibraryListView", code: 1))
             },
             onSoftDelete: { [weak libraryModel] in
-                _ = libraryModel?.softDeleteMeeting(stem: meeting.stem)
+                guard let libraryModel else { return }
+                LibraryDialogs.confirmAndSoftDelete(meetingTitle: meeting.displayTitle, stem: meeting.stem, model: libraryModel)
             },
             onExport: { [weak libraryModel] dest in
                 libraryModel?.exportMeeting(stem: meeting.stem, to: dest)

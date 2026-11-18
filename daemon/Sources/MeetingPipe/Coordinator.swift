@@ -1013,7 +1013,15 @@ final class Coordinator: NSObject {
                 if self.libraryModel.processing(for: stem).isBusy { return .processing }
                 return nil
             }
-        }
+        },
+        // STOR7: the real locations a delete also clears. Wired here only; the service's defaults
+        // look nowhere, so a test's delete never reaches Application Support or a sink folder.
+        correctionsDir: { try? CorrectionStore.directory() },
+        publishedRoots: { [weak self] in
+            guard let store = self?.configStore else { return [] }
+            return LocalPublishRoots.roots(filesystemOutputDir: store.filesystemOutputDir, obsidianVaultPath: store.obsidianVaultPath)
+        },
+        pruneSearchIndex: { [weak self] stems in self?.launcher.pruneSearchIndex(stems: stems) }
     )
 
     /// Config-change responses: eager local-model prefetch, model-download

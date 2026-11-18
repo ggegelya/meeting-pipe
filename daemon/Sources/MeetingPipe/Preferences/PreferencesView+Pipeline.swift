@@ -22,6 +22,8 @@ struct PipelineSectionView: View {
     @State private var promptError: String?
     @State private var showLocalModelConfig = false
     @State private var voiceprintMeetings = 0
+    /// STOR7: a Reset whose removal failed, shown instead of pretending the profile is gone.
+    @State private var voiceprintResetError: String?
     /// UX43: the Local model picker's own selection, `nil` until the user picks one
     /// and the stored id speaks for itself. This is what makes Custom reachable: it
     /// writes nothing to the store, so a selection derived from the store alone could
@@ -167,11 +169,20 @@ struct PipelineSectionView: View {
                     sublabel: voiceProfileSublabel,
                     showsDivider: false) {
                     Button("Reset") {
-                        VoiceprintProfile.reset()
-                        voiceprintMeetings = 0
+                        if case .failure(let error) = VoiceprintProfile.reset() {
+                            voiceprintResetError = PipelineLauncher.diagnostics(for: error)
+                        } else {
+                            voiceprintResetError = nil
+                        }
+                        // Re-read rather than assume: a failed removal leaves the profile in place.
+                        voiceprintMeetings = VoiceprintProfile.meetingsLearned()
                     }
                     .buttonStyle(.mpGhost)
                     .disabled(voiceprintMeetings == 0)
+                }
+            } footer: {
+                if let error = voiceprintResetError {
+                    FailureNotice(failure: FailurePresentation(diagnostics: error, operation: .storage, title: "Couldn't reset the voice profile")).foregroundStyle(.mpDanger)
                 }
             }
 
@@ -340,8 +351,9 @@ struct PipelineSectionView: View {
         rosterError = nil
         RosterRename.run(from: person.name, to: newName, launcher: launcher) { result in
             switch result {
-            case .success:
+            case .success(let outcome):
                 refreshRoster()
+                rosterError = outcome.keptOldNameNote
             case .failure(let error):
                 rosterError = PipelineLauncher.diagnostics(for: error)
             }

@@ -42,6 +42,7 @@ ENTRY_CONTRACT_EXEMPT = {
     "corrections": "aggregates the local correction corpus (read-only)",
     "analyze_detection": "audits the event stream (read-only)",
     "roster_cmd": "local voiceprint management; no sink, no engine",
+    "index_prune": "drops rows from the local search-index cache; no sink, no engine, no config (STOR7)",
     # `actions` was exempt until AI7: `--cluster` can load an embedding model, so
     # it is no longer a pure read of files on disk and now arms the guard.
     "prep": "recaps <stem>.meta.json + <stem>.summary.json already on disk; no sink, no engine",

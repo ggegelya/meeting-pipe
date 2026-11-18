@@ -259,6 +259,39 @@ final class StorageStatsTests: XCTestCase {
         XCTAssertTrue(fm.fileExists(atPath: hub.appendingPathComponent("models--someone--other-model").path), "another tool's model")
     }
 
+    /// STOR7 (SW-18): `models_evicted` logged every candidate's bytes as freed before removing
+    /// anything. A directory that will not go is now reported as failed and its bytes excluded.
+    @MainActor
+    func test_a_failed_eviction_is_counted_and_its_bytes_are_not_reported_freed() async throws {
+        try writeHub()
+        let hub = root.appendingPathComponent("hub")
+        let logs = root.appendingPathComponent("logs")
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+        let config = ConfigStore(configURL: root.appendingPathComponent("config.toml"))
+        config.outputDirPath = root.appendingPathComponent("library").path
+        let store = StorageStatsStore(
+            configStore: config,
+            workflowStore: WorkflowStore(directory: root.appendingPathComponent("workflows", isDirectory: true)),
+            hubRoot: hub
+        )
+        await store.rescan()
+        let blobs = hub.appendingPathComponent("models--mlx-community--Qwen2.5-3B-Instruct-4bit/blobs")
+        XCTAssertEqual(chmod(blobs.path, 0o500), 0)
+        defer { chmod(blobs.path, 0o700) }
+
+        await store.evictUnusedModels()
+
+        let rows = try String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)
+            .split(separator: "\n")
+            .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+        let row = try XCTUnwrap(rows.last { $0["action"] as? String == "models_evicted" })
+        XCTAssertEqual(row["count"] as? Int, 0)
+        XCTAssertEqual(row["bytes_freed"] as? Int, 0)
+        XCTAssertEqual(row["failed"] as? Int, 1)
+    }
+
     func test_repoID_unsanitizes_the_hub_directory_name() {
         XCTAssertEqual(
             StorageScanner.repoID(fromDirectoryName: "models--mlx-community--Qwen2.5-7B"),

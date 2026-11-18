@@ -173,11 +173,14 @@ struct PeopleView: View {
         RosterRename.run(from: person.name, to: newName, launcher: launcher) { result in
             renaming = nil
             switch result {
-            case .success:
+            case .success(let outcome):
                 // The carry's overlay writes bump the store's watcher, which
                 // reaggregates; do it here too so a rename with nothing to carry
                 // still refreshes the row's name.
                 reaggregate()
+                if let note = outcome.keptOldNameNote {
+                    errorText = FailurePresentation(diagnostics: note, operation: .renameVoice, title: "Renamed, but not everywhere")
+                }
             case .failure(let error):
                 errorText = FailurePresentation(error: error, operation: .renameVoice, title: "Couldn't rename this voice")
             }

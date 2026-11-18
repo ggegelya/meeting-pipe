@@ -559,10 +559,11 @@ struct TranscriptTab: View {
         guard let newName = RosterRename.prompt(currentName: currentName) else { return }
         RosterRename.run(from: currentName, to: newName, launcher: launcher) { result in
             switch result {
-            case .success:
+            case .success(let outcome):
                 // The carry rewrites this meeting's overlay too, so the reload is what
                 // makes the chip and the rows follow.
                 Task { await reload() }
+                if let note = outcome.keptOldNameNote { LibraryDialogs.reportRosterRenameProblem(note) }
             case .failure(let error):
                 // A chip has no error slot, and a rename that changed nothing after a
                 // modal prompt has to say so (the UX32 rail-row precedent).

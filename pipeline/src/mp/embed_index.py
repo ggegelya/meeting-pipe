@@ -934,6 +934,52 @@ def refresh_index(
     return index
 
 
+class _InertEmbedder:
+    """Stands in for the real embedder when an index is only rewritten, never queried, so a
+    prune never loads MLX. `embed` is unreachable on that path; it raises rather than guess."""
+
+    name = "inert"
+
+    def embed(self, texts: list[str], kind: EmbedKind = "passage") -> np.ndarray:
+        raise RuntimeError("an index opened for pruning cannot embed")
+
+    def release(self) -> None:
+        return None
+
+
+def prune_stems(index_dir: Path, stems: list[str]) -> int:
+    """Drop every row of `stems` from the persisted index and its manifest (STOR7).
+
+    A deleted meeting's chunk text otherwise waits in Caches until the next refresh
+    (`mp ask` refreshes before it answers, so it is not answered from; the text is
+    simply still on disk, and a running MCP server holds it until its next reload).
+    Returns the number of rows removed; 0, writing nothing, when there is no index,
+    it cannot be read, or none of the stems is in it. `load` and `save` each take the
+    directory's flock on their own descriptor, so they are not wrapped in an outer
+    lock (that would deadlock); a refresh landing between them is healed by the next.
+    """
+    index_dir = Path(index_dir).expanduser()
+    if not (index_dir / MANIFEST_NAME).exists():
+        return 0
+    try:
+        index = EmbeddingIndex.load(index_dir, _InertEmbedder())
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        log.warning("index at %s unreadable (%s); nothing pruned", index_dir, e)
+        return 0
+    doomed = set(stems)
+    keep = [i for i, c in enumerate(index.chunks) if c.stem not in doomed]
+    removed = len(index.chunks) - len(keep)
+    stems_left = {k: v for k, v in index.stems.items() if k not in doomed}
+    if removed == 0 and stems_left == index.stems:
+        return 0
+    index.chunks = [index.chunks[i] for i in keep]
+    if index.vectors.ndim == 2 and index.vectors.shape[0] == removed + len(keep):
+        index.vectors = index.vectors[keep]
+    index.stems = stems_left
+    index.save(index_dir)
+    return removed
+
+
 def load_or_build(
     root: Path,
     index_dir: Path,

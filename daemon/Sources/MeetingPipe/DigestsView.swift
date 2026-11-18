@@ -167,8 +167,19 @@ struct DigestsView: View {
     }
 
     private func trash(_ d: DigestFile) {
-        for url in [d.jsonURL, d.mdURL] {
-            try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        // STOR7 (SW-18): was `try?`, so a failure showed only as the row not going away.
+        var firstError: Error?
+        for url in [d.jsonURL, d.mdURL] where FileManager.default.fileExists(atPath: url.path) {
+            do {
+                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            } catch {
+                Log.failure(category: "library", action: "trash_failed", error: error,
+                            attributes: ["kind": "digest"], describe: false)
+                if firstError == nil { firstError = error }
+            }
+        }
+        model.failure = firstError.map {
+            FailurePresentation(error: $0, operation: .digest, title: "Couldn't move the digest to the Trash")
         }
         if model.selectedStem == d.stem { model.selectedStem = nil }
         model.reload(directory: libraryModel.digestsDirectory)

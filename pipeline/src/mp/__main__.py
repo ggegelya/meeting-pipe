@@ -77,6 +77,10 @@ Subcommands:
                               Manage named-speaker voiceprints: name an
                               unknown THEM-A cluster so a recurring person
                               surfaces by name across meetings (FEAT3-ROSTER)
+  index-prune [--index-dir P] <stem>...
+                              Drop deleted meetings' rows from the semantic
+                              search index cache (the daemon runs it after a
+                              delete; STOR7). Touches nothing in the library
   backup <dir> [--no-audio]   Archive the library, config, workflows, roster, and
                               corrections into a dated tar.gz, plus a manifest
                               naming the Keychain items (values never exported)
@@ -355,6 +359,9 @@ def _dispatch(cmd: str, rest: list[str]) -> int:
         return run(rest)
     if cmd == "roster":
         from .roster_cmd import main as run
+        return run(rest)
+    if cmd in {"index-prune", "index_prune"}:
+        from .index_prune import main as run
         return run(rest)
     if cmd == "backup":
         from .backup import main as run

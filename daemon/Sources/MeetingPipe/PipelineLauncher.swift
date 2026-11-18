@@ -130,6 +130,10 @@ protocol PipelineDriver: AnyObject {
     func rosterForget(name: String, completion: @escaping (Result<Void, Error>) -> Void)
     /// Rename a roster person while keeping their voiceprint (FEAT3-MANAGE): runs `mp roster rename`. Defaulted no-op.
     func rosterRename(old: String, new: String, completion: @escaping (Result<Void, Error>) -> Void)
+    /// STOR7: `mp index-prune <stem>...` drops deleted meetings' rows from the semantic index, so
+    /// their chunk text does not wait in Caches for the next `mp ask`. Fire and forget; logs its
+    /// own `search_index_pruned` row. Defaulted no-op.
+    func pruneSearchIndex(stems: [String])
     /// Run a full library backup now (STOR3): `mp backup <dir>` writes a dated `tar.gz` into `dir`, updates `.last-backup.json`, and prunes older archives there (STOR12). `libraryBytes` sizes the watchdog cap (`PipelineLauncher.storageJobTimeout`). Local-only (`entry.prepare(secrets=False)`), so no meeting anchor. Defaulted no-op.
     func backup(dir: URL, libraryBytes: Int, completion: @escaping (Result<Void, Error>) -> Void)
     /// STOR5 step one: `mp restore <archive> --dry-run --json --out <tmp>`, the mandatory preview. Writes nothing and refuses nothing, so it always answers with the plan the confirm is about. Defaulted no-op.
@@ -302,6 +306,9 @@ extension PipelineDriver {
             userInfo: [NSLocalizedDescriptionKey: "rosterRename unsupported by this driver"]
         )))
     }
+
+    /// Default no-op stub; `PipelineLauncher` overrides this.
+    func pruneSearchIndex(stems: [String]) {}
 
     /// Default no-op stub; `PipelineLauncher` overrides this.
     func backup(dir: URL, libraryBytes: Int, completion: @escaping (Result<Void, Error>) -> Void) {
@@ -1090,6 +1097,22 @@ final class PipelineLauncher: PipelineDriver {
     /// fully local (roster.json), no egress, so no meeting anchor.
     func rosterRename(old: String, new: String, completion: @escaping (Result<Void, Error>) -> Void) {
         runMP(["roster", "rename", "--old", old, "--new", new], timeout: 30, meeting: nil, completion: completion)
+    }
+
+    /// STOR7: rewrites only the index cache (never the library), so no meeting anchor and no STOR16
+    /// registration. A failure costs nothing lasting: the next `mp ask` refresh drops the rows too.
+    func pruneSearchIndex(stems: [String]) {
+        guard !stems.isEmpty else { return }
+        runMP(["index-prune", "--"] + stems, timeout: 120, meeting: nil) { result in
+            var attrs: [String: Any] = ["stems": stems.count]
+            if case .failure(let error) = result {
+                attrs["ok"] = false
+                Log.failure(category: "coordinator", action: "search_index_prune_failed", error: error, attributes: attrs, describe: false)
+            } else {
+                attrs["ok"] = true
+                Log.event(category: "coordinator", action: "search_index_pruned", attributes: attrs)
+            }
+        }
     }
 
     /// STOR12: the floor of every backup and restore cap, the fixed cap all three used to share.

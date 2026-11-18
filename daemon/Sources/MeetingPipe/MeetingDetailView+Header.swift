@@ -890,9 +890,7 @@ extension MeetingDetailView {
     }
 
     func confirmDelete() {
-        if LibraryDialogs.confirmSoftDelete(meetingTitle: meeting.displayTitle) {
-            _ = libraryModel.softDeleteMeeting(stem: meeting.stem)
-        }
+        LibraryDialogs.confirmAndSoftDelete(meetingTitle: meeting.displayTitle, stem: meeting.stem, model: libraryModel)
     }
 
     func commitTitle() {

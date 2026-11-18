@@ -116,4 +116,19 @@ extension RosterRenameTests {
         StoreFiles.unlock(url)
         XCTAssertEqual(try Data(contentsOf: url), original)
     }
+
+    /// STOR7 (SW-18): a meeting whose overlay cannot be rewritten is counted, not hidden.
+    func test_a_failed_carry_is_counted_in_failed() throws {
+        try writeSummary("20260101-090000", attendees: ["Ivan"])
+        try writeSummary("20260102-090000", attendees: ["Ivan"])
+        // A directory where the overlay file should be: unreadable, so the write refuses (STOR9).
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("20260102-090000.speaker_labels.json"), withIntermediateDirectories: true)
+
+        let outcome = RosterRename.carryCounting(from: "Ivan", to: "Ivan K.", in: dir)
+
+        XCTAssertEqual(outcome, RosterRename.Outcome(carried: 1, failed: 1))
+        XCTAssertEqual(outcome.keptOldNameNote, "1 meeting kept the old name: its speaker labels could not be rewritten.")
+        XCTAssertNil(RosterRename.Outcome(carried: 3, failed: 0).keptOldNameNote)
+    }
 }

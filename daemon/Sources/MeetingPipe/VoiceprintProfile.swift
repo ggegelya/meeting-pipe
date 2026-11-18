@@ -26,8 +26,20 @@ enum VoiceprintProfile {
     }
 
     /// Forget the learned voiceprint (the Preferences "Reset" action). The next
-    /// stereo meeting re-enrolls from scratch.
-    static func reset(at url: URL = fileURL) {
-        try? FileManager.default.removeItem(at: url)
+    /// stereo meeting re-enrolls from scratch. A file already gone is success. STOR7 (SW-18):
+    /// this was `try?`, and Preferences showed "0 meetings" while the biometric file stayed.
+    @discardableResult
+    static func reset(at url: URL = fileURL) -> Result<Void, Error> {
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            // Nothing to forget.
+        } catch {
+            Log.failure(category: "coordinator", action: "voiceprint_reset", error: error,
+                        attributes: ["ok": false], describe: false)
+            return .failure(error)
+        }
+        Log.event(category: "coordinator", action: "voiceprint_reset", attributes: ["ok": true])
+        return .success(())
     }
 }

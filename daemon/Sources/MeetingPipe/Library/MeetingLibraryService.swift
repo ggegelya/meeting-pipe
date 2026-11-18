@@ -165,6 +165,17 @@ final class MeetingLibraryService {
     /// delete (the row, the detail header, the batch pane, the FEAT9 merge cleanup) goes through it.
     /// Never blocks by default, like the other collaborators, so a headless test need not wire it.
     private let deletionBlock: (String) -> DeletionBlock?
+    /// STOR7: where the summary gradings live; nil (look nowhere) unless the Coordinator wires it,
+    /// so a test's delete never reaches the real Application Support.
+    private let correctionsDir: () -> URL?
+    /// STOR7: the local sink folders a published copy may be trashed from; empty (trash none)
+    /// unless wired, for the same reason.
+    private let publishedRoots: () -> [URL]
+    /// STOR7: the move to the Trash, injectable so a test can fail one.
+    private let trash: (URL) throws -> Void
+    /// STOR7: drop these stems' rows from the semantic index (`mp index-prune`). No-op unless wired.
+    private let pruneSearchIndex: ([String]) -> Void
+    private var pendingPrune: [String] = []
 
     init(
         outputDir: @escaping () -> URL,
@@ -181,9 +192,17 @@ final class MeetingLibraryService {
         libraryRunLane: @escaping () -> LibraryRunLane? = { nil },
         notifyFailure: ((String?, FailurePresentation) -> Void)? = nil,
         failedSetMayHaveChanged: @escaping () -> Void = {},
-        deletionBlock: @escaping (String) -> DeletionBlock? = { _ in nil }
+        deletionBlock: @escaping (String) -> DeletionBlock? = { _ in nil },
+        correctionsDir: @escaping () -> URL? = { nil },
+        publishedRoots: @escaping () -> [URL] = { [] },
+        trash: @escaping (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) },
+        pruneSearchIndex: @escaping ([String]) -> Void = { _ in }
     ) {
         self.deletionBlock = deletionBlock
+        self.correctionsDir = correctionsDir
+        self.publishedRoots = publishedRoots
+        self.trash = trash
+        self.pruneSearchIndex = pruneSearchIndex
         self.outputDir = outputDir
         self.originalsDir = originalsDir
         self.launcher = launcher
@@ -1320,8 +1339,28 @@ final class MeetingLibraryService {
         }
     }
 
-    /// Move all sidecars for a stem (audio, transcript, summary, run, meta, notion, obsidian, READY_FOR_MANUAL) to the Trash. The directory watcher picks up the deletes and refreshes the list.
-    func softDeleteMeeting(stem: String) -> Result<Void, Error> {
+    /// STOR7: what deleting `stem` would remove and what it would leave, for the confirm. Lists the
+    /// library once; the delete itself locates again, so a file that appeared since is not missed.
+    func locateFootprint(stem: String) -> MeetingFootprint {
+        locateFootprints(stems: [stem]).first ?? MeetingFootprint()
+    }
+
+    /// The batch confirm's footprints, from one listing of the library for the whole selection.
+    func locateFootprints(stems: [String]) -> [MeetingFootprint] {
+        let listing = (try? FileManager.default.contentsOfDirectory(at: outputDir(), includingPropertiesForKeys: nil, options: [])) ?? []
+        let corrections = correctionsDir()
+        let roots = publishedRoots()
+        return stems.map {
+            MeetingFootprint.locate(stem: $0, listing: listing, correctionsDir: corrections, publishedRoots: roots)
+        }
+    }
+
+    /// Move a meeting to the Trash: its library entries, the kept original and any held-back
+    /// recording, and (STOR7) its summary grading and its local published copies, located through
+    /// the sink sidecars before those go. `derived: false` keeps the old raw-only scope, for the
+    /// merge's fragment cleanup, whose confirm promises only that the fragments move. The directory
+    /// watcher picks up the deletes and refreshes the list.
+    func softDeleteMeeting(stem: String, derived: Bool = true) -> Result<Void, Error> {
         // STOR18: first, before the directory is even listed. Trashing is a rename, so a live
         // recording kept writing into the Trash, its stop found no intermediates and produced no
         // final, and the orphan sweep that "will recover it automatically" looked in raw/.
@@ -1335,73 +1374,75 @@ final class MeetingLibraryService {
         defer { failedSetMayHaveChanged() }
         let dir = outputDir()
         let fm = FileManager.default
-        let entries: [URL]
+        let listing: [URL]
         do {
-            entries = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil, options: [])
+            listing = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil, options: [])
         } catch {
             return .failure(error)
         }
-        let matching = entries.filter { url in
-            MeetingStore.stem(of: url) == stem
-        }
-        guard !matching.isEmpty else {
+        let footprint = MeetingFootprint.locate(
+            stem: stem, listing: listing, correctionsDir: derived ? correctionsDir() : nil,
+            publishedRoots: derived ? publishedRoots() : [], derived: derived
+        )
+        guard !footprint.rawFiles.isEmpty else {
             return .failure(LibraryError.noFiles(stem: stem))
         }
-        var firstFailure: Error?
-        for url in matching {
-            var trashedURL: NSURL?
-            do {
-                try fm.trashItem(at: url, resultingItemURL: &trashedURL)
-            } catch {
-                Log.failure(category: "library", action: "trash_failed", error: error, attributes: [
-                    "stem": stem, "file": url.lastPathComponent, "kind": "artifact",
-                ])
-                if firstFailure == nil { firstFailure = error }
-            }
+        var outcome = FootprintTrashOutcome()
+        for url in footprint.rawFiles {
+            _ = outcome.trash(url, stem: stem, kind: "artifact", logName: true, with: trash)
         }
-        // Cascade into the kept full recording (ADR 0016 / MIC13). It lives
-        // outside the scanned raw/ tree, so the stem enumeration above never
-        // sees it. Most meetings have none (only redaction-opt-in or quarantined
-        // recordings keep one); trash it best-effort when present, matching how
-        // the rest of the meeting's files are removed.
+        // Cascade into the kept full recording (ADR 0016 / MIC13). It lives outside the scanned
+        // raw/ tree, so the stem enumeration above never sees it. Most meetings have none.
         var originalTrashed = false
         let original = originalsDir().appendingPathComponent("\(stem).wav")
         if fm.fileExists(atPath: original.path) {
-            var trashedURL: NSURL?
-            do {
-                try fm.trashItem(at: original, resultingItemURL: &trashedURL)
-                originalTrashed = true
-            } catch {
-                Log.failure(category: "library", action: "trash_failed", error: error, attributes: [
-                    "stem": stem, "file": original.lastPathComponent, "kind": "original",
-                ])
-                if firstFailure == nil { firstFailure = error }
-            }
+            originalTrashed = outcome.trash(original, stem: stem, kind: "original", logName: true, with: trash)
         }
         // SEC26: and into the held-back recording, which has no twin in raw/ and is deleted only here, by
-        // the owner's own delete. Best-effort, like the kept original above.
+        // the owner's own delete.
         for held in MuteRedactor.heldRecordings(stem: stem, in: originalsDir()) {
-            var trashedURL: NSURL?
-            do {
-                try fm.trashItem(at: held, resultingItemURL: &trashedURL)
-            } catch {
-                Log.failure(category: "library", action: "trash_failed", error: error, attributes: [
-                    "stem": stem, "file": held.lastPathComponent, "kind": "held",
-                ])
-                if firstFailure == nil { firstFailure = error }
-            }
+            _ = outcome.trash(held, stem: stem, kind: "held", logName: true, with: trash)
+        }
+        if let corrections = footprint.corrections {
+            outcome.correctionsTrashed = outcome.trash(corrections, stem: stem, kind: "corrections", logName: true, with: trash)
+        }
+        for copy in footprint.publishedCopies where outcome.trash(copy, stem: stem, kind: "published", logName: false, with: trash) {
+            outcome.publishedTrashed += 1
         }
         // The waveform peaks cache lives under Caches/, outside both trees, and is
         // keyed on the stem. Nothing will ever re-derive it for a deleted meeting,
         // so remove it rather than leave it to age out (it leaked before STOR1).
         try? fm.removeItem(at: WaveformPeaksLoader.cachePath(stem: stem))
+        // STOR7: `files_count` keeps its meaning (library entries matched); `files_trashed` and
+        // `files_failed` count every move this delete attempted, outside raw/ included.
         Log.event(category: "coordinator", action: "meeting_deleted", attributes: [
             "stem": stem,
-            "files_count": matching.count,
+            "files_count": footprint.rawFiles.count,
+            "files_trashed": outcome.trashed,
+            "files_failed": outcome.failed,
             "original_trashed": originalTrashed,
+            "corrections_trashed": outcome.correctionsTrashed,
+            "published_trashed": outcome.publishedTrashed,
+            "published_kept": footprint.kept.count,
         ])
-        if let err = firstFailure { return .failure(err) }
+        if derived, outcome.trashed > 0 { schedulePrune(stem) }
+        if let err = outcome.firstFailure { return .failure(err) }
         return .success(())
+    }
+
+    /// STOR7: the semantic index keeps a deleted meeting's chunk text in Caches until something
+    /// refreshes it (`mp ask` does, before it answers). One `mp index-prune` per main-loop turn
+    /// drops the rows for every stem deleted in it, so a batch of N is one spawn, not N.
+    private func schedulePrune(_ stem: String) {
+        let first = pendingPrune.isEmpty
+        pendingPrune.append(stem)
+        guard first else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let stems = self.pendingPrune
+            self.pendingPrune = []
+            self.pruneSearchIndex(stems)
+        }
     }
 
     /// Copy summary markdown, transcript, summary JSON, and audio to a user-chosen folder. Missing files are silently skipped (best-effort sharing export, not archival). Returns file count.
@@ -1572,7 +1613,7 @@ final class MeetingLibraryService {
                     // does not undo a landed merge, so it is counted, not fatal.
                     var trashed = 0
                     for stem in fragmentStems {
-                        if case .success = self.softDeleteMeeting(stem: stem) { trashed += 1 }
+                        if case .success = self.softDeleteMeeting(stem: stem, derived: false) { trashed += 1 }
                     }
                     Log.event(category: "coordinator", action: "merge_succeeded", attributes: [
                         "primary": primaryStem,
