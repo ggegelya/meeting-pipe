@@ -2,9 +2,9 @@
 id: DOC20
 title: README, SETUP and CONVENTIONS state guarantees the code does not keep: muted spans redacted by default, only the summarizer sees the transcript, every cross-tree surface pinned by a shared fixture
 category: Docs
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). README says muted spans are redacted by default while the default capture mode never redacts (241.6 s of owner speech under a muted verdict transcribed in six weeks of field logs, DOC8's sweep called that bullet correct), SETUP says nothing but the summarizer call leaves the Mac while the default Notion sink uploads the whole transcript, and CONVENTIONS says every cross-tree surface is fixture-pinned when RestorePlan, MCP status and the backend clamp are not. One doc-truth commit over README, SETUP, GUIDE and CONVENTIONS, no behaviour change.
+comment: Shipped 2026-11-18, docs only - README's capture-first bullet says redaction is opt-in per workflow, GUIDE's Off the record says muting in the meeting app is not off the record, SETUP names Notion's Include the full transcript and drops "nothing else leaves your Mac", CONVENTIONS claims only its fixture table, names the three unpinned surfaces, and describes the restore plan's fail-closed decode. Owner owes a read-through and closing it. [Spec](./DOC20.md)
 ---
 
 # DOC20: README, SETUP and CONVENTIONS state guarantees the code does not keep: muted spans redacted by default, only the summarizer sees the transcript, every cross-tree surface pinned by a shared fixture
@@ -54,3 +54,14 @@ One doc-truth commit (the DOC12 and HYG6 precedent), no code or copy-string chan
 - CONVENTIONS' fixture section no longer opens with "Every Swift-Python surface"; it names the restore plan, the MCP status and the effective-backend clamp as not fixture-pinned; the restore section describes the fail-closed decode.
 - The README, SETUP and GUIDE wording agree with the two in-app sublabels quoted in Context (no string in `daemon/Sources` changes).
 - `python3 scripts/truth_fences.py both` and `bash scripts/ci-local.sh fences` green; no U+2014 on changed lines.
+
+**Progress (2026-11-18): shipped, docs only.** Every premise re-checked at HEAD first: `CaptureMode.resolve` still returns `.captureFirst` unless the workflow opts in, `NotionCfg.include_full_transcript` still defaults to `True` (PIPE39 is still `new`), the clamp still has no cross-tree check (the Swift tests mention `effective_backend` only in comments), and `RestorePlan.load` is still a strict decode failing with "restore --dry-run produced no readable plan".
+
+- README's capture-first bullet, lead included: the mic is recorded in full and nothing is redacted by default, so a muted aside reaches the transcript, summary and every sink; **Redact muted spans from the notes** opts in; off the record (`⌃⌥O`) is always cut; regulated and NDA keep the real-time gate; the ADR 0016 link stays.
+- GUIDE "Off the record": muting yourself in the meeting app is not off the record.
+- SETUP Step 6 names **Include the full transcript** in Preferences ▸ Integrations and says Notion gets the transcript by default; Step 7 drops "nothing else leaves your Mac", qualifies Local MLX's "no network" as the summarizer's, and says the `(cloud)` / `(on-device)` tag names where the summary was written, not where it is published.
+- CONVENTIONS' fixture section claims only its table and gains a "Not fixture-pinned" paragraph (the clamp, the restore plan, the MCP status, with where each is pinned instead); the restore section describes the fail-closed decode.
+
+No string in `daemon/Sources` changed. Whichever of this and PIPE39 lands second aligns SETUP with the Notion transcript behaviour then true.
+
+**Owner owes:** a read of the four changed passages (README "The mic is captured losslessly", GUIDE "Off the record", SETUP steps 6 and 7, CONVENTIONS "Cross-tree golden fixtures"), then closing it.

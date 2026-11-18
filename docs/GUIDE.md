@@ -79,6 +79,8 @@ The disk your recordings are saved to has stopped keeping up: the app is holding
 
 For a stretch where what *you* say should not reach your notes, press `⌃⌥O`, or click the **mic-with-a-slash** button on the recording panel (it is also **Go off the record** on that panel's right-click menu). The panel shows a steady **Off the record** state and the voice meter drops to zero until you turn it off again. Press it a second time to resume; an open stretch closes by itself when you stop.
 
+Muting yourself in the meeting app is not the same as off the record. Under an ordinary workflow, what you say while muted is kept and transcribed like anything else, unless the workflow's **Redact muted spans from the notes** is on.
+
 Off the record covers your microphone only. The other people on the call are still recorded, so anything they say during the stretch still reaches the transcript and the summary. If the whole conversation should stay out, stop the recording instead and start a new one afterwards.
 
 What it does to your microphone depends on the workflow. Under an ordinary workflow the microphone keeps recording and your side of the marked stretch is cut out before anything reads the audio, so your voice from it never reaches the transcript, the summary, or anything you publish. The uncut recording is kept on your Mac as a recovery copy, readable only by you and never backed up or synced anywhere, and it is reclaimed after a month or so. Under a workflow in NDA mode, or with regulated mode on, the microphone is silenced for real while the stretch is open, because those modes promise no such audio is kept at all.

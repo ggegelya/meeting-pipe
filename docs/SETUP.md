@@ -143,17 +143,19 @@ Other columns are optional. If you add any of `Workflow`, `Source`, `Attendees` 
 2. Click **Fetch databases** and pick your `Meetings` database from the list. If it does not appear, paste its ID: the 32-character block after the last `/` and before the `?` in the database URL (`.../yourworkspace/1a2b3c4d5e6f7890abcdef1234567890?v=...`), without hyphens.
 3. Click **Verify connection**. This checks, read-only, that the token works and the integration is connected to that database, so the first real meeting will not fail to publish. Nothing is written to Notion.
 
+Notion receives each meeting's summary and, by default, its full transcript as well. The switch is **Include the full transcript** in **Preferences ▸ Integrations**, under Notion; turn it off to send only the summary.
+
 ## Step 7: Choose how summaries are written
 
 Transcription always happens on your Mac. Summarization is the one step with a choice, and it is a real one. Pick a backend in **Preferences ▸ Pipeline**:
 
-- **Anthropic (the default).** Best quality. Costs a few cents per meeting and needs an API key from [console.anthropic.com](https://console.anthropic.com), which requires adding credit. Paste the key into **Preferences ▸ Integrations**. The transcript is sent to Anthropic; nothing else leaves your Mac.
+- **Anthropic (the default).** Best quality. Costs a few cents per meeting and needs an API key from [console.anthropic.com](https://console.anthropic.com), which requires adding credit. Paste the key into **Preferences ▸ Integrations**. The transcript is sent to Anthropic to be summarized. That is the summarizer's part; where the summary is published is the other place your meeting can go, and the Notion destination from [step 6](#step-6-connect-notion) receives the full transcript too unless you switch that off.
 - **Claude CLI.** Free if you already pay for a Claude subscription: it drives your existing Claude Code login rather than an API key. Still a cloud backend, so the transcript leaves your Mac.
-- **Local MLX.** Fully on-device, no network, no cost. Quality is lower than Anthropic's. It needs a 4.3 GB model; the Welcome flow's workflow step, the workflow editor, and the menu bar's **Finish setup** row all offer a **Download now** button when you pick an on-device backend, so it downloads in the background instead of stalling your first meeting. No terminal involved.
+- **Local MLX.** The summary is written fully on-device, with no network and no cost; a cloud publish destination such as Notion still receives what it is set to send. Quality is lower than Anthropic's. It needs a 4.3 GB model; the Welcome flow's workflow step, the workflow editor, and the menu bar's **Finish setup** row all offer a **Download now** button when you pick an on-device backend, so it downloads in the background instead of stalling your first meeting. No terminal involved.
 
 If you choose Local MLX, **Configure local model** offers three sizes, and each one is labelled against your own Mac's memory: "Fits comfortably", "little headroom", or "Needs about 24 GB; this Mac has 16". A size your Mac cannot hold is greyed out with that reason, and the default (**Recommended**) is the right answer on almost every machine. You do not have to work any of this out: nothing you can pick in that menu will run your Mac out of memory, and if one ever gets close mid-meeting the summary stops with a plain "Not enough memory" note instead of leaving you with a beachball.
 
-The names above are what the picker shows, and the same name follows that engine everywhere else in the app: the line under a meeting's title saying what produced its summary, the **Re-summarize with…** menu, and a workflow's own Backend row all say **Anthropic**, **Local MLX**, or **Claude CLI**, with `(cloud)` or `(on-device)` after it so you can always tell whether a summary left your Mac.
+The names above are what the picker shows, and the same name follows that engine everywhere else in the app: the line under a meeting's title saying what produced its summary, the **Re-summarize with…** menu, and a workflow's own Backend row all say **Anthropic**, **Local MLX**, or **Claude CLI**, with `(cloud)` or `(on-device)` after it so you can always tell where a summary was written. That tag is about the summarizer, not about where the summary is published: a meeting summarized `(on-device)` still goes to Notion if Notion is its destination.
 
 You can change this later at any time, and switch a single meeting's backend after the fact from the Library.
 
