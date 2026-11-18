@@ -599,7 +599,7 @@ def gen_failures() -> str:
 def gen_summary_limits() -> str:
     """PIPE54: the three `MeetingSummary` limits Swift's writers must respect, read off the
     schema the pipeline validates `mp publish`'s input against, not restated."""
-    from mp.schemas import MeetingSummary
+    from mp.schemas import SUMMARY_MIN_ITEMS, TITLE_MIN_LENGTH, MeetingSummary
 
     schema = MeetingSummary.model_json_schema()
     props = schema["properties"]
@@ -608,8 +608,9 @@ def gen_summary_limits() -> str:
         "title_max_length": props["title"]["maxLength"],
         "summary_max_items": props["summary"]["maxItems"],
         # PIPE43 (F176): the lower bounds, so an editor save cannot write a file publish refuses.
-        "title_min_length": props["title"]["minLength"],
-        "summary_min_items": props["summary"]["minItems"],
+        # They apply to generated output only, so they are module constants, not schema fields.
+        "title_min_length": TITLE_MIN_LENGTH,
+        "summary_min_items": SUMMARY_MIN_ITEMS,
         "confidence_values": confidence["enum"],
     }
     return _envelope(

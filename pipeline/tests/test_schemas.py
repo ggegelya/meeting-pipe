@@ -108,7 +108,20 @@ def _base(**overrides) -> dict:
 )
 def test_an_empty_answer_fails_validation(overrides):
     with pytest.raises(ValidationError):
-        MeetingSummary.model_validate(_base(**overrides))
+        MeetingSummary.validate_generated(_base(**overrides))
+
+
+def test_a_stored_summary_with_an_empty_title_still_loads(caplog):
+    """The PIPE43 bounds are for model output only: a `<stem>.summary.json` an older build wrote
+    with an empty title (or no bullet) must stay readable, and the read says what it lacks."""
+    import logging
+
+    stored = json.dumps(_base(title="", summary=[]))
+    with caplog.at_level(logging.WARNING, logger="mp.schemas"):
+        s = MeetingSummary.model_validate_json(stored)
+    assert s.title == "" and s.summary == []
+    assert s.content_shortfall() == ["title is blank", "summary has no bullet"]
+    assert any("below the content floor" in r.getMessage() for r in caplog.records)
 
 
 def test_blank_entries_are_dropped_and_their_anchors_with_them():

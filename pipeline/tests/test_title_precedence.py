@@ -28,14 +28,12 @@ def _cases() -> list[dict]:
 
 
 def _summary(title: str) -> MeetingSummary:
-    fields = dict(title=title, summary=["a"], decisions=[], actions=[], questions=[],
-                  attendees=[], detected_language="en")
-    if not title:
-        # PIPE43: a blank title no longer validates, but the golden still carries the
-        # empty-title rows because Swift reads legacy files that have one; this only
-        # checks precedence, so it builds that state without validating it.
-        return MeetingSummary.model_construct(**fields)
-    return MeetingSummary(**fields)
+    # An empty title still loads (PIPE43 bounds model output, not stored files), which is
+    # what the golden's empty-title rows need.
+    return MeetingSummary(
+        title=title, summary=["a"], decisions=[], actions=[], questions=[],
+        attendees=[], detected_language="en",
+    )
 
 
 def _meta(case: dict) -> dict[str, Any]:

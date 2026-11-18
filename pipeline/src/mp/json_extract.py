@@ -165,7 +165,7 @@ def parse_summary(text: str, *, error: type[Exception], message: str) -> Meeting
         if not candidate:
             continue
         try:
-            return MeetingSummary.model_validate(json.loads(candidate))
+            return MeetingSummary.validate_generated(json.loads(candidate))
         except (json.JSONDecodeError, ValidationError):
             continue
     raise error(message)

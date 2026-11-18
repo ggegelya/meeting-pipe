@@ -514,7 +514,7 @@ class AnthropicSummaryClient:
                 continue
 
             try:
-                return MeetingSummary.model_validate(tool_blocks[0].input)
+                return MeetingSummary.validate_generated(tool_blocks[0].input)
             except ValidationError as ve:
                 last_err = ve
                 log.warning("Attempt %d: schema violation: %s", attempt, ve)
@@ -674,6 +674,13 @@ def summarize(
             close = getattr(client, "close", None)
             if callable(close):
                 close()
+
+    # PIPE43: the one gate every engine's answer passes before it is written. A client that
+    # validated with `validate_generated` has already been through its repair loop; one that
+    # built the model directly (the staged path, an injected client) is held to the floor here.
+    if shortfall := summary.content_shortfall():
+        raise ValueError("the engine returned an empty summary (" + "; ".join(shortfall)
+                         + "); nothing was written")
 
     stem = transcript_md.stem
     out_dir = transcript_md.parent

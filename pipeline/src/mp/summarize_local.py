@@ -1483,7 +1483,7 @@ class LocalSummaryClient:
                     best = f"layer {layer}: invalid JSON: {je}"
                 continue
             try:
-                summary = MeetingSummary.model_validate(obj)
+                summary = MeetingSummary.validate_generated(obj)
             except ValidationError as ve:
                 log.warning("layer %d schema violation: %s", layer, ve)
                 best = f"layer {layer}: parsed as JSON but failed the schema: {ve}"

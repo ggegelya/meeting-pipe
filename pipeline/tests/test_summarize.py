@@ -952,3 +952,18 @@ def test_a_candidate_preview_leaves_the_empty_marker(tmp_path: Path, monkeypatch
 
     summarize(transcript, cfg=Config(), client=_FakeClient(), out_suffix="candidate")
     assert marker.exists()
+
+
+def test_an_empty_summary_from_any_engine_is_never_written(tmp_path: Path, monkeypatch):
+    """PIPE43: the content floor is checked before the write, whatever built the summary."""
+    transcript = tmp_path / "20261009-121709.md"
+    transcript.write_text("# Transcript\n\n**A**: Quick check.\n", encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    class _EmptyClient:
+        def summarize(self, **_):
+            return MeetingSummary(title="", summary=[], detected_language="en")
+
+    with pytest.raises(ValueError, match="empty summary"):
+        summarize(transcript, cfg=Config(), client=_EmptyClient())
+    assert not (tmp_path / "20261009-121709.summary.json").exists()

@@ -6,11 +6,14 @@ Field names and types are locked-in; Notion publishing assumes this exact shape.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from .prompt_safety import clean_due, clean_language, clean_person, clean_text
+
+_log = logging.getLogger("mp.schemas")
 
 # Named so consumers that coerce a free-form string onto this field (digest's
 # `_clamp_confidence`) can say so in their signature rather than returning `str`.
@@ -288,12 +291,20 @@ def drop_blank_entries(payload: Any) -> Any:
     return out
 
 
+#: PIPE43 (F176): the content floor a *generated* summary must clear: a non-blank title and at
+#: least one non-blank bullet. Enforced only under `GENERATED`, never on a stored file.
+TITLE_MIN_LENGTH = 1
+SUMMARY_MIN_ITEMS = 1
+#: The validation context for model output about to be written (`MeetingSummary.validate_generated`).
+GENERATED = {"generated": True}
+
+
 class MeetingSummary(BaseModel):
-    # PIPE43 (F176): lower bounds as well as upper ones. An empty model answer (no title, no
-    # bullet) used to validate and be written as a summary; now it fails and takes the existing
-    # repair or failure path. `summary` keeps at least one bullet after blanks are dropped.
-    title: str = Field(..., min_length=1, max_length=120)
-    summary: list[str] = Field(..., min_length=1, max_length=10)
+    # PIPE43: the lower bounds live in `_content_floor`, not in these fields, because they hold
+    # only for model output. A `<stem>.summary.json` already on disk must stay readable whatever
+    # it holds (an older build wrote some with an empty title), so a read logs the shortfall.
+    title: str = Field(..., max_length=120)
+    summary: list[str] = Field(..., max_length=10)
     decisions: list[str] = Field(default_factory=list)
     actions: list[ActionItem] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
@@ -318,10 +329,33 @@ class MeetingSummary(BaseModel):
     @field_validator("title", mode="after")
     @classmethod
     def _scrub_title(cls, v: str) -> str:
-        cleaned = clean_text(v).strip()
-        if not cleaned:
-            raise ValueError("title is blank")
-        return cleaned
+        return clean_text(v).strip()
+
+    @classmethod
+    def validate_generated(cls, data: Any) -> "MeetingSummary":
+        """Validate model output before it is written: the content floor applies (PIPE43), so an
+        empty answer raises `ValidationError` into the caller's repair or failure path."""
+        return cls.model_validate(data, context=GENERATED)
+
+    def content_shortfall(self) -> list[str]:
+        """What keeps this summary under the PIPE43 content floor; empty when it clears it."""
+        missing: list[str] = []
+        if len(self.title) < TITLE_MIN_LENGTH:
+            missing.append("title is blank")
+        if len(self.summary) < SUMMARY_MIN_ITEMS:
+            missing.append("summary has no bullet")
+        return missing
+
+    @model_validator(mode="after")
+    def _content_floor(self, info: ValidationInfo) -> "MeetingSummary":
+        shortfall = self.content_shortfall()
+        if not shortfall:
+            return self
+        if isinstance(info.context, dict) and info.context.get("generated"):
+            raise ValueError("an empty summary is not a summary: " + "; ".join(shortfall))
+        # A stored file: load it anyway and say so, rather than make it unreadable.
+        _log.warning("summary loaded below the content floor (%s)", "; ".join(shortfall))
+        return self
 
     @field_validator("summary", "decisions", "questions", mode="after")
     @classmethod
