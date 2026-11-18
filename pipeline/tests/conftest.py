@@ -282,3 +282,23 @@ def _fresh_secret_probe_state():
     yield
     config._ABSENT_SECRETS.clear()
     config._UNREADABLE_SECRETS.clear()
+
+
+@pytest.fixture
+def evicted(monkeypatch):
+    """PIPE35: make a library file read the way an iCloud-evicted (dataless) one does on the
+    owner's Mac, `[Errno 11] Resource deadlock avoided` (EDEADLK), without touching iCloud.
+    Returns a function that marks one path; every `Path.read_bytes` of it then raises."""
+    import errno as errno_mod
+    from pathlib import Path as _Path
+
+    marked: set[_Path] = set()
+    real = _Path.read_bytes
+
+    def _read_bytes(self):
+        if _Path(self) in marked:
+            raise OSError(errno_mod.EDEADLK, "Resource deadlock avoided", str(self))
+        return real(self)
+
+    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+    return lambda path: marked.add(_Path(path))

@@ -173,6 +173,58 @@ def read_json_object(path: Path) -> dict[str, Any] | None:
     return read.data
 
 
+class UnreadableTally:
+    """What one library-wide command could not read (PIPE35).
+
+    The digest, `mp actions`, the MCP tools, the prep card and the Ask index's title lookup each
+    skip a summary or sidecar they cannot read and carry on, which is right; doing it with no
+    count is what made an iCloud-evicted library (EDEADLK on a dataless file) answer from a
+    subset with nothing saying so. One tally per command run, keyed by path so a file two
+    readers both touch is counted once, and by reason (`errno.errorcode` name, or
+    `unparseable`) for the report. A missing file is never counted: absent is a legitimate state.
+    """
+
+    def __init__(self) -> None:
+        self._reasons: dict[Path, str] = {}
+
+    def add(self, path: Path, reason: str) -> None:
+        self._reasons.setdefault(Path(path), reason)
+
+    @property
+    def total(self) -> int:
+        return len(self._reasons)
+
+    def as_dict(self) -> dict[str, int]:
+        """Count per reason, `{"EDEADLK": 2, "unparseable": 1}`; empty when nothing was skipped."""
+        counts: dict[str, int] = {}
+        for reason in self._reasons.values():
+            counts[reason] = counts.get(reason, 0) + 1
+        return dict(sorted(counts.items()))
+
+    def reason_for(self, path: Path) -> str | None:
+        return self._reasons.get(Path(path))
+
+    def warn(self, root: Path) -> None:
+        """The one end-of-command WARNING, and only when something was skipped."""
+        if not self.total:
+            return
+        detail = ", ".join(f"{k}: {v}" for k, v in self.as_dict().items())
+        log.warning("skipped %d unreadable file(s) (%s) under %s", self.total, detail, root)
+
+
+def read_library_json(path: Path, tally: UnreadableTally | None) -> dict[str, Any] | None:
+    """`read_json_object`, but an unreadable file is counted in `tally` (PIPE35).
+
+    None for a missing file (not counted), and None plus a tally entry for an `OSError` (keyed by
+    its errno name) or a file that is not a JSON object (`unparseable`). Never raises."""
+    read = load_json_object(path)
+    if read.state == "unreadable" and tally is not None:
+        tally.add(path, (read.errno or "io_error") if read.kind == "io" else "unparseable")
+    if read.not_object:
+        log.warning("%s holds JSON whose %s; ignoring it", path, read.reason)
+    return read.data
+
+
 class StoreUnreadable(Exception):
     """A user-data store that is present but cannot be used (STOR9).
 

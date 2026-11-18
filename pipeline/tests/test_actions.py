@@ -136,3 +136,26 @@ def test_main_overdue_text_shows_age(tmp_path: Path, capsys) -> None:
     assert "Way overdue" in out
     assert "No deadline" not in out  # undated is never overdue
     assert "overdue)" in out  # the age phrase is rendered
+
+
+def test_an_unreadable_summary_is_counted_and_warned_once(tmp_path: Path, evicted, caplog,
+                                                            capsys) -> None:
+    """PIPE35: the readable meetings still answer; the evicted one is counted, not silent.
+    The JSON stays a bare list, since the daemon decodes `--out` as one."""
+    import logging
+
+    from mp.storage import UnreadableTally
+
+    _summary(tmp_path, "20260101-1000", "Kickoff", [{"task": "Send deck", "confidence": "high"}])
+    _summary(tmp_path, "20260102-1000", "Sync", [{"task": "Book room", "confidence": "low"}])
+    evicted(tmp_path / "20260102-1000.summary.json")
+    tally = UnreadableTally()
+    assert [a.task for a in discover(tmp_path, tally=tally)] == ["Send deck"]
+    assert tally.as_dict() == {"EDEADLK": 1}
+
+    with caplog.at_level(logging.WARNING, logger="mp.storage"):
+        assert main(["--dir", str(tmp_path), "--json"]) == 0
+    assert isinstance(json.loads(capsys.readouterr().out), list)
+    assert [r.getMessage() for r in caplog.records if "unreadable" in r.getMessage()] == [
+        f"skipped 1 unreadable file(s) (EDEADLK: 1) under {tmp_path}"
+    ]

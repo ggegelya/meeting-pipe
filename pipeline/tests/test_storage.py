@@ -128,3 +128,35 @@ def test_load_json_object_tells_missing_from_unreadable(tmp_path: Path) -> None:
     good = tmp_path / "good.json"
     good.write_text('{"k": 2}')
     assert storage.load_json_object(good).data == {"k": 2}
+
+
+# ----- PIPE35: the one tolerant library reader counts what it skips -----
+
+
+def test_read_library_json_counts_unreadable_but_not_missing(tmp_path, evicted, caplog) -> None:
+    import logging
+
+    from mp.storage import UnreadableTally, read_library_json
+
+    good = tmp_path / "a.summary.json"
+    good.write_text('{"title": "ok"}', encoding="utf-8")
+    bad_json = tmp_path / "b.summary.json"
+    bad_json.write_text("{not json", encoding="utf-8")
+    gone = tmp_path / "c.summary.json"
+    gone.write_text("{}", encoding="utf-8")
+    evicted(gone)
+    tally = UnreadableTally()
+
+    assert read_library_json(good, tally) == {"title": "ok"}
+    assert read_library_json(tmp_path / "missing.summary.json", tally) is None
+    assert read_library_json(bad_json, tally) is None
+    assert read_library_json(gone, tally) is None
+    assert read_library_json(gone, tally) is None  # a second reader of one file counts once
+    assert tally.total == 2
+    assert tally.as_dict() == {"EDEADLK": 1, "unparseable": 1}
+
+    with caplog.at_level(logging.WARNING, logger="mp.storage"):
+        tally.warn(tmp_path)
+        UnreadableTally().warn(tmp_path)  # nothing skipped: no line
+    lines = [r.getMessage() for r in caplog.records if "unreadable" in r.getMessage()]
+    assert lines == [f"skipped 2 unreadable file(s) (EDEADLK: 1, unparseable: 1) under {tmp_path}"]

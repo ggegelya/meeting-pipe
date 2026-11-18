@@ -226,3 +226,34 @@ def test_main_workflow_with_no_summarized_meeting(tmp_path: Path, capsys) -> Non
     assert "No summarized meeting yet in Client work." in capsys.readouterr().out
     assert main(["Client work", "--dir", str(tmp_path), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["card"] is None
+
+
+def test_an_unreadable_last_meeting_is_counted_and_the_card_falls_through(
+    tmp_path: Path, evicted, capsys
+) -> None:
+    """PIPE35: the card still recaps the older meeting, which is right, but now says how many
+    it could not read instead of passing one by silently."""
+    from mp.storage import UnreadableTally
+
+    _meeting(tmp_path, "20260701-090000", "Client work", _summary("Kickoff", ["old"]))
+    _meeting(tmp_path, "20260715-090000", "Client work", _summary("Review", ["new"]))
+    evicted(tmp_path / "20260715-090000.summary.json")
+    tally = UnreadableTally()
+    card = prep(tmp_path, "Client work", tally=tally)
+    assert card is not None and card.stem == "20260701-090000"
+    assert tally.as_dict() == {"EDEADLK": 1}
+
+    assert main(["Client work", "--dir", str(tmp_path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["card"]["stem"] == "20260701-090000"
+    assert payload["skipped_unreadable"] == {"EDEADLK": 1}
+
+
+def test_an_unreadable_meta_sidecar_is_counted(tmp_path: Path, evicted) -> None:
+    from mp.storage import UnreadableTally
+
+    _meeting(tmp_path, "20260701-090000", "Client work", _summary("Kickoff", ["old"]))
+    evicted(tmp_path / "20260701-090000.meta.json")
+    tally = UnreadableTally()
+    assert candidates(tmp_path, tally) == []
+    assert tally.total == 1

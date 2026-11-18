@@ -547,3 +547,46 @@ def test_a_raising_digest_writes_a_failed_attempt_and_event(monkeypatch: pytest.
     assert attempt is not None and attempt["outcome"] == "failed"
     assert attempt["reason"] == "RuntimeError: library unreadable"
     assert emitted == [("pipeline", "digest_failed", {"error_type": "RuntimeError", "trigger": "scheduled"})]
+
+
+# ----- PIPE35: a meeting the digest could not read is counted and named -----
+
+
+def test_an_unreadable_summary_is_counted_in_the_event_the_json_and_the_digest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, evicted, capsys
+) -> None:
+    root = tmp_path / "raw"
+    out = tmp_path / "digests"
+    today = date.today()
+    for i, hhmmss in enumerate(("090000", "100000", "110000")):
+        _meeting(root, _stem(today, hhmmss), title=f"M{i}", decisions=[f"call {i}"], actions=[
+            {"task": f"t{i}", "owner": "A", "due": None, "confidence": "medium",
+             "resolved": False},
+        ])
+    evicted(root / f"{_stem(today, '100000')}.summary.json")
+    emitted: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(digest.events, "emit", lambda *a, **k: emitted.append((a, k)))
+    monkeypatch.setattr(digest.Config, "load", classmethod(lambda cls: _cfg()))
+    monkeypatch.setattr(digest.engine, "complete_text", _engine_ok("- bullet"))
+
+    assert digest.main(["--dir", str(root), "--out-dir", str(out), "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["skipped_unreadable"] == {"EDEADLK": 1}
+    assert payload["decisions"] == 2
+    generated = [k for a, k in emitted if a == ("pipeline", "digest_generated")]
+    assert generated[0]["skipped_unreadable"] == 1
+    written = json.loads(next(out.glob("digest-*.summary.json")).read_text(encoding="utf-8"))
+    scope = [s for s in written["extra_sections"] if s["name"] == digest.SCOPE_SECTION]
+    assert any("1 meeting(s) could not be read" in line for line in scope[0]["content"])
+
+
+def test_scope_section_names_the_skip_even_when_nothing_was_trimmed(tmp_path: Path) -> None:
+    _meeting(tmp_path, _stem(TODAY), title="M", actions=[_action("one")])
+    scope = _scope(tmp_path)
+    assert digest.scope_section(scope, 7) is None
+    note = digest.scope_section(scope, 7, skipped_unreadable=3)
+    assert note is not None
+    assert note.content == [
+        "3 meeting(s) could not be read, so their actions and decisions are missing from this digest."
+    ]

@@ -326,15 +326,22 @@ def default_embedder(model_id: str = DEFAULT_EMBED_MODEL) -> Embedder:
     return HashingEmbedder()
 
 
-def _read_title(root: Path, stem: str) -> str:
-    obj = storage.read_json_object(root / f"{stem}.summary.json")
+def _read_title(root: Path, stem: str, tally: storage.UnreadableTally | None = None) -> str:
+    """The summary's title, or the stem. PIPE35: an unreadable summary is counted in `tally`, so
+    a refresh that cited stems instead of titles says how many it could not read."""
+    obj = storage.read_library_json(root / f"{stem}.summary.json", tally)
     if obj is not None and obj.get("title"):
         return str(obj["title"])
     return stem
 
 
 def chunk_stem(
-    root: Path, stem: str, *, chunk_chars: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP
+    root: Path,
+    stem: str,
+    *,
+    chunk_chars: int = CHUNK_CHARS,
+    overlap: int = CHUNK_OVERLAP,
+    tally: storage.UnreadableTally | None = None,
 ) -> list[Chunk]:
     """One meeting's windows. Empty when it has neither a summary nor a
     transcript, which is a legitimate outcome, not a failure: such a stem is
@@ -356,7 +363,7 @@ def chunk_stem(
         )
     if not parts:
         return []
-    title = _read_title(root, stem)
+    title = _read_title(root, stem, tally)
     text = "\n\n".join(parts)
     return [
         Chunk(stem=stem, title=title, index=window.index, text=window.text)
@@ -880,6 +887,7 @@ def refresh_index(
     last_save = started
     checkpoints = 0
     save_s = 0.0
+    tally = storage.UnreadableTally()
 
     def _timed_persist(ix: "EmbeddingIndex") -> None:
         nonlocal save_s, last_save
@@ -897,7 +905,8 @@ def refresh_index(
             watchdog.check(stage=EMBED_STAGE)
         batch_chunks: list[Chunk] = []
         for stem in batch:
-            batch_chunks.extend(chunk_stem(root, stem, chunk_chars=chunk_chars, overlap=overlap))
+            batch_chunks.extend(chunk_stem(root, stem, chunk_chars=chunk_chars, overlap=overlap,
+                                           tally=tally))
         if batch_chunks:
             # Embed first, so a backend that raises leaves the accumulated state
             # untouched rather than one list ahead of the other.
@@ -930,7 +939,9 @@ def refresh_index(
         chunks_embedded=embedded_chunks, chunks_total=len(index.chunks),
         checkpoints=checkpoints, save_s=round(save_s, 2),
         duration_s=round(clock() - started, 2),
+        skipped_unreadable=tally.total,
     )
+    tally.warn(root)
     return index
 
 

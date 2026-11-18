@@ -111,7 +111,11 @@ def _meeting_day(stem: str) -> date | None:
 
 
 def collect_open_actions(
-    root: Path, today: date, *, allow_stems: set[str] | None = None
+    root: Path,
+    today: date,
+    *,
+    allow_stems: set[str] | None = None,
+    tally: storage.UnreadableTally | None = None,
 ) -> list[actions_mod.OpenAction]:
     """Every open action across the library, most-overdue / soonest-due first
     (undated last). Reuses `mp actions`' discovery + open filter (AI1).
@@ -119,7 +123,7 @@ def collect_open_actions(
     `allow_stems` is AUTO3's visibility gate, applied inside `discover` so a
     withheld meeting's commitments are never read, let alone narrated."""
     opens = actions_mod.filter_actions(
-        actions_mod.discover(Path(root), allow_stems=allow_stems),
+        actions_mod.discover(Path(root), allow_stems=allow_stems, tally=tally),
         lifecycle="open", today=today,
     )
     opens.sort(key=lambda a: (a.due is None, a.due or "", a.stem))
@@ -127,7 +131,12 @@ def collect_open_actions(
 
 
 def collect_recent_decisions(
-    root: Path, today: date, since_days: int, *, allow_stems: set[str] | None = None
+    root: Path,
+    today: date,
+    since_days: int,
+    *,
+    allow_stems: set[str] | None = None,
+    tally: storage.UnreadableTally | None = None,
 ) -> list[RecentDecision]:
     """Decisions from meetings dated within the last `since_days`, newest first.
     Decisions are undated, so "recent" is by the meeting's date (like DV1).
@@ -146,7 +155,7 @@ def collect_recent_decisions(
         day = _meeting_day(stem)
         if day is None or day < cutoff:
             continue
-        obj = storage.read_json_object(summary_json)
+        obj = storage.read_library_json(summary_json, tally)
         if obj is None:
             continue
         title = str(obj.get("title") or stem)
@@ -282,16 +291,25 @@ def scope_actions(open_actions: list[actions_mod.OpenAction], today: date, since
                        overdue_total=sum(1 for a in scoped if a.is_overdue(today)))
 
 
-def scope_section(scope: ActionScope, since_days: int) -> ExtraSection | None:
+def scope_section(
+    scope: ActionScope, since_days: int, skipped_unreadable: int = 0
+) -> ExtraSection | None:
     """The section that keeps a bounded digest honest: how much of the window it
     showed, which groups are trimmed, and where the rest lives. None when the
-    digest is showing everything there is, so a small library gains no noise."""
-    if scope.shown == scope.window_total == scope.library_total:
+    digest is showing everything there is, so a small library gains no noise.
+
+    PIPE35: `skipped_unreadable` meetings could not be read at all (an iCloud-evicted
+    summary answers EDEADLK), so the digest is partial even when nothing was trimmed, and
+    the section says so in that case too."""
+    complete = scope.shown == scope.window_total == scope.library_total
+    if complete and not skipped_unreadable:
         return None
-    content = [
-        f"Showing {scope.shown} of {scope.window_total} open action(s) from the last "
-        f"{since_days} day(s), across {len(scope.groups)} of {scope.group_total} group(s)."
-    ]
+    content: list[str] = []
+    if not complete:
+        content.append(
+            f"Showing {scope.shown} of {scope.window_total} open action(s) from the last "
+            f"{since_days} day(s), across {len(scope.groups)} of {scope.group_total} group(s)."
+        )
     content += [
         f"{g.name}: {len(g.shown)} of {g.total} shown"
         for g in scope.groups if g.hidden
@@ -300,6 +318,11 @@ def scope_section(scope: ActionScope, since_days: int) -> ExtraSection | None:
         content.append(
             f"{scope.library_total} open action(s) library-wide; the rest are dormant "
             "(undated, from before this window). Full list: the Facts rail, or `mp actions --open`."
+        )
+    if skipped_unreadable:
+        content.append(
+            f"{skipped_unreadable} meeting(s) could not be read, so their actions and decisions "
+            "are missing from this digest."
         )
     return ExtraSection(name=SCOPE_SECTION, content=content)
 
@@ -421,6 +444,7 @@ def build_digest_summary(
     *,
     today: date,
     since_days: int,
+    skipped_unreadable: int = 0,
 ) -> MeetingSummary:
     """Assemble the digest as a `MeetingSummary` so it fans out through the same
     sinks a meeting does. The narrative is the `summary`; the decisions and
@@ -437,7 +461,7 @@ def build_digest_summary(
         for g in scope.groups for a in g.shown
     ]
     decision_strings = [f"{d.text} ({d.title})" for d in decisions]
-    note = scope_section(scope, since_days)
+    note = scope_section(scope, since_days, skipped_unreadable)
     return MeetingSummary(
         title=title[:120],
         summary=bullets or ["No activity this period."],
@@ -457,6 +481,8 @@ class DigestResult:
     summary: MeetingSummary
     backend: str
     scope: ActionScope
+    #: PIPE35: summaries present but unreadable, which the digest had to leave out.
+    skipped: storage.UnreadableTally | None = None
 
 
 def generate(cfg: Config, root: Path, *, since_days: int = DEFAULT_SINCE_DAYS,
@@ -473,15 +499,20 @@ def generate(cfg: Config, root: Path, *, since_days: int = DEFAULT_SINCE_DAYS,
     """
     today = today or date.today()
     allow = visibility.visible_stems(Path(root))
-    scope = scope_actions(collect_open_actions(root, today, allow_stems=allow), today, since_days)
-    decisions = collect_recent_decisions(root, today, since_days, allow_stems=allow)
+    tally = storage.UnreadableTally()
+    scope = scope_actions(collect_open_actions(root, today, allow_stems=allow, tally=tally),
+                          today, since_days)
+    decisions = collect_recent_decisions(root, today, since_days, allow_stems=allow,
+                                         tally=tally)
+    tally.warn(Path(root))
     # Narrate over the window (ranked, most pressing first), not the library: a
     # narrative that names a commitment the list below does not carry reads as a
     # hallucination even when it is true. The facts carry the window's totals so
     # the narrative can still say how much sits behind the shown slice.
     bullets, backend = narrate(cfg, scope, decisions, today, since_days)
-    summary = build_digest_summary(scope, decisions, bullets, today=today, since_days=since_days)
-    return DigestResult(summary=summary, backend=backend, scope=scope)
+    summary = build_digest_summary(scope, decisions, bullets, today=today, since_days=since_days,
+                                   skipped_unreadable=tally.total)
+    return DigestResult(summary=summary, backend=backend, scope=scope, skipped=tally)
 
 
 def main(argv: list[str]) -> int:
@@ -524,6 +555,7 @@ def _run(args: argparse.Namespace, run_trigger: str) -> int:
 
     result = generate(cfg, Path(root), since_days=args.since, today=today)
     summary, backend, scope = result.summary, result.backend, result.scope
+    skipped = result.skipped or storage.UnreadableTally()
 
     out_dir = out_dir.expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -553,7 +585,8 @@ def _run(args: argparse.Namespace, run_trigger: str) -> int:
     events.emit("pipeline", "digest_generated", actions=len(summary.actions),
                 actions_in_window=scope.window_total, actions_open=scope.library_total,
                 decisions=len(summary.decisions), backend=backend, published=published,
-                publish_failed=publish_failed, trigger=run_trigger)
+                publish_failed=publish_failed, trigger=run_trigger,
+                skipped_unreadable=skipped.total)
     run_attempt.record(run_attempt.DIGEST, outcome="failed" if publish_failed else "ok",
                        reason="every configured sink failed to publish" if publish_failed else None,
                        run_trigger=run_trigger)
@@ -564,6 +597,7 @@ def _run(args: argparse.Namespace, run_trigger: str) -> int:
             "actions": len(summary.actions), "actions_in_window": scope.window_total,
             "actions_open": scope.library_total, "decisions": len(summary.decisions),
             "backend": backend, "published": published, "publish_failed": publish_failed,
+            "skipped_unreadable": skipped.as_dict(),
         }, indent=2))
     else:
         print(f"Wrote {md_path}")

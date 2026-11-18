@@ -85,8 +85,10 @@ def _meeting_date(stem: str) -> str | None:
         return None
 
 
-def _summary(root: Path, stem: str) -> dict[str, Any]:
-    return storage.read_json_object(root / f"{stem}.summary.json") or {}
+def _summary(
+    root: Path, stem: str, tally: storage.UnreadableTally | None = None
+) -> dict[str, Any]:
+    return storage.read_library_json(root / f"{stem}.summary.json", tally) or {}
 
 
 def _task(text: str) -> str:
@@ -103,11 +105,13 @@ def _workflow_name(root: Path, stem: str) -> str | None:
     return str(read_meta(root / f"{stem}.meta.json").get("workflow_name") or "") or None
 
 
-def _row(root: Path, stem: str) -> dict[str, Any]:
+def _row(
+    root: Path, stem: str, tally: storage.UnreadableTally | None = None
+) -> dict[str, Any]:
     """One metadata row: no summary points, no decisions, no transcript. This is
     everything `list_meetings` may say about a meeting, and keeping it a separate
     function is what stops that list from growing content by accident."""
-    summary = _summary(root, stem)
+    summary = _summary(root, stem, tally)
     return {
         "stem": stem,
         "title": wrap_untrusted(str(summary.get("title") or stem)),
@@ -163,7 +167,13 @@ def get_meeting(root: Path, stem: str, allow_stems: set[str]) -> dict[str, Any]:
     root = Path(root).expanduser()
     if stem not in allow_stems:
         return not_found(stem)
-    summary = _summary(root, stem)
+    tally = storage.UnreadableTally()
+    summary = _summary(root, stem, tally)
+    # PIPE35: a summary that is there but cannot be read (an iCloud-evicted file answers
+    # EDEADLK) is not a meeting with no points; say which, rather than empty lists.
+    if (reason := tally.reason_for(root / f"{stem}.summary.json")) is not None:
+        tally.warn(root)
+        return {"stem": stem, "unreadable": reason}
     if not summary and not (root / f"{stem}.md").exists():
         return not_found(stem)
     points = [str(p) for p in (summary.get("summary") or []) if isinstance(p, str)]
@@ -266,10 +276,11 @@ def list_meetings(
     """
     root = Path(root).expanduser()
     rows = []
+    tally = storage.UnreadableTally()
     for stem in sorted(visibility.library_stems(root), reverse=True):
         if stem not in allow_stems:
             continue
-        row = _row(root, stem)
+        row = _row(root, stem, tally)
         day = row["date"]
         if (since or until) and day is None:
             continue
@@ -282,7 +293,10 @@ def list_meetings(
         rows.append(row)
         if len(rows) >= max(1, int(limit)):
             break
-    return {"meetings": rows, "count": len(rows)}
+    tally.warn(root)
+    # PIPE35: rows whose summary could not be read still list (titled by stem), and this
+    # says how many, by reason, so a client knows those titles are not the meetings' own.
+    return {"meetings": rows, "count": len(rows), "skipped_unreadable": tally.as_dict()}
 
 
 def list_actions(
@@ -310,7 +324,9 @@ def list_actions(
     """
     root = Path(root).expanduser()
     today = today or date.today()
-    found = actions_mod.discover(root, allow_stems=allow_stems)
+    tally = storage.UnreadableTally()
+    found = actions_mod.discover(root, allow_stems=allow_stems, tally=tally)
+    tally.warn(root)
     if open_only:
         found = actions_mod.filter_actions(found, lifecycle="open", today=today)
     rows = []
@@ -340,5 +356,6 @@ def list_actions(
     for r in rows:
         del r["_rank_due"]
     page = rows[: max(1, int(limit))]
+    # PIPE35: meetings whose summary could not be read contribute no actions; say how many.
     return {"actions": page, "count": len(page), "total": len(rows),
-            "truncated": len(rows) > len(page)}
+            "truncated": len(rows) > len(page), "skipped_unreadable": tally.as_dict()}

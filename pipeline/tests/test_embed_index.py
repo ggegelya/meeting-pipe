@@ -827,3 +827,18 @@ def test_an_index_from_the_previous_schema_rebuilds_once(tmp_path: Path, caplog)
     with caplog.at_level("INFO", logger="mp.embed_index"):
         embed_index.load_or_build(lib, idx_dir, third)
     assert third.embedded == [] and "predates" not in caplog.text
+
+
+def test_an_unreadable_summary_title_is_counted_on_the_refresh(
+    tmp_path: Path, monkeypatch, evicted
+) -> None:
+    """PIPE35: the title lookup falls back to the stem, as before, and the refresh event now
+    says how many summaries it could not read for it."""
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(tmp_path / "logs"))
+    lib, idx_dir = tmp_path / "lib", tmp_path / "idx"
+    _library(lib, 3)
+    evicted(lib / "m001.summary.json")
+    index = embed_index.refresh_index(lib, idx_dir, CountingEmbedder())
+    titles = {c.stem: c.title for c in index.chunks}
+    assert titles["m001"] == "m001" and titles["m000"] == "T0"
+    assert _refresh_done(tmp_path / "logs")[-1]["skipped_unreadable"] == 1

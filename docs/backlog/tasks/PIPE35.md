@@ -2,9 +2,9 @@
 id: PIPE35
 title: The digest, mp actions, the MCP tools and the prep card skip every summary or sidecar they cannot read without a log line or a count
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (observability band, O21: PY-6): actions.discover, digest decisions, mcp_tools._summary, prep and the index title lookup drop unreadable files silently; EDEADLK on evicted iCloud sidecars is in pipeline.log on 2026-10-16, so digests and MCP answers go partial with no count. One storage.read_library_json with an errno tally, skipped_unreadable on digest_generated and in digest, actions and MCP JSON. [Spec](./PIPE35.md)
+comment: Shipped 2026-11-18: storage.read_library_json plus a per-command UnreadableTally (deduped by path, by errno name or unparseable) behind actions.discover, digest decisions, mcp_tools, prep and the index title lookup; skipped_unreadable on digest_generated, digest/prep JSON, MCP list_actions/list_meetings and ask_index_refresh_done, a digest scope line, get_meeting returns unreadable; mp actions only warns (its JSON is a list the daemon decodes). Owed: the owner seeing the digest line on a library with an evicted summary. [Spec](./PIPE35.md)
 ---
 
 # PIPE35: the digest, `mp actions`, the MCP tools and the prep card skip every summary or sidecar they cannot read without a log line or a count, so with an iCloud-evicted library their answers are silently partial
@@ -51,3 +51,5 @@ Verified in code on 2026-10-25 against `main` at `01e904a`. The pipeline's libra
 - `test_actions.py`, `test_prep.py`, `test_embed_index.py`: the same injected failure is counted, and `prep` still falls through to the older meeting.
 - `test_mcp_serve.py` (or a `mcp_tools` unit test): `get_meeting` on an unreadable summary returns `unreadable` rather than empty lists; `list_actions` reports the skip count.
 - `cd pipeline && uv run --extra dev pytest -q` green, `uv run --extra dev ruff check src tests` and `uv run --extra dev --extra mcp pyright` clean, `python3 scripts/truth_fences.py` green, N new tests in the commit body.
+
+**Progress (2026-11-18):** shipped as scoped with one deviation. `mp actions --json` (and `--out`) stays a bare JSON list: the daemon's `ActionClusterAssignment.load` decodes `mp actions --open --cluster --out` as `[ActionClusterAssignment]`, so wrapping it in an object to carry `skipped_unreadable` would have broken the Facts rail's clustering. `mp actions` reports the skip as the one end-of-run WARNING instead; every other surface carries the key. The tally is keyed by path, so the digest's two passes over one summary (actions, then decisions) count it once.

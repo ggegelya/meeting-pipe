@@ -70,13 +70,21 @@ class OpenAction:
         return (not self.resolved) and age is not None and age > 0
 
 
-def discover(root: Path, *, allow_stems: set[str] | None = None) -> list[OpenAction]:
+def discover(
+    root: Path,
+    *,
+    allow_stems: set[str] | None = None,
+    tally: storage.UnreadableTally | None = None,
+) -> list[OpenAction]:
     """Collect every action item from the `<stem>.summary.json` files under `root`.
 
     `allow_stems` is AUTO3's visibility gate (`visibility.visible_stems`), passed
     by the surfaces that can egress (`mp digest`'s narration, the MCP server's
     `list_actions`). None keeps every meeting, which is what `mp actions` itself
     wants: it prints to the owner's own terminal and reaches no engine.
+
+    `tally` counts every summary that is present but could not be read (PIPE35), so the
+    caller can say its answer is partial; None skips them uncounted, as before.
     """
     root = root.expanduser()
     if not root.is_dir():
@@ -86,7 +94,7 @@ def discover(root: Path, *, allow_stems: set[str] | None = None) -> list[OpenAct
         stem = summary_json.name.split(".", 1)[0]
         if allow_stems is not None and stem not in allow_stems:
             continue
-        obj = storage.read_json_object(summary_json)
+        obj = storage.read_library_json(summary_json, tally)
         if obj is None:
             continue
         title = str(obj.get("title") or stem)
@@ -200,8 +208,14 @@ def main(argv: list[str]) -> int:
 
     today = date.today()
     root = args.dir if args.dir is not None else cfg.recording.output_dir
+    # PIPE35: an unreadable summary is still skipped, but counted and warned about once. The
+    # JSON stays a bare list (the daemon's `ActionClusterAssignment.load` decodes `--out` as
+    # one), so the count rides the WARNING on stderr rather than the payload.
+    tally = storage.UnreadableTally()
+    found = discover(Path(root), tally=tally)
+    tally.warn(Path(root))
     actions = filter_actions(
-        discover(Path(root)), args.owner, args.due_before, args.min_confidence,
+        found, args.owner, args.due_before, args.min_confidence,
         args.lifecycle, today,
     )
     if args.cluster:

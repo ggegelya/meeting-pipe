@@ -1042,3 +1042,29 @@ def test_dated_ties_and_free_text_dues_rank_as_the_spec_says(tmp_path: Path) -> 
     assert [_plain(r["task"]) for r in rows] == ["new same", "old same", "vague", "undated mid"]
     assert rows[0]["due"] == "2026-02-01"  # an ISO due is a bare value
     assert _plain(rows[2]["due"]) == "end of week"
+
+
+# --------------------------------------------------------------------------
+# PIPE35: an unreadable summary is reported, never answered as empty
+# --------------------------------------------------------------------------
+
+
+def test_get_meeting_on_an_unreadable_summary_says_so(library: Path, allow: set[str],
+                                                      evicted) -> None:
+    evicted(library / f"{NORMAL_A}.summary.json")
+    assert mcp_tools.get_meeting(library, NORMAL_A, allow) == {
+        "stem": NORMAL_A, "unreadable": "EDEADLK",
+    }
+
+
+def test_list_actions_and_meetings_report_the_skip_count(library: Path, allow: set[str],
+                                                         evicted) -> None:
+    clean = mcp_tools.list_actions(library, allow)
+    assert clean["skipped_unreadable"] == {}
+    evicted(library / f"{NORMAL_A}.summary.json")
+    partial = mcp_tools.list_actions(library, allow)
+    assert partial["skipped_unreadable"] == {"EDEADLK": 1}
+    assert partial["total"] == clean["total"] - 1
+    meetings = mcp_tools.list_meetings(library, allow)
+    assert meetings["skipped_unreadable"] == {"EDEADLK": 1}
+    assert meetings["count"] == len(allow)

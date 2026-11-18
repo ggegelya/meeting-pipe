@@ -68,8 +68,9 @@ def parse_stem(stem: str) -> datetime | None:
         return None
 
 
-def _read_json(path: Path) -> dict | None:
-    return storage.read_json_object(path)
+def _read_json(path: Path, tally: storage.UnreadableTally | None = None) -> dict | None:
+    """PIPE35: a present-but-unreadable file is counted in `tally`, never silently passed."""
+    return storage.read_library_json(path, tally)
 
 
 @dataclass
@@ -80,7 +81,7 @@ class _Candidate:
     summary_path: Path
 
 
-def candidates(root: Path) -> list[_Candidate]:
+def candidates(root: Path, tally: storage.UnreadableTally | None = None) -> list[_Candidate]:
     """Every summarized meeting under `root` that names a workflow, newest first.
 
     A meeting with no `<stem>.summary.json` has nothing to recap, and one with no
@@ -99,7 +100,7 @@ def candidates(root: Path) -> list[_Candidate]:
         summary_path = root / f"{stem}.summary.json"
         if not summary_path.is_file():
             continue
-        meta = _read_json(meta_path)
+        meta = _read_json(meta_path, tally)
         if meta is None:
             continue
         workflow = str(meta.get("workflow_name") or "").strip()
@@ -195,7 +196,8 @@ def build_card(
 
 
 def prep(root: Path, workflow: str, max_points: int = MAX_POINTS,
-         max_actions: int = MAX_ACTIONS) -> PrepCard | None:
+         max_actions: int = MAX_ACTIONS,
+         tally: storage.UnreadableTally | None = None) -> PrepCard | None:
     """The card for the newest meeting recorded under `workflow`, or None.
 
     Walks back through that workflow's meetings newest-first: a last meeting whose
@@ -203,10 +205,10 @@ def prep(root: Path, workflow: str, max_points: int = MAX_POINTS,
     one before it usually does, so the card falls through rather than reporting an
     empty "last time".
     """
-    for cand in candidates(root):
+    for cand in candidates(root, tally):
         if cand.workflow != workflow:
             continue
-        summary = _read_json(cand.summary_path)
+        summary = _read_json(cand.summary_path, tally)
         if summary is None:
             continue
         card = build_card(workflow, cand.stem, cand.started_at, summary,
@@ -275,7 +277,10 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
 
     root = Path(args.dir if args.dir is not None else Config.load().recording.output_dir)
-    cands = candidates(root)
+    # PIPE35: the card falls through an unreadable meeting to the one before it, which is
+    # right, but it now says so once on stderr instead of recapping an older meeting silently.
+    tally = storage.UnreadableTally()
+    cands = candidates(root, tally)
     names = workflow_names(cands)
     resolved = resolve_workflow(names, args.workflow)
     if resolved is None:
@@ -286,10 +291,12 @@ def main(argv: list[str]) -> int:
                 print(f"  {name}", file=sys.stderr)
         return 2
 
-    card = prep(root, resolved)
+    card = prep(root, resolved, tally=tally)
+    tally.warn(root)
     if card is None:
         if args.as_json:
-            print(json.dumps({"workflow": resolved, "card": None}, indent=2))
+            print(json.dumps({"workflow": resolved, "card": None,
+                              "skipped_unreadable": tally.as_dict()}, indent=2))
             return 0
         print(f"No summarized meeting yet in {resolved}.")
         return 0
@@ -307,6 +314,7 @@ def main(argv: list[str]) -> int:
                 ],
                 "more_actions": card.more_actions,
             },
+            "skipped_unreadable": tally.as_dict(),
         }, indent=2))
         return 0
 
