@@ -2,9 +2,9 @@
 id: PIPE50
 title: Publish from paste rewrites the user's pasted summary with a lossy re-render before any sink runs, so prose it cannot parse is replaced by a placeholder
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). publish_from_paste keeps only what parse_summary_md recognises (bullets under known H2s, ten summary bullets, a 120-char title) and overwrites the pasted `<stem>.summary.md` and `.summary.json` before fanout, so prose under ## Summary becomes the placeholder bullet in the file and every sink (F016); last used 2026-06-09 (55 paste requests 2026-05-28 to 06-09). Leave the pasted file byte-identical, refuse when a filled section parses empty, write summary.json atomically.
+comment: Shipped 2026-11-19: publish_from_paste no longer rewrites the pasted summary.md (byte-identical; summary.json carries the parsed form), refuses before any write when Summary, Decisions, Action Items or Questions has content that parses to nothing (message names the section and its shape, main exits 1), and emits paste_truncated when the title or bullets are cut; summary.json was already atomic via PIPE30. Owed: the owner pasting a prose summary in the Summary tab and seeing the refusal inline, then a bulleted one publishing.
 ---
 
 # PIPE50: Publish from paste rewrites the user's pasted summary with a lossy re-render before any sink runs, so prose it cannot parse is replaced by a placeholder
@@ -54,3 +54,5 @@ All in `pipeline/src/mp/publish_from_paste.py`, with the Swift side unchanged ex
 - `test_publish_from_paste_round_trip` is rewritten to assert the pasted file is unchanged rather than re-rendered; `test_parse_handles_minimal_markdown`, the regulated-mode test and the fanout and exit-3 tests stay green.
 - `cd pipeline && uv run --extra dev pytest -q` green with the new tests counted by the session that writes them; ruff and pyright green; the event row added to CONVENTIONS keeps `python3 scripts/truth_fences.py both` green.
 - [docs/GUIDE.md](../../GUIDE.md) and README's paste-box sentence say, in the same commit, that the pasted summary needs one bullet per line under its headings and that a paste the app cannot read is refused with the reason.
+
+**Progress (2026-11-19):** item 4 was already done by PIPE30 (both writes went through `storage.atomic_write_text`), so only the `.md` rewrite was removed. Attendees is deliberately not refusable: it has its own `Attendees: Alice, Bob` fallback and is names, not content. OBS3's `command_failed` has not landed, so the refusal goes through `main`'s existing `log.error` and exit 1, which the paste box already shows.

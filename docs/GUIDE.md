@@ -61,6 +61,8 @@ Press `⌃⌥M` anywhere in macOS, or pick **Start Recording** from the menu bar
 
 **Record (BYO)** records exactly like a normal meeting but does not ask any engine for a summary. When the recording has been processed a notification says **Ready for your summary**; click it, or open the meeting in the Library and the **Summary** tab shows a **Paste your summary** box: drop your text in, click **Save & publish**, and it goes to the same destinations a normal meeting would.
 
+Your pasted text is kept exactly as you pasted it. What gets published is read from its headings, so write each section as one bullet per line under its heading (`## Summary`, `## Decisions`, `## Open Questions`), and action items as `- [ ] **Owner**: task`. If a section has text the app cannot read that way, a paragraph under **Summary** for instance, nothing is published and the box says which section to fix. A title over 120 characters or more than ten summary bullets is trimmed to fit.
+
 Useful for a call you do not want summarized by anything, or one you would rather hand-write. Not available for a regulated or NDA meeting: those never produce a paste-into-a-chat bundle, and the meeting is summarized on your Mac instead.
 
 ### If the panel says "Mic lost"

@@ -12,6 +12,7 @@ import pytest
 from mp.config import Config
 from mp.publish_from_paste import main as paste_main, parse_summary_md, publish_from_paste
 from mp.publish_router import EXIT_PUBLISH_FAILED
+from mp.schemas import MeetingSummary
 
 
 def _summary_md_canonical() -> str:
@@ -209,10 +210,8 @@ def test_publish_from_paste_round_trip(tmp_path, monkeypatch):
 
     # Side effect: canonical .summary.json now sits next to the transcript.
     assert (tmp_path / "20260430-1500.summary.json").exists()
-    # And the .summary.md was re-rendered into our canonical shape.
-    rendered = summary_md.read_text(encoding="utf-8")
-    assert "## Summary" in rendered
-    assert "## Action Items" in rendered
+    # PIPE50: the pasted .summary.md is exactly what was pasted, never re-rendered.
+    assert summary_md.read_text(encoding="utf-8") == _summary_md_canonical()
 
 
 def test_publish_from_paste_missing_file_raises(tmp_path):
@@ -306,3 +305,100 @@ def test_main_exits_zero_on_a_regulated_skip(tmp_path, monkeypatch):
         lambda t: {"page_id": None, "page_url": None, "regulated": True},
     )
     assert paste_main([str(transcript)]) == 0
+
+
+# ----- PIPE50: the pasted file is never rewritten, and a lossy parse is refused -----
+
+
+_PROSE_SUMMARY = """\
+# Planning sync
+
+## Summary
+We walked through the quarter's plan in some detail and agreed the scope
+was too wide; most of the hour went on the migration.
+
+## Decisions
+- Ship the migration on Friday
+"""
+
+
+def _paste(tmp_path, text: str):
+    transcript = tmp_path / "20260430-1500.md"
+    transcript.write_text("# Transcript\n\n**A**: hi\n", encoding="utf-8")
+    summary_md = tmp_path / "20260430-1500.summary.md"
+    summary_md.write_text(text, encoding="utf-8")
+    return transcript, summary_md
+
+
+def _no_fanout(monkeypatch) -> list:
+    calls: list = []
+    monkeypatch.setattr("mp.publish_from_paste.fanout",
+                        lambda **k: calls.append(k) or {"page_id": None, "page_url": None,
+                                                         "sinks": {}})
+    return calls
+
+
+def test_prose_under_summary_is_refused_before_anything_is_written(tmp_path, monkeypatch):
+    transcript, summary_md = _paste(tmp_path, _PROSE_SUMMARY)
+    calls = _no_fanout(monkeypatch)
+    with pytest.raises(ValueError, match=r"`## Summary` section could not be read"):
+        publish_from_paste(transcript, cfg=Config())
+    assert summary_md.read_text(encoding="utf-8") == _PROSE_SUMMARY
+    assert not (tmp_path / "20260430-1500.summary.json").exists()
+    assert calls == []
+
+
+def test_untickable_action_lines_are_refused_with_the_expected_shape(tmp_path, monkeypatch):
+    text = "# T\n\n## Summary\n- a point\n\n## Action Items\n- Alice sends the deck\n"
+    transcript, _ = _paste(tmp_path, text)
+    _no_fanout(monkeypatch)
+    with pytest.raises(ValueError, match=r"- \[ \] \*\*Owner\*\*: task"):
+        publish_from_paste(transcript, cfg=Config())
+
+
+def test_well_formed_bullets_publish_and_leave_the_paste_byte_identical(tmp_path, monkeypatch):
+    transcript, summary_md = _paste(tmp_path, _summary_md_canonical())
+    before = summary_md.read_bytes()
+    calls = _no_fanout(monkeypatch)
+    publish_from_paste(transcript, cfg=Config())
+    assert summary_md.read_bytes() == before
+    assert summary_md.stat().st_mode & 0o777 == 0o600  # private, without a rewrite
+    stored = MeetingSummary.model_validate_json(
+        (tmp_path / "20260430-1500.summary.json").read_text(encoding="utf-8"))
+    assert stored.summary[0] == "Reviewed Notion publishing schema"
+    assert [a.owner for a in stored.actions][:2] == ["Alice", "Bob"]
+    assert len(calls) == 1
+
+
+def test_twelve_bullets_publish_ten_and_say_so(tmp_path, monkeypatch):
+    bullets = "\n".join(f"- bullet {i}" for i in range(12))
+    transcript, _ = _paste(tmp_path, f"# Title\n\n## Summary\n{bullets}\n")
+    _no_fanout(monkeypatch)
+    emitted: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr("mp.publish_from_paste.events.emit",
+                        lambda *a, **k: emitted.append((a, k)))
+    publish_from_paste(transcript, cfg=Config())
+    stored = MeetingSummary.model_validate_json(
+        (tmp_path / "20260430-1500.summary.json").read_text(encoding="utf-8"))
+    assert len(stored.summary) == 10
+    assert emitted == [(("pipeline", "paste_truncated"),
+                        {"title_chars": 5, "title_limit": 120,
+                         "summary_bullets": 12, "summary_limit": 10})]
+
+
+def test_a_paste_with_no_summary_heading_keeps_the_placeholder(tmp_path, monkeypatch):
+    transcript, summary_md = _paste(tmp_path, "# Quick chat\n\nNothing structured here.\n")
+    _no_fanout(monkeypatch)
+    publish_from_paste(transcript, cfg=Config())
+    assert summary_md.read_text(encoding="utf-8") == "# Quick chat\n\nNothing structured here.\n"
+
+
+def test_main_on_the_prose_case_exits_1_naming_the_section(tmp_path, monkeypatch, caplog):
+    import logging
+
+    transcript, _ = _paste(tmp_path, _PROSE_SUMMARY)
+    _no_fanout(monkeypatch)
+    monkeypatch.setattr("mp.publish_from_paste.entry.prepare", lambda cfg, md: Config())
+    with caplog.at_level(logging.ERROR, logger="mp.publish_from_paste"):
+        assert paste_main([str(transcript)]) == 1
+    assert any("## Summary" in r.getMessage() for r in caplog.records)

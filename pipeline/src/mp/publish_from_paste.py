@@ -9,21 +9,26 @@ back into a `MeetingSummary` and reuse the existing publish machinery.
 The parser is deliberately tolerant: hand-written markdown rarely
 matches a strict schema. We extract what we can and fill the rest with
 sensible defaults (empty lists, unassigned action items). The published
-Notion page is identical in shape to the auto-summarised flow — same
-properties, same body block structure.
+page is identical in shape to the auto-summarised flow.
+
+PIPE50: the pasted `<stem>.summary.md` is never rewritten. The parsed form
+goes to `<stem>.summary.json`, which every sink renders from, and a paste
+whose known section has content the parser cannot read (prose under
+`## Summary`) is refused with the shape it expects, rather than published
+as a placeholder.
 """
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 from pathlib import Path
 
-from . import entry, storage
+from . import entry, events, storage
 from .config import Config
 from .publish_router import EXIT_PUBLISH_FAILED, fanout, publish_failed, publish_failure_reason
 from .schemas import ActionItem, ExtraSection, MeetingSummary
-from .markdown import deeplink_stem, render_summary_md
 
 log = logging.getLogger("mp.publish_from_paste")
 
@@ -43,6 +48,10 @@ _TODO = re.compile(
     re.MULTILINE,
 )
 
+#: The schema caps `parse_summary_md` truncates to (PIPE50 reports when it does).
+TITLE_LIMIT = 120
+SUMMARY_LIMIT = 10
+
 
 def parse_summary_md(text: str, *, fallback_title: str = "(untitled meeting)") -> MeetingSummary:
     """Best-effort parse of free-form summary Markdown into MeetingSummary.
@@ -56,18 +65,20 @@ def parse_summary_md(text: str, *, fallback_title: str = "(untitled meeting)") -
         owner; otherwise owner=None and confidence=low.
       - "Attendees: Alice, Bob" line (anywhere) populates attendees.
 
-    Anything we can't parse is dropped silently — better to publish a
-    partial summary than to fail the whole flow.
+    Content outside a recognised shape is not kept in the parsed form.
+    `publish_from_paste` refuses a paste where that would empty a known
+    section (`lossy_sections`), and reports a truncation (`truncation`), so
+    neither loss is silent any more; this function itself stays pure.
     """
     sections = _split_sections(text)
 
     title_match = _H1.search(text)
-    title = (title_match.group(1).strip() if title_match else fallback_title)[:120]
+    title = ((title_match.group(1).strip() if title_match else "") or fallback_title)[:TITLE_LIMIT]
 
     summary_bullets = _extract_bullets(sections.get("summary", ""))
     if not summary_bullets:
         summary_bullets = ["(no summary section detected — see transcript)"]
-    summary_bullets = summary_bullets[:10]  # schema cap
+    summary_bullets = summary_bullets[:SUMMARY_LIMIT]  # schema cap
 
     decisions = _extract_bullets_or_numbered(sections.get("decisions", ""))
     questions = _extract_bullets(sections.get("open questions", "")) or _extract_bullets(
@@ -101,6 +112,52 @@ _KNOWN_SECTIONS = frozenset({
     "summary", "decisions", "action items", "actions",
     "open questions", "questions", "attendees", "transcript",
 })
+
+
+#: PIPE50: the content sections a paste is refused over when they hold text that parses to
+#: nothing, with the shape each one expects. Attendees is left out: it has its own
+#: `Attendees: Alice, Bob` fallback and is a list of names, not content that can be lost.
+_REFUSABLE: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("summary",), "one bullet per line, starting with `- `"),
+    (("decisions",), "one bullet per line, starting with `- ` (or a numbered list)"),
+    (("action items", "actions"), "one item per line, written `- [ ] **Owner**: task`"),
+    (("open questions", "questions"), "one bullet per line, starting with `- `"),
+)
+
+
+def lossy_sections(text: str) -> list[str]:
+    """The known sections of a paste that have content but would parse to nothing, each as a
+    sentence naming the heading and the shape it expects (PIPE50). Empty when nothing would be
+    lost. A missing heading is not lossy: the minimal-markdown case keeps its placeholder."""
+    sections = _split_sections(text)
+    headings = {m.group(1).strip().lower(): m.group(1).strip() for m in _H2.finditer(text)}
+    problems: list[str] = []
+    for names, shape in _REFUSABLE:
+        for name in names:
+            body = sections.get(name)
+            if body is None or not body.strip():
+                continue
+            if name in ("action items", "actions"):
+                parsed: list = _extract_actions(body)
+            elif name == "decisions":
+                parsed = _extract_bullets_or_numbered(body)
+            else:
+                parsed = _extract_bullets(body)
+            if not parsed:
+                problems.append(f"the `## {headings.get(name, name)}` section could not be read; "
+                                f"write it as {shape}")
+    return problems
+
+
+def truncation(text: str) -> dict[str, int] | None:
+    """What `parse_summary_md` cuts to fit the schema, or None when nothing is cut (PIPE50)."""
+    title_match = _H1.search(text)
+    title_chars = len(title_match.group(1).strip()) if title_match else 0
+    bullets = len(_extract_bullets(_split_sections(text).get("summary", "")))
+    if title_chars <= TITLE_LIMIT and bullets <= SUMMARY_LIMIT:
+        return None
+    return {"title_chars": title_chars, "title_limit": TITLE_LIMIT,
+            "summary_bullets": bullets, "summary_limit": SUMMARY_LIMIT}
 
 
 def _extract_extra_sections(text: str) -> list[ExtraSection]:
@@ -234,6 +291,7 @@ def publish_from_paste(transcript_md: Path, cfg: Config | None = None) -> dict:
 
     raw = summary_md_path.read_text(encoding="utf-8")
     summary = parse_summary_md(raw, fallback_title=stem)
+    cut = truncation(raw)
     log.info(
         "Parsed summary: title=%r, %d bullets, %d decisions, %d actions, %d questions",
         summary.title,
@@ -254,18 +312,31 @@ def publish_from_paste(transcript_md: Path, cfg: Config | None = None) -> dict:
         )
         return {"page_id": None, "page_url": None, "regulated": True}
 
-    # Persist the canonical .summary.json so re-runs (or the auto-flow
-    # later) see a consistent on-disk shape.
-    # PIPE30: atomic, like `summarize`'s writer of the same two files. The .md
-    # goes first: `MeetingStore` reads a summary.json on disk as done.
-    # Re-render the summary.md from the parsed form so the published body
-    # matches what we publish: preserves user content but drops whatever
-    # ad-hoc styling the LLM produced.
-    # AUTO2: `deeplink_stem` so this writer spells the stored `.summary.md` the
-    # same way `summarize` does. A pasted summary carries no anchors today, so
-    # the rendered text is unchanged; wiring it here is what keeps the two
-    # writers of one file from drifting the day it can.
-    storage.atomic_write_text(summary_md_path, render_summary_md(summary, deeplink_stem(transcript_md)))
+    # SEC14: a summary carries meeting content, so the pasted file is owner-only. The daemon
+    # writes it with default permissions; the re-render used to make it 0600 by accident of
+    # `atomic_write_text`, so with the re-render gone (PIPE50) only the mode is set, the bytes
+    # stay exactly as pasted.
+    try:
+        os.chmod(summary_md_path, 0o600)
+    except OSError as exc:
+        log.warning("could not make %s private: %s", summary_md_path.name, exc)
+
+    # PIPE50: refuse, before anything is written, a paste whose known section the parser cannot
+    # read. Publishing it used to replace prose under `## Summary` with the placeholder bullet in
+    # the file and every sink. `main` exits 1 and the paste box shows this message inline.
+    if problems := lossy_sections(raw):
+        raise ValueError("Nothing was published: " + "; ".join(problems) + ".")
+    if cut is not None:
+        log.warning("The pasted summary was trimmed to fit: title %d of %d characters kept, "
+                    "summary %d of %d bullets kept",
+                    min(cut["title_chars"], TITLE_LIMIT), cut["title_chars"],
+                    min(cut["summary_bullets"], SUMMARY_LIMIT), cut["summary_bullets"])
+        events.emit("pipeline", "paste_truncated", **cut)
+
+    # PIPE50: the pasted `<stem>.summary.md` stays exactly as the owner pasted it, so the Ask
+    # index and drag-out keep the full text. It used to be re-rendered from the parsed form,
+    # which kept only what the parser recognised. `<stem>.summary.json` carries the parsed form
+    # every sink renders from; atomic, like `summarize`'s writer of the same file (PIPE30).
     storage.atomic_write_text(summary_json_path, summary.model_dump_json(indent=2, exclude_none=False))
 
     # Route through the fanout so every configured sink receives the summary,
