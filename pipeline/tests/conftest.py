@@ -1,13 +1,153 @@
 """Shared pytest fixtures for the pipeline suite."""
 from __future__ import annotations
 
+import ipaddress
 import os
 import signal
+import socket
 
 import pytest
 
 from mp import egress_guard, resource_guard
 from mp.config import MANAGED_SECRET_KEYS
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "guard_proof: an egress-guard test that aims at a public address on purpose, with "
+        "the guard's downstream connect stubbed to fail; `_no_network` stands aside (T12)",
+    )
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Keeps the call phase's report on the item, so `_no_network` reports a blocked
+    connect once: at teardown only when the test swallowed the in-call failure."""
+    report = yield
+    if report.when == "call":
+        item._t12_call_report = report
+    return report
+
+
+def _loopback_host(host: object) -> bool:
+    """True for a host a test may reach: loopback, unspecified, `localhost`, or no
+    host at all. A name is refused, since resolving it already leaves the machine."""
+    if host is None or host in ("", "localhost", b"localhost"):
+        return True
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    if not isinstance(host, str):
+        return False
+    try:
+        ip = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return False
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return ip.is_loopback or ip.is_unspecified or bool(mapped and mapped.is_loopback)
+
+
+# T12: the suite never leaves the machine. One wrapper over `getaddrinfo` and INET
+# `connect` / `connect_ex`, installed once at import and never removed: the egress
+# guard also patches `socket.connect` once per process and keeps what it captured,
+# so a per-test install-and-restore pulled the guard out from under every later test.
+# The wrapper consults `_NETWORK`, which `_no_network` points at the running test.
+_NETWORK: dict = {"node": None, "blocked": None}
+_REAL_GETADDRINFO = socket.getaddrinfo
+_REAL_CONNECT = socket.socket.connect
+_REAL_CONNECT_EX = socket.socket.connect_ex
+
+
+def _refuse(what: str) -> None:
+    node, blocked = _NETWORK["node"], _NETWORK["blocked"]
+    if node is None:
+        return
+    blocked.append(what)
+    pytest.fail(f"{node}: {what} leaves the machine; tests are loopback-only (T12)", pytrace=False)
+
+
+def _suite_getaddrinfo(host, *args, **kwargs):
+    if not _loopback_host(host):
+        _refuse(f"getaddrinfo({host!r})")
+    return _REAL_GETADDRINFO(host, *args, **kwargs)
+
+
+def _check_connect(sock: socket.socket, address) -> None:
+    if sock.family in (socket.AF_INET, socket.AF_INET6) and not _loopback_host(address[0]):
+        _refuse(f"connect to {address!r}")
+
+
+def _suite_connect(self, address):
+    _check_connect(self, address)
+    return _REAL_CONNECT(self, address)
+
+
+def _suite_connect_ex(self, address):
+    _check_connect(self, address)
+    return _REAL_CONNECT_EX(self, address)
+
+
+socket.getaddrinfo = _suite_getaddrinfo
+socket.socket.connect = _suite_connect  # type: ignore[method-assign]
+socket.socket.connect_ex = _suite_connect_ex  # type: ignore[method-assign]
+
+
+@pytest.fixture(autouse=True)
+def _no_network(request):
+    """T12: fails any `getaddrinfo` of a name or IP that is not loopback, and any
+    INET `connect` to one, naming the test. `test_cli_out_writes_cluster_ids` and
+    eight `test_ask.py` cases resolved huggingface.co through an unpinned embedder
+    before this existed.
+
+    Raised as `pytest.fail` (a BaseException, so a library `except Exception` cannot
+    swallow it) and also recorded, so a caller that catches BaseException still fails
+    the test at teardown. A `guard_proof` test stands it aside. A test that stubs
+    `socket.getaddrinfo` itself replaces that half for its own duration."""
+    if request.node.get_closest_marker("guard_proof") is not None:
+        yield
+        return
+    blocked: list[str] = []
+    node = request.node.nodeid
+    _NETWORK.update(node=node, blocked=blocked)
+    try:
+        yield
+    finally:
+        _NETWORK.update(node=None, blocked=None)
+    call = getattr(request.node, "_t12_call_report", None)
+    if blocked and not (call is not None and call.failed):
+        pytest.fail(f"{node}: blocked network access was swallowed: {blocked}", pytrace=False)
+
+
+def _no_keychain(_key: str) -> None:
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _keychain_unreachable(monkeypatch):
+    """T12: `config.load_secrets` reads the developer's Keychain through
+    `/usr/bin/security` for every managed token missing from the environment, and
+    any test reaching `entry.prepare(..., secrets=True)` (`run_all`, `summarize`,
+    `doctor`) did so with a live token in `os.environ` for its duration. Its reader
+    is a default bound at definition time, so `config._keychain_get` cannot be
+    patched; the default itself is. A test passing `reader=` is unaffected, and
+    `test_keychain_secrets.py` restores the real default to test it over a faked
+    `subprocess.run`."""
+    from mp import config
+
+    monkeypatch.setattr(config.load_secrets, "__defaults__", (_no_keychain,))
+
+
+@pytest.fixture(autouse=True)
+def _no_developer_config(monkeypatch, tmp_path):
+    """T12: `Config.load()` with no path reads `~/.config/meeting-pipe/config.toml`,
+    so a malformed developer config failed tests and one with `regulated_mode` on
+    armed the egress guard inside them. Point it at a per-test path that does not
+    exist; a test that writes one there, or passes a path, gets exactly that."""
+    from mp import config, doctor
+
+    missing = tmp_path / "no-config-home" / "config.toml"
+    monkeypatch.setattr(config, "CONFIG_PATH", missing)
+    monkeypatch.setattr(doctor, "CONFIG_PATH", missing)
 
 
 @pytest.fixture(autouse=True)

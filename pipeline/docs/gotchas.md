@@ -272,3 +272,12 @@ FEAT3-UNDO made `<stem>.md` the raw render on purpose: names and line edits are 
 The three local sinks also skipped on content alone (F090): after a changed `output_dir`, `mount_path` or vault the new folder was created empty and the sink reported `idempotent: True` with the old URL, and a deleted file was skipped the same way. A skip is now honest only when the recorded destination equals the one in use and the recorded file still exists (`publish_fs.recorded_target_is_live`; Obsidian's `_recorded_note`), and `mkdir` runs after that decision so a skip creates nothing. `file_url` is `Path.as_uri()`: the hand-rolled version encoded only spaces, so `#` ended the path and a bare `%` was an invalid escape.
 
 Not done, on purpose: notes the old naming already wrote stay where they are (the owner removes the orphans), and nothing is renamed. The daily-note backlink still uses the publish day.
+
+## The suite's network wrapper is installed once (T12)
+
+`tests/conftest.py` wraps `socket.getaddrinfo` and `socket.socket.connect` / `connect_ex` at import and never removes the wrapper; the autouse `_no_network` fixture only points it at the running test. The first version installed and restored the patch per test, and it broke the egress guard: `egress_guard.arm` patches `socket.connect` once per process (`_patched`) and keeps what it captured as `_orig_connect`, so the per-test restore pulled the guard out from under every later test. Nine `test_egress_guard.py` proofs then failed, and because their stubbed downstream was gone they made real connects to `93.184.216.34` and the file took 229 s instead of 1.5 s. Anything that layers under a process-global patch has to be installed before it and stay put.
+
+Two leaks it found on its first run: the `--cluster` CLI tests and eight `test_ask.py` cases reached huggingface.co through `embed_index.default_embedder()`, which picks MLX e5 wherever `mlx_embeddings` imports. Both files now pin `HashingEmbedder`, and the full suite dropped from about 81 s to about 50 s on the dev Mac.
+
+A blocked call raises `pytest.fail` (a `BaseException`, so `except Exception` in library code cannot hide it) and is also recorded, so a caller that swallows `BaseException` still fails at teardown. The egress-guard proofs aim at public addresses on purpose with the downstream stubbed, so they carry `@pytest.mark.guard_proof`.
+

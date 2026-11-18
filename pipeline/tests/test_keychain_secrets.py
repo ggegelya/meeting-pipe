@@ -32,6 +32,10 @@ def _clean(monkeypatch: pytest.MonkeyPatch):
     config._UNREADABLE_SECRETS.clear()
     config._ABSENT_SECRETS.clear()
     monkeypatch.setattr("mp.egress_guard.is_armed", lambda: False)
+    # T12: conftest makes the Keychain unreachable suite-wide by replacing
+    # `load_secrets`'s default reader. This file tests that reader, always over a
+    # faked `subprocess.run`, so it puts the real default back.
+    monkeypatch.setattr(config.load_secrets, "__defaults__", (_keychain_get,))
     yield
     config._UNREADABLE_SECRETS.clear()
     config._ABSENT_SECRETS.clear()

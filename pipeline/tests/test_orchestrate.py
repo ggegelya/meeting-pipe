@@ -1280,11 +1280,8 @@ def test_run_all_reports_a_missing_publish_secret_as_a_failed_publish(
     """
     monkeypatch.delenv("MP_FORCE_BYO", raising=False)
     monkeypatch.delenv("NOTION_TOKEN", raising=False)
-    # `entry.prepare` refills the managed tokens from the login Keychain (SEC8),
-    # so on the owner's own Mac `delenv` alone does not make the secret missing:
-    # without this the publisher builds for real and the suite talks to
-    # api.notion.com, which no test here is allowed to do.
-    monkeypatch.setattr("mp.entry.load_secrets", lambda *a, **k: None)
+    # `entry.prepare` refills the managed tokens from the login Keychain (SEC8);
+    # conftest's `_keychain_unreachable` (T12) is what keeps `delenv` meaningful here.
     emitted: list[tuple] = []
     monkeypatch.setattr("mp.orchestrate.events.emit",
                         lambda cat, action, **attrs: emitted.append((cat, action, attrs)))
@@ -1352,7 +1349,6 @@ def test_run_all_with_a_no_sinks_workflow_exits_0_and_records_local(
     for. It now publishes nowhere, exits 0, and records `state: "local"`."""
     monkeypatch.delenv("MP_FORCE_BYO", raising=False)
     monkeypatch.delenv("NOTION_TOKEN", raising=False)
-    monkeypatch.setattr("mp.entry.load_secrets", lambda *a, **k: None)
     monkeypatch.setattr(Config, "load", classmethod(lambda cls, *a, **k: Config()))
 
     stem = "20260516-0900"

@@ -19,6 +19,14 @@ from mp.embed_index import EmbeddingIndex, HashingEmbedder
 from mp.engine import EngineError, EngineResult
 
 
+@pytest.fixture(autouse=True)
+def _hashing_embedder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T12: `ask.main` builds its index with `embed_index.default_embedder()`, which
+    picks MLX e5 wherever `mlx_embeddings` imports and resolved huggingface.co from
+    eight of these tests. Pin the hashing embedder the rest of the file already uses."""
+    monkeypatch.setattr(ask.embed_index, "default_embedder", lambda *a, **k: HashingEmbedder(dim=256))
+
+
 def _meeting(root: Path, stem: str, *, title: str, transcript: str, summary: str = "") -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / f"{stem}.md").write_text(transcript, encoding="utf-8")

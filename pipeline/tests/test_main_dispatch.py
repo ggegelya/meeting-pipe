@@ -214,13 +214,20 @@ def test_interrupt_is_caught_at_the_dispatch_level(
     assert "Traceback" not in err
 
 
+# T12: the child resets SIGINT first. A parent that ignores SIGINT (a backgrounded
+# shell, nohup, an agent harness) hands the child SIG_IGN across exec, Python does not
+# install `default_int_handler` over an inherited ignore, and the signal below did
+# nothing: a 60 s hang, then TimeoutExpired. Production `mp` keeps the inherited
+# disposition; a backgrounded `mp` that ignores Ctrl-C is the shell doing as asked.
 CHILD = """
+import signal
+signal.signal(signal.SIGINT, signal.default_int_handler)
 import sys, time
 import mp.logs_cmd
 
 def blocking_main(argv):
     print("READY", flush=True)
-    time.sleep(60)
+    time.sleep(10)
     return 0
 
 mp.logs_cmd.main = blocking_main
@@ -244,7 +251,7 @@ def test_real_sigint_prints_no_traceback() -> None:
         assert ready.strip() == "READY", f"child never started: {proc.communicate()[1]}"
 
         proc.send_signal(signal.SIGINT)
-        _out, err = proc.communicate(timeout=60)
+        _out, err = proc.communicate(timeout=10)
     except BaseException:
         proc.kill()
         raise

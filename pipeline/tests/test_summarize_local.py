@@ -1206,6 +1206,29 @@ def _fake_lifecycle(
     return counts
 
 
+class _ManualTimer(threading.Timer):
+    """A `threading.Timer` that fires when the test says so, never on a wall clock
+    (T12). Still a real thread, so `_on_idle_timeout`'s identity check and its wait
+    on the client lock behave exactly as in production."""
+
+    def __init__(self, interval: float, function) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(interval, function)
+        self.daemon = True
+        self._fire = threading.Event()
+
+    def fire(self) -> None:
+        self._fire.set()
+
+    def cancel(self) -> None:
+        super().cancel()
+        self._fire.set()
+
+    def run(self) -> None:
+        self._fire.wait()
+        if not self.finished.is_set():
+            self.function()
+
+
 def test_a_request_longer_than_the_idle_timeout_keeps_the_server(
     fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1214,29 +1237,46 @@ def test_a_request_longer_than_the_idle_timeout_keeps_the_server(
     default) fired it mid-call, and the callback, waiting on the lock, killed
     the server the moment the call returned. The next request (a LANG1 repair,
     the next cleanup window) then reloaded the model. Idleness now counts from
-    the last request to finish, and the timer still stops an idle server."""
+    the last request to finish, and the timer still stops an idle server.
+
+    T12: driven by an injected clock and timer, so no step races a real sleep."""
     host, port, server = fake_server
-    delay = {"sec": 2.0}
+    now = {"t": 1000.0}
+    timers: list[_ManualTimer] = []
+    fired: list[_ManualTimer] = []
+
+    def factory(delay: float, fn) -> _ManualTimer:  # type: ignore[no-untyped-def]
+        timer = _ManualTimer(delay, fn)
+        timers.append(timer)
+        return timer
 
     def slow_summary(_payload: dict) -> dict:
-        time.sleep(delay["sec"])
+        # Mid-request: the timeout passes twice over and the armed timer fires.
+        now["t"] += 2.0
+        fired.append(timers[-1])
+        timers[-1].fire()
         return {"choices": [{"message": {"content": json.dumps(_valid_summary_obj())}}]}
 
     server.builder = slow_summary  # type: ignore[attr-defined]
-    client = LocalSummaryClient(host=host, port=port, idle_timeout_sec=1.0)
+    client = LocalSummaryClient(
+        host=host, port=port, idle_timeout_sec=1.0, clock=lambda: now["t"], timer_factory=factory
+    )
     counts = _fake_lifecycle(client, server, monkeypatch)
     try:
-        _summarize(client)  # outlasts the timeout twice over
-        time.sleep(0.2)     # room for the fired callback to take the lock
+        _summarize(client)
+        fired[0].join(timeout=10)  # the callback took the lock after the call returned
+        assert not fired[0].is_alive()
         assert counts == {"spawn": 1, "terminate": 0}
+        assert timers[-1] is not fired[0] and timers[-1].interval == pytest.approx(1.0)
 
-        delay["sec"] = 0.0
+        _serve_valid_summary(server)
         _summarize(client)
         assert counts == {"spawn": 1, "terminate": 0}  # reused, not respawned
 
-        deadline = time.monotonic() + 5.0
-        while counts["terminate"] == 0 and time.monotonic() < deadline:
-            time.sleep(0.05)
+        now["t"] += 1.5  # idle past the timeout
+        idle = timers[-1]
+        idle.fire()
+        idle.join(timeout=10)
         assert counts == {"spawn": 1, "terminate": 1}  # idle, so it still stops
     finally:
         client.close()

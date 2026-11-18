@@ -10,6 +10,7 @@ gives a green suite.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import socket
 import threading
@@ -533,9 +534,15 @@ def test_a_rejected_argument_cannot_reach_a_withheld_stem(
 # The SDK wiring itself (skipped where the optional extra is absent)
 # --------------------------------------------------------------------------
 
-sdk = pytest.importorskip("mcp", reason="the optional `mcp` extra is not installed")
+# T12: per test, never at module level. A module-level importorskip skips the whole
+# file at collection, which hid all 35 SDK-free tests above in exactly the venv they
+# exist for (one synced without the extra).
+needs_sdk = pytest.mark.skipif(
+    importlib.util.find_spec("mcp") is None, reason="the optional `mcp` extra is not installed"
+)
 
 
+@needs_sdk
 def test_every_spec_builds_a_real_sdk_tool() -> None:
     """The specs are plain dicts so CI can assert them without the SDK; this is
     the one place that checks they are also valid `Tool`s."""
@@ -547,6 +554,7 @@ def test_every_spec_builds_a_real_sdk_tool() -> None:
         assert tool.name == spec["name"]
 
 
+@needs_sdk
 def test_the_sdk_server_registers_the_five_tools_and_no_others() -> None:
     import anyio
     from mcp.server import Server

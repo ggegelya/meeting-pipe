@@ -61,7 +61,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, NoReturn
+from typing import Any, Callable, NoReturn
 
 import httpx
 from pydantic import ValidationError
@@ -429,8 +429,14 @@ class LocalSummaryClient:
         map_reduce_above_chars: int = DEFAULT_MAP_REDUCE_ABOVE_CHARS,
         adapter_path: str | None = None,
         memory_floor_pct: float = resource_guard.DEFAULT_FLOOR_PCT,
+        clock: Callable[[], float] = time.monotonic,
+        timer_factory: Callable[[float, Callable[[], None]], threading.Timer] = threading.Timer,
     ) -> None:
         self._model = model
+        # T12: the idle timer's clock and thread, injectable so its tests drive
+        # them instead of racing real sleeps with sub-second margins.
+        self._clock = clock
+        self._timer_factory = timer_factory
         self._host = _loopback_only(host)
         self._port = port
         self._startup_timeout_sec = startup_timeout_sec
@@ -1270,7 +1276,7 @@ class LocalSummaryClient:
         self._cancel_idle_timer()
         if self._idle_timeout_sec <= 0:
             return
-        t = threading.Timer(
+        t = self._timer_factory(
             self._idle_timeout_sec if delay_sec is None else delay_sec, self._on_idle_timeout
         )
         t.daemon = True
@@ -1296,7 +1302,7 @@ class LocalSummaryClient:
             # waits on the lock until the call returns; killing the server here
             # would make the next request (a LANG1 repair, the next cleanup
             # window) reload the model. Re-arm for the remainder instead.
-            idle_sec = time.monotonic() - self._last_activity
+            idle_sec = self._clock() - self._last_activity
             if idle_sec < self._idle_timeout_sec:
                 self._reset_idle_timer(self._idle_timeout_sec - idle_sec)
                 return
@@ -1404,7 +1410,7 @@ class LocalSummaryClient:
             # reduce batches, repairs, `complete`, the staged path), so this one
             # stamp is what the idle timer measures from. A failed request is
             # still activity: the server was busy until now.
-            self._last_activity = time.monotonic()
+            self._last_activity = self._clock()
         if r.status_code != 200:
             detail = f"local backend returned {r.status_code}: {r.text[:500]}"
             if r.status_code == 403:

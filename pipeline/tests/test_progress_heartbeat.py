@@ -4,6 +4,7 @@ a wedged one and surface it on the row."""
 from __future__ import annotations
 
 import json
+import threading
 import time
 
 from mp import orchestrate
@@ -12,16 +13,19 @@ from mp.orchestrate import PROGRESS_SENTINEL, _ProgressHeartbeat
 
 def test_heartbeat_emits_stage_progress_events(monkeypatch, capsys):
     recorded: list[tuple[str, str, dict]] = []
-    monkeypatch.setattr(
-        orchestrate.events,
-        "emit",
-        lambda category, action, **attrs: recorded.append((category, action, attrs)),
-    )
+    beat = threading.Event()
+
+    def emit(category, action, **attrs):
+        recorded.append((category, action, attrs))
+        beat.set()
+
+    monkeypatch.setattr(orchestrate.events, "emit", emit)
 
     hb = _ProgressHeartbeat(interval_s=0.02)
     hb.set_stage("summarize")
     hb.start()
-    time.sleep(0.1)
+    # T12: wait for a beat, not a fixed 0.1 s that a loaded machine can outlast.
+    assert beat.wait(timeout=10), "no beat within 10 s"
     hb.stop()
 
     progress = [a for (c, act, a) in recorded if c == "pipeline" and act == "stage_progress"]
@@ -40,15 +44,18 @@ def test_heartbeat_emits_stage_progress_events(monkeypatch, capsys):
 
 def test_heartbeat_set_stage_updates_emitted_stage(monkeypatch):
     recorded: list[tuple[str, dict]] = []
-    monkeypatch.setattr(
-        orchestrate.events,
-        "emit",
-        lambda category, action, **attrs: recorded.append((action, attrs)),
-    )
+    published = threading.Event()
+
+    def emit(category, action, **attrs):
+        recorded.append((action, attrs))
+        if action == "stage_progress" and attrs.get("stage") == "publish":
+            published.set()
+
+    monkeypatch.setattr(orchestrate.events, "emit", emit)
     hb = _ProgressHeartbeat(interval_s=0.02)
     hb.start()
     hb.set_stage("publish")
-    time.sleep(0.08)
+    assert published.wait(timeout=10), "no publish beat within 10 s"  # T12: no fixed sleep
     hb.stop()
     stages = [a["stage"] for (act, a) in recorded if act == "stage_progress"]
     assert "publish" in stages
@@ -82,13 +89,17 @@ def test_stage_elapsed_resets_on_a_stage_change_and_on_progress_and_otherwise_gr
 
 def test_the_beat_carries_stage_elapsed_on_both_the_event_and_the_stdout_line(monkeypatch, capsys):
     recorded: list[dict] = []
-    monkeypatch.setattr(
-        orchestrate.events, "emit",
-        lambda category, action, **attrs: recorded.append(attrs) if action == "stage_progress" else None,
-    )
+    beat = threading.Event()
+
+    def emit(category, action, **attrs):
+        if action == "stage_progress":
+            recorded.append(attrs)
+            beat.set()
+
+    monkeypatch.setattr(orchestrate.events, "emit", emit)
     hb = _ProgressHeartbeat(interval_s=0.02)
     hb.start()
-    time.sleep(0.1)
+    assert beat.wait(timeout=10), "no beat within 10 s"  # T12: no fixed sleep
     hb.stop()
     assert recorded and all("stage_elapsed_s" in r for r in recorded)
     line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith(PROGRESS_SENTINEL))
@@ -120,10 +131,15 @@ def test_a_blocked_summarize_shows_stage_elapsed_growing_across_beats(tmp_path, 
     summary_json = tmp_path / "20260516-0900.summary.json"
     summary_json.write_text("{}", encoding="utf-8")
     beats: list[dict] = []
-    monkeypatch.setattr(
-        orchestrate.events, "emit",
-        lambda category, action, **attrs: beats.append(attrs) if action == "stage_progress" else None,
-    )
+    three = threading.Event()
+
+    def emit(category, action, **attrs):
+        if action == "stage_progress":
+            beats.append(attrs)
+            if sum(b["stage"] == "summarize" for b in beats) >= 3:
+                three.set()
+
+    monkeypatch.setattr(orchestrate.events, "emit", emit)
     real = orchestrate._ProgressHeartbeat
     # 100x faster beats and a 100x clock, so 0.3 real seconds of a hung call read as ~30 s.
     monkeypatch.setattr(
@@ -132,7 +148,9 @@ def test_a_blocked_summarize_shows_stage_elapsed_growing_across_beats(tmp_path, 
     )
 
     def hung_summarize(*_a, **_k):
-        time.sleep(0.35)  # a request that never returns a unit of progress
+        # A request that never returns a unit of progress, held until three beats
+        # have landed rather than for a fixed 0.35 s (T12).
+        assert three.wait(timeout=10), "fewer than three summarize beats within 10 s"
         return {"json": summary_json, "md": tmp_path / "x.md"}
 
     from unittest.mock import patch

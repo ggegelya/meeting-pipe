@@ -153,7 +153,6 @@ def test_main_refuses_regulated_meeting(tmp_path: Path, monkeypatch) -> None:
     regulated = Config()
     regulated.modes.regulated_mode = True
     monkeypatch.setattr(Config, "load", lambda: regulated)
-    monkeypatch.setattr("mp.entry.load_secrets", lambda *a, **k: None)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")  # present: must still refuse
 
     anthropic = Mock()
@@ -172,7 +171,6 @@ def test_main_runs_non_regulated_meeting(tmp_path: Path, monkeypatch) -> None:
     transcript.write_text("**A**: hi there\n", encoding="utf-8")
 
     monkeypatch.setattr(Config, "load", lambda: Config())  # not regulated
-    monkeypatch.setattr("mp.entry.load_secrets", lambda *a, **k: None)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
 
     ran: list[int] = []
@@ -192,7 +190,6 @@ def test_main_passes_local_model_override(tmp_path: Path, monkeypatch) -> None:
     transcript.write_text("**A**: hi there\n", encoding="utf-8")
 
     monkeypatch.setattr(Config, "load", lambda: Config())
-    monkeypatch.setattr("mp.entry.load_secrets", lambda *a, **k: None)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
 
     seen: dict = {}
@@ -214,7 +211,6 @@ def test_main_adapter_mode_runs_locally_without_cloud(tmp_path: Path, monkeypatc
     regulated = Config()
     regulated.modes.regulated_mode = True  # would refuse in the cloud (Anthropic) path
     monkeypatch.setattr(Config, "load", lambda: regulated)
-    monkeypatch.setattr("mp.entry.load_secrets", lambda *a, **k: None)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)  # no key required
 
     anthropic = Mock()
@@ -269,7 +265,6 @@ def test_main_adapter_mode_refuses_a_trained_on_transcript(tmp_path: Path, monke
                                      held_out="20260502-0900")
 
     monkeypatch.setattr(Config, "load", lambda: Config())
-    monkeypatch.setattr("mp.entry.load_secrets", lambda *a, **k: None)
     ran = Mock()
     monkeypatch.setattr("mp.dogfood.run_one_adapter", ran)
 

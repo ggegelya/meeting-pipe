@@ -226,6 +226,7 @@ def _block_downstream(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(egress_guard, "_orig_connect_ex", _fail_connect)
 
 
+@pytest.mark.guard_proof
 def test_urllib_to_a_public_host_is_blocked_at_the_socket(monkeypatch: pytest.MonkeyPatch) -> None:
     """urllib never touches httpx, so before SEC19 nothing stopped it."""
     egress_guard.arm("test")
@@ -235,6 +236,7 @@ def test_urllib_to_a_public_host_is_blocked_at_the_socket(monkeypatch: pytest.Mo
         urllib.request.urlopen("http://example.invalid/", timeout=1)
 
 
+@pytest.mark.guard_proof
 def test_raw_create_connection_to_a_public_ip_is_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
     egress_guard.arm("test")
     _block_downstream(monkeypatch)
@@ -242,6 +244,7 @@ def test_raw_create_connection_to_a_public_ip_is_blocked(monkeypatch: pytest.Mon
         socket.create_connection((_PUBLIC_IP, 80), timeout=1)
 
 
+@pytest.mark.guard_proof
 def test_connect_ex_to_a_public_ip_is_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
     egress_guard.arm("test")
     _block_downstream(monkeypatch)
@@ -249,6 +252,7 @@ def test_connect_ex_to_a_public_ip_is_blocked(monkeypatch: pytest.MonkeyPatch) -
         s.connect_ex((_PUBLIC_IP, 443))
 
 
+@pytest.mark.guard_proof
 def test_ipv4_mapped_public_address_is_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
     egress_guard.arm("test")
     _block_downstream(monkeypatch)
@@ -256,6 +260,7 @@ def test_ipv4_mapped_public_address_is_blocked(monkeypatch: pytest.MonkeyPatch) 
         s.connect((f"::ffff:{_PUBLIC_IP}", 80, 0, 0))
 
 
+@pytest.mark.guard_proof
 def test_a_name_resolving_to_any_public_address_is_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
     egress_guard.arm("test")
     _block_downstream(monkeypatch)
@@ -271,6 +276,7 @@ def test_a_name_resolving_to_any_public_address_is_blocked(monkeypatch: pytest.M
         s.connect(("sometimes-local.example", 80))
 
 
+@pytest.mark.guard_proof
 def test_a_loopback_name_connects_to_the_address_it_was_checked_at(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -326,6 +332,7 @@ def test_unix_sockets_pass_untouched_when_armed() -> None:
         os.rmdir(path_dir)
 
 
+@pytest.mark.guard_proof
 def test_socket_layer_is_inert_after_disarm(monkeypatch: pytest.MonkeyPatch) -> None:
     egress_guard.arm("test")
     egress_guard.disarm()
@@ -359,6 +366,7 @@ def test_child_env_drops_proxy_settings_when_armed() -> None:
     assert env["NO_PROXY"] == "*" and env["no_proxy"] == "*"
 
 
+@pytest.mark.guard_proof
 def test_a_loopback_proxy_never_sees_urllib_traffic_when_armed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -475,6 +483,7 @@ def test_huggingface_hub_still_speaks_the_patched_httpx() -> None:
         client.close()
 
 
+@pytest.mark.guard_proof
 def test_huggingface_hub_is_stopped_by_the_socket_layer_alone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -183,6 +183,15 @@ def library(tmp_path, monkeypatch):
     """A two-meeting Standup series restating one commitment, plus an untagged
     meeting. Returns the recordings dir."""
     monkeypatch.setattr("mp.entry.prepare", lambda *a, **k: None)
+    # T12: pin the embedder. `cluster_actions` falls back to `default_embedder()`,
+    # which picks MLX e5 wherever `mlx_embeddings` is importable: 3.6 s per test on
+    # the dev Mac, a live connect to huggingface.co, and a result that depends on
+    # the machine. The CLI rows are verbatim restatements, which hashing groups.
+    from mp import embed_index
+
+    monkeypatch.setattr(
+        embed_index, "default_embedder", lambda *a, **k: embed_index.HashingEmbedder(dim=256)
+    )
 
     def write(stem: str, tasks: list[dict], workflow: str | None) -> None:
         (tmp_path / f"{stem}.summary.json").write_text(

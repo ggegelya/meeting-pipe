@@ -3,6 +3,7 @@ builder, the loopback clamp, the `mp serve-local` warm entry point, and the
 `mp summarize --print-prompt` read-only prompt surface."""
 from __future__ import annotations
 
+import os
 import types
 
 import pytest
@@ -63,6 +64,21 @@ def _fake_cfg(*, regulated: bool = False, model: str = "mlx-community/Custom-7B-
             local_adapter_path="",  # LOCAL9: no adapter -> base model served
         ),
     )
+
+
+@pytest.fixture(autouse=True)
+def _restore_stdio_fds():
+    """T12: `serve_local_main` runs `_redirect_output_to_server_log` before the
+    (faked) exec, which `dup2`s the server log over fds 1 and 2 of the pytest
+    process itself. Fd capture happens to re-`dup2` its saved fds afterwards; with
+    `-s` the session's own report went into the log. Put both back every time."""
+    saved = {fd: os.dup(fd) for fd in (1, 2)}
+    try:
+        yield
+    finally:
+        for fd, copy in saved.items():
+            os.dup2(copy, fd)
+            os.close(copy)
 
 
 def test_serve_local_execs_server_for_configured_model(monkeypatch):
