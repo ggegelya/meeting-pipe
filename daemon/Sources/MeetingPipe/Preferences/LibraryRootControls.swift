@@ -8,6 +8,17 @@ import SwiftUI
 /// `StorageStatsStore`, which is the one seam that moves or re-points the library.
 struct LibraryRootButtons: View {
     @ObservedObject var stats: StorageStatsStore
+    /// STOR16: a backup or restore in the Storage pane (`StorageBusyGate`). The Recording pane
+    /// cannot see those, and the execute-time check covers it there.
+    var storageBusy: Bool = false
+
+    /// Disabled while anything owns the library: a backup or restore, a move already running, a
+    /// plan being measured, or a recording or job the owners report (STOR16).
+    private var blockedReason: String? {
+        if stats.isMoving || stats.moveGuard.moveInProgress { return "A library move is running." }
+        if storageBusy { return "A backup or restore is running." }
+        return stats.moveGuard.busyReason().map { "Not now: \($0)." }
+    }
 
     var body: some View {
         HStack(spacing: MPSpace.s2) {
@@ -16,10 +27,12 @@ struct LibraryRootButtons: View {
             }
             Button("Move library…") { LibraryRootPanels.chooseMoveDestination(stats: stats) }
                 .buttonStyle(.mpGhost)
-                .disabled(stats.isPlanningMove)
+                .disabled(stats.isPlanningMove || blockedReason != nil)
+                .help(blockedReason ?? "Move the recordings folder, and the digests beside it, somewhere else.")
             Button("Use another folder…") { LibraryRootPanels.chooseOtherFolder(stats: stats) }
                 .buttonStyle(.mpGhost)
-                .disabled(stats.isPlanningMove)
+                .disabled(stats.isPlanningMove || blockedReason != nil)
+                .help(blockedReason ?? "Point at another folder without moving anything.")
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([stats.libraryURL])
             } label: {

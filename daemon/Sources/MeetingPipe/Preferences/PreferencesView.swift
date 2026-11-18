@@ -65,6 +65,7 @@ struct PreferencesView: View {
     /// PERF24: forwarded to the General and Storage panes for the status menu. Nil headless.
     var onLaunchAtLoginStatus: ((LaunchAtLoginStatus) -> Void)? = nil
     var onLibraryRestored: (() -> Void)? = nil
+    var libraryMoveGuard = LibraryMoveGuard()
     @StateObject private var doctor = DoctorRunner()
 
     @State private var doctorSheetOpen: Bool = false
@@ -147,7 +148,7 @@ struct PreferencesView: View {
         case .general:
             GeneralSectionView(store: store, onLaunchAtLoginStatus: onLaunchAtLoginStatus)
         case .recording:
-            RecordingSectionView(store: store, workflowStore: workflows)
+            RecordingSectionView(store: store, workflowStore: workflows, moveGuard: libraryMoveGuard)
         case .prompt:
             PromptSectionView(store: store)
         case .pipeline:
@@ -159,7 +160,9 @@ struct PreferencesView: View {
                 pendingVocabularyScope: $selectionState.pendingVocabularyScope
             )
         case .storage:
-            StorageSectionView(store: store, workflowStore: workflows, onRestored: onLibraryRestored)
+            StorageSectionView(
+                store: store, workflowStore: workflows, onRestored: onLibraryRestored, moveGuard: libraryMoveGuard
+            )
         case .integrations:
             IntegrationsSectionView(
                 store: store,

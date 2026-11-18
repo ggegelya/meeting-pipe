@@ -434,7 +434,7 @@ This is an operating-system behaviour, not something the app can override, so me
 
 **To fix it**, either move the library or turn the sync off:
 
-- **Preferences ▸ Storage ▸ Move library…** (also in **Preferences ▸ Recording**, synced or not) asks for a folder outside every sync folder, shows you exactly what it will move and how much, and moves the recordings folder and its `digests/` sibling only after you confirm. It refuses while a recording or a pipeline job is in flight, and it refuses a destination that is itself synced. Your `published/` folder, if you use the filesystem sink, is not moved: `mp doctor` will keep reporting it until you point `filesystem.output_dir` somewhere local.
+- **Preferences ▸ Storage ▸ Move library…** (also in **Preferences ▸ Recording**, synced or not) asks for a folder outside every sync folder, shows you exactly what it will move and how much, and moves the recordings folder and its `digests/` sibling only after you confirm. It refuses while a recording or a pipeline job is in flight, asking the recorder and the pipeline lane rather than guessing from files, and asks again at the confirm (STOR16); a recording that starts while the folder is being moved waits and starts when the move ends. It also refuses a destination that is itself synced, and stays disabled during a backup or restore. Your `published/` folder, if you use the filesystem sink, is not moved: `mp doctor` will keep reporting it until you point `filesystem.output_dir` somewhere local.
 - Or turn off System Settings ▸ [your name] ▸ iCloud ▸ Desktop & Documents Folders, which affects far more than meeting-pipe.
 
 ---

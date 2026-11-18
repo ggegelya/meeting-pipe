@@ -7,9 +7,11 @@ struct RecordingSectionView: View {
     /// UX89: the library root changes only through this store's confirmed move or switch.
     @StateObject private var stats: StorageStatsStore
 
-    init(store: ConfigStore, workflowStore: WorkflowStore) {
+    init(store: ConfigStore, workflowStore: WorkflowStore, moveGuard: LibraryMoveGuard = LibraryMoveGuard()) {
         self.store = store
-        _stats = StateObject(wrappedValue: StorageStatsStore(configStore: store, workflowStore: workflowStore))
+        _stats = StateObject(wrappedValue: StorageStatsStore(
+            configStore: store, workflowStore: workflowStore, moveGuard: moveGuard
+        ))
     }
 
     var body: some View {

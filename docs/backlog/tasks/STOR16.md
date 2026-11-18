@@ -2,9 +2,9 @@
 id: STOR16
 title: The library move checks for in-flight work only at plan time and only from file heuristics, then executes unguarded after its confirm
 category: Storage
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). LibraryMover.plan runs inFlightReason, but StorageStatsStore.executeMove calls LibraryMover.execute after an open-ended confirm with no re-check and the Move library button ignores StorageBusyGate, so a recording, backup, restore or pipeline job that starts while the dialog is open has raw/ renamed or copied out from under it; the check itself tests only the first .mic.wav listed, counts the processing window from recording start, and cannot see re-runs (F057, F074, F141; the row is live on the owner's Mac, whose library is iCloud-synced). Ask the recorder and the dispatcher, re-check on main immediately before execute, honour the busy gate, hold recording starts for the move's duration.
+comment: Shipped 2026-11-18 - LibraryMoveGuard asks the recorder's owned stems and the lane's queue depth at plan, switch and execute, claims the move in the same main-actor turn, recording starts are deferred and replayed (option b, the spec's proposal, taken while the owner's answer was pending), busy gate gains moveRunning, file fallback tests every mic.wav and counts from the newest write; 10 new tests. Owner owes confirming option (b) over (a) or (c). [Spec](./STOR16.md)
 ---
 
 # STOR16: The library move checks for in-flight work only at plan time and only from file heuristics, then executes unguarded after its confirm

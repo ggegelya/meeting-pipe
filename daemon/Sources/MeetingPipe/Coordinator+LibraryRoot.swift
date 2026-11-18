@@ -8,6 +8,10 @@ extension Coordinator {
     /// change the one `ConfigStore` value, and this one subscription re-roots the same store in
     /// place, so the search indexer and every view observing the store carry over unchanged.
     func wireLibraryRoot() {
+        // STOR16: the move asks the owners of the work, and a held recording start goes ahead when it ends.
+        libraryMoveGuard.busyReason = { [weak self] in self?.libraryBusyReason }
+        libraryMoveGuard.onMoveFinished = { [weak self] in self?.session.releaseHeldStart() }
+        preferencesWindow?.libraryMoveGuard = libraryMoveGuard
         guard let configStore else { return }
         libraryRootCancellable = configStore.$outputDirPath
             .removeDuplicates()
@@ -19,6 +23,18 @@ extension Coordinator {
                 self.libraryModel.meetingStore.reroot(to: root)
             }
     }
+
+    /// STOR16: why the library cannot be moved or re-pointed right now, from the components that
+    /// own the work rather than from its files (REC23's rule). The recorder's owned stems cover a
+    /// capture from before its engine starts; the lane's depth covers run-all and every Library
+    /// re-run (re-summarize, re-transcribe, merge), which PIPE11 routes through it.
+    var libraryBusyReason: String? {
+        if !MainActor.assumeIsolated({ recorder.ownedStems }).isEmpty { return "a recording is in progress" }
+        if jobDispatcher.queueDepth > 0 { return "a meeting is still being processed" }
+        return nil
+    }
+
+    var libraryMoveInProgress: Bool { libraryMoveGuard.moveInProgress }
 
     /// The missing-root state's **Choose folder…** (UX89). Points the library at an existing
     /// folder without moving anything: the configured root is not there, so nothing stays behind.

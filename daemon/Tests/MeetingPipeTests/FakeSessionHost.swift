@@ -65,6 +65,7 @@ final class FakeSessionHost: SessionHost {
     // MARK: Ambient state the tests drive
 
     var dryRun = false
+    var libraryMoveInProgress = false
     var micAuthorizationStatus: AVAuthorizationStatus = .authorized
     var liveOutputDir: URL
     var liveAutoConsentApps: [String] = []

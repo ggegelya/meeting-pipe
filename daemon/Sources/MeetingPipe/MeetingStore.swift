@@ -771,12 +771,15 @@ final class MeetingStore: ObservableObject {
     /// i.e. one an in-progress recording is actively writing. Returns nil for a
     /// stale intermediate so an orphaned/failed capture is not surfaced as a row.
     static func freshCaptureIntermediate(in files: [URL]) -> URL? {
-        guard let mic = files.first(where: { $0.lastPathComponent.hasSuffix(".mic.wav") }),
-              let mtime = try? mic.resourceValues(forKeys: [.contentModificationDateKey])
-                  .contentModificationDate,
-              Date().timeIntervalSince(mtime) < liveCaptureFreshnessSec
-        else { return nil }
-        return mic
+        // Every `.mic.wav`, not the first one listed (STOR16): `LibraryMover` hands in a whole
+        // directory, whose order is unspecified, so a stale orphan listed first hid a live capture.
+        files.first { mic in
+            guard mic.lastPathComponent.hasSuffix(".mic.wav"),
+                  let mtime = try? mic.resourceValues(forKeys: [.contentModificationDateKey])
+                      .contentModificationDate
+            else { return false }
+            return Date().timeIntervalSince(mtime) < liveCaptureFreshnessSec
+        }
     }
 
     /// One stem's length, in the order the available sources can be trusted

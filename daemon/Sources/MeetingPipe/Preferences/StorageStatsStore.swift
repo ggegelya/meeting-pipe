@@ -28,10 +28,21 @@ final class StorageStatsStore: ObservableObject {
 
     /// `LibraryMover.plan`, injectable so a test can see which thread runs it.
     typealias MovePlanner = @Sendable (_ source: URL, _ destinationParent: URL) throws -> LibraryMover.Plan
+    /// `LibraryMover.execute`, injectable so a test can see whether it ran (STOR16).
+    typealias MoveExecutor = @Sendable (_ plan: LibraryMover.Plan) throws -> Void
+    /// The file-heuristic fallback re-checked at execute (STOR16): work no owner reports.
+    typealias InFlightCheck = @Sendable (_ source: URL) -> String?
+
+    /// True from the execute-time check until the move returns (STOR16). Back up now and Restore
+    /// are disabled meanwhile, and so are both root actions.
+    @Published private(set) var isMoving = false
+    let moveGuard: LibraryMoveGuard
 
     private let workflowStore: WorkflowStore
     private let configStore: ConfigStore
     private let planner: MovePlanner
+    private let executor: MoveExecutor
+    private let inFlightCheck: InFlightCheck
     private let hubRoot: URL
 
     init(
@@ -40,9 +51,15 @@ final class StorageStatsStore: ObservableObject {
         planner: @escaping MovePlanner = { source, destination in
             try LibraryMover.plan(source: source, destinationParent: destination)
         },
-        hubRoot: URL = StorageScanner.hubRoot(home: FileManager.default.homeDirectoryForCurrentUser)
+        hubRoot: URL = StorageScanner.hubRoot(home: FileManager.default.homeDirectoryForCurrentUser),
+        moveGuard: LibraryMoveGuard = LibraryMoveGuard(),
+        executor: @escaping MoveExecutor = { plan in try LibraryMover.execute(plan) },
+        inFlightCheck: @escaping InFlightCheck = { source in LibraryMover.inFlightReason(in: source) }
     ) {
         self.hubRoot = hubRoot
+        self.moveGuard = moveGuard
+        self.executor = executor
+        self.inFlightCheck = inFlightCheck
         self.configStore = configStore
         self.workflowStore = workflowStore
         self.planner = planner
@@ -158,6 +175,11 @@ final class StorageStatsStore: ObservableObject {
     /// Plan a move to `destinationParent` and hold it for the confirmation dialog.
     func requestMove(to destinationParent: URL) async {
         pendingSwitch = nil
+        // STOR16: the owners first, so a busy library never gets as far as a confirmation.
+        if let reason = moveGuard.busyReason() {
+            moveError = LibraryMover.MoveError.busy(reason).localizedDescription
+            return
+        }
         if let plan = await planMove(to: destinationParent) { pendingMove = plan }
     }
 
@@ -170,15 +192,30 @@ final class StorageStatsStore: ObservableObject {
             moveError = LibraryRootChange.unwritableConfig
             return
         }
+        // STOR16: the plan's check ran when the dialog opened, and the dialog waits for as long as
+        // the owner does. Re-check now: the files first (off main, the fallback for work nothing
+        // owns), then the owners and the claim in one main-actor turn, so nothing can start a
+        // recording or a job between the answer and the move.
+        let source = plan.source
+        let inFlightCheck = self.inFlightCheck
+        let fileReason = await Task.detached(priority: .userInitiated) { inFlightCheck(source) }.value
+        if let reason = fileReason ?? moveGuard.begin() {
+            moveError = LibraryMover.MoveError.busy(reason).localizedDescription
+            return
+        }
+        isMoving = true
+        let executor = self.executor
         do {
             try await Task.detached(priority: .userInitiated) {
-                try LibraryMover.execute(plan)
+                try executor(plan)
             }.value
             LibraryRootChange.pointAt(plan.destination, configStore: configStore)
             moveError = nil
         } catch {
             moveError = error.localizedDescription
         }
+        isMoving = false
+        moveGuard.end()
         await rescan()
     }
 
@@ -189,10 +226,11 @@ final class StorageStatsStore: ObservableObject {
         moveError = nil
         pendingSwitch = nil
         let source = libraryURL
-        let reason = await Task.detached(priority: .userInitiated) {
-            LibraryMover.inFlightReason(in: source)
+        let inFlightCheck = self.inFlightCheck
+        let fileReason = await Task.detached(priority: .userInitiated) {
+            inFlightCheck(source)
         }.value
-        if let reason {
+        if let reason = fileReason ?? moveGuard.busyReason() {
             moveError = LibraryMover.MoveError.busy(reason).localizedDescription
             return
         }
@@ -207,6 +245,11 @@ final class StorageStatsStore: ObservableObject {
     func confirmSwitch() async {
         guard let folder = pendingSwitch else { return }
         pendingSwitch = nil
+        // STOR16: the confirmation may have waited; ask the owners again before re-pointing.
+        if let reason = moveGuard.busyReason() {
+            moveError = LibraryMover.MoveError.busy(reason).localizedDescription
+            return
+        }
         LibraryRootChange.pointAt(folder, configStore: configStore)
         await rescan()
     }

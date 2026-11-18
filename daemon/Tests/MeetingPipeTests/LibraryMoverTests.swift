@@ -63,7 +63,41 @@ final class LibraryMoverTests: XCTestCase {
         // block the move forever otherwise.
         let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-4 * 60 * 60))
         try write("\(stem).wav")
+        // Since STOR16 the window runs from the newest write, so a real orphan is old on disk too.
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-4 * 60 * 60)],
+            ofItemAtPath: library.appendingPathComponent("\(stem).wav").path
+        )
         XCTAssertNil(LibraryMover.inFlightReason(in: library))
+    }
+
+    /// STOR16: every `.mic.wav` is tested, not the first one listed. Directory order is
+    /// unspecified, so the stale orphan is made to sort first by name and by age.
+    func test_a_stale_mic_listed_first_does_not_hide_a_live_capture() throws {
+        let stale = library.appendingPathComponent("20200101-000000.mic.wav")
+        try Data([0]).write(to: stale)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-86_400)], ofItemAtPath: stale.path
+        )
+        try write("20260101-120000.mic.wav")
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: library, includingPropertiesForKeys: [.contentModificationDateKey]
+        ).sorted { $0.lastPathComponent < $1.lastPathComponent }
+        XCTAssertEqual(entries.first?.lastPathComponent, "20200101-000000.mic.wav")
+        XCTAssertEqual(MeetingStore.freshCaptureIntermediate(in: entries)?.lastPathComponent, "20260101-120000.mic.wav")
+        XCTAssertEqual(LibraryMover.inFlightReason(in: library), "a recording is in progress")
+    }
+
+    /// STOR16: a 2.5 h meeting that stopped a minute ago is mid-pipeline although it started
+    /// outside the 2 h window.
+    func test_a_long_meeting_just_stopped_is_still_processing() throws {
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-2.5 * 60 * 60))
+        try write("\(stem).wav")
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-60)],
+            ofItemAtPath: library.appendingPathComponent("\(stem).wav").path
+        )
+        XCTAssertEqual(LibraryMover.inFlightReason(in: library), "a meeting is still being processed")
     }
 
     func test_a_settled_library_is_not_in_flight() throws {

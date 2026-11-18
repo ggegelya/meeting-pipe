@@ -30,11 +30,14 @@ struct StorageSectionView: View {
     // the two never run together (see `busy`), and a spawner is stateless.
     @StateObject private var restore: RestoreFlow
 
-    init(store: ConfigStore, workflowStore: WorkflowStore, onRestored: (() -> Void)? = nil) {
+    init(
+        store: ConfigStore, workflowStore: WorkflowStore, onRestored: (() -> Void)? = nil,
+        moveGuard: LibraryMoveGuard = LibraryMoveGuard()
+    ) {
         self.store = store
         self.workflowStore = workflowStore
         _stats = StateObject(wrappedValue: StorageStatsStore(
-            configStore: store, workflowStore: workflowStore
+            configStore: store, workflowStore: workflowStore, moveGuard: moveGuard
         ))
         _restore = StateObject(wrappedValue: RestoreFlow(
             launcher: PipelineLauncher(), onRestored: onRestored ?? {}
@@ -47,7 +50,8 @@ struct StorageSectionView: View {
         StorageBusyGate(
             backupRunning: backupInFlight,
             restoreRunning: restore.isBusy,
-            hasBackupDestination: ui.backupDestinationPath != nil
+            hasBackupDestination: ui.backupDestinationPath != nil,
+            moveRunning: stats.isMoving
         )
     }
 
@@ -138,7 +142,7 @@ struct StorageSectionView: View {
                         }
                         Button("Move library…") { LibraryRootPanels.chooseMoveDestination(stats: stats) }
                             .buttonStyle(.mpGhost)
-                            .disabled(stats.isPlanningMove)
+                            .disabled(stats.isPlanningMove || busy.isBusy || stats.moveGuard.busyReason() != nil)
                     }
                 }
             } footer: {
@@ -164,7 +168,7 @@ struct StorageSectionView: View {
     private var libraryGroup: some View {
         SettingsGroup("Library") {
             SettingsRow("Recordings folder", sublabel: store.outputDirPath) {
-                LibraryRootButtons(stats: stats)
+                LibraryRootButtons(stats: stats, storageBusy: busy.isBusy)
             }
             SettingsRow("Total size",
                 sublabel: "Recordings, transcripts, summaries, and every sidecar.") {

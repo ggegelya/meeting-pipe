@@ -84,7 +84,7 @@ final class LibraryRootUX89Tests: XCTestCase {
         for pane in ["Preferences/PreferencesView+Recording.swift", "Preferences/PreferencesView+Storage.swift"] {
             let text = try daemonSource(pane)
             XCTAssertFalse(text.contains("$store.outputDirPath"), "\(pane) must not bind the library root to an editable control")
-            XCTAssertTrue(text.contains("LibraryRootButtons(stats: stats)"), "\(pane) offers Move library and Use another folder")
+            XCTAssertTrue(text.contains("LibraryRootButtons(stats: stats"), "\(pane) offers Move library and Use another folder")
             XCTAssertTrue(text.contains(".libraryRootDialogs(stats)"), "\(pane) confirms both actions")
         }
     }

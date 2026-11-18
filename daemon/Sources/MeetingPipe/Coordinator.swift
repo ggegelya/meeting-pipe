@@ -112,6 +112,8 @@ final class Coordinator: NSObject {
     var permissionGrantedCancellable: AnyCancellable?
     /// UX89: re-roots the Library when `output_dir` changes. See `wireLibraryRoot()`.
     var libraryRootCancellable: AnyCancellable?
+    /// STOR16: the library move's execute-time check and recording-start hold. Wired in `wireLibraryRoot()`.
+    let libraryMoveGuard = LibraryMoveGuard()
 
     init(
         config: Config,

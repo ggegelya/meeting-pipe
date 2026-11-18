@@ -45,6 +45,8 @@ enum LibraryMover {
 
     /// Why the library cannot be moved right now, or nil when it can.
     ///
+    /// The fallback since STOR16: `LibraryMoveGuard` asks the recorder and the pipeline lane first,
+    /// and this covers work neither owns (another app's process, a crash's leftovers).
     /// Filesystem-only, so it needs no reference to the running `Coordinator`: a
     /// freshly-written `.mic.wav` is a live capture, and a stem with a recording
     /// but no terminal sidecar, inside the staleness window, is a meeting the
@@ -52,7 +54,7 @@ enum LibraryMover {
     static func inFlightReason(in directory: URL, now: Date = Date()) -> String? {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+            at: directory, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
         ) else { return nil }
 
         if MeetingStore.freshCaptureIntermediate(in: entries) != nil {
@@ -61,8 +63,14 @@ enum LibraryMover {
 
         var recordings: Set<String> = []
         var terminal: Set<String> = []
+        // STOR16: the processing window runs from the stem's newest write, not from its start. A
+        // 2.5 h meeting that has just stopped is mid-pipeline, and its start is outside 2 h.
+        var newestWrite: [String: Date] = [:]
         for url in entries {
             let stem = MeetingStore.stem(of: url)
+            if let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate {
+                newestWrite[stem] = max(newestWrite[stem] ?? .distantPast, mtime)
+            }
             if MeetingStore.isFinalRecording(url) {
                 recordings.insert(stem)
             }
@@ -75,8 +83,8 @@ enum LibraryMover {
             }
         }
         for stem in recordings.subtracting(terminal) {
-            guard let startedAt = MeetingStore.parseStem(stem) else { continue }
-            if now.timeIntervalSince(startedAt) < Meeting.staleProcessingThresholdSec {
+            guard MeetingStore.parseStem(stem) != nil, let newest = newestWrite[stem] else { continue }
+            if now.timeIntervalSince(newest) < Meeting.staleProcessingThresholdSec {
                 return "a meeting is still being processed"
             }
         }

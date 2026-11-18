@@ -117,6 +117,9 @@ final class MeetingSessionController: @unchecked Sendable {
     /// END17 item 5: the stem a resume links to, handed from `handleMeetingStarted` to the start it
     /// triggers, then held as the active recording's for its sidecar. Main-queue only.
     private var pendingResumedFrom: String?
+    /// STOR16: a start that arrived while a library move ran, replayed when the move finishes.
+    /// Latest wins: a second press while held replaces the first.
+    private(set) var heldStart: (source: AppSource?, summaryMode: SummaryMode)?
     private var activeResumedFrom: String?
 
     /// END28: which call the running recording is of (`CallIdentityTracker`), its 2 s read timer,
@@ -705,6 +708,18 @@ final class MeetingSessionController: @unchecked Sendable {
         )
     }
 
+    /// STOR16: the move finished, success or failure; start what it held, if anything.
+    func releaseHeldStart() {
+        assertMainQueue()
+        guard let held = heldStart else { return }
+        heldStart = nil
+        Log.event(category: "coordinator", action: "recording_start_released", attributes: [
+            "reason": "library_move",
+            "bundle_id": held.source?.bundleID ?? "manual",
+        ])
+        beginRecording(source: held.source, summaryMode: held.summaryMode)
+    }
+
     /// AI9: what repeated WF8 corrections say the workflow for `source` should be,
     /// when that disagrees with `matched`. Nil is the normal answer.
     ///
@@ -724,6 +739,19 @@ final class MeetingSessionController: @unchecked Sendable {
     func beginRecording(source: AppSource?, summaryMode: SummaryMode) {
         assertMainQueue()
         coordinator.stateMachine.cancelPromptTimeout()
+        // STOR16 (owner decision, option b): while the library folder is being moved, no capture
+        // file may open under the old root or the new one. Defer the start, before anything below
+        // consumes routing state, and replay it unchanged when the move ends. The opening of the
+        // meeting is lost for the move's length: milliseconds for a same-volume rename.
+        if coordinator.libraryMoveInProgress {
+            heldStart = (source, summaryMode)
+            Log.writeLine("daemon", "beginRecording held: a library move is running")
+            Log.event(category: "coordinator", action: "recording_start_held", attributes: [
+                "reason": "library_move",
+                "bundle_id": source?.bundleID ?? "manual",
+            ])
+            return
+        }
         // END17 item 5: consumed first, before any early return, so a resume link can only ever
         // attach to the start it was armed for and never to a later, unrelated one.
         let resumedFrom = pendingResumedFrom

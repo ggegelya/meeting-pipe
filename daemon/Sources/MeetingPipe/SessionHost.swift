@@ -68,6 +68,8 @@ protocol SessionHost: AnyObject {
 
     // Ambient state and live-config reads.
     var dryRun: Bool { get }
+    /// STOR16: a library move is renaming or copying the recordings folder; a start waits for it.
+    var libraryMoveInProgress: Bool { get }
     var micAuthorizationStatus: AVAuthorizationStatus { get }
     var liveOutputDir: URL { get }
     var liveAutoConsentApps: [String] { get }

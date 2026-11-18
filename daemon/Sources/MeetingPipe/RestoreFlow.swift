@@ -175,8 +175,10 @@ struct StorageBusyGate: Equatable {
     /// handed its archive by the file picker, so it needs none, which is the
     /// one place these two differ.
     let hasBackupDestination: Bool
+    /// STOR16: a library move renames or copies the folder both of the others read or write.
+    var moveRunning: Bool = false
 
-    var isBusy: Bool { backupRunning || restoreRunning }
+    var isBusy: Bool { backupRunning || restoreRunning || moveRunning }
     var backupEnabled: Bool { !isBusy && hasBackupDestination }
     var restoreEnabled: Bool { !isBusy }
 }
