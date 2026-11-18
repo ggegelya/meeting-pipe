@@ -810,9 +810,11 @@ struct WorkflowEditor: View {
             // the table with it. The workflow is already saved; a glossary that will not read is
             // reported by the store's own refusal path and does not undo the rename.
             if workflow.name != clone.name {
+                // A same-named workflow (WF9) still resolves to the old table, so it keeps it.
+                let shared = store.workflows.contains { $0.id != workflow.id && $0.name == workflow.name }
                 do {
                     try GlossaryStore(fileURL: GlossaryStore.defaultURL)
-                        .renameWorkflowTable(from: workflow.name, to: clone.name)
+                        .renameWorkflowTable(from: workflow.name, to: clone.name, keepSource: shared)
                 } catch {
                     Log.failure(category: "daemon", action: "glossary_workflow_rename_failed", error: error)
                 }

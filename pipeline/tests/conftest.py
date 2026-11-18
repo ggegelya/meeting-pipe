@@ -152,6 +152,11 @@ def _no_developer_config(monkeypatch, tmp_path):
     missing = tmp_path / "no-config-home" / "config.toml"
     monkeypatch.setattr(config, "CONFIG_PATH", missing)
     monkeypatch.setattr(doctor, "CONFIG_PATH", missing)
+    # WF11: `load_glossary` now reads the workflows directory whenever a meeting's sidecar
+    # carries a `workflow_id`; its default was computed from the real CONFIG_PATH at import.
+    from mp import workflows
+
+    monkeypatch.setattr(workflows, "WORKFLOWS_DIR", missing.parent / "workflows")
     # STOR6: a config naming no library path keeps the old ~/Documents default when it holds
     # files, which on a developer's Mac it does. Point the old defaults somewhere empty too.
     monkeypatch.setattr(config, "LEGACY_OUTPUT_DIR", str(tmp_path / "no-legacy" / "raw"))

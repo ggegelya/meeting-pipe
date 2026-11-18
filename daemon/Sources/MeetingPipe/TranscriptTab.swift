@@ -304,6 +304,17 @@ struct TranscriptTab: View {
     /// ASR12: corrections skipped on the last load because their line drifted.
     @State private var driftedCorrections = 0
 
+    /// WF11: the workflow a new vocabulary term defaults to, by its current name. A meeting
+    /// recorded before its workflow was renamed still carries the old name, and a term written
+    /// under it would land in a table no reader resolves this meeting to any more.
+    private var vocabularyScopeName: String? {
+        WorkflowIdentity.currentName(
+            workflowID: meeting.workflowID,
+            recordedName: meeting.workflowName,
+            workflows: libraryModel.workflowStore?.workflows ?? []
+        )
+    }
+
     /// ASR12: the predicate both edit surfaces read. While true every overlay writer refuses.
     private var editsLocked: Bool {
         libraryModel.overlayEditsLocked(stem: meeting.stem)
@@ -618,7 +629,7 @@ struct TranscriptTab: View {
                         speakerName: speaker.displayName,
                         speakerColorIndex: MeetingCast.colorIndex(for: speaker, in: cast),
                         start: seg.start,
-                        workflowName: meeting.workflowName,
+                        workflowName: vocabularyScopeName,
                         lines: segments.map(\.text)
                     )
                 },
@@ -680,7 +691,7 @@ struct TranscriptTab: View {
             pendingVocabularyOffer = VocabularyOffer.make(
                 original: pipelineOriginal,
                 edited: edited,
-                workflowName: meeting.workflowName
+                workflowName: vocabularyScopeName
             )
             // FEAT25: the preview seam, the lines as displayed (this edit already patched in).
             pendingVocabularyOffer?.lines = segments.map(\.text)

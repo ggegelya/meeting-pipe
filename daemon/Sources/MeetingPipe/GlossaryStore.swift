@@ -273,12 +273,15 @@ final class GlossaryStore: ObservableObject {
     /// untouched. Returns how many terms moved and how many the destination kept, or nil when
     /// there was no source table (nothing to do, nothing written).
     ///
+    /// `keepSource`: another live workflow still carries the old name (WF9 allows duplicates)
+    /// and resolves to that table too, so it is copied rather than moved.
+    ///
     /// Written straight to the file rather than through the debounced row editor, which models
     /// one scope's rows and has no notion of a table changing its name. An editor instance open
     /// on the old scope with unsaved rows can still re-create the old table on its next save;
     /// that is the same narrow race `addVocabularyTerm` documents.
     @discardableResult
-    func renameWorkflowTable(from old: String, to new: String) throws -> (moved: Int, kept: Int)? {
+    func renameWorkflowTable(from old: String, to new: String, keepSource: Bool = false) throws -> (moved: Int, kept: Int)? {
         guard !old.isEmpty, !new.isEmpty, old != new else { return nil }
         if let readError { throw GlossaryReadRefusal(message: readError) }
         let disk: TOMLTable
@@ -307,7 +310,7 @@ final class GlossaryStore: ObservableObject {
         for key in source.keys where key != "terms" && destination[key] == nil {
             if let value = source[key] { destination[key] = value }
         }
-        workflows.remove(at: old)
+        if !keepSource { workflows.remove(at: old) }
         rawDocument = disk
         try writeToDisk(currentTOML())
         // Counts only: the names are workflow names and the terms are meeting vocabulary.

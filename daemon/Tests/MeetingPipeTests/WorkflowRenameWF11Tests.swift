@@ -179,6 +179,28 @@ final class WorkflowRenameWF11Tests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), toml, "nothing written")
     }
 
+    /// Another live workflow still carries the old name, so it keeps the table: copied, not moved.
+    func test_a_table_shared_with_a_same_named_workflow_is_copied_not_moved() throws {
+        let url = try glossary("""
+        [workflow."Client".terms]
+        "acme" = "ACME"
+        """)
+        _ = try GlossaryStore(fileURL: url).renameWorkflowTable(from: "Client", to: "Acme Co", keepSource: true)
+        XCTAssertEqual(GlossaryStore.resolvedTerms(at: url, workflowName: "Acme Co"), ["acme": "ACME"])
+        XCTAssertEqual(GlossaryStore.resolvedTerms(at: url, workflowName: "Client"), ["acme": "ACME"])
+    }
+
+    /// A term added from a meeting recorded before the rename defaults to the current name, so
+    /// it lands in the table every reader resolves that meeting to.
+    func test_a_new_terms_default_scope_is_the_workflows_current_name() {
+        let wf = Workflow(name: "Team Sync", isDefault: false, order: 0)
+        let m = meeting("a", name: "Weekly Sync", id: wf.id)
+        let scope = WorkflowIdentity.currentName(workflowID: m.workflowID, recordedName: m.workflowName, workflows: [wf])
+        XCTAssertEqual(Clarify.defaultScope(workflowName: scope), "Team Sync")
+        XCTAssertEqual(VocabularyOffer.make(original: "perfecta", edited: "Perfeqta", workflowName: scope)?.defaultScope,
+                       "Team Sync")
+    }
+
     // MARK: - The carry's glossary name
 
     func test_the_carry_resolves_a_meetings_glossary_name_through_its_id() throws {
