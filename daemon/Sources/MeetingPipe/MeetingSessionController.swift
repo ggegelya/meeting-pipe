@@ -2460,7 +2460,7 @@ final class MeetingSessionController: @unchecked Sendable {
         setStoppingSoon(true)
     }
 
-    /// UX92: whether the HUD currently says "No audio, stopping soon".
+    /// UX92: whether the HUD currently says "Silent, stops soon".
     private var stoppingSoonShown = false
 
     private func setStoppingSoon(_ on: Bool) {

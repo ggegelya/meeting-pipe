@@ -159,6 +159,10 @@ final class PermissionsCenter: ObservableObject {
     }
 
     func refreshNotifications() async {
+        // `UNUserNotificationCenter.current()` raises in a process with no app bundle (the XCTest
+        // host, a bare build product), and UX92 reads it on every menu open; such a process has no
+        // notification settings to read, so it keeps whatever it last had.
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
         // UX92: banners off reads the same as denied to the owner, so it is read beside the grant.
@@ -188,7 +192,7 @@ final class PermissionsCenter: ObservableObject {
         commit(\.notifications, kind: .notifications, status: new)
     }
 
-    /// Re-probe Microphone, Screen Recording, and Accessibility synchronously (all cheap TCC reads, no dialog). Notifications excluded: it requires an async UNUserNotificationCenter call and the menu-bar warning row doesn't depend on it.
+    /// Re-probe Microphone, Screen Recording, and Accessibility synchronously (all cheap TCC reads, no dialog). Notifications excluded: it requires an async UNUserNotificationCenter call, so the menu re-reads it separately on open (UX92, `StatusBarController.refreshNotificationsReading`) and repopulates when it moved.
     func refreshMenuRelevantSync() {
         refreshMicSync()
         refreshScreenRecording()

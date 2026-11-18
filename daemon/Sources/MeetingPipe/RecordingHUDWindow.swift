@@ -101,7 +101,7 @@ enum HUDStateLabel {
     }
 
     /// UX92: the label while the silence backstop is about to stop the recording.
-    static let stoppingSoonText = "No audio, stopping soon"
+    static let stoppingSoonText = "Silent, stops soon"
 
     static func resolve(
         micCaptureLost: Bool,
@@ -568,7 +568,7 @@ final class RecordingHUDWindow {
     /// captured seconds, and hiding it would misrepresent a recording that is genuinely running.
     /// `fgSubtle` is the quietest token that still clears DSN3's 4.5:1 contrast floor, which
     /// `fgFaint` does not (it measures about 2.8:1).
-    /// UX92: show or clear "No audio, stopping soon". The nudge used to be a notification only, so
+    /// UX92: show or clear "Silent, stops soon". The nudge used to be a notification only, so
     /// under Focus, with notifications off, or while presenting, nothing warned before the backstop
     /// ended a live recording. A label and colour change, no new card, the `setConfirmingEnd` way.
     func setStoppingSoon(_ on: Bool) {

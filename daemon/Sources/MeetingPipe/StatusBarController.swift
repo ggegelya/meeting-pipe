@@ -551,6 +551,20 @@ final class StatusBarController {
         refreshLaunchAgentState()
         refreshFailedMeetingCount()
         refreshRecentMeetings()
+        refreshNotificationsReading()
+    }
+
+    /// UX92: the Notifications line reads an async setting, so it is re-read on each open and the
+    /// open menu is repopulated only when the reading moved. Without this a flip in System Settings
+    /// reached the menu only after a relaunch or a visit to the Permissions pane.
+    private func refreshNotificationsReading() {
+        Task { @MainActor [weak self] in
+            let center = PermissionsCenter.shared
+            let before = center.notificationsOff
+            await center.refreshNotifications()
+            guard center.notificationsOff != before else { return }
+            self?.repopulateIfOpen()
+        }
     }
 
     fileprivate func menuDidClose() {

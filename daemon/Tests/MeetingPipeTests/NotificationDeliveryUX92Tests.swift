@@ -1,3 +1,4 @@
+import AppKit
 import UserNotifications
 import XCTest
 @testable import MeetingPipe
@@ -104,7 +105,7 @@ final class NotificationDeliveryUX92Tests: XCTestCase {
     func test_the_stopping_soon_label_and_its_precedence() {
         let label = HUDStateLabel.resolve(micCaptureLost: false, lowSpace: nil, offRecord: false,
                                           stoppingSoon: true, confirmingEnd: true)
-        XCTAssertEqual(label.text, "No audio, stopping soon")
+        XCTAssertEqual(label.text, "Silent, stops soon")
         XCTAssertEqual(HUDStateLabel.resolve(micCaptureLost: false, lowSpace: nil, offRecord: true,
                                              stoppingSoon: true, confirmingEnd: false).text, "Off the record")
         XCTAssertEqual(HUDStateLabel.resolve(micCaptureLost: true, lowSpace: nil, offRecord: false,
@@ -124,6 +125,20 @@ final class NotificationDeliveryUX92Tests: XCTestCase {
         XCTAssertEqual(host.notifierSpy.stillMeetingCount, 2, "the banner is still posted too")
         controller.keepRecordingFromNudge()
         XCTAssertEqual(host.hudSpy.stoppingSoonStates, [true, false])
+    }
+
+    /// The label shares the HUD's fixed-width pill with every other state (UX92 follow-up).
+    func test_the_stopping_soon_label_fits_the_pill() {
+        let label = NSTextField(labelWithString: HUDStateLabel.stoppingSoonText)
+        label.font = .systemFont(ofSize: 10, weight: MPType.medium)
+        XCTAssertGreaterThan(HUDPanelGeometry.pillWidth, 8 + 5 + label.intrinsicContentSize.width)
+    }
+
+    /// The menu re-reads Notifications on open, so a flip in System Settings reaches it.
+    func test_the_menu_open_rereads_notifications() throws {
+        let source = try String(contentsOf: Self.sources.appendingPathComponent("StatusBarController.swift"), encoding: .utf8)
+        let open = try XCTUnwrap(source.range(of: "fileprivate func refreshMenuBeforeDisplay"))
+        XCTAssertTrue(source[open.lowerBound...].prefix(900).contains("refreshNotificationsReading()"))
     }
 
     private static var sources: URL {
