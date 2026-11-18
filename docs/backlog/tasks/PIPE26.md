@@ -2,9 +2,9 @@
 id: PIPE26
 title: The base summary prompt and the shipped team_context describe the owner's employer, so every new install's meetings are summarized as a regulated SaaS team's
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-24 (audit band, go-live FQ-4): meeting_summary.md opens as a regulated-domain summarizer with a regulated-SaaS rule and colleague names, and config.example.toml ships an FDA Part 11 team_context the migrator seeds into every new default workflow. Scope: neutral base prompt, empty shipped context, the owner moves the domain rule into their workflow context. [Spec](./PIPE26.md)
+comment: Shipped 2026-11-18 - neutral base prompt (no regulated-domain role, no colleague names, rule 4 defers domain terms to the team context), config.example.toml ships team_context = "" so a fresh install's General workflow seeds empty; 5 new tests. Owner owes pasting the old rule-4 text into their work workflows' context prompts (body), then closing it. [Spec](./PIPE26.md)
 ---
 
 # PIPE26: the base summary prompt and the shipped team_context describe the owner's employer, so every new install's meetings are summarized as a regulated SaaS team's
@@ -44,3 +44,13 @@ The owner's own install is not at risk from the change: `install.sh` copies the 
 
 1. [session] Before landing, paste the removed rule-4 sentence and term list into the commit body so the owner can copy it.
 2. [owner] In **Workflows**, open each workflow used for work meetings and add that text to its context prompt. Pass: the next work meeting's summary does not turn "validation" or "deviation" into stand-alone action items. Cost: a minute per workflow.
+
+**Progress (2026-11-18): shipped.** `meeting_summary.md` opens "You are a precise meeting summarizer", the two worked examples that named colleagues now say "the product lead" and "the security lead", and rule 4 reads: words the team context names as the team's domain vocabulary are domain terms, usually not action items on their own (the "validation" example is kept). Every other line is byte-identical. `config.example.toml` ships `team_context = ""` with a comment and a non-owner example; `WorkflowMigrator` needed no change, since it copies whatever the example holds. Tests: `pipeline/tests/test_prompt_neutral.py` (4: no domain or colleague words, every hard-rule heading still rendered, rule 4 defers to the team context, the example's context parses empty) and `WorkflowMigratorTests.test_seeding_from_the_shipped_example_config_leaves_the_context_empty` (1). README's `team_context` line and GUIDE's context-prompt recipe say where domain vocabulary goes now.
+
+Not like-for-like: summaries made before and after this change were made under different instructions, so a LOCAL13 bench or dogfood comparison spanning it is not a clean comparison, and a LoRA adapter trained by `train_adapter` before it was trained on the old system prompt.
+
+**Owner owes (nothing migrates automatically, by design).** In **Workflows**, open each workflow used for work meetings and add this to its **Context prompt** (it is the old rule 4, which every meeting used to get from the base prompt):
+
+> The team works in regulated SaaS. Words like "validation", "qualification", "DMS", "QMS", "audit", "Part 11", "deviation" are domain terms, usually not action items on their own.
+
+Pass: the next work meeting's summary does not turn "validation" or "deviation" into stand-alone action items. Cost: a minute per workflow. Your own `config.toml`'s `team_context` is untouched by this change (install.sh copies the example only when no config exists).

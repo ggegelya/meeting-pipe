@@ -46,6 +46,21 @@ final class WorkflowMigratorTests: XCTestCase {
         XCTAssertEqual(general.notionDatabaseID, "abc123")
     }
 
+    /// PIPE26: a fresh install copies `config.example.toml`, and the migrator seeds "General"
+    /// from its `team_context`. The example used to carry the owner's employer's domain, so every
+    /// new install's default workflow described an FDA-regulated SaaS team.
+    func test_seeding_from_the_shipped_example_config_leaves_the_context_empty() throws {
+        let example = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("config.example.toml")
+        let configURL = try writeConfig(try String(contentsOf: example, encoding: .utf8))
+        let store = WorkflowStore(directory: try makeTempDir())
+        store.load()
+        XCTAssertTrue(WorkflowMigrator.runIfNeeded(store: store, configStore: ConfigStore(configURL: configURL)))
+        XCTAssertEqual(store.workflows.first?.contextPrompt, "")
+    }
+
     func test_no_op_when_workflows_already_exist() throws {
         let workflowsDir = try makeTempDir()
         let store = WorkflowStore(directory: workflowsDir)

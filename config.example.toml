@@ -130,7 +130,11 @@ diarization_clustering_threshold = 0.55
 # Also editable as "Anthropic model" in Preferences -> Pipeline.
 model = "claude-sonnet-5-5"
 max_tokens = 4000
-team_context = "FDA 21 CFR Part 11 regulated SaaS, .NET 8 + Angular + AWS EKS"
+# One line about your team that every summary prompt sees, so the model knows
+# your vocabulary, e.g. "Mobile app team; terms: release train, hotfix, TestFlight".
+# Empty is fine. A fresh install copies it into the default "General" workflow's
+# context prompt, which is where per-meeting context lives (Workflows window).
+team_context = ""
 # Your name, stamped on your own diarized speaker so "me vs them" reads as a
 # real name instead of "Speaker 1". Which speaker is you: the mic channel on a
 # stereo recording, else a voice profile learned automatically from your stereo

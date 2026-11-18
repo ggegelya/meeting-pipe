@@ -146,6 +146,8 @@ The editor's **Context prompt** is the background the engine is given for every 
 - **The words this team says out loud** that a transcript will mangle: product names, client names, internal acronyms.
 - **What kind of meeting this is.** A standup, a client review, and a one-to-one want different summaries.
 
+The engine's own instructions assume no particular field, so if your team has words that sound like tasks but are just its vocabulary (an audit, a validation, a release train), list them here as the team's terms and the summary stops turning them into action items on their own.
+
 A workflow with none carries a small question-mark glyph beside its name in the rail; hover it and it says `no context`. That is an observation, not a warning; a workflow that genuinely wants none can keep the marker.
 
 ### NDA mode
