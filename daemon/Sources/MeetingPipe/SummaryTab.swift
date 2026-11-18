@@ -29,6 +29,9 @@ struct SummaryTab: View {
     /// inline warning (edits preserved); `savedCue` shows a brief confirmation
     /// before the crossfade back to the reader.
     @State private var saveError: String? = nil
+    /// UX99: the summary was regenerated under the open editor and Save is waiting on the owner's
+    /// choice, asked in the footer (`SummaryStaleness.choice`'s copy). Nothing is written meanwhile.
+    @State private var staleChoicePending = false
     @State private var savedCue = false
 
     /// BYO / long-meeting paste-back (TECH-UX3).
@@ -83,6 +86,7 @@ struct SummaryTab: View {
             isEditing = false
             editorModel = nil
             saveError = nil
+            staleChoicePending = false
             savedCue = false
             // TECH-A16: drop any unkept candidate preview (and its sidecar) when
             // navigating to another meeting.
@@ -508,17 +512,16 @@ struct SummaryTab: View {
     // MARK: Editor flow
 
     private func beginEditing() {
-        guard let summary = MeetingSummary.load(from: summaryJsonURL) else {
+        // UX99: the identity of what the editor opens on is captured with the read, so a save can
+        // tell whether the summary was regenerated meanwhile.
+        guard let model = CorrectionViewModel.forInlineEditor(
+            stem: meeting.stem, recordingsDir: meeting.recordingsDir, runMeta: loadRunSidecar() ?? [:]
+        ) else {
             return
         }
-        let model = CorrectionViewModel(
-            stem: meeting.stem,
-            recordingsDir: meeting.recordingsDir,
-            runMeta: loadRunSidecar() ?? [:],
-            originalSummary: summary
-        )
         editorModel = model
         saveError = nil
+        staleChoicePending = false
         savedCue = false
         isEditing = true
     }
@@ -533,7 +536,38 @@ struct SummaryTab: View {
         }
     }
 
+    @ViewBuilder
     private func footer(model: CorrectionViewModel) -> some View {
+        if staleChoicePending {
+            staleChoiceFooter(model: model)
+        } else {
+            saveFooter(model: model)
+        }
+    }
+
+    /// UX99: UX65's question, asked inline rather than in a dialog. The copy is
+    /// `SummaryStaleness.choice`'s, so the two surfaces say the same thing; Return keeps the edits,
+    /// the default that loses no typing.
+    private func staleChoiceFooter(model: CorrectionViewModel) -> some View {
+        let choice = SummaryStaleness.choice(verdict: .edited)
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Label(choice.title, systemImage: "exclamationmark.triangle")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.mpWarning)
+                Text(choice.message)
+                    .font(.caption)
+                    .foregroundStyle(Color(MPColors.fgMuted))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            Button(choice.reopenButton) { save(model: model, staleChoice: .reopen) }
+            Button(choice.keepButton) { save(model: model, staleChoice: .keep) }
+                .keyboardShortcut(.defaultAction)
+        }
+    }
+
+    private func saveFooter(model: CorrectionViewModel) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             footerStatus
             Spacer(minLength: 12)
@@ -575,15 +609,28 @@ struct SummaryTab: View {
     /// Persist the edit and surface the result instead of swallowing it (UX13).
     /// On failure the user stays in edit with the inline warning; on success a
     /// brief cue shows, then the body crossfades back to the reader.
-    private func save(model: CorrectionViewModel) {
+    private func save(model: CorrectionViewModel, staleChoice: CorrectionWindow.StaleSaveChoice? = nil) {
         // PIPE54: refuse an edit over the schema's limits with what to change; nothing is written.
         if let refusal = model.schemaRefusal {
             saveError = refusal
             return
         }
-        guard persistEdit(model: model) else {
-            saveError = "Could not save the correction. Check the file permissions and try again."
+        staleChoicePending = false
+        switch InlineSummarySave.save(model: model, staleChoice: staleChoice) {
+        case .needsStaleChoice:
+            saveError = nil
+            staleChoicePending = true
             return
+        case .reopen:
+            // The owner chose the regenerated summary: the edit goes, as the choice said it would.
+            beginEditing()
+            return
+        case .failed(let message):
+            // UX99: the editor stays open with the edits, and no "Saved" cue.
+            saveError = message
+            return
+        case .saved:
+            break
         }
         saveError = nil
         savedCue = true
@@ -602,56 +649,10 @@ struct SummaryTab: View {
 
     private func cancelEditing() {
         saveError = nil
+        staleChoicePending = false
         savedCue = false
         isEditing = false
         editorModel = nil
-    }
-
-    /// Writes a correction record (verdict=edited) and overwrites `<stem>.summary.json`. Returns false on disk-write failure.
-    private func persistEdit(model: CorrectionViewModel) -> Bool {
-        let corrected = model.makeCorrectedSummary()
-        let correctedDict = corrected.jsonObject()
-        // PIPE55: a changed title field is the owner's rename. It goes to `meta.json["user_title"]`, which every
-        // sink and the Library read first, and `summary.json` keeps the generated title, so a re-summarize
-        // cannot undo the rename and the correction record below still carries what was typed.
-        let split = UserTitleStore.splitEditorTitle(corrected: corrected, generatedTitle: model.originalSummary.title)
-
-        // 1. Correction record (same path as the standalone window so the LoRA training set sees both surfaces identically).
-        do {
-            try CorrectionStore.write(
-                stem: model.stem,
-                transcriptPath: model.transcriptPath,
-                summaryJsonPath: model.summaryJsonPath,
-                modelId: model.modelId,
-                backend: model.backend,
-                verdict: .edited,
-                originalSummary: model.originalSummary.jsonObject(),
-                correctedSummary: correctedDict,
-                notes: model.notes.isEmpty ? nil : model.notes
-            )
-            Log.event(category: "library", action: "summary_edited", attributes: [
-                "stem": model.stem,
-            ])
-        } catch {
-            Log.failure(category: "library", action: "summary_correction_write_failed", error: error, attributes: ["stem": model.stem])
-            return false
-        }
-
-        if let rename = split.rename,
-           case .failure = UserTitleStore.write(title: rename, stem: model.stem, in: meeting.recordingsDir) {
-            return false
-        }
-
-        // 2. Overwrite the live summary so the row, Markdown render, and any future republish see the corrected version (record preserves the original). The title stays the generated one (PIPE55).
-        let liveDict = split.live.jsonObject()
-        if JSONSerialization.isValidJSONObject(liveDict),
-           let data = try? JSONSerialization.data(
-               withJSONObject: liveDict,
-               options: [.prettyPrinted, .sortedKeys]
-           ) {
-            try? data.write(to: summaryJsonURL, options: .atomic)
-        }
-        return true
     }
 
     // MARK: Disk helpers

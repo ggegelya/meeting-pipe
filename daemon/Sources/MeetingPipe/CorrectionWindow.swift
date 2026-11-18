@@ -287,6 +287,11 @@ final class CorrectionViewModel: ObservableObject {
     @Published var attendees: [String]
     @Published var detectedLanguage: String
     @Published var notes: String = ""
+    /// UX99: the editor's own rendering of the summary it opened on (`makeCorrectedSummary()` before
+    /// any edit), so "which fields did the owner change" compares like with like. The raw
+    /// `originalSummary` would read every untouched section as edited, since the save path trims,
+    /// drops empty rows and rebuilds actions without fields the editor does not model.
+    private(set) var openedAs = MeetingSummary()
 
     init(
         stem: String,
@@ -318,6 +323,7 @@ final class CorrectionViewModel: ObservableObject {
                 originalTask: $0.task
             )
         }
+        openedAs = makeCorrectedSummary()
     }
 
     var backend: String { (runMeta["backend"] as? String) ?? "" }
