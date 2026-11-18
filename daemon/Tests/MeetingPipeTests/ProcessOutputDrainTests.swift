@@ -97,7 +97,10 @@ final class ProcessOutputDrainTests: XCTestCase {
         let before = Self.openDescriptors()
         for _ in 0..<20 { spawnOnce() }
         let after = Self.openDescriptors()
-        XCTAssertLessThanOrEqual(after, before + 2, "a failed spawn leaked descriptors (\(before) -> \(after))")
+        // /dev/fd counts the whole test process, so unrelated work can hold a few descriptors across the
+        // window (CI saw +3 twice). The leak this pins was one per failed spawn, +20 over these 20 spawns,
+        // so a slack of 10 still fails on it.
+        XCTAssertLessThanOrEqual(after, before + 10, "a failed spawn leaked descriptors (\(before) -> \(after))")
     }
 
     static func openDescriptors() -> Int {
