@@ -489,3 +489,172 @@ def test_merge_meetings_real_audio_end_to_end(tmp_path: Path):
     assert last["text"] == "second half"
     assert last["start"] == pytest.approx(1.0, abs=0.01)
     assert (tmp_path / "20260101-0900.summary.json").exists()
+
+
+# --- PIPE47: labels, overlays, markers and voiceprints ---------------------
+
+def _jw(path: Path, obj) -> Path:
+    path.write_text(json.dumps(obj), encoding="utf-8")
+    return path
+
+
+def _meeting_with(dir: Path, stem: str, seconds: float, *segs: dict) -> Path:
+    wav = _write_meeting(dir, stem, *segs)
+    return _put_wav(wav, seconds)
+
+
+def _merged_json(primary: Path) -> dict:
+    return json.loads(primary.with_suffix(".json").read_text(encoding="utf-8"))
+
+
+def test_fragment_label_maps_renumber_only_per_recording_labels():
+    from mp.merge_meetings import fragment_label_maps
+
+    primary = _transcript(_seg(0, 1, "a", "THEM-A"), _seg(1, 2, "b", "THEM-B"),
+                          _seg(2, 3, "c", "Me"))
+    frag1 = _transcript(_seg(0, 1, "d", "THEM-A"), _seg(1, 2, "e", "speaker_1"),
+                        _seg(2, 3, "f", "Me"), _seg(3, 4, "g", "Alice"),
+                        _seg(4, 5, "h", "speaker_unknown"), _seg(5, 6, "i", "speaker_user"))
+    frag2 = _transcript(_seg(0, 1, "j", "THEM-B"), _seg(1, 2, "k", "THEM-A"))
+    maps = fragment_label_maps([primary, frag1, frag2])
+    assert maps[0] == {}
+    # the owner, a named person, and the channel/catch-all labels are one label everywhere
+    assert maps[1] == {"THEM-A": "THEM-C", "speaker_1": "speaker_1-f1"}
+    # numbering continues, in order of first speech within the fragment
+    assert maps[2] == {"THEM-B": "THEM-D", "THEM-A": "THEM-E"}
+
+
+def test_fragment_label_maps_continue_past_z():
+    from mp.diarize import them_label
+    from mp.merge_meetings import fragment_label_maps
+
+    primary = _transcript(*[_seg(i, i + 1, "x", them_label(i)) for i in range(27)])
+    frag = _transcript(_seg(0, 1, "y", "THEM-A"))
+    assert fragment_label_maps([primary, frag])[1] == {"THEM-A": "THEM-AB"}
+
+
+def test_merge_keeps_two_voices_with_the_same_them_label_apart(monkeypatch, tmp_path: Path):
+    """Each recording's THEM-A is whoever spoke first in it. After the merge they are
+    two labels, so the primary's name for THEM-A names only the primary's segments."""
+    _install_wav_fakes(monkeypatch)
+    primary = _meeting_with(tmp_path, "20260101-0900", 10.0,
+                            _seg(0, 2, "hello", "THEM-A"), _seg(2, 4, "hi", "Me"))
+    frag = _meeting_with(tmp_path, "20260101-0930", 20.0,
+                         _seg(0, 2, "back", "THEM-A"), _seg(2, 4, "yes", "Me"))
+    _jw(primary.with_suffix(".speaker_labels.json"), {"labels": {"THEM-A": "Pat"}})
+
+    merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    merged = _merged_json(primary)
+    speakers = [s["speaker"] for s in merged["segments"] if s.get("kind") != "gap"]
+    assert speakers == ["THEM-A", "Me", "THEM-B", "Me"]
+
+    from mp import speaker_overlay
+    shown = speaker_overlay.apply_overlay(
+        merged["segments"], speaker_overlay.read_overlay(primary.with_suffix(".md")))
+    assert shown
+    named = [s["speaker"] for s in merged["segments"] if s.get("kind") != "gap"]
+    assert named == ["Pat", "Me", "THEM-B", "Me"]
+
+
+def test_merge_bakes_the_fragments_names_and_text_corrections(monkeypatch, tmp_path: Path):
+    _install_wav_fakes(monkeypatch)
+    primary = _meeting_with(tmp_path, "20260101-0900", 10.0, _seg(0, 2, "start", "Me"))
+    frag = _meeting_with(tmp_path, "20260101-0930", 20.0,
+                         _seg(0, 2, "the Acme deal", "THEM-A"), _seg(2, 4, "ok", "THEM-B"))
+    _jw(frag.with_suffix(".speaker_labels.json"), {"labels": {"THEM-A": "Bob"}})
+    _jw(frag.with_suffix(".transcript_corrections.json"), {
+        "schema_version": 1,
+        "segments": [{"index": 0, "original_text": "the Acme deal", "edited_text": "the ACME deal"}],
+    })
+
+    merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    segs = [s for s in _merged_json(primary)["segments"] if s.get("kind") != "gap"]
+    assert (segs[1]["speaker"], segs[1]["text"]) == ("Bob", "the ACME deal")
+    assert segs[2]["speaker"] == "THEM-A"  # its only unnamed voice, and the primary has no THEM label to clear
+    md = primary.with_suffix(".md").read_text(encoding="utf-8")
+    assert "Bob" in md and "the ACME deal" in md
+
+
+def test_merge_refuses_when_a_fragments_overlay_cannot_be_read(monkeypatch, tmp_path: Path):
+    _install_wav_fakes(monkeypatch)
+    primary = _meeting_with(tmp_path, "20260101-0900", 10.0, _seg(0, 2, "start", "Me"))
+    frag = _meeting_with(tmp_path, "20260101-0930", 20.0, _seg(0, 2, "back", "Me"))
+    frag.with_suffix(".speaker_labels.json").write_text("{not json", encoding="utf-8")
+    before = {p: p.read_bytes() for p in tmp_path.iterdir()}
+
+    with pytest.raises(Exception, match="speaker names"):
+        merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    assert {p: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+def test_merge_carries_flagged_moments_shifted_by_the_audio_offset(monkeypatch, tmp_path: Path):
+    from mp.markers import flagged_moments_block
+
+    _install_wav_fakes(monkeypatch)
+    primary = _meeting_with(tmp_path, "20260101-0900", 10.0, _seg(0, 4, "opening point", "Me"))
+    frag = _meeting_with(tmp_path, "20260101-0930", 20.0,
+                         _seg(0, 4, "budget is approved", "Me"), _seg(10, 14, "ship in March", "Me"))
+    _jw(primary.with_suffix(".markers.json"), {"schema_version": 1, "markers": [{"t_seconds": 1.0}]})
+    _jw(frag.with_suffix(".markers.json"),
+        {"schema_version": 1, "markers": [{"t_seconds": 1.0}, {"t_seconds": 11.0}]})
+
+    merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    got = json.loads(primary.with_suffix(".markers.json").read_text(encoding="utf-8"))
+    assert [m["t_seconds"] for m in got["markers"]] == [1.0, 11.0, 21.0]
+    block = flagged_moments_block(primary.with_suffix(".md")) or ""
+    assert "opening point" in block and "budget is approved" in block and "ship in March" in block
+
+
+def test_merge_carries_voiceprints_under_the_mapped_labels(monkeypatch, tmp_path: Path):
+    _install_wav_fakes(monkeypatch)
+    primary = _meeting_with(tmp_path, "20260101-0900", 10.0,
+                            _seg(0, 2, "a", "THEM-A"), _seg(2, 4, "b", "Me"))
+    frag = _meeting_with(tmp_path, "20260101-0930", 20.0,
+                         _seg(0, 2, "c", "THEM-A"), _seg(2, 4, "d", "THEM-B"), _seg(4, 6, "e", "Me"))
+    _jw(primary.with_suffix(".embeddings.json"),
+        {"schema_version": 2, "embeddings": {"THEM-A": [1.0], "Me": [0.5]}, "near_misses": {"THEM-A": "Pat"}})
+    _jw(frag.with_suffix(".embeddings.json"),
+        {"schema_version": 2, "embeddings": {"THEM-A": [2.0], "THEM-B": [3.0], "Me": [9.0]}})
+    # the fragment's Library rename of THEM-B: its voiceprint follows the name
+    _jw(frag.with_suffix(".speaker_labels.json"), {"labels": {"THEM-B": "Bob"}})
+
+    merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    got = json.loads(primary.with_suffix(".embeddings.json").read_text(encoding="utf-8"))
+    assert got["embeddings"] == {"THEM-A": [1.0], "Me": [0.5], "THEM-B": [2.0], "Bob": [3.0]}
+    assert got["near_misses"] == {"THEM-A": "Pat"}  # the primary's own record is untouched
+
+
+def test_carrying_sidecars_twice_adds_nothing(monkeypatch, tmp_path: Path):
+    """A crash before the transcript commit re-runs the merge, so the carry must be
+    idempotent: no duplicated marker, no overwritten voiceprint."""
+    import mp.merge_meetings as mm
+
+    primary = _meeting_with(tmp_path, "20260101-0900", 10.0, _seg(0, 4, "x", "Me"))
+    frag = _meeting_with(tmp_path, "20260101-0930", 20.0, _seg(0, 4, "y", "THEM-A"))
+    _jw(frag.with_suffix(".markers.json"), {"schema_version": 1, "markers": [{"t_seconds": 1.0}]})
+    _jw(frag.with_suffix(".embeddings.json"), {"schema_version": 2, "embeddings": {"THEM-A": [2.0]}})
+    structured = [_read_json(primary), _read_json(frag)]
+
+    mm._carry_sidecars(primary, [frag], structured, [10.0, 20.0])
+    first = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    mm._carry_sidecars(primary, [frag], structured, [10.0, 20.0])
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == first
+
+
+def _read_json(wav: Path) -> dict:
+    return json.loads(wav.with_suffix(".json").read_text(encoding="utf-8"))
+
+
+def test_merge_refuses_before_writing_when_a_carried_sidecar_is_unreadable(monkeypatch, tmp_path: Path):
+    """An unreadable primary markers file is not an empty one: refuse, write nothing."""
+    _install_wav_fakes(monkeypatch)
+    primary = _meeting_with(tmp_path, "20260101-0900", 10.0, _seg(0, 2, "start", "Me"))
+    frag = _meeting_with(tmp_path, "20260101-0930", 20.0, _seg(0, 2, "back", "Me"))
+    _jw(frag.with_suffix(".markers.json"), {"schema_version": 1, "markers": [{"t_seconds": 1.0}]})
+    primary.with_suffix(".embeddings.json").write_text("[1]", encoding="utf-8")
+    primary.with_suffix(".markers.json").write_text("{broken", encoding="utf-8")
+    before = {p: p.read_bytes() for p in tmp_path.iterdir()}
+
+    with pytest.raises(MergeError, match="cannot be read"):
+        merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    assert {p: p.read_bytes() for p in tmp_path.iterdir()} == before

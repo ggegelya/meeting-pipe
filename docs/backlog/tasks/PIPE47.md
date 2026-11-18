@@ -2,9 +2,9 @@
 id: PIPE47
 title: Merging meetings concatenates per-fragment speaker labels verbatim and drops each fragment's speaker names, text corrections and markers
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). `merge_meetings` copies each fragment's segments with `speaker` unchanged, although THEM-x labels are assigned per recording. It reads raw `<stem>.json`, so a fragment's speaker names, text corrections, flagged moments and voiceprints are dropped, then trashed along with the fragment. In the three adjacent field pairs inside the pack, all 9 THEM-x labels shared by both halves are different voices (cosine -0.03 to 0.32); none was merged. Fix: renumber a fragment's THEM-x labels so they never collide (an embedding match is optional), bake each fragment's overlays into its segments, carry its markers shifted by the offset, and merge its embeddings.
+comment: Shipped 2026-11-18 (floor items 1, 3, 4): per-recording labels renumbered, fragment names and corrections baked in, flags and voiceprints carried; item 2 (match by voice) deliberately deferred; owner owes one real merge of a split call
 ---
 
 # PIPE47: Merging meetings concatenates per-fragment speaker labels verbatim and drops each fragment's speaker names, text corrections and markers

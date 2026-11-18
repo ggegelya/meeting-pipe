@@ -17,6 +17,13 @@ replaced, so a failed concat never destroys the primary recording. A
 publish-stage failure re-summarize + republish rather than concatenate the
 audio a second time.
 
+PIPE47: a fragment's labels, edits and sidecars are carried, not concatenated.
+THEM-x and raw ``speaker_N`` ids are numbered per recording, so a fragment's are
+renumbered to never collide with the primary's (`fragment_label_maps`); its
+speaker names and text corrections are baked into the segments it contributes
+(`transcript_corrections.overlaid_structured`), and its flagged moments and
+voiceprints ride into the primary's ``.markers.json`` / ``.embeddings.json``.
+
 PIPE48: ``merged_from`` is committed before the audio swap, so a retry that sees
 it may be looking at a merge that never reached the swap. The resume branch
 therefore decides from the audio's actual state (see `_resume_audio`), always
@@ -28,10 +35,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
-from . import entry, events, storage
+from . import entry, events, markers, speaker_overlay, storage, transcript_corrections
 from .config import Config
 from .markdown import render_markdown
 from .publish_router import (
@@ -40,7 +48,7 @@ from .publish_router import (
     fanout as publish_fanout,
 )
 from .services import SummaryClient
-from .summarize import summarize
+from .summarize import refuse_unreadable_overlays, summarize
 
 log = logging.getLogger("mp.merge_meetings")
 
@@ -63,6 +71,64 @@ class MergeError(RuntimeError):
     """A merge could not complete without risking the source recordings."""
 
 
+# PIPE47: the labels that are numbered per recording (the diarizer's raw `speaker_N`
+# and the finalizer's `THEM-x` cluster), as opposed to the owner's label, roster and
+# Library names, `speaker_user` / `speaker_other` and the `speaker_unknown` catch-all,
+# which mean the same thing in every recording.
+_THEM_RE = re.compile(r"^THEM-([A-Z]+)$")
+_RAW_RE = re.compile(r"^speaker_\d+$")
+
+
+def _them_index(label: str) -> int | None:
+    """Inverse of `diarize.them_label`: THEM-A -> 0, THEM-AA -> 26; None otherwise."""
+    m = _THEM_RE.match(label)
+    if m is None:
+        return None
+    n = 0
+    for ch in m.group(1):
+        n = n * 26 + (ord(ch) - ord("A") + 1)
+    return n - 1
+
+
+def _speakers_in_order(segments: list[dict]) -> list[str]:
+    seen: dict[str, None] = {}
+    for seg in segments:
+        spk = seg.get("speaker") if isinstance(seg, dict) else None
+        if isinstance(spk, str) and spk:
+            seen.setdefault(spk)
+    return list(seen)
+
+
+def fragment_label_maps(fragments: list[dict]) -> list[dict[str, str]]:
+    """PIPE47: per fragment, the map from its own per-recording labels to labels
+    that cannot collide with any earlier recording's. Pure. The primary (index 0)
+    keeps every label. A later fragment's THEM-x labels continue after the highest
+    THEM index used so far (`diarize.them_label`, in order of first speech), and a
+    raw `speaker_N` gets a per-fragment suffix. Everything else maps to itself, so
+    the owner and named people stay one label across recordings."""
+    from .diarize import them_label
+
+    next_them = 0
+    maps: list[dict[str, str]] = []
+    for i, frag in enumerate(fragments):
+        mapping: dict[str, str] = {}
+        speakers = _speakers_in_order(frag.get("segments") or [])
+        if i == 0:
+            for spk in speakers:
+                idx = _them_index(spk)
+                if idx is not None:
+                    next_them = max(next_them, idx + 1)
+        else:
+            for spk in speakers:
+                if _them_index(spk) is not None:
+                    mapping[spk] = them_label(next_them)
+                    next_them += 1
+                elif _RAW_RE.match(spk):
+                    mapping[spk] = f"{spk}-f{i}"
+        maps.append(mapping)
+    return maps
+
+
 def merge_transcripts(fragments: list[dict], durations: list[float]) -> dict:
     """Concatenate the fragments' transcripts onto one continuous timeline.
 
@@ -70,13 +136,15 @@ def merge_transcripts(fragments: list[dict], durations: list[float]) -> dict:
     first; `durations` are each fragment's audio duration in seconds (so a
     segment's timestamps stay aligned with the concatenated audio, not the
     transcript's last-segment end, which trails off into silence). A gap marker
-    is inserted at every fragment boundary.
+    is inserted at every fragment boundary. Later fragments' per-recording speaker
+    labels are renumbered so they never collide with the primary's (PIPE47).
     """
     if not fragments:
         raise MergeError("no fragments to merge")
     if len(fragments) != len(durations):
         raise MergeError("fragment / duration count mismatch")
 
+    label_maps = fragment_label_maps(fragments)
     merged_segments: list[dict] = []
     offset = 0.0
     for i, (frag, dur) in enumerate(zip(fragments, durations)):
@@ -87,6 +155,9 @@ def merge_transcripts(fragments: list[dict], durations: list[float]) -> dict:
             )
         for seg in frag.get("segments") or []:
             shifted = dict(seg)
+            spk = shifted.get("speaker")
+            if isinstance(spk, str) and spk in label_maps[i]:
+                shifted["speaker"] = label_maps[i][spk]
             if isinstance(shifted.get("start"), (int, float)):
                 shifted["start"] = float(shifted["start"]) + offset
             if isinstance(shifted.get("end"), (int, float)):
@@ -246,6 +317,107 @@ def _read_transcript(audio: Path) -> dict:
     return read.data
 
 
+def _read_fragment(audio: Path) -> dict:
+    """A later fragment's transcript as the Library shows it (PIPE47): its speaker
+    names and text corrections baked into the segments, because the fragment's
+    sidecars go to the Trash with it on success. An unreadable overlay refuses,
+    as `summarize` does (STOR9), rather than quietly dropping the owner's edits."""
+    _read_transcript(audio)  # the missing / unreadable errors, named for this recording
+    md = audio.with_suffix(".md")
+    refuse_unreadable_overlays(md)
+    composed = transcript_corrections.overlaid_structured(md)
+    if composed is None:
+        raise MergeError(f"unreadable transcript for {audio.name}")
+    return composed[0]
+
+
+def _read_sidecar(path: Path) -> dict | None:
+    """A sidecar to carry: None when missing, the object when readable, and a
+    MergeError when present but unreadable (the writer refuses rather than read
+    unreadable as empty and overwrite it, STOR9)."""
+    read = storage.load_json_object(path)
+    if read.state == "missing":
+        return None
+    if read.data is None:
+        raise MergeError(f"{path.name} is present but cannot be read ({read.reason}); "
+                         "nothing was merged")
+    return read.data
+
+
+def _marker_entries(obj: dict | None) -> list[dict]:
+    raw = obj.get("markers") if obj else None
+    return [m for m in raw if isinstance(m, dict)] if isinstance(raw, list) else []
+
+
+def _carry_sidecars(
+    primary_audio: Path,
+    fragment_audios: list[Path],
+    fragments: list[dict],
+    durations: list[float],
+) -> None:
+    """PIPE47: fold each later fragment's flagged moments and voiceprints into the
+    primary's `.markers.json` / `.embeddings.json`. `fragments` is primary-first,
+    like `durations`. Every read happens before any write (an unreadable sidecar
+    refuses with nothing touched), and both writes are idempotent (a marker already
+    present at the same offset, an embedding label already present, is not added
+    again), because a crash before the transcript commit re-runs the whole merge.
+    The primary's own entries are never moved: its segment indices do not change,
+    so its overlays stay valid."""
+    primary_md = primary_audio.with_suffix(".md")
+    label_maps = fragment_label_maps(fragments)
+    marker_file = _read_sidecar(markers.markers_path(primary_md))
+    emb_file = _read_sidecar(primary_audio.with_suffix(".embeddings.json"))
+
+    marker_entries = _marker_entries(marker_file)
+    seen_offsets = {m.get("t_seconds") for m in marker_entries}
+    embeddings = dict(emb_file.get("embeddings") or {}) if emb_file else {}
+    if not isinstance(embeddings, dict):
+        embeddings = {}
+    added_markers = added_embeddings = False
+
+    offset = durations[0]
+    for i, audio in enumerate(fragment_audios, start=1):
+        frag_md = audio.with_suffix(".md")
+        frag_markers = _read_sidecar(markers.markers_path(frag_md))
+        frag_emb = _read_sidecar(audio.with_suffix(".embeddings.json"))
+        for m in _marker_entries(frag_markers):
+            t = m.get("t_seconds")
+            if isinstance(t, bool) or not isinstance(t, (int, float)):
+                continue
+            shifted = {**m, "t_seconds": float(t) + offset}
+            if shifted["t_seconds"] not in seen_offsets:
+                seen_offsets.add(shifted["t_seconds"])
+                marker_entries.append(shifted)
+                added_markers = True
+        # A voiceprint is keyed by the label the recording showed at finalize; the
+        # Library's rename of that label (the overlay) and then the renumbering
+        # decide what the merged transcript calls the voice.
+        names = speaker_overlay.read_overlay(frag_md).get("labels") or {}
+        present = {label_maps[i].get(s, s) for s in _speakers_in_order(fragments[i].get("segments") or [])}
+        frag_vectors = frag_emb.get("embeddings") if frag_emb else None
+        for key, vec in (frag_vectors.items() if isinstance(frag_vectors, dict) else ()):
+            if not isinstance(key, str) or not isinstance(vec, list) or not vec:
+                continue
+            label = names.get(key, key)
+            label = label_maps[i].get(label, label)
+            if label in present and label not in embeddings:
+                embeddings[label] = vec
+                added_embeddings = True
+        offset += durations[i]
+
+    if added_markers:
+        storage.atomic_write_text(
+            markers.markers_path(primary_md),
+            json.dumps({"schema_version": 1, "markers": marker_entries}),
+        )
+    if added_embeddings:
+        payload: dict = dict(emb_file) if emb_file else {"schema_version": 2}
+        payload["embeddings"] = embeddings
+        # Biometric: `atomic_write_text` creates it 0600, as the finalizer's write does.
+        storage.atomic_write_text(primary_audio.with_suffix(".embeddings.json"),
+                                  json.dumps(payload))
+
+
 def merge_meetings(
     primary_audio: Path,
     fragment_audios: list[Path],
@@ -290,7 +462,7 @@ def merge_meetings(
                         fragments=frag_stems, segments=len(existing.get("segments") or []),
                         resumed=True)
     else:
-        structured = [existing, *(_read_transcript(a) for a in fragment_audios)]
+        structured = [existing, *(_read_fragment(a) for a in fragment_audios)]
         _check_free_space(inputs, primary_audio)
         tmp = primary_audio.with_name(primary_audio.name + ".merging.tmp")
         try:
@@ -299,6 +471,9 @@ def merge_meetings(
             merged = merge_transcripts(structured, durations)
             merged["audio_path"] = str(primary_audio)
             merged["merged_from"] = sorted(already | set(frag_stems))
+            # PIPE47: the carried sidecars land BEFORE the transcript commit, so a
+            # resume (PIPE48) never meets a merge with its markers half carried.
+            _carry_sidecars(primary_audio, fragment_audios, structured, durations)
 
             # PIPE8 (FEAT9 follow-up): commit the transcript that carries
             # `merged_from` BEFORE swapping in the merged audio, so a crash between
