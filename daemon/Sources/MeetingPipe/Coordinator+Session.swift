@@ -23,6 +23,20 @@ extension Coordinator {
         configStore?.autoConsentApps ?? config.recording.autoConsentApps
     }
 
+    func addAutoConsentApp(_ bundleID: String) {
+        guard let configStore else {
+            // Headless: no store to write, so the pick records this meeting and nothing more.
+            Log.writeLine("daemon", "always-consent not kept: no config store (\(bundleID))")
+            return
+        }
+        configStore.addAutoConsentApp(bundleID)
+        if configStore.parseError != nil {
+            // ARCH9: saves are refused over an unparsed config.toml, so this holds until quit.
+            Log.failure(category: "coordinator", action: "consent_save_failed",
+                        reason: "config.toml cannot be read, so this Always lasts only until the app quits")
+        }
+    }
+
     var livePromptTimeoutSec: Double {
         configStore?.promptTimeoutSec ?? config.detection.promptTimeoutSec
     }

@@ -22,7 +22,7 @@ import MeetingPipeCore
 ///   notifier, recorder, HUD, prompt window, and job dispatcher touch AppKit,
 ///   AVFoundation, UserNotifications, or spawn processes, so a test cannot have
 ///   the real ones. Everything else (`DetectionStateMachine`, `MicGate`,
-///   `ConsentStore`, `WorkflowStore`, `IdleStopBackstop`, ...) is already
+///   `WorkflowStore`, `IdleStopBackstop`, ...) is already
 ///   constructible in a test and stays concrete. Protocolising those too would be
 ///   ceremony that buys nothing.
 ///
@@ -45,7 +45,6 @@ protocol SessionHost: AnyObject {
     /// `lifecycleCoord` directly so a test can state the reading without engaging an adapter.
     var liveCallSignal: CallTeardownOracle.LiveCallSignal { get }
     var silenceBackstop: IdleStopBackstop { get }
-    var consent: ConsentStore { get }
     var workflowStore: WorkflowStore { get }
     /// AI9: the WF8 correction pairs behind the prompt's routing hint. Concrete
     /// for the reason above: a test builds one over a temp URL, or an empty one.
@@ -73,6 +72,10 @@ protocol SessionHost: AnyObject {
     var micAuthorizationStatus: AVAuthorizationStatus { get }
     var liveOutputDir: URL { get }
     var liveAutoConsentApps: [String] { get }
+    /// UX97: the prompt's "Always for <app>" adds the bundle to the same list `liveAutoConsentApps`
+    /// reads and Preferences renders, so it shows there with a remove tag. It used to go to a second
+    /// store (`auto_consent.json`) that only the start check could see.
+    func addAutoConsentApp(_ bundleID: String)
     var livePromptTimeoutSec: Double { get }
     var liveRepromptCooldownSec: Double { get }
     var liveHonorAppMute: Bool { get }

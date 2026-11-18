@@ -441,7 +441,7 @@ final class MeetingSessionController: @unchecked Sendable {
     func chooseAlways(source: AppSource) {
         assertMainQueue()
         guard case .prompting(let pending) = coordinator.stateMachine.current, pending == source else { return }
-        coordinator.consent.setAutoConsented(bundleID: source.bundleID, value: true)
+        coordinator.addAutoConsentApp(source.bundleID)
         Log.writeLine("daemon", "user always-consented (\(source.bundleID))")
         Log.event(category: "coordinator", action: "user_consented_always", attributes: [
             "bundle_id": source.bundleID,
@@ -1758,7 +1758,7 @@ final class MeetingSessionController: @unchecked Sendable {
             case .recordBYO:
                 recordAttached(to: held, summaryMode: .byo, trigger: "prompt_offer")
             case .always:
-                coordinator.consent.setAutoConsented(bundleID: held.bundleID, value: true)
+                coordinator.addAutoConsentApp(held.bundleID)
                 Log.event(category: "coordinator", action: "user_consented_always", attributes: [
                     "bundle_id": held.bundleID,
                 ])
@@ -1966,12 +1966,11 @@ final class MeetingSessionController: @unchecked Sendable {
         // captures this synchronously before its async start.
         micTierPromptBundle = isMicTier ? source.bundleID : nil
 
-        // Auto-consent (config or persisted "Always").
+        // Auto-consent: the allowlist, which since UX97 also holds every "Always for <app>" pick.
         // DET17 guard 1: a browser source carries no audio evidence today, so an auto-consented
         // browser prompts rather than recording without a click.
         if source.kind != .browser,
-           coordinator.liveAutoConsentApps.contains(source.bundleID) ||
-           coordinator.consent.isAutoConsented(bundleID: source.bundleID) {
+           coordinator.liveAutoConsentApps.contains(source.bundleID) {
             Log.writeLine("daemon", "auto-consent → recording (\(source.bundleID))")
             Log.event(category: "coordinator", action: "auto_consent", attributes: [
                 "bundle_id": source.bundleID,

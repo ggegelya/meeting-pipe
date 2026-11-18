@@ -27,7 +27,6 @@ final class Coordinator: NSObject {
     /// adapter; the `.starting` verdict raises the prompt (TECH-C13 step 5).
     let discoveryWatcher = MeetingDiscoveryWatcher()
     let hotkey: HotkeyManager
-    let consent: ConsentStore
     /// AI9: the WF8 correction pairs. Written by `library.reassignWorkflow`, read
     /// by the session controller when it raises a prompt. Loaded beside the
     /// workflow store below rather than in its own `init`, matching
@@ -131,7 +130,6 @@ final class Coordinator: NSObject {
         self.promptWindow = MeetingPromptWindow()
         self.recordingHUD = RecordingHUDWindow()
         self.hotkey = HotkeyManager()
-        self.consent = ConsentStore()
         let resolvedLauncher = launcher ?? PipelineLauncher()
         self.launcher = resolvedLauncher
         // FluidAudio is the only ASR path: in-process Parakeet TDT +

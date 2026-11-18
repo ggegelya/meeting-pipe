@@ -31,7 +31,7 @@ enum AutoRetryEligibility {
 
 /// The per-stem record that makes the bound hold. It cannot live in `<stem>.error.json`: `retryMeeting` clears
 /// that file before it runs and a failed re-run writes a fresh one, so "already auto-retried" would be lost
-/// exactly when it matters. It lives beside `auto_consent.json` in Application Support instead, outside the
+/// exactly when it matters. It lives in `~/Library/Application Support/MeetingPipe` instead, outside the
 /// library folder, so it is not a sidecar any stem scan, stranded-job detector or sidecar inventory sees.
 ///
 /// Two states: `pending` (a failure was marked eligible and its re-run has not started) and `spent` (the one
@@ -50,7 +50,7 @@ final class AutoRetryStore {
     private let url: URL
     private(set) var entries: [String: Entry]
 
-    /// The store beside `auto_consent.json`, or `url` for a test.
+    /// The store in Application Support, or `url` for a test.
     init(url: URL? = nil) {
         let resolved: URL
         if let url {

@@ -4,7 +4,7 @@ import Foundation
 /// Observable owner of the saved smart folders (UX24). One JSON array at
 /// `~/.config/meeting-pipe/saved_searches.json`.
 ///
-/// Deliberately the `ConsentStore` single-file-JSON idiom rather than `WorkflowStore`'s
+/// Deliberately a single-file-JSON store rather than `WorkflowStore`'s
 /// file-per-item TOML: a folder is daemon UI state with no per-item override pin, the
 /// pipeline never reads it, and the whole set is rewritten on any edit anyway. Mutations
 /// run on the caller's queue (main, from the Library views) so `@Published` stays on the

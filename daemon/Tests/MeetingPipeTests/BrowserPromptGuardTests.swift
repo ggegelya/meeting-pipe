@@ -88,7 +88,7 @@ final class BrowserPromptGuardTests: XCTestCase {
     func test_anAutoConsentedBrowser_prompts() throws {
         let (controller, host) = try makeController()
         let tab = chrome("Meet: \"Placeholder sync\"")
-        host.consent.setAutoConsented(bundleID: tab.bundleID, value: true)
+        host.addAutoConsentApp(tab.bundleID)
         controller.handleMeetingStarted(source: tab)
         XCTAssertEqual(host.promptSpy.presentCount, 1)
         XCTAssertEqual(host.recorderSpy.startCallCount, 0)

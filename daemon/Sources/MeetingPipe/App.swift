@@ -155,6 +155,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // UX96: a hand edit while the app runs reaches the in-memory readers (the
         // regulated glyph, the recording's meta) instead of waiting for a relaunch.
         store.startWatching()
+        // UX97: an older install's "Always for <app>" picks lived in auto_consent.json, a list
+        // Preferences never showed. Move them onto the allowlist once; here and nowhere else,
+        // because tests build Coordinators and this rewrites the real config.
+        LegacyConsentMigration.run(into: store)
 
         // SecretsStore is unfailing: it reads the tokens from the Keychain (a missing item is normal on first run) and writes only the accounts a Preferences edit changed. The tokens are not put into the process environment (SEC23): `PipelineLauncher.runMP` and `NotionDatabaseList` read them from `SecretsStore.live`.
         let secrets = SecretsStore()

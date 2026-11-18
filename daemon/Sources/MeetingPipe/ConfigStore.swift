@@ -835,3 +835,28 @@ final class ConfigStore: ObservableObject {
         )
     }
 }
+
+// MARK: - Auto-record allowlist (UX97)
+
+extension ConfigStore {
+    /// Add `bundleID` to `recording.auto_consent_apps` unless it is already there. The one writer
+    /// for both the Preferences field and the prompt's "Always for <app>", so an Always pick shows
+    /// up in the allowlist Preferences renders, with the same remove tag. False when nothing changed.
+    @discardableResult
+    func addAutoConsentApp(_ bundleID: String) -> Bool {
+        let trimmed = bundleID.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !autoConsentApps.contains(trimmed) else { return false }
+        autoConsentApps.append(trimmed)
+        return true
+    }
+
+    /// Take `bundleID` off the allowlist. The start check reads this same array, so the next
+    /// sighting of that app prompts again, with no restart.
+    func removeAutoConsentApp(_ bundleID: String) {
+        autoConsentApps.removeAll { $0 == bundleID }
+    }
+
+    /// Preferences' empty state: true only when no app records without a prompt. Since UX97 this
+    /// array is the only list the start check reads, so its emptiness is the whole answer.
+    var everyMeetingPrompts: Bool { autoConsentApps.isEmpty }
+}

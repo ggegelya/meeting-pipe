@@ -3,7 +3,7 @@ import Foundation
 /// Owner of the WF8 correction pairs (AI9). One JSON array at
 /// `~/.config/meeting-pipe/workflow_corrections.json`.
 ///
-/// The `ConsentStore` / `SavedSearchStore` single-file idiom rather than
+/// The `SavedSearchStore` single-file idiom rather than
 /// `WorkflowStore`'s file-per-item TOML, for the same reasons: this is daemon
 /// state with no per-item override pin, the pipeline never reads it, and an
 /// append rewrites the whole (small) set anyway.

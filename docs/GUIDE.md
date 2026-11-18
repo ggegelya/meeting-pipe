@@ -40,7 +40,7 @@ Plus [the words this app uses](#the-words-this-app-uses) at the end. In the app 
 Join a call in Zoom, Teams, Google Meet, Webex, or a Slack huddle and a small panel appears in the top-right corner. It names the app it found and shows the workflow it is about to use.
 
 - **Record** starts recording. The button reads **Starting…** at once, and the recording panel appears reading **Starting…** until the microphone is up, usually well under a second, then turns into the running recording.
-- The **chevron** beside Record holds the rest: **Record (BYO)**, **Always for `<app>`** (never ask again for that app), and **Skip this meeting**.
+- The **chevron** beside Record holds the rest: **Record (BYO)**, **Always for `<app>`** (never ask again for that app), and **Skip this meeting**. An Always pick adds the app to **Preferences ▸ Recording ▸ Auto-record allowlist**; click the **×** on its tag there to be asked again, from the next meeting on, with no restart.
 - The **×** in the corner is the same as Skip.
 - **Last time** appears when this workflow has met before. Click it and the panel expands in place to show the previous meeting: its title, how long ago, the first few summary points, and what it left open. Click again to collapse.
 - The **workflow chip** shows which routing this meeting will use. Click it to pick a different one before you record.

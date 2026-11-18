@@ -10,7 +10,7 @@ import MeetingPipeCore
 /// daemon) had no constructible coverage at all. This fake stands in for it.
 ///
 /// The six UI / I/O collaborators are recording spies. Everything else is the real
-/// type: `DetectionStateMachine`, `MicGate`, `ConsentStore`, `WorkflowStore`,
+/// type: `DetectionStateMachine`, `MicGate`, `WorkflowStore`,
 /// `IdleStopBackstop` and friends are all constructible without TCC, a window
 /// server, or a process spawn, so faking them would only add a layer that can lie.
 /// The state machine in particular is the real one, which is the point: a test
@@ -38,7 +38,6 @@ final class FakeSessionHost: SessionHost {
     /// meaning what it meant; the veto tests state it explicitly.
     var liveCallSignal: CallTeardownOracle.LiveCallSignal = .unknown
     let silenceBackstop = IdleStopBackstop()
-    let consent: ConsentStore
     let workflowStore: WorkflowStore
     let workflowCorrections: WorkflowCorrectionStore
     var configStore: ConfigStore?
@@ -68,7 +67,17 @@ final class FakeSessionHost: SessionHost {
     var libraryMoveInProgress = false
     var micAuthorizationStatus: AVAuthorizationStatus = .authorized
     var liveOutputDir: URL
-    var liveAutoConsentApps: [String] = []
+    /// UX97: the allowlist the start check reads. Read through `configStore` when a test sets one,
+    /// as `Coordinator` does, so a test can drive the very array Preferences renders.
+    var liveAutoConsentApps: [String] {
+        get { configStore?.autoConsentApps ?? stubAutoConsentApps }
+        set { if let configStore { configStore.autoConsentApps = newValue } else { stubAutoConsentApps = newValue } }
+    }
+    private var stubAutoConsentApps: [String] = []
+    func addAutoConsentApp(_ bundleID: String) {
+        if let configStore { configStore.addAutoConsentApp(bundleID) }
+        else if !stubAutoConsentApps.contains(bundleID) { stubAutoConsentApps.append(bundleID) }
+    }
     var livePromptTimeoutSec: Double = 12
     var liveRepromptCooldownSec: Double = 60
     var liveHonorAppMute = false
@@ -84,7 +93,6 @@ final class FakeSessionHost: SessionHost {
     /// so nothing here touches the owner's real library or `~/.config`.
     init(tempDir: URL, workflows: [Workflow] = []) {
         self.liveOutputDir = tempDir
-        self.consent = ConsentStore(url: tempDir.appendingPathComponent("consent.json"))
         let workflowDir = tempDir.appendingPathComponent("workflows", isDirectory: true)
         try? FileManager.default.createDirectory(at: workflowDir, withIntermediateDirectories: true)
         self.workflowStore = WorkflowStore(directory: workflowDir)

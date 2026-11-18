@@ -102,7 +102,7 @@ final class StartInFlightTests: XCTestCase {
 
     func test_anAutoConsentStart_thatItsMeetingEndsDuring_isStoppedBeforeItCommits() async {
         let (controller, host) = makeController()
-        host.consent.setAutoConsented(bundleID: teams.bundleID, value: true)
+        host.addAutoConsentApp(teams.bundleID)
         await runParkedStart(host, start: { controller.handleMeetingStarted(source: teams) }) {
             controller.handleMeetingEnded(bundleID: teams.bundleID, reason: teamsEnd)
         }
@@ -130,7 +130,7 @@ final class StartInFlightTests: XCTestCase {
     /// An end for another app, or any end while a source-less start comes up, is not the start's.
     func test_aForeignEnd_andAnEndDuringASourcelessStart_letTheStartCommit() async {
         let (controller, host) = makeController()
-        host.consent.setAutoConsented(bundleID: teams.bundleID, value: true)
+        host.addAutoConsentApp(teams.bundleID)
         await runParkedStart(host, start: { controller.handleMeetingStarted(source: teams) }) {
             controller.handleMeetingEnded(bundleID: "us.zoom.xos", reason: teamsEnd)
         }
@@ -228,7 +228,7 @@ final class StartInFlightTests: XCTestCase {
         controller.chooseAlways(source: teams)
         await Task.yield()
         XCTAssertEqual(host.recorderSpy.startCallCount, 0)
-        XCTAssertFalse(host.consent.isAutoConsented(bundleID: teams.bundleID))
+        XCTAssertFalse(host.liveAutoConsentApps.contains(teams.bundleID))
         XCTAssertTrue(host.stateMachine.current.isRecordingState)
     }
 
@@ -238,7 +238,7 @@ final class StartInFlightTests: XCTestCase {
         controller.handleMeetingStarted(source: teams)
         controller.chooseAlways(source: teams)
         await waitUntil({ host.stateMachine.current.isRecordingState }, "the recording")
-        XCTAssertTrue(host.consent.isAutoConsented(bundleID: teams.bundleID))
+        XCTAssertTrue(host.liveAutoConsentApps.contains(teams.bundleID))
         controller.forceStop(reason: "test")
         await waitUntil({ host.stateMachine.current == .idle }, "the flush")
     }

@@ -56,7 +56,7 @@ struct RecordingSectionView: View {
 
             SettingsGroup("Auto-record allowlist") {
                 SettingsFullRow(showsDivider: false) {
-                    if store.autoConsentApps.isEmpty {
+                    if store.everyMeetingPrompts {
                         Text("No apps yet - every meeting will prompt.")
                             .font(.mpTextSM)
                             .foregroundStyle(Color(MPColors.fgSubtle))
@@ -64,7 +64,7 @@ struct RecordingSectionView: View {
                     } else {
                         WrappingHStack(items: store.autoConsentApps) { bundleID in
                             SettingsTag(bundleID) {
-                                store.autoConsentApps.removeAll { $0 == bundleID }
+                                store.removeAutoConsentApp(bundleID)
                             }
                         }
                     }
@@ -81,16 +81,14 @@ struct RecordingSectionView: View {
                     }
                 }
             } footer: {
-                Text("When the daemon detects audio from these apps, recording starts without showing the prompt.")
+                Text("When the daemon detects audio from these apps, recording starts without showing the prompt. Picking Always for an app on the prompt adds it here; remove it to be asked again from the next meeting on.")
             }
         }
         .libraryRootDialogs(stats)
     }
 
     private func addBundle() {
-        let trimmed = newConsentBundleID.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, !store.autoConsentApps.contains(trimmed) else { return }
-        store.autoConsentApps.append(trimmed)
+        store.addAutoConsentApp(newConsentBundleID)
         newConsentBundleID = ""
     }
 }

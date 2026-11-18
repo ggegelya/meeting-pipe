@@ -264,7 +264,7 @@ const PWRecordingPane = () => (
       <PWToggleRow first on label="Pause mic when muted" sublabel="Pauses mic capture while you're muted in Teams / Zoom / Slack / Webex. Uses the locale catalogue (en, uk, de, es, fr, ja, pt, ru)."/>
       <PWToggleRow on={false} label="Voice processing" sublabel="Apple's noise-suppression + AGC. Drops your mic gain system-wide while recording, so other apps hear you quietly. Off by default; flip on only for solo voice memos."/>
     </PWGroup>
-    <PWGroup label="Auto-record allowlist" footer="When the daemon detects audio from these apps, recording starts without showing the prompt.">
+    <PWGroup label="Auto-record allowlist" footer="When the daemon detects audio from these apps, recording starts without showing the prompt. Picking Always for an app on the prompt adds it here; remove it to be asked again from the next meeting on.">
       <PWFullRow first>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <PWTag>us.zoom.xos</PWTag>
