@@ -165,6 +165,16 @@
         "provider": "filesystem"
       },
       "cause": "synced_target"
+    },
+    {
+      "name": "overlay_unreadable",
+      "payload": {
+        "schema_version": 1,
+        "cause": "overlay_unreadable",
+        "operation": "summary",
+        "remedy": "retry"
+      },
+      "cause": "overlay_unreadable"
     }
   ]
 }

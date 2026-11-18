@@ -1474,6 +1474,7 @@ final class PipelineLauncher: PipelineDriver {
             },
             onFinished: { [self] status, stderrTail in
                 defer { try? FileManager.default.removeItem(at: spawn.failureURL) }
+                Self.deliverNotices(from: Self.noticeURL(for: spawn.failureURL))
                 watchdog.cancel()
                 slots.release(handle, from: retain)   // TECH-UX5 / UX37: run finished/killed
                 if timedOut.isSet || handle.isCancelled { reapServerAfterStop() }
@@ -1498,6 +1499,21 @@ final class PipelineLauncher: PipelineDriver {
             watchdog.cancel()
             slots.release(handle, from: retain)
             completion(.failure(error))
+        }
+    }
+
+    /// The per-spawn notice file `MP_NOTICE_PATH` names (STOR9), beside the failure file.
+    static func noticeURL(for failureURL: URL) -> URL {
+        failureURL.deletingPathExtension().appendingPathExtension("notices")
+    }
+
+    /// Post each line `mp` left in the notice file through `StoreNotice`, then remove it.
+    static func deliverNotices(from url: URL) {
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return }
+        for line in text.split(separator: "\n") {
+            let message = line.trimmingCharacters(in: .whitespaces)
+            if !message.isEmpty { StoreNotice.post(message) }
         }
     }
 
@@ -1547,6 +1563,9 @@ final class PipelineLauncher: PipelineDriver {
         for (k, v) in extraEnv { env[k] = v }
         let failureURL = FileManager.default.temporaryDirectory.appendingPathComponent("mp-failure-\(UUID().uuidString).json")
         env["MP_FAILURE_PATH"] = failureURL.path
+        // STOR9: what `mp` wants the owner told (a quarantined store, say), one line each. A file per
+        // spawn rather than a stdout marker, since a line can straddle two pipe chunks.
+        env["MP_NOTICE_PATH"] = Self.noticeURL(for: failureURL).path
         // PERF13: this process copies the child's stderr into `pipeline.log`, so it is that file's one
         // writer. The flag tells `_configure_logging` to skip its own FileHandler, which used to put
         // every run-all record into the file twice.

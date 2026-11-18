@@ -192,6 +192,8 @@ Nothing is written until you press Add, and both sides stay editable until you d
 
 A workflow's own terms are one click from its editor too, which carries a **Vocabulary…** link that opens this pane with that workflow already selected.
 
+If the pane says **Couldn't read the vocabulary file**, your `glossary.toml` has a mistake in it, usually from editing it by hand. The pane shows nothing and saves nothing until the file reads again, so your terms are not overwritten: fix the line it names (or undo the hand edit), then leave and reopen the pane.
+
 ### When terms take effect
 
 Terms are applied when a transcript is finished, so **a new meeting picks them up automatically and an old one does not**. To fix an old meeting, open it and pick **Re-transcribe…** from the `...` menu. That is the one action that rewrites an existing transcript; see [the three re-verbs](#the-three-re-verbs) below for why the other two do not.

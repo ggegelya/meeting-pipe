@@ -15,6 +15,9 @@ final class SavedSearchStore: ObservableObject {
     @Published private(set) var searches: [SavedSearch] = []
 
     private let url: URL
+    /// STOR9: the last load failed (unparseable or unreadable), so `searches` is the empty fallback
+    /// and not the owner's folders. The next mutation re-reads first (`StoreGuard.recoverForWrite`).
+    private var loadFailed = false
     private let writeQueue = DispatchQueue(
         label: "com.meetingpipe.savedsearchstore.write",
         qos: .utility
@@ -34,20 +37,40 @@ final class SavedSearchStore: ObservableObject {
     /// explicitly, so a headless test that builds a `LibraryWindowModel` never reads the
     /// real file.
     func load() {
-        guard let data = try? Data(contentsOf: url) else {
+        switch Self.read(url) {
+        case .loaded(let list):
+            searches = list
+            loadFailed = false
+        case .missing:
             searches = []
-            return
-        }
-        do {
-            searches = try JSONDecoder().decode([SavedSearch].self, from: data)
-                .sorted(by: Self.orderComparator)
-        } catch {
-            // A corrupt or hand-broken file must not take the Library down with it.
+            loadFailed = false
+        case .unparseable(let error), .unreadable(let error):
+            // A corrupt or hand-broken file must not take the Library down with it, and since STOR9
+            // it must not be saved over either: `loadFailed` holds the next write until it re-reads.
             Log.failure(category: "library", action: "saved_searches_unreadable", error: error, attributes: [
                 "file": self.url.lastPathComponent,
             ])
             searches = []
+            loadFailed = true
         }
+    }
+
+    private static func read(_ url: URL) -> StoreLoad<[SavedSearch]> {
+        StoreLoad.read(url) { data in
+            try JSONDecoder().decode([SavedSearch].self, from: data).sorted(by: orderComparator)
+        }
+    }
+
+    /// STOR9: every mutation asks first. False refuses it (the file could not be read; the owner
+    /// was told, and nothing changed).
+    private func mayWrite() -> Bool {
+        guard loadFailed else { return true }
+        guard let base = StoreGuard.recoverForWrite(
+            reread: Self.read(url), empty: [], url: url, store: "saved_searches", pathKind: .config
+        ) else { return false }
+        searches = base
+        loadFailed = false
+        return true
     }
 
     func search(id: UUID) -> SavedSearch? {
@@ -71,6 +94,7 @@ final class SavedSearchStore: ObservableObject {
 
     /// Insert or replace by id, then persist.
     func upsert(_ search: SavedSearch) {
+        guard mayWrite() else { return }
         if let idx = searches.firstIndex(where: { $0.id == search.id }) {
             searches[idx] = search
         } else {
@@ -83,7 +107,7 @@ final class SavedSearchStore: ObservableObject {
     @discardableResult
     func rename(id: UUID, to name: String) -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
+        guard !trimmed.isEmpty, mayWrite(),
               let idx = searches.firstIndex(where: { $0.id == id })
         else { return false }
         searches[idx].name = trimmed
@@ -96,7 +120,7 @@ final class SavedSearchStore: ObservableObject {
     /// ("Update to current filter" on the rail row).
     @discardableResult
     func updateCriteria(id: UUID, base: SavedSearch.Base, filter: MeetingFilter) -> Bool {
-        guard let idx = searches.firstIndex(where: { $0.id == id }) else { return false }
+        guard mayWrite(), let idx = searches.firstIndex(where: { $0.id == id }) else { return false }
         searches[idx].base = base
         searches[idx].filter = filter
         persist()
@@ -105,7 +129,7 @@ final class SavedSearchStore: ObservableObject {
 
     @discardableResult
     func delete(id: UUID) -> Bool {
-        guard let idx = searches.firstIndex(where: { $0.id == id }) else { return false }
+        guard mayWrite(), let idx = searches.firstIndex(where: { $0.id == id }) else { return false }
         searches.remove(at: idx)
         persist()
         return true

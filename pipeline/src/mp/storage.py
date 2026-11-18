@@ -243,6 +243,24 @@ def report_unreadable(store: str, error: StoreUnreadable, outcome: str, *, path_
                 reason=error.reason, outcome=outcome)
 
 
+def post_notice(message: str) -> None:
+    """Tell the owner something the app should show (STOR9: a quarantined store).
+
+    The daemon names a per-spawn file in `MP_NOTICE_PATH` and posts each line it finds
+    there once `mp` exits; a terminal run has no such file and the message is printed
+    by the caller as before. Best-effort: a notice must never fail the command.
+    """
+    path = os.environ.get("MP_NOTICE_PATH")
+    if not path:
+        return
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(message.replace("\n", " ") + "\n")
+    except OSError:
+        pass
+
+
 def config_dir(home: Path | None = None) -> Path:
     """`~/.config/meeting-pipe/`: config.toml, workflows/, voiceprint, roster,
     glossary. Mirrors `config.CONFIG_PATH.parent` with an injectable home."""

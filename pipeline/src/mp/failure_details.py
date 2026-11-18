@@ -123,6 +123,10 @@ def describe(error: BaseException, *, operation: str, provider: str | None = Non
     elif "not in the local huggingface cache" in message or _has_type_name(links, "EmbedderUnavailableError"):
         cause = "model_missing"
         provider = "local"
+    elif _has_type_name(links, "OverlayUnreadable"):
+        # STOR9: a present speaker-label, correction or marker sidecar that will not read. Retrying
+        # without fixing the file refuses again; the remedy is the file, so the cause is its own.
+        cause = "overlay_unreadable"
     elif _has_type_name(links, "SyncedTargetError"):
         # SEC18: a zero-egress run's file sink sits inside a sync folder. Retrying cannot help until the
         # publish folder is changed in Integrations, so it is its own cause with that remedy.

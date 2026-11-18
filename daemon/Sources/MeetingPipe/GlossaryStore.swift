@@ -82,14 +82,35 @@ final class GlossaryStore: ObservableObject {
     /// the user typed and the pipeline never sees is the whole bug this task fixes.
     @Published private(set) var saveError: String?
 
+    /// STOR9 item 4, ARCH9's rule for a hand-edited file: `glossary.toml` is there and will not
+    /// read or parse. Held until a re-read succeeds (`reload()`); while it is set nothing is
+    /// written, so the owner's file is never replaced by the empty table this store fell back to.
+    @Published private(set) var readError: String?
+    /// One `store_unreadable` row per held error, not one per pane switch.
+    private var readErrorReported = false
+
+    /// What the rows were last loaded from or saved as (STOR9 item 9, G012). A save applies only
+    /// the difference between the rows and these onto a fresh read of the file, so a term another
+    /// instance wrote (the transcript's Add to Vocabulary) survives this one's save.
+    private var baseGlobal: [String: TermPair] = [:]
+    private var baseWorkflow: [String: TermPair] = [:]
+    private var baseFuzzy = false
+    /// A workflow scope left with unsaved edits: its delta, kept until a save lands.
+    private var stashedWorkflowDeltas: [String: TermDelta] = [:]
+    /// Snapshots of what each in-flight debounced save wrote, committed as the new base only once
+    /// that write lands (the `ConfigStore.commit` rule): a failed write keeps its delta.
+    private var pendingCommits: [SaveSnapshot] = []
+
     /// The debounced save (CONC8): snapshots on main, writes on `writeQueue`.
     private lazy var saver = DebouncedSaver(
         queue: writeQueue,
         prepare: { [weak self] in self?.prepareSave() },
         completion: { [weak self] result in
+            let snapshot = self?.pendingCommits.isEmpty == false ? self?.pendingCommits.removeFirst() : nil
             switch result {
             case .success:
                 self?.saveError = nil
+                if let snapshot { self?.commit(snapshot) }
             case .failure(let error):
                 Log.failure(category: "daemon", action: "glossary_save_failed", error: error)
                 self?.saveError = error.localizedDescription
@@ -103,11 +124,17 @@ final class GlossaryStore: ObservableObject {
 
     init(fileURL: URL = GlossaryStore.defaultURL) {
         self.fileURL = fileURL
-        let raw = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
-        // A malformed file loads as an empty document rather than throwing, matching
-        // `load_glossary`, which logs and returns an empty glossary. Saving from here
-        // would replace the broken file, which is the only way out of it in-app.
-        let doc = (try? TOMLTable(string: raw)) ?? TOMLTable()
+        // A malformed or unreadable file loads as an empty document rather than throwing, matching
+        // `load_glossary`, which logs and returns an empty glossary. Since STOR9 that empty document
+        // is never saved over the file: the error is held and every write refuses until a re-read.
+        let doc: TOMLTable
+        switch GlossaryStore.readDocument(at: fileURL) {
+        case .loaded(let loaded): doc = loaded
+        case .missing: doc = TOMLTable()
+        case .unparseable(let error), .unreadable(let error):
+            doc = TOMLTable()
+            self.readError = GlossaryStore.readErrorText(fileURL, error)
+        }
         self.rawDocument = doc
         self.globalTerms = GlossaryStore.terms(in: doc["terms"]?.table)
         self.selectedWorkflow = nil
@@ -117,7 +144,47 @@ final class GlossaryStore: ObservableObject {
         // (Python's `bool("yes")` is true), which no UI can produce and which off is
         // the safe answer to anyway: a wrong substitution is worse than a missed one.
         self.fuzzyEnabled = doc["fuzzy"]?.table?["enabled"]?.bool ?? false
+        self.baseGlobal = GlossaryStore.folded(globalTerms)
+        self.baseFuzzy = fuzzyEnabled
         self.isInitialized = true
+    }
+
+    /// Re-read the file and start over from it (STOR9): what clears a held `readError` once the owner
+    /// fixed the file, and what the Vocabulary pane runs when it appears. Unsaved edits are kept: a
+    /// reload over them is skipped unless the store is holding an error, which has nothing to keep.
+    func reload() {
+        guard readError != nil || !hasUnsavedChanges else { return }
+        let doc: TOMLTable
+        switch GlossaryStore.readDocument(at: fileURL) {
+        case .loaded(let loaded): doc = loaded
+        case .missing: doc = TOMLTable()
+        case .unparseable(let error), .unreadable(let error):
+            readError = GlossaryStore.readErrorText(fileURL, error)
+            return
+        }
+        isInitialized = false
+        rawDocument = doc
+        readError = nil
+        readErrorReported = false
+        stashedWorkflowDeltas = [:]
+        globalTerms = GlossaryStore.terms(in: doc["terms"]?.table)
+        let table = selectedWorkflow.flatMap { GlossaryStore.workflowTable(named: $0, in: doc) }
+        workflowTerms = GlossaryStore.terms(in: table?["terms"]?.table)
+        fuzzyEnabled = doc["fuzzy"]?.table?["enabled"]?.bool ?? false
+        baseGlobal = GlossaryStore.folded(globalTerms)
+        baseWorkflow = GlossaryStore.folded(workflowTerms)
+        baseFuzzy = fuzzyEnabled
+        isInitialized = true
+    }
+
+    /// True when the rows, a stashed workflow scope or the near-miss switch differ from what was
+    /// last loaded or saved. `flush()` writes nothing otherwise (G012: opening and leaving the pane
+    /// used to rewrite the file every time).
+    var hasUnsavedChanges: Bool {
+        !GlossaryStore.delta(base: baseGlobal, rows: globalTerms).isEmpty
+            || (selectedWorkflow != nil && !GlossaryStore.delta(base: baseWorkflow, rows: workflowTerms).isEmpty)
+            || stashedWorkflowDeltas.values.contains { !$0.isEmpty }
+            || fuzzyEnabled != baseFuzzy
     }
 
     // MARK: - Scope
@@ -128,11 +195,23 @@ final class GlossaryStore: ObservableObject {
     func selectWorkflow(_ name: String?) {
         guard name != selectedWorkflow else { return }
         writeBack()
+        // STOR9: the outgoing scope's unsaved edits ride along to the next save as a delta.
+        if let outgoing = selectedWorkflow {
+            let delta = GlossaryStore.delta(base: baseWorkflow, rows: workflowTerms)
+            if !delta.isEmpty { stashedWorkflowDeltas[outgoing] = (stashedWorkflowDeltas[outgoing] ?? TermDelta()).then(delta) }
+        }
         selectedWorkflow = name
         let table = name.flatMap { GlossaryStore.workflowTable(named: $0, in: rawDocument) }
+        let loaded = GlossaryStore.terms(in: table?["terms"]?.table)
+        // The base is what this scope holds before this pane touches it, minus a stash of its own:
+        // a stashed scope re-entered shows its edits (they are in `rawDocument`) and keeps them owed.
+        baseWorkflow = GlossaryStore.folded(loaded)
+        if let name, let stash = stashedWorkflowDeltas.removeValue(forKey: name) {
+            baseWorkflow = stash.undo(on: baseWorkflow)
+        }
         // Assign through the stored property: its `didSet` schedules a save, which is
         // harmless (the document already matches) and keeps one write path.
-        workflowTerms = GlossaryStore.terms(in: table?["terms"]?.table)
+        workflowTerms = loaded
     }
 
     // MARK: - Confirmed append (FEAT12)
@@ -154,6 +233,7 @@ final class GlossaryStore: ObservableObject {
     /// FEAT12's hard constraint): nothing in the correction flow may reach this without
     /// one.
     func addTerm(heard: String, canonical: String, workflow: String?) throws {
+        if let readError { throw GlossaryReadRefusal(message: readError) }
         selectWorkflow(workflow)
         let fold = heard.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         func apply(_ rows: inout [GlossaryTerm]) {
@@ -239,17 +319,20 @@ final class GlossaryStore: ObservableObject {
     // MARK: - Persistence
 
     /// Force an immediate save (used by tests and by the editor's explicit actions). Written through the
-    /// saver's queue, behind any debounced write already in flight.
+    /// saver's queue, behind any debounced write already in flight. Throws while a read error is held.
     func saveNow() throws {
-        writeBack()
-        let toml = currentTOML()
+        guard let prepared = try prepareMerge(force: true) else { return }
+        let (toml, snapshot) = prepared
         try saver.performNow { try self.writeToDisk(toml) }
+        saveError = nil
+        commit(snapshot)
     }
 
     /// Write pending edits out now, recording a failure instead of throwing. The editor
     /// calls this when it goes away: the 500 ms debounce is held by a timer that a
     /// closed Preferences window can outlive by less than that, and a dropped last
-    /// keystroke here is a term the pipeline silently never applies.
+    /// keystroke here is a term the pipeline silently never applies. Writes nothing
+    /// when nothing changed, and nothing while a read error is held (STOR9).
     func flush() {
         saver.flush()
     }
@@ -259,12 +342,161 @@ final class GlossaryStore: ObservableObject {
         saver.schedule()
     }
 
-    /// On main when the debounce fires: mutate the tree and render it here, so the queue only sees a string.
+    /// On main when the debounce fires: merge onto a fresh read and render it here, so the queue only
+    /// sees a string. Nil writes nothing (no change, or a held read error).
     private func prepareSave() -> DebouncedSaver.Work? {
         guard isInitialized else { return nil }
-        writeBack()
-        let toml = currentTOML()
+        let prepared: (String, SaveSnapshot)?
+        do { prepared = try prepareMerge(force: false) } catch { return nil }
+        guard let prepared else { return nil }
+        let (toml, snapshot) = prepared
+        pendingCommits.append(snapshot)
         return { [self] in try writeToDisk(toml) }
+    }
+
+    /// STOR9 items 4 and 9: re-read `glossary.toml`, lay this pane's own changes onto it, and render.
+    /// A file that will not read holds `readError` and refuses (throws `GlossaryReadRefusal`); no change
+    /// writes nothing unless `force` (an explicit save still writes, so the `[fuzzy]` key appears).
+    private func prepareMerge(force: Bool) throws -> (String, SaveSnapshot)? {
+        if let readError {
+            reportRefusal(GlossaryReadRefusal(message: readError))
+            throw GlossaryReadRefusal(message: readError)
+        }
+        writeBack()   // keeps `rawDocument` (the live resolution's view) current
+        let global = GlossaryStore.delta(base: baseGlobal, rows: globalTerms)
+        let workflow = selectedWorkflow.map { ($0, GlossaryStore.delta(base: baseWorkflow, rows: workflowTerms)) }
+        let fuzzyChanged = fuzzyEnabled != baseFuzzy
+        let changed = !global.isEmpty || !(workflow?.1.isEmpty ?? true)
+            || stashedWorkflowDeltas.values.contains { !$0.isEmpty } || fuzzyChanged
+        guard changed || force else { return nil }
+
+        let disk: TOMLTable
+        switch GlossaryStore.readDocument(at: fileURL) {
+        case .loaded(let doc): disk = doc
+        case .missing: disk = TOMLTable()
+        case .unparseable(let error), .unreadable(let error):
+            let message = GlossaryStore.readErrorText(fileURL, error)
+            readError = message
+            reportRefusal(GlossaryReadRefusal(message: message))
+            throw GlossaryReadRefusal(message: message)
+        }
+        global.apply(to: ensureTable("terms", in: disk))
+        let workflows = { self.ensureTable("workflow", in: disk) }
+        for (name, delta) in stashedWorkflowDeltas where !delta.isEmpty {
+            delta.apply(to: ensureTable("terms", in: ensureTable(name, in: workflows())))
+        }
+        if let (name, delta) = workflow, !name.isEmpty, !delta.isEmpty {
+            delta.apply(to: ensureTable("terms", in: ensureTable(name, in: workflows())))
+        }
+        let fuzzy = ensureTable("fuzzy", in: disk)
+        if fuzzyChanged || fuzzy["enabled"]?.bool == nil { fuzzy["enabled"] = fuzzyEnabled }
+        // The merged document: this pane's rows plus whatever another instance wrote. Not
+        // `writeBack()`ed again, which replaces a table with the rows and would drop those keys.
+        rawDocument = disk
+        let snapshot = SaveSnapshot(
+            global: GlossaryStore.folded(globalTerms),
+            workflow: selectedWorkflow.map { ($0, GlossaryStore.folded(workflowTerms)) },
+            fuzzy: fuzzyEnabled,
+            stashedScopes: Set(stashedWorkflowDeltas.keys)
+        )
+        return (currentTOML(), snapshot)
+    }
+
+    /// A write landed: what it wrote is the new base, and the stashes it carried are paid.
+    private func commit(_ snapshot: SaveSnapshot) {
+        baseGlobal = snapshot.global
+        if let (name, rows) = snapshot.workflow, name == selectedWorkflow { baseWorkflow = rows }
+        baseFuzzy = snapshot.fuzzy
+        for name in snapshot.stashedScopes { stashedWorkflowDeltas.removeValue(forKey: name) }
+    }
+
+    private func reportRefusal(_ refusal: GlossaryReadRefusal) {
+        guard !readErrorReported else { return }
+        readErrorReported = true
+        StoreGuard.report(store: "glossary", pathKind: .config, reason: "unreadable", outcome: "refused", error: refusal)
+    }
+
+    /// `glossary.toml` read as a document: missing, parsed, or the reason it is not.
+    static func readDocument(at url: URL) -> StoreLoad<TOMLTable> {
+        StoreLoad.read(url) { data in
+            guard let raw = String(data: data, encoding: .utf8) else {
+                throw StoreShapeError(why: "glossary.toml is not UTF-8 text")
+            }
+            return try TOMLTable(string: raw)
+        }
+    }
+
+    static func readErrorText(_ url: URL, _ error: Error) -> String {
+        let reason = LibraryRootState.posixCode(of: error) == EIO && !(error is StoreShapeError)
+            ? (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            : error.localizedDescription
+        return "Couldn't read \(url.path): \(reason). Nothing is saved until the file reads; fix it, then reopen this pane."
+    }
+
+    // MARK: - Three-way merge (STOR9 item 9)
+
+    /// One row as written: the key as typed, its value.
+    struct TermPair: Equatable { let key: String; let value: String }
+
+    /// Live rows keyed by their folded (lower-cased) key, the identity the pipeline matches on.
+    static func folded(_ terms: [GlossaryTerm]) -> [String: TermPair] {
+        var out: [String: TermPair] = [:]
+        for pair in liveTerms(terms) { out[pair.key.lowercased()] = TermPair(key: pair.key, value: pair.value) }
+        return out
+    }
+
+    static func delta(base: [String: TermPair], rows: [GlossaryTerm]) -> TermDelta {
+        let current = folded(rows)
+        var delta = TermDelta()
+        for (fold, pair) in current where base[fold] != pair { delta.upserts[fold] = pair }
+        for fold in base.keys where current[fold] == nil { delta.removals.insert(fold) }
+        delta.prior = base.filter { delta.upserts[$0.key] != nil || delta.removals.contains($0.key) }
+        return delta
+    }
+
+    /// What this pane changed in one table: keys it set (by fold) and keys it removed. Applied onto a
+    /// fresh read, it leaves every other key, including one another instance added, alone.
+    struct TermDelta: Equatable {
+        var upserts: [String: TermPair] = [:]
+        var removals: Set<String> = []
+        /// The base values the changed keys had, so a stash can be undone into a base on re-entry.
+        var prior: [String: TermPair] = [:]
+
+        var isEmpty: Bool { upserts.isEmpty && removals.isEmpty }
+
+        func apply(to table: TOMLTable) {
+            for key in table.keys {
+                let fold = key.lowercased()
+                if removals.contains(fold) { table.remove(at: key); continue }
+                if let pair = upserts[fold], pair.key != key { table.remove(at: key) }
+            }
+            for pair in upserts.values { table[pair.key] = pair.value }
+        }
+
+        /// This delta followed by `next`.
+        func then(_ next: TermDelta) -> TermDelta {
+            var out = self
+            for (fold, pair) in next.upserts { out.upserts[fold] = pair; out.removals.remove(fold) }
+            for fold in next.removals { out.removals.insert(fold); out.upserts.removeValue(forKey: fold) }
+            for (fold, pair) in next.prior where out.prior[fold] == nil { out.prior[fold] = pair }
+            return out
+        }
+
+        /// The base a scope had before this delta, given the base that already includes it.
+        func undo(on base: [String: TermPair]) -> [String: TermPair] {
+            var out = base
+            for fold in upserts.keys { out.removeValue(forKey: fold) }
+            for fold in removals { out.removeValue(forKey: fold) }
+            for (fold, pair) in prior { out[fold] = pair }
+            return out
+        }
+    }
+
+    struct SaveSnapshot {
+        let global: [String: TermPair]
+        let workflow: (String, [String: TermPair])?
+        let fuzzy: Bool
+        let stashedScopes: Set<String>
     }
 
     /// Mutate `rawDocument` to reflect the current rows. Visible to tests so they can
@@ -361,4 +593,10 @@ final class GlossaryStore: ObservableObject {
         parent[key] = new
         return new
     }
+}
+
+/// A glossary write refused because `glossary.toml` will not read (STOR9 item 4).
+struct GlossaryReadRefusal: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
 }

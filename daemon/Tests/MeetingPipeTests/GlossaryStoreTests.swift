@@ -40,12 +40,97 @@ final class GlossaryStoreTests: XCTestCase {
         )
     }
 
-    func test_a_malformed_file_loads_empty_rather_than_throwing() throws {
+    /// STOR9 item 4 (replaces FEAT11's "loads empty" assertion, which was half the bug): a malformed
+    /// file still loads without throwing, as `load_glossary` does, but the error is held and nothing
+    /// is written over the file, by the pane's flush or by the transcript's Add to Vocabulary.
+    func test_a_malformed_file_holds_its_error_and_survives_every_writer() throws {
         let url = try makeTempURL()
-        try write("this is not = = toml", to: url)
-        // `load_glossary` logs and returns an empty glossary for the same input, so the
-        // editor must not be the one surface that hard-fails on it.
-        XCTAssertTrue(GlossaryStore(fileURL: url).globalTerms.isEmpty)
+        let broken = "this is not = = toml"
+        try write(broken, to: url)
+        let store = GlossaryStore(fileURL: url)
+        XCTAssertTrue(store.globalTerms.isEmpty)
+        XCTAssertNotNil(store.readError)
+        XCTAssertTrue(store.readError?.contains(url.path) == true, "the pane names the file")
+
+        store.globalTerms = [GlossaryTerm(heard: "acme", canonical: "ACME")]
+        store.flush()
+        XCTAssertThrowsError(try store.saveNow())
+        XCTAssertThrowsError(try GlossaryStore(fileURL: url).addTerm(heard: "k8s", canonical: "Kubernetes", workflow: nil))
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), broken, "byte-identical")
+
+        // Fixing the file and re-reading clears it.
+        try write("[terms]\n\"acme\" = \"ACME\"\n", to: url)
+        store.reload()
+        XCTAssertNil(store.readError)
+        XCTAssertEqual(store.globalTerms.map(\.canonical), ["ACME"])
+    }
+
+    // MARK: - STOR9 item 9 (G012): writes start from disk
+
+    func test_g012_a_term_added_by_another_instance_survives_this_ones_flush() throws {
+        let url = try makeTempURL()
+        let pane = GlossaryStore(fileURL: url)
+        pane.globalTerms = [GlossaryTerm(heard: "acme", canonical: "ACME")]
+        try pane.saveNow()
+
+        try GlossaryStore(fileURL: url).addTerm(heard: "k8s", canonical: "Kubernetes", workflow: nil)
+        pane.globalTerms.append(GlossaryTerm(heard: "pg", canonical: "PostgreSQL"))   // a row edit
+        pane.flush()
+
+        XCTAssertEqual(
+            GlossaryStore.resolvedTerms(at: url, workflowName: nil),
+            ["acme": "ACME", "k8s": "Kubernetes", "pg": "PostgreSQL"]
+        )
+    }
+
+    func test_g012_a_fuzzy_toggle_does_not_drop_the_other_instances_term() throws {
+        let url = try makeTempURL()
+        let pane = GlossaryStore(fileURL: url)
+        try GlossaryStore(fileURL: url).addTerm(heard: "k8s", canonical: "Kubernetes", workflow: nil)
+        pane.fuzzyEnabled = true
+        pane.flush()
+        XCTAssertEqual(GlossaryStore.resolvedTerms(at: url, workflowName: nil), ["k8s": "Kubernetes"])
+        XCTAssertTrue(GlossaryStore(fileURL: url).fuzzyEnabled)
+    }
+
+    func test_g012_a_deleted_term_stays_deleted_while_the_others_addition_survives() throws {
+        let url = try makeTempURL()
+        try write("[terms]\n\"acme\" = \"ACME\"\n\"old\" = \"Old\"\n", to: url)
+        let pane = GlossaryStore(fileURL: url)
+        try GlossaryStore(fileURL: url).addTerm(heard: "k8s", canonical: "Kubernetes", workflow: nil)
+        pane.globalTerms.removeAll { $0.heard == "old" }
+        pane.flush()
+        XCTAssertEqual(
+            GlossaryStore.resolvedTerms(at: url, workflowName: nil),
+            ["acme": "ACME", "k8s": "Kubernetes"]
+        )
+    }
+
+    func test_g012_flush_with_no_change_writes_nothing() throws {
+        let url = try makeTempURL()
+        try write("[terms]\n\"acme\" = \"ACME\"\n", to: url)
+        let past = Date(timeIntervalSinceNow: -3600)
+        try FileManager.default.setAttributes([.modificationDate: past], ofItemAtPath: url.path)
+        let pane = GlossaryStore(fileURL: url)
+        pane.selectWorkflow("Client work")
+        pane.selectWorkflow(nil)
+        pane.flush()
+        let mtime = try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date
+        XCTAssertEqual(mtime?.timeIntervalSince1970 ?? 0, past.timeIntervalSince1970, accuracy: 1)
+    }
+
+    func test_g012_a_workflow_scope_edit_left_for_another_scope_is_still_saved_with_the_merge() throws {
+        let url = try makeTempURL()
+        let pane = GlossaryStore(fileURL: url)
+        pane.selectWorkflow("Client work")
+        pane.workflowTerms = [GlossaryTerm(heard: "ps", canonical: "PS Corp")]
+        pane.selectWorkflow(nil)
+        try GlossaryStore(fileURL: url).addTerm(heard: "k8s", canonical: "Kubernetes", workflow: "Client work")
+        pane.flush()
+        XCTAssertEqual(
+            GlossaryStore.resolvedTerms(at: url, workflowName: "Client work"),
+            ["ps": "PS Corp", "k8s": "Kubernetes"]
+        )
     }
 
     func test_existing_terms_load_as_rows() throws {

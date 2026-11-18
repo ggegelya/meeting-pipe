@@ -543,6 +543,7 @@ def gen_failures() -> str:
     from mp.config import MissingSecretError
     from mp.failure_details import describe
     from mp.publish_router import SyncedTargetError
+    from mp.summarize import OverlayUnreadable
 
     request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
     cases = []
@@ -575,6 +576,13 @@ def gen_failures() -> str:
         "payload": describe(SyncedTargetError("filesystem", Path("/synthetic/synced"), "Dropbox"),
                             operation="publish", provider="filesystem"),
         "cause": "synced_target",
+    })
+    # STOR9: a meeting's edit overlay is present and will not read, so summarize refused.
+    cases.append({
+        "name": "overlay_unreadable",
+        "payload": describe(OverlayUnreadable("synthetic: the speaker names file can't be read"),
+                            operation="summary"),
+        "cause": "overlay_unreadable",
     })
     return _envelope("Generated synthetic failure metadata from mp.failure_details.describe. No owner data.", cases)
 

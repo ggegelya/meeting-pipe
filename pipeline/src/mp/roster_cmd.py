@@ -158,8 +158,10 @@ def _run(args: argparse.Namespace, roster: RosterStore) -> int:
 
     roster.enroll(args.name, embedding, stem=wav.stem, label=args.label)
     if roster.quarantined_to is not None:
-        print(f"{roster.path.name} could not be parsed; it was moved to {roster.quarantined_to} "
-              "and a new roster was started")
+        notice = (f"{roster.path.name} could not be parsed; it was moved to {roster.quarantined_to.name} "
+                  "beside it and a new roster was started")
+        print(notice)
+        storage.post_notice(notice)  # STOR9: the app shows it; stdout reaches only a terminal
     if not args.no_relabel:
         _relabel_transcript(wav, args.label, args.name)
 

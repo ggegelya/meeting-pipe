@@ -113,3 +113,32 @@ final class WorkflowCorrectionStoreTests: XCTestCase {
         XCTAssertEqual(suggestion?.workflowID, client.id)
     }
 }
+
+// MARK: - STOR9: unreadable is not empty
+
+extension WorkflowCorrectionStoreTests {
+    func test_stor9_a_malformed_file_is_quarantined_before_the_next_record() throws {
+        try StoreFiles.garbage.write(to: url)
+        let store = WorkflowCorrectionStore(url: url)
+        store.load()
+        XCTAssertTrue(store.record(bundleID: "com.microsoft.teams2", meetingTitle: "Standup", workflow: Workflow(name: "Client work")))
+
+        let copies = StoreFiles.corruptCopies(of: url)
+        XCTAssertEqual(copies.count, 1)
+        XCTAssertEqual(try Data(contentsOf: copies[0]), StoreFiles.garbage)
+        XCTAssertEqual(store.corrections.count, 1)
+    }
+
+    func test_stor9_an_unreadable_file_refuses_the_record_and_is_left_alone() throws {
+        let original = Data("[]".utf8)
+        try original.write(to: url)
+        StoreFiles.lock(url, in: self)
+        let store = WorkflowCorrectionStore(url: url)
+        store.load()
+
+        XCTAssertFalse(store.record(bundleID: "com.microsoft.teams2", meetingTitle: "Standup", workflow: Workflow(name: "Client work")))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        StoreFiles.unlock(url)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+}

@@ -102,3 +102,18 @@ final class RosterRenameTests: XCTestCase {
         XCTAssertEqual(overlay("20260101-090000").labels, ["THEM-A": "Ivan"])
     }
 }
+
+// MARK: - STOR9
+
+extension RosterRenameTests {
+    /// A rename-everywhere carry never writes a meeting whose names file it could not read.
+    func test_stor9_carry_leaves_an_unreadable_sidecar_untouched() throws {
+        try SpeakerLabelStore.setLabel("THEM-A", to: "Ivan", stem: "20260101-090000", in: dir)
+        let url = SpeakerLabelStore.path(stem: "20260101-090000", in: dir)
+        let original = try Data(contentsOf: url)
+        StoreFiles.lock(url, in: self)
+        _ = RosterRename.carry(from: "Ivan", to: "Ivan K.", in: dir)
+        StoreFiles.unlock(url)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+}

@@ -80,3 +80,55 @@ final class SpeakerLabelStoreTests: XCTestCase {
         XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).segments, [2: "Bob"])
     }
 }
+
+// MARK: - STOR9: unreadable is not empty
+
+extension SpeakerLabelStoreTests {
+    private func stor9Dir() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mp-stor9-labels-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
+    /// The defect: the malformed file read as empty and the naming saved "empty plus one" over it.
+    func test_stor9_a_malformed_sidecar_is_quarantined_before_a_naming_writes() throws {
+        let dir = try stor9Dir()
+        let url = SpeakerLabelStore.path(stem: "m", in: dir)
+        try StoreFiles.garbage.write(to: url)
+
+        try SpeakerLabelStore.setLabel("THEM-A", to: "Alice", stem: "m", in: dir)
+
+        let copies = StoreFiles.corruptCopies(of: url)
+        XCTAssertEqual(copies.count, 1)
+        XCTAssertEqual(try Data(contentsOf: copies[0]), StoreFiles.garbage, "the owner's bytes are kept whole")
+        XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels, ["THEM-A": "Alice"])
+    }
+
+    func test_stor9_a_non_object_sidecar_is_unparseable_too() throws {
+        let dir = try stor9Dir()
+        let url = SpeakerLabelStore.path(stem: "m", in: dir)
+        try Data("[1, 2]".utf8).write(to: url)
+        try SpeakerLabelStore.setLabel("THEM-A", to: "Alice", stem: "m", in: dir)
+        XCTAssertEqual(StoreFiles.corruptCopies(of: url).count, 1)
+    }
+
+    func test_stor9_an_unreadable_sidecar_refuses_every_writer_and_is_left_alone() throws {
+        let dir = try stor9Dir()
+        let url = SpeakerLabelStore.path(stem: "m", in: dir)
+        let original = Data(#"{"schema_version": 1, "labels": {"THEM-A": "Alice", "THEM-B": "Bob"}}"#.utf8)
+        try original.write(to: url)
+        StoreFiles.lock(url, in: self)
+
+        XCTAssertThrowsError(try SpeakerLabelStore.setLabel("THEM-C", to: "Carol", stem: "m", in: dir)) {
+            XCTAssertTrue($0 is StoreRefusal)
+        }
+        // `removeLabel` over a fail-open empty read used to delete the whole sidecar.
+        XCTAssertThrowsError(try SpeakerLabelStore.removeLabel("THEM-A", stem: "m", in: dir))
+        XCTAssertThrowsError(try SpeakerLabelStore.replace(overlay: .empty, stem: "m", in: dir))
+        StoreFiles.unlock(url)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+        XCTAssertTrue(StoreFiles.corruptCopies(of: url).isEmpty)
+    }
+}

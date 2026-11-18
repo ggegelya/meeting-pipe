@@ -228,3 +228,42 @@ final class TranscriptCorrectionStoreTests: XCTestCase {
         )
     }
 }
+
+// MARK: - STOR9: unreadable is not empty
+
+extension TranscriptCorrectionStoreTests {
+    private func stor9Dir() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mp-stor9-corr-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
+    func test_stor9_a_malformed_sidecar_is_quarantined_before_an_edit_writes() throws {
+        let dir = try stor9Dir()
+        let url = TranscriptCorrectionStore.path(stem: "m", in: dir)
+        try StoreFiles.garbage.write(to: url)
+
+        try TranscriptCorrectionStore.upsert(segmentIndex: 3, pipelineOriginal: "teh", edited: "the", stem: "m", in: dir)
+
+        let copies = StoreFiles.corruptCopies(of: url)
+        XCTAssertEqual(copies.count, 1)
+        XCTAssertEqual(try Data(contentsOf: copies[0]), StoreFiles.garbage)
+        XCTAssertEqual(TranscriptCorrectionStore.read(stem: "m", in: dir).keys.sorted(), [3])
+    }
+
+    func test_stor9_an_unreadable_sidecar_refuses_and_is_left_alone() throws {
+        let dir = try stor9Dir()
+        let url = TranscriptCorrectionStore.path(stem: "m", in: dir)
+        try TranscriptCorrectionStore.upsert(segmentIndex: 1, pipelineOriginal: "a", edited: "b", stem: "m", in: dir)
+        let original = try Data(contentsOf: url)
+        StoreFiles.lock(url, in: self)
+
+        XCTAssertThrowsError(try TranscriptCorrectionStore.upsert(segmentIndex: 2, pipelineOriginal: "c", edited: "d", stem: "m", in: dir))
+        XCTAssertThrowsError(try TranscriptCorrectionStore.remove(segmentIndex: 1, stem: "m", in: dir))
+        XCTAssertThrowsError(try TranscriptCorrectionStore.replace([:], stem: "m", in: dir))
+        StoreFiles.unlock(url)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+}

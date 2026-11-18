@@ -449,6 +449,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// REC20: the library volume is short of space for this recording. A warning with no action:
     /// the recording keeps running, and the HUD carries the countdown.
+    /// STOR9: a user-data store was refused or quarantined; the message names the file and, for a
+    /// quarantine, where the old one went.
+    func notifyStoreNotice(_ message: String) {
+        post(title: "A MeetingPipe file could not be read", body: message)
+    }
+
     func notifyLowSpace(title: String, body: String) {
         post(title: title, body: body)
     }

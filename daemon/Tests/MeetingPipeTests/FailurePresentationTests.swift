@@ -196,3 +196,17 @@ final class FailurePresentationTests: XCTestCase {
         XCTAssertEqual(metadata.cause, .modelRejected)
     }
 }
+
+// MARK: - STOR9: overlay_unreadable
+
+extension FailurePresentationTests {
+    func test_stor9_overlay_refusal_names_the_file_from_the_diagnostics() {
+        let tail = "Traceback...\nmp.summarize.OverlayUnreadable: This meeting's speaker names file can't be read: Permission denied. Nothing was summarized; fix or remove 20260101-120000.speaker_labels.json and try again.\n"
+        XCTAssertEqual(
+            FailurePresentation.overlayRefusal(tail),
+            "This meeting's speaker names file can't be read: Permission denied. Nothing was summarized; fix or remove 20260101-120000.speaker_labels.json and try again."
+        )
+        XCTAssertNil(FailurePresentation.overlayRefusal("some other failure"))
+        XCTAssertEqual(FailureMetadata.Cause(rawValue: "overlay_unreadable"), .overlayUnreadable)
+    }
+}

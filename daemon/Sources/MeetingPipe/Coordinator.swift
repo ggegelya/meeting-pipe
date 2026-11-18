@@ -655,6 +655,7 @@ final class Coordinator: NSObject {
         }
 
         wireLibraryRoot()
+        wireStoreNotices()
 
         // Re-evaluate detection the moment Mic/Accessibility flip on, so a
         // daemon restarted mid-meeting (the typical AX-grant flow) doesn't

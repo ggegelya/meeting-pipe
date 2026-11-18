@@ -27,6 +27,8 @@ final class WorkflowCorrectionStore {
     private(set) var corrections: [WorkflowCorrection] = []
 
     private let url: URL
+    /// STOR9: the last load failed, so `corrections` is the empty fallback, not the owner's history.
+    private var loadFailed = false
     private let writeQueue = DispatchQueue(
         label: "com.meetingpipe.workflowcorrectionstore.write",
         qos: .utility
@@ -46,22 +48,42 @@ final class WorkflowCorrectionStore {
     /// the Coordinator calls this explicitly, so a headless test never reads the
     /// real file.
     func load() {
-        guard let data = try? Data(contentsOf: url) else {
+        switch Self.read(url) {
+        case .loaded(let list):
+            corrections = list
+            loadFailed = false
+        case .missing:
             corrections = []
-            return
-        }
-        do {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601   // matches `persist`
-            corrections = try decoder.decode([WorkflowCorrection].self, from: data)
-        } catch {
-            // A corrupt or hand-broken file must not take detection down with it;
-            // the worst case is a prompt that stops suggesting.
+            loadFailed = false
+        case .unparseable(let error), .unreadable(let error):
+            // A corrupt or hand-broken file must not take detection down with it; the worst case is
+            // a prompt that stops suggesting. STOR9: and it is not saved over: `loadFailed` holds
+            // the next record until it re-reads.
             Log.failure(category: "workflow", action: "correction_store_unreadable", error: error, attributes: [
                 "file": self.url.lastPathComponent,
             ])
             corrections = []
+            loadFailed = true
         }
+    }
+
+    private static func read(_ url: URL) -> StoreLoad<[WorkflowCorrection]> {
+        StoreLoad.read(url) { data in
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601   // matches `persist`
+            return try decoder.decode([WorkflowCorrection].self, from: data)
+        }
+    }
+
+    /// STOR9: false refuses the record (the owner was told; nothing changed).
+    private func mayWrite() -> Bool {
+        guard loadFailed else { return true }
+        guard let base = StoreGuard.recoverForWrite(
+            reread: Self.read(url), empty: [], url: url, store: "workflow_corrections", pathKind: .config
+        ) else { return false }
+        corrections = base
+        loadFailed = false
+        return true
     }
 
     /// Record one correction, or ignore it.
@@ -79,7 +101,7 @@ final class WorkflowCorrectionStore {
         at date: Date = Date()
     ) -> Bool {
         let bundle = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !bundle.isEmpty else { return false }
+        guard !bundle.isEmpty, mayWrite() else { return false }
         corrections.append(
             WorkflowCorrection(
                 bundleID: bundle,

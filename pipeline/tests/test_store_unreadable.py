@@ -310,3 +310,38 @@ def test_doctor_says_nothing_about_healthy_or_missing_stores(
     doctor.check_user_stores(home=tmp_path)
     assert capsys.readouterr().out == ""
 
+
+
+# ---------- the quarantine notice reaches the app (STOR9) ----------------------------
+
+
+def test_a_cli_quarantine_notice_lands_in_the_notice_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`mp roster enroll` printed where the old roster went to stdout, which the app never shows.
+    The daemon names a per-spawn file in MP_NOTICE_PATH and posts each line it finds there."""
+    from mp import roster_cmd
+
+    roster = tmp_path / "roster.json"
+    _corrupt(roster, "{ not json")
+    monkeypatch.setattr("mp.roster.ROSTER_PATH", roster)
+    wav = tmp_path / "20260101-120000.wav"
+    wav.write_bytes(b"")
+    (tmp_path / "20260101-120000.embeddings.json").write_text(
+        json.dumps({"embeddings": {"THEM-A": _axis(0)}}), encoding="utf-8")
+    notices = tmp_path / "spawn.notices"
+    monkeypatch.setenv("MP_NOTICE_PATH", str(notices))
+
+    assert roster_cmd.main(["enroll", "--name", "Ann", "--label", "THEM-A", "--wav", str(wav),
+                            "--no-relabel"]) == 0
+    lines = notices.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert "roster.json could not be parsed" in lines[0]
+    assert ".corrupt-" in lines[0]
+    assert str(tmp_path) not in lines[0], "the notice names the file, not the folder"
+
+
+def test_post_notice_is_a_no_op_without_the_variable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MP_NOTICE_PATH", raising=False)
+    storage.post_notice("nothing to show this to")
+    assert list(tmp_path.iterdir()) == []

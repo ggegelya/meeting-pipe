@@ -73,7 +73,13 @@ struct VocabularySection: View {
                     }
                     .buttonStyle(.mpGhost)
                     Spacer(minLength: 0)
-                    if let error = glossary.saveError {
+                    if let error = glossary.readError {
+                        // STOR9: the file is there and will not read; nothing is written until it does.
+                        FailureNotice(failure: FailurePresentation(diagnostics: error, operation: .processing, title: "Couldn't read the vocabulary file"))
+                            .font(.mpTextXS)
+                            .foregroundStyle(.mpDanger)
+                            .lineLimit(3)
+                    } else if let error = glossary.saveError {
                         FailureNotice(failure: FailurePresentation(diagnostics: error, operation: .processing, title: "Couldn't save the vocabulary"))
                             .font(.mpTextXS)
                             .foregroundStyle(.mpDanger)
@@ -90,6 +96,8 @@ struct VocabularySection: View {
             Text(VocabularyCopy.footer)
         }
         .onAppear {
+            // STOR9: a fixed file clears a held read error, and a term another window added shows up.
+            glossary.reload()
             glossary.selectWorkflow(scope)
             applyPendingScope()
         }

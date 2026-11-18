@@ -7,6 +7,13 @@ extension Coordinator {
     /// another folder", the missing-root state's Choose folder and a hand edit UX96 reloads all
     /// change the one `ConfigStore` value, and this one subscription re-roots the same store in
     /// place, so the search indexer and every view observing the store carry over unchanged.
+    /// STOR9: a store that refused a write or quarantined a file tells the owner, and so does `mp`.
+    func wireStoreNotices() {
+        MainActor.assumeIsolated {
+            StoreNotice.install { [weak self] message in self?.notifier.notifyStoreNotice(message) }
+        }
+    }
+
     func wireLibraryRoot() {
         // STOR16: the move asks the owners of the work, and a held recording start goes ahead when it ends.
         libraryMoveGuard.busyReason = { [weak self] in self?.libraryBusyReason }

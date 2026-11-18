@@ -51,13 +51,24 @@ enum SpeakerLabelStore {
         directory.appendingPathComponent("\(stem).speaker_labels.json")
     }
 
-    /// Reads the overlay. Returns `.empty` for a missing or malformed sidecar.
+    /// Reads the overlay. Returns `.empty` for a missing or malformed sidecar: the display-only
+    /// read. A writer goes through `loadForWrite` instead (STOR9).
     static func read(stem: String, in directory: URL) -> Overlay {
-        let url = path(stem: stem, in: directory)
-        guard let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return .empty
+        load(stem: stem, in: directory).orEmpty(.empty)
+    }
+
+    /// The typed read (STOR9): missing, loaded, unparseable (not JSON, or a top level that is not an
+    /// object) or unreadable. The per-key filtering is unchanged and pinned by the CI4 overlay fixture.
+    static func load(stem: String, in directory: URL) -> StoreLoad<Overlay> {
+        StoreLoad.read(path(stem: stem, in: directory)) { data in
+            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw StoreShapeError(why: "the speaker names file is not a JSON object")
+            }
+            return overlay(from: obj)
         }
+    }
+
+    private static func overlay(from obj: [String: Any]) -> Overlay {
         var labels: [String: String] = [:]
         if let raw = obj["labels"] as? [String: Any] {
             for (k, v) in raw where !k.isEmpty {
@@ -73,13 +84,24 @@ enum SpeakerLabelStore {
         return Overlay(labels: labels, segments: segments)
     }
 
+    /// What every writer here starts from (STOR9): an unreadable sidecar refuses with
+    /// `StoreRefusal` and changes nothing; an unparseable one is moved aside to
+    /// `<stem>.speaker_labels.json.corrupt-<ts>` first. Before this, a malformed file read as empty
+    /// and the next naming saved the empty-plus-one state over every other name in the meeting.
+    static func loadForWrite(stem: String, in directory: URL) throws -> Overlay {
+        try StoreGuard.valueForWrite(
+            load(stem: stem, in: directory), empty: .empty,
+            url: path(stem: stem, in: directory), store: "speaker_labels", pathKind: .library
+        )
+    }
+
     // MARK: - Cluster-level naming (FEAT3-UNDO)
 
     /// Assign the whole `label` cluster the display name `name`. Overwrites any
     /// prior name for that cluster.
     @discardableResult
     static func setLabel(_ label: String, to name: String, stem: String, in directory: URL) throws -> Overlay {
-        var overlay = read(stem: stem, in: directory)
+        var overlay = try loadForWrite(stem: stem, in: directory)
         overlay.labels[label] = name
         try write(overlay: overlay, stem: stem, in: directory)
         return overlay
@@ -89,7 +111,7 @@ enum SpeakerLabelStore {
     /// label. The undo half of FEAT3-UNDO.
     @discardableResult
     static func removeLabel(_ label: String, stem: String, in directory: URL) throws -> Overlay {
-        var overlay = read(stem: stem, in: directory)
+        var overlay = try loadForWrite(stem: stem, in: directory)
         overlay.labels.removeValue(forKey: label)
         try write(overlay: overlay, stem: stem, in: directory)
         return overlay
@@ -101,7 +123,7 @@ enum SpeakerLabelStore {
     /// per-segment reassignment FEAT3-SEGMENT rides on this same overlay.
     @discardableResult
     static func setSegment(_ index: Int, to target: String, stem: String, in directory: URL) throws -> Overlay {
-        var overlay = read(stem: stem, in: directory)
+        var overlay = try loadForWrite(stem: stem, in: directory)
         overlay.segments[index] = target
         try write(overlay: overlay, stem: stem, in: directory)
         return overlay
@@ -109,7 +131,7 @@ enum SpeakerLabelStore {
 
     @discardableResult
     static func removeSegment(_ index: Int, stem: String, in directory: URL) throws -> Overlay {
-        var overlay = read(stem: stem, in: directory)
+        var overlay = try loadForWrite(stem: stem, in: directory)
         overlay.segments.removeValue(forKey: index)
         try write(overlay: overlay, stem: stem, in: directory)
         return overlay
@@ -118,7 +140,7 @@ enum SpeakerLabelStore {
     /// Reassign a batch of segments to `target` in one write (multi-select).
     @discardableResult
     static func setSegments(_ indices: [Int], to target: String, stem: String, in directory: URL) throws -> Overlay {
-        var overlay = read(stem: stem, in: directory)
+        var overlay = try loadForWrite(stem: stem, in: directory)
         for i in indices { overlay.segments[i] = target }
         try write(overlay: overlay, stem: stem, in: directory)
         return overlay
@@ -127,7 +149,7 @@ enum SpeakerLabelStore {
     /// Drop the per-segment overrides for a batch, reverting each to its cluster.
     @discardableResult
     static func removeSegments(_ indices: [Int], stem: String, in directory: URL) throws -> Overlay {
-        var overlay = read(stem: stem, in: directory)
+        var overlay = try loadForWrite(stem: stem, in: directory)
         for i in indices { overlay.segments.removeValue(forKey: i) }
         try write(overlay: overlay, stem: stem, in: directory)
         return overlay
@@ -139,6 +161,8 @@ enum SpeakerLabelStore {
     /// to apply it. Empty deletes the sidecar, like every other write here.
     @discardableResult
     static func replace(overlay: Overlay, stem: String, in directory: URL) throws -> Overlay {
+        // STOR9: the caller computed `overlay` from the fail-open read, so the file must be checked here.
+        _ = try loadForWrite(stem: stem, in: directory)
         try write(overlay: overlay, stem: stem, in: directory)
         return overlay
     }

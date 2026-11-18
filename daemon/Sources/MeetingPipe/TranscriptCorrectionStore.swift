@@ -32,28 +32,38 @@ enum TranscriptCorrectionStore {
         directory.appendingPathComponent("\(stem).transcript_corrections.json")
     }
 
-    /// Reads corrections keyed by segment index. Returns empty for a missing or malformed sidecar so the transcript itself is never hidden.
+    /// Reads corrections keyed by segment index. Returns empty for a missing or malformed sidecar so the transcript itself is never hidden. Display-only: a writer goes through `loadForWrite` (STOR9).
     static func read(stem: String, in directory: URL) -> [Int: Correction] {
-        let url = path(stem: stem, in: directory)
-        guard let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let arr = obj["segments"] as? [[String: Any]] else {
-            return [:]
-        }
-        var out: [Int: Correction] = [:]
-        for raw in arr {
-            guard let idx = (raw["index"] as? NSNumber)?.intValue,
-                  let original = raw["original_text"] as? String,
-                  let edited = raw["edited_text"] as? String else {
-                continue
+        load(stem: stem, in: directory).orEmpty([:])
+    }
+
+    /// The typed read (STOR9). A top level that is not a JSON object is unparseable, as in Python's
+    /// `storage.load_json_object`; an object without a usable `segments` array reads as no corrections.
+    static func load(stem: String, in directory: URL) -> StoreLoad<[Int: Correction]> {
+        StoreLoad.read(path(stem: stem, in: directory)) { data in
+            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw StoreShapeError(why: "the transcript corrections file is not a JSON object")
             }
-            out[idx] = Correction(
-                segmentIndex: idx,
-                originalText: original,
-                editedText: edited
-            )
+            var out: [Int: Correction] = [:]
+            for raw in obj["segments"] as? [[String: Any]] ?? [] {
+                guard let idx = (raw["index"] as? NSNumber)?.intValue,
+                      let original = raw["original_text"] as? String,
+                      let edited = raw["edited_text"] as? String else {
+                    continue
+                }
+                out[idx] = Correction(segmentIndex: idx, originalText: original, editedText: edited)
+            }
+            return out
         }
-        return out
+    }
+
+    /// What every writer here starts from (STOR9): refuse an unreadable sidecar, quarantine an
+    /// unparseable one, so an edit never saves an empty-plus-one state over the owner's corrections.
+    static func loadForWrite(stem: String, in directory: URL) throws -> [Int: Correction] {
+        try StoreGuard.valueForWrite(
+            load(stem: stem, in: directory), empty: [:],
+            url: path(stem: stem, in: directory), store: "transcript_corrections", pathKind: .library
+        )
     }
 
     /// Upserts a correction. Preserves the earliest `originalText` across re-edits so the pipeline-truth snapshot doesn't decay. Removes the override when `edited` matches the resolved original (no-op).
@@ -65,7 +75,7 @@ enum TranscriptCorrectionStore {
         stem: String,
         in directory: URL
     ) throws -> [Int: Correction] {
-        var existing = read(stem: stem, in: directory)
+        var existing = try loadForWrite(stem: stem, in: directory)
         let resolvedOriginal = existing[segmentIndex]?.originalText ?? pipelineOriginal
         if edited == resolvedOriginal {
             existing.removeValue(forKey: segmentIndex)
@@ -86,7 +96,7 @@ enum TranscriptCorrectionStore {
         stem: String,
         in directory: URL
     ) throws -> [Int: Correction] {
-        var existing = read(stem: stem, in: directory)
+        var existing = try loadForWrite(stem: stem, in: directory)
         existing.removeValue(forKey: segmentIndex)
         try write(corrections: existing, stem: stem, in: directory)
         return existing
@@ -103,6 +113,8 @@ enum TranscriptCorrectionStore {
         stem: String,
         in directory: URL
     ) throws {
+        // STOR9: the caller computed the set from the fail-open read, so the file is checked here.
+        _ = try loadForWrite(stem: stem, in: directory)
         try write(corrections: corrections, stem: stem, in: directory)
     }
 

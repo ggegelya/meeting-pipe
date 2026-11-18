@@ -150,3 +150,56 @@ final class SavedSearchStoreTests: XCTestCase {
         XCTFail("saved_searches.json was not written within \(timeout)s")
     }
 }
+
+// MARK: - STOR9: unreadable is not empty
+
+extension SavedSearchStoreTests {
+    private var stor9URL: URL { url }
+
+    func test_stor9_a_malformed_file_is_quarantined_before_the_next_save() throws {
+        try StoreFiles.garbage.write(to: stor9URL)
+        let store = SavedSearchStore(url: stor9URL)
+        store.load()
+        let search = SavedSearch(name: "Recent client", filter: MeetingFilter(query: "a"))
+        store.upsert(search)
+
+        let copies = StoreFiles.corruptCopies(of: stor9URL)
+        XCTAssertEqual(copies.count, 1)
+        XCTAssertEqual(try Data(contentsOf: copies[0]), StoreFiles.garbage)
+        XCTAssertTrue(StoreFiles.waitUntil {
+            (try? JSONDecoder().decode([SavedSearch].self, from: Data(contentsOf: self.stor9URL))) == [search]
+        }, "the store holds only the new folder")
+        // The next save does not quarantine the good file it just wrote.
+        store.upsert(SavedSearch(name: "Second", filter: MeetingFilter(query: "b")))
+        XCTAssertEqual(StoreFiles.corruptCopies(of: stor9URL).count, 1)
+    }
+
+    func test_stor9_an_unreadable_file_refuses_and_is_left_alone() throws {
+        let original = try JSONEncoder().encode([SavedSearch(name: "Kept", filter: MeetingFilter(query: "k"))])
+        try original.write(to: stor9URL)
+        StoreFiles.lock(stor9URL, in: self)
+        let store = SavedSearchStore(url: stor9URL)
+        store.load()
+
+        store.upsert(SavedSearch(name: "New", filter: MeetingFilter(query: "n")))
+        XCTAssertTrue(store.searches.isEmpty, "the refused write changed nothing in memory either")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        StoreFiles.unlock(stor9URL)
+        XCTAssertEqual(try Data(contentsOf: stor9URL), original)
+        XCTAssertTrue(StoreFiles.corruptCopies(of: stor9URL).isEmpty)
+    }
+
+    /// Unreadable is retryable: once the file reads again the next write adopts it, not the empty fallback.
+    func test_stor9_a_file_that_reads_again_is_adopted_before_the_write() throws {
+        let kept = SavedSearch(name: "Kept", filter: MeetingFilter(query: "k"))
+        try JSONEncoder().encode([kept]).write(to: stor9URL)
+        StoreFiles.lock(stor9URL, in: self)
+        let store = SavedSearchStore(url: stor9URL)
+        store.load()
+        StoreFiles.unlock(stor9URL)
+
+        let added = SavedSearch(name: "New", filter: MeetingFilter(query: "n"), order: 1)
+        store.upsert(added)
+        XCTAssertEqual(Set(store.searches.map(\.name)), ["Kept", "New"])
+    }
+}

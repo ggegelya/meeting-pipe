@@ -6,6 +6,7 @@ struct FailureMetadata: Codable, Equatable, Hashable {
         case missingKey = "missing_key", rejectedKey = "rejected_key", expiredKey = "expired_key"
         case rateLimit = "rate_limit", serviceUnavailable = "service_unavailable", modelMissing = "model_missing"
         case syncedTarget = "synced_target"
+        case overlayUnreadable = "overlay_unreadable"
         case modelRejected = "model_rejected"
 
         /// Causes whose fix is in Preferences > Pipeline rather than Integrations. One place, so
@@ -142,6 +143,12 @@ struct FailurePresentation: Equatable {
         case .syncedTarget:
             heading = "The publish folder is synced"
             explanation = "Regulated mode or an NDA workflow keeps this meeting on your Mac, and a sync client would upload it from this folder. Choose a folder outside the synced tree in Preferences > Integrations, then retry."
+        case .overlayUnreadable:
+            // STOR9: summarize refused rather than drop the owner's names and corrections. The file
+            // is named in the diagnostics line `mp` wrote, never in the metadata.
+            heading = "This meeting's edits can't be read"
+            explanation = Self.overlayRefusal(diagnostics)
+                ?? "A speaker names, transcript corrections or flagged moments file for this meeting is there but can't be read, so nothing was summarized. Fix or remove it, then retry."
         case .publish:
             heading = provider.map { "Couldn't publish to \($0)" } ?? heading
             explanation = "Check the destination in Preferences > Integrations, then retry publishing."
@@ -158,6 +165,17 @@ struct FailurePresentation: Equatable {
         self.title = title ?? heading
         let operationLine = facts.cause == .credits || facts.cause == .quota ? [facts.operation == .summary ? "The summary could not be created." : facts.operation.failureTitle + "."] : []
         self.explanation = (operationLine + saved + [explanation]).joined(separator: " ")
+    }
+
+    /// The sentence `summarize.refuse_unreadable_overlays` writes, picked out of the stderr tail.
+    static func overlayRefusal(_ diagnostics: String) -> String? {
+        diagnostics.split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+            .first { $0.contains("file can't be read") }
+            .map { line in
+                guard let start = line.range(of: "This meeting's") else { return line }
+                return String(line[start.lowerBound...])
+            }
     }
 
     var billingURL: URL? {
