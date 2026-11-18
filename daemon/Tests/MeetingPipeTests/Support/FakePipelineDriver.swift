@@ -90,6 +90,10 @@ final class FakePipelineDriver: PipelineDriver, @unchecked Sendable {
     private(set) var publishFromPasteInputs: [URL] = []
     private(set) var previewInputs: [URL] = []
     private(set) var applePreviewInputs: [URL] = []
+    /// PIPE52: the one-shot backend each `mp summarize --candidate` preview was given.
+    private(set) var previewBackends: [String?] = []
+    /// PIPE52: transcripts handed to the Swift Apple summarizer for a Library re-summarize.
+    private(set) var appleSummarizeInputs: [URL] = []
     /// TECH-FEAT7: the contextOverride forwarded into each preview call, both engines.
     private(set) var previewContextOverrides: [String?] = []
     private let summarizeQueue = Parked<Result<Void, Error>>()
@@ -97,9 +101,10 @@ final class FakePipelineDriver: PipelineDriver, @unchecked Sendable {
     private let publishFromPasteQueue = Parked<Result<Void, Error>>()
     private let previewQueue = Parked<Result<Void, Error>>()
 
-    func summarizePreview(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+    func summarizePreview(transcriptMD: URL, contextOverride: String?, backend: String?, completion: @escaping (Result<Void, Error>) -> Void) {
         locked {
             previewInputs.append(transcriptMD)
+            previewBackends.append(backend)
             previewContextOverrides.append(contextOverride)
         }
         park(previewQueue, completion)
@@ -128,6 +133,16 @@ final class FakePipelineDriver: PipelineDriver, @unchecked Sendable {
     }
 
     func finishSummarize(_ result: Result<Void, Error>) { resolve(summarizeQueue, result) }
+
+    private let appleSummarizeQueue = Parked<Result<Void, Error>>()
+
+    func summarizeViaAppleIntelligence(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        locked { appleSummarizeInputs.append(transcriptMD) }
+        park(appleSummarizeQueue, completion)
+    }
+
+    /// Resolve the oldest in-flight Apple re-summarize (PIPE52).
+    func finishAppleSummarize(_ result: Result<Void, Error>) { resolve(appleSummarizeQueue, result) }
 
     func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void) {
         locked { publishInputs.append(summaryJSON) }

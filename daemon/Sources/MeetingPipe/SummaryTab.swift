@@ -43,6 +43,12 @@ struct SummaryTab: View {
     @State private var candidateStem: String? = nil
     @State private var previewing = false
     @State private var previewError: FailurePresentation? = nil
+    /// PIPE52: the on-device engine the local preview runs for this meeting, nil when it is not
+    /// offered. Resolved in the reload task (it reads the sidecar and the config), never in `body`.
+    @State private var localPreviewEngine: String? = nil
+    /// PIPE52: whether the candidate on screen came from the on-device preview, so the compare
+    /// footer says "local" only when it was.
+    @State private var candidateOnDevice = true
 
     /// TECH-FEAT7: reprocess with a custom prompt. `showReprocess` swaps the
     /// reader for a prompt editor; the generated candidate flows into the same
@@ -67,6 +73,9 @@ struct SummaryTab: View {
         // bump) so an in-place summary rewrite refreshes the open pane; the mtime
         // guard in reloadSummary keeps unrelated rescans from re-parsing.
         .task(id: SummaryReloadKey(stem: meeting.stem, revision: store.revision)) {
+            // PIPE52: before `reloadSummary`'s unchanged-file early return, so a Change workflow
+            // (which rewrites the sidecar, not the summary) still moves the preview gate.
+            await refreshPreviewEngine()
             await reloadSummary()
         }
         .onChange(of: meeting.stem) { _, _ in
@@ -157,7 +166,9 @@ struct SummaryTab: View {
         if candidate != nil {
             Divider()
             HStack(spacing: 8) {
-                Text("Previewing a new local summary. Keep replaces the current one (you choose whether to publish).")
+                Text(candidateOnDevice
+                     ? "Previewing a new local summary. Keep replaces the current one (you choose whether to publish)."
+                     : "Previewing a new summary. Keep replaces the current one (you choose whether to publish).")
                     .font(.caption)
                     .foregroundStyle(Color(MPColors.fgMuted))
                     .fixedSize(horizontal: false, vertical: true)
@@ -168,7 +179,7 @@ struct SummaryTab: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-        } else if libraryModel.canPreviewLocally, loadedSummary != nil, !showReprocess {
+        } else if localPreviewEngine != nil, loadedSummary != nil, !showReprocess {
             Divider()
             HStack(spacing: 8) {
                 if let err = previewError {
@@ -180,7 +191,7 @@ struct SummaryTab: View {
                     ProgressView().controlSize(.small)
                     Text("Re-running on-device…").font(.caption).foregroundStyle(Color(MPColors.fgMuted))
                 } else {
-                    Button("Re-run locally (preview)") { Task { await runPreview() } }
+                    Button("Re-run locally (preview)") { Task { await runPreview(mode: .onDevice) } }
                         .help("Re-run summarization with the on-device model and compare, without publishing.")
                 }
             }
@@ -193,16 +204,17 @@ struct SummaryTab: View {
         meeting.recordingsDir.appendingPathComponent("\(meeting.stem).summary.candidate.json")
     }
 
-    private func runPreview(contextOverride: String? = nil) async {
+    private func runPreview(contextOverride: String? = nil, mode: MeetingLibraryService.PreviewMode) async {
         previewError = nil
         previewing = true
-        let result = await libraryModel.previewSummary(stem: meeting.stem, contextOverride: contextOverride)
+        let result = await libraryModel.previewSummary(stem: meeting.stem, contextOverride: contextOverride, mode: mode)
         previewing = false
         switch result {
         case .success:
             if let loaded = MeetingSummary.load(from: candidateURL) {
                 candidate = loaded
                 candidateStem = meeting.stem
+                candidateOnDevice = mode == .onDevice
                 showReprocess = false   // the candidate compare pane takes over
             } else {
                 previewError = FailurePresentation(diagnostics: "The re-run produced no readable summary.", operation: .summary)
@@ -307,7 +319,9 @@ struct SummaryTab: View {
         // An empty / whitespace prompt sends no override (a plain reprocess on
         // the configured context); the Python side treats it as a no-op too.
         let trimmed = promptDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        Task { await runPreview(contextOverride: trimmed.isEmpty ? nil : promptDraft) }
+        // PIPE52: the meeting's own engine, which may be a cloud one; regulated / NDA still force
+        // local through the same resolver `cloudSecretPolicy` reads.
+        Task { await runPreview(contextOverride: trimmed.isEmpty ? nil : promptDraft, mode: .meetingBackend) }
     }
 
     private func keepPreview() {
@@ -429,6 +443,15 @@ struct SummaryTab: View {
     private struct SummaryReloadKey: Equatable {
         let stem: String
         let revision: Int
+    }
+
+    /// PIPE52: resolve which on-device engine the local preview would run for this meeting, off
+    /// main, and drop the answer if the selection moved meanwhile.
+    @MainActor
+    private func refreshPreviewEngine() async {
+        let stem = meeting.stem
+        let engine = await libraryModel.localPreviewEngine(stem: stem)
+        if meeting.stem == stem { localPreviewEngine = engine }
     }
 
     /// Loads `<stem>.summary.json` off-main. Called via `.task(id:)`; guards

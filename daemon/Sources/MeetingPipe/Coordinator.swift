@@ -958,6 +958,11 @@ final class Coordinator: NSObject {
         summarizationBackend: { [weak self] in
             self?.configStore?.summarizationBackend ?? "anthropic"
         },
+        // PIPE52: a nil store reads as regulated, the fail-closed direction ARCH9 gives an
+        // unreadable config: an on-device dispatch, never a cloud one.
+        regulatedMode: { [weak self] in
+            self?.configStore?.regulatedMode ?? true
+        },
         recordCorrection: { [weak self] bundleID, title, workflow in
             self?.workflowCorrections.record(
                 bundleID: bundleID, meetingTitle: title, workflow: workflow

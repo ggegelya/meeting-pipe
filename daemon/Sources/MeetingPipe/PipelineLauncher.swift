@@ -100,12 +100,14 @@ protocol PipelineDriver: AnyObject {
     func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// As `summarize`, but with a one-shot backend override for a re-summarize on a chosen engine (PIPE6): `mp summarize --backend <backend>`. `nil` uses the configured backend. Defaulted to ignore the override so fakes need only implement the plain form.
     func summarize(transcriptMD: URL, backend: String?, completion: @escaping (Result<Void, Error>) -> Void)
+    /// PIPE52: re-summarize an existing meeting on-device with Apple Intelligence, the Swift summarizer run-all hands off to, writing `<stem>.summary.json` and `<stem>.run.json` and publishing nothing (the Library's regenerate chain publishes after it). Driven by the transcript, so a meeting whose audio retention removed is still served. Cancellable like `summarize`. Defaulted to failure so a fake that does not implement it cannot pass by skipping it.
+    func summarizeViaAppleIntelligence(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// Re-run only the finalize stage over the daemon's `<stem>.json` (ASR3): `mp finalize <wav>` re-derives speaker labels, the voiceprint + roster match, the embeddings sidecar, and the glossary normalization. No summarize, no publish, no egress. Defaulted no-op.
     func finalize(wav: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// Publish a hand-pasted summary (TECH-UX3): runs `mp publish-from-paste <transcript.md>`, which parses the sibling `<stem>.summary.md` the caller wrote and fans out to the sinks.
     func publishFromPaste(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
-    /// Re-run summarize into a `<stem>.summary.candidate.json` preview (TECH-A16), no publish. `contextOverride` (TECH-FEAT7) overrides only the CONTEXT block for this run when non-empty. Defaulted no-op.
-    func summarizePreview(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void)
+    /// Re-run summarize into a `<stem>.summary.candidate.json` preview (TECH-A16), no publish. `contextOverride` (TECH-FEAT7) overrides only the CONTEXT block for this run when non-empty. `backend` is a one-shot `--backend` (PIPE52): the on-device preview passes `local`, so the run stays on this Mac whatever the workflow pins; nil runs the meeting's own backend (FEAT7's reprocess). Defaulted no-op.
+    func summarizePreview(transcriptMD: URL, contextOverride: String?, backend: String?, completion: @escaping (Result<Void, Error>) -> Void)
     /// Apple Intelligence candidate-preview re-run (TECH-A16), no publish. `contextOverride` (TECH-FEAT7) overrides the context for this run when non-empty. Defaulted no-op.
     func summarizePreviewViaApple(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void)
     /// Ask a natural-language question across the whole library (AI3): runs `mp ask`, which retrieves + synthesizes an engine-backed answer with verified `[stem]` citations on-device (honouring the backend + egress clamp), and returns the parsed answer. Defaulted no-op.
@@ -187,6 +189,14 @@ extension PipelineDriver {
         summarize(transcriptMD: transcriptMD, completion: completion)
     }
 
+    /// Default failure; `PipelineLauncher` overrides this.
+    func summarizeViaAppleIntelligence(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.failure(NSError(
+            domain: "PipelineDriver", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "summarizeViaAppleIntelligence unsupported by this driver"]
+        )))
+    }
+
     /// Default no-op stub; `PipelineLauncher` overrides this.
     func finalize(wav: URL, completion: @escaping (Result<Void, Error>) -> Void) {
         completion(.failure(NSError(
@@ -204,7 +214,7 @@ extension PipelineDriver {
     }
 
     /// Default no-op stub; `PipelineLauncher` overrides this.
-    func summarizePreview(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+    func summarizePreview(transcriptMD: URL, contextOverride: String?, backend: String?, completion: @escaping (Result<Void, Error>) -> Void) {
         completion(.failure(NSError(
             domain: "PipelineDriver", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "summarizePreview unsupported by this driver"]
@@ -1255,16 +1265,25 @@ final class PipelineLauncher: PipelineDriver {
     }
 
     /// Re-run summarize into a `<stem>.summary.candidate.json` preview without
-    /// touching the live summary or any sink (TECH-A16), via the configured
-    /// MLX-local backend (`mp summarize --candidate`).
-    func summarizePreview(transcriptMD: URL, contextOverride: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+    /// touching the live summary or any sink (TECH-A16): `mp summarize --candidate`,
+    /// plus `--backend` when one is passed (PIPE52). The override reaches `runMP` too,
+    /// so `cloudSecretPolicy` strips the cloud keys for an on-device preview of a
+    /// meeting whose workflow pins a cloud backend.
+    func summarizePreview(transcriptMD: URL, contextOverride: String?, backend: String?, completion: @escaping (Result<Void, Error>) -> Void) {
         // TECH-FEAT7: a non-empty ad-hoc prompt overrides only the CONTEXT block
         // for this one candidate run, through the same extraEnv channel as
         // MP_FORCE_BYO. runMP keeps the regulated/NDA force-local enforcement
         // (cloudSecretPolicy) on this exact call.
-        runMP(["summarize", transcriptMD.path, "--candidate"], timeout: 20 * 60,
+        runMP(Self.previewArgs(transcriptMD: transcriptMD, backend: backend), timeout: 20 * 60,
               meeting: transcriptMD, extraEnv: Self.contextOverrideEnv(contextOverride),
-              completion: completion)
+              backendOverride: backend, completion: completion)
+    }
+
+    /// The `mp summarize` argv for a candidate preview (PIPE52), apart so a test can pin it.
+    static func previewArgs(transcriptMD: URL, backend: String?) -> [String] {
+        var args = ["summarize", transcriptMD.path, "--candidate"]
+        if let backend { args += ["--backend", backend] }
+        return args
     }
 
     /// TECH-FEAT7: a non-empty ad-hoc reprocess prompt as the `MP_CONTEXT_OVERRIDE`
@@ -1329,6 +1348,53 @@ final class PipelineLauncher: PipelineDriver {
     ) {
         let dir = wav.deletingLastPathComponent()
         let stem = wav.deletingPathExtension().lastPathComponent
+        let summaryJSON = dir.appendingPathComponent("\(stem).summary.json")
+        runAppleSummarize(anchor: wav, onProgress: onProgress) { result in
+            if case .failure(let error) = result {
+                completion(.failure(error))
+                return
+            }
+            self.runMP(["publish", summaryJSON.path], timeout: 10 * 60, meeting: summaryJSON,
+                       retain: .run) { result in
+                switch result {
+                case .failure(let error):
+                    completion(.failure(error))
+                case .success:
+                    completion(.success(PublishResult.load(stem: stem, in: dir)?.pageURL))
+                }
+            }
+            // `runMP` retained the publish before returning. A Cancel that landed between the
+            // summarize's last check and that retain found the Task cancelled and the slot still
+            // empty, so it is honoured here, against the publish it missed.
+            if Task.isCancelled {
+                self.terminate(self.slots.markCancelled(.run)?.process, what: "pipeline run")
+            }
+        }
+    }
+
+    /// PIPE52: the Library's Apple re-summarize. The same Task, beats, cancel and run sidecar as
+    /// run-all's hand-off, without the publish: `regenerateMeeting` chains `performRepublish`
+    /// itself, inside the lane slot, after its NDA re-check.
+    func summarizeViaAppleIntelligence(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        let anchor = MeetingStore.sidecarAnchorURL(
+            stem: transcriptMD.deletingPathExtension().lastPathComponent,
+            in: transcriptMD.deletingLastPathComponent()
+        )
+        runAppleSummarize(anchor: anchor, onProgress: nil, then: completion)
+    }
+
+    /// The shared Apple phase (TECH-SUM1-APPLE, PIPE36, PIPE52): summarize `<stem>.md` on-device,
+    /// then write `<stem>.run.json`, then call `then` from inside the held Task, so a caller that
+    /// spawns a follow-up can still read `Task.isCancelled`. `anchor` names the meeting (its
+    /// directory and stem pick the context); its audio is never read, so retention may have
+    /// removed it. A cancelled summarize answers the `CancellationError` it threw.
+    private func runAppleSummarize(
+        anchor: URL,
+        onProgress: ((PipelineProgress) -> Void)?,
+        then: @escaping (Result<Void, Error>) -> Void
+    ) {
+        let dir = anchor.deletingLastPathComponent()
+        let stem = MeetingStore.stem(of: anchor)
         let transcriptMD = dir.appendingPathComponent("\(stem).md")
         let summaryJSON = dir.appendingPathComponent("\(stem).summary.json")
         let summarize = appleSummarize
@@ -1346,11 +1412,11 @@ final class PipelineLauncher: PipelineDriver {
 
         let task = Task {
             do {
-                try await summarize(wav, transcriptMD, beat)
+                try await summarize(anchor, transcriptMD, beat)
                 // A click that landed after the last call returned: nothing left to throw from.
                 try Task.checkCancellation()
             } catch {
-                completion(.failure(Task.isCancelled ? CancellationError() : error))
+                then(.failure(Task.isCancelled ? CancellationError() : error))
                 return
             }
             // TECH-FEAT6: snapshot the run before publish, matching the Python
@@ -1359,21 +1425,7 @@ final class PipelineLauncher: PipelineDriver {
             Self.writeAppleRunSidecar(
                 dir: dir, stem: stem, transcriptMD: transcriptMD, summaryJSON: summaryJSON
             )
-            self.runMP(["publish", summaryJSON.path], timeout: 10 * 60, meeting: summaryJSON,
-                       retain: .run) { result in
-                switch result {
-                case .failure(let error):
-                    completion(.failure(error))
-                case .success:
-                    completion(.success(PublishResult.load(stem: stem, in: dir)?.pageURL))
-                }
-            }
-            // `runMP` retained the publish before returning. A Cancel that landed between the
-            // check above and that retain found this Task cancelled and the slot still empty,
-            // so it is honoured here, against the publish it missed.
-            if Task.isCancelled {
-                self.terminate(self.slots.markCancelled(.run)?.process, what: "pipeline run")
-            }
+            then(.success(()))
         }
         appleTaskLock.lock()
         appleTask = task
@@ -1730,41 +1782,20 @@ final class PipelineLauncher: PipelineDriver {
         return ["expected_backend": expected.backend, "backend_source": expected.source]
     }
 
-    private struct ResolvedRun {
-        var regulated: Bool
-        var nda: Bool
-        var backend: String
-        var source: String
-    }
+    private typealias ResolvedRun = EffectiveBackend.Resolution
 
     /// Regulated, then NDA, then the one-shot override, then the sidecar, then the global setting.
+    /// The decision itself is `EffectiveBackend.resolve` (PIPE52), which the Library's dispatch
+    /// calls too; this reads its inputs off disk.
     private static func resolveRun(for meeting: URL?, backendOverride: String?, configURL: URL) -> ResolvedRun {
         let config = ConfigStore(configURL: configURL)
-        var regulated = config.regulatedMode
-        let globalBackend = config.summarizationBackend
-        var nda = false
-        var sidecarBackend: String?
-        if let meeting = meeting {
-            switch MeetingMetaRead.load(stem: MeetingStore.stem(of: meeting), in: meeting.deletingLastPathComponent()) {
-            case .absent:
-                break
-            case .loaded(let obj):
-                nda = (obj["workflow_nda_mode"] as? Bool) ?? false
-                regulated = regulated || ((obj["regulated_mode"] as? Bool) ?? false)
-                sidecarBackend = obj["workflow_backend"] as? String
-            case .unreadable:
-                nda = true
-            }
-        }
-        // PIPE6: a one-shot backend override (Library "Re-summarize with...") wins
-        // over the meeting's persisted backend, so keeping/stripping a token reflects
-        // the engine actually about to run. It never wins over regulated: that still
-        // forces local and strips both tokens, so the override cannot widen egress.
-        if regulated { return ResolvedRun(regulated: true, nda: nda, backend: "local", source: "regulated") }
-        if nda { return ResolvedRun(regulated: false, nda: true, backend: "local", source: "nda") }
-        if let backendOverride { return ResolvedRun(regulated: false, nda: false, backend: backendOverride, source: "override") }
-        if let sidecarBackend { return ResolvedRun(regulated: false, nda: false, backend: sidecarBackend, source: "sidecar") }
-        return ResolvedRun(regulated: false, nda: false, backend: globalBackend, source: "global")
+        let meta: MeetingMetaRead = meeting.map {
+            MeetingMetaRead.load(stem: MeetingStore.stem(of: $0), in: $0.deletingLastPathComponent())
+        } ?? .absent
+        return EffectiveBackend.resolve(
+            meta: meta, globalRegulated: config.regulatedMode,
+            globalBackend: config.summarizationBackend, override: backendOverride
+        )
     }
 
     /// Which managed tokens a pipeline spawn is withheld (SEC5, widened by SEC18 from two booleans to

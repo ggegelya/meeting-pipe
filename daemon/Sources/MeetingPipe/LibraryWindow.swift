@@ -412,18 +412,29 @@ final class LibraryWindowModel: ObservableObject {
         coordinator?.summarizationBackend ?? "anthropic"
     }
 
-    /// True when the configured backend is on-device (MLX-local or Apple
-    /// Intelligence), so the free local re-run preview is offered (TECH-A16).
-    var canPreviewLocally: Bool {
-        summarizationBackend == "local" || summarizationBackend == "apple_intelligence"
+    /// The on-device engine "Re-run locally (preview)" runs for `stem`, or nil when it is not
+    /// offered (TECH-A16, per meeting since PIPE52). Reads the meeting's sidecar and the config, so
+    /// the Summary tab asks it from its load task, never from `body`; the sidecar read runs off main.
+    func localPreviewEngine(stem: String) async -> String? {
+        guard let gate = library?.previewGate() else { return nil }
+        return await Task.detached(priority: .userInitiated) {
+            MeetingLibraryService.localPreviewEngine(
+                stem: stem, in: gate.dir, globalBackend: gate.globalBackend, globalRegulated: gate.globalRegulated
+            )
+        }.value
     }
 
     /// Re-run summarization into a candidate preview (TECH-A16); never publishes.
     /// `contextOverride` (TECH-FEAT7) feeds an ad-hoc reprocess prompt for that
-    /// run only; nil is the plain local re-run.
-    func previewSummary(stem: String, contextOverride: String? = nil) async -> Result<Void, Error> {
+    /// run only. `mode` says which engine (PIPE52): the A16 button is on-device only,
+    /// FEAT7's reprocess runs the meeting's own backend.
+    func previewSummary(
+        stem: String,
+        contextOverride: String? = nil,
+        mode: MeetingLibraryService.PreviewMode = .onDevice
+    ) async -> Result<Void, Error> {
         await bridge { library, done in
-            library.previewSummary(stem: stem, contextOverride: contextOverride) { done($0) }
+            library.previewSummary(stem: stem, contextOverride: contextOverride, mode: mode) { done($0) }
         }
     }
 

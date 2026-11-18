@@ -254,7 +254,7 @@ These sound alike and do genuinely different things. Pick by what you want chang
 | --- | --- | --- |
 | Different **words** in the transcript, or names applied, or a vocabulary term to reach an old meeting | **Re-transcribe…** | Transcribes the audio again with today's vocabulary, your named voices, and the current models. Entirely on your Mac, nothing published, and it keeps the summary you already have. |
 | A different **summary** of the same transcript, or a different engine | **Re-summarize with…** | Re-runs the summary over the transcript already on disk and republishes. You pick the engine. |
-| To try a **different angle** on the summary before committing | **Reprocess…** | At the foot of the Summary tab. Edit the background the engine is given for this one run and see the candidate side by side with the current one. Keep it or discard it. Never published on its own. |
+| To try a **different angle** on the summary before committing | **Reprocess…** | At the foot of the Summary tab. Edit the background the engine is given for this one run and see the candidate side by side with the current one. Keep it or discard it. Never published on its own. Runs on the meeting's own engine. When the meeting has an on-device engine, **Re-run locally (preview)** beside it does the same on this Mac only, without a prompt. |
 
 If one of a meeting's edit files (its speaker names, transcript corrections or flagged moments) is damaged, Re-summarize stops and names the file rather than producing a summary without your edits.
 

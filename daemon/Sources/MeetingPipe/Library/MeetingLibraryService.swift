@@ -31,6 +31,9 @@ final class MeetingLibraryService {
         case heldBack(stem: String)
         /// "Keep" pressed with no candidate summary alongside the live one.
         case noCandidateSummary
+        /// "Re-run locally (preview)" reached for a meeting with no on-device engine (PIPE52): the
+        /// button is hidden then, so only a stale view or a headless caller gets here.
+        case noLocalPreview
         /// Ask was invoked with a blank question.
         case emptyQuestion
         /// Speaker naming was invoked with a blank name.
@@ -69,6 +72,8 @@ final class MeetingLibraryService {
                 return "No recording to retry: this meeting was held back and its recording is kept in MeetingPipe's originals folder (held). Use Show recording."
             case .noCandidateSummary:
                 return "No candidate summary to keep"
+            case .noLocalPreview:
+                return "No on-device engine is set up for this meeting, so there is nothing to re-run locally."
             case .emptyQuestion:
                 return "Type a question first."
             case .emptyName:
@@ -116,8 +121,11 @@ final class MeetingLibraryService {
     private let notifyFailure: ((String?, FailurePresentation) -> Void)?
     /// The third argument is `redactionOwed` (REC21), from a recovery manifest a failed quarantine kept.
     private let enqueue: (URL, SummaryMode, Bool) -> Void
-    /// Resolves the configured summarization backend ("local" / "apple_intelligence" / "anthropic" / "auto") so the local re-run preview (TECH-A16) dispatches correctly. Defaulted for tests.
+    /// The global `summarization.backend` and `modes.regulated_mode`, read live, which with the
+    /// meeting's sidecar decide the engine a re-run dispatches to (PIPE52, `EffectiveBackend`).
+    /// Defaulted for tests, so no test resolves from the owner's real config.
     private let summarizationBackend: () -> String
+    private let regulatedMode: () -> Bool
     /// AI9: records a WF8 reassignment as a labelled correction pair. Injected as a
     /// closure like the other collaborators, so a test drives `reassignWorkflow`
     /// without a store and the no-op default keeps every existing call site honest.
@@ -164,6 +172,7 @@ final class MeetingLibraryService {
         notifyError: @escaping (String) -> Void,
         enqueue: @escaping (URL, SummaryMode, Bool) -> Void,
         summarizationBackend: @escaping () -> String = { "local" },
+        regulatedMode: @escaping () -> Bool = { false },
         originalsDir: @escaping () -> URL = { MuteRedactor.originalsDirectory() },
         recordCorrection: @escaping (String, String?, Workflow) -> Bool = { _, _, _ in false },
         enqueueRetranscribe: @escaping (URL, @escaping (Result<Void, Error>) -> Void) -> Void
@@ -182,6 +191,7 @@ final class MeetingLibraryService {
         self.notifyFailure = notifyFailure
         self.enqueue = enqueue
         self.summarizationBackend = summarizationBackend
+        self.regulatedMode = regulatedMode
         self.recordCorrection = recordCorrection
         self.enqueueRetranscribe = enqueueRetranscribe
         self.refreshLibrary = refreshLibrary
@@ -376,12 +386,21 @@ final class MeetingLibraryService {
             completion: completion
         ) { [weak self] token in
             guard let self = self else { return token.finish(.success(nil)) }
+            // PIPE52: resolved when the slot opens, not when the job was queued, since the
+            // meeting can change workflow while it waits. An Apple meeting goes to the Swift
+            // summarizer: `mp summarize` has no Apple path and could only fail.
+            let resolved = self.effectiveBackend(stem: stem, in: dir, override: backend)
             Log.writeLine("daemon", "regenerate requested → \(stem)\(backend.map { " (backend=\($0))" } ?? "")")
             Log.event(category: "coordinator", action: "regenerate_started", attributes: [
                 "stem": stem,
                 "backend": backend ?? NSNull(),
+                "expected_backend": resolved.backend,
+                "backend_source": resolved.source,
             ])
-            self.launcher.summarize(transcriptMD: transcriptURL, backend: backend) { result in
+            let summarize: (@escaping (Result<Void, Error>) -> Void) -> Void = resolved.backend == "apple_intelligence"
+                ? { self.launcher.summarizeViaAppleIntelligence(transcriptMD: transcriptURL, completion: $0) }
+                : { self.launcher.summarize(transcriptMD: transcriptURL, backend: backend, completion: $0) }
+            summarize { result in
                 DispatchQueue.main.async {
                     switch result {
                     case .success:
@@ -1154,11 +1173,59 @@ final class MeetingLibraryService {
         dir.appendingPathComponent("\(stem).summary.candidate.md")
     }
 
-    /// Re-run summarization into a `<stem>.summary.candidate.json` preview, on
-    /// the local backend, without touching the live summary or any sink
-    /// (TECH-A16). Dispatches to the Swift Apple summarizer or `mp summarize
-    /// --candidate` by configured backend. Errors flow through `completion`.
-    func previewSummary(stem: String, contextOverride: String? = nil, completion: @escaping (Result<Void, Error>) -> Void) {
+    /// The engine a run of `stem` uses (PIPE52): `EffectiveBackend` over the meeting's sidecar and
+    /// the live global settings, the same function `PipelineLauncher.cloudSecretPolicy` keys the
+    /// spawn's tokens from.
+    func effectiveBackend(stem: String, in dir: URL? = nil, override: String? = nil) -> EffectiveBackend.Resolution {
+        EffectiveBackend.resolve(
+            meta: MeetingMetaRead.load(stem: stem, in: dir ?? outputDir()),
+            globalRegulated: regulatedMode(), globalBackend: summarizationBackend(), override: override
+        )
+    }
+
+    /// The on-device engine "Re-run locally (preview)" runs for `stem`, or nil when the preview is
+    /// not offered (PIPE52, `EffectiveBackend.localPreviewEngine`).
+    func localPreviewEngine(stem: String) -> String? {
+        let gate = previewGate()
+        return Self.localPreviewEngine(stem: stem, in: gate.dir, globalBackend: gate.globalBackend, globalRegulated: gate.globalRegulated)
+    }
+
+    /// The live values the preview gate reads, taken where the caller is (the Library reads them on
+    /// main), so the sidecar read in `localPreviewEngine(stem:in:...)` can run off main.
+    func previewGate() -> (dir: URL, globalBackend: String, globalRegulated: Bool) {
+        (outputDir(), summarizationBackend(), regulatedMode())
+    }
+
+    nonisolated static func localPreviewEngine(
+        stem: String, in dir: URL, globalBackend: String, globalRegulated: Bool
+    ) -> String? {
+        let resolved = EffectiveBackend.resolve(
+            meta: MeetingMetaRead.load(stem: stem, in: dir),
+            globalRegulated: globalRegulated, globalBackend: globalBackend, override: nil
+        )
+        return EffectiveBackend.localPreviewEngine(resolved: resolved.backend, global: globalBackend)
+    }
+
+    /// Which preview a `previewSummary` call is (PIPE52).
+    enum PreviewMode {
+        /// TECH-A16's "Re-run locally (preview)": on-device only, whatever the workflow pins.
+        case onDevice
+        /// FEAT7's reprocess with a custom prompt: the meeting's own engine.
+        case meetingBackend
+    }
+
+    /// Re-run summarization into a `<stem>.summary.candidate.json` preview without touching the
+    /// live summary or any sink (TECH-A16). PIPE52: dispatched on the meeting's resolved engine, not
+    /// the global setting. Apple goes to the Swift summarizer; anything else to `mp summarize
+    /// --candidate`, which for `.onDevice` carries an explicit `--backend local` so a workflow
+    /// pinned to a cloud backend cannot carry the "on-device" run off this Mac. Errors flow
+    /// through `completion`.
+    func previewSummary(
+        stem: String,
+        contextOverride: String? = nil,
+        mode: PreviewMode = .onDevice,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
         let dir = outputDir()
         let transcriptURL = dir.appendingPathComponent("\(stem).md")
         guard FileManager.default.fileExists(atPath: transcriptURL.path) else {
@@ -1166,7 +1233,24 @@ final class MeetingLibraryService {
                 name: transcriptURL.lastPathComponent, action: "re-run")))
             return
         }
-        Log.event(category: "coordinator", action: "summary_preview_started", attributes: ["stem": stem])
+        let resolved = effectiveBackend(stem: stem, in: dir)
+        let engine: String
+        switch mode {
+        case .meetingBackend:
+            engine = resolved.backend
+        case .onDevice:
+            guard let onDevice = EffectiveBackend.localPreviewEngine(
+                resolved: resolved.backend, global: summarizationBackend()
+            ) else {
+                completion(.failure(LibraryError.noLocalPreview))
+                return
+            }
+            engine = onDevice
+        }
+        Log.event(category: "coordinator", action: "summary_preview_started", attributes: [
+            "stem": stem, "expected_backend": engine,
+            "backend_source": mode == .onDevice && engine != resolved.backend ? "preview" : resolved.source,
+        ])
         let handler: (Result<Void, Error>) -> Void = { result in
             DispatchQueue.main.async {
                 if case .failure(let err) = result {
@@ -1176,10 +1260,13 @@ final class MeetingLibraryService {
                 completion(result)
             }
         }
-        if summarizationBackend() == "apple_intelligence" {
+        if engine == "apple_intelligence" {
             launcher.summarizePreviewViaApple(transcriptMD: transcriptURL, contextOverride: contextOverride, completion: handler)
         } else {
-            launcher.summarizePreview(transcriptMD: transcriptURL, contextOverride: contextOverride, completion: handler)
+            launcher.summarizePreview(
+                transcriptMD: transcriptURL, contextOverride: contextOverride,
+                backend: mode == .onDevice ? "local" : nil, completion: handler
+            )
         }
     }
 

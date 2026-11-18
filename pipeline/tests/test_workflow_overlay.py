@@ -578,3 +578,32 @@ def test_contract_fixture_user_title_is_informational_to_the_overlay() -> None:
     renamed = apply_overrides(cfg, fixture)
     plain = apply_overrides(cfg, _CONTRACT / "workflow-full.meta.json")
     assert renamed.model_dump() == plain.model_dump()
+
+
+def test_on_device_preview_override_beats_a_cloud_workflow_pin(tmp_path: Path, monkeypatch) -> None:
+    # PIPE52: the Library's "Re-run locally (preview)" spawns
+    # `mp summarize <md> --candidate --backend local` for a meeting whose workflow pins
+    # anthropic. The run stays on-device only if the CLI forwards both flags and the
+    # override lands AFTER the overlay, so it beats the pin rather than being overlaid by it.
+    from mp import summarize as sm
+    from mp.config import effective_backend, with_backend_override
+
+    stem = "20261118-preview"
+    _write_meta(tmp_path, stem, {"workflow_backend": "anthropic"})
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    overlaid = apply_overrides(Config(), wav)
+    assert overlaid.summarization.backend == "anthropic"
+    assert effective_backend(with_backend_override(overlaid, "local")) == "local"
+
+    md = tmp_path / f"{stem}.md"
+    md.write_text("transcript", encoding="utf-8")
+    seen: dict = {}
+
+    def fake_summarize(path, *, out_suffix=None, backend=None, **_kw):
+        seen.update(path=path, out_suffix=out_suffix, backend=backend)
+        return {}
+
+    monkeypatch.setattr(sm, "summarize", fake_summarize)
+    assert sm.main([str(md), "--candidate", "--backend", "local"]) == 0
+    assert seen == {"path": md.resolve(), "out_suffix": "candidate", "backend": "local"}
