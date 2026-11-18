@@ -2,9 +2,9 @@
 id: PIPE43
 title: Nothing stops a summary of a transcript too thin to mean anything, so 10 meetings of 20 s to 32 words got summaries with action items
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). 10 of 110 field summaries were written for transcripts under 300 words, under 3 minutes or under 20 wpm (a 20 s, 32-word fragment got an 88-word summary), and none of the 110 has zero action items, because run_all's only pre-summary gates are no segments and the suspect check (2.0 wpm, only from 300 s), and MeetingSummary accepts an empty title and no bullets. Add a content floor that writes an empty marker with a new reason instead of a summary, on owner-confirmed thresholds, and give the schema lower bounds.
+comment: Shipped 2026-11-19: transcript_quality.below_content_floor (150 words, 120 s speech span, owner-approved starting values) gates run_all after the suspect check with run_skipped below_content_floor and an empty marker, Swift EmptyReason.belowContentFloor (Too short), MeetingSummary lower bounds with blank entries and their anchors dropped, the editor refusing the same, and Re-summarize still overriding (mp summarize skips the gates and clears the stale marker, so UX90's done banner does not say Too short). Owed: a read-only validation of the library's existing summary.json files against the new bounds (not run: sessions may not touch the library), and the walkthrough's live check that the next very short recording shows Too short and Re-summarize fills it.
 ---
 
 # PIPE43: Nothing stops a summary of a transcript too thin to mean anything, so 10 meetings of 20 s to 32 words got summaries with action items
@@ -54,3 +54,5 @@ Related: [ASR10](./ASR10.md) (the recorder length), [FEAT21](./FEAT21.md) (atten
 1. [session] Before landing, run `below_content_floor` read-only over the owner's library transcripts and report how many of the 113 it would skip, listed by stem with word count and span, against the 10 the field report names.
 2. [owner] Confirm or change the two thresholds from that list.
 3. [owner] After landing, the next very short recording shows the new Library state instead of a summary, and Re-summarize on it produces one.
+
+**Progress (2026-11-19):** shipped items 1 to 4. Not done by the session: walkthrough step 1 (a read-only `below_content_floor` dry run over the owner's library) and the scope's check that the 110 field summaries still validate, both because batch sessions may not read the owner's library; the owner approved the thresholds without the dry run. The field-evidence report already shows summary bullets never empty across all 110, so the only open risk is a legacy summary with an empty title, which would now fail `mp publish` with the PIPE54 `[FAIL]` line naming the title. Two additions beyond the spec, both to keep the cross-tree contract whole: the Summary editor refuses a save with an empty title or no bullet (the same bounds, mirrored through `summary-limits-golden.json`), and blank entries are judged after SEC28's `clean_text`, so an entry that scrubs to nothing is dropped with its anchor rather than leaving a stored summary that re-validates differently. The pipeline suite runs with the floor off (`_content_floor_off` in `conftest.py`, like `_disable_memory_guard`); the floor's own tests opt back in with `@pytest.mark.content_floor`.

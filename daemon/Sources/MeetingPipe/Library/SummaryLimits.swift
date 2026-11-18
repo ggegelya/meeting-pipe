@@ -10,6 +10,10 @@ extension MeetingSummary {
     static let titleMaxLength = 120
     /// `summary: list[str] = Field(..., max_length=10)`.
     static let summaryMaxItems = 10
+    /// PIPE43 (F176): `title` has `min_length=1` (and a blank one is refused), `summary` has
+    /// `min_length=1` after blank bullets are dropped. The editor refuses a save below either.
+    static let titleMinLength = 1
+    static let summaryMinItems = 1
     /// `ActionItem.confidence: Literal["low", "medium", "high"]`.
     static let confidenceValues = ["low", "medium", "high"]
 

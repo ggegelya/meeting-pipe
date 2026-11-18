@@ -913,3 +913,42 @@ def test_a_matching_summary_emits_no_language_check(tmp_path: Path, monkeypatch)
 
     summarize(transcript, cfg=Config(), client=_FakeClient())
     assert ("pipeline", "language_check") not in rows
+
+
+@pytest.mark.content_floor
+def test_re_summarize_overrides_a_content_floor_skip(tmp_path: Path, monkeypatch):
+    """PIPE43: the Library's Re-summarize runs `mp summarize`, which does not pass through
+    run_all's gates, so a meeting the content floor kept unsummarized still gets one on request.
+    The live summary clears the marker, so neither the row nor the done banner reads it."""
+    stem = "20261009-121708"
+    transcript = tmp_path / f"{stem}.md"
+    transcript.write_text("# Transcript\n\n**A**: Quick check, ship it Friday.\n", encoding="utf-8")
+    (tmp_path / f"{stem}.empty.json").write_text(
+        json.dumps({"stem": stem, "reason": "below_content_floor"}), encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    class _FakeClient:
+        def summarize(self, **_):
+            return _make_summary()
+
+    out = summarize(transcript, cfg=Config(), client=_FakeClient())
+    assert out["json"].exists()
+    assert MeetingSummary.model_validate_json(out["json"].read_text(encoding="utf-8")).summary
+    # The marker described the run that produced no summary; this one did.
+    assert not (tmp_path / f"{stem}.empty.json").exists()
+
+
+def test_a_candidate_preview_leaves_the_empty_marker(tmp_path: Path, monkeypatch):
+    stem = "20261009-121708"
+    transcript = tmp_path / f"{stem}.md"
+    transcript.write_text("# Transcript\n\n**A**: Quick check, ship it Friday.\n", encoding="utf-8")
+    marker = tmp_path / f"{stem}.empty.json"
+    marker.write_text(json.dumps({"stem": stem, "reason": "below_content_floor"}), encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    class _FakeClient:
+        def summarize(self, **_):
+            return _make_summary()
+
+    summarize(transcript, cfg=Config(), client=_FakeClient(), out_suffix="candidate")
+    assert marker.exists()

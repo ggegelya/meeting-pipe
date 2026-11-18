@@ -331,8 +331,9 @@ final class Coordinator: NSObject {
                 // than the generic done path's "Meeting processed / Nothing was
                 // published", which would claim a summary exists (PIPE3 /
                 // AUD-16a).
-                // An empty-skip meeting never produces a summary, so the marker
-                // unambiguously identifies this completion as the skip.
+                // An empty-skip run produces no summary, and `mp summarize` removes the
+                // marker when a later Re-summarize writes one (PIPE43), so a marker present
+                // here identifies this completion as the skip.
                 // UX90: a paste-bundle skip (BYO, or past the long-meeting gate) is the same
                 // shape, so `DoneRoute` decides both; the empty marker wins.
                 switch DoneRoute.probe(stem: stem, in: recordingsDir) {

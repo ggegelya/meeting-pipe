@@ -37,7 +37,7 @@ from .config import (
     zero_egress,
 )
 from .corrections import set_publish_state, write_empty_marker, write_run_sidecar
-from .transcript_quality import transcript_issues
+from .transcript_quality import below_content_floor, speech_span_sec, transcript_issues, word_count
 from .diarize import (
     apply_speaker_labels,
     assign_speakers_by_channel,
@@ -406,6 +406,22 @@ def _check_suspect_transcript(wav: Path, t: dict[str, Path], structured: dict) -
     return _skip_result(t, "suspect_transcript")
 
 
+def _check_content_floor(wav: Path, t: dict[str, Path], structured: dict) -> dict | None:
+    """PIPE43: a transcript too thin to summarize (a 20 s, 32-word fragment got an 88-word
+    summary with action items in the field). Kept with its transcript and an empty marker the
+    Library shows as its own state; not summarized, not published. Re-summarize still runs
+    `mp summarize`, which does not pass through these gates, so the owner can override."""
+    segments = structured.get("segments") or []
+    reason = below_content_floor(segments)
+    if reason is None:
+        return None
+    log.info("Transcript is below the content floor (%s) - skipping summarize + publish.", reason)
+    events.emit("pipeline", "run_skipped", wav=str(wav), reason="below_content_floor",
+                words=word_count(segments), span_s=round(speech_span_sec(segments), 1))
+    _mark_empty(wav, "below_content_floor")
+    return _skip_result(t, "below_content_floor")
+
+
 def _check_byo(
     wav: Path, t: dict[str, Path], md_text: str, force_byo: bool, cfg: Config
 ) -> dict | None:
@@ -563,7 +579,9 @@ def _run_all_inner(
 
     structured = json.loads(t["json"].read_text(encoding="utf-8"))
     log.debug("guards: segments=%d", len(structured.get("segments") or []))
-    skip = _check_no_speech(wav, t, structured) or _check_suspect_transcript(wav, t, structured)
+    skip = (_check_no_speech(wav, t, structured)
+            or _check_suspect_transcript(wav, t, structured)
+            or _check_content_floor(wav, t, structured))
     if skip is not None:
         log.debug("guards: skipped (%s)", skip.get("skipped"))
         return skip

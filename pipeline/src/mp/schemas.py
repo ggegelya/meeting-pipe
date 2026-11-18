@@ -259,9 +259,41 @@ def normalize_model_summary(payload: Any) -> Any:
     return out
 
 
+def drop_blank_entries(payload: Any) -> Any:
+    """PIPE43 (F176): drop blank strings from the three string sections, and their evidence
+    slots with them so the index alignment holds. A blank bullet is not content: kept, it let a
+    summary of nothing but whitespace validate. "Blank" is judged after SEC28's `clean_text`, so
+    an entry that scrubs to nothing (a bare code fence) goes too, here where its anchor slot can
+    go with it, and a stored summary re-validates to itself. A non-string entry is left for the
+    field validation to refuse, as before."""
+    if not isinstance(payload, dict):
+        return payload
+    out = dict(payload)
+    evidence = out.get("evidence")
+    evidence = dict(evidence) if isinstance(evidence, dict) else None
+    for section in EVIDENCE_SECTIONS:
+        items = out.get(section)
+        if not isinstance(items, list):
+            continue
+        keep = [i for i, item in enumerate(items)
+                if not (isinstance(item, str) and not clean_text(item).strip())]
+        if len(keep) == len(items):
+            continue
+        out[section] = [items[i] for i in keep]
+        anchors = evidence.get(section) if evidence is not None else None
+        if evidence is not None and isinstance(anchors, list):
+            evidence[section] = [anchors[i] for i in keep if i < len(anchors)]
+    if evidence is not None:
+        out["evidence"] = evidence
+    return out
+
+
 class MeetingSummary(BaseModel):
-    title: str = Field(..., max_length=120)
-    summary: list[str] = Field(..., max_length=10)
+    # PIPE43 (F176): lower bounds as well as upper ones. An empty model answer (no title, no
+    # bullet) used to validate and be written as a summary; now it fails and takes the existing
+    # repair or failure path. `summary` keeps at least one bullet after blanks are dropped.
+    title: str = Field(..., min_length=1, max_length=120)
+    summary: list[str] = Field(..., min_length=1, max_length=10)
     decisions: list[str] = Field(default_factory=list)
     actions: list[ActionItem] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
@@ -281,12 +313,15 @@ class MeetingSummary(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _normalize_sections(cls, data: Any) -> Any:
-        return normalize_model_summary(data)
+        return drop_blank_entries(normalize_model_summary(data))
 
     @field_validator("title", mode="after")
     @classmethod
     def _scrub_title(cls, v: str) -> str:
-        return clean_text(v)
+        cleaned = clean_text(v).strip()
+        if not cleaned:
+            raise ValueError("title is blank")
+        return cleaned
 
     @field_validator("summary", "decisions", "questions", mode="after")
     @classmethod

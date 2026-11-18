@@ -26,6 +26,12 @@ _WPM_MIN_DURATION_SEC = 300.0
 # Below this words-per-minute over a long recording the transcription almost
 # certainly failed (real speech runs 100-150 wpm; 2 wpm is ~10 words in 5 min).
 _WPM_FLOOR = 2.0
+# PIPE43: the content floor, a separate question from "is this transcript degenerate". Below
+# either bound a transcript is too thin to summarize meaningfully: the field had a 20 s, 32-word
+# fragment summarized into 88 words with action items. Owner-confirmed starting values (the field
+# recommendation); a thin meeting is kept with its transcript, only not summarized.
+_FLOOR_MIN_WORDS = 150
+_FLOOR_MIN_SPAN_SEC = 120.0
 
 
 def _segment_text(segments: list[dict]) -> str:
@@ -37,6 +43,34 @@ def _duration_sec(segments: list[dict]) -> float:
     # narrows nothing about the value the comprehension goes on to collect.
     ends = [e for e in (seg.get("end") for seg in segments) if isinstance(e, (int, float))]
     return float(max(ends)) if ends else 0.0
+
+
+def speech_span_sec(segments: list[dict]) -> float:
+    """First segment start to last segment end: how long people were actually talking, which is
+    what the floor measures (not the recording, whose silent tail says nothing about content)."""
+    starts = [s for s in (seg.get("start") for seg in segments) if isinstance(s, (int, float))]
+    end = _duration_sec(segments)
+    return max(0.0, end - float(min(starts))) if starts else end
+
+
+def word_count(segments: list[dict]) -> int:
+    return len(_segment_text(segments).split())
+
+
+def below_content_floor(segments: list[dict]) -> str | None:
+    """Why the transcript is too thin to summarize, or None when it clears the floor (PIPE43).
+
+    Pure, and deliberately separate from `transcript_issues`: that asks whether the ASR output is
+    garbage, this asks whether there is enough of a meeting to summarize. Either bound trips it:
+    fewer than `_FLOOR_MIN_WORDS` words, or a speech span under `_FLOOR_MIN_SPAN_SEC`.
+    """
+    words = word_count(segments)
+    span = speech_span_sec(segments)
+    if words < _FLOOR_MIN_WORDS:
+        return f"{words} words is below the {_FLOOR_MIN_WORDS}-word content floor"
+    if span < _FLOOR_MIN_SPAN_SEC:
+        return f"{span:.0f} s of speech is below the {_FLOOR_MIN_SPAN_SEC:.0f} s content floor"
+    return None
 
 
 def _distinct_ngram_ratio(words: list[str], n: int) -> float:

@@ -19,11 +19,15 @@ final class EmptyMarkerTests: XCTestCase {
         XCTAssertEqual(EmptyReason(marker: "suspect_transcript"), .suspectTranscript)
         XCTAssertEqual(EmptyReason(marker: nil), .noSpeech, "absent reason falls back to no-speech")
         XCTAssertEqual(EmptyReason(marker: "future_reason"), .noSpeech, "unknown reason falls back")
+        XCTAssertEqual(EmptyReason(marker: "below_content_floor"), .belowContentFloor)
     }
 
     func test_wording_is_distinct_and_nonempty() {
         XCTAssertNotEqual(EmptyReason.noSpeech.pillLabel, EmptyReason.suspectTranscript.pillLabel)
-        for reason in [EmptyReason.noSpeech, .suspectTranscript] {
+        let reasons: [EmptyReason] = [.noSpeech, .suspectTranscript, .belowContentFloor]
+        XCTAssertEqual(Set(reasons.map(\.pillLabel)).count, reasons.count, "each reason reads differently")
+        XCTAssertEqual(Set(reasons.map(\.notificationTitle)).count, reasons.count)
+        for reason in reasons {
             XCTAssertFalse(reason.pillLabel.isEmpty)
             XCTAssertFalse(reason.detail.isEmpty)
             XCTAssertFalse(reason.notificationTitle.isEmpty)

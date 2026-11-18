@@ -89,3 +89,43 @@ def test_round_trip_through_schema():
     }
     s = MeetingSummary.model_validate(payload)
     assert s.actions[0].due == "2026-05-01"
+
+
+# ----- PIPE43 (F176): lower bounds, so an empty answer is not a summary -----
+
+
+def _base(**overrides) -> dict:
+    payload = {"title": "Sync", "summary": ["We shipped it."], "decisions": [], "actions": [],
+               "questions": [], "attendees": [], "detected_language": "en"}
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"title": ""}, {"title": "   "}, {"summary": []}, {"summary": ["", "  ", "\n"]}],
+    ids=["empty_title", "blank_title", "no_bullets", "only_blank_bullets"],
+)
+def test_an_empty_answer_fails_validation(overrides):
+    with pytest.raises(ValidationError):
+        MeetingSummary.model_validate(_base(**overrides))
+
+
+def test_blank_entries_are_dropped_and_their_anchors_with_them():
+    anchor = [{"t": 3.0, "quote": "we shipped"}]
+    s = MeetingSummary.model_validate(_base(
+        summary=["  ", "We shipped it."],
+        decisions=["", "Ship Friday", "   "],
+        questions=["  "],
+        evidence={"summary": [[], anchor]},
+    ))
+    assert s.summary == ["We shipped it."]
+    assert s.decisions == ["Ship Friday"]
+    assert s.questions == []
+    # The surviving bullet keeps its own anchor: the blank one's slot went with it.
+    assert [e.quote for e in s.evidence["summary"][0]] == ["we shipped"]
+
+
+def test_a_stored_summary_revalidates_to_itself():
+    s = MeetingSummary.model_validate(_base(decisions=["  ", "Ship"]))
+    assert MeetingSummary.model_validate(json.loads(s.model_dump_json())) == s

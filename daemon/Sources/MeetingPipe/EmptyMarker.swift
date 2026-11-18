@@ -2,7 +2,8 @@ import Foundation
 
 /// Why `mp run-all` finished without producing a summary, from the
 /// `<stem>.empty.json` marker's `reason` field. The pipeline writes the marker
-/// for the two genuinely-empty skips (LOCAL2); the daemon reads it to show a
+/// for the genuinely-empty skips (LOCAL2) and, since PIPE43, a transcript below the
+/// content floor; the daemon reads it to show a
 /// terminal Library state and an honest completion notice instead of spinning in
 /// `.processing` forever (PIPE3 / AUD-16a).
 ///
@@ -11,6 +12,9 @@ import Foundation
 enum EmptyReason: String {
     case noSpeech = "no_speech"
     case suspectTranscript = "suspect_transcript"
+    /// PIPE43: under 150 words or 2 minutes of speech. Kept with its transcript, not summarized;
+    /// Re-summarize still produces one on request.
+    case belowContentFloor = "below_content_floor"
 
     /// Tolerant parse: an absent or unrecognized reason falls back to
     /// `.noSpeech`, the original single-state behavior before this reason was
@@ -24,6 +28,7 @@ enum EmptyReason: String {
         switch self {
         case .noSpeech:          return "No speech"
         case .suspectTranscript: return "Unclear audio"
+        case .belowContentFloor: return "Too short"
         }
     }
 
@@ -34,6 +39,8 @@ enum EmptyReason: String {
             return "No speech was detected, so there is nothing to summarize."
         case .suspectTranscript:
             return "The transcript looked unreliable (no clear speech, repetition, or garbled audio), so it was not summarized."
+        case .belowContentFloor:
+            return "Too short to summarize: the transcript is kept, but there was too little speech for a useful summary. Use Re-summarize if you want one anyway."
         }
     }
 
@@ -42,6 +49,7 @@ enum EmptyReason: String {
         switch self {
         case .noSpeech:          return "No speech detected"
         case .suspectTranscript: return "Transcript looked unreliable"
+        case .belowContentFloor: return "Too short to summarize"
         }
     }
 
@@ -52,6 +60,8 @@ enum EmptyReason: String {
             return "Nothing to summarize for this meeting."
         case .suspectTranscript:
             return "This meeting was not summarized. Open it in the Library to review."
+        case .belowContentFloor:
+            return "The transcript is saved. Re-summarize it from the Library if you want a summary."
         }
     }
 }

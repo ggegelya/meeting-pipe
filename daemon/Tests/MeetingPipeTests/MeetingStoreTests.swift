@@ -187,6 +187,32 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(captured.first?.status, .empty)
     }
 
+    /// PIPE43: a meeting the content floor kept unsummarized reads as its own empty state, and a
+    /// Re-summarize that then writes a summary wins over the marker it leaves behind.
+    func test_a_content_floor_skip_reads_empty_until_a_summary_lands() throws {
+        let dir = try tempDir()
+        let stem = "20260511-143110"
+        try writeFile(dir.appendingPathComponent("\(stem).wav"))
+        try writeFile(dir.appendingPathComponent("\(stem).empty.json"), "{\"reason\":\"below_content_floor\"}")
+        func scan() -> Meeting? {
+            let store = MeetingStore(recordingsDir: dir)
+            let exp = expectation(description: "scan")
+            var captured: [Meeting] = []
+            let cancel = store.$meetings.dropFirst().sink { meetings in
+                captured = meetings
+                exp.fulfill()
+            }
+            store.start()
+            wait(for: [exp], timeout: 2.0)
+            cancel.cancel()
+            return captured.first
+        }
+        XCTAssertEqual(scan()?.status, .empty)
+        XCTAssertEqual(scan()?.emptyReason, .belowContentFloor)
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{\"title\":\"x\",\"summary\":[\"b\"]}")
+        XCTAssertEqual(scan()?.status, .done)
+    }
+
     func test_processing_when_only_wav_present() throws {
         let dir = try tempDir()
         // Use a stem within the staleness window so it stays processing.

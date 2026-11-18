@@ -600,6 +600,9 @@ def gen_summary_limits() -> str:
     contract = {
         "title_max_length": props["title"]["maxLength"],
         "summary_max_items": props["summary"]["maxItems"],
+        # PIPE43 (F176): the lower bounds, so an editor save cannot write a file publish refuses.
+        "title_min_length": props["title"]["minLength"],
+        "summary_min_items": props["summary"]["minItems"],
         "confidence_values": confidence["enum"],
     }
     return _envelope(
@@ -608,7 +611,7 @@ def gen_summary_limits() -> str:
         "validates the file against the schema before any sink runs, so a Swift writer "
         "(the Summary editor, the Apple summarizer) that exceeds one fails every later "
         "publish of that meeting. Swift mirrors these as MeetingSummary.titleMaxLength, "
-        "summaryMaxItems and confidenceValues (SummaryLimitsTests).",
+        "summaryMaxItems, confidenceValues, titleMinLength and summaryMinItems (SummaryLimitsTests).",
         [],
         contract,
     )

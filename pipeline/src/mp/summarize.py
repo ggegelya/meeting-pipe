@@ -690,6 +690,14 @@ def summarize(
     # the app (it is what `mp publish-from-paste` and the fs sinks copy), so its
     # citations link back to the transcript like a published note's do.
     storage.atomic_write_text(md_path, render_summary_md(summary, stem))
+    if not infix:
+        # PIPE43: a live summary supersedes an earlier run's no-summary marker. Re-summarize is
+        # the override for a content-floor skip, and a marker left beside the new summary would
+        # still route the done banner to "Too short to summarize" (`DoneRoute`, empty wins).
+        try:
+            (out_dir / f"{stem}.empty.json").unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("stale empty marker could not be removed: %s", exc)
 
     # PIPE19: every client names itself; the `AutoFallbackClient` reports the rung
     # that answered. A client with no model of its own (Anthropic takes it per

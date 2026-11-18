@@ -18,6 +18,10 @@ def pytest_configure(config):
         "guard_proof: an egress-guard test that aims at a public address on purpose, with "
         "the guard's downstream connect stubbed to fail; `_no_network` stands aside (T12)",
     )
+    config.addinivalue_line(
+        "markers",
+        "content_floor: keep PIPE43's content floor live; every other test runs with it off",
+    )
 
 
 @pytest.hookimpl(wrapper=True)
@@ -177,6 +181,20 @@ def _disable_memory_guard(monkeypatch):
     turn it back on deliberately and pass an explicit `ram_gb`.
     """
     monkeypatch.setenv(resource_guard.OVERRIDE_ENV, "0")
+
+
+@pytest.fixture(autouse=True)
+def _content_floor_off(request, monkeypatch):
+    """PIPE43: `run_all` skips a transcript under 150 words or 120 s of speech, and the run-all
+    fixtures across the suite are one-line transcripts written to exercise everything after that
+    gate. Off by default, the way `_disable_memory_guard` handles the memory guard; the tests of
+    the floor itself opt back in with `@pytest.mark.content_floor`."""
+    if request.node.get_closest_marker("content_floor") is not None:
+        return
+    from mp import transcript_quality
+
+    monkeypatch.setattr(transcript_quality, "_FLOOR_MIN_WORDS", 0)
+    monkeypatch.setattr(transcript_quality, "_FLOOR_MIN_SPAN_SEC", 0.0)
 
 
 @pytest.fixture(autouse=True)

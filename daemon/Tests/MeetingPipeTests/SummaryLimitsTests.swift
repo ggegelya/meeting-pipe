@@ -16,6 +16,18 @@ final class SummaryLimitsTests: XCTestCase {
         XCTAssertEqual(contract["title_max_length"] as? Int, MeetingSummary.titleMaxLength)
         XCTAssertEqual(contract["summary_max_items"] as? Int, MeetingSummary.summaryMaxItems)
         XCTAssertEqual(contract["confidence_values"] as? [String], MeetingSummary.confidenceValues)
+        XCTAssertEqual(contract["title_min_length"] as? Int, MeetingSummary.titleMinLength)
+        XCTAssertEqual(contract["summary_min_items"] as? Int, MeetingSummary.summaryMinItems)
+    }
+
+    /// PIPE43: the editor refuses a save `mp publish` would now refuse: no title, or no bullet
+    /// once blank ones are discounted.
+    func test_an_empty_title_or_no_bullet_is_refused_by_the_editor() {
+        XCTAssertEqual(editor(MeetingSummary(title: "  ", summary: ["b"])).schemaRefusal,
+                       "The title is empty. Add one before saving.")
+        XCTAssertEqual(editor(MeetingSummary(title: "T", summary: ["  ", ""])).schemaRefusal,
+                       "The summary needs at least one bullet. Add one before saving.")
+        XCTAssertNil(editor(MeetingSummary(title: "T", summary: ["b"])).schemaRefusal)
     }
 
     // MARK: - The write backstop

@@ -796,6 +796,55 @@ def test_suspect_transcript_short_circuits(tmp_path: Path, monkeypatch):
     assert payload["reason"] == "suspect_transcript"
 
 
+@pytest.mark.content_floor
+def test_a_transcript_below_the_content_floor_is_kept_but_not_summarized(
+    tmp_path: Path, monkeypatch
+):
+    """PIPE43: a 20 s, 32-word fragment gets an empty marker with its own reason and a
+    `run_skipped` event with the counts, and no summarize call."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    stem = "20260430-1700"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem, segments=[
+        {"start": 0.0, "end": 20.0, "text": " ".join(["word"] * 32), "speaker": "speaker_0"},
+    ])
+    emitted: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr("mp.orchestrate.events.emit", lambda *a, **k: emitted.append((a, k)))
+
+    with patch("mp.orchestrate.summarize") as s, \
+         patch("mp.orchestrate.publish_fanout") as p:
+        result = run_all(wav, cfg=Config())
+    s.assert_not_called()
+    p.assert_not_called()
+    assert result["skipped"] == "below_content_floor"
+    payload = json.loads((tmp_path / f"{stem}.empty.json").read_text(encoding="utf-8"))
+    assert payload["reason"] == "below_content_floor"
+    skipped = [k for a, k in emitted if a == ("pipeline", "run_skipped")]
+    assert skipped == [{"wav": str(wav), "reason": "below_content_floor",
+                        "words": 32, "span_s": 20.0}]
+
+
+@pytest.mark.content_floor
+def test_a_transcript_above_the_content_floor_reaches_summarize(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    stem = "20260430-1800"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem, segments=[
+        {"start": i * 20.0, "end": (i + 1) * 20.0,
+         "text": f"point {i} about the roadmap budget hiring plan and the next release",
+         "speaker": f"speaker_{i % 2}"}
+        for i in range(30)
+    ])
+    with patch("mp.orchestrate.summarize", side_effect=RuntimeError("reached summarize")) as s, \
+         patch("mp.orchestrate.publish_fanout"):
+        with pytest.raises(RuntimeError, match="reached summarize"):
+            run_all(wav, cfg=Config())
+    s.assert_called_once()
+    assert not (tmp_path / f"{stem}.empty.json").exists()
+
+
 def test_diarize_cleanup_runs_when_enabled(tmp_path: Path, monkeypatch):
     """When summarization.diarize_cleanup is on and the transcript has
     multiple speakers, run-all runs the cleanup pass before summarize."""

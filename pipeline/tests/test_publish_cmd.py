@@ -12,7 +12,7 @@ from mp.publish_cmd import main
 from mp.publish_router import EXIT_PUBLISH_FAILED
 
 _SUMMARY = (
-    '{"title":"T","summary":[],"decisions":[],"actions":[],'
+    '{"title":"T","summary":["s"],"decisions":[],"actions":[],'
     '"questions":[],"attendees":[],"detected_language":"en"}'
 )
 

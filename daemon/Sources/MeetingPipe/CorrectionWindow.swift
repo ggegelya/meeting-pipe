@@ -399,6 +399,14 @@ final class CorrectionViewModel: ObservableObject {
         if length > MeetingSummary.titleMaxLength {
             return "The title is \(length) characters; the limit is \(MeetingSummary.titleMaxLength). Shorten it before saving."
         }
+        // PIPE43: the lower bounds. `mp publish` refuses a summary with no title or no bullet,
+        // so a save that would write one is refused here, where the fix is one keystroke away.
+        if length < MeetingSummary.titleMinLength {
+            return "The title is empty. Add one before saving."
+        }
+        if bullets < MeetingSummary.summaryMinItems {
+            return "The summary needs at least one bullet. Add one before saving."
+        }
         return nil
     }
 
