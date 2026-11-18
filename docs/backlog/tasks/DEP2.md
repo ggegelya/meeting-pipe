@@ -2,9 +2,9 @@
 id: DEP2
 title: Ffmpeg is still a hard runtime dependency at three spawn sites although DEP1 measured the AVFoundation replacement as GO
 category: Distribution
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-24 (audit band, go-live DI-12): RecordingPostProcessor merge, MuteRedactor and AudioTranscoder still spawn ffmpeg, so install needs Homebrew, the bundle needs a licensed static ffmpeg, and CI installs it. DEP1 measured native FLAC and merge as GO. Port FLAC, then the merge with REC9 and REC14's length policy, then redaction after SEC16, then delete findFFmpeg and every install and CI step. [Spec](./DEP2.md) Amended 2026-11-13 by the audit band: until the native merge lands, the no-ffmpeg fallback must stop promoting a mic-only final as success, since the later merge it promises can never run (F052).
+comment: F052 amendment shipped 2026-11-18 (no ffmpeg now fails a two-channel merge with a recordfail breadcrumb and keeps both channels; the orphan sweep merges them once ffmpeg exists). Remainder, unchanged and not started - port FLAC (AudioTranscoder), then the merge with REC9/REC14 length policy, then redaction after SEC16, then delete findFFmpeg and every install and CI ffmpeg step.
 ---
 
 # DEP2: ffmpeg is still a hard runtime dependency at three spawn sites although DEP1 measured the AVFoundation replacement as GO
@@ -68,3 +68,5 @@ Trigger: no ffmpeg at `MEETINGPIPE_FFMPEG`, on `PATH`, in the DIST1 bundle, or a
 - `RecordingPostProcessorTests`: `produceFinal` with both intermediates present and the locator returning nil returns false, leaves `<stem>.mic.wav` and `<stem>.system.wav` in place, writes no `<stem>.wav`, writes a `<stem>.recordfail.json` whose `retained` lists both, and emits `recorder/postprocess_failed`.
 - `OrphanRecordingRecoveryTests`: the same directory is listed by the orphan scan afterwards, and `recoverOrphan` with a working locator then produces the stereo final and removes both intermediates.
 - `cd daemon && swift build` and `swift test` green, new test count in the commit body.
+
+**Progress (2026-11-18): F052 amendment only.** `RecordingPostProcessor.produceFinal`'s no-ffmpeg branch no longer renames `mic.wav` onto the final. It calls `writePostProcessFailure(retained: [mic, system], reason: ffmpegMissingReason)` and returns false, so no mic-only `<stem>.wav` exists, the orphan scan keeps listing the stem, and `recoverOrphan` merges it at the next launch (or after-job sweep) once ffmpeg is found. The reason names the missing ffmpeg and says a relaunch retries it (REC24's cap stops only the after-job sweep). The seam is a defaulted `locateFFmpeg:` parameter on `produceFinal`. Tests: `RecordingPostProcessorTests` x2 and `OrphanRecordingRecoveryTests` x1 (`_F052`). The single-source path is unchanged (it already failed with a breadcrumb). Remainder is the named port, none of it started: FLAC, the merge, redaction, then deleting `findFFmpeg` and the install and CI steps. Owed by the owner: nothing; the next live check is the removed-ffmpeg case on a build without the bundled binary, which the tests cover.

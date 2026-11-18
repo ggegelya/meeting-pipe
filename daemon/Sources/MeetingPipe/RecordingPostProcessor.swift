@@ -323,6 +323,11 @@ enum RecordingPostProcessor {
         return f
     }()
 
+    /// The breadcrumb reason when a two-channel recording cannot be merged for want of ffmpeg (DEP2/F052).
+    /// The launch sweep ignores REC24's attempt cap, so a relaunch after installing ffmpeg is what retries it.
+    static let ffmpegMissingReason =
+        "ffmpeg was not found, so the two channels were not merged; both were kept. Install ffmpeg and relaunch MeetingPipe to merge them"
+
     static func writePostProcessFailure(
         final: URL,
         retained: [URL],
@@ -373,7 +378,8 @@ enum RecordingPostProcessor {
     static func produceFinal(
         mic: URL, system: URL, final: URL, hasMic: Bool, hasSystem: Bool,
         systemHeadOffsetSec: Double = 0, limitSeconds: Double? = nil,
-        ffmpegPath: String? = nil, ceilingSeconds: Double = RecordingPostProcessor.mergeCeilingSeconds
+        ffmpegPath: String? = nil, ceilingSeconds: Double = RecordingPostProcessor.mergeCeilingSeconds,
+        locateFFmpeg: () -> String? = RecordingPostProcessor.findFFmpeg
     ) async -> Bool {
         let tmp = mergingTempURL(forFinal: final)
         // Clear a stale temp a prior abandoned (timed-out) merge may have left.
@@ -386,23 +392,18 @@ enum RecordingPostProcessor {
                 systemHeadOffsetSec: systemHeadOffsetSec
             )
             lengths = applyTrim(lengths, limitSeconds: limitSeconds)
-            guard let ffmpeg = ffmpegPath ?? findFFmpeg() else {
-                // No ffmpeg: move mic -> final (an atomic rename, no wedge risk) and
-                // keep system.wav for a later merge or manual recovery.
-                Log.writeLine("recorder", "ERROR: ffmpeg not found - moving mic.wav to final, keeping system.wav for a later merge")
-                do {
-                    try FileManager.default.moveItem(at: mic, to: final)
-                } catch {
-                    Log.writeLine("recorder", "ERROR: ffmpeg absent and mic.wav could not be moved to final: \(error.localizedDescription)")
-                    writePostProcessFailure(final: final, retained: [mic, system])
-                    return false
-                }
-                // Byte floor only, deliberately. Nothing merged: this is the mic file
-                // under a new name, so `lengths`' target (which counts system audio
-                // that is still sitting in `system.wav`) is not a length it could ever
-                // have, and checking it against its own duration would assert nothing.
-                if producedPlausibleOutput(at: final) { return true }
-                writePostProcessFailure(final: final, retained: [mic, system])
+            guard let ffmpeg = ffmpegPath ?? locateFFmpeg() else {
+                // DEP2 / F052: no ffmpeg means no merge, and a mic-only file promoted to `final` is a
+                // success that lacks the far side of the call: orphan recovery skips any stem that
+                // already has a final, so the "later merge" this branch used to promise could never run.
+                // Fail like every other failed merge instead: both intermediates stay, the breadcrumb
+                // lets the orphan sweep find the stem, and a merge happens once ffmpeg exists.
+                Log.writeLine("recorder", "ERROR: ffmpeg not found - keeping mic.wav and system.wav unmerged (DEP2/F052)")
+                writePostProcessFailure(
+                    final: final,
+                    retained: [mic, system],
+                    reason: Self.ffmpegMissingReason
+                )
                 return false
             }
             // OBS10: what the merge cost, beside the machine's state; written once the result is

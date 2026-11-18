@@ -251,6 +251,41 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
         XCTAssertEqual(markers.markers.map(\.tSeconds), [12.5, 340.0])
     }
 
+    /// DEP2 / F052: the stem a no-ffmpeg stop left behind is still an orphan (no final was promoted), and
+    /// once ffmpeg exists `recoverOrphan` produces the final and consumes both intermediates.
+    func test_a_stem_left_by_a_no_ffmpeg_stop_is_scanned_and_merges_once_ffmpeg_exists_F052() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+        let stem = "20261118-100000"
+        let mic = dir.appendingPathComponent("\(stem).mic.wav")
+        let system = dir.appendingPathComponent("\(stem).system.wav")
+        let final = dir.appendingPathComponent("\(stem).wav")
+        try makeWavData(seconds: 1.0).write(to: mic)
+        try makeWavData(seconds: 1.0).write(to: system)
+
+        let stopped = await RecordingPostProcessor.produceFinal(
+            mic: mic, system: system, final: final, hasMic: true, hasSystem: true, locateFFmpeg: { nil }
+        )
+        XCTAssertFalse(stopped)
+        XCTAssertEqual(OrphanRecordingRecovery.scanOrphanStems(in: dir), [stem], "the sweep still sees the stem")
+
+        let merged = dir.appendingPathComponent("merged-source.bin")
+        try makeWavData(seconds: 1.0).write(to: merged)
+        setenv("MEETINGPIPE_FFMPEG", try fakeFFmpeg(in: dir, writing: merged).path, 1)
+        defer { unsetenv("MEETINGPIPE_FFMPEG") }
+
+        let recovered = await RecordingPostProcessor.recoverOrphan(stem: stem, in: dir)
+
+        XCTAssertEqual(recovered, final)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: final.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mic.path), "the consumed intermediates are removed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: system.path))
+    }
+
     /// A PCM WAV of `seconds` of silence: decodable, past the 4,096-byte has-audio floor.
     private func makeWavData(seconds: Double, sampleRate: UInt32 = 16000) -> Data {
         let payloadBytes = Int(Double(sampleRate) * seconds) * 2

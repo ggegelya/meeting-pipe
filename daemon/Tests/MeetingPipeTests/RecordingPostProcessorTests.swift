@@ -232,6 +232,63 @@ final class RecordingPostProcessorTests: XCTestCase {
         XCTAssertTrue(reason.contains("REC9"), "the breadcrumb names the length refusal, not a generic failure: \(reason)")
     }
 
+    // MARK: - DEP2 / F052: no ffmpeg is a failed merge, never a mic-only success
+
+    /// Both channels present and no ffmpeg: the old branch renamed `mic.wav` onto the final and reported
+    /// success, which hid the stem from the orphan sweep and published a call with the far side missing.
+    func test_no_ffmpeg_keeps_both_channels_and_writes_no_final_F052() async throws {
+        let dir = try makeTempDir()
+        let logs = dir.appendingPathComponent("logs")
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+        let mic = dir.appendingPathComponent("rec.mic.wav")
+        let system = dir.appendingPathComponent("rec.system.wav")
+        let final = dir.appendingPathComponent("rec.wav")
+        try makeWavData(seconds: 1.0, amplitude: 1000).write(to: mic)
+        try makeWavData(seconds: 1.0, amplitude: 2000).write(to: system)
+        let micBytes = try Data(contentsOf: mic)
+        let systemBytes = try Data(contentsOf: system)
+
+        let ok = await RecordingPostProcessor.produceFinal(
+            mic: mic, system: system, final: final, hasMic: true, hasSystem: true,
+            locateFFmpeg: { nil }
+        )
+
+        XCTAssertFalse(ok, "a mic-only file is not a finished recording")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: final.path), "no final at the canonical path")
+        XCTAssertEqual(try Data(contentsOf: mic), micBytes, "the mic channel stays where it was")
+        XCTAssertEqual(try Data(contentsOf: system), systemBytes)
+        let breadcrumb = try XCTUnwrap(RecordingPostProcessor.readPostProcessFailure(final: final))
+        XCTAssertEqual(breadcrumb.reason, RecordingPostProcessor.ffmpegMissingReason)
+        XCTAssertTrue(breadcrumb.reason?.contains("ffmpeg") == true && breadcrumb.reason?.contains("relaunch") == true)
+        let raw = try Data(contentsOf: RecordingPostProcessor.recordFailURL(forFinal: final))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: raw) as? [String: Any])
+        XCTAssertEqual(payload["retained"] as? [String], ["rec.mic.wav", "rec.system.wav"])
+        let events = try String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)
+        XCTAssertTrue(events.contains("postprocess_failed"), events)
+    }
+
+    /// A single present channel is converted, not merged, and keeps its own failure path (unchanged).
+    func test_no_ffmpeg_leaves_the_single_source_path_failing_as_before_F052() async throws {
+        let dir = try makeTempDir()
+        let mic = dir.appendingPathComponent("solo.mic.wav")
+        let final = dir.appendingPathComponent("solo.wav")
+        try makeWavData(seconds: 1.0, amplitude: 1000).write(to: mic)
+        let saved = ProcessInfo.processInfo.environment["MEETINGPIPE_FFMPEG"]
+        setenv("MEETINGPIPE_FFMPEG", "/nonexistent/ffmpeg", 1)
+        defer { if let saved { setenv("MEETINGPIPE_FFMPEG", saved, 1) } else { unsetenv("MEETINGPIPE_FFMPEG") } }
+
+        let ok = await RecordingPostProcessor.produceFinal(
+            mic: mic, system: dir.appendingPathComponent("solo.system.wav"), final: final,
+            hasMic: true, hasSystem: false, ffmpegPath: "/nonexistent/ffmpeg"
+        )
+
+        XCTAssertFalse(ok)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: final.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mic.path))
+    }
+
     // MARK: - Helpers
 
     private func makeTempDir() throws -> URL {
