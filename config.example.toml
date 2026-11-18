@@ -1,11 +1,16 @@
 # Copy to ~/.config/meeting-pipe/config.toml and edit.
 
 [recording]
-# Where raw WAVs land. Tilde is expanded at runtime.
+# Where raw WAVs land. Tilde is expanded at runtime. The default sits outside
+# ~/Documents (STOR6): with iCloud Desktop & Documents on, anything there is
+# uploaded to Apple, and the folder is privacy-protected, so the first write
+# there raises a permission prompt. Until 2026-11-18 the default was
+# ~/Documents/Meetings/raw; a config that names no path keeps that one when it
+# already holds recordings.
 #
 # There is no sample-rate knob: capture is a deliberate 16 kHz constant (what
 # Parakeet TDT consumes). The key existed until HYG2 and nothing read it.
-output_dir = "~/Documents/Meetings/raw"
+output_dir = "~/Meetings/raw"
 # Bundle IDs that auto-start recording without a prompt, e.g. ["us.zoom.xos"].
 auto_consent_apps = []
 # When true, AVAudioEngine's voice-processing chain runs on the mic
@@ -282,7 +287,7 @@ daily_note_backlink = false
 # transcript, actions). A sibling of the recordings dir by default. Worth
 # setting even if you never enable the sink by hand: an NDA workflow publishes
 # here and nowhere else.
-output_dir = "~/Documents/Meetings/published"
+output_dir = "~/Meetings/published"
 
 [lan]
 # Target directory on an ALREADY-MOUNTED SMB/NFS share for the "lan" sink.

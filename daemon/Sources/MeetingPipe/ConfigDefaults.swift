@@ -17,12 +17,23 @@ enum ConfigDefaults {
 
     // MARK: - [recording]
 
-    static let outputDirPath = "~/Documents/Meetings/raw"
+    /// STOR6: outside iCloud Desktop & Documents and the TCC-protected Documents folder, and
+    /// visible in Finder (unlike `~/Library`). `LibraryDefaultPin` keeps an existing library at
+    /// the old default where it is.
+    static let outputDirPath = "~/Meetings/raw"
+    /// The default until STOR6, which `LibraryDefaultPin` pins for a config that names no path.
+    static let legacyOutputDirPath = "~/Documents/Meetings/raw"
     static let autoConsentApps: [String] = []
     /// Off: VPIO's AGC degrades the HAL device gain system-wide while the engine runs, so other
     /// mic users (Teams, Zoom, FaceTime) hear the user as extremely quiet. Opt in for isolated recording.
     static let voiceProcessing = false
     static let honorAppMute = true
+
+    // MARK: - [filesystem]
+
+    /// STOR6: a sibling of the recordings directory, outside `~/Documents` like it.
+    static let filesystemOutputDirPath = "~/Meetings/published"
+    static let legacyFilesystemOutputDirPath = "~/Documents/Meetings/published"
 
     // MARK: - [detection]
 

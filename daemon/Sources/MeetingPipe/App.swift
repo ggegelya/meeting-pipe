@@ -205,6 +205,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             Log.main.info("Loaded config from \(Config.defaultPath.path)")
         }
+        // STOR6 item 2: before the launch-time Config is taken, so a library at the old default
+        // that the file never named stays where it is rather than appearing to vanish.
+        store.pinLegacyDefaults()
         let config = store.config
         self.configStore = store
         // UX96: a hand edit while the app runs reaches the in-memory readers (the

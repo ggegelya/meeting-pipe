@@ -911,8 +911,8 @@ def check_library_sync(
 
     An OS-level hole in the zero-egress promise: `egress_guard` clamps this
     process, but it cannot stop iCloud from syncing the WAV that was just written.
-    The default `~/Documents/Meetings/` sits inside iCloud's Desktop & Documents
-    scope, so this is the common case, not the exotic one.
+    The pre-STOR6 default `~/Documents/Meetings/`, which every older install keeps,
+    sits inside iCloud's Desktop & Documents scope, so this is a common case.
 
     A synced root is a WARN. A synced root under `regulated_mode`, or on a Mac with
     any NDA workflow, is a FAIL: those modes exist precisely to promise that

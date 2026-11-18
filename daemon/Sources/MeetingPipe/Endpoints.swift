@@ -38,7 +38,6 @@ enum Endpoints {
         /// `mp backup` owns writing it.
         static let lastBackupRelative = ".config/meeting-pipe/.last-backup.json"
         static let logsRelative = "Library/Logs/MeetingPipe"
-        static let recordingsRelative = "Documents/Meetings/raw"
         /// Phase 2 correction corpus. Per-meeting JSON files; consumed by
         /// `mp corrections-stats` and (Phase 3) the LoRA trainer.
         static let correctionsRelative = "Library/Application Support/MeetingPipe/corrections"

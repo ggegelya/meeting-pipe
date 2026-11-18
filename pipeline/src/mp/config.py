@@ -21,6 +21,36 @@ def _expand(p: str) -> Path:
 
 CONFIG_PATH = _expand("~/.config/meeting-pipe/config.toml")
 
+# STOR6: the library defaults moved out of iCloud's Desktop & Documents scope (and the
+# TCC-protected Documents folder). A config that names no path, whose old default already holds
+# files, keeps the old one: the daemon's `LibraryDefaultPin` writes it into config.toml at launch,
+# and `_pin_legacy_defaults` applies the same rule here so a run before that launch agrees.
+DEFAULT_OUTPUT_DIR = "~/Meetings/raw"
+DEFAULT_PUBLISHED_DIR = "~/Meetings/published"
+LEGACY_OUTPUT_DIR = "~/Documents/Meetings/raw"
+LEGACY_PUBLISHED_DIR = "~/Documents/Meetings/published"
+
+
+def _has_entries(path: Path) -> bool:
+    try:
+        return any(entry.name != ".DS_Store" for entry in path.iterdir())
+    except OSError:
+        return False
+
+
+def _pin_legacy_defaults(raw: dict[str, Any]) -> None:
+    """Name the old default in `raw` for each library key the file leaves unset whose old
+    default directory holds files (STOR6; mirrors Swift's `LibraryDefaultPin`)."""
+    for table, legacy in (("recording", LEGACY_OUTPUT_DIR), ("filesystem", LEGACY_PUBLISHED_DIR)):
+        section = raw.get(table)
+        if section is None:
+            section = {}
+        if not isinstance(section, dict) or "output_dir" in section:
+            continue
+        if _has_entries(_expand(legacy)):
+            section["output_dir"] = legacy
+            raw[table] = section
+
 # SEC8: API tokens live in the macOS login Keychain, not a plaintext file. The daemon, this pipeline, and
 # scripts/install.sh all read/write the same generic-password items through /usr/bin/security. Keep the
 # service + managed-key names in sync with KeychainSecrets.swift and install.sh.
@@ -56,7 +86,7 @@ class ConfigError(ValueError):
 
 
 class Recording(BaseModel):
-    output_dir: Path = Field(default=_expand("~/Documents/Meetings/raw"))
+    output_dir: Path = Field(default=_expand(DEFAULT_OUTPUT_DIR))
     # `extra="ignore"` — old config files in the wild may still have
     # capture_mode / audio_device / mic_device / sample_rate fields (the last
     # deleted by HYG2: capture is a deliberate 16 kHz constant). Tolerate them
@@ -234,7 +264,7 @@ class FilesystemCfg(BaseModel):
     files (summary, transcript, actions) are dumped into per meeting.
     Defaults to a sibling of the recordings dir so a fresh install
     "works" without further config when the sink is enabled."""
-    output_dir: str = "~/Documents/Meetings/published"
+    output_dir: str = DEFAULT_PUBLISHED_DIR
 
 
 class LanCfg(BaseModel):
@@ -316,7 +346,11 @@ class Config(BaseModel):
     def load(cls, path: Path | None = None) -> "Config":
         path = path or CONFIG_PATH
         if not path.exists():
-            return cls()
+            empty: dict[str, Any] = {}
+            _pin_legacy_defaults(empty)
+            if isinstance(empty.get("recording", {}).get("output_dir"), str):
+                empty["recording"]["output_dir"] = str(_expand(empty["recording"]["output_dir"]))
+            return cls(**empty)
         with path.open("rb") as f:
             raw = tomllib.load(f)
         if "regulated_mode" in raw:
@@ -336,6 +370,7 @@ class Config(BaseModel):
             )
         unknown = find_unknown_keys(raw)
         _report_unknown(unknown)
+        _pin_legacy_defaults(raw)
         # Normalize tilde in output_dir if user wrote one.
         rec = raw.get("recording", {})
         if isinstance(rec.get("output_dir"), str):

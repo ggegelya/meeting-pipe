@@ -279,7 +279,7 @@ struct IntegrationsSectionView: View {
             SettingsStackRow("Output folder", showsDivider: false) {
                 pathField(
                     text: $store.filesystemOutputDir,
-                    placeholder: "~/Documents/Meetings/published",
+                    placeholder: ConfigDefaults.filesystemOutputDirPath,
                     prompt: "Pick where published Markdown lands."
                 )
             }

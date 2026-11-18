@@ -145,6 +145,18 @@ truth_fences() {
     fi
     echo "macOS $pkg everywhere: Package.swift, install.sh check, LSMinimumSystemVersion."
     end
+
+    begin "no 'never leaves your Mac' promise in the generated plist (STOR6)"
+    # The permission prompts install.sh writes into Info.plist are static text macOS shows, so
+    # they cannot be derived from the configured backend or library the way the welcome step
+    # is. A sentence claiming audio or notes never leave the Mac is false under the default
+    # Anthropic engine or a synced library; keep these to what is true under any config.
+    if grep -niE "never leaves?( your| this)? mac" scripts/install.sh; then
+        echo "::error::STOR6: scripts/install.sh writes a 'never leave(s) your Mac' promise into the app's Info.plist. Say only what is true under every configuration."
+        return 1
+    fi
+    echo "install.sh's permission strings make no never-leaves promise."
+    end
 }
 
 pipeline() {

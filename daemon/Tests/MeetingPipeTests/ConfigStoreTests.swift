@@ -286,7 +286,7 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(store.obsidianFolder, "Meetings")
         XCTAssertTrue(store.obsidianAttachAudio)
         XCTAssertEqual(store.obsidianAttachmentsSubfolder, "_attachments")
-        XCTAssertEqual(store.filesystemOutputDir, "~/Documents/Meetings/published")
+        XCTAssertEqual(store.filesystemOutputDir, "~/Meetings/published", "STOR6: outside ~/Documents")
         XCTAssertEqual(store.lanMountPath, "/Volumes/meetings")
         XCTAssertEqual(store.lanHost, "")
         XCTAssertTrue(store.notionIncludeFullTranscript, "on, matching the pipeline default")

@@ -33,7 +33,16 @@ trap 'rm -rf "$SCRATCH"' EXIT
 echo "predicates"
 H="/Users/someone"
 expect_eq "no config is the default directory" \
-    "$(live_recording_output_dir "$SCRATCH/absent.toml" "$H")" "$H/Documents/Meetings/raw"
+    "$(live_recording_output_dir "$SCRATCH/absent.toml" "$H")" "$H/Meetings/raw"
+
+# STOR6: a config naming no path keeps the old default when it already holds files.
+OLDH="$SCRATCH/oldhome"
+mkdir -p "$OLDH/Documents/Meetings/raw"
+expect_eq "an empty old default does not pin" \
+    "$(live_recording_output_dir "$SCRATCH/absent.toml" "$OLDH")" "$OLDH/Meetings/raw"
+touch "$OLDH/Documents/Meetings/raw/20260101-090000.wav"
+expect_eq "an old default holding recordings is kept" \
+    "$(live_recording_output_dir "$SCRATCH/absent.toml" "$OLDH")" "$OLDH/Documents/Meetings/raw"
 
 cat >"$SCRATCH/c1.toml" <<'TOML'
 [filesystem]
@@ -51,7 +60,7 @@ cat >"$SCRATCH/c2.toml" <<'TOML'
 output_dir = "/not/this/one"
 TOML
 expect_eq "another table's output_dir is not the recordings directory" \
-    "$(live_recording_output_dir "$SCRATCH/c2.toml" "$H")" "$H/Documents/Meetings/raw"
+    "$(live_recording_output_dir "$SCRATCH/c2.toml" "$H")" "$H/Meetings/raw"
 
 cat >"$SCRATCH/c3.toml" <<'TOML'
 [ recording ]

@@ -141,7 +141,7 @@ struct OnboardingRootView: View {
 
             Group {
                 switch step {
-                case 0: OnboardingStepWelcome()
+                case 0: OnboardingStepWelcome(store: deps.configStore, workflows: deps.workflowStore)
                 case 1: OnboardingStepPermissions(relaunch: deps.relaunchToPermissions)
                 case 2: OnboardingStepWorkflow(
                     workflowStore: deps.workflowStore,

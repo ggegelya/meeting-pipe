@@ -19,8 +19,11 @@
 # live_recording_output_dir <config.toml path> <home>
 #   The recordings directory, resolved the way the pipeline's `mp` resolves
 #   `recording.output_dir`: the `[recording]` table's `output_dir`, `~` expanded,
-#   else the default `~/Documents/Meetings/raw`. A missing or unreadable config
-#   is the default, which is where the daemon writes when it has none either.
+#   else the default. A missing or unreadable config is the default, which is
+#   where the daemon writes when it has none either. The default is
+#   `~/Meetings/raw` (STOR6), except that a config naming no path keeps the old
+#   `~/Documents/Meetings/raw` when that directory holds anything, the same rule
+#   the daemon's LibraryDefaultPin and `mp.config` apply.
 live_recording_output_dir() {
     local config="$1" home="$2" dir=""
     if [[ -r "$config" ]]; then
@@ -43,8 +46,16 @@ live_recording_output_dir() {
         ' "$config" 2>/dev/null)" || dir=""
     fi
     # The literal tilde is the config default's own spelling; the case below expands it.
-    # shellcheck disable=SC2088
-    [[ -n "$dir" ]] || dir="~/Documents/Meetings/raw"
+    if [[ -z "$dir" ]]; then
+        if [[ -d "$home/Documents/Meetings/raw" ]] \
+            && [[ -n "$(find "$home/Documents/Meetings/raw" -mindepth 1 -maxdepth 1 ! -name .DS_Store -print -quit 2>/dev/null)" ]]; then
+            # shellcheck disable=SC2088
+            dir="~/Documents/Meetings/raw"
+        else
+            # shellcheck disable=SC2088
+            dir="~/Meetings/raw"
+        fi
+    fi
     # shellcheck disable=SC2088  # matching a literal tilde, not expanding one
     case "$dir" in
         "~") dir="$home" ;;

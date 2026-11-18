@@ -2,9 +2,9 @@
 id: STOR6
 title: New installs put the library in iCloud-synced ~/Documents, the welcome screen promises nothing leaves the Mac, and a library left in iCloud is read with no dataless or download handling
 category: Storage
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-24 (audit band, architecture review M9, go-live UX-5 PD-10 DI-11): SEC12 only warns; the default is still ~/Documents/Meetings, six of the owner's library files are already iCloud-evicted, and the welcome step says notes never leave the Mac while the default engine is Anthropic. Default new installs to ~/Meetings, pin existing paths, welcome copy from PrivacyReach, download-status checks before heavy reads. [Spec](./STOR6.md) Amended 2026-11-13 by the audit band: install.sh's microphone prompt also says audio never leaves the Mac while the default library is iCloud-synced; rewrite it to a sentence true under any config, and the owner rules on the launch-path wizard.
+comment: Partial 2026-11-18. Shipped items 1, 2, 3 and 5, and item 4's backup half - new installs default to ~/Meetings/raw and ~/Meetings/published (Swift, mp.config, config.example.toml, live-recording.sh), a config naming no path keeps an old library that holds files (LibraryDefaultPin writes it into config.toml at launch, library_default_pinned; mp and the rebuild guard apply the same rule), welcome copy from PrivacyReach plus the library's sync state, a ci-local fence on install.sh's never-leaves promise, mp backup counts dataless files. Owner ruled F175 setup ease, kept. Left - item 4's Swift half (download-status checks before playback and transcription).
 ---
 
 # STOR6: new installs put the library in iCloud-synced `~/Documents`, the welcome screen promises nothing leaves the Mac, and a library left in iCloud is read with no dataless or download handling
@@ -63,3 +63,17 @@ Correction at filing: F175's copy defect is already this task. `OnboardingStepWe
 - (F175) The Swift welcome-copy test in the acceptance above also asserts the string contains no "never leave".
 
 **Owner decision (F175; gates nothing in items 1 to 5).** [owner] Say whether the launch-time first-run flow (`presentOnboardingIfNeeded`) stays as setup ease or is a deferred wizard; [session] records the answer in this file.
+
+**Answered 2026-11-18: "Setup ease, keep it."** The launch-time first-run flow stays. It frames the TCC prompts one at a time and is setup ease under root `CLAUDE.md`'s carve-out, not a deferred onboarding wizard; nothing is filed against it.
+
+**Progress (2026-11-18):** shipped items 1, 2, 3 and 5, and the backup half of item 4.
+
+- **Item 1.** `ConfigDefaults.outputDirPath` is `~/Meetings/raw` and the new `filesystemOutputDirPath` is `~/Meetings/published` (the store and the Integrations placeholder read it); `mp.config` (`DEFAULT_OUTPUT_DIR`, `DEFAULT_PUBLISHED_DIR`) and `config.example.toml` match, and `Endpoints.Paths.recordingsRelative` is gone. The folder name was the spec's proposal (`~/Meetings`); the owner did not name another.
+- **Item 2.** `LibraryDefaultPin` (pure) and `ConfigStore.pinLegacyDefaults`, called at launch before the launch-time `Config` is taken: a key the file does not name, whose old default holds anything but a `.DS_Store`, is written into `config.toml` explicitly and logged as `daemon` / `library_default_pinned`. Decisions not in the spec: the filesystem sink's default is pinned by the same rule, since a published folder appearing to vanish is the same failure; `mp.config` applies the rule when it reads a config with no key (and when there is no file), so a pipeline run before the daemon's first launch agrees; and `scripts/lib/live-recording.sh` applies it too, because `rebuild.sh` reads it before the new daemon has launched, and resolving to the new default there would miss a live recording in the old one (DIST9's stop-before-write guard). The suite is sealed from the developer's real old library (`conftest.py` points the legacy paths at an empty temp dir).
+- **Item 3.** `WelcomeCopy` builds the welcome step from `PrivacyReach.summarizationSentence` and `publishSentence` over the configured backend, regulated mode and the workflows' sinks, and names the library folder and, through `CloudSyncDetector`, the sync client that owns it. Title "Meeting notes from your calls". README's "keeps summarization on your Mac" sentence is corrected, and README, ARCHITECTURE, CONVENTIONS, GUIDE and SETUP name the new default and the old one older installs keep.
+- **Item 5.** The plist string was already rewritten by SEC18 (`aa00836b`); added the acceptance's check as a `ci-local.sh fences` step that fails on a "never leave(s) your/this Mac" phrase in `scripts/install.sh` (tried against a planted copy of the old string, then reverted).
+- **Item 4, backup half.** `mp backup` reads `SF_DATALESS` from each file's stat before archiving it, records `dataless` per root in the manifest, and the summary names the count and points at Move library.
+
+Tests: `LibraryDefaultSTOR6Tests` (10), `ConfigStoreTests` updated for the published default, `pipeline/tests/test_library_default_stor6.py` (6), two in `test_backup_restore.py`, three new cases in `scripts/test-rebuild-guard.sh`.
+
+**Remainder.** Item 4's Swift half: before playback, transcription or re-transcription, read `ubiquitousItemDownloadingStatus`, start the download and show "Downloading from iCloud" on the row instead of blocking, with `icloud_download_wait`. That touches the playback controller, the transcription runner and the Library row state, and is its own change. **Owner checks:** an install into a scratch home creates `~/Meetings/raw` on first record with no Documents-folder prompt; on this Mac, the first launch after updating leaves the library where it is (config.toml already names it, so nothing is pinned); the welcome step reads true (also SEC12's outstanding eyeball).

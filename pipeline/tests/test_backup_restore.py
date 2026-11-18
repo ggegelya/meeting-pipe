@@ -1572,3 +1572,46 @@ def test_a_successful_backup_writes_an_ok_attempt_and_a_completed_event(
 
 def test_the_attempt_markers_are_not_archived() -> None:
     assert {".last-backup-attempt.json", ".last-digest-attempt.json"} <= backup_mod.EXCLUDED_NAMES
+
+
+# STOR6: a library left in iCloud is reported, not silently materialised.
+
+def test_backup_counts_a_file_whose_flags_say_it_is_dataless(tmp_path: Path, monkeypatch) -> None:
+    import io
+    import tarfile as _tarfile
+
+    from mp import backup
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "evicted.summary.md").write_text("x", encoding="utf-8")
+    (lib / "local.summary.md").write_text("y", encoding="utf-8")
+
+    real_stat = Path.stat
+
+    class _Stat:
+        def __init__(self, st: os.stat_result, flags: int) -> None:
+            self._st, self.st_flags = st, flags
+
+        def __getattr__(self, name: str):
+            return getattr(self._st, name)
+
+    def fake_stat(self: Path, *args, **kwargs):
+        st = real_stat(self, *args, **kwargs)
+        return _Stat(st, backup.SF_DATALESS) if self.name == "evicted.summary.md" else st
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    with _tarfile.open(fileobj=io.BytesIO(), mode="w") as tar:
+        entry = backup._add_root(tar, backup.Root(name="library", prefix="library", source=lib), include_audio=True)
+    assert entry["files"] == 2
+    assert entry["dataless"] == 1
+
+
+def test_is_dataless_reads_the_flag() -> None:
+    from types import SimpleNamespace
+
+    from mp import backup
+
+    assert backup.is_dataless(SimpleNamespace(st_flags=backup.SF_DATALESS))  # type: ignore[arg-type]
+    assert not backup.is_dataless(SimpleNamespace(st_flags=0))  # type: ignore[arg-type]
+    assert not backup.is_dataless(SimpleNamespace())  # type: ignore[arg-type]

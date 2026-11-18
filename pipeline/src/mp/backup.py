@@ -201,13 +201,29 @@ def _root_files(root: Root, *, include_audio: bool) -> Iterator[Path]:
         yield path
 
 
+#: STOR6: `SF_DATALESS` (macOS `<sys/stat.h>`), set on a file a sync client has evicted to the
+#: cloud. `stat` has the name from Python 3.13; the value is the kernel's either way.
+SF_DATALESS = getattr(stat, "SF_DATALESS", 0x40000000)
+
+
+def is_dataless(st: os.stat_result) -> bool:
+    """Whether the stat says the file's bytes are in the cloud, not on this disk. Reading one
+    makes the sync client download it first, which is what a backup of an evicted library does
+    to every file it holds."""
+    return bool(getattr(st, "st_flags", 0) & SF_DATALESS)
+
+
 def _add_root(tar: tarfile.TarFile, root: Root, *, include_audio: bool) -> dict[str, object]:
     """Archive one root, returning its manifest entry. A root that does not exist
     contributes an entry with zero files rather than being silently dropped, so a
     restore can tell "you had no digests" from "the backup forgot digests"."""
     files = 0
     total = 0
+    dataless = 0
     for path in _root_files(root, include_audio=include_audio):
+        # STOR6: read the flags before `tar.add` reads the bytes, which downloads an evicted file.
+        if is_dataless(path.stat()):
+            dataless += 1
         arcname = f"{root.prefix}/{path.relative_to(root.source)}"
         tar.add(path, arcname=arcname, recursive=False)
         files += 1
@@ -218,6 +234,7 @@ def _add_root(tar: tarfile.TarFile, root: Root, *, include_audio: bool) -> dict[
         "source": str(root.source),
         "files": files,
         "bytes": total,
+        "dataless": dataless,
     }
 
 
@@ -760,6 +777,10 @@ def main(argv: list[str]) -> int:
     print(f"wrote {archive}  ({storage.human_bytes(archive.stat().st_size)})")
     for root in manifest["roots"]:
         print(f"  {root['name']:12} {root['files']:>6} files  {storage.human_bytes(root['bytes'])}")
+        if root.get("dataless"):
+            print(f"  {'':12} {root['dataless']:>6} of them were in iCloud (or another sync client) only, "
+                  "and were downloaded to be archived. Your library is inside a synced folder: "
+                  "Preferences ▸ Storage ▸ Move library… moves it out.")
     if not include_audio:
         print("  recordings were skipped (--no-audio)")
     if result.prune_skipped:

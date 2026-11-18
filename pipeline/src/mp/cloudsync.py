@@ -1,9 +1,9 @@
 """Is the meeting library sitting inside a cloud-sync folder? (SEC12)
 
 The zero-egress promise is enforced inside this process (`egress_guard`), but the
-filesystem can undo it from underneath: the default library at
-`~/Documents/Meetings/` sits inside iCloud's Desktop & Documents scope, and if
-that setting is on, every WAV and transcript uploads to Apple with nothing in
+filesystem can undo it from underneath: a library under `~/Documents/Meetings/`
+(the default until STOR6, and still every older install's) sits inside iCloud's
+Desktop & Documents scope, and if that setting is on, every WAV and transcript uploads to Apple with nothing in
 meeting-pipe aware of it. Dropbox, Google Drive, and OneDrive do the same to any
 library placed inside them.
 

@@ -148,6 +148,10 @@ def _no_developer_config(monkeypatch, tmp_path):
     missing = tmp_path / "no-config-home" / "config.toml"
     monkeypatch.setattr(config, "CONFIG_PATH", missing)
     monkeypatch.setattr(doctor, "CONFIG_PATH", missing)
+    # STOR6: a config naming no library path keeps the old ~/Documents default when it holds
+    # files, which on a developer's Mac it does. Point the old defaults somewhere empty too.
+    monkeypatch.setattr(config, "LEGACY_OUTPUT_DIR", str(tmp_path / "no-legacy" / "raw"))
+    monkeypatch.setattr(config, "LEGACY_PUBLISHED_DIR", str(tmp_path / "no-legacy" / "published"))
 
 
 @pytest.fixture(autouse=True)

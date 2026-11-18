@@ -561,9 +561,43 @@ final class ConfigStore: ObservableObject {
         self.obsidianAttachmentsSubfolder = obsidian?["attachments_subfolder"]?.string
             ?? "_attachments"
         self.filesystemOutputDir = filesystem?["output_dir"]?.string
-            ?? "~/Documents/Meetings/published"
+            ?? ConfigDefaults.filesystemOutputDirPath
         self.lanMountPath = lan?["mount_path"]?.string ?? "/Volumes/meetings"
         self.lanHost = lan?["host"]?.string ?? ""
+    }
+
+    /// STOR6 item 2: whether the file names `[table] key` itself, as opposed to the value being
+    /// the default this store filled in.
+    func namesKey(_ key: LibraryDefaultPin.Key) -> Bool {
+        rawDocument[key.table]?.table?[key.key]?.string != nil
+    }
+
+    /// STOR6 item 2: pin each moved default whose old directory holds files and that the file does
+    /// not name, then save at once. Returns the keys pinned. Never on a file that did not parse
+    /// (saves are refused there anyway, and the store is running on defaults).
+    @discardableResult
+    func pinLegacyDefaults(hasEntries: (String) -> Bool = { LibraryDefaultPin.hasEntries($0) }) -> [LibraryDefaultPin.Key] {
+        guard parseError == nil else { return [] }
+        var pinned: [LibraryDefaultPin.Key] = []
+        for key in [LibraryDefaultPin.recordings, LibraryDefaultPin.published]
+        where LibraryDefaultPin.shouldPin(configNamesKey: namesKey(key), legacyHasEntries: hasEntries(key.legacy)) {
+            if key == LibraryDefaultPin.recordings { outputDirPath = key.legacy } else { filesystemOutputDir = key.legacy }
+            pinned.append(key)
+        }
+        guard !pinned.isEmpty else { return [] }
+        do {
+            try saveNow()
+        } catch {
+            Log.failure(category: "daemon", action: "library_default_pin_failed", error: error)
+            return []
+        }
+        for key in pinned {
+            Log.writeLine("daemon", "kept the library at its old default: wrote \(key.table).\(key.key) = \(key.legacy) into config.toml")
+            Log.event(category: "daemon", action: "library_default_pinned", attributes: [
+                "key": "\(key.table).\(key.key)",
+            ])
+        }
+        return pinned
     }
 
     // MARK: - Persistence
