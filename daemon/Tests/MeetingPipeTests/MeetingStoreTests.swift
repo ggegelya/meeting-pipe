@@ -641,7 +641,137 @@ final class MeetingStoreTests: XCTestCase {
             "c.wav", "c.error.json", "c.summary.json",
         ])
         XCTAssertEqual(stems, ["a"],
-                       "b succeeded; c's summary supersedes its error sidecar")
+                       "filename-only (the auto-retry pass): a summary supersedes every error sidecar")
+    }
+
+    // MARK: UX90: the menu's failed row uses the Library's rule
+
+    private func readers(
+        error: [String: MeetingStore.ErrorEvidence] = [:],
+        summary: [String: Date] = [:],
+        publish: [String: String] = [:]
+    ) -> MeetingStore.FailureContentReaders {
+        MeetingStore.FailureContentReaders(
+            errorEvidence: { error[$0] }, summaryModified: { summary[$0] }, publishState: { publish[$0] }
+        )
+    }
+
+    func test_unrecoveredFailureStems_is_stage_aware_beside_a_summary_UX90() {
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let names = [
+            "a.wav", "a.error.json",                       // no summary: counted
+            "c.wav", "c.error.json", "c.summary.json",     // publish-stage beside a summary
+            "d.wav", "d.error.json", "d.summary.json",     // older metadata-less: stale
+            "e.wav", "e.error.json", "e.summary.json",     // structured, newer than the summary
+            "f.wav", "f.error.json", "f.summary.json",     // structured, older than the summary
+        ]
+        let stems = MeetingStore.unrecoveredFailureStems(fileNames: names, readers: readers(
+            error: [
+                "c": .init(stage: .publish, structured: false, modified: t0),
+                "d": .init(stage: .pipeline, structured: false, modified: t0),
+                "e": .init(stage: .pipeline, structured: true, modified: t0.addingTimeInterval(60)),
+                "f": .init(stage: .pipeline, structured: true, modified: t0.addingTimeInterval(-60)),
+            ],
+            summary: ["c": t0, "d": t0.addingTimeInterval(60), "e": t0, "f": t0]
+        ))
+        XCTAssertEqual(stems, ["a", "c", "e"])
+    }
+
+    func test_unrecoveredFailureStems_counts_a_partial_none_or_unknown_publish_UX90() {
+        let names = ["p.summary.json", "p.publish.json", "n.summary.json", "n.publish.json",
+                     "u.summary.json", "u.publish.json", "f.summary.json", "f.publish.json",
+                     "l.summary.json", "l.run.json", "r.summary.json", "r.run.json"]
+        let stems = MeetingStore.unrecoveredFailureStems(fileNames: names, readers: readers(
+            publish: ["p": "partial", "n": "none", "u": PublishResult.unknownState, "f": "full",
+                      "l": "local", "r": "none"]
+        ))
+        XCTAssertEqual(stems, ["n", "p", "r", "u"], "full and local are settled; r is a legacy run.json state")
+    }
+
+    func test_unrecoveredFailureStems_unreadable_error_beside_a_summary_is_not_counted_UX90() {
+        XCTAssertEqual(MeetingStore.unrecoveredFailureStems(
+            fileNames: ["c.error.json", "c.summary.json"], readers: readers()
+        ), [])
+    }
+
+    func test_errorIsCurrent_without_a_summary_is_always_current_UX90() {
+        let e = MeetingStore.ErrorEvidence(stage: .pipeline, structured: false, modified: Date())
+        XCTAssertTrue(MeetingStore.errorIsCurrent(e, summaryModified: nil))
+    }
+
+    /// The acceptance's agreement test: one fixture directory, the Library's statuses and the menu's
+    /// count read through the disk readers, and the same stems on both sides.
+    func test_buildMeeting_and_the_menu_count_agree_UX90() throws {
+        let dir = try tempDir()
+        let t0 = Date().addingTimeInterval(-3600)
+        func stem(_ minutes: Int) -> String {
+            MeetingFormatters.stem.string(from: t0.addingTimeInterval(TimeInterval(minutes * 60)))
+        }
+        let ok = stem(0), noSummary = stem(1), publishFail = stem(2), stale = stem(3),
+            regen = stem(4), partial = stem(5), full = stem(6)
+        for s in [ok, noSummary, publishFail, stale, regen, partial, full] {
+            try writeFile(dir.appendingPathComponent("\(s).wav"))
+        }
+        for s in [ok, publishFail, stale, regen, partial, full] {
+            try writeFile(dir.appendingPathComponent("\(s).summary.json"), "{\"title\":\"t\"}")
+            try setMtime(dir.appendingPathComponent("\(s).summary.json"), t0)
+        }
+        PipelineFailureSidecar.write(stem: noSummary, in: dir, stage: .pipeline, reason: "x")
+        PipelineFailureSidecar.write(stem: publishFail, in: dir, stage: .publish, reason: "x")
+        PipelineFailureSidecar.write(stem: stale, in: dir, stage: .pipeline, reason: "x")
+        try setMtime(PipelineFailureSidecar.url(forStem: stale, in: dir), t0.addingTimeInterval(-60))
+        PipelineFailureSidecar.write(stem: regen, in: dir, stage: .pipeline, reason: "x",
+                                     metadata: FailureMetadata(cause: .unknown, operation: .summary))
+        try setMtime(PipelineFailureSidecar.url(forStem: regen, in: dir), t0.addingTimeInterval(60))
+        try writeFile(dir.appendingPathComponent("\(partial).publish.json"),
+                      #"{"state":"partial","sinks":{"notion":{"ok":false},"filesystem":{"ok":true}}}"#)
+        try writeFile(dir.appendingPathComponent("\(full).publish.json"),
+                      #"{"state":"full","sinks":{"filesystem":{"ok":true}}}"#)
+
+        let store = MeetingStore(recordingsDir: dir)
+        let exp = expectation(description: "scan")
+        var captured: [Meeting] = []
+        let cancel = store.$meetings.dropFirst().sink { captured = $0; exp.fulfill() }
+        store.start()
+        wait(for: [exp], timeout: 2.0)
+        cancel.cancel()
+        let library = Set(captured.filter {
+            $0.status == .failed || ($0.status == .done && MeetingStore.publishNeedsAttention($0.publishState))
+        }.map(\.stem))
+        let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        let menu = Set(MeetingStore.unrecoveredFailureStems(
+            fileNames: names, readers: MeetingStore.diskFailureReaders(in: dir, cache: FailureStateCache())
+        ))
+        XCTAssertEqual(library, [noSummary, publishFail, regen, partial])
+        XCTAssertEqual(menu, library)
+        XCTAssertEqual(MeetingLibraryService.failedMeetingCount(in: dir, cache: FailureStateCache()), 4)
+    }
+
+    /// An unchanged library is decoded once: the second count reads nothing, and a touched file is
+    /// re-read. Times a 500-stem library for the commit body.
+    func test_failedMeetingCount_cache_reads_an_unchanged_library_once_UX90() throws {
+        let dir = try tempDir()
+        let base = Date().addingTimeInterval(-86_400 * 30)
+        for i in 0..<500 {
+            let s = MeetingFormatters.stem.string(from: base.addingTimeInterval(TimeInterval(i * 120)))
+            for ext in ["wav", "json", "md", "meta.json", "run.json"] {
+                try writeFile(dir.appendingPathComponent("\(s).\(ext)"), "{}")
+            }
+            try writeFile(dir.appendingPathComponent("\(s).summary.json"), "{}")
+            try writeFile(dir.appendingPathComponent("\(s).publish.json"),
+                          i % 50 == 0 ? #"{"state":"partial","sinks":{}}"# : #"{"state":"full","sinks":{}}"#)
+        }
+        let cache = FailureStateCache()
+        let cold = Date()
+        XCTAssertEqual(MeetingLibraryService.failedMeetingCount(in: dir, cache: cache), 10)
+        let coldMs = Date().timeIntervalSince(cold) * 1000
+        let decoded = cache.decodeCount
+        XCTAssertEqual(decoded, 500)
+        let warm = Date()
+        XCTAssertEqual(MeetingLibraryService.failedMeetingCount(in: dir, cache: cache), 10)
+        let warmMs = Date().timeIntervalSince(warm) * 1000
+        XCTAssertEqual(cache.decodeCount, decoded, "an unchanged library is not read again")
+        print("UX90 500-stem failedMeetingCount: cold \(Int(coldMs)) ms, warm \(Int(warmMs)) ms")
     }
 
     func test_unrecoveredFailureStems_empty_when_no_failures() {

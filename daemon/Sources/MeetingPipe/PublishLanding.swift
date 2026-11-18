@@ -158,9 +158,18 @@ struct DoneNotificationCopy: Equatable {
     /// landed, in which case the banner offers no Open action at all.
     var openPhrase: String?
 
-    /// - Parameter canCorrect: `<stem>.run.json` exists, so the summary is
-    ///   gradeable and the banner asks about it.
-    static func make(landing: PublishLanding, canCorrect: Bool) -> DoneNotificationCopy {
+    /// - Parameters:
+    ///   - canCorrect: `<stem>.run.json` exists, so the summary is gradeable and
+    ///     the banner asks about it.
+    ///   - publish: this run's `<stem>.publish.json`. A `partial` state names the
+    ///     destinations that refused it (UX90): "Meeting published" over a run
+    ///     whose Notion sink failed was a clean claim about a failed publish, and
+    ///     the menu showed nothing either.
+    static func make(
+        landing: PublishLanding,
+        canCorrect: Bool,
+        publish: PublishResult? = nil
+    ) -> DoneNotificationCopy {
         let question = "How did this summary look?"
         guard let phrase = landing.openPhrase else {
             // The summary exists (the title says so) and reached no sink: a
@@ -174,10 +183,32 @@ struct DoneNotificationCopy: Equatable {
                 openPhrase: nil
             )
         }
+        if publish?.state == "partial" {
+            let missed = failedDestinations(publish)
+            let head = missed.isEmpty ? "Not sent everywhere." : "Not sent to \(missed)."
+            return DoneNotificationCopy(
+                title: "Meeting partly published",
+                body: canCorrect ? "\(head) \(phrase). \(question)" : "\(head) \(phrase).",
+                openPhrase: phrase
+            )
+        }
         return DoneNotificationCopy(
             title: "Meeting published",
             body: canCorrect ? "\(phrase). \(question)" : phrase,
             openPhrase: phrase
         )
+    }
+
+    /// The sinks that failed, by display name ("Notion", "Notion and the shared folder"). A sink
+    /// this build does not know keeps its raw `output.sinks` name rather than being dropped.
+    static func failedDestinations(_ publish: PublishResult?) -> String {
+        let names = (publish?.sinks ?? []).filter { !$0.ok }.map { outcome in
+            PublishSink(rawValue: outcome.name)?.displayName ?? outcome.name
+        }
+        switch names.count {
+        case 0: return ""
+        case 1: return names[0]
+        default: return names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
+        }
     }
 }

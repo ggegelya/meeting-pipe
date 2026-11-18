@@ -28,6 +28,10 @@ extension Coordinator: NotifierDelegate {
         ExternalURLPolicy.openPublishTarget(url)  // SEC30: the sidecar's page_url is checked, not trusted
     }
 
+    func notifier(_ notifier: Notifier, didRequestOpenMeeting stem: String) {
+        openMeeting(stem: stem)
+    }
+
     func notifier(_ notifier: Notifier, didRequestFailure failure: FailurePresentation, stem: String?) {
         if let stem { openMeeting(stem: stem) }
         else { Task { @MainActor in FailureDialog.show(failure) } }

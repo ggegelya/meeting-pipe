@@ -161,6 +161,8 @@ final class NotificationRouterTests: XCTestCase {
             R.stillMeetingIDPrefix + "x",
             R.skipLateIDPrefix + "us.zoom.xos",
             R.librarySyncedIDPrefix + "1763300000",
+            R.pasteReadyIDPrefix + "x",
+            R.failureIDPrefix + "x",
         ]
         let actions = [
             "", R.actionOpen, R.actionLooksGood, R.actionEditSummary, R.actionOpenSettings,
@@ -181,6 +183,12 @@ final class NotificationRouterTests: XCTestCase {
                 }
             }
         }
+    }
+
+    /// UX90: a paste-ready banner opens its meeting on a tap and on nothing else.
+    func test_paste_ready_tap_opens_the_meeting() {
+        XCTAssertEqual(route(id: R.pasteReadyIDPrefix + "x", isDefault: true).routes, [.openMeeting])
+        XCTAssertEqual(route(id: R.pasteReadyIDPrefix + "x", action: R.actionOpen).routes, [])
     }
 
     /// A response with no matching entry and an unknown action is a no-op, not a

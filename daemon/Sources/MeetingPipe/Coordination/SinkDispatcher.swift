@@ -798,10 +798,12 @@ final class SinkDispatcher: @unchecked Sendable {
                 case .success:
                     // SEC38: sink names, never the note path or page address (it embeds the title slug).
                     let publish = PublishResult.load(stem: loc.stem, in: loc.dir)
-                    Log.writeLine("daemon", PipelineOutcomeLog.successLine(publish))
+                    // UX90: a paste-bundle skip exits 0 too; say so rather than "OK".
+                    let pasteSkip = DoneRoute.probe(stem: loc.stem, in: loc.dir) == .pasteReady
+                    Log.writeLine("daemon", PipelineOutcomeLog.successLine(publish, pasteSkip: pasteSkip))
                     Log.event(category: "coordinator", action: "pipeline_succeeded", attributes: [
                         "file": job.file.lastPathComponent,
-                    ].merging(PipelineOutcomeLog.publishAttributes(publish)) { a, _ in a })
+                    ].merging(PipelineOutcomeLog.publishAttributes(publish, pasteSkip: pasteSkip)) { a, _ in a })
                     // The run finished; clear any failure sidecar a prior
                     // failed run (or retry) left behind for this stem.
                     PipelineFailureSidecar.clear(stem: loc.stem, in: loc.dir)

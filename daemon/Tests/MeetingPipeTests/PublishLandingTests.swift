@@ -114,6 +114,36 @@ final class PublishLandingTests: XCTestCase {
         XCTAssertEqual(copy.openPhrase, "Open the local note")
     }
 
+    // MARK: - UX90: a partial publish says so
+
+    func test_a_partial_publish_is_partly_published_and_names_the_failed_sink_UX90() {
+        let publish = result([(name: "filesystem", ok: true), (name: "notion", ok: false)], pageURL: "file:///n.md")
+        let copy = DoneNotificationCopy.make(landing: .sink(.filesystem), canCorrect: false, publish: publish)
+        XCTAssertEqual(copy.title, "Meeting partly published")
+        XCTAssertEqual(copy.body, "Not sent to Notion. Open the local note.")
+        XCTAssertEqual(copy.openPhrase, "Open the local note", "Open still opens what landed")
+        let graded = DoneNotificationCopy.make(landing: .sink(.filesystem), canCorrect: true, publish: publish)
+        XCTAssertEqual(graded.body, "Not sent to Notion. Open the local note. How did this summary look?")
+    }
+
+    func test_partial_names_every_failed_sink_and_keeps_an_unknown_name_UX90() {
+        let publish = result(
+            [(name: "filesystem", ok: true), (name: "notion", ok: false), (name: "lan", ok: false),
+             (name: "carrier_pigeon", ok: false)],
+            pageURL: "file:///n.md"
+        )
+        XCTAssertEqual(DoneNotificationCopy.failedDestinations(publish),
+                       "Notion, the shared folder and carrier_pigeon")
+    }
+
+    func test_a_full_publish_and_no_publish_keep_their_copy_UX90() {
+        let full = result([(name: "filesystem", ok: true)], pageURL: "file:///n.md")
+        XCTAssertEqual(DoneNotificationCopy.make(landing: .sink(.filesystem), canCorrect: false, publish: full).title,
+                       "Meeting published")
+        XCTAssertEqual(DoneNotificationCopy.make(landing: .nowhere, canCorrect: false, publish: nil).title,
+                       "Meeting processed")
+    }
+
     func test_a_gradeable_summary_appends_the_correction_question() {
         let copy = DoneNotificationCopy.make(landing: .sink(.notion), canCorrect: true)
         XCTAssertEqual(copy.body, "Open in Notion. How did this summary look?")

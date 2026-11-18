@@ -333,9 +333,18 @@ final class Coordinator: NSObject {
                 // AUD-16a).
                 // An empty-skip meeting never produces a summary, so the marker
                 // unambiguously identifies this completion as the skip.
-                if let reason = EmptyMarker.read(stem: stem, in: recordingsDir) {
+                // UX90: a paste-bundle skip (BYO, or past the long-meeting gate) is the same
+                // shape, so `DoneRoute` decides both; the empty marker wins.
+                switch DoneRoute.probe(stem: stem, in: recordingsDir) {
+                case .empty(let reason):
                     self.notifier.notifyEmptySkip(reason: reason)
                     return
+                case .pasteReady:
+                    // No completion tone: nothing is ready yet.
+                    self.notifier.notifyPasteReady(stem: stem)
+                    return
+                case .done:
+                    break
                 }
                 // TECH-DSN5: opt-in, default-off completion tone (the summary is
                 // ready). Never plays during a call; separate from the done

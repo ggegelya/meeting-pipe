@@ -1663,7 +1663,7 @@ final class MeetingLibraryService {
         }
     }
 
-    /// Count of unrecovered pipeline failures. Filename-only scan so it works while the Library window is closed.
+    /// Count of meetings that failed, by the Library's own rule (UX90). Works while the Library window is closed.
     func failedMeetingCount() -> Int {
         Self.failedMeetingCount(in: outputDir())
     }
@@ -1673,7 +1673,15 @@ final class MeetingLibraryService {
     /// year of meetings is thousands of entries in a folder that may sync to iCloud: never on
     /// the main thread, and not per menu rebuild. The directory is resolved by the caller on
     /// main because `outputDir()` reads `ConfigStore`.
-    static func failedMeetingCount(in dir: URL, reporter: LibraryUnreadableReporter = .shared) -> Int {
+    ///
+    /// UX90: a filename pass, then a content pass for stems with a summary beside an error sidecar or a
+    /// publish record. `cache` keys the decoded state on each file's mtime, so an unchanged library
+    /// costs a stat per such file and no reads.
+    static func failedMeetingCount(
+        in dir: URL,
+        reporter: LibraryUnreadableReporter = .shared,
+        cache: FailureStateCache = .shared
+    ) -> Int {
         let names: [String]
         do {
             names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
@@ -1684,7 +1692,9 @@ final class MeetingLibraryService {
             return 0
         }
         reporter.note(.readable, site: "failed_count")
-        return MeetingStore.unrecoveredFailureStems(fileNames: names).count
+        return MeetingStore.unrecoveredFailureStems(
+            fileNames: names, readers: MeetingStore.diskFailureReaders(in: dir, cache: cache)
+        ).count
     }
 
     // MARK: - Action resolution (UX26)

@@ -20,6 +20,8 @@ protocol NotifierDelegate: AnyObject {
     func notifier(_ notifier: Notifier, didRequestStartLate source: AppSource)
     /// User tapped "Move library..." (or the banner) on the synced-library warning (SEC18). Coordinator opens Preferences > Storage.
     func notifierDidRequestStoragePreferences(_ notifier: Notifier)
+    /// User clicked the paste-ready banner (UX90): open that meeting in the Library.
+    func notifier(_ notifier: Notifier, didRequestOpenMeeting stem: String)
     /// User clicked "Looks good" on the published-meeting notification.
     func notifier(
         _ notifier: Notifier,
@@ -36,6 +38,7 @@ protocol NotifierDelegate: AnyObject {
 
 extension NotifierDelegate {
     func notifier(_ notifier: Notifier, didRequestFailure failure: FailurePresentation, stem: String?) {}
+    func notifier(_ notifier: Notifier, didRequestOpenMeeting stem: String) {}
 }
 
 /// Why a detected meeting was not recorded, which decides how loudly the skip banner
@@ -131,11 +134,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         pageURL: URL?
     ) {
         let canCorrect = Self.canCorrect(stem: stem, recordingsDir: recordingsDir)
-        let landing = PublishLanding.decide(
-            publish: Self.publishResult(stem: stem, recordingsDir: recordingsDir),
-            pageURL: pageURL
-        )
-        let copy = DoneNotificationCopy.make(landing: landing, canCorrect: canCorrect)
+        let publish = Self.publishResult(stem: stem, recordingsDir: recordingsDir)
+        let landing = PublishLanding.decide(publish: publish, pageURL: pageURL)
+        let copy = DoneNotificationCopy.make(landing: landing, canCorrect: canCorrect, publish: publish)
 
         let content = UNMutableNotificationContent()
         content.sound = .default
@@ -175,6 +176,21 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// summarized).
     func notifyEmptySkip(reason: EmptyReason) {
         post(title: reason.notificationTitle, body: reason.notificationBody)
+    }
+
+    /// UX90: the run left a paste bundle and no summary (BYO, or a meeting past the long-meeting
+    /// gate). A click opens the meeting in the Library, where the paste happens. The stem rides in
+    /// `userInfo`, so the click still works after a relaunch.
+    func notifyPasteReady(stem: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Ready for your summary"
+        content.body = "Open it in the Library to paste a summary."
+        content.sound = .default
+        content.userInfo = [NotificationRouter.meetingStemKey: stem]
+        let req = UNNotificationRequest(
+            identifier: NotificationRouter.pasteReadyIDPrefix + UUID().uuidString, content: content, trigger: nil
+        )
+        UNUserNotificationCenter.current().add(req)
     }
 
     /// True when `<stem>.run.json` exists (pipeline produced a gradeable summary). Skipped paths (no_speech, byo, too_long) never write the run sidecar, so the correction action is correctly disabled for them.
@@ -605,6 +621,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
         for route in decision.routes {
             switch route {
+            case .openMeeting:
+                guard let stem = response.notification.request.content.userInfo[NotificationRouter.meetingStemKey] as? String
+                else { continue }
+                delegate?.notifier(self, didRequestOpenMeeting: stem)
             case .openFailure:
                 let failure = failures.removeValue(forKey: id)
                 let stem = failure?.1 ?? response.notification.request.content.userInfo["failureStem"] as? String

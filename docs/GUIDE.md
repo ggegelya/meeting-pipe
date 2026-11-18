@@ -59,7 +59,7 @@ Press `⌃⌥M` anywhere in macOS, or pick **Start Recording** from the menu bar
 
 ### BYO, when you would rather write the summary yourself
 
-**Record (BYO)** records exactly like a normal meeting but does not ask any engine for a summary. Afterwards, open the meeting in the Library and the **Summary** tab shows a **Paste your summary** box: drop your text in, click **Save & publish**, and it goes to the same destinations a normal meeting would.
+**Record (BYO)** records exactly like a normal meeting but does not ask any engine for a summary. When the recording has been processed a notification says **Ready for your summary**; click it, or open the meeting in the Library and the **Summary** tab shows a **Paste your summary** box: drop your text in, click **Save & publish**, and it goes to the same destinations a normal meeting would.
 
 Useful for a call you do not want summarized by anything, or one you would rather hand-write. Not available for a regulated or NDA meeting: those never produce a paste-into-a-chat bundle, and the meeting is summarized on your Mac instead.
 
@@ -521,7 +521,7 @@ While a meeting is processing, its row in the Library shows the step it is on an
 
 ### A meeting that failed
 
-Failed meetings collect in the Library's **Needs you** rail, which carries an amber count. Open one to see a short explanation and its next action below the tabs. **Retry summary** reuses a complete saved transcript; **Retry publishing** uses the saved summary without another model call. If a usable transcript is missing, **Retry** starts from the recording. The configured engine and the meeting's privacy rules still apply.
+Failed meetings collect in the Library's **Needs you** rail, which carries an amber count. The menu bar's "⚠ N meetings failed - open Library to retry" row counts the same meetings, including one whose summary was written but could not be published, or was only partly published, so it is still there if you missed the notification. Open one to see a short explanation and its next action below the tabs. **Retry summary** reuses a complete saved transcript; **Retry publishing** uses the saved summary without another model call. If a usable transcript is missing, **Retry** starts from the recording. The configured engine and the meeting's privacy rules still apply.
 
 An **Insufficient Anthropic credits** notice means the provider reported a credit problem. Choose **Open billing**, resolve it in your provider account, then retry. It does not mean your key expired. Missing or rejected keys lead to **Open Integrations**; expiry is named only when the provider explicitly reports it. A notice that says the provider **does not recognise the model** means the model id in **Preferences > Pipeline** was retired, mistyped or is not open to your account. Choose **Model settings** and pick another; retrying cannot help. On the Auto engine the meeting is summarized on your Mac instead, so you still get a summary. An unknown failure gets a short explanation without guessing its cause.
 
@@ -614,7 +614,7 @@ The same row can name **Regulated mode** instead of a line: the file reads, but 
 
 Two families of failure are worth naming, because both read as the app being broken and neither is.
 
-**A destination refused it.** Every place a summary publishes succeeds or fails on its own, so a Notion page that will not write does not stop the copy going to Obsidian or your folder. The **Needs you** row names the destination that failed, **Run doctor…** says why (a key that expired, a database the integration was never shared with, a share that is not mounted), and **Retry** sends the summary already on disk rather than writing a new one.
+**A destination refused it.** Every place a summary publishes succeeds or fails on its own, so a Notion page that will not write does not stop the copy going to Obsidian or your folder. The notification then reads **Meeting partly published** and names the destination that refused it, and the menu bar's failed row counts the meeting until a retry lands. The **Needs you** row names the destination that failed, **Run doctor…** says why (a key that expired, a database the integration was never shared with, a share that is not mounted), and **Retry** sends the summary already on disk rather than writing a new one.
 
 **An engine refused it.** A summary written on your Mac needs its model downloaded and enough free memory to run it, and when either is missing it stops with the reason rather than taking the Mac down: it names the model to fetch, or the memory it wanted against what was free. The row leads with whichever fix applies, so the fix is a click rather than a diagnosis. A cloud engine's refusals arrive the same way, with the key or the limit named.
 

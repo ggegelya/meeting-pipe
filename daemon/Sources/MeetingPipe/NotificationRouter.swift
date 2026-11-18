@@ -39,6 +39,9 @@ enum NotificationRouter {
     static let librarySyncedIDPrefix = "library-synced-"
     static let actionOpenFailure = "MP_OPEN_FAILURE"
     static let failureIDPrefix = "failure-"
+    /// UX90: the paste-ready banner. Its stem rides in `userInfo[meetingStemKey]`, never in a map.
+    static let pasteReadyIDPrefix = "paste-ready-"
+    static let meetingStemKey = "meetingStem"
 
     static let stillMeetingIDPrefix = "still-meeting-"
     static let skipLateIDPrefix = "skip-late-"
@@ -85,6 +88,7 @@ enum NotificationRouter {
     /// exhaustiveness test watches for.
     enum Route: Equatable {
         case openFailure
+        case openMeeting
         case markLooksGood(stem: String)
         case editSummary(stem: String)
         case openPage
@@ -133,6 +137,11 @@ enum NotificationRouter {
 
         if id.hasPrefix(failureIDPrefix), isDefault || action == actionOpenFailure {
             return Decision(routes: [.openFailure], consumeDoneEntry: false)
+        }
+
+        // UX90: a paste-ready banner has no actions; a tap opens its meeting.
+        if id.hasPrefix(pasteReadyIDPrefix), isDefault {
+            return Decision(routes: [.openMeeting], consumeDoneEntry: false)
         }
 
         if let entry = doneEntry {

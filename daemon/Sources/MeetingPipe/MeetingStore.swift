@@ -1002,9 +1002,12 @@ final class MeetingStore: ObservableObject {
         // A saved summary supersedes a legacy processing marker. Publish failures
         // and newer, structured regeneration failures still need their notice.
         let failure: PipelineFailureSidecar.Failure?
+        // UX90: the rule is `errorIsCurrent`, shared with the menu's failed-row count.
         if let errorURL, let recorded = PipelineFailureSidecar.read(at: errorURL),
-           summaryURL == nil || recorded.stage == .publish
-            || (recorded.metadata != nil && summaryURL.map { mtime(of: errorURL) > mtime(of: $0) } == true) {
+           MeetingStore.errorIsCurrent(
+               ErrorEvidence(stage: recorded.stage, structured: recorded.metadata != nil, modified: mtime(of: errorURL)),
+               summaryModified: summaryURL.map { mtime(of: $0) }
+           ) {
             failure = recorded
         } else {
             failure = nil
@@ -1288,19 +1291,28 @@ final class MeetingStore: ObservableObject {
         return MeetingFormatters.stem.date(from: stem)
     }
 
-    /// Stems the menu-bar failed badge should count. Two classes, matching
-    /// `buildMeeting`'s `.failed` precedence so the badge and the Library list
-    /// agree (PIPE3 / AUD-16b, which flagged that age-inferred stalls were
-    /// excluded from the badge):
-    ///   1. an explicit `<stem>.error.json` failure with no superseding summary, and
-    ///   2. an age-inferred stall: a final recording with no terminal sidecar whose
-    ///      stem start time is older than `Meeting.staleProcessingThresholdSec`.
-    /// Filename-only (plus the stem's encoded start time) so it stays cheap enough
-    /// to run on every menu open and is unit-testable. `now` is injected for tests.
-    static func unrecoveredFailureStems(fileNames: [String], now: Date = Date()) -> [String] {
+    /// Stems the menu-bar failed badge should count, by the same rule `buildMeeting` and
+    /// `LibraryScope.needsYou` apply (UX90), so the badge and the Library's Needs you rail agree on
+    /// every failure class:
+    ///   1. an explicit `<stem>.error.json` with no summary,
+    ///   2. beside a summary, an error sidecar `errorIsCurrent` keeps (a publish failure, or a
+    ///      structured failure newer than the summary),
+    ///   3. beside a summary, a publish outcome `publishNeedsAttention` flags (`none`, `partial`,
+    ///      `unknown`), and
+    ///   4. an age-inferred stall: a final recording with no terminal sidecar whose stem start time
+    ///      is older than `Meeting.staleProcessingThresholdSec`.
+    /// The filename pass decides 1 and 4 alone; 2 and 3 ask `readers`, and only for stems carrying
+    /// a summary and the file in question. `.filenameOnly` keeps the pre-UX90 behaviour (a summary
+    /// supersedes everything), which the launch auto-retry pass relies on. `now` is injected for tests.
+    static func unrecoveredFailureStems(
+        fileNames: [String],
+        now: Date = Date(),
+        readers: FailureContentReaders = .filenameOnly
+    ) -> [String] {
         struct Flags {
             var summary = false
             var error = false
+            var publishRecord = false
             var paste = false
             var empty = false
             var finalRecording = false
@@ -1319,6 +1331,8 @@ final class MeetingStore: ObservableObject {
                 f.paste = true
             } else if name.hasSuffix(EmptyMarker.suffix) {
                 f.empty = true
+            } else if name.hasSuffix(".publish.json") || name.hasSuffix(".run.json") {
+                f.publishRecord = true
             }
             if finalRecordingExtensions.contains(where: { name.hasSuffix(".\($0)") }),
                !name.hasSuffix(".mic.wav"), !name.hasSuffix(".system.wav") {
@@ -1328,7 +1342,17 @@ final class MeetingStore: ObservableObject {
         }
         var failed: [String] = []
         for (stem, f) in byStem {
-            if f.summary { continue }                     // produced: supersedes a stale error
+            if f.summary {
+                // Produced. Still failed when the error sidecar is current or the publish did not
+                // fully land; otherwise the summary supersedes a stale error.
+                let errorCurrent = f.error && readers.errorEvidence(stem).map {
+                    errorIsCurrent($0, summaryModified: readers.summaryModified(stem))
+                } == true
+                if errorCurrent || (f.publishRecord && publishNeedsAttention(readers.publishState(stem))) {
+                    failed.append(stem)
+                }
+                continue
+            }
             if f.error { failed.append(stem); continue }  // explicit failure sidecar
             if f.paste || f.empty { continue }            // terminal benign skip
             // Age-inferred stall: a merged recording whose pipeline wrote no

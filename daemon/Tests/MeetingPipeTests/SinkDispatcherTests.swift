@@ -538,7 +538,9 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertEqual(row["sinks"] as? [String], ["obsidian"])
         let daemonLog = (try? String(contentsOf: logs.appendingPathComponent("daemon.log"), encoding: .utf8)) ?? ""
         XCTAssertFalse(daemonLog.contains("placeholder-topic"), "daemon.log names sinks, not the note path")
-        XCTAssertTrue(daemonLog.contains("pipeline OK -> obsidian"))
+        XCTAssertTrue(daemonLog.contains("pipeline OK (partial: notion) -> obsidian"), "UX90 names the failed sink")
+        XCTAssertEqual(row["publish_state"] as? String, "partial")
+        XCTAssertTrue(row["skip_reason"] is NSNull)
     }
 
     func test_pipeline_failed_logs_no_error_text_and_the_sidecar_keeps_it_SEC38() throws {
@@ -580,6 +582,23 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertEqual(attrs["exit_code"] as? Int, 1)
         XCTAssertEqual(attrs["stage"] as? String, "pipeline")
         XCTAssertEqual(PipelineOutcomeLog.successLine(nil), "pipeline OK -> local-only")
+    }
+
+    // MARK: - UX90: the success row says what actually happened
+
+    func test_success_row_carries_publish_state_and_skip_reason_UX90() {
+        let partial = PublishResult(state: "partial", pageURL: nil, sinks: [
+            .init(name: "filesystem", ok: true, pageURL: nil), .init(name: "notion", ok: false, pageURL: nil),
+        ])
+        let attrs = PipelineOutcomeLog.publishAttributes(partial)
+        XCTAssertEqual(attrs["publish_state"] as? String, "partial")
+        XCTAssertTrue(attrs["skip_reason"] is NSNull)
+        XCTAssertEqual(PipelineOutcomeLog.successLine(partial), "pipeline OK (partial: notion) -> filesystem")
+
+        let skipped = PipelineOutcomeLog.publishAttributes(nil, pasteSkip: true)
+        XCTAssertTrue(skipped["publish_state"] is NSNull)
+        XCTAssertEqual(skipped["skip_reason"] as? String, "paste")
+        XCTAssertEqual(PipelineOutcomeLog.successLine(nil, pasteSkip: true), "pipeline skipped (paste bundle)")
     }
 
     // MARK: - SEC37: the held-end trim reads the sidecar fail-closed

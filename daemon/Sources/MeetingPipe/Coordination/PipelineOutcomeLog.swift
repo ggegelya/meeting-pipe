@@ -11,16 +11,33 @@ enum PipelineOutcomeLog {
         (publish?.sinks ?? []).filter(\.ok).map(\.name).sorted()
     }
 
-    /// The success row's publish attributes: `published` and `sinks`, never `page_url`.
-    static func publishAttributes(_ publish: PublishResult?) -> [String: Any] {
-        let sinks = publishedSinks(publish)
-        return ["published": !sinks.isEmpty, "sinks": sinks]
+    /// The sinks that failed, by their `output.sinks` name, sorted.
+    static func failedSinks(_ publish: PublishResult?) -> [String] {
+        (publish?.sinks ?? []).filter { !$0.ok }.map(\.name).sorted()
     }
 
-    /// The daemon.log success line: the sinks that landed, or "local-only".
-    static func successLine(_ publish: PublishResult?) -> String {
+    /// The success row's publish attributes: `published`, `sinks`, and UX90's `publish_state`
+    /// (`publish.json`'s state, or null when the run wrote none) and `skip_reason` (`paste` when the
+    /// run left a paste bundle and no summary, else null). Never `page_url`.
+    static func publishAttributes(_ publish: PublishResult?, pasteSkip: Bool = false) -> [String: Any] {
         let sinks = publishedSinks(publish)
-        return "pipeline OK -> \(sinks.isEmpty ? "local-only" : sinks.joined(separator: ","))"
+        return [
+            "published": !sinks.isEmpty, "sinks": sinks,
+            "publish_state": publish?.state ?? NSNull(),
+            "skip_reason": pasteSkip ? "paste" : NSNull(),
+        ]
+    }
+
+    /// The daemon.log success line: the sinks that landed, or "local-only". A paste-bundle skip says
+    /// so instead of "OK" (UX90), and a partial publish names the sinks that failed.
+    static func successLine(_ publish: PublishResult?, pasteSkip: Bool = false) -> String {
+        if pasteSkip { return "pipeline skipped (paste bundle)" }
+        let sinks = publishedSinks(publish)
+        let landed = sinks.isEmpty ? "local-only" : sinks.joined(separator: ",")
+        if publish?.state == "partial" {
+            return "pipeline OK (partial: \(failedSinks(publish).joined(separator: ","))) -> \(landed)"
+        }
+        return "pipeline OK -> \(landed)"
     }
 
     /// A fixed class for an error, never its description.

@@ -189,8 +189,8 @@ enum LibraryScope: Hashable {
             case .failed, .manualPasteReady, .empty:
                 return true
             case .done:
-                return meeting.publishState == "none" || meeting.publishState == "partial"
-                    || meeting.publishState == PublishResult.unknownState  // PIPE34
+                // UX90: the same rule the menu's failed row counts by. PIPE34's `unknown` is in it.
+                return MeetingStore.publishNeedsAttention(meeting.publishState)
             default:
                 return false
             }
