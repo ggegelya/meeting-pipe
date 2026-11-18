@@ -164,6 +164,19 @@ def test_dv7_a_roster_without_former_names_loads_and_renames(tmp_path):
     assert _entry(path, "Alicia")["former_names"] == ["Alice"]
 
 
+def test_dv7_former_names_survive_later_roster_writes(tmp_path):
+    """Every other writer rewrites the whole people list; none may drop the field."""
+    path = tmp_path / "roster.json"
+    roster = RosterStore(path)
+    roster.enroll("Alice", _axis(0))
+    assert roster.rename("Alice", "Alicia")
+    roster.enroll("Alicia", _axis(0, tilt=0.1))
+    roster.enroll("Bob", _axis(1))
+    assert _entry(path, "Alicia")["former_names"] == ["Alice"]
+    roster.forget("Bob")
+    assert _entry(path, "Alicia")["former_names"] == ["Alice"]
+
+
 def test_rename_absent_person_is_false(tmp_path):
     roster = RosterStore(tmp_path / "roster.json")
     roster.enroll("Alice", _axis(0))
