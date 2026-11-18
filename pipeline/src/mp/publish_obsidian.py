@@ -5,11 +5,16 @@ front-matter, optionally drops the recording into a configured
 ``_attachments`` folder, and (optionally) appends a backlink to the daily
 note.
 
-Idempotency: each call writes to a deterministic path
-(``<vault>/<folder>/<stem>.md``) plus a sidecar at
-``<wav-dir>/<stem>.obsidian.json`` containing a SHA-256 of the rendered
-file body. A second call with identical body returns ``idempotent: True``
-without touching disk; a changed body overwrites the file in place.
+Idempotency: a note is named once, ``<vault>/<folder>/<stem> <title slug>.md``
+(the recording stem makes two meetings with one title distinct; the slug keeps
+letters and digits of any script), and a sidecar at
+``<wav-dir>/<stem>.obsidian.json`` records that path plus a SHA-256 of the
+rendered body. Every later publish of the stem reuses the recorded path (PIPE31),
+so a changed summary or title rewrites the same note instead of writing a second
+one, and the first filename is kept for the note's life (Obsidian links by name).
+A second call with identical body, in the same vault, whose note is still on disk,
+returns ``idempotent: True`` without touching disk. The front-matter ``date`` is
+the meeting's own day, from the stem, not the day it was published.
 
 The Notion publisher is the schema reference; this one stays narrower:
 no API keys, no rate limits, no toggle blocks. The strategic point is
@@ -22,9 +27,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 import shutil
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,6 +37,7 @@ from typing import Any
 from . import storage
 from .transcript_corrections import publish_text
 from .markdown import deeplink_stem, evidence_suffix
+from .publish_fs import date_from_stem, file_url
 from .schemas import MeetingSummary
 
 log = logging.getLogger("mp.publish_obsidian")
@@ -112,8 +118,9 @@ class ObsidianPublisher:
     ) -> dict[str, Any]:
         if transcript_text is None:  # PIPE51: the overlaid view, resolved once
             transcript_text = publish_text(transcript_md)
+        meeting_date = date_from_stem(deeplink_stem(transcript_md)) or _today_iso()
         body = self._render_note(
-            summary, transcript_md, date=_today_iso(), generated=_now_iso(),
+            summary, transcript_md, date=meeting_date, generated=_now_iso(),
             transcript_text=transcript_text,
         )
         # Idempotency fingerprint: hash a canonical render with the
@@ -129,16 +136,20 @@ class ObsidianPublisher:
         body_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
         existing = _load_sidecar(sidecar_path)
-        if existing and existing.get("body_sha256") == body_hash:
+        # PIPE31: the note this stem was already published to, when it is inside the
+        # vault in use now (a moved vault setting makes the record stale: start fresh).
+        recorded = self._recorded_note(existing)
+        if recorded is not None and existing and existing.get("body_sha256") == body_hash \
+                and recorded.exists():
             log.info("Obsidian note unchanged, skipping write (sha=%s...)", body_hash[:8])
             return {
-                "page_id": existing.get("note_path"),
-                "page_url": _file_url(Path(existing["note_path"])) if existing.get("note_path") else None,
+                "page_id": str(recorded),
+                "page_url": file_url(recorded),
                 "idempotent": True,
                 "local": True,
             }
 
-        note_path = self._compute_note_path(summary, transcript_md)
+        note_path = recorded or self._compute_note_path(summary, transcript_md)
         note_path.parent.mkdir(parents=True, exist_ok=True)
         storage.atomic_write_text(note_path, body)  # PIPE30
         log.info("wrote the Obsidian note")  # SEC38: the note path embeds the title slug
@@ -162,24 +173,30 @@ class ObsidianPublisher:
 
         return {
             "page_id": str(note_path),
-            "page_url": _file_url(note_path),
+            "page_url": file_url(note_path),
             "idempotent": False,
             "local": True,
         }
 
     # ----- Path layout -----
 
+    def _recorded_note(self, existing: dict[str, Any] | None) -> Path | None:
+        """The `note_path` the sidecar recorded, if it lies inside the vault in use."""
+        raw = existing.get("note_path") if existing else None
+        if not isinstance(raw, str) or not raw:
+            return None
+        path = Path(raw)
+        return path if path.is_absolute() and path.is_relative_to(self._vault) else None
+
     def _compute_note_path(self, summary: MeetingSummary, transcript_md: Path | None) -> Path:
         # `deeplink_stem` strips the speaker-segmented `.summary` suffix so two
         # Markdown files do not share a name (the convention summarize.py uses),
-        # and is the same stem the note's citation links address.
-        stem = deeplink_stem(transcript_md) or _slugify(summary.title)
-        date = _today_iso()
-        # Title prefix with the meeting topic for human-grokkability
-        # at the file-listing level. Falls back to bare stem when the
-        # title slug is empty.
+        # and is the same stem the note's citation links address. The stem leads,
+        # so two recordings can never share a path, whatever their titles (PIPE31);
+        # the slug after it is for a human reading the file listing.
+        stem = deeplink_stem(transcript_md)
         title_slug = _slugify(summary.title)
-        filename = f"{date} {title_slug}".strip() if title_slug else stem
+        filename = " ".join(part for part in (stem, title_slug) if part) or "meeting"
         return self._vault / self._folder / f"{filename}.md"
 
     def _copy_audio_attachment(self, transcript_md: Path) -> str | None:
@@ -331,13 +348,26 @@ def _yaml_str(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-_SLUG_RE = re.compile(r"[^a-z0-9]+")
+_SLUG_MAX_CHARS = 80
+# A filename is limited to 255 bytes, and a CJK character is three of them, so the
+# slug is also bounded in bytes, leaving room for the stem and `.md`.
+_SLUG_MAX_BYTES = 180
 
 
 def _slugify(s: str) -> str:
-    s = s.lower().strip()
-    s = _SLUG_RE.sub("-", s)
-    return s.strip("-")[:80]
+    """The title as a filename fragment: lowercased, letters, digits and combining
+    marks of ANY script kept, every other run (spaces, punctuation, `/`, `:`,
+    underscores) collapsed to one hyphen. The old `[^a-z0-9]` pattern turned every
+    Cyrillic letter into a hyphen, so 12 of 12 Ukrainian notes lost their names
+    (PIPE31)."""
+    s = unicodedata.normalize("NFC", s).lower().strip()
+    kept = "".join(
+        ch if (ch.isalnum() or unicodedata.category(ch).startswith("M")) else "-" for ch in s
+    )
+    slug = re.sub(r"-+", "-", kept).strip("-")[:_SLUG_MAX_CHARS]
+    while len(slug.encode("utf-8")) > _SLUG_MAX_BYTES:
+        slug = slug[:-1]
+    return slug.strip("-")
 
 
 def _today_iso() -> str:
@@ -346,10 +376,6 @@ def _today_iso() -> str:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _file_url(p: Path) -> str:
-    return "file://" + os.path.abspath(p).replace(" ", "%20")
 
 
 def _load_sidecar(p: Path) -> dict[str, Any] | None:

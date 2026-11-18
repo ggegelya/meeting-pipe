@@ -26,6 +26,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -58,7 +59,6 @@ class FilesystemPublisher:
         sidecar_path: Path,
         transcript_text: str | None = None,
     ) -> dict[str, Any]:
-        self._out.mkdir(parents=True, exist_ok=True)
         stem = transcript_md.stem if transcript_md else stem_from_summary(summary)
 
         # AUTO2: a Markdown-file sink, so its `[mm:ss]` citations link back into
@@ -79,7 +79,10 @@ class FilesystemPublisher:
         ).hexdigest()
 
         existing = load_sidecar(sidecar_path)
-        if existing and existing.get("signature_sha256") == signature:
+        if (
+            existing and existing.get("signature_sha256") == signature
+            and recorded_target_is_live(existing, "output_dir", self._out)
+        ):
             log.info("filesystem sink unchanged, skipping write (sha=%s...)", signature[:8])
             return {
                 "page_id": existing.get("summary_path"),
@@ -88,6 +91,7 @@ class FilesystemPublisher:
                 "local": True,
             }
 
+        self._out.mkdir(parents=True, exist_ok=True)  # after the skip decision: a skip creates nothing
         summary_path = self._out / f"{stem}.summary.md"
         actions_path = self._out / f"{stem}.actions.json"
         # PIPE30: atomic and 0600; a truncated sidecar would read as absent and
@@ -129,7 +133,34 @@ def stem_from_summary(summary: MeetingSummary) -> str:
 
 
 def file_url(p: Path) -> str:
-    return "file://" + os.path.abspath(p).replace(" ", "%20")
+    """A `file://` URL for `p`. `Path.as_uri()` percent-encodes `#`, `%`, `?` and
+    the rest; the hand-rolled version encoded only spaces, so a vault named
+    `Vault #1` produced a URL whose path ended at the `#` (PIPE31)."""
+    return Path(os.path.abspath(p)).as_uri()
+
+
+def date_from_stem(stem: str | None) -> str | None:
+    """The meeting's own local date, `YYYY-MM-DD`, from a `YYYYMMDD-HHMMSS` stem;
+    None for a stem that carries no valid date. Sinks file a meeting under the day
+    it happened, not the day it was published (PIPE31)."""
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})(?:\D|$)", stem or "")
+    if m is None:
+        return None
+    try:
+        return datetime(int(m[1]), int(m[2]), int(m[3])).date().isoformat()
+    except ValueError:
+        return None
+
+
+def recorded_target_is_live(existing: dict[str, Any] | None, key: str, target: Path) -> bool:
+    """PIPE31 (F090): an unchanged-content skip is only honest when the sidecar's
+    recorded destination (`output_dir` / `mount_path`) is the one in use now and the
+    summary file it recorded is still there. Otherwise the sink writes as if there
+    were no sidecar."""
+    if not existing or existing.get(key) != str(target):
+        return False
+    summary_path = existing.get("summary_path")
+    return bool(summary_path) and Path(summary_path).exists()
 
 
 def now_iso() -> str:

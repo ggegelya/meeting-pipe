@@ -98,3 +98,30 @@ def test_lan_does_not_survive_regulated_mode(tmp_path: Path) -> None:
     pubs = build_publishers(cfg)
     names = [p.name for p in pubs]
     assert names == ["filesystem"]
+
+
+# --- PIPE31 ------------------------------------------------------------------
+
+def test_unchanged_signature_with_a_new_mount_writes_there(tmp_path: Path) -> None:
+    transcript = tmp_path / "x.md"
+    transcript.write_text("hi", encoding="utf-8")
+    sidecar = tmp_path / "x.lan.json"
+    LanPublisher(mount_path=tmp_path / "old").upsert(
+        summary=_summary(), transcript_md=transcript, sidecar_path=sidecar)
+    res = LanPublisher(mount_path=tmp_path / "new").upsert(
+        summary=_summary(), transcript_md=transcript, sidecar_path=sidecar)
+    assert res["idempotent"] is False
+    for name in ("x.summary.md", "x.actions.json", "x.transcript.md"):
+        assert (tmp_path / "new" / name).exists()
+
+
+def test_unchanged_signature_with_a_deleted_summary_rewrites_it(tmp_path: Path) -> None:
+    transcript = tmp_path / "x.md"
+    transcript.write_text("hi", encoding="utf-8")
+    sidecar = tmp_path / "x.lan.json"
+    share = tmp_path / "share"
+    pub = LanPublisher(mount_path=share)
+    pub.upsert(summary=_summary(), transcript_md=transcript, sidecar_path=sidecar)
+    (share / "x.summary.md").unlink()
+    assert pub.upsert(summary=_summary(), transcript_md=transcript, sidecar_path=sidecar)["idempotent"] is False
+    assert (share / "x.summary.md").exists()

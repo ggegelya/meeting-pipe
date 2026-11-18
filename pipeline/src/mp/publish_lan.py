@@ -36,6 +36,7 @@ from .markdown import deeplink_stem, render_summary_md
 from .publish_fs import (
     file_url,
     load_sidecar,
+    recorded_target_is_live,
     now_iso,
     stem_from_summary,
 )
@@ -68,7 +69,6 @@ class LanPublisher:
         transcript_text: str | None = None,
     ) -> dict[str, Any]:
         target = self._check_reachable()
-        target.mkdir(parents=True, exist_ok=True)
         stem = transcript_md.stem if transcript_md else stem_from_summary(summary)
 
         # AUTO2: same linked citations the filesystem sink writes; the deeplink
@@ -86,7 +86,10 @@ class LanPublisher:
         ).hexdigest()
 
         existing = load_sidecar(sidecar_path)
-        if existing and existing.get("signature_sha256") == signature:
+        if (
+            existing and existing.get("signature_sha256") == signature
+            and recorded_target_is_live(existing, "mount_path", target)
+        ):
             log.info("lan sink unchanged, skipping write (sha=%s...)", signature[:8])
             return {
                 "page_id": existing.get("summary_path"),
@@ -95,6 +98,7 @@ class LanPublisher:
                 "local": True,
             }
 
+        target.mkdir(parents=True, exist_ok=True)  # after the skip decision (PIPE31)
         summary_path = target / f"{stem}.summary.md"
         actions_path = target / f"{stem}.actions.json"
         _atomic_write(summary_path, summary_md)

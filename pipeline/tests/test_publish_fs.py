@@ -117,3 +117,50 @@ def test_resolved_flag_round_trips_to_actions_json_and_markdown(tmp_path: Path) 
     body = (out / "b.summary.md").read_text(encoding="utf-8")
     assert "- [x] **A**: Wrapped" in body
     assert "- [ ] **B**: Pending" in body
+
+
+# --- PIPE31 ------------------------------------------------------------------
+
+def test_file_url_round_trips_a_path_with_special_characters(tmp_path: Path) -> None:
+    from urllib.parse import unquote, urlparse
+
+    from mp.publish_fs import file_url
+
+    p = tmp_path / "Vault #1" / "100% notes?" / "a b.md"
+    parsed = urlparse(file_url(p))
+    assert (parsed.scheme, parsed.query, parsed.fragment) == ("file", "", "")
+    assert unquote(parsed.path) == str(p)
+
+
+def test_date_from_stem() -> None:
+    from mp.publish_fs import date_from_stem
+
+    assert date_from_stem("20261001-003000") == "2026-10-01"
+    assert date_from_stem("20261301-000000") is None
+    assert date_from_stem("paste-note") is None
+    assert date_from_stem(None) is None
+
+
+def test_unchanged_signature_with_a_new_output_dir_writes_there(tmp_path: Path) -> None:
+    transcript = tmp_path / "x.md"
+    transcript.write_text("hi", encoding="utf-8")
+    sidecar = tmp_path / "x.filesystem.json"
+    FilesystemPublisher(output_dir=tmp_path / "old").upsert(
+        summary=_summary(), transcript_md=transcript, sidecar_path=sidecar)
+    res = FilesystemPublisher(output_dir=tmp_path / "new").upsert(
+        summary=_summary(), transcript_md=transcript, sidecar_path=sidecar)
+    assert res["idempotent"] is False
+    for name in ("x.summary.md", "x.actions.json", "x.transcript.md"):
+        assert (tmp_path / "new" / name).exists()
+
+
+def test_unchanged_signature_with_a_deleted_summary_rewrites_it(tmp_path: Path) -> None:
+    transcript = tmp_path / "x.md"
+    transcript.write_text("hi", encoding="utf-8")
+    sidecar = tmp_path / "x.filesystem.json"
+    out = tmp_path / "out"
+    pub = FilesystemPublisher(output_dir=out)
+    pub.upsert(summary=_summary(), transcript_md=transcript, sidecar_path=sidecar)
+    (out / "x.summary.md").unlink()
+    assert pub.upsert(summary=_summary(), transcript_md=transcript, sidecar_path=sidecar)["idempotent"] is False
+    assert (out / "x.summary.md").exists()

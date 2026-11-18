@@ -2,9 +2,9 @@
 id: PIPE31
 title: Republishing an Obsidian note with a changed body on a later day writes a second note and orphans the first, and file_url mis-encodes #, % and ?
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (code-quality audit PY7, PY8): reproduced, a changed-body republish a day later leaves 2 notes in the vault because the filename takes the publish day's UTC date and the sidecar's `note_path` is ignored; two hand-rolled `file://` builders encode only spaces. Reuse the recorded note_path, date from the stem (paired with PIPE23), one `Path.as_uri()` helper. [Spec](./PIPE31.md) Amended 2026-11-13 by the audit band: the name also collides for same-title meetings on one UTC day and drops every non-Latin title (12 of 12 Ukrainian notes degraded), and all three local sinks skip without checking the target, so stem plus Unicode slug and a target-and-exists skip check.
+comment: Shipped 2026-11-18 (reuse recorded note_path, stem-led Unicode slug, date from the stem, one as_uri helper, target-and-exists skip on all three local sinks); owner removes the orphan notes the old naming already left in the vault; PIPE23 can reuse date_from_stem
 ---
 
 # PIPE31: Republishing an Obsidian note with a changed body on a later day writes a second note and orphans the first, and file_url mis-encodes #, % and ?
