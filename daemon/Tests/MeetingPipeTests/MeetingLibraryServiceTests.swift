@@ -1377,21 +1377,25 @@ final class MeetingLibraryServiceTests: XCTestCase {
         try touch("\(stem).wav")
         try writeTranscript(stem, segments: [
             segment(0, 10, "hi", "ME"),
-            segment(10, 20, "we shipped perfecta", "THEM-A"),
+            segment(10, 12, "um", "ME"),
+            segment(12, 20, "we shipped perfecta", "THEM-A"),
         ])
         _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Alice", stem: stem, in: dir)
         _ = try TranscriptCorrectionStore.upsert(
-            segmentIndex: 1, pipelineOriginal: "we shipped perfecta",
+            segmentIndex: 2, pipelineOriginal: "we shipped perfecta",
             edited: "we shipped Perfeqta", stem: stem, in: dir
         )
 
         var captured: Result<MeetingLibraryService.RetranscribeOutcome, Error>?
         service.retranscribeMeeting(stem: stem) { captured = $0 }
 
-        // The run rewrote the transcript: one fewer leading segment, and the
-        // same voice under a different cluster id.
+        // The run rewrote the transcript: the two leading fragments coalesced
+        // into one turn, and the same voice came back under a different cluster
+        // id. (ASR11: the fixture used to merge Alice into a cluster that was
+        // half someone else's, which the two-way gate now rightly refuses.)
         try writeTranscript(stem, segments: [
-            segment(0, 20, "hi we shipped perfecta", "THEM-B"),
+            segment(0, 12, "hi um", "ME"),
+            segment(12, 20, "we shipped perfecta", "THEM-B"),
         ])
         finishRetranscribe()
         XCTAssertTrue(drainMainSync())
@@ -1399,8 +1403,8 @@ final class MeetingLibraryServiceTests: XCTestCase {
         guard case .success(let outcome)? = captured else { return XCTFail("expected success") }
         XCTAssertEqual(SpeakerLabelStore.read(stem: stem, in: dir).labels, ["THEM-B": "Alice"])
         let corrections = TranscriptCorrectionStore.read(stem: stem, in: dir)
-        XCTAssertEqual(corrections[0]?.editedText, "we shipped Perfeqta")
-        XCTAssertNil(corrections[1], "the old index must not survive alongside the carried one")
+        XCTAssertEqual(corrections[1]?.editedText, "we shipped Perfeqta")
+        XCTAssertNil(corrections[2], "the old index must not survive alongside the carried one")
         XCTAssertEqual(outcome.carried, 2)
         XCTAssertEqual(outcome.dropped, 0)
     }

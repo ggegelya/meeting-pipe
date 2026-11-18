@@ -26,16 +26,21 @@ final class TranscriptOverlayCarryTests: XCTestCase {
 
     // MARK: - Segment anchoring
 
-    /// The headline case: the new transcript coalesced three fine segments into
-    /// one turn, so index 2's correction has to land on index 0, not stay at 2.
+    /// The headline case: the new transcript coalesced two fine segments into
+    /// one turn, so index 1's correction has to land on index 0, not stay at 1.
+    /// And because the old segment is only part of that turn, the edit is
+    /// spliced in rather than laid over it: the turn keeps its leading word
+    /// (ASR11; this test used to pin the lossy whole-text replacement). The
+    /// fragment is under half the turn on purpose: at exactly half it is still
+    /// "same span" and replaces whole, see the boundary test below.
     func testCorrectionFollowsItsAudioAcrossRenumbering() {
         let old = [
-            anchor(0, 0, 2, speaker: "ME", text: "hi"),
-            anchor(1, 2, 4, speaker: "ME", text: "we shipped perfecta"),
+            anchor(0, 0, 2.5, speaker: "ME", text: "hi everyone"),
+            anchor(1, 2.5, 4, speaker: "ME", text: "we shipped perfecta"),
             anchor(2, 4, 6, speaker: "THEM-A", text: "nice"),
         ]
         let new = [
-            anchor(0, 0, 4, speaker: "ME", text: "hi we shipped perfecta"),
+            anchor(0, 0, 4, speaker: "ME", text: "hi everyone we shipped perfecta"),
             anchor(1, 4, 6, speaker: "THEM-A", text: "nice one"),
         ]
 
@@ -46,9 +51,129 @@ final class TranscriptOverlayCarryTests: XCTestCase {
         )
 
         XCTAssertEqual(carry.corrections.keys.map { $0 }, [0])
-        XCTAssertEqual(carry.corrections[0]?.editedText, "we shipped Perfeqta")
+        XCTAssertEqual(carry.corrections[0]?.editedText, "hi everyone we shipped Perfeqta")
+        XCTAssertEqual(carry.corrections[0]?.originalText, "hi everyone we shipped perfecta")
         XCTAssertEqual(carry.carriedCorrections, 1)
         XCTAssertEqual(carry.dropped, 0)
+    }
+
+    // MARK: - Onto a longer turn (ASR11)
+
+    /// The boundary as the spec states it: "at least" half of the new span, so a
+    /// fragment that is exactly half of the merged turn still counts as the same
+    /// span and its edit replaces the whole turn. Pinned so a change to that
+    /// rule is a decision, not an accident; a fragment under half is spliced
+    /// (the headline test above).
+    func testAFragmentThatIsExactlyHalfTheMergedTurnIsSameSpan() {
+        let match = TranscriptOverlayCarry.segmentMapping(
+            old: [anchor(0, 0, 2, text: "a"), anchor(1, 2, 4, text: "b")],
+            new: [anchor(0, 0, 4, text: "a b")]
+        )
+        XCTAssertEqual(match[1]?.newIndex, 0)
+        XCTAssertEqual(match[1]?.sameSpan, true)
+
+        let under = TranscriptOverlayCarry.segmentMapping(
+            old: [anchor(0, 0, 2.5, text: "a"), anchor(1, 2.5, 4, text: "b")],
+            new: [anchor(0, 0, 4, text: "a b")]
+        )
+        XCTAssertEqual(under[1]?.sameSpan, false)
+    }
+
+    /// A short fragment merged into a long turn whose text no longer contains
+    /// the fragment's words: there is no place the edit belongs, so it drops
+    /// and the turn is left exactly as the pipeline wrote it.
+    func testACorrectionWhoseWordsAreGoneFromTheLongerTurnIsDropped() {
+        let old = [anchor(0, 0, 2, text: "four word fix here")]
+        let new = [anchor(0, 0, 30, text: "a sixty word turn that reads entirely differently now")]
+
+        let carry = TranscriptOverlayCarry.carry(
+            old: old, new: new, speakerOverlay: .empty,
+            corrections: [0: correction(0, "four word fix here", "four word fix there")]
+        )
+
+        XCTAssertTrue(carry.corrections.isEmpty)
+        XCTAssertEqual(carry.dropped, 1)
+        XCTAssertEqual(carry.carriedCorrections, 0)
+    }
+
+    /// Two places the edit could go is no place: picking the first would be a
+    /// guess that reads exactly like a carry.
+    func testACorrectionWhoseWordsOccurTwiceInTheLongerTurnIsDropped() {
+        let old = [anchor(0, 0, 2, text: "ok sure")]
+        let new = [anchor(0, 0, 10, text: "ok sure we can, ok sure")]
+
+        let carry = TranscriptOverlayCarry.carry(
+            old: old, new: new, speakerOverlay: .empty,
+            corrections: [0: correction(0, "ok sure", "OK, sure")]
+        )
+
+        XCTAssertTrue(carry.corrections.isEmpty)
+        XCTAssertEqual(carry.dropped, 1)
+    }
+
+    /// A fragment's edit the longer turn already reads is the ratchet's win,
+    /// the same as a same-span retire, not a loss.
+    func testAFragmentEditTheLongerTurnAlreadyReadsIsRetired() {
+        let carry = TranscriptOverlayCarry.carry(
+            old: [anchor(0, 0, 2, text: "we shipped perfecta")],
+            new: [anchor(0, 0, 10, text: "so we shipped Perfeqta last week")],
+            speakerOverlay: .empty,
+            corrections: [0: correction(0, "we shipped perfecta", "we shipped Perfeqta")]
+        )
+
+        XCTAssertTrue(carry.corrections.isEmpty)
+        XCTAssertEqual(carry.retired, 1)
+        XCTAssertEqual(carry.dropped, 0)
+    }
+
+    /// The same-span path is unchanged: whole-text replacement, the retire, and
+    /// the UX66 contradiction count all behave exactly as before.
+    func testASameSpanCorrectionStillReplacesWholeTextRetiresAndCountsContradictions() {
+        let replaced = TranscriptOverlayCarry.carry(
+            old: [anchor(0, 0, 4, text: "the deck is ready")],
+            new: [anchor(0, 0.2, 4.2, text: "the dek is ready")],
+            speakerOverlay: .empty,
+            corrections: [0: correction(0, "the deck is ready", "something else entirely")]
+        )
+        XCTAssertEqual(replaced.corrections[0]?.editedText, "something else entirely")
+        XCTAssertEqual(replaced.carriedCorrections, 1)
+
+        let retired = TranscriptOverlayCarry.carry(
+            old: [anchor(0, 0, 4, text: "a")],
+            new: [anchor(0, 0, 4, text: "A")],
+            speakerOverlay: .empty,
+            corrections: [0: correction(0, "a", "A")]
+        )
+        XCTAssertEqual(retired.retired, 1)
+
+        let contradicted = TranscriptOverlayCarry.carry(
+            old: [anchor(0, 0, 4, text: "thanks Jorji")],
+            new: [anchor(0, 0, 4, text: "thanks Georgy")],
+            speakerOverlay: .empty,
+            corrections: [0: correction(0, "thanks Jorji", "thanks Jorji indeed")],
+            terms: ["jorji": "Georgy"]
+        )
+        XCTAssertEqual(contradicted.contradicted, 1)
+        XCTAssertEqual(contradicted.corrections[0]?.editedText, "thanks Jorji indeed")
+    }
+
+    /// A reassignment voices a whole segment. Made on a short fragment that the
+    /// new transcript folded into a long turn, it would re-voice every line of
+    /// that turn, so it drops instead.
+    func testAReassignmentOnAFragmentCoalescedIntoALongTurnIsDropped() {
+        let carry = TranscriptOverlayCarry.carry(
+            old: [
+                anchor(0, 0, 2, speaker: "THEM-A", text: "yeah"),
+                anchor(1, 2, 20, speaker: "THEM-A", text: "so the plan is"),
+            ],
+            new: [anchor(0, 0, 20, speaker: "THEM-A", text: "yeah so the plan is")],
+            speakerOverlay: SpeakerLabelStore.Overlay(labels: [:], segments: [0: "Bob"]),
+            corrections: [:]
+        )
+
+        XCTAssertTrue(carry.speakerOverlay.segments.isEmpty)
+        XCTAssertEqual(carry.carriedReassignments, 0)
+        XCTAssertEqual(carry.dropped, 1)
     }
 
     /// The correction's `original_text` is re-snapshotted against the new
@@ -239,6 +364,48 @@ final class TranscriptOverlayCarryTests: XCTestCase {
             )
             XCTAssertEqual(again.speakerOverlay, first.speakerOverlay)
         }
+    }
+
+    /// G010's scenario. A 40 s named cluster and a 30 min unnamed one merged
+    /// into one new cluster: the name owns all of its own old time there but a
+    /// sliver of the new cluster's, so the merged cluster stays unnamed rather
+    /// than crediting the named person with half an hour of someone else.
+    func testASmallNamedClusterMergedIntoALargeUnnamedOneDoesNotNameIt() {
+        let old = [
+            anchor(0, 0, 40, speaker: "THEM-A"),
+            anchor(1, 40, 1840, speaker: "THEM-B"),
+        ]
+        let new = [anchor(0, 0, 1840, speaker: "THEM-X")]
+
+        let carry = TranscriptOverlayCarry.carry(
+            old: old, new: new,
+            speakerOverlay: SpeakerLabelStore.Overlay(labels: ["THEM-A": "Alice"], segments: [:]),
+            corrections: [:]
+        )
+
+        XCTAssertTrue(carry.speakerOverlay.labels.isEmpty)
+        XCTAssertEqual(carry.carriedNames, 0)
+        XCTAssertEqual(carry.dropped, 1)
+    }
+
+    /// The other way round: the named voice is most of the merged cluster, so
+    /// the name still carries.
+    func testAMergedClusterMostlyFromTheNamedOneKeepsTheName() {
+        let old = [
+            anchor(0, 0, 600, speaker: "THEM-A"),
+            anchor(1, 600, 640, speaker: "THEM-B"),
+        ]
+        let new = [anchor(0, 0, 640, speaker: "THEM-X")]
+
+        let carry = TranscriptOverlayCarry.carry(
+            old: old, new: new,
+            speakerOverlay: SpeakerLabelStore.Overlay(labels: ["THEM-A": "Alice"], segments: [:]),
+            corrections: [:]
+        )
+
+        XCTAssertEqual(carry.speakerOverlay.labels, ["THEM-X": "Alice"])
+        XCTAssertEqual(carry.carriedNames, 1)
+        XCTAssertEqual(carry.dropped, 0)
     }
 
     // MARK: - Per-segment reassignments

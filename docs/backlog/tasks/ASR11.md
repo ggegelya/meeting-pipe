@@ -2,9 +2,9 @@
 id: ASR11
 title: Re-transcribe carry gates measure coverage of the old span only, so a short line's edit replaces a whole merged turn and a small named cluster names a large merged one
 category: Transcription
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). TranscriptOverlayCarry only asks how much of the OLD segment or cluster the new one covers, so when a re-transcribe coalesces turns a four-word fix overwrites a sixty-word turn and a 40 s named cluster names a 30 min merged one, while the alert reports the edit as carried; the suite's headline test pins the lossy case. Require coverage in both directions for corrections, reassignments and cluster names, splice a text edit into a longer turn when its original occurs there once, otherwise drop and count.
+comment: Shipped 2026-11-18. TranscriptOverlayCarry gates both ways: SegmentMatch.sameSpan; a fragment's text edit is spliced into the longer turn when its original occurs once (retired, an unspecced choice, when it is gone and the turn already reads the edit; else dropped); reassignments carry only same-span; cluster names need a strict majority in both directions. 9 new tests, headline test rewritten, ASR3's service fixture re-timed. Boundary per spec: a fragment exactly half the merged turn is still same-span and replaces whole (pinned). Owner still owes one live re-transcribe of an edited meeting whose turns coalesce, checking the alert's counts against the Transcript tab.
 ---
 
 # ASR11: Re-transcribe carry gates measure coverage of the old span only, so a short line's edit replaces a whole merged turn and a small named cluster names a large merged one

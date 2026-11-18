@@ -14,9 +14,14 @@ import Foundation
 /// agree about because they describe the same audio:
 ///
 ///  - A new segment inherits an old segment's overrides when it covers at least
-///    `minSegmentOverlap` of that old segment's span.
-///  - A new cluster inherits an old cluster's name when it owns at least
-///    `minClusterDominance` of that old cluster's speaking time.
+///    `minSegmentOverlap` of that old segment's span. Whole-value overrides (a
+///    replacement text, a speaker reassignment) need the old segment to cover
+///    `minSegmentOverlap` of the *new* span as well (ASR11): a fragment that
+///    `SegmentBuilder.coalesce` folded into a longer turn is not that turn, so
+///    its edit is spliced in where its words occur once, and dropped otherwise.
+///  - A new cluster inherits an old cluster's name when each owns a strict
+///    majority (`minClusterDominance`) of the other's speaking time, so a small
+///    named cluster absorbed into a large unnamed one does not rename it.
 ///
 /// Both mappings are injective: a new slot can only be claimed once, because
 /// one segment has one speaker and one edited text. A collision resolves to the
@@ -78,20 +83,31 @@ enum TranscriptOverlayCarry {
         var carried: Int { carriedNames + carriedReassignments + carriedCorrections }
     }
 
-    /// Share of an old segment's duration a new segment must cover to inherit
-    /// its index-keyed overrides. Half is deliberate: `SegmentBuilder.coalesce`
-    /// merges fragments into turns, so a new segment is usually longer than the
-    /// old one it replaces, and requiring the *old* span to be mostly covered
-    /// keeps that direction cheap while still refusing a glancing touch.
+    /// Share of a span the overlap must cover, measured in **both** directions
+    /// (ASR11). The old span covered at least this much is what anchors the old
+    /// segment to a new one at all, and refuses a glancing touch. The new span
+    /// covered at least this much as well is what makes the match `sameSpan`,
+    /// which is the only case where an override may replace the new segment's
+    /// whole value. `SegmentBuilder.coalesce` merges fragments into turns, so a
+    /// new segment is often much longer than the old one it absorbed, and that
+    /// is the lossy direction, not the cheap one: measured on the old span alone,
+    /// a four-word fix replaced a sixty-word turn and the alert called it carried.
+    /// A text edit onto a longer turn is spliced instead (see `carry`), and a
+    /// speaker reassignment onto one is dropped.
     static let minSegmentOverlap = 0.5
 
-    /// Share of an old cluster's speaking time one new cluster must own to
-    /// inherit its name. Compared **strictly**, so this is a majority test, not
-    /// a coverage one: a cluster the new diarization split down the middle has
-    /// no majority owner and stays unnamed, and picking one half anyway would be
-    /// a coin flip wearing a deterministic tiebreak. That is the right way
-    /// round, because an unnamed cluster is a prompt to name it while a
-    /// wrongly-named one asserts a person who was not in the room.
+    /// Share of speaking time an old named cluster and a new cluster must each
+    /// own of the other for the name to carry, measured in **both** directions
+    /// (ASR11). Compared **strictly**, so each half is a majority test, not a
+    /// coverage one: a cluster the new diarization split down the middle has no
+    /// majority owner and stays unnamed, and picking one half anyway would be a
+    /// coin flip wearing a deterministic tiebreak. The reverse half is the merge
+    /// case: a 40 s named cluster absorbed into a new cluster that is mostly an
+    /// unnamed 30 min voice owns that new cluster's time by a sliver, and naming
+    /// it would credit the person with half an hour of someone else's speech.
+    /// Both refusals are the right way round, because an unnamed cluster is a
+    /// prompt to name it while a wrongly-named one asserts a person who was not
+    /// in the room.
     static let minClusterDominance = 0.5
 
     /// Reduce parsed segments to anchors. `TranscriptSegment.index` is already
@@ -151,7 +167,10 @@ enum TranscriptOverlayCarry {
         var segments: [Int: String] = [:]
         var reassignmentOverlap: [Int: Double] = [:]
         for (oldIndex, value) in speakerOverlay.segments.sorted(by: { $0.key < $1.key }) {
-            guard let match = segmentMap[oldIndex] else {
+            // A reassignment voices the whole new segment, so it carries only
+            // onto a segment that is the same stretch of speech (ASR11); on a
+            // longer merged turn it would re-voice lines it was never about.
+            guard let match = segmentMap[oldIndex], match.sameSpan else {
                 result.dropped += 1
                 continue
             }
@@ -179,9 +198,27 @@ enum TranscriptOverlayCarry {
                 result.dropped += 1
                 continue
             }
-            if target.text == correction.editedText {
-                result.retired += 1
-                continue
+            let editedText: String
+            if match.sameSpan {
+                if target.text == correction.editedText {
+                    result.retired += 1
+                    continue
+                }
+                editedText = correction.editedText
+            } else {
+                // The old segment is only part of the new turn (ASR11), so its
+                // edit may not replace the whole turn. Splice it where the words
+                // it corrected occur exactly once; anything else is a guess.
+                switch splice(correction, into: target.text) {
+                case .spliced(let text):
+                    editedText = text
+                case .alreadyApplied:
+                    result.retired += 1
+                    continue
+                case .unplaceable:
+                    result.dropped += 1
+                    continue
+                }
             }
             let rebased = TranscriptCorrectionStore.Correction(
                 segmentIndex: match.newIndex,
@@ -189,7 +226,7 @@ enum TranscriptOverlayCarry {
                 // the sidecar keeps meaning "this is what the pipeline produced"
                 // rather than pointing at a sentence that no longer exists.
                 originalText: target.text,
-                editedText: correction.editedText
+                editedText: editedText
             )
             if carriedCorrections[match.newIndex] != nil {
                 result.dropped += 1
@@ -201,7 +238,7 @@ enum TranscriptOverlayCarry {
             }
             carriedCorrections[match.newIndex] = rebased
             correctionOverlap[match.newIndex] = match.overlap
-            if contradicts(editedText: correction.editedText, newText: target.text, terms: terms) {
+            if contradicts(editedText: editedText, newText: target.text, terms: terms) {
                 result.contradicted += 1
             } else {
                 result.carriedCorrections += 1
@@ -211,6 +248,53 @@ enum TranscriptOverlayCarry {
         result.speakerOverlay = SpeakerLabelStore.Overlay(labels: labels, segments: segments)
         result.corrections = carriedCorrections
         return result
+    }
+
+    // MARK: - Splicing onto a longer turn (ASR11)
+
+    enum Splice: Equatable {
+        /// The turn's text with the one occurrence of the old text replaced.
+        case spliced(String)
+        /// The old text is gone and the edit already reads there: the new
+        /// transcript subsumed the fix, the same outcome as a same-span retire.
+        case alreadyApplied
+        /// The old text occurs zero or several times, so there is no single
+        /// place the edit belongs.
+        case unplaceable
+    }
+
+    /// Place a fragment's correction inside the longer turn it was merged into.
+    ///
+    /// Exact, literal, single-occurrence only. A diff or fuzzy alignment would
+    /// place more edits and some of them wrongly, and a wrongly placed edit is
+    /// silent where a dropped one is counted.
+    static func splice(
+        _ correction: TranscriptCorrectionStore.Correction,
+        into turn: String
+    ) -> Splice {
+        let original = correction.originalText
+        guard !original.isEmpty else { return .unplaceable }
+        let ranges = occurrences(of: original, in: turn)
+        if ranges.count == 1, let range = ranges.first {
+            return .spliced(turn.replacingCharacters(in: range, with: correction.editedText))
+        }
+        if ranges.isEmpty, !correction.editedText.isEmpty,
+           occurrences(of: correction.editedText, in: turn).count == 1 {
+            return .alreadyApplied
+        }
+        return .unplaceable
+    }
+
+    /// Non-overlapping literal occurrences, left to right.
+    private static func occurrences(of needle: String, in haystack: String) -> [Range<String.Index>] {
+        var out: [Range<String.Index>] = []
+        var from = haystack.startIndex
+        while from < haystack.endIndex,
+              let r = haystack.range(of: needle, options: .literal, range: from..<haystack.endIndex) {
+            out.append(r)
+            from = r.upperBound
+        }
+        return out
     }
 
     // MARK: - Vocabulary conflicts (UX66)
@@ -252,34 +336,45 @@ enum TranscriptOverlayCarry {
     struct SegmentMatch: Equatable {
         let newIndex: Int
         let overlap: Double
+        /// The overlap also covers `minSegmentOverlap` of the new segment, so
+        /// the two are the same stretch of speech and a whole-value override
+        /// may replace the new one's. False when the new segment is a longer
+        /// turn the old one was merged into (ASR11).
+        let sameSpan: Bool
     }
 
     /// Old segment index -> the new segment that covers it, when one covers at
-    /// least `minSegmentOverlap` of it.
+    /// least `minSegmentOverlap` of it. `sameSpan` records whether the old one
+    /// covers that share of the new segment too.
     static func segmentMapping(old: [Anchor], new: [Anchor]) -> [Int: SegmentMatch] {
         var out: [Int: SegmentMatch] = [:]
         for a in old {
-            var best: SegmentMatch?
+            var best: (anchor: Anchor, overlap: Double)?
             for b in new {
                 let seconds = overlapSeconds(a, b)
                 guard seconds > 0 else { continue }
                 if seconds > (best?.overlap ?? 0) {
-                    best = SegmentMatch(newIndex: b.index, overlap: seconds)
+                    best = (b, seconds)
                 }
             }
-            guard let match = best else { continue }
-            // A zero-length old segment (a marker-ish row) has no span to
-            // measure, so any real overlap is the best evidence available.
+            guard let (b, overlap) = best else { continue }
+            // A zero-length segment (a marker-ish row) has no span to measure,
+            // so any real overlap is the best evidence available.
             let required = a.duration > 0 ? a.duration * minSegmentOverlap : 0
-            if match.overlap >= required { out[a.index] = match }
+            guard overlap >= required else { continue }
+            let requiredOfNew = b.duration > 0 ? b.duration * minSegmentOverlap : 0
+            out[a.index] = SegmentMatch(newIndex: b.index, overlap: overlap, sameSpan: overlap >= requiredOfNew)
         }
         return out
     }
 
-    /// Old cluster label -> the new cluster that dominates it. Restricted to
-    /// `named` (the clusters an overlay actually names), because an unnamed
-    /// cluster has nothing to carry and would only compete for the injective
-    /// slots.
+    /// Old cluster label -> the new cluster it and only it majority-shares time
+    /// with, in both directions (`minClusterDominance`). The old side is
+    /// restricted to `named` (the clusters an overlay actually names), because
+    /// an unnamed cluster has nothing to carry and would only compete for the
+    /// injective slots; the new side's total counts every new anchor, so an
+    /// unnamed voice that supplied most of a merged cluster still outweighs the
+    /// name.
     static func clusterMapping(old: [Anchor], new: [Anchor], named: Set<String>) -> [String: String] {
         guard !named.isEmpty else { return [:] }
         var totals: [String: Double] = [:]
@@ -288,6 +383,11 @@ enum TranscriptOverlayCarry {
             totals[label, default: 0] += a.duration
         }
         guard !totals.isEmpty else { return [:] }
+        var newTotals: [String: Double] = [:]
+        for b in new {
+            guard let label = b.speaker else { continue }
+            newTotals[label, default: 0] += b.duration
+        }
 
         var overlaps: [String: [String: Double]] = [:]
         for a in old {
@@ -311,6 +411,8 @@ enum TranscriptOverlayCarry {
             guard total > 0 else { continue }
             for (newLabel, seconds) in perNew {
                 let ratio = seconds / total
+                let newTotal = newTotals[newLabel] ?? 0
+                guard newTotal > 0, seconds / newTotal > minClusterDominance else { continue }
                 if ratio > minClusterDominance {
                     candidates.append(Candidate(old: oldLabel, new: newLabel, ratio: ratio))
                 }
