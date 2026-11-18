@@ -341,7 +341,7 @@ def _no_fanout(monkeypatch) -> list:
 def test_prose_under_summary_is_refused_before_anything_is_written(tmp_path, monkeypatch):
     transcript, summary_md = _paste(tmp_path, _PROSE_SUMMARY)
     calls = _no_fanout(monkeypatch)
-    with pytest.raises(ValueError, match=r"`## Summary` section could not be read"):
+    with pytest.raises(ValueError, match=r"The `## Summary` section could not be read"):
         publish_from_paste(transcript, cfg=Config())
     assert summary_md.read_text(encoding="utf-8") == _PROSE_SUMMARY
     assert not (tmp_path / "20260430-1500.summary.json").exists()
@@ -393,12 +393,37 @@ def test_a_paste_with_no_summary_heading_keeps_the_placeholder(tmp_path, monkeyp
     assert summary_md.read_text(encoding="utf-8") == "# Quick chat\n\nNothing structured here.\n"
 
 
-def test_main_on_the_prose_case_exits_1_naming_the_section(tmp_path, monkeypatch, caplog):
-    import logging
-
+def test_main_on_the_prose_case_exits_1_with_one_fail_line(tmp_path, monkeypatch, capsys):
+    """The paste box reads its explanation from the last `[FAIL] <sentence>` stderr line, capped
+    at 400 characters and refusing `{`, so the refusal has to be that line."""
     transcript, _ = _paste(tmp_path, _PROSE_SUMMARY)
     _no_fanout(monkeypatch)
     monkeypatch.setattr("mp.publish_from_paste.entry.prepare", lambda cfg, md: Config())
-    with caplog.at_level(logging.ERROR, logger="mp.publish_from_paste"):
-        assert paste_main([str(transcript)]) == 1
-    assert any("## Summary" in r.getMessage() for r in caplog.records)
+    assert paste_main([str(transcript)]) == 1
+    fails = [line for line in capsys.readouterr().err.splitlines() if line.startswith("[FAIL] ")]
+    assert len(fails) == 1
+    assert "`## Summary`" in fails[0] and len(fails[0]) <= 407 and "{" not in fails[0]
+
+
+def test_several_lossy_sections_still_fit_one_short_sentence():
+    from mp.publish_from_paste import lossy_sections, refusal_message
+
+    text = ("# T\n## Summary\nprose\n## Decisions\nNone.\n## Action Items\nAlice sends it\n"
+            "## Open Questions\nnone yet\n")
+    problems = lossy_sections(text)
+    assert [h for h, _ in problems] == ["Summary", "Decisions", "Action Items", "Open Questions"]
+    message = refusal_message(problems)
+    assert len(message) <= 400 and "{" not in message
+
+
+def test_the_apps_own_rendered_summary_is_never_refused():
+    from mp.markdown import render_summary_md
+    from mp.publish_from_paste import lossy_sections
+    from mp.schemas import ActionItem
+
+    full = MeetingSummary(title="T", summary=["a"], decisions=["d"], questions=["q?"],
+                          actions=[ActionItem(task="x", owner="Al", due="2026-01-01"),
+                                   ActionItem(task="y")], attendees=["A"])
+    bare = MeetingSummary(title="T", summary=["a"])
+    for s in (full, bare):
+        assert lossy_sections(render_summary_md(s, "20260101-1000")) == []

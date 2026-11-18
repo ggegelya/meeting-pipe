@@ -125,13 +125,31 @@ _REFUSABLE: tuple[tuple[tuple[str, ...], str], ...] = (
 )
 
 
-def lossy_sections(text: str) -> list[str]:
-    """The known sections of a paste that have content but would parse to nothing, each as a
-    sentence naming the heading and the shape it expects (PIPE50). Empty when nothing would be
-    lost. A missing heading is not lossy: the minimal-markdown case keeps its placeholder."""
+class PasteRefused(ValueError):
+    """A paste `publish_from_paste` will not publish because a known section would be lost
+    (PIPE50). `main` prints it as one `[FAIL] <sentence>` line, the stderr shape the paste box's
+    `FailurePresentation` reads its explanation from (STOR14 / PIPE54), so it stays one short
+    sentence."""
+
+
+def refusal_message(problems: list[tuple[str, str]]) -> str:
+    """One sentence for the paste box, short enough for the `[FAIL]` reader's 400-character cap."""
+    if len(problems) == 1:
+        heading, shape = problems[0]
+        return (f"The `## {heading}` section could not be read, so nothing was published. "
+                f"Write it as {shape}.")
+    names = ", ".join(f"`## {h}`" for h, _ in problems[:-1]) + f" and `## {problems[-1][0]}`"
+    return (f"The {names} sections could not be read, so nothing was published. Write each as "
+            "one bullet per line starting with `- `, and action items as `- [ ] **Owner**: task`.")
+
+
+def lossy_sections(text: str) -> list[tuple[str, str]]:
+    """The known sections of a paste that have content but would parse to nothing, as
+    (heading as written, the shape it expects) (PIPE50). Empty when nothing would be lost. A
+    missing heading is not lossy: the minimal-markdown case keeps its placeholder."""
     sections = _split_sections(text)
     headings = {m.group(1).strip().lower(): m.group(1).strip() for m in _H2.finditer(text)}
-    problems: list[str] = []
+    problems: list[tuple[str, str]] = []
     for names, shape in _REFUSABLE:
         for name in names:
             body = sections.get(name)
@@ -144,8 +162,7 @@ def lossy_sections(text: str) -> list[str]:
             else:
                 parsed = _extract_bullets(body)
             if not parsed:
-                problems.append(f"the `## {headings.get(name, name)}` section could not be read; "
-                                f"write it as {shape}")
+                problems.append((headings.get(name, name), shape))
     return problems
 
 
@@ -325,7 +342,7 @@ def publish_from_paste(transcript_md: Path, cfg: Config | None = None) -> dict:
     # read. Publishing it used to replace prose under `## Summary` with the placeholder bullet in
     # the file and every sink. `main` exits 1 and the paste box shows this message inline.
     if problems := lossy_sections(raw):
-        raise ValueError("Nothing was published: " + "; ".join(problems) + ".")
+        raise PasteRefused(refusal_message(problems))
     if cut is not None:
         log.warning("The pasted summary was trimmed to fit: title %d of %d characters kept, "
                     "summary %d of %d bullets kept",
@@ -361,6 +378,11 @@ def main(argv: list[str]) -> int:
     )
     try:
         result = publish_from_paste(transcript)
+    except PasteRefused as e:
+        # PIPE50: the paste box shows this sentence inline (`FailurePresentation.refusalSentence`).
+        log.error("publish-from-paste refused: %s", e)
+        print(f"[FAIL] {e}", file=sys.stderr)
+        return 1
     except Exception as e:  # noqa: BLE001
         log.error("publish-from-paste failed: %s", e)
         return 1

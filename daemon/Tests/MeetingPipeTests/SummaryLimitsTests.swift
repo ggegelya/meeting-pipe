@@ -132,6 +132,17 @@ final class SummaryLimitsTests: XCTestCase {
             PipelineLauncher.publishFailedExitCode, stderr)), .publish)
     }
 
+    /// PIPE50: a paste the parser cannot read is refused with the same `[FAIL]` line, and the
+    /// paste box's notice shows that sentence rather than a destination hint.
+    func test_a_refused_paste_explains_which_section_to_fix() {
+        let sentence = "The `## Summary` section could not be read, so nothing was published. Write it as one bullet per line, starting with `- `."
+        let stderr = "2026-11-19 ERROR mp.publish_from_paste: publish-from-paste refused: \(sentence)\n[FAIL] \(sentence)\n"
+        let failure = FailurePresentation(
+            error: PipelineLauncher.LaunchError.nonZeroExit(1, stderr), operation: .publish
+        )
+        XCTAssertTrue(failure.explanation.hasSuffix(sentence), failure.explanation)
+    }
+
     /// The Library's detail pane builds the notice from `<stem>.error.json` (stage, reason,
     /// metadata), not from the error, so the sentence has to survive that round trip.
     func test_the_refusal_reaches_the_detail_notice_through_the_failure_sidecar() throws {
