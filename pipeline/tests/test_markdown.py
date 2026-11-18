@@ -76,6 +76,26 @@ def test_renders_warning_banner_when_diarization_failed():
     assert "**Speaker?**: Solo voice." in md
 
 
+def test_the_diarization_banner_is_worded_by_the_fallback_that_ran_DIAR8():
+    base = {
+        "language": "en",
+        "audio_path": "/tmp/x.wav",
+        "diarization_failed": True,
+        "diarization_failure_reason": "boom",
+        "segments": [{"speaker": "speaker_user", "text": "Hi."}],
+    }
+    channel = render_markdown({**base, "speaker_fallback": "channel"})
+    none = render_markdown({**base, "speaker_fallback": "none"})
+    legacy = render_markdown(base)  # written before DIAR8: no speaker_fallback key
+
+    assert "labeled by microphone and system audio" in channel
+    assert "no speakers were labeled" in none
+    assert "no speakers were labeled" in legacy
+    for md in (channel, none, legacy):
+        assert "Reason: boom" in md
+        assert "`Speaker?`" not in md, "the banner no longer names a sentinel the turns may not carry"
+
+
 def test_no_warning_banner_on_successful_diarization():
     structured = {
         "language": "en",

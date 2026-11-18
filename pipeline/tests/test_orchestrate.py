@@ -1576,3 +1576,106 @@ def test_run_all_success_events_carry_sink_names_and_no_page_url(tmp_path: Path,
         assert "placeholder-topic-slug" not in json.dumps(row)
         assert row["sinks"] == ["notion"]
     assert completed["published"] is True
+
+
+# MARK: DIAR8: the flag, not the label, says the daemon's diarizer failed
+
+def _stereo_wav(path: Path, *, mic_first: bool = True) -> None:
+    """Two seconds of stereo 16 kHz: the mic (left) is loud for the first second and the system (right)
+    for the second, so the channel-aware pass has a real answer for each segment."""
+    import numpy as np
+    import soundfile as sf
+
+    rate = 16000
+    t = np.arange(rate) / rate
+    tone = (0.4 * np.sin(2 * np.pi * 440 * t) * 32767).astype("int16")
+    quiet = np.zeros(rate, dtype="int16")
+    left = np.concatenate([tone, quiet]) if mic_first else np.concatenate([quiet, tone])
+    right = np.concatenate([quiet, tone]) if mic_first else np.concatenate([tone, quiet])
+    sf.write(str(path), np.stack([left, right], axis=1), rate, subtype="PCM_16")
+
+
+def _swift_failed_streamed(wav: Path, *, failed: bool = True, label: str = "speaker_unknown") -> dict:
+    """What Swift writes when its diarizer throws: every segment under its own sentinel."""
+    return {
+        "language": "en",
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": "From the mic.", "speaker": label},
+            {"start": 1.0, "end": 2.0, "text": "From the call.", "speaker": label},
+        ],
+        "audio_path": str(wav),
+        "audio_seconds": 2.0,
+        "model": "parakeet-tdt-0.6b-v3",
+        "backend": "fluidaudio",
+        "diarization": not failed,
+        "diarization_failed": failed,
+        "diarization_failure_reason": "CoreMLError: model failed to load" if failed else None,
+        "streaming": False,
+        "finalized": True,
+    }
+
+
+def _finalize_streamed(wav: Path, streamed: dict) -> dict:
+    from mp.orchestrate import finalize_streamed_transcript
+
+    out = finalize_streamed_transcript(
+        wav, dict(streamed), voiceprint_store=VoiceprintStore(path=wav.parent / "vp.json"),
+    )
+    return json.loads(out["json"].read_text(encoding="utf-8"))
+
+
+def test_a_failed_diarizer_with_a_stereo_recording_takes_the_channel_path_DIAR8(tmp_path: Path):
+    wav = tmp_path / "20261118-1000.wav"
+    _stereo_wav(wav)
+
+    data = _finalize_streamed(wav, _swift_failed_streamed(wav))
+
+    assert [s["speaker"] for s in data["segments"]] == ["speaker_user", "speaker_other"]
+    assert data["diarization_failed"] is True, "the failure stays on the record"
+    assert data["diarization_failure_reason"] == "CoreMLError: model failed to load"
+    assert data["speaker_fallback"] == "channel"
+    md = (tmp_path / "20261118-1000.md").read_text(encoding="utf-8")
+    assert "microphone and system audio" in md
+    assert "CoreMLError: model failed to load" in md
+
+
+def test_a_healthy_run_with_mostly_unknown_segments_stays_labelled_DIAR8(tmp_path: Path):
+    """The flag decides, not the label: speaker_unknown is also the healthy diarizer's junk drawer."""
+    wav = tmp_path / "20261118-1001.wav"
+    _stereo_wav(wav)
+
+    data = _finalize_streamed(wav, _swift_failed_streamed(wav, failed=False))
+
+    assert [s["speaker"] for s in data["segments"]] == ["speaker_unknown", "speaker_unknown"]
+    assert "speaker_fallback" not in data
+
+
+def test_a_failed_diarizer_on_a_mono_recording_keeps_the_swift_reason_and_sentinel_DIAR8(tmp_path: Path):
+    import numpy as np
+    import soundfile as sf
+
+    wav = tmp_path / "20261118-1002.wav"
+    sf.write(str(wav), np.zeros(32000, dtype="int16"), 16000, subtype="PCM_16")
+
+    data = _finalize_streamed(wav, _swift_failed_streamed(wav))
+
+    assert data["diarization_failed"] is True
+    assert data["diarization_failure_reason"] == "CoreMLError: model failed to load"
+    assert data["speaker_fallback"] == "none"
+    # Swift's readers know speaker_unknown; a literal `Speaker?` would show up as a person.
+    assert [s["speaker"] for s in data["segments"]] == ["speaker_unknown", "speaker_unknown"]
+    md = (tmp_path / "20261118-1002.md").read_text(encoding="utf-8")
+    assert "no speakers were labeled" in md
+
+
+def test_finalizing_a_channel_fallback_transcript_twice_keeps_its_labels_without_the_wav_DIAR8(tmp_path: Path):
+    wav = tmp_path / "20261118-1003.wav"
+    _stereo_wav(wav)
+    first = _finalize_streamed(wav, _swift_failed_streamed(wav))
+    wav.unlink()  # compressed or removed since
+
+    second = _finalize_streamed(wav, first)
+
+    assert [s["speaker"] for s in second["segments"]] == ["speaker_user", "speaker_other"]
+    assert second["speaker_fallback"] == "channel"
+    assert second["diarization_failed"] is True

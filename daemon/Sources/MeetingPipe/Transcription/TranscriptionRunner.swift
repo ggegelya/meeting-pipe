@@ -21,6 +21,9 @@ struct TranscriptSidecar: Codable, Equatable {
     /// the final transcript the Library reads. Omitted when diarization
     /// produced no speakers.
     var speakerEmbeddings: [String: [Float]]? = nil
+    /// DIAR8: the Swift type of the error the diarizer threw (`diarization_failed` event only). Deliberately
+    /// not a coding key: the sidecar contract with Python is unchanged, and a decoded sidecar has none.
+    var diarizationFailureType: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case language

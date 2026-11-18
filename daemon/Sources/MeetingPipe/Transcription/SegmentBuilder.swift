@@ -47,8 +47,11 @@ enum SegmentBuilder {
         static let `default` = Config()
     }
 
-    /// Build segments from tokens and a diarization timeline. Empty speakers list
-    /// assigns the fallback label (matches Python's _UNKNOWN_SPEAKER for schema uniformity).
+    /// Build segments from tokens and a diarization timeline. An empty speakers list assigns the
+    /// fallback label, the daemon's own junk-drawer string `speaker_unknown`. It is NOT Python's `Speaker?`
+    /// (DIAR8): the pipeline decides whether a transcript is labelled from the sidecar's
+    /// `diarization_failed`, never from this string, which is also what a healthy run leaves on words no
+    /// diarizer span covered.
     static func build(
         tokens: [AsrToken],
         speakers: [SpeakerSpan],

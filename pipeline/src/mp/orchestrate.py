@@ -733,7 +733,18 @@ def existing_daemon_transcript(wav: Path) -> dict | None:
 def _streamed_segments_have_speakers(streamed: dict) -> bool:
     """FluidAudio writes speaker labels inline. When at least half the
     segments carry a real label (not None / not `Speaker?`), trust them
-    and skip the channel-aware finalize step entirely."""
+    and skip the channel-aware finalize step entirely.
+
+    DIAR8: the sidecar's own `diarization_failed` flag decides before any label is
+    counted. Swift labels every segment `speaker_unknown` when its diarizer throws, and
+    that string is not `Speaker?`, so counting labels called a failed run labelled. The
+    flag, not the string, is the signal: `speaker_unknown` is also the healthy run's
+    junk drawer. A transcript that already carries `speaker_fallback` was handled by an
+    earlier finalize, so it is not routed back here: that pass needs the WAV, and a
+    second `mp finalize` over a compressed or removed recording would otherwise wipe the
+    channel labels it wrote."""
+    if streamed.get("diarization_failed") and not streamed.get("speaker_fallback"):
+        return False
     segs = streamed.get("segments") or []
     if not segs:
         return False
@@ -910,21 +921,35 @@ def finalize_streamed_transcript(
         storage.atomic_write_text(md_path, render_markdown(structured))
         return {"json": json_path, "md": md_path}
 
+    # DIAR8: what the daemon recorded about its own diarizer, kept on the record through this pass.
+    swift_failed = bool(streamed.get("diarization_failed"))
+    swift_reason = streamed.get("diarization_failure_reason")
     diarization_failed = False
     diarization_failure_reason: str | None = None
     used_channel_aware = False
+    speaker_fallback: str
 
     if is_stereo_recording(wav):
         log.info("Stereo recording; channel-aware speaker labelling at finalization")
         used_channel_aware = True
+        diarization_failed = swift_failed
+        diarization_failure_reason = swift_reason if swift_failed else None
+        speaker_fallback = "channel"
     else:
         diarization_failed = True
         diarization_failure_reason = (
-            "FluidAudio diarization missing and mono input; cannot label speakers"
+            swift_reason
+            if swift_failed and swift_reason
+            else "FluidAudio diarization missing and mono input; cannot label speakers"
         )
+        speaker_fallback = "none"
 
     if used_channel_aware:
         labelled = assign_speakers_by_channel(streamed["segments"], wav)
+    elif swift_failed:
+        # The daemon's own sentinel stays: Swift's readers (the cast, the stats, the transcript
+        # rows) know `speaker_unknown` and would show a literal `Speaker?` as a person.
+        labelled = list(streamed["segments"])
     elif diarization_failed:
         labelled = [{**s, "speaker": "Speaker?"} for s in streamed["segments"]]
     else:
@@ -938,6 +963,7 @@ def finalize_streamed_transcript(
         "diarization": not diarization_failed,
         "diarization_failed": diarization_failed,
         "diarization_failure_reason": diarization_failure_reason,
+        "speaker_fallback": speaker_fallback,
         "finalized": True,
     }
     # Atomic (PIPE8) + 0600 (SEC14), exactly as the labelled branch above: this

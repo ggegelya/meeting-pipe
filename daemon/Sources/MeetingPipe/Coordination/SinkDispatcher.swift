@@ -653,8 +653,19 @@ final class SinkDispatcher: @unchecked Sendable {
             Log.event(category: "transcription", action: "engine_succeeded", attributes: Self.engineSucceededAttributes(
                 file: job.file, engine: runner.backendName, segments: sidecar.segments.count,
                 audioSeconds: sidecar.audioSeconds, kind: job.kind == .retranscribe ? "retranscribe" : "full",
-                runnerWarm: warm, cost: cost
+                runnerWarm: warm, cost: cost, diarizationOK: !sidecar.diarizationFailed, language: sidecar.language
             ))
+            // DIAR8: a diarizer that threw used to leave the failure only inside the transcript, so no
+            // event log could count it. Below the commit point above, so an abandoned pass writes nothing.
+            if sidecar.diarizationFailed {
+                let reason = Self.cappedDiarizationReason(sidecar.diarizationFailureReason)
+                Log.event(category: "transcription", action: "diarization_failed", attributes: [
+                    "file": job.file.lastPathComponent,
+                    "error_type": sidecar.diarizationFailureType ?? "unknown",
+                    "reason": reason,
+                ])
+                Log.writeLine("transcription", "diarization failed for \(job.file.lastPathComponent) (\(sidecar.diarizationFailureType ?? "unknown")): \(reason); the pipeline labels speakers by channel (DIAR8)")
+            }
             // OBS10: the spawn that follows says how long the daemon took to get to it.
             EngineHandoff.shared.note(file: job.file, at: probe.uptime())
             await MainActor.run {
@@ -1311,11 +1322,21 @@ final class SinkDispatcher: @unchecked Sendable {
 }
 
 extension SinkDispatcher {
+    /// The longest diarization failure reason an event row carries (DIAR8): an error's description can
+    /// quote paths and model ids, and the full text is still in the transcript's own header.
+    static let diarizationReasonLimit = 300
+
+    static func cappedDiarizationReason(_ reason: String?) -> String {
+        guard let reason, !reason.isEmpty else { return "unknown" }
+        return reason.count <= diarizationReasonLimit ? reason : String(reason.prefix(diarizationReasonLimit))
+    }
+
     /// OBS10: `engine_succeeded`, with what the pass cost and the machine's state at its start and
     /// end. `rtf` is seconds of audio per second of wall time.
     static func engineSucceededAttributes(
         file: URL, engine: String, segments: Int, audioSeconds: Double, kind: String, runnerWarm: Bool,
-        cost: (sample: ResourceSample, machineAtStart: MachineState, machine: MachineState)
+        cost: (sample: ResourceSample, machineAtStart: MachineState, machine: MachineState),
+        diarizationOK: Bool = true, language: String? = nil
     ) -> [String: Any] {
         var attrs: [String: Any] = [
             "file": file.lastPathComponent,
@@ -1325,7 +1346,11 @@ extension SinkDispatcher {
             "kind": kind,
             "compute_units": MachineState.computeUnits,
             "runner_warm": runnerWarm,
+            // DIAR8: false only when the diarizer threw (the sidecar's `diarization_failed`). A runner
+            // that never diarizes reads true: nothing failed.
+            "diarization_ok": diarizationOK,
         ]
+        if let language { attrs["language"] = language }
         attrs.merge(cost.sample.attributes) { _, new in new }
         if let rtf = cost.sample.rtf(audioSeconds: audioSeconds) { attrs["rtf"] = (rtf * 10).rounded() / 10 }
         attrs.merge(cost.machine.attributes()) { _, new in new }

@@ -65,10 +65,12 @@ def render_markdown(structured: dict[str, Any], *, timestamps: bool = False) -> 
 
     if structured.get("diarization_failed"):
         reason = structured.get("diarization_failure_reason") or "unknown"
-        lines.append(
-            f"> Diarization failed; all turns labeled `{_UNKNOWN_SPEAKER}`. "
-            f"Reason: {reason}"
-        )
+        # DIAR8: worded by what the finalizer actually did, not by a label the turns may not carry.
+        if structured.get("speaker_fallback") == "channel":
+            what = "turns are labeled by microphone and system audio instead"
+        else:
+            what = "no speakers were labeled"
+        lines.append(f"> Diarization failed; {what}. Reason: {reason}")
         lines.append("")
 
     current_speaker: str | object = _UNSET

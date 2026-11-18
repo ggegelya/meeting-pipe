@@ -69,6 +69,9 @@ enum TranscriptLoader {
         let segments: [TranscriptSegment]
         let language: String?
         let speakerOrder: [String]   // speaker IDs in first-seen order
+        /// DIAR8: set only when the transcript says its diarizer failed. nil for every transcript
+        /// written before that key existed.
+        var diarizationNote: TranscriptDiarizationNote? = nil
         /// Reversible speaker-label overrides (FEAT3-UNDO / FEAT3-SEGMENT). Resolved
         /// at display time, not baked into `segments`, so the raw diarization label
         /// stays recoverable. `.empty` from `parse` (no sidecar in a raw payload).
@@ -127,6 +130,7 @@ enum TranscriptLoader {
             segments: overlaid,
             language: parsed.language,
             speakerOrder: parsed.speakerOrder,
+            diarizationNote: parsed.diarizationNote,
             speakerOverlay: SpeakerLabelStore.read(stem: stem, in: directory),
             voiceprintLabels: embeddings.voiceprintLabels,
             nearMisses: embeddings.nearMisses
@@ -182,7 +186,8 @@ enum TranscriptLoader {
         return Result(
             segments: out,
             language: (language?.isEmpty == true) ? nil : language,
-            speakerOrder: order
+            speakerOrder: order,
+            diarizationNote: TranscriptDiarizationNote.parse(obj)
         )
     }
 }
@@ -289,6 +294,7 @@ struct TranscriptTab: View {
 
     @State private var segments: [TranscriptSegment] = []
     @State private var language: String? = nil
+    @State private var diarizationNote: TranscriptDiarizationNote? = nil
     /// Reversible speaker-label overrides (FEAT3-UNDO). Resolved at display time so
     /// the diarization label in `<stem>.json` is never overwritten.
     @State private var speakerOverlay: SpeakerLabelStore.Overlay = .empty
@@ -576,6 +582,7 @@ struct TranscriptTab: View {
             TranscriptList(
                 segments: segments,
                 language: language,
+                diarizationNote: diarizationNote,
                 markers: markers,
                 overlay: speakerOverlay,
                 voiceprintLabels: voiceprintLabels,
@@ -800,6 +807,7 @@ struct TranscriptTab: View {
         guard meeting.stem == stem else { return }
         segments = result?.segments ?? []
         language = result?.language
+        diarizationNote = result?.diarizationNote
         speakerOverlay = result?.speakerOverlay ?? .empty
         voiceprintLabels = result?.voiceprintLabels ?? []
         cast = MeetingCast.members(segments: segments, overlay: speakerOverlay)
@@ -823,6 +831,7 @@ struct TranscriptTab: View {
 private struct TranscriptList: View {
     let segments: [TranscriptSegment]
     let language: String?
+    let diarizationNote: TranscriptDiarizationNote?
     /// Flagged-moment offsets (FEAT8), anchored to their segments for chips.
     let markers: [Double]
     /// Reversible speaker-label overrides (FEAT3-UNDO), resolved per row for display.
@@ -882,6 +891,15 @@ private struct TranscriptList: View {
                             .font(.caption)
                             .foregroundStyle(Color(MPColors.fgSubtle))
                             .padding(.top, 12)
+                    }
+                    // DIAR8: when the diarizer failed the speaker names below are a fallback, and a
+                    // reader should not have to guess why every line carries the same few labels.
+                    if let note = diarizationNote {
+                        Text(note.text)
+                            .font(.caption)
+                            .foregroundStyle(Color(MPColors.fgSubtle))
+                            .help(note.help)
+                            .padding(.top, language == nil ? 12 : 2)
                     }
                     // Discoverability caption (DSN22 #10): the rows are clickable to
                     // edit or seek, which is not otherwise obvious.

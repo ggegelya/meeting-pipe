@@ -125,6 +125,7 @@ final class FluidAudioRunner: TranscriptionRunner {
         var speakerEmbeddings: [String: [Float]] = [:]
         var diarizationOK = true
         var diarizationFailureReason: String? = nil
+        var diarizationFailureType: String? = nil
         try Task.checkCancellation()
         do {
             let diarized = try await runDiarization(samples: samples)
@@ -140,6 +141,7 @@ final class FluidAudioRunner: TranscriptionRunner {
         } catch {
             diarizationOK = false
             diarizationFailureReason = String(describing: error)
+            diarizationFailureType = String(describing: type(of: error))
         }
         // The one stretch above with no checkpoint inside it, so this is where a
         // click that landed during it is honoured.
@@ -173,7 +175,8 @@ final class FluidAudioRunner: TranscriptionRunner {
             diarizationFailureReason: diarizationFailureReason,
             streaming: false,
             finalized: true,
-            speakerEmbeddings: speakerEmbeddings.isEmpty ? nil : speakerEmbeddings
+            speakerEmbeddings: speakerEmbeddings.isEmpty ? nil : speakerEmbeddings,
+            diarizationFailureType: diarizationFailureType
         )
     }
 

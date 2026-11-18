@@ -658,3 +658,17 @@ def test_merge_refuses_before_writing_when_a_carried_sidecar_is_unreadable(monke
     with pytest.raises(MergeError, match="cannot be read"):
         merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
     assert {p: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+def test_a_merged_transcript_keeps_the_speaker_fallback_only_when_every_fragment_agrees_DIAR8():
+    def frag(fallback):
+        return {**_transcript(_seg(0.0, 1.0, "x", "speaker_user"), diarization_failed=True),
+                **({"speaker_fallback": fallback} if fallback else {})}
+
+    same = merge_transcripts([frag("channel"), frag("channel")], [1.0, 1.0])
+    mixed = merge_transcripts([frag("channel"), frag("none")], [1.0, 1.0])
+    healthy = merge_transcripts([{**frag("channel"), "diarization_failed": False}, frag("channel")], [1.0, 1.0])
+
+    assert same["speaker_fallback"] == "channel"
+    assert "speaker_fallback" not in mixed
+    assert "speaker_fallback" not in healthy

@@ -174,6 +174,11 @@ def merge_transcripts(fragments: list[dict], durations: list[float]) -> dict:
     merged["streaming"] = False
     merged["finalized"] = True
     merged["diarization_failed"] = diarization_failed
+    # DIAR8: `dict(primary)` carried the first fragment's fallback. It describes the merged
+    # transcript only when every fragment failed the same way.
+    fallbacks = {f.get("speaker_fallback") for f in fragments}
+    if not (diarization_failed and len(fallbacks) == 1):
+        merged.pop("speaker_fallback", None)
     merged["diarization"] = (not diarization_failed) and any(
         bool(f.get("diarization")) for f in fragments
     )

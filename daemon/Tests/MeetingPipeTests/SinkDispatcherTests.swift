@@ -900,6 +900,79 @@ final class SinkDispatcherTests: XCTestCase {
         XCTAssertFalse(OffRecordMarker.exists(forFinal: wav), "the marker's job is done once the cut landed")
     }
 
+    // MARK: - DIAR8: a diarization failure is an event, and engine_succeeded says whether it ran
+
+    private final class DiarizationRunner: TranscriptionRunner {
+        let backendName = "diar"
+        let failed: Bool
+        let reason: String?
+        init(failed: Bool, reason: String? = nil) { self.failed = failed; self.reason = reason }
+        func transcribe(wavURL: URL, languageHint: String?) async throws -> TranscriptSidecar {
+            TranscriptSidecar(
+                language: "uk", segments: [], audioPath: wavURL.path, audioSeconds: 1, model: "m",
+                backend: backendName, diarization: !failed, diarizationFailed: failed,
+                diarizationFailureReason: reason, streaming: false, finalized: true,
+                diarizationFailureType: failed ? "CoreMLError" : nil
+            )
+        }
+    }
+
+    private func eventRows(_ logs: URL, action: String) throws -> [[String: Any]] {
+        let url = logs.appendingPathComponent("events.jsonl")
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        return try String(contentsOf: url, encoding: .utf8)
+            .split(separator: "\n")
+            .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            .filter { $0["action"] as? String == action }
+    }
+
+    func test_a_failed_diarizer_emits_one_capped_diarization_failed_event_and_says_so_on_engine_succeeded_DIAR8() throws {
+        let driver = FakePipelineDriver()
+        let longReason = String(repeating: "r", count: 500)
+        let dispatcher = SinkDispatcher(
+            launcher: driver, makeTranscriptionRunner: { DiarizationRunner(failed: true, reason: longReason) })
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()); unsetenv("MEETINGPIPE_LOGS_DIR") }
+        let logs = try isolatedLogs(wav.deletingLastPathComponent())
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+
+        let succeeded = try XCTUnwrap(try eventRows(logs, action: "engine_succeeded").first)
+        XCTAssertEqual(succeeded["diarization_ok"] as? Bool, false)
+        XCTAssertEqual(succeeded["language"] as? String, "uk")
+        let failures = try eventRows(logs, action: "diarization_failed")
+        XCTAssertEqual(failures.count, 1)
+        XCTAssertEqual(failures.first?["error_type"] as? String, "CoreMLError")
+        XCTAssertEqual((failures.first?["reason"] as? String)?.count, SinkDispatcher.diarizationReasonLimit)
+        XCTAssertEqual(failures.first?["file"] as? String, "clip.wav")
+    }
+
+    func test_a_healthy_diarizer_emits_no_diarization_failed_event_DIAR8() throws {
+        let driver = FakePipelineDriver()
+        let dispatcher = SinkDispatcher(launcher: driver, makeTranscriptionRunner: { DiarizationRunner(failed: false) })
+        let wav = try makeTempWav()
+        defer { try? FileManager.default.removeItem(at: wav.deletingLastPathComponent()); unsetenv("MEETINGPIPE_LOGS_DIR") }
+        let logs = try isolatedLogs(wav.deletingLastPathComponent())
+
+        dispatcher.enqueue(file: wav, summaryMode: .auto)
+        waitForPipelineStart(driver)
+
+        XCTAssertEqual(try eventRows(logs, action: "engine_succeeded").first?["diarization_ok"] as? Bool, true)
+        XCTAssertTrue(try eventRows(logs, action: "diarization_failed").isEmpty)
+    }
+
+    func test_the_diarization_failure_type_is_not_part_of_the_sidecar_contract_DIAR8() throws {
+        let sidecar = TranscriptSidecar(
+            language: "en", segments: [], audioPath: "/x.wav", audioSeconds: 1, model: "m", backend: "b",
+            diarization: false, diarizationFailed: true, diarizationFailureReason: "r", streaming: false,
+            finalized: true, diarizationFailureType: "CoreMLError")
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(sidecar)) as? [String: Any]
+        XCTAssertEqual(json?["diarization_failed"] as? Bool, true)
+        XCTAssertNil(json?["diarization_failure_type"])
+        XCTAssertFalse(json?.keys.contains { $0.lowercased().contains("type") } ?? true)
+    }
+
     // MARK: - failure-stage attribution (PIPE1)
 
     /// `mp` exits 3 when every configured sink failed. That leaves a complete

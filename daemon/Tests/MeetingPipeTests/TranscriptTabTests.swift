@@ -33,6 +33,40 @@ final class TranscriptTabTests: XCTestCase {
         XCTAssertEqual(result.speakerOrder, ["speaker_0", "speaker_1"])
     }
 
+    // MARK: DIAR8: the notice
+
+    func test_parse_surfaces_a_diarization_failure_by_channel_DIAR8() {
+        let result = TranscriptLoader.parse([
+            "segments": [["start": 0.0, "end": 1.0, "text": "Hi.", "speaker": "speaker_user"]],
+            "diarization_failed": true,
+            "diarization_failure_reason": "CoreMLError: model failed to load",
+            "speaker_fallback": "channel",
+        ])
+        let note = result.diarizationNote
+        XCTAssertEqual(note?.labelledByChannel, true)
+        XCTAssertEqual(note?.reason, "CoreMLError: model failed to load")
+        XCTAssertEqual(note?.text, "Speakers could not be told apart; labeled by microphone and system audio instead.")
+        XCTAssertTrue(note?.help.contains("CoreMLError: model failed to load") == true)
+    }
+
+    func test_parse_words_a_failure_with_no_labels_and_a_transcript_from_before_the_key_the_same_DIAR8() {
+        for fallback in [["speaker_fallback": "none"], [:]] as [[String: Any]] {
+            var payload: [String: Any] = ["segments": [], "diarization_failed": true]
+            payload.merge(fallback) { _, new in new }
+            let note = TranscriptLoader.parse(payload).diarizationNote
+            XCTAssertEqual(note?.labelledByChannel, false, "\(fallback)")
+            XCTAssertNil(note?.reason)
+            XCTAssertEqual(note?.text, "Speakers could not be told apart, so these lines are not attributed to anyone.")
+            XCTAssertEqual(note?.help, note?.text, "no reason, so the help is the notice")
+        }
+    }
+
+    func test_no_notice_without_a_failed_diarizer_even_when_a_fallback_key_is_present_DIAR8() {
+        XCTAssertNil(TranscriptLoader.parse(["segments": []]).diarizationNote, "every transcript before DIAR8")
+        XCTAssertNil(TranscriptLoader.parse(["segments": [], "diarization_failed": false, "speaker_fallback": "channel"]).diarizationNote)
+        XCTAssertNil(TranscriptLoader.parse(["segments": [], "diarization_failed": "yes"]).diarizationNote, "not a bool")
+    }
+
     func test_parse_skips_empty_and_malformed_segments() {
         let payload: [String: Any] = [
             "segments": [

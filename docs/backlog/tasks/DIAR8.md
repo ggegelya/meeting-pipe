@@ -2,9 +2,9 @@
 id: DIAR8
 title: When diarization throws, nothing is logged or evented, and the channel-aware fallback never runs because Swift labels every segment `speaker_unknown` while Python only treats `Speaker?` as unlabelled
 category: Transcription
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (observability band, O8: FB-4, LG-17): the FluidAudioRunner diarization catch logs nothing and engine_succeeded has no flag, and Swift's speaker_unknown passes Python's != Speaker? test, so the stereo channel fallback never runs. Key finalize on diarization_failed, keep it plus speaker_fallback, a diarization_failed event, diarization_ok and language on engine_succeeded, a Transcript tab notice. [Spec](./DIAR8.md)
+comment: Shipped 2026-11-18 (ci-local pipeline + daemon green, shellcheck lane not run): Python keys on diarization_failed so the stereo channel fallback runs and the failure plus speaker_fallback stay on the record, honest markdown banner, diarization_failed event, diarization_ok and language on engine_succeeded, Transcript tab notice. Deviations in the Progress note. Owed - the owner checks the notice on a transcript from a forced diarizer failure.
 ---
 
 # DIAR8: When diarization throws, nothing is logged or evented, and the channel-aware fallback never runs because Swift labels every segment `speaker_unknown` while Python only treats `Speaker?` as unlabelled
@@ -48,3 +48,12 @@ Re-verified against `main` at `01e904a` on 2026-10-25. FB-4 was confirmed by an 
 - `TranscriptTabTests`: `TranscriptLoader.parse` surfaces the three keys, and their absence (every transcript written before this task) parses as no notice.
 - `cd pipeline && uv run --extra dev ruff check src tests`, `uv run --extra dev --extra mcp pyright` and `uv run --extra dev pytest -q` green; `cd daemon && swift build` and `swift test` green; `bash scripts/ci-local.sh` green; N new tests named in the commit body.
 - `CONVENTIONS.md` documents the `diarization_failed` transcription action, the two new `engine_succeeded` attributes and the `speaker_fallback` transcript key; `python3 scripts/truth_fences.py` clean.
+
+**Progress (2026-11-18): all six scope items shipped, three deviations.**
+
+- A transcript that already carries `speaker_fallback` is not routed back through the fallback (`_streamed_segments_have_speakers` only returns False for a failed transcript with no `speaker_fallback`). Item 2 made `diarization_failed` sticky, so without this a second `mp finalize` over a compressed or removed WAV would see a mono input and wipe the channel labels the first pass wrote. Pinned by a finalize-twice-without-the-WAV test.
+- The mono case with a Swift-flagged failure keeps `speaker_unknown` rather than relabelling to `Speaker?` (the acceptance bullet asked for `Speaker?`). `MeetingCast`, `TranscriptDisplay`, `MeetingStats` and `valid1_check.py` know only `speaker_unknown`, so a literal `Speaker?` would show as a named person. The unflagged mono path still relabels `Speaker?`.
+- `diarization_ok` is `!diarizationFailed` (false only when the diarizer threw), not the sidecar's `diarization` bool, so a runner that never diarizes does not read as a failure. The error's type name rides a transient `diarizationFailureType` on `TranscriptSidecar`, outside `CodingKeys`, so the sidecar contract is unchanged.
+- `merge_meetings` keeps `speaker_fallback` only when every fragment failed and they agree (`dict(primary)` would have carried the first fragment's).
+
+Tests: 5 pipeline (4 finalize, 1 merge) plus the markdown wording test, red on the old code; 3 `SinkDispatcherTests` and 3 `TranscriptTabTests` (`_DIAR8`). The notice's wording is a pure function (`TranscriptDiarizationNote`). No contract fixture lists the finalized transcript, so none were regenerated. Not done: the notice has not been looked at in the running app (the daemon UI cannot be screenshotted); a forced diarizer failure on a real stereo meeting is the owner's check.
