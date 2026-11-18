@@ -72,3 +72,7 @@ Decisions not in the spec: (1) the spawn-failure leak was one descriptor per fai
 Acceptance not met as written: the supervisor test asserts both handlers are nil after termination and after `cancel()` but has no counting stderr handler (the spin it guards is the nil handler); the scratch `-strict-concurrency=complete` build was not run (the `stderrTail` var is gone, which covers the five old diagnostics, but the new `@Sendable` drain closures were not re-measured under complete mode). Known rare edge: the run slot is now released at drain finish, up to 2 s after exit when a grandchild holds a pipe; `summarize_local` points the `mlx_lm.server` child's stdout and stderr at a log file or DEVNULL, so `mp` itself never hits it.
 
 Nothing is owed by the owner; the task can be closed.
+
+## Amended 2026-11-18 (descriptor tests flaked on CI)
+
+Both 20-spawn descriptor tests (`ProcessOutputDrainTests` and `PipelineLauncherDrainTests`) failed on GitHub CI on a clean drain, by +3, +4 and once +55 (82 -> 137 in 1.3 s), because `/dev/fd` counts the whole test process and unrelated work opened descriptors inside the window. They now share `ProcessOutputDrainTests.assertNoPerSpawnLeak`: two batches of 40 spawns, failing only when both batches grew by 20 or more, so noise cannot fail them and a one-per-spawn leak still does (red-checked with `detach()`'s pipe closes removed: +80 then +80 in both tests). Unexplained and not chased: what opened 55 descriptors in that window. It is not this drain, and it may be a leak elsewhere in the test process worth its own look.

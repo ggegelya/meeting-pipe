@@ -93,17 +93,31 @@ final class ProcessOutputDrainTests: XCTestCase {
             XCTAssertThrowsError(try drain.run())
             XCTAssertEqual(finished.withLock { $0 }, 0)
         }
-        spawnOnce()   // warm anything lazily opened
-        let before = Self.openDescriptors()
-        for _ in 0..<20 { spawnOnce() }
-        let after = Self.openDescriptors()
-        // /dev/fd counts the whole test process, so unrelated work can hold a few descriptors across the
-        // window (CI saw +3 twice). The leak this pins was one per failed spawn, +20 over these 20 spawns,
-        // so a slack of 10 still fails on it.
-        XCTAssertLessThanOrEqual(after, before + 10, "a failed spawn leaked descriptors (\(before) -> \(after))")
+        Self.assertNoPerSpawnLeak("a failed spawn", spawnOnce)
     }
 
     static func openDescriptors() -> Int {
         (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? 0
+    }
+
+    /// `/dev/fd` counts the whole test process, so a single before/after count fails whenever unrelated
+    /// work opens descriptors inside the window (CI saw +3, +4 and +55 on a clean drain). A leak grows with
+    /// every spawn and noise does not, so count across two equal batches and fail only when both grew by
+    /// half a descriptor per spawn or more. The leak CONC7 fixed was one per spawn: +40 in each batch.
+    static func assertNoPerSpawnLeak(
+        _ what: String, batch: Int = 40, file: StaticString = #filePath, line: UInt = #line, _ spawn: () -> Void
+    ) {
+        spawn()   // warm anything lazily opened
+        let start = openDescriptors()
+        for _ in 0..<batch { spawn() }
+        let mid = openDescriptors()
+        for _ in 0..<batch { spawn() }
+        let end = openDescriptors()
+        let first = mid - start, second = end - mid
+        XCTAssertFalse(
+            first >= batch / 2 && second >= batch / 2,
+            "\(what) leaked descriptors: +\(first) then +\(second) over two batches of \(batch) (\(start) -> \(mid) -> \(end))",
+            file: file, line: line
+        )
     }
 }

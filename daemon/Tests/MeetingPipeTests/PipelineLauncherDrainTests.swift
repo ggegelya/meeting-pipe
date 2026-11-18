@@ -49,12 +49,9 @@ final class PipelineLauncherDrainTests: XCTestCase {
         try "#!/bin/sh\n".write(to: notExecutable, atomically: true, encoding: .utf8)
         let l = launcher { .init(shell: notExecutable.path, args: []) }
 
-        XCTAssertNotNil(summarizeAndWait(l, md))   // warm anything lazily opened
-        let before = ProcessOutputDrainTests.openDescriptors()
-        for _ in 0..<20 { XCTAssertNotNil(summarizeAndWait(l, md)) }
-        let after = ProcessOutputDrainTests.openDescriptors()
-
-        XCTAssertLessThanOrEqual(after, before + 2, "failed spawns leaked descriptors (\(before) -> \(after))")
+        ProcessOutputDrainTests.assertNoPerSpawnLeak("a spawn that cannot start") {
+            XCTAssertNotNil(summarizeAndWait(l, md))
+        }
         // No handle is left in the `.run` slot, so a Cancel has nothing to stop.
         XCTAssertNil(l.slots.markCancelled(.run), "a spawn that never ran left a handle in the .run slot")
     }
