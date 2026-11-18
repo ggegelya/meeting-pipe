@@ -20,15 +20,7 @@ extension Coordinator {
         libraryMoveGuard.onMoveFinished = { [weak self] in self?.session.releaseHeldStart() }
         preferencesWindow?.libraryMoveGuard = libraryMoveGuard
         guard let configStore else { return }
-        libraryRootCancellable = configStore.$outputDirPath
-            .removeDuplicates()
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] raw in
-                guard let self else { return }
-                let root = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
-                self.libraryModel.meetingStore.reroot(to: root)
-            }
+        libraryRootCancellable = libraryModel.meetingStore.follow(configStore)
     }
 
     /// STOR16: why the library cannot be moved or re-pointed right now, from the components that

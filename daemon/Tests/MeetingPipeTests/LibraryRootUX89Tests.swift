@@ -95,9 +95,31 @@ final class LibraryRootUX89Tests: XCTestCase {
         let coordinator = try daemonSource("Coordinator.swift")
         XCTAssertTrue(coordinator.contains("        wireLibraryRoot()\n"), "start() wires the subscription")
         let wiring = try daemonSource("Coordinator+LibraryRoot.swift")
-        XCTAssertTrue(wiring.contains("configStore.$outputDirPath"))
-        XCTAssertTrue(wiring.contains("self.libraryModel.meetingStore.reroot(to: root)"))
+        XCTAssertTrue(wiring.contains("libraryRootCancellable = libraryModel.meetingStore.follow(configStore)"))
         XCTAssertFalse(coordinator.contains("a live\n        // change needs a daemon restart"), "the stale init-time comment is gone")
+    }
+
+    /// The advisor-found hole: a `config.toml` broken by hand reloads as defaults, and following that
+    /// value re-rooted a moved library onto the creatable default path.
+    func test_a_config_that_fails_to_parse_does_not_re_root_the_library() async throws {
+        let lib = try makeLibrary("raw")
+        let config = try configStore(outputDir: lib)
+        let store = MeetingStore(recordingsDir: lib)
+        let follow = store.follow(config)
+        defer { follow.cancel() }
+
+        try Data("[recording\noutput_dir = = broken".utf8).write(to: base.appendingPathComponent("config.toml"))
+        config.reloadIfChangedOnDisk()
+        XCTAssertNotNil(config.parseError)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(store.recordingsDir.standardizedFileURL, lib.standardizedFileURL)
+
+        // A real change after the fix still follows.
+        let other = base.appendingPathComponent("other", isDirectory: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        try Data("[recording]\noutput_dir = \"\(other.path)\"\n".utf8).write(to: base.appendingPathComponent("config.toml"))
+        config.reloadIfChangedOnDisk()
+        await until("re-rooted") { store.recordingsDir.standardizedFileURL == other.standardizedFileURL }
     }
 
     // MARK: Use another folder

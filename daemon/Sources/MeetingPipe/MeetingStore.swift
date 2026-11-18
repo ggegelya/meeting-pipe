@@ -376,6 +376,23 @@ final class MeetingStore: ObservableObject {
         refresh()
     }
 
+    /// Re-root whenever `[recording] output_dir` changes (UX89), the subscription the Coordinator
+    /// holds. A value read from a `config.toml` that did not parse is ignored: `ConfigStore` falls
+    /// back to the default path then, and following it would re-root a moved library onto the
+    /// first-run default, which is creatable, and the scan of that empty folder would empty the
+    /// search index and the duration cache (F058 by another door). The fixed file's value arrives
+    /// as an ordinary change.
+    func follow(_ configStore: ConfigStore) -> AnyCancellable {
+        configStore.$outputDirPath
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak configStore] raw in
+                guard let self, let configStore, configStore.parseError == nil else { return }
+                self.reroot(to: URL(fileURLWithPath: (raw as NSString).expandingTildeInPath))
+            }
+    }
+
     /// Point the store at a new library root (UX89). Stops watching the old root before anything
     /// touches the new one, forgets every cached row (a moved library keeps its mtimes, so the cache
     /// would otherwise serve rows whose `audioURL` names the old root), and rescans. `hasLoadedOnce`
