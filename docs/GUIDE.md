@@ -262,6 +262,12 @@ One thing worth knowing about Re-transcribe: your hand edits are carried over by
 
 The report also tells you when an edit and a vocabulary term have started disagreeing. If you once fixed a word by hand on this meeting, and later added a Vocabulary term that spells the same word the other way, the re-transcribe applies the term to the transcript and then puts your edit back on top of it, because a fix you made on one meeting outranks a rule that applies to all of them. That is the behaviour you want, but it looks exactly like the term not working, so the run names it: *1 of your edits now disagrees with a vocabulary rule*. If the rule is the one you meant, open that line and edit it again to match, and the two stop fighting.
 
+### Renaming a meeting
+
+Click the title in the meeting's header, type, and press Return. The new title is what **Republish** sends to Notion, Obsidian, the folder on disk and a shared folder alike, and a re-summarize or reprocess keeps it. Emptying the field takes the rename back. Editing the title inside the summary editor does the same thing.
+
+The title a meeting shows is your rename if you gave it one, otherwise the title the app captured from the meeting window or calendar when recording started, otherwise the one the summary wrote. That order changed: until it did, the summary's own title won over the captured one, so a meeting with a captured window topic may now show that topic where it used to show the summary's title. Your destinations already worked this way, so the list and the published notes now agree.
+
 ### After you rename anyone
 
 The transcript and the People rail resolve names every time you open them. The summary does not: it is prose an engine wrote with whatever names existed at the time. So a meeting can read a person's name in the transcript and a cluster label in the summary bullets. The detail header says so, with a **Re-summarize** button beside the sentence. Nothing re-runs on its own, because that is an engine call you should choose.

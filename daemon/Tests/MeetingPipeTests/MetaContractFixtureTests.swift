@@ -157,10 +157,31 @@ final class MetaContractFixtureTests: XCTestCase {
         XCTAssertEqual(reassigned["meeting_title"] as? String, "Design review")
     }
 
-    func test_all_fixtures_carry_schema_version_five() throws {
-        for name in ["source-only-regulated", "workflow-full", "workflow-lan", "workflow-nda", "workflow-reassigned-to-nda", "held-end-trim", "workflow-no-sinks", "split-from"] {
+    /// PIPE55: the rename is a pure rewrite of one key. Everything else, `meeting_title` included, survives, and an empty
+    /// title removes the key rather than writing an empty string, which reverts to the computed title.
+    func test_user_title_matches_fixture_and_never_touches_meeting_title() throws {
+        let existing = try XCTUnwrap(fixture("workflow-full") as? [String: Any])
+        let renamed = MeetingMetaSidecar.withUserTitle(existing: existing, title: "  My rename  ")
+        XCTAssertEqual(renamed as NSDictionary, try fixture("user-title"))
+        XCTAssertEqual(renamed["meeting_title"] as? String, "Design review")
+        let cleared = MeetingMetaSidecar.withUserTitle(existing: renamed, title: "   ")
+        XCTAssertEqual(cleared as NSDictionary, try fixture("workflow-full"))
+        XCTAssertNil(cleared["user_title"])
+    }
+
+    /// PIPE55 + AI9: a workflow reassignment after a rename keeps `user_title` (it lies outside the workflow block) and the captured `meeting_title` the correction is recorded against.
+    func test_reassignment_after_a_rename_keeps_user_title_and_meeting_title() throws {
+        let existing = try XCTUnwrap(fixture("user-title") as? [String: Any])
+        let wf = Workflow(id: UUID(), name: "Other", color: "#000000", contextPrompt: "", sinks: [], backend: nil)
+        let reassigned = MeetingMetaSidecar.reassigned(existing: existing, to: wf)
+        XCTAssertEqual(reassigned["user_title"] as? String, "My rename")
+        XCTAssertEqual(reassigned["meeting_title"] as? String, "Design review")
+    }
+
+    func test_all_fixtures_carry_schema_version_six() throws {
+        for name in ["source-only-regulated", "workflow-full", "workflow-lan", "workflow-nda", "workflow-reassigned-to-nda", "held-end-trim", "workflow-no-sinks", "split-from", "user-title"] {
             let f = try fixture(name)
-            XCTAssertEqual(f["schema_version"] as? Int, 5, "\(name) must carry schema_version 5")
+            XCTAssertEqual(f["schema_version"] as? Int, 6, "\(name) must carry schema_version 6")
         }
     }
 
@@ -234,7 +255,7 @@ final class MetaContractFixtureTests: XCTestCase {
         )
         XCTAssertEqual(withMic["mic_device_name"] as? String, "AirPods Pro")
         XCTAssertEqual(withMic["mic_silent"] as? Bool, true)
-        XCTAssertEqual(withMic["schema_version"] as? Int, 5)
+        XCTAssertEqual(withMic["schema_version"] as? Int, 6)
 
         let quietMic = MeetingMetaSidecar.build(source: source, workflow: nil, micDeviceName: "AirPods Pro")
         XCTAssertEqual(quietMic["mic_device_name"] as? String, "AirPods Pro")

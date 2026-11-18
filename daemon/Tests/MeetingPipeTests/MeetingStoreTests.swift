@@ -664,7 +664,8 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertEqual(row.sourceBundleID, "us.zoom.xos")
         XCTAssertEqual(row.sourceDisplayName, "Zoom")
         XCTAssertEqual(row.sourceKind, .native)
-        XCTAssertEqual(row.displayTitle, "Aligned scope for Q3")
+        // PIPE55: the captured title outranks the summary's own, as it does in every sink.
+        XCTAssertEqual(row.displayTitle, "Sprint planning")
     }
 
     /// SEC33: Python withholds a stem with no `<stem>.meta.json` as `no_sidecar`, and `isZeroEgress` is

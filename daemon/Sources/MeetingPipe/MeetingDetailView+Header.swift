@@ -887,51 +887,27 @@ extension MeetingDetailView {
     func commitTitle() {
         let trimmed = editingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            // Restore the computed display title so the field never goes empty.
-            editingTitle = meeting.displayTitle
+            // PIPE55: emptying the field of a renamed meeting clears the rename and reverts to the
+            // computed title; with no rename there is nothing to clear, so restore what is shown.
+            if meeting.userTitle != nil {
+                writeTitle("")
+            } else {
+                editingTitle = meeting.displayTitle
+            }
             return
         }
-        if trimmed == meeting.summaryTitle || trimmed == meeting.meetingTitle {
+        if trimmed == meeting.displayTitle {
             return
         }
         writeTitle(trimmed)
     }
 
-    /// Writes to `summary.json["title"]` when it exists, else `meta.json["meeting_title"]`. The directory watcher picks up the change on the next debounce tick.
+    /// PIPE55: the rename goes to `meta.json["user_title"]` (empty clears it) and nowhere else, so `meeting_title` stays the AX-captured routing signal and `summary.json` keeps the generated title a re-summarize may replace. The directory watcher picks up the change on the next debounce tick. A `meta.json` that exists but cannot be read is left alone (`UserTitleStore`), and the field goes back to what the row shows.
     func writeTitle(_ newTitle: String) {
-        let summaryURL = meeting.recordingsDir.appendingPathComponent("\(meeting.stem).summary.json")
-        let metaURL = meeting.recordingsDir.appendingPathComponent("\(meeting.stem).meta.json")
-
-        let target: URL
-        let key: String
-        if FileManager.default.fileExists(atPath: summaryURL.path) {
-            target = summaryURL
-            key = "title"
-        } else {
-            target = metaURL
-            key = "meeting_title"
+        if case .failure = UserTitleStore.write(title: newTitle, stem: meeting.stem, in: meeting.recordingsDir) {
+            editingTitle = meeting.displayTitle
         }
-
-        var existing: [String: Any] = [:]
-        if let data = try? Data(contentsOf: target),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            existing = obj
-        }
-        existing[key] = newTitle
-        guard JSONSerialization.isValidJSONObject(existing),
-              let data = try? JSONSerialization.data(
-                  withJSONObject: existing,
-                  options: [.prettyPrinted, .sortedKeys]
-              ) else {
-            return
-        }
-        try? data.write(to: target, options: .atomic)
-        Log.event(category: "library", action: "title_edited", attributes: [
-            "stem": meeting.stem,
-            "target": target.lastPathComponent,
-        ])
     }
-
 }
 
 /// The header transport (UX78). Its own view so the position text can watch the play head

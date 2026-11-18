@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "source_bundle_id": "com.google.Chrome",
   "source_display_name": "Google Chrome",
   "source_kind": "browser",

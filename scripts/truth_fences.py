@@ -974,9 +974,6 @@ BLOCKER_ALLOWLIST: dict[tuple[str, str], tuple[int, str]] = {
         1, "DigestFile.scan, called only from a Task.detached in the digest reload"),
     ("MeetingDetailView.swift", "Data(contentsOf:)"): (
         2, "PublishURLs.notion/obsidian, called only from the Task.detached in reloadPublishURLs"),
-    ("MeetingDetailView+Header.swift", "Data(contentsOf:)"): (
-        1, "writeTitle reads the whole summary.json (or meta.json) on main when the user commits a "
-           "title with Return, and rewrites it atomically on main; known, not yet moved off main"),
     ("Preferences/PreferencesView+Pipeline.swift", "waitUntilExit"): (
         1, "off main inside the Task.detached of the prompt preview's load(), but that closure blocks "
            "a cooperative-pool thread, which daemon/CLAUDE.md forbids; CONC5's ProcessRunner "

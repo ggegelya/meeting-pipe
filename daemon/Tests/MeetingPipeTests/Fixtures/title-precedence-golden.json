@@ -1,0 +1,47 @@
+{
+  "_comment": "PIPE55 hand-maintained golden for the title a meeting resolves to. Both trees read it: Swift's Meeting.displayTitle (TitlePrecedenceTests) and Python's publish_notion.apply_meeting_title (test_title_precedence.py) must pick the same source. Order, below the owner's rename: the captured meeting_title, then the summary's own title (owner's decision 2026-11-18). `expected` is the title, or null when none is set (Swift then falls back to source-and-time or the stem; Python keeps the summary's empty title).",
+  "cases": [
+    {
+      "name": "user_title_only",
+      "user_title": "My rename",
+      "meeting_title": null,
+      "summary_title": null,
+      "expected": "My rename"
+    },
+    {
+      "name": "all_three_present",
+      "user_title": "My rename",
+      "meeting_title": "Captured topic",
+      "summary_title": "Generated title",
+      "expected": "My rename"
+    },
+    {
+      "name": "captured_plus_summary",
+      "user_title": null,
+      "meeting_title": "Captured topic",
+      "summary_title": "Generated title",
+      "expected": "Captured topic"
+    },
+    {
+      "name": "summary_only",
+      "user_title": null,
+      "meeting_title": null,
+      "summary_title": "Generated title",
+      "expected": "Generated title"
+    },
+    {
+      "name": "empty_user_title_falls_through",
+      "user_title": "",
+      "meeting_title": "Captured topic",
+      "summary_title": "Generated title",
+      "expected": "Captured topic"
+    },
+    {
+      "name": "none",
+      "user_title": null,
+      "meeting_title": null,
+      "summary_title": null,
+      "expected": null
+    }
+  ]
+}

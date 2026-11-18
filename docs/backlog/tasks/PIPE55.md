@@ -2,9 +2,9 @@
 id: PIPE55
 title: The Library and the pipeline resolve a meeting's title with opposite precedence, so an in-app rename never reaches a sink
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). MeetingStore.displayTitle shows summary.title over meta meeting_title and the rename (and the Summary editor's title field) writes only summary.json's title, while apply_meeting_title, used by every fanout, prefers meeting_title, so after a rename and Republish every sink keeps the captured window topic and the Library and the sinks disagree even before any rename. One user-title key in meta.json that both trees read first, one precedence below it pinned in a cross-tree fixture.
+comment: Shipped 2026-11-18 under the owner's decision (a): user_title, then captured meeting_title, then summary.title in both trees, pinned by title-precedence-golden.json. Library labels change for meetings with a captured window topic (they now show it instead of the summary title). Owner owes one real rename + Republish to a sink; Obsidian reuse relies on PIPE31 (landed)
 ---
 
 # PIPE55: The Library and the pipeline resolve a meeting's title with opposite precedence, so an in-app rename never reaches a sink
@@ -28,6 +28,8 @@ Source: F126 in [2026-11-12-independent-audit.md](../../audits/2026-11-12-indepe
 **Obsidian note path.** `ObsidianPublisher._compute_note_path` builds the filename from today's date plus `_slugify(summary.title)` and ignores the `note_path` recorded in `<stem>.obsidian.json`, so once a rename does reach the sink, each rename plus republish would write a second note and orphan the first. [PIPE31](./PIPE31.md) (new) owns reusing the recorded `note_path`; this task depends on it.
 
 Related: [SEC28](./SEC28.md) adds a scrub inside `apply_meeting_title`, which the override must pass through; [ARCH10](./ARCH10.md) owns `writeTitle`'s parse safety; [ARCH21](./ARCH21.md) is the per-meeting file schema spike.
+
+**Owner's decision (2026-11-18, relayed by the parent session): precedence below `user_title` is (a), the spec default: `user_title`, then captured `meeting_title`, then `summary.title`, in both trees.**
 
 ## Scope
 

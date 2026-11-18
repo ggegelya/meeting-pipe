@@ -3,8 +3,24 @@ import Foundation
 /// Pure builder for `<stem>.meta.json`. Canonical Swift-to-Python contract: the pipeline reads these keys via `mp.workflow.apply_overrides`. Unit-testable without a Coordinator.
 enum MeetingMetaSidecar {
 
-    /// Sidecar shape version. Bump when the key set or a key's semantics change so a future reader can migrate. The Python reader stays fail-open on it (an unknown key is ignored); the cross-language golden fixtures (CI2, `Fixtures/meta-contract/`) pin it on both sides. Bumped to 2 by MIC15 (added `mic_device_name` + `mic_silent`); to 3 by WF7 (added `workflow_extra_sections`); to 4 by END17 (added `held_end_trim_sec` and `resumed_from`); to 5 by END28 (added `split_from`).
-    static let schemaVersion = 5
+    /// Sidecar shape version. Bump when the key set or a key's semantics change so a future reader can migrate. The Python reader stays fail-open on it (an unknown key is ignored); the cross-language golden fixtures (CI2, `Fixtures/meta-contract/`) pin it on both sides. Bumped to 2 by MIC15 (added `mic_device_name` + `mic_silent`); to 3 by WF7 (added `workflow_extra_sections`); to 4 by END17 (added `held_end_trim_sec` and `resumed_from`); to 5 by END28 (added `split_from`); to 6 by PIPE55 (added `user_title`).
+    static let schemaVersion = 6
+
+    /// PIPE55: the owner's rename. Written only by the Library's rename and the Summary editor's title field, through `withUserTitle`; read first by `Meeting.displayTitle` and by the pipeline's `apply_meeting_title`. It is a separate key from `meeting_title` on purpose: that one is the title AX scraped at recording start and doubles as a routing signal (AI9's `recordCorrection`, workflow rules matching on the title), so a rename written there would be learned as the window topic.
+    static let userTitleKey = "user_title"
+
+    /// PIPE55: `existing` with the rename set to `title` (trimmed), or the key removed when `title` is empty, which reverts to the computed title. Every other key, known or not, is preserved, and `meeting_title` is never touched. Pure, beside `reassigned`, so the fixture test can pin it.
+    static func withUserTitle(existing: [String: Any], title: String) -> [String: Any] {
+        var dict = existing
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            dict.removeValue(forKey: userTitleKey)
+        } else {
+            dict[userTitleKey] = trimmed
+        }
+        dict["schema_version"] = schemaVersion
+        return dict
+    }
 
     /// END28: the `<stem>.meta.json` key linking a split's second stem to its first.
     static let splitFromKey = "split_from"

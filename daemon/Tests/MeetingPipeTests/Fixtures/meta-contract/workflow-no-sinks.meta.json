@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "source_bundle_id": "us.zoom.xos",
   "source_display_name": "Zoom",
   "source_kind": "native",

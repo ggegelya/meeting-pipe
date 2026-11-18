@@ -134,22 +134,32 @@ class NotionRestPublisher:
         return {"page_id": page_id, "page_url": page_url, "idempotent": idempotent}
 
 
+# PIPE55: the keys of `<stem>.meta.json` that name a meeting, in precedence order. The
+# Library's `Meeting.displayTitle` resolves the same order (then `summary.title`, then a
+# source-and-time fallback), pinned on both sides by `Fixtures/title-precedence-golden.json`.
+# `user_title` is the owner's rename; `meeting_title` is the title captured at recording start.
+_TITLE_KEYS = ("user_title", "meeting_title")
+
+
 def apply_meeting_title(summary: MeetingSummary, summary_json: Path) -> MeetingSummary:
-    """Prefer the meeting name the daemon extracted at recording-start time
-    (Zoom topic, Calendar event behind a Meet link, Slack channel) over the
-    LLM-derived title, so every sink shows the same title. Falls back to
-    `summary.title` when `<stem>.meta.json` is absent or carries no title; older
-    recordings stay unaffected. Shared by the legacy `publish()` path and the
-    `publish_router.fanout` path so the two no longer diverge (PIPE2/AUD-15)."""
+    """Resolve the title every sink publishes: the owner's rename (`user_title`),
+    else the meeting name the daemon extracted at recording-start time (Zoom topic,
+    Calendar event behind a Meet link, Slack channel, `meeting_title`), else the
+    LLM-derived `summary.title`. Older recordings with no `<stem>.meta.json` are
+    unaffected. Shared by the legacy `publish()` path and the `publish_router.fanout`
+    path so the two no longer diverge (PIPE2/AUD-15, PIPE55)."""
     meta = _load_meta_sidecar(summary_json)
     if meta:
-        meeting_title = (meta.get("meeting_title") or "").strip()
-        meeting_title = clean_text(meeting_title) if meeting_title else ""
-        if meeting_title:
-            # SEC28: the title is an AX-scraped window title (a Zoom topic, a
-            # calendar event name) that an invitee controls, and `model_copy`
-            # skips the schema's validators, so it was scrubbed above.
-            return summary.model_copy(update={"title": meeting_title[:120]})
+        for key in _TITLE_KEYS:
+            raw = meta.get(key)
+            title = raw.strip() if isinstance(raw, str) else ""
+            title = clean_text(title) if title else ""
+            if title:
+                # SEC28: a captured window title is something an invitee controls and
+                # `model_copy` skips the schema's validators, so it is scrubbed here
+                # (the rename passes the same scrub: it is typed by the owner but may
+                # be pasted from a hostile invite).
+                return summary.model_copy(update={"title": title[:120]})
     return summary
 
 

@@ -583,6 +583,10 @@ struct SummaryTab: View {
     private func persistEdit(model: CorrectionViewModel) -> Bool {
         let corrected = model.makeCorrectedSummary()
         let correctedDict = corrected.jsonObject()
+        // PIPE55: a changed title field is the owner's rename. It goes to `meta.json["user_title"]`, which every
+        // sink and the Library read first, and `summary.json` keeps the generated title, so a re-summarize
+        // cannot undo the rename and the correction record below still carries what was typed.
+        let split = UserTitleStore.splitEditorTitle(corrected: corrected, generatedTitle: model.originalSummary.title)
 
         // 1. Correction record (same path as the standalone window so the LoRA training set sees both surfaces identically).
         do {
@@ -605,10 +609,16 @@ struct SummaryTab: View {
             return false
         }
 
-        // 2. Overwrite the live summary so the row, Markdown render, and any future republish see the corrected version (record preserves the original).
-        if JSONSerialization.isValidJSONObject(correctedDict),
+        if let rename = split.rename,
+           case .failure = UserTitleStore.write(title: rename, stem: model.stem, in: meeting.recordingsDir) {
+            return false
+        }
+
+        // 2. Overwrite the live summary so the row, Markdown render, and any future republish see the corrected version (record preserves the original). The title stays the generated one (PIPE55).
+        let liveDict = split.live.jsonObject()
+        if JSONSerialization.isValidJSONObject(liveDict),
            let data = try? JSONSerialization.data(
-               withJSONObject: correctedDict,
+               withJSONObject: liveDict,
                options: [.prettyPrinted, .sortedKeys]
            ) {
             try? data.write(to: summaryJsonURL, options: .atomic)

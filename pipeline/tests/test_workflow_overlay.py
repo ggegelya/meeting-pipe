@@ -536,10 +536,10 @@ def test_contract_fixtures_carry_schema_version() -> None:
     for name in (
         "source-only-regulated", "workflow-full", "workflow-lan",
         "workflow-nda", "workflow-reassigned-to-nda", "held-end-trim",
-        "workflow-no-sinks", "split-from",
+        "workflow-no-sinks", "split-from", "user-title",
     ):
         data = json.loads((_CONTRACT / f"{name}.meta.json").read_text(encoding="utf-8"))
-        assert data["schema_version"] == 5
+        assert data["schema_version"] == 6
 
 
 def test_contract_fixture_split_from_is_informational() -> None:
@@ -565,3 +565,16 @@ def test_contract_fixture_held_end_trim_is_informational() -> None:
     assert result.summarization.team_context == cfg.summarization.team_context
     assert result.output.sinks == cfg.output.sinks
     assert result.modes.regulated_mode == cfg.modes.regulated_mode
+
+
+def test_contract_fixture_user_title_is_informational_to_the_overlay() -> None:
+    # PIPE55: the owner's rename rides in the same sidecar as the workflow block, but the
+    # overlay decides routing and backend only. A sidecar that gains `user_title` must
+    # resolve to exactly what the same sidecar without it does; the title is read
+    # by `publish_notion.apply_meeting_title`, not here.
+    cfg = Config()
+    fixture = _CONTRACT / "user-title.meta.json"
+    assert json.loads(fixture.read_text(encoding="utf-8"))["user_title"] == "My rename"
+    renamed = apply_overrides(cfg, fixture)
+    plain = apply_overrides(cfg, _CONTRACT / "workflow-full.meta.json")
+    assert renamed.model_dump() == plain.model_dump()

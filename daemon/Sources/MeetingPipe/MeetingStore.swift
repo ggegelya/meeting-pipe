@@ -30,6 +30,8 @@ struct Meeting: Identifiable, Hashable {
 
     let summaryTitle: String?     // from <stem>.summary.json["title"]
     let meetingTitle: String?     // from <stem>.meta.json["meeting_title"]
+    /// The owner's rename (PIPE55), from `<stem>.meta.json["user_title"]`. Wins over every computed title in `displayTitle`, and the pipeline's `apply_meeting_title` reads the same key first, so a rename is what every sink publishes. Declared right after `meetingTitle` so the memberwise initializer keeps its argument order.
+    var userTitle: String? = nil
 
     let sourceBundleID: String?
     let sourceDisplayName: String?
@@ -194,10 +196,11 @@ struct Meeting: Identifiable, Hashable {
     /// put into a question sent to the configured backend.
     var isAskVisible: Bool { hasMetaSidecar && !isZeroEgress }
 
-    /// Best-effort display label: summary title > meeting title > "{source} at HH:mm" > raw stem. Never empty.
+    /// Best-effort display label: user title > meeting title > summary title > "{source} at HH:mm" > raw stem. Never empty. PIPE55: the first three are the order `publish_notion.apply_meeting_title` uses for what every sink publishes (owner's decision 2026-11-18), pinned on both sides by `Fixtures/title-precedence-golden.json`; the Library used to put the summary title above the captured one, so the two disagreed before any rename.
     var displayTitle: String {
-        if let t = summaryTitle, !t.isEmpty { return t }
+        if let t = userTitle, !t.isEmpty { return t }
         if let t = meetingTitle, !t.isEmpty { return t }
+        if let t = summaryTitle, !t.isEmpty { return t }
         let time = MeetingFormatters.shortTime.string(from: startedAt)
         if let src = sourceDisplayName, !src.isEmpty {
             return "\(src) at \(time)"
@@ -1053,6 +1056,7 @@ final class MeetingStore: ObservableObject {
         }
 
         let searchable = MeetingStore.buildSearchableText(
+            userTitle: meta?["user_title"] as? String,
             meetingTitle: meta?["meeting_title"] as? String,
             sourceDisplayName: meta?["source_display_name"] as? String,
             summary: summary
@@ -1064,6 +1068,7 @@ final class MeetingStore: ObservableObject {
             recordingsDir: directory,
             summaryTitle: (summary?.title).flatMap { $0.isEmpty ? nil : $0 },
             meetingTitle: (meta?["meeting_title"] as? String),
+            userTitle: (meta?["user_title"] as? String),
             sourceBundleID: (meta?["source_bundle_id"] as? String),
             sourceDisplayName: (meta?["source_display_name"] as? String),
             sourceKind: kind,
@@ -1219,11 +1224,13 @@ final class MeetingStore: ObservableObject {
 
     /// Build the lowercased filter haystack from user-visible fields (titles, source app, summary bullets, decisions, action tasks). Internal so tests can drive it directly.
     static func buildSearchableText(
+        userTitle: String? = nil,
         meetingTitle: String?,
         sourceDisplayName: String?,
         summary: MeetingSummary?
     ) -> String {
         var parts: [String] = []
+        if let s = userTitle, !s.isEmpty { parts.append(s) }
         if let s = summary?.title, !s.isEmpty { parts.append(s) }
         if let s = meetingTitle, !s.isEmpty { parts.append(s) }
         if let s = sourceDisplayName, !s.isEmpty { parts.append(s) }
