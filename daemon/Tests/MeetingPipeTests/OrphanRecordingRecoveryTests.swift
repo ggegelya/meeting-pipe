@@ -1,5 +1,6 @@
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// Pure-logic tests for `OrphanRecordingRecovery.detectOrphanStems`.
 ///
@@ -173,7 +174,7 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
         try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
         let merged = dir.appendingPathComponent("merged-source.bin")
         try makeWavData(seconds: 1.0).write(to: merged)
-        setenv("MEETINGPIPE_FFMPEG", try fakeFFmpeg(in: dir, writing: merged).path, 1)
+        setenv("MEETINGPIPE_FFMPEG", try FakeFFmpeg.copying(merged, in: dir).path, 1)
         setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
         defer {
             unsetenv("MEETINGPIPE_FFMPEG")
@@ -228,7 +229,7 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
         try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
         let merged = dir.appendingPathComponent("merged-source.bin")
         try makeWavData(seconds: 1.0).write(to: merged)
-        setenv("MEETINGPIPE_FFMPEG", try fakeFFmpeg(in: dir, writing: merged).path, 1)
+        setenv("MEETINGPIPE_FFMPEG", try FakeFFmpeg.copying(merged, in: dir).path, 1)
         setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
         defer {
             unsetenv("MEETINGPIPE_FFMPEG")
@@ -275,7 +276,7 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
 
         let merged = dir.appendingPathComponent("merged-source.bin")
         try makeWavData(seconds: 1.0).write(to: merged)
-        setenv("MEETINGPIPE_FFMPEG", try fakeFFmpeg(in: dir, writing: merged).path, 1)
+        setenv("MEETINGPIPE_FFMPEG", try FakeFFmpeg.copying(merged, in: dir).path, 1)
         defer { unsetenv("MEETINGPIPE_FFMPEG") }
 
         let recovered = await RecordingPostProcessor.recoverOrphan(stem: stem, in: dir)
@@ -299,20 +300,6 @@ final class OrphanRecordingRecoveryTests: XCTestCase {
         return data
     }
 
-    /// A stand-in ffmpeg that ignores its arguments, drops `source` at the output path, and
-    /// exits 0, so a merge succeeds without a real ffmpeg (and so without a skip).
-    private func fakeFFmpeg(in dir: URL, writing source: URL) throws -> URL {
-        let script = dir.appendingPathComponent("fake-ffmpeg")
-        let body = """
-        #!/bin/sh
-        for last; do :; done
-        /bin/cp "\(source.path)" "$last"
-        exit 0
-        """
-        try Data(body.utf8).write(to: script)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
-        return script
-    }
 
     func test_scanOrphanStems_recovery_marker_exempts_a_stale_orphan_REC6() throws {
         let dir = try makeTempDir()

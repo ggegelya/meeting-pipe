@@ -1,5 +1,6 @@
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// REC9: the merge's length policy and the duration-based promote gate.
 ///
@@ -211,7 +212,7 @@ final class RecordingPostProcessorTests: XCTestCase {
 
         let truncated = dir.appendingPathComponent("truncated.wav")
         try makeWavData(seconds: 1, amplitude: 8000).write(to: truncated)
-        setenv("MEETINGPIPE_FFMPEG", try fakeFFmpeg(in: dir, writing: truncated).path, 1)
+        setenv("MEETINGPIPE_FFMPEG", try FakeFFmpeg.copying(truncated, in: dir).path, 1)
         defer { unsetenv("MEETINGPIPE_FFMPEG") }
 
         let ok = await RecordingPostProcessor.produceFinal(
@@ -363,20 +364,6 @@ final class RecordingPostProcessorTests: XCTestCase {
         return loudest
     }
 
-    /// A stand-in ffmpeg that ignores its arguments, drops `source` at the output
-    /// path, and exits 0.
-    private func fakeFFmpeg(in dir: URL, writing source: URL) throws -> URL {
-        let script = dir.appendingPathComponent("fake-ffmpeg")
-        let body = """
-        #!/bin/sh
-        for last; do :; done
-        /bin/cp "\(source.path)" "$last"
-        exit 0
-        """
-        try Data(body.utf8).write(to: script)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
-        return script
-    }
 
     private func requireFFmpeg() throws {
         if RecordingPostProcessor.findFFmpeg() != nil { return }
@@ -470,7 +457,7 @@ extension RecordingPostProcessorTests {
         MergePlacement.write(.init(systemHeadOffsetSec: 4, limitSeconds: 8), forFinal: final)
         let truncated = dir.appendingPathComponent("truncated.wav")
         try makeWavData(seconds: 1, amplitude: 8000).write(to: truncated)
-        setenv("MEETINGPIPE_FFMPEG", try fakeFFmpeg(in: dir, writing: truncated).path, 1)
+        setenv("MEETINGPIPE_FFMPEG", try FakeFFmpeg.copying(truncated, in: dir).path, 1)
         defer { unsetenv("MEETINGPIPE_FFMPEG") }
 
         let recovered = await RecordingPostProcessor.recoverOrphan(stem: stem, in: dir)
@@ -506,7 +493,7 @@ extension RecordingPostProcessorTests {
         MergePlacement.write(.init(systemHeadOffsetSec: 4, spanSec: 14), forFinal: final)
         let truncated = dir.appendingPathComponent("truncated.wav")
         try makeWavData(seconds: 1, amplitude: 8000).write(to: truncated)
-        setenv("MEETINGPIPE_FFMPEG", try fakeFFmpeg(in: dir, writing: truncated).path, 1)
+        setenv("MEETINGPIPE_FFMPEG", try FakeFFmpeg.copying(truncated, in: dir).path, 1)
         defer { unsetenv("MEETINGPIPE_FFMPEG") }
 
         _ = await RecordingPostProcessor.recoverOrphan(stem: stem, in: dir)

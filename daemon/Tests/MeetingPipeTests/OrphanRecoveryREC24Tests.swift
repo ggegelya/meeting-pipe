@@ -1,5 +1,6 @@
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// REC24: the orphan sweep keeps an attempt count in `<stem>.recordfail.json`, stops retrying a
 /// stem after jobs once it reaches `maxAfterJobAttempts` (the launch sweep still tries it), says
@@ -108,7 +109,7 @@ final class OrphanRecoveryREC24Tests: XCTestCase {
         RecordingPostProcessor.writePostProcessFailure(final: dir.appendingPathComponent("\(stem).wav"), retained: [])
         let merged = dir.appendingPathComponent("merged-source.bin")
         try makeWavData(seconds: 1).write(to: merged)
-        setenv("MEETINGPIPE_FFMPEG", try fakeFFmpeg(writing: merged).path, 1)
+        setenv("MEETINGPIPE_FFMPEG", try FakeFFmpeg.copying(merged, in: dir).path, 1)
 
         let result = await OrphanRecordingRecovery.scanAndRecover(
             in: dir, excludingStems: [], sweep: .afterJob, isOwned: { _ in false }
@@ -280,17 +281,4 @@ final class OrphanRecoveryREC24Tests: XCTestCase {
         return data
     }
 
-    /// A stand-in ffmpeg that drops `source` at its last argument and exits 0.
-    private func fakeFFmpeg(writing source: URL) throws -> URL {
-        let script = dir.appendingPathComponent("fake-ffmpeg")
-        let body = """
-        #!/bin/sh
-        for last; do :; done
-        /bin/cp "\(source.path)" "$last"
-        exit 0
-        """
-        try Data(body.utf8).write(to: script)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
-        return script
-    }
 }

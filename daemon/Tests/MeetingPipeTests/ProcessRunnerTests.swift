@@ -2,6 +2,7 @@ import AVFoundation
 import os
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// CONC5: `ProcessRunner` and the call sites that now ride it. Every child is a `/bin/sh` script, and
 /// the fake ffmpegs below are shell scripts, so none of this needs a real ffmpeg.
@@ -31,13 +32,6 @@ final class ProcessRunnerTests: XCTestCase {
         return try XCTUnwrap(pid_t(text))
     }
 
-    /// An executable script standing in for ffmpeg.
-    private func fakeFFmpeg(_ body: String) throws -> String {
-        let url = dir.appendingPathComponent("fake-ffmpeg-\(UUID().uuidString).sh")
-        try ("#!/bin/sh\n" + body + "\n").write(to: url, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
-        return url.path
-    }
 
     /// A short mono 16 kHz WAV (silence unless `amplitude` is set), written through AVFoundation.
     @discardableResult
@@ -181,11 +175,11 @@ final class ProcessRunnerTests: XCTestCase {
     func test_a_flood_of_ffmpeg_stderr_does_not_deadlock_the_convert() async throws {
         let mic = try writeWAV("a.mic.wav")
         let final = dir.appendingPathComponent("a.wav")
-        let ffmpeg = try fakeFFmpeg("""
+        let ffmpeg = try FakeFFmpeg.script("""
         head -c 1048576 /dev/zero | tr '\\0' w >&2
         for a; do last=$a; done
         cp '\(mic.path)' "$last"
-        """)
+        """, in: dir).path
 
         let ok = await produce(ffmpeg: ffmpeg, ceiling: 30, mic: mic, final: final)
 
@@ -198,12 +192,12 @@ final class ProcessRunnerTests: XCTestCase {
         let final = dir.appendingPathComponent("b.wav")
         let pidFile = dir.appendingPathComponent("pid")
         // Writes a (truncated, well-formed) temp first, as a SIGTERMed ffmpeg would leave behind.
-        let ffmpeg = try fakeFFmpeg("""
+        let ffmpeg = try FakeFFmpeg.script("""
         echo $$ > '\(pidFile.path)'
         for a; do last=$a; done
         cp '\(mic.path)' "$last"
         exec sleep 30
-        """)
+        """, in: dir).path
         let tmp = RecordingPostProcessor.mergingTempURL(forFinal: final)
 
         let started = Date()
@@ -217,7 +211,7 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: mic.path), "the intermediate was deleted")
 
         // The next attempt is not touched by the killed one.
-        let retry = try fakeFFmpeg("for a; do last=$a; done\ncp '\(mic.path)' \"$last\"")
+        let retry = try FakeFFmpeg.script("for a; do last=$a; done\ncp '\(mic.path)' \"$last\"", in: dir).path
         let again = await produce(ffmpeg: retry, ceiling: 30, mic: mic, final: final)
         XCTAssertTrue(again)
     }
@@ -227,12 +221,12 @@ final class ProcessRunnerTests: XCTestCase {
         let system = try writeWAV("e.system.wav")
         let final = dir.appendingPathComponent("e.wav")
         let pidFile = dir.appendingPathComponent("pid")
-        let ffmpeg = try fakeFFmpeg("""
+        let ffmpeg = try FakeFFmpeg.script("""
         echo $$ > '\(pidFile.path)'
         for a; do last=$a; done
         cp '\(mic.path)' "$last"
         exec sleep 30
-        """)
+        """, in: dir).path
 
         let ok = await RecordingPostProcessor.produceFinal(
             mic: mic, system: system, final: final, hasMic: true, hasSystem: true,
@@ -255,7 +249,7 @@ final class ProcessRunnerTests: XCTestCase {
         setenv("MEETINGPIPE_LOGS_DIR", dir.appendingPathComponent("logs").path, 1)
         defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
         MuteTimelineFile.write(spans: [MuteTimeline.Span(startSec: 0, endSec: 0.5, source: .manual)], forFinal: wav)
-        let ffmpeg = try fakeFFmpeg("echo $$ > '\(pidFile.path)'\nfor a; do last=$a; done\necho partial > \"$last\"\nexec sleep 30")
+        let ffmpeg = try FakeFFmpeg.script("echo $$ > '\(pidFile.path)'\nfor a; do last=$a; done\necho partial > \"$last\"\nexec sleep 30", in: dir).path
 
         let outcome = await MuteRedactor.redactIfNeeded(
             wav: wav, originalsDir: dir.appendingPathComponent("originals"),
@@ -279,7 +273,7 @@ final class ProcessRunnerTests: XCTestCase {
         let wav = try writeWAV("d.wav")
         let original = try Data(contentsOf: wav)
         let pidFile = dir.appendingPathComponent("pid")
-        let ffmpeg = try fakeFFmpeg("echo $$ > '\(pidFile.path)'\nexec sleep 30")
+        let ffmpeg = try FakeFFmpeg.script("echo $$ > '\(pidFile.path)'\nexec sleep 30", in: dir).path
 
         XCTAssertThrowsError(try AudioTranscoder.compressToFLAC(wav: wav, ffmpegPath: ffmpeg, ceilingSeconds: 1)) { error in
             XCTAssertEqual(error as? AudioTranscoder.TranscodeError, .timedOut)
