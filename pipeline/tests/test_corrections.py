@@ -275,7 +275,7 @@ def test_cli_markdown_output(tmp_path: Path):
 
     buf = io.StringIO()
     with redirect_stdout(buf):
-        rc = corrections.main(["--dir", str(tmp_path / "corrections")])
+        rc = corrections.main(["--dir", str(tmp_path / "corrections"), "--library", str(tmp_path / "raw")])
     assert rc == 0
     out = buf.getvalue()
     assert "# Correction corpus" in out
@@ -288,7 +288,7 @@ def test_cli_json_output(tmp_path: Path):
 
     buf = io.StringIO()
     with redirect_stdout(buf):
-        rc = corrections.main(["--dir", str(tmp_path / "corrections"), "--json"])
+        rc = corrections.main(["--dir", str(tmp_path / "corrections"), "--library", str(tmp_path / "raw"), "--json"])
     assert rc == 0
     parsed = json.loads(buf.getvalue())
     assert parsed["total"] == 1
@@ -304,7 +304,7 @@ def test_cli_rejects_unknown_arg(tmp_path: Path):
 def test_cli_empty_dir_reports_zero(tmp_path: Path):
     buf = io.StringIO()
     with redirect_stdout(buf):
-        rc = corrections.main(["--dir", str(tmp_path / "empty"), "--json"])
+        rc = corrections.main(["--dir", str(tmp_path / "empty"), "--library", str(tmp_path), "--json"])
     assert rc == 0
     parsed = json.loads(buf.getvalue())
     assert parsed["total"] == 0
@@ -432,3 +432,43 @@ def test_set_publish_state_noop_when_sidecar_missing(tmp_path):
     target = tmp_path / "missing.run.json"
     set_publish_state(target, "full")
     assert not target.exists()
+
+
+# -------- LOCAL26: a moved library still resolves by stem -------------------
+
+
+def _moved_library(tmp_path: Path) -> tuple[Path, Path, int]:
+    """Two meetings written under `old/raw` (absolute paths in every sidecar and record), then
+    the library directory moved to `new/raw`, as SEC12's mover or a restore onto another root
+    leaves it. Returns (corrections dir, the new library, the pre-move transcript chars)."""
+    _write_correction(tmp_path / "old", "m1", verdict="good", transcript_chars=7_000)
+    _write_correction(tmp_path / "old", "m2", verdict="edited", transcript_chars=5_000)
+    before = sum(r.transcript_chars for r in corrections.load_records(tmp_path / "old" / "corrections"))
+    (tmp_path / "new").mkdir()
+    (tmp_path / "old" / "raw").rename(tmp_path / "new" / "raw")
+    return tmp_path / "old" / "corrections", tmp_path / "new" / "raw", before
+
+
+def test_a_moved_library_still_counts_every_meeting(tmp_path: Path):
+    corr, library, before = _moved_library(tmp_path)
+    assert before == 12_000
+    assert sum(r.transcript_chars for r in corrections.load_records(corr)) == 0  # the stale paths alone
+    assert sum(r.transcript_chars for r in corrections.load_records(corr, library=library)) == before
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        assert corrections.main(["--dir", str(corr), "--library", str(library), "--json"]) == 0
+    assert json.loads(out.getvalue())["transcript_chars"] == before
+
+
+def test_a_stored_path_is_still_a_hint_and_a_missing_meeting_is_zero(tmp_path: Path):
+    _write_correction(tmp_path, "kept", verdict="good", transcript_chars=3_000)
+    elsewhere = tmp_path / "another-library"
+    elsewhere.mkdir()
+    records = corrections.load_records(tmp_path / "corrections", library=elsewhere)
+    assert records[0].transcript_chars == 3_000   # stem absent here, stored path still there
+
+    for leftover in (tmp_path / "raw").iterdir():
+        leftover.unlink()
+    records = corrections.load_records(tmp_path / "corrections", library=elsewhere)
+    assert records[0].transcript_chars == 0

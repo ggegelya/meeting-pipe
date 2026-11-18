@@ -2,9 +2,9 @@
 id: LOCAL26
 title: Run and correction sidecars carry absolute paths that a library move or a cross-path restore leaves stale, so earlier meetings drop out of train-adapter and corrections-stats
 category: Local models
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). `<stem>.run.json` and every correction record store absolute `transcript_path` and `summary_json_path` that nothing rewrites (110 of 110 run sidecars in the field hold one), and both Python readers open them verbatim, so after SEC12's library move or a restore onto another root every earlier meeting drops out of `mp train-adapter` and counts 0 transcript chars in `mp corrections-stats`; the daemon copies the stale path into new corrections too. Resolve by stem against the current library in `corrections` and `train_adapter`, stored paths as fallback only. [Spec](./LOCAL26.md)
+comment: Shipped 2026-11-18 (all four scope items, plus the daemon leg the batch brief asked for). corrections.resolve_meeting_file resolves <library>/<stem><suffix> first and the stored path as a hint; corrections-stats (new --library, else recording.output_dir), gate_ready, build_pairs and build_run_pairs all use it; the daemon's new correction records take the current library's path. Owner: nothing to run unless the library moves; then mp corrections-stats should report the same transcript chars as before.
 ---
 
 # LOCAL26: Run and correction sidecars carry absolute paths that a library move or a cross-path restore leaves stale, so earlier meetings drop out of train-adapter and corrections-stats
@@ -49,3 +49,13 @@ Source: finding F139 of the [2026-11-12 independent audit](../../audits/2026-11-
 - `pipeline/tests/test_train_adapter.py`: the same moved scratch library yields the same pair count from `collect_pairs("runs", ...)` and `collect_pairs("corrections", ...)` before and after the move, with transcripts and summaries read from the new root.
 - `cd pipeline && uv run --extra dev ruff check src tests`, `uv run --extra dev --extra mcp pyright` and `uv run --extra dev pytest -q` green, with the number of new tests in the commit body; `bash scripts/ci-local.sh` green.
 - If `corrections-stats` gains `--library`, its usage line and the README's mention of the command agree in the same commit.
+
+**Progress (2026-11-18): all four scope items shipped.**
+
+- Premise check: every premise held. PIPE33's `meeting_files` seam has not landed, so the resolver is a local join, `corrections.resolve_meeting_file(stem, suffix, library, stored)`: `<library>/<stem><suffix>` when it exists, else the stored path when that exists, else None.
+- `corrections-stats`: `_resolve_transcript_chars` looks for the run sidecar, then the transcript, by stem first. `load_records` takes `library=`. A record's stem comes from its `stem` key, then the correction file's own name, then the stored path's basename; the daemon's record carries no `stem`, and "Looks good" can store an empty path. `main` gains `--library PATH` and otherwise reads `recording.output_dir` through `entry.prepare(secrets=False)`.
+- `train-adapter`: `build_pairs` takes `recordings_dir`, and `collect_pairs` passes it. `build_run_pairs` resolves its summary and transcript by stem. `gate_ready(source, pairs, library)` gets the library `main` already resolves. When the lookup finds nothing, the stored path still goes to the injected reader, so a custom reader keeps working.
+- No migration: writers still store absolute paths, and nothing rewrites existing sidecars.
+- **Deviation from "Explicitly not", at the batch brief's request.** The brief asked that the daemon stop copying stale paths into new corrections. It now does this in the narrowest form: `CorrectionStore.currentPath` gives `CorrectionViewModel.transcriptPath` / `summaryJsonPath` and the "Looks good" record (`Coordinator+Delegates`) the current library's `<stem>.md` / `<stem>.summary.json` when they exist, and the stored path otherwise. Same keys and still absolute, so the record's schema is unchanged. The run sidecar writers (`write_run_sidecar`, `writeAppleRunSidecar`) are untouched.
+- Tests: `test_corrections.py` 2 (a moved library counts every meeting, through `load_records` and `main --library`; a stored path is still a hint, and a missing meeting is 0), `test_train_adapter.py` 2 (a moved library keeps every pair from both sources; `gate_ready` counts a moved library's corrections), `CorrectionPathTests` 1.
+

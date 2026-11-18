@@ -328,13 +328,14 @@ final class CorrectionViewModel: ObservableObject {
 
     var backend: String { (runMeta["backend"] as? String) ?? "" }
     var modelId: String { (runMeta["model"] as? String) ?? "" }
+    // LOCAL26: the current library first, the run sidecar's stored path only as a fallback.
     var transcriptPath: String {
-        (runMeta["transcript_path"] as? String)
-            ?? recordingsDir.appendingPathComponent("\(stem).md").path
+        CorrectionStore.currentPath(stored: runMeta["transcript_path"] as? String,
+                                    stem: stem, suffix: ".md", in: recordingsDir)
     }
     var summaryJsonPath: String {
-        (runMeta["summary_json_path"] as? String)
-            ?? recordingsDir.appendingPathComponent("\(stem).summary.json").path
+        CorrectionStore.currentPath(stored: runMeta["summary_json_path"] as? String,
+                                    stem: stem, suffix: ".summary.json", in: recordingsDir)
     }
 
     // MARK: Schema limits (PIPE54)

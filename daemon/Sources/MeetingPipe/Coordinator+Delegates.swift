@@ -56,8 +56,11 @@ extension Coordinator: NotifierDelegate {
             let summary = try CorrectionStore.loadOriginalSummary(at: summaryURL)
             let backend = (run["backend"] as? String) ?? ""
             let model = (run["model"] as? String) ?? ""
-            let transcriptPath = (run["transcript_path"] as? String) ?? ""
-            let summaryJsonPath = (run["summary_json_path"] as? String) ?? summaryURL.path
+            // LOCAL26: the current library first, not the run sidecar's possibly stale absolute path.
+            let transcriptPath = CorrectionStore.currentPath(
+                stored: run["transcript_path"] as? String, stem: stem, suffix: ".md", in: recordingsDir)
+            let summaryJsonPath = CorrectionStore.currentPath(
+                stored: run["summary_json_path"] as? String, stem: stem, suffix: ".summary.json", in: recordingsDir)
             let written = try CorrectionStore.write(
                 stem: stem,
                 transcriptPath: transcriptPath,

@@ -118,6 +118,7 @@ def build_pairs(
     corrections_dir: Path,
     read_transcript: Callable[[str], str | None] = _read_transcript,
     system_prompt: str | None = None,
+    recordings_dir: Path | None = None,
 ) -> list[Pair]:
     """Build training pairs from every ``edited`` correction whose transcript is
     readable; the completion is the corrected summary JSON. Records without a
@@ -134,11 +135,15 @@ def build_pairs(
         if not isinstance(corrected, dict):
             continue
         transcript_path = data.get("transcript_path") or ""
-        transcript = read_transcript(transcript_path)
+        # LOCAL26: the record's file name is its stem, and the current library is
+        # searched by it first; the stored absolute path is only a fallback.
+        stem = data.get("stem") or path.stem or Path(transcript_path).stem
+        found = corrections.resolve_meeting_file(stem, ".md", recordings_dir, transcript_path)
+        transcript = read_transcript(str(found) if found is not None else transcript_path)
         if not transcript:
             continue
         pairs.append(_make_pair(
-            stem=data.get("stem") or Path(transcript_path).stem,
+            stem=stem,
             system_prompt=instr,
             transcript=transcript,
             summary=corrected,
@@ -173,10 +178,18 @@ def build_run_pairs(
         stem = data.get("stem") or path.name[: -len(".run.json")]
         if stem in skip:
             continue
-        summary = _read_summary(data.get("summary_json_path") or "")
+        # LOCAL26: by stem in this library first, so a moved or restored library keeps
+        # every earlier meeting; the stored absolute paths are only a fallback.
+        summary_path = corrections.resolve_meeting_file(
+            stem, ".summary.json", recordings_dir, data.get("summary_json_path"))
+        summary = _read_summary(
+            str(summary_path) if summary_path is not None else data.get("summary_json_path") or "")
         if not summary:
             continue
-        transcript = read_transcript(data.get("transcript_path") or "")
+        transcript_path = corrections.resolve_meeting_file(
+            stem, ".md", recordings_dir, data.get("transcript_path"))
+        transcript = read_transcript(
+            str(transcript_path) if transcript_path is not None else data.get("transcript_path") or "")
         if not transcript:
             continue
         pairs.append(_make_pair(
@@ -224,7 +237,7 @@ def collect_pairs(
     corrected trains on the corrected summary, never on the one it replaced."""
     if source == "runs":
         return build_run_pairs(recordings_dir, system_prompt=system_prompt)
-    corrected = build_pairs(corrections_dir, system_prompt=system_prompt)
+    corrected = build_pairs(corrections_dir, system_prompt=system_prompt, recordings_dir=recordings_dir)
     if source == "corrections":
         return corrected
     return corrected + build_run_pairs(
@@ -249,7 +262,7 @@ def split_pairs(pairs: list[Pair]) -> dict[str, list[Pair]]:
     }
 
 
-def gate_ready(source: str, pairs: list[Pair]) -> tuple[bool, str]:
+def gate_ready(source: str, pairs: list[Pair], library: Path | None = None) -> tuple[bool, str]:
     """Is the corpus big enough to train on? Returns (ready, human-readable state).
 
     ``corrections`` keeps the ``mp corrections-stats`` bar, which is what the README
@@ -258,7 +271,8 @@ def gate_ready(source: str, pairs: list[Pair]) -> tuple[bool, str]:
     just built, against the same two numbers.
     """
     if source == "corrections":
-        stats = corrections.aggregate(corrections.load_records(corrections.CORRECTIONS_DIR))
+        stats = corrections.aggregate(
+            corrections.load_records(corrections.CORRECTIONS_DIR, library=library))
         state = (
             f"{stats['total']}/{corrections.READINESS_MIN_COUNT} corrections, "
             f"{stats['transcript_chars']:,}/"
@@ -466,7 +480,7 @@ def main(argv: list[str]) -> int:
             int(max(p.chars() for p in too_long) / CHARS_PER_TOKEN),
         )
 
-    ready, state = gate_ready(args.source, pairs)
+    ready, state = gate_ready(args.source, pairs, Path(recordings_dir).expanduser())
     if not ready and not args.force:
         hint = (
             "Grade more meetings (see `mp corrections-stats`), try `--source runs` to "

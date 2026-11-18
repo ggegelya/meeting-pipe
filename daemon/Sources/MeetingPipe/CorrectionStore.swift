@@ -60,6 +60,18 @@ enum CorrectionStore {
         }
     }
 
+    /// LOCAL26: the path a new correction record stores for one of the meeting's files. The run
+    /// sidecar's absolute path goes stale when the library moves (SEC12) or is restored onto another
+    /// root, and nothing rewrites it, so the current library's `<stem><suffix>` wins when it exists;
+    /// the stored path is the fallback, then the current-library path even when absent. Same key,
+    /// still absolute, so the record's schema does not change.
+    static func currentPath(stored: String?, stem: String, suffix: String, in recordingsDir: URL) -> String {
+        let here = recordingsDir.appendingPathComponent("\(stem)\(suffix)").path
+        if FileManager.default.fileExists(atPath: here) { return here }
+        if let stored, !stored.isEmpty { return stored }
+        return here
+    }
+
     /// Writes `<stem>.json`. `correctedSummary` is omitted when nil (good/bad verdicts produce smaller records than edited ones). Atomic replacement, so a crash leaves either the previous record or the new one and never neither (PERF8).
     @discardableResult
     static func write(

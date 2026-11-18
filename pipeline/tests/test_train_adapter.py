@@ -245,3 +245,41 @@ def test_build_lora_command_batch_size_override(tmp_path: Path):
         tmp_path / "data", tmp_path / "adapter", batch_size=1,
     )
     assert cmd[cmd.index("--batch-size") + 1] == "1"
+
+
+def test_a_moved_library_keeps_every_pair_from_both_sources(tmp_path: Path):
+    """LOCAL26: run sidecars and correction records store absolute paths, which a library
+    move (SEC12) or a restore onto another root leaves stale. Both sources resolve by stem
+    against the current library, so the pair count survives the move."""
+    old = tmp_path / "old"
+    old.mkdir()
+    corr = tmp_path / "corrections"
+    corr.mkdir()
+    for stem in ("m1", "m2"):
+        _write_run(old, stem)
+        _write_correction(corr, stem, corrected={"title": stem.upper()},
+                          transcript_path=str(old / f"{stem}.md"))
+    before = {src: len(collect_pairs(src, corrections_dir=corr, recordings_dir=old))
+              for src in ("runs", "corrections")}
+    assert before == {"runs": 2, "corrections": 2}
+
+    new = tmp_path / "new"
+    old.rename(new)
+    after = {src: collect_pairs(src, corrections_dir=corr, recordings_dir=new)
+             for src in ("runs", "corrections")}
+    assert {src: len(p) for src, p in after.items()} == before
+    assert all("transcript" in p.prompt for p in after["runs"] + after["corrections"])
+
+
+def test_gate_ready_counts_a_moved_librarys_corrections(tmp_path: Path, monkeypatch):
+    from mp import corrections as corr_mod
+
+    corr = tmp_path / "corrections"
+    corr.mkdir()
+    library = tmp_path / "library"
+    library.mkdir()
+    (library / "m1.md").write_text("x" * 5_000, encoding="utf-8")
+    _write_correction(corr, "m1", verdict="good", transcript_path="/gone/m1.md")
+    monkeypatch.setattr(corr_mod, "CORRECTIONS_DIR", corr)
+    _ready, state = gate_ready("corrections", [], library)
+    assert "5,000/" in state

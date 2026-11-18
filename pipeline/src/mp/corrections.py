@@ -202,9 +202,31 @@ class CorrectionRecord:
     """Per-field normalized Levenshtein (0.0-1.0) when ``has_corrected``."""
 
 
-def load_records(corrections_dir: Path) -> list[CorrectionRecord]:
-    """Read every ``*.json`` file in ``corrections_dir`` and join with run
-    sidecars when discoverable from ``transcript_path``."""
+def resolve_meeting_file(
+    stem: str, suffix: str, library: Path | None, stored: str | None
+) -> Path | None:
+    """Where a meeting's ``<stem><suffix>`` is now (LOCAL26).
+
+    The current library first, so a library moved by SEC12's mover, restored onto
+    another root, or re-pointed by a typed Output directory still resolves. The
+    absolute path a run sidecar or correction record stored is a hint after that,
+    for a record whose meeting is not in this library. None when neither exists.
+    Writers keep storing absolute paths; nothing rewrites existing sidecars."""
+    if stem and library is not None:
+        here = library / f"{stem}{suffix}"
+        if here.exists():
+            return here
+    if stored:
+        hint = Path(stored)
+        if hint.exists():
+            return hint
+    return None
+
+
+def load_records(corrections_dir: Path, *, library: Path | None = None) -> list[CorrectionRecord]:
+    """Read every ``*.json`` file in ``corrections_dir`` and join each with its run
+    sidecar. ``library`` is the current recordings dir, where the meeting's files are
+    looked up by stem first (LOCAL26); the stored paths are only a fallback."""
     if not corrections_dir.exists():
         return []
     out: list[CorrectionRecord] = []
@@ -213,22 +235,26 @@ def load_records(corrections_dir: Path) -> list[CorrectionRecord]:
         if data is None:
             log.warning("skipping unreadable correction %s", path)
             continue
-        rec = _record_from(data)
+        rec = _record_from(data, library=library, file_stem=path.stem)
         if rec is not None:
             out.append(rec)
     return out
 
 
-def _record_from(data: dict[str, Any]) -> CorrectionRecord | None:
+def _record_from(
+    data: dict[str, Any], *, library: Path | None = None, file_stem: str = ""
+) -> CorrectionRecord | None:
     verdict = data.get("verdict")
     if verdict not in {"good", "bad", "edited"}:
         return None
     transcript_path = data.get("transcript_path") or ""
-    stem = data.get("stem") or _stem_from_transcript(transcript_path)
+    # The record's file name is the stem (`corrections/<stem>.json`), and the daemon's
+    # record carries no `stem` key, so the name is the surest source after the key.
+    stem = data.get("stem") or file_stem or _stem_from_transcript(transcript_path)
     backend = data.get("backend") or ""
     model = data.get("model_id") or data.get("model") or ""
 
-    transcript_chars = _resolve_transcript_chars(data, transcript_path)
+    transcript_chars = _resolve_transcript_chars(stem, transcript_path, library)
 
     edits: dict[str, float] = {}
     has_corrected = False
@@ -257,20 +283,22 @@ def _stem_from_transcript(transcript_path: str) -> str:
     return name[:-3] if name.endswith(".md") else name
 
 
-def _resolve_transcript_chars(
-    data: dict[str, Any], transcript_path: str
-) -> int:
-    """Prefer the run sidecar's pre-computed count; fall back to stat'ing
-    the transcript file directly. 0 when neither is available."""
-    if not transcript_path:
-        return 0
-    p = Path(transcript_path)
-    sidecar = p.with_suffix(".run.json") if p.suffix else Path(str(p) + ".run.json")
-    side = read_run_sidecar(sidecar)
+def _resolve_transcript_chars(stem: str, transcript_path: str, library: Path | None) -> int:
+    """Prefer the run sidecar's pre-computed count, then the transcript's length, both
+    found by stem in the current library first (LOCAL26). 0 when neither is there."""
+    stored_sidecar = ""
+    if transcript_path:
+        p = Path(transcript_path)
+        stored_sidecar = str(p.with_suffix(".run.json") if p.suffix else Path(str(p) + ".run.json"))
+    sidecar = resolve_meeting_file(stem, ".run.json", library, stored_sidecar)
+    side = read_run_sidecar(sidecar) if sidecar is not None else None
     if side and isinstance(side.get("transcript_chars"), int):
         return int(side["transcript_chars"])
+    transcript = resolve_meeting_file(stem, ".md", library, transcript_path)
+    if transcript is None:
+        return 0
     try:
-        return len(Path(transcript_path).read_text(encoding="utf-8"))
+        return len(transcript.read_text(encoding="utf-8"))
     except Exception:
         return 0
 
@@ -465,19 +493,22 @@ def _render_table(table: dict[str, dict[str, int]]) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    """``mp corrections-stats [--dir PATH] [--json]`` entry point.
+    """``mp corrections-stats [--dir PATH] [--library PATH] [--json]`` entry point.
 
-    ``--dir`` overrides the default location (mostly for tests).
+    ``--dir`` overrides the default location (mostly for tests). ``--library``
+    overrides the recordings dir meetings are found in by stem, which otherwise
+    comes from ``recording.output_dir`` (LOCAL26).
     ``--json`` emits the aggregate dict as JSON instead of Markdown.
     """
     corrections_dir = CORRECTIONS_DIR
+    library: Path | None = None
     as_json = False
     i = 0
     while i < len(argv):
         a = argv[i]
         if a in {"-h", "--help"}:
             print(
-                "usage: mp corrections-stats [--dir PATH] [--json]",
+                "usage: mp corrections-stats [--dir PATH] [--library PATH] [--json]",
                 file=sys.stderr,
             )
             return 0
@@ -487,6 +518,12 @@ def main(argv: list[str]) -> int:
                 print("missing value for --dir", file=sys.stderr)
                 return 2
             corrections_dir = Path(argv[i]).expanduser()
+        elif a == "--library":
+            i += 1
+            if i >= len(argv):
+                print("missing value for --library", file=sys.stderr)
+                return 2
+            library = Path(argv[i]).expanduser()
         elif a == "--json":
             as_json = True
         else:
@@ -494,7 +531,12 @@ def main(argv: list[str]) -> int:
             return 2
         i += 1
 
-    records = load_records(corrections_dir)
+    if library is None:
+        # Local-only, like `mp train-adapter`: no secrets, guard armed.
+        from . import entry
+
+        library = Path(entry.prepare(secrets=False).recording.output_dir).expanduser()
+    records = load_records(corrections_dir, library=library)
     stats = aggregate(records)
 
     if as_json:
