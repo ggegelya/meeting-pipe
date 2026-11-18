@@ -2,9 +2,9 @@
 id: OBS3
 title: Failure events carry only a caption, a signal death is read as an exit code, and three pipeline commands fail with no event at all
 category: Observability
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (observability band, O9: FB-7, PY-8, PY-9, PY-10, PY-11, SW-19): pipeline_failed and siblings carry only the caption, terminationReason is never read so SIGQUIT hits the exit-3 publish rule, merge, paste-publish and finalize emit nothing, run-all exits 1 on a missing secret. Structured rows via OBS1, uncaughtSignal case, one command_failed helper, emit never raises, typed transcript read. [Spec](./OBS3.md) Amended 2026-11-13 by the audit band: pipeline_failed has named no exit code since UX80 (2026-09-14); adds error_type, exit and stage on the daemon.log line, and segment counts on held_end_excluded.
+comment: Shipped 2026-11-19 - one failure-row builder for pipeline_failed, retranscribe_failed, regenerate_failed and republish_failed (stage, error_type, termination_reason, exit_code or signal, cause, operation, provider; never text), terminationReason read so a foreign signal is LaunchError.uncaughtSignal and never the exit-3 publish stage, exit= or signal= back on the daemon.log line, held_end_excluded segment counts, fail_command and command_failed for merge, paste-publish, finalize, summarize and the CLI boundary, run-all missing secret exits 2, events.emit never raises, typed daemon-transcript errors with one run_failed, and SW-19 (transcriptUnreadable, the OS error on the write-failure escalation, a reaper marker that will not parse, an unreadable library refuses a move). Owed - the owner reads one real failure row in events.jsonl after the next pipeline failure. [Spec](./OBS3.md)
 ---
 
 # OBS3: failure events carry only a caption, a signal death is read as an exit code, and three pipeline commands fail with no event at all
@@ -86,3 +86,5 @@ Correction at filing: item 1 above already specifies `exit_status`, `termination
 - A `SinkDispatcher` or `PipelineFailureEvent` test: `nonZeroExit(1, ...)` yields a `pipeline_failed` row with `exit_status: 1`, `error_type: nonZeroExit` and a `stage`, and the `daemon.log` line names `exit=1`.
 - A held-end trim test: a sidecar with segments past the trim point yields `held_end_excluded` with `segments_before` greater than `segments_after`, and `segments_after` equal to the written sidecar's count.
 - CONVENTIONS.md "Event log schema" lists the new attributes in the same commit; `cd daemon && swift test` and `python3 scripts/truth_fences.py` green, new test count in the commit body.
+
+**Progress (2026-11-19):** shipped. Two deliberate deviations from the spec text: the rows extend SEC38's `PipelineOutcomeLog.failureAttributes` rather than add a second builder, so the exit status keeps its existing key `exit_code` (not `exit_status`), and the `error` caption the spec says "stays" is gone from these rows, as SEC38 (which landed later) requires; `regenerate_failed` lost its caption the same way. The rows are written with `Log.event` plus the `pipeline FAIL` line rather than `Log.failure`, whose generic line would hide the exit and stage the amendment asks for. The reaper's malformed-marker report went in because LOCAL21 has not deleted the reaper.

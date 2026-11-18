@@ -639,12 +639,13 @@ final class SinkDispatcher: @unchecked Sendable {
             // A re-transcribe honours it too until the owner restores the tail. Below the commit
             // point so an abandoned pass's late return logs no `held_end_excluded` row.
             if case .trim(let trimAt) = trim {
+                let segmentsBefore = sidecar.segments.count
                 sidecar = HeldEndTrim.apply(sidecar, at: trimAt)
-                Log.event(category: "transcription", action: "held_end_excluded", attributes: [
-                    "file": job.file.lastPathComponent,
-                    "trim_sec": trimAt,
-                    "audio_seconds": sidecar.audioSeconds,
-                ])
+                Log.event(category: "transcription", action: "held_end_excluded",
+                          attributes: Self.heldEndExcludedAttributes(
+                              file: job.file, trimAt: trimAt, audioSeconds: sidecar.audioSeconds,
+                              segmentsBefore: segmentsBefore, segmentsAfter: sidecar.segments.count
+                          ))
             }
             let jsonURL = job.file
                 .deletingPathExtension()
@@ -758,10 +759,10 @@ final class SinkDispatcher: @unchecked Sendable {
                     // Here the transcript on disk IS degraded: the runner replaced
                     // it with the raw FluidAudio sidecar and finalize never got to
                     // relabel it. Mark the row so Reprocess is offered.
+                    // OBS3: the shared builder, so the row says how the run ended, not only its class.
                     Log.event(category: "coordinator", action: "retranscribe_failed", attributes: [
                         "stem": loc.stem,
-                        "error_type": PipelineOutcomeLog.errorType(err),  // SEC38: the text can quote the title
-                    ])
+                    ].merging(PipelineOutcomeLog.failureAttributes(err, stage: .pipeline)) { a, _ in a })
                     PipelineFailureSidecar.write(
                         stem: loc.stem, in: loc.dir,
                         stage: .pipeline, reason: PipelineLauncher.diagnostics(for: err), metadata: FailureMetadata.from(err)
@@ -1298,6 +1299,17 @@ final class SinkDispatcher: @unchecked Sendable {
     }
 
     /// Attribute a pipeline failure to the stage that produced it. A missing executable is the only launch-stage failure. `mp` exits `publishFailedExitCode` when every configured sink failed (PIPE1), which leaves a complete summary on disk, so the Library can retry publish alone. A cancelled run (UX50) is `.interrupted`, PIPE3's label for work that stopped without faulting; it carries no exit code, so it cannot collide with the publish contract, and since UX69 that covers a cancel during the daemon's own transcription pass too, which arrives as a `CancellationError` instead. A memory refusal or watchdog abort (LOCAL16) is recognised by the marker its message carries, because it has no exit code of its own and "Summarize and publish failed" would hide the one fact the user can act on. Everything else faults somewhere inside summarize/publish and gets the coarse `.pipeline` label. Internal for `SinkDispatcherTests`.
+    /// OBS3: the held-end trim's row, with the segment counts either side of `HeldEndTrim.apply`;
+    /// `engine_succeeded` carries only the count after, so what the trim removed was unrecoverable.
+    static func heldEndExcludedAttributes(
+        file: URL, trimAt: Double, audioSeconds: Double, segmentsBefore: Int, segmentsAfter: Int
+    ) -> [String: Any] {
+        [
+            "file": file.lastPathComponent, "trim_sec": trimAt, "audio_seconds": audioSeconds,
+            "segments_before": segmentsBefore, "segments_after": segmentsAfter,
+        ]
+    }
+
     static func stage(for error: Error) -> PipelineFailureSidecar.Stage {
         // Asked first, and through the one predicate, because since UX69 a cancel
         // arrives as either of two error types depending on which half of the job

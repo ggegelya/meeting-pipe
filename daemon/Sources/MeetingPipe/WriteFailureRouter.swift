@@ -82,7 +82,7 @@ final class WriteFailureRouter {
             case .escalate:
                 self?.escalate(
                     channel: channel, consecutive: tracker.consecutiveFailures,
-                    generation: generation, directory: directory
+                    generation: generation, directory: directory, lastError: tracker.lastFailure
                 )
             }
         }
@@ -90,19 +90,25 @@ final class WriteFailureRouter {
 
     /// On the writer's queue, once per tracker: decide the cause off main (REC19 reads the
     /// volume's free space here, which can be slow on the volume that is failing), then hop.
-    private func escalate(channel: CaptureWriteChannel, consecutive: Int, generation: UInt64, directory: URL) {
+    private func escalate(
+        channel: CaptureWriteChannel, consecutive: Int, generation: UInt64, directory: URL,
+        lastError: WriteFailureTracker.FailureCode?
+    ) {
         let space = freeSpace(directory)
         let decision = RecordingWriteFailure.decide(
             channel: channel.rawValue, freeBytes: space.freeBytes, volumeName: space.volumeName
         )
         mainHop { [weak self] in
-            self?.deliver(decision, consecutive: consecutive, generation: generation)
+            self?.deliver(decision, consecutive: consecutive, generation: generation, lastError: lastError)
         }
     }
 
     /// On main: the live recording's escalation goes to `onWriteFailure`; anyone else's is logged
     /// and dropped.
-    private func deliver(_ decision: RecordingWriteFailure.Decision, consecutive: Int, generation: UInt64) {
+    private func deliver(
+        _ decision: RecordingWriteFailure.Decision, consecutive: Int, generation: UInt64,
+        lastError: WriteFailureTracker.FailureCode? = nil
+    ) {
         guard generation == liveGeneration else {
             emit("write_failure_stale", [
                 "channel": decision.channel,
@@ -114,13 +120,20 @@ final class WriteFailureRouter {
             Log.writeLine("recorder", "WARN: \(decision.channel) writer from recording generation \(generation) failed \(consecutive) consecutive writes after its recording ended - not stopping anything")
             return
         }
-        emit("recording_error", [
+        // OBS3: the last write's own error, beside the cause the free space suggested.
+        var attributes: [String: Any] = [
             "channel": decision.channel,
             "consecutive_failures": consecutive,
             "cause": decision.cause.rawValue,
             "free_bytes": decision.freeBytes as Any,
-        ])
-        Log.writeLine("recorder", "ERROR: \(decision.channel) writer failed \(consecutive) consecutive writes (cause=\(decision.cause.rawValue) free_bytes=\(decision.freeBytes.map(String.init) ?? "unreadable")); force-stopping to preserve the intact prefix")
+        ]
+        if let lastError {
+            attributes["error_domain"] = lastError.domain
+            attributes["error_code"] = lastError.code
+        }
+        emit("recording_error", attributes)
+        let os = lastError.map { " error=\($0.domain) \($0.code)" } ?? ""
+        Log.writeLine("recorder", "ERROR: \(decision.channel) writer failed \(consecutive) consecutive writes (cause=\(decision.cause.rawValue) free_bytes=\(decision.freeBytes.map(String.init) ?? "unreadable")\(os)); force-stopping to preserve the intact prefix")
         onWriteFailure?(decision)
     }
 

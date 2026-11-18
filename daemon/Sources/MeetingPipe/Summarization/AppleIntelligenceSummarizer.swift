@@ -7,6 +7,9 @@ import FoundationModels
 enum AppleIntelligenceError: Error, LocalizedError {
     case unavailable(String)
     case emptyTranscript
+    /// OBS3: the transcript is there but could not be read (a permission error, an evicted file).
+    /// It used to throw `.emptyTranscript`, so the failure read "Transcript is empty".
+    case transcriptUnreadable(String)
     case parseFailed(String)
     /// PIPE6: the on-device model rejected the transcript's language/locale (the
     /// case that stranded `20260707-150057`). Deterministic: a same-backend retry
@@ -27,6 +30,7 @@ enum AppleIntelligenceError: Error, LocalizedError {
         switch self {
         case .unavailable(let why): return "Apple Intelligence is not available: \(why)"
         case .emptyTranscript: return "Transcript is empty; nothing to summarize."
+        case .transcriptUnreadable(let detail): return "The transcript could not be read: \(detail)"
         case .parseFailed(let detail): return "Apple Intelligence returned an unparseable summary: \(detail)"
         case .unsupportedLanguage(let detail):
             return "Apple Intelligence: \(Self.unsupportedLanguageMarker) for this transcript. \(detail)"
@@ -72,6 +76,23 @@ enum AppleIntelligenceError: Error, LocalizedError {
 /// `meeting_summary.md` master prompt. Output quality is validated by on-device
 /// dogfood (the acceptance bars require a real Apple Intelligence run).
 struct AppleIntelligenceSummarizer {
+
+    /// OBS3: the transcript, or the reason it cannot be summarized. Unreadable is not empty.
+    static func readTranscript(at url: URL) throws -> String {
+        let raw: String
+        do {
+            raw = try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            let ns = error as NSError
+            let underlying = (ns.userInfo[NSUnderlyingErrorKey] as? NSError).map { " (\($0.domain) \($0.code))" } ?? ""
+            throw AppleIntelligenceError.transcriptUnreadable("\(ns.domain) \(ns.code)\(underlying)")
+        }
+        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AppleIntelligenceError.emptyTranscript
+        }
+        return raw
+    }
+
     /// Chars per map window. The system model's context is 4096 tokens TOTAL,
     /// and Cyrillic tokenizes at ~1.7 tokens/char (vs ~0.3 for English), so the
     /// old 3200-char window overflowed on Ukrainian. 1000 keeps a worst-case
@@ -130,10 +151,7 @@ struct AppleIntelligenceSummarizer {
         outputSuffix: String = "",
         onCall: ((Int, Int) -> Void)? = nil
     ) async throws {
-        guard let raw = try? String(contentsOf: transcriptMD, encoding: .utf8),
-              !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw AppleIntelligenceError.emptyTranscript
-        }
+        let raw = try Self.readTranscript(at: transcriptMD)
         let summary = try await summarize(
             transcript: raw, teamContext: teamContext, summaryLanguage: summaryLanguage, onCall: onCall
         )

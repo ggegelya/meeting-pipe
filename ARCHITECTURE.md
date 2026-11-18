@@ -268,7 +268,7 @@ One hop to the right file. Moved here from `daemon/CLAUDE.md` by DOC15: that fil
 | Permissions | `PermissionsCenter.swift` |
 | Pipeline subprocess | `PipelineLauncher.swift`, `ProcessOutputDrain.swift`, `ProcessRunner.swift`, `StorageJanitor.swift`, `LocalServerReaper.swift`, `LocalModelPreloader.swift`, `LocalModelTier.swift` |
 | Post-stop cost and machine state (OBS10, measure only) | `ResourceProbe.swift` (`ResourceSample`, `MachineState`, `MemoryPressureWatch`, `EngineHandoff`) |
-| Failure presentation (UX80) | `FailurePresentation.swift` (pure cause, copy, report allowlist), `FailureNotice.swift` (bounded notice, Details, local copy, dialogs), `PipelineFailureSidecar.swift` (durable daemon-owned evidence); Python `failure_details.py` classifies native errors into an optional process-scoped result |
+| Failure presentation (UX80) | `FailurePresentation.swift` (pure cause, copy, report allowlist), `FailureNotice.swift` (bounded notice, Details, local copy, dialogs), `PipelineFailureSidecar.swift` (durable daemon-owned evidence); Python `failure_details.py` classifies native errors into an optional process-scoped result, and its `fail_command` is every subcommand's one failure report (`command_failed`, OBS3); `PipelineOutcomeLog.swift` is the one builder for the daemon's failure rows (exit status or signal, stage, typed cause; OBS3) |
 | Scheduled `mp` jobs | `LaunchAgentScheduler.swift`, `DigestSchedulerService.swift` (AI4), `BackupSchedulerService.swift` (STOR4) - a new job adds a thin service here, not a second plist writer |
 | Launch at login | `LaunchAtLoginService.swift` (UX42) - the agent that installs the app, distinct from the one-shots above |
 | One instance only | `SingleInstanceGuard.swift` (UX54) |

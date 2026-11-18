@@ -609,6 +609,11 @@ final class PipelineLauncher: PipelineDriver {
         /// Full output remains in `pipeline.log`. Optional native metadata travels separately.
         case nonZeroExit(Int32, String)
         case reportedFailure(Int32, FailureMetadata, String)
+        /// OBS3: a signal this app did not send (its own Cancel is `.cancelled`, its watchdog
+        /// `.timeout`). `terminationStatus` is the signal number then, so a SIGQUIT read as an exit
+        /// code was 3, the publish-failed contract, and the Library offered to republish a summary
+        /// that may not exist. Carries the signal and the stderr tail.
+        case uncaughtSignal(Int32, String)
         /// The limit and the `mp` subcommand that hit it (UX93): every job shares the one `runMP`
         /// watchdog, so the caption has to say which job, and only run-all has a wav to re-run.
         case timeout(TimeInterval, job: String)
@@ -627,6 +632,8 @@ final class PipelineLauncher: PipelineDriver {
                 return PipelineLauncher.failureCaption(stderr: diagnostics)
             case .reportedFailure(_, let metadata, let diagnostics):
                 return FailurePresentation(diagnostics: diagnostics, metadata: metadata).title
+            case .uncaughtSignal(let signal, _):
+                return PipelineLauncher.signalCaption(signal)
             case .timeout(let seconds, let job):
                 return PipelineLauncher.timeoutCaption(seconds: seconds, job: job)
             case .cancelled:
@@ -711,9 +718,22 @@ final class PipelineLauncher: PipelineDriver {
         FailurePresentation(diagnostics: stderr).title + "."
     }
 
+    /// OBS3: names the signal, never guesses why it came. A SIGKILL is not called memory here:
+    /// nothing tells jetsam from another SIGKILL, and LOCAL16's marker stays the one memory route.
+    static func signalCaption(_ signal: Int32) -> String {
+        let names: [Int32: String] = [
+            SIGHUP: "SIGHUP", SIGINT: "SIGINT", SIGQUIT: "SIGQUIT", SIGABRT: "SIGABRT", SIGKILL: "SIGKILL",
+            SIGBUS: "SIGBUS", SIGSEGV: "SIGSEGV", SIGTERM: "SIGTERM",
+        ]
+        return "pipeline was stopped by signal \(signal)\(names[signal].map { " (\($0))" } ?? "")."
+    }
+
     static func diagnostics(for error: Error) -> String {
         switch error {
         case LaunchError.nonZeroExit(_, let text), LaunchError.reportedFailure(_, _, let text): return text
+        case LaunchError.uncaughtSignal(let signal, let text):
+            let caption = signalCaption(signal)
+            return text.isEmpty ? caption : caption + "\n\n" + text
         default: return error.localizedDescription
         }
     }
@@ -743,9 +763,14 @@ final class PipelineLauncher: PipelineDriver {
     /// signal against a subprocess, and it is exactly the path that shipped
     /// wrong. A run that completed before the SIGTERM landed is a success even
     /// though a cancel was asked for, since the work is done and on disk.
-    static func outcome(status: Int32, cancelled: Bool, stderr: String, metadata: FailureMetadata? = nil) -> Result<Void, Error> {
-        if status == 0 { return .success(()) }
+    static func outcome(
+        status: Int32, reason: Process.TerminationReason = .exit, cancelled: Bool, stderr: String,
+        metadata: FailureMetadata? = nil
+    ) -> Result<Void, Error> {
+        if status == 0, reason == .exit { return .success(()) }
         if cancelled { return .failure(LaunchError.cancelled) }
+        // OBS3: a foreign signal is never read as an exit code.
+        if reason == .uncaughtSignal { return .failure(LaunchError.uncaughtSignal(status, stderr)) }
         if let metadata { return .failure(LaunchError.reportedFailure(status, metadata, stderr)) }
         return .failure(LaunchError.nonZeroExit(status, stderr))
     }
@@ -1588,6 +1613,7 @@ final class PipelineLauncher: PipelineDriver {
                 // UX50: the cancel flag is read here, not at the call sites.
                 completion(Self.outcome(
                     status: status,
+                    reason: p.terminationReason,
                     cancelled: handle.isCancelled,
                     stderr: String(decoding: stderrTail, as: UTF8.self),
                     metadata: (try? Data(contentsOf: spawn.failureURL)).flatMap(FailureMetadata.decode)

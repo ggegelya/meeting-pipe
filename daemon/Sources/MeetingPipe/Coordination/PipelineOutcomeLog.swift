@@ -46,28 +46,50 @@ enum PipelineOutcomeLog {
         case PipelineLauncher.LaunchError.mpNotFound: return "mp_not_found"
         case PipelineLauncher.LaunchError.nonZeroExit: return "non_zero_exit"
         case PipelineLauncher.LaunchError.reportedFailure: return "reported_failure"
+        case PipelineLauncher.LaunchError.uncaughtSignal: return "uncaught_signal"
         case PipelineLauncher.LaunchError.timeout: return "timeout"
         case PipelineLauncher.LaunchError.cancelled: return "cancelled"
         default: return String(describing: type(of: error))
         }
     }
 
-    /// The failure row's attributes: the stage, the error's class, and the cause and exit code when
-    /// the pipeline reported them. All fixed vocabularies.
+    /// The failure row's attributes, one builder for `pipeline_failed`, `retranscribe_failed`,
+    /// `regenerate_failed` and `republish_failed` (OBS3): the stage, the error's class, how the
+    /// process ended (`termination_reason` `exit` with `exit_code`, or `signal` with `signal`), and
+    /// the pipeline's typed `cause`, `operation` and `provider` when it reported them. All fixed
+    /// vocabularies; never the error's text (SEC38).
     static func failureAttributes(_ error: Error, stage: PipelineFailureSidecar.Stage) -> [String: Any] {
         var attributes: [String: Any] = ["stage": stage.rawValue, "error_type": errorType(error)]
-        if let cause = FailureMetadata.from(error)?.cause { attributes["cause"] = cause.rawValue }
+        if let metadata = FailureMetadata.from(error) {
+            attributes["cause"] = metadata.cause.rawValue
+            attributes["operation"] = metadata.operation.rawValue
+            if let provider = metadata.provider { attributes["provider"] = provider }
+        }
         switch error {
         case PipelineLauncher.LaunchError.nonZeroExit(let code, _),
              PipelineLauncher.LaunchError.reportedFailure(let code, _, _):
             attributes["exit_code"] = Int(code)
+            attributes["termination_reason"] = "exit"
+        case PipelineLauncher.LaunchError.uncaughtSignal(let signal, _):
+            attributes["signal"] = Int(signal)
+            attributes["termination_reason"] = "signal"
         default: break
         }
         return attributes
     }
 
-    /// The daemon.log failure line.
+    /// The daemon.log failure line. OBS3: the exit status or the signal again, which UX80's caption
+    /// change dropped on 2026-09-14.
     static func failureLine(_ error: Error, stage: PipelineFailureSidecar.Stage) -> String {
-        "pipeline FAIL -> stage=\(stage.rawValue) error_type=\(errorType(error))"
+        var line = "pipeline FAIL -> stage=\(stage.rawValue) error_type=\(errorType(error))"
+        switch error {
+        case PipelineLauncher.LaunchError.nonZeroExit(let code, _),
+             PipelineLauncher.LaunchError.reportedFailure(let code, _, _):
+            line += " exit=\(code)"
+        case PipelineLauncher.LaunchError.uncaughtSignal(let signal, _):
+            line += " signal=\(signal)"
+        default: break
+        }
+        return line
     }
 }

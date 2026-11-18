@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -150,6 +151,27 @@ def describe(error: BaseException, *, operation: str, provider: str | None = Non
     if isinstance(request_id, str) and re.fullmatch(r"req_[A-Za-z0-9]{8,96}|[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}", request_id):
         result["request_id"] = request_id
     return result
+
+
+_log = logging.getLogger("mp.failure")
+
+#: The cap on `command_failed`'s `message`, the same as the daemon's failure rows.
+COMMAND_MESSAGE_CAP = 300
+
+
+def fail_command(command: str, error: BaseException, *, operation: str) -> dict:
+    """OBS3: the one way a subcommand reports that it failed. Writes the failure metadata (the
+    daemon's typed cause), emits `pipeline` / `command_failed` with `command`, `error_type`, `cause`
+    and `message` (capped), and logs with the traceback. Only `run-all` had an event of its own
+    (`run_failed`, which it keeps); a failed merge, paste-publish, finalize or Library re-summarize
+    left nothing in `pipeline_events.jsonl` and showed the generic unknown cause."""
+    from . import events
+
+    payload = emit_failure(error, operation=operation)
+    events.emit("pipeline", "command_failed", command=command, error_type=type(error).__name__,
+                cause=payload.get("cause", "unknown"), message=str(error)[:COMMAND_MESSAGE_CAP])
+    _log.error("%s failed: %s", command, error, exc_info=error)
+    return payload
 
 
 def emit_failure(error: BaseException, *, operation: str, provider: str | None = None) -> dict:

@@ -558,15 +558,9 @@ def _run_all_inner(
     # before invoking us. We finalize it (channel-aware speaker labels
     # fallback if FluidAudio diarization failed) and continue with
     # summarize + publish. No Python-side ASR exists anymore.
+    # OBS3: raises the typed reason and emits nothing; `run_all`'s wrapper writes the one
+    # `run_failed`, with that type as `error_type`.
     streamed = existing_daemon_transcript(wav)
-    if streamed is None:
-        events.emit("pipeline", "run_failed", wav=str(wav),
-                    error="no daemon transcript", error_type="MissingSidecar")
-        raise RuntimeError(
-            f"No daemon transcript at {wav.with_suffix('.json')}. "
-            "FluidAudio must produce the sidecar before the Python "
-            "pipeline runs."
-        )
     source = streamed.get("backend") or ("streamed" if streamed.get("streaming") else "daemon")
     log.info("[1/3] finalize (produced by daemon: %s)", source)
     _stage("finalize")
@@ -733,21 +727,46 @@ def _run_all_inner(
 _DAEMON_BACKENDS = frozenset({"fluidaudio"})
 
 
-def existing_daemon_transcript(wav: Path) -> dict | None:
-    """Return the structured JSON the daemon wrote, or None if it doesn't
-    exist / is unusable. The daemon's FluidAudio runner writes `<stem>.json`
-    with `backend: "fluidaudio"`, `streaming: false`, `finalized: true`.
-    Empty-segments sidecars are accepted; the no-speech short-circuit in
-    `_run_all_inner` handles them.
+class DaemonTranscriptError(RuntimeError):
+    """OBS3: the daemon's `<stem>.json` cannot be used. Three cases, three types, because they have
+    three different causes: the recorder never wrote it, the disk will not give it back (an
+    iCloud-evicted file reads EDEADLK), or something else wrote it. All three used to read as
+    `MissingSidecar`, so an evicted transcript was filed as a recorder fault."""
+
+
+class DaemonTranscriptMissing(DaemonTranscriptError):
+    pass
+
+
+class DaemonTranscriptUnreadable(DaemonTranscriptError):
+    pass
+
+
+class DaemonTranscriptForeign(DaemonTranscriptError):
+    pass
+
+
+def existing_daemon_transcript(wav: Path) -> dict:
+    """Return the structured JSON the daemon wrote, or raise the typed reason it cannot be used.
+    The daemon's FluidAudio runner writes `<stem>.json` with `backend: "fluidaudio"`,
+    `streaming: false`, `finalized: true`. Empty-segments sidecars are accepted; the no-speech
+    short-circuit in `_run_all_inner` handles them.
 
     Shared with `mp finalize` (ASR3), which reads the same sidecar.
     """
-    data = storage.read_json_object(wav.parent / f"{wav.stem}.json")
-    if data is None:
-        return None
-    if str(data.get("backend") or "") not in _DAEMON_BACKENDS:
-        return None
-    return data
+    path = wav.parent / f"{wav.stem}.json"
+    read = storage.load_json_object(path)
+    if read.state == "missing":
+        raise DaemonTranscriptMissing(
+            f"No daemon transcript at {path}. FluidAudio must produce the sidecar before the "
+            "Python pipeline runs."
+        )
+    if read.state == "unreadable" or read.data is None:
+        detail = read.errno or ("not a JSON object" if read.kind == "parse" else "unreadable")
+        raise DaemonTranscriptUnreadable(f"The daemon transcript at {path} cannot be read ({detail}).")
+    if str(read.data.get("backend") or "") not in _DAEMON_BACKENDS:
+        raise DaemonTranscriptForeign(f"{path} was not written by the daemon's transcriber.")
+    return read.data
 
 
 def _streamed_segments_have_speakers(streamed: dict) -> bool:
@@ -1015,9 +1034,14 @@ def main(argv: list[str]) -> int:
     try:
         result = run_all(wav, backend=backend_override)
     except Exception as e:  # noqa: BLE001
-        log.exception("run-all failed: %s", e)
+        from .config import MissingSecretError
         from .failure_details import emit_failure
         emit_failure(e, operation="summary")
+        if isinstance(e, MissingSecretError):
+            # OBS3: the CLI boundary's exit 2 (PIPE16), as `summarize.main` already does; this
+            # handler used to swallow it into exit 1 for the command that runs every meeting.
+            raise
+        log.exception("run-all failed: %s", e)
         return 1
     # PIPE1: an all-sinks-failed publish is a failed run. The daemon reads this
     # exit code to stamp `<stem>.error.json` with stage=publish, which in turn

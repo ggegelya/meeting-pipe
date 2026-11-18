@@ -529,10 +529,13 @@ def main(argv: list[str]) -> int:
     try:
         result = merge_meetings(primary, fragments)
     except MergeError as e:
+        from .failure_details import fail_command
+        fail_command("merge-meetings", e, operation="processing")
         print(f"merge failed: {e}", file=sys.stderr)
         return 1
     except Exception as e:  # noqa: BLE001
-        log.exception("merge-meetings failed: %s", e)
+        from .failure_details import fail_command
+        fail_command("merge-meetings", e, operation="processing")
         return 1
     if result.get("publish_failed"):
         return EXIT_PUBLISH_FAILED

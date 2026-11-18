@@ -384,7 +384,8 @@ def main(argv: list[str]) -> int:
         print(f"[FAIL] {e}", file=sys.stderr)
         return 1
     except Exception as e:  # noqa: BLE001
-        log.error("publish-from-paste failed: %s", e)
+        from .failure_details import fail_command
+        fail_command("publish-from-paste", e, operation="publish")
         return 1
     # Same honest-failure contract as `run-all` and `mp publish` (PIPE1): the
     # daemon's paste box treats a zero exit as "published" and clears the failure

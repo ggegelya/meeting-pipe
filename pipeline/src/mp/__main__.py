@@ -415,10 +415,10 @@ def main() -> int:
         print(f"ERROR: {e}", file=sys.stderr)
         return EXIT_MISSING_SECRET
     except Exception as e:
-        import traceback
-        from .failure_details import emit_failure
-        emit_failure(e, operation={"summarize": "summary", "run-all": "summary"}.get(cmd, cmd))
-        traceback.print_exc()
+        # OBS3: `fail_command` emits `command_failed` and logs the traceback (to stderr through
+        # logging's last-resort handler when the subcommand configured none), so it is not printed twice.
+        from .failure_details import fail_command
+        fail_command(cmd, e, operation={"summarize": "summary", "run-all": "summary"}.get(cmd, cmd))
         return 1
     except KeyboardInterrupt:
         # No cleanup, no `finally`, no rollback: what the interrupt leaves on

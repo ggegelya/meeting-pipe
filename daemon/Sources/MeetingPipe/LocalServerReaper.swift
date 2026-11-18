@@ -97,7 +97,15 @@ enum LocalServerReaper {
 
     static func loadMarker() -> Marker? {
         guard let data = try? Data(contentsOf: markerURL) else { return nil }
-        return parseMarker(data)
+        guard let marker = parseMarker(data) else {
+            // OBS3: present but unparseable used to return nil with no word, so an orphaned
+            // server behind a torn marker was never reaped and nothing said why.
+            Log.failure(category: "pipeline", action: "local_server_marker_unreadable",
+                        reason: "the local model server's marker is present but does not parse",
+                        attributes: ["bytes": data.count])
+            return nil
+        }
+        return marker
     }
 
     // MARK: - Process identity

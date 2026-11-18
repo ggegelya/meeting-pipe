@@ -53,9 +53,19 @@ enum LibraryMover {
     /// pipeline still owns.
     static func inFlightReason(in directory: URL, now: Date = Date()) -> String? {
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
-        ) else { return nil }
+        let entries: [URL]
+        do {
+            entries = try fm.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
+            )
+        } catch {
+            // OBS3: an absent folder has nothing in flight; one that will not list cannot be judged
+            // safe to move, so the move is refused with the reason instead of read as "not busy".
+            let ns = error as NSError
+            if ns.domain == NSCocoaErrorDomain, ns.code == NSFileReadNoSuchFileError { return nil }
+            if ns.domain == NSPOSIXErrorDomain, ns.code == Int(ENOENT) { return nil }
+            return "the library folder could not be read (\(ns.domain) \(ns.code))"
+        }
 
         if MeetingStore.freshCaptureIntermediate(in: entries) != nil {
             return "a recording is in progress"

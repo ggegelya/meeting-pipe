@@ -469,10 +469,10 @@ final class MeetingLibraryService {
                         if !PipelineLauncher.isCancellation(err) {
                             PipelineFailureSidecar.write(stem: stem, in: dir, stage: SinkDispatcher.stage(for: err),
                                 reason: PipelineLauncher.diagnostics(for: err), metadata: FailurePresentation(error: err, operation: .summary).metadata)
+                            // OBS3: the shared builder, and no error text (SEC38): the caption can quote a title.
                             Log.event(category: "coordinator", action: "regenerate_failed", attributes: [
                                 "stem": stem,
-                                "error": err.localizedDescription,
-                            ])
+                            ].merging(PipelineOutcomeLog.failureAttributes(err, stage: SinkDispatcher.stage(for: err))) { a, _ in a })
                             self.reportFailure(err, stem: stem, operation: .summary)
                         }
                         token.finish(.failure(err))
@@ -652,8 +652,7 @@ final class MeetingLibraryService {
                     self.refreshLibrary()
                     var attributes: [String: Any] = [
                         "stem": stem,
-                        "error_type": PipelineOutcomeLog.errorType(err),  // SEC38: the text can quote the title
-                    ]
+                    ].merging(PipelineOutcomeLog.failureAttributes(err, stage: .pipeline)) { a, _ in a }  // OBS3
                     if let carried {
                         attributes["carried"] = carried.carried
                         attributes["dropped"] = carried.dropped
@@ -1644,8 +1643,7 @@ final class MeetingLibraryService {
                     guard !PipelineLauncher.isCancellation(err) else { break }
                     Log.event(category: "coordinator", action: "republish_failed", attributes: [
                         "stem": stem,
-                        "error_type": PipelineOutcomeLog.errorType(err),  // SEC38: the text can quote the title
-                    ])
+                    ].merging(PipelineOutcomeLog.failureAttributes(err, stage: SinkDispatcher.stage(for: err))) { a, _ in a })
                     // Durably mark the row failed so it can be retried; the banner is gone in seconds.
                     PipelineFailureSidecar.write(
                         stem: stem, in: dir,

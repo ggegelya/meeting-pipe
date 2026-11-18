@@ -271,8 +271,10 @@ def emit(category: str, action: str, **attrs: Any) -> None:
     record["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     record["category"] = category
     record["action"] = action
-    path = _events_path()
     try:
+        # OBS3: inside the try, because `_events_path` makes the logs dir; an unwritable one used to
+        # raise out of `emit` and replace the very exception a failure handler was logging.
+        path = _events_path()
         rotate_if_needed(path)
         line = json.dumps(record, sort_keys=True, default=str)
         with path.open("a", encoding="utf-8") as f:

@@ -37,6 +37,9 @@ struct WriteFailureTracker {
     /// REC22: the first failed write's error, kept so the stop-time event can name the cause.
     /// Later failures never overwrite it.
     private(set) var firstFailure: FailureCode?
+    /// OBS3: the most recent failed write's error, which the escalation line and its
+    /// `recording_error` row name.
+    private(set) var lastFailure: FailureCode?
 
     /// The `NSError` domain and code of a failed write.
     struct FailureCode: Equatable {
@@ -73,6 +76,7 @@ struct WriteFailureTracker {
     /// caller escalates a single time even as failures continue; `.firstFailure` comes once, on
     /// the first failure when that is not also the crossing. A success resets the streak only.
     mutating func record(_ failure: FailureCode?) -> Outcome {
+        if let failure { lastFailure = failure }
         guard let failure else {
             consecutiveFailures = 0
             return .none

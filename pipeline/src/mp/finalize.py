@@ -24,6 +24,7 @@ from pathlib import Path
 from . import entry, events
 from .orchestrate import (
     apply_glossary,
+    DaemonTranscriptError,
     existing_daemon_transcript,
     finalize_streamed_transcript,
 )
@@ -47,14 +48,12 @@ def finalize(
     finalize.
     """
     cfg = cfg or entry.prepare(anchor=wav, secrets=False)
-    streamed = existing_daemon_transcript(wav)
-    if streamed is None:
-        events.emit("pipeline", "finalize_failed", wav=str(wav),
-                    error="no daemon transcript", error_type="MissingSidecar")
-        raise RuntimeError(
-            f"No daemon transcript at {wav.with_suffix('.json')}. "
-            "FluidAudio must produce the sidecar before finalize runs."
-        )
+    try:
+        streamed = existing_daemon_transcript(wav)
+    except DaemonTranscriptError as e:
+        # OBS3: the typed reason (missing, unreadable, or not the daemon's) as `error_type`.
+        events.emit("pipeline", "finalize_failed", wav=str(wav), error=str(e), error_type=type(e).__name__)
+        raise
     source = streamed.get("backend") or ("streamed" if streamed.get("streaming") else "daemon")
     events.emit("pipeline", "stage_started", stage="finalize", source=source, standalone=True)
     t = finalize_streamed_transcript(
@@ -84,7 +83,8 @@ def main(argv: list[str]) -> int:
     try:
         t = finalize(wav)
     except Exception as e:  # noqa: BLE001 - surfaced as a non-zero exit for the daemon
-        log.error("finalize failed: %s", e)
+        from .failure_details import fail_command
+        fail_command("finalize", e, operation="transcribe")
         print(f"finalize failed: {e}", file=sys.stderr)
         return 1
     print(f"finalized: {t['json']}")
