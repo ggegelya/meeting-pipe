@@ -2,9 +2,9 @@
 id: HYG24
 title: valid1_check's report_timings pairs each run_completed with the oldest unclosed run_started, so one skipped or failed run corrupts every later run total
 category: Validation
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). report_timings keeps run starts in a FIFO popped only on run_completed, while orchestrate ends five skip paths with run_skipped and three failure paths with run_failed; one skip then a 40 s and a 30 s run prints 21640.00 s and 68430.00 s (G019, reproduced). check_ux4 passes on the mic-channel degraded row and DIAR1 passes on an empty range (G048). Pair runs on wav with latest start winning, close on skip and fail, grade UX4 on the SCStream row only, and fail DIAR1 on no data. [Spec](./HYG24.md)
+comment: Shipped 2026-11-19: valid1_check.build_timings pairs runs on wav (latest start wins, run_completed/run_skipped/run_failed each close their own run, unmatched ends counted in a note), report_timings prints it; check_ux4 excludes channel mic rows and says how many; report_diar fails on no data. Stages still pair by name (OBS4). Owed: the owner's next VALID1 run reading sane per-run totals on a log that holds a skipped run.
 ---
 
 # HYG24: valid1_check's report_timings pairs each run_completed with the oldest unclosed run_started, so one skipped or failed run corrupts every later run total

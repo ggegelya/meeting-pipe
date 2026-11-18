@@ -120,13 +120,23 @@ def _key(event: dict) -> str:
 
 def check_ux4(daemon_events: list[dict]) -> bool:
     """UX4: a real failed SCStream must surface `recording.degraded` (and ideally
-    a later `recording.recovered`). Pass when at least one degraded event exists.
+    a later `recording.recovered`). Pass when at least one system-audio degraded
+    event exists.
+
+    HYG24: since REC16 a failed mic device change emits `recording.degraded` too,
+    with `channel: "mic"`; it is not the behaviour UX4 grades, so it is excluded.
+    Historic SCStream rows carry `reason` and no `channel`, so excluding the mic
+    rows (rather than requiring a system marker) keeps old logs gradable.
     """
-    degraded = [e for e in daemon_events if _key(e) == "recording.degraded"]
+    all_degraded = [e for e in daemon_events if _key(e) == "recording.degraded"]
+    degraded = [e for e in all_degraded if e.get("channel") != "mic"]
+    mic_rows = len(all_degraded) - len(degraded)
     recovered = [e for e in daemon_events if _key(e) == "recording.recovered"]
     print("== UX4: live degraded banner + recording.degraded event ==")
+    if mic_rows:
+        print(f"  note: excluded {mic_rows} mic-channel degraded row(s); UX4 grades system audio")
     if not degraded:
-        print("  FAIL  no recording.degraded event found.")
+        print("  FAIL  no system-audio recording.degraded event found.")
         print("        Force a real SCStream failure (revoke Screen Recording mid-call,")
         print("        or stop the capture target) and confirm the HUD banner appears.")
         return False
@@ -138,35 +148,86 @@ def check_ux4(daemon_events: list[dict]) -> bool:
     return True
 
 
-def report_timings(pipeline_events: list[dict]) -> None:
-    """Pair run_started/run_completed and stage_started/stage_completed (by
-    `stage`) and print elapsed seconds. Feeds the A15 cold-start, A16 latency,
-    and DIAR1 under-10s reads; thresholds live in the runbook, not here.
+_RUN_TERMINAL = {
+    "pipeline.run_completed": "completed",
+    "pipeline.run_skipped": "skipped",
+    "pipeline.run_failed": "failed",
+}
+
+
+def build_timings(pipeline_events: list[dict]) -> dict:
+    """Pair each run's start with its own end, and each stage's start with its completion.
+
+    HYG24 (G019): runs pair on the `wav` attribute every `run_started` and terminal row
+    carries. The old FIFO popped the oldest open start on `run_completed` only, so one
+    skipped or failed run (which ends in `run_skipped` / `run_failed`) left its start at
+    the head and every later total was off by the gap between them. A later `run_started`
+    for the same `wav` replaces an unclosed one (a killed run never ends), and a terminal
+    row with no `wav` or no open start is counted in `unpaired`, never guessed at.
+
+    Stages still pair on the stage name: their events carry no `wav`, and keying them per
+    run needs a run id on every event (OBS4).
+
+    Returns `{"rows": [...], "unpaired": n}`; a run row is `{"kind": "run", "start",
+    "outcome", "total_s"}` (`total_s` only for a completed run), a stage row is
+    `{"kind": "stage", "stage", "elapsed_s"}`.
     """
-    print("== Run + stage timings (A15 cold-start / A16 latency / DIAR1) ==")
-    open_runs: list[datetime] = []
+    open_runs: dict[str, datetime] = {}
     open_stages: dict[str, datetime] = {}
-    any_row = False
+    rows: list[dict] = []
+    unpaired = 0
     for e in pipeline_events:
         key = _key(e)
         ts = _parse_ts(e.get("ts"))
         if ts is None:
             continue
         if key == "pipeline.run_started":
-            open_runs.append(ts)
-        elif key == "pipeline.run_completed" and open_runs:
-            start = open_runs.pop(0)
-            print(f"  run        {start.isoformat()}  ->  {(ts - start).total_seconds():7.2f} s total")
-            any_row = True
+            if e.get("wav"):
+                open_runs[str(e["wav"])] = ts
+        elif key in _RUN_TERMINAL:
+            wav = e.get("wav")
+            start = open_runs.pop(str(wav), None) if wav else None
+            if start is None:
+                unpaired += 1
+                continue
+            outcome = _RUN_TERMINAL[key]
+            if outcome == "skipped":
+                outcome = f"skipped ({e.get('reason', '?')})"
+            elif outcome == "failed":
+                outcome = f"failed ({e.get('stage') or e.get('error_type') or '?'})"
+            row: dict = {"kind": "run", "start": start, "outcome": outcome}
+            if key == "pipeline.run_completed":
+                row["total_s"] = round((ts - start).total_seconds(), 2)
+            rows.append(row)
         elif key == "pipeline.stage_started":
             open_stages[str(e.get("stage", "?"))] = ts
         elif key == "pipeline.stage_completed":
             stage = str(e.get("stage", "?"))
-            start = open_stages.pop(stage, None)
-            if start is not None:
-                print(f"    stage {stage:<16} {(ts - start).total_seconds():7.2f} s")
-                any_row = True
-    if not any_row:
+            stage_start = open_stages.pop(stage, None)
+            if stage_start is not None:
+                rows.append({"kind": "stage", "stage": stage,
+                             "elapsed_s": round((ts - stage_start).total_seconds(), 2)})
+    return {"rows": rows, "unpaired": unpaired}
+
+
+def report_timings(pipeline_events: list[dict]) -> None:
+    """Print `build_timings`. Feeds the A15 cold-start, A16 latency, and DIAR1
+    under-10s reads; thresholds live in the runbook, not here.
+    """
+    print("== Run + stage timings (A15 cold-start / A16 latency / DIAR1) ==")
+    t = build_timings(pipeline_events)
+    for row in t["rows"]:
+        if row["kind"] == "run":
+            if "total_s" in row:
+                print(f"  run        {row['start'].isoformat()}  ->  {row['total_s']:7.2f} s total")
+            else:
+                print(f"  run        {row['start'].isoformat()}  ->  {row['outcome']}")
+        else:
+            print(f"    stage {row['stage']:<16} {row['elapsed_s']:7.2f} s")
+    if t["unpaired"]:
+        print(f"  note: {t['unpaired']} run end(s) with no matching start (no wav, or the start "
+              "is outside the range); not paired.")
+    if not any("total_s" in r or r["kind"] == "stage" for r in t["rows"]):
         print("  (no completed runs in range; run a meeting through the pipeline first.)")
 
 
@@ -279,8 +340,10 @@ def report_diar(daemon_events: list[dict], engine: str = REAL_ENGINE) -> bool:
         print(f"  note: skipped {skipped} (the Swift test suite writes its fake engines")
         print("        into this same log; they are not real transcription runs)")
     if not r["runs"]:
-        print("  SKIP  no paired transcription.engine_started/succeeded events in range.")
-        return True
+        # HYG24: no data is not a pass, the same contract as `check_ux4`'s empty case.
+        print("  FAIL  no paired transcription.engine_started/succeeded events in range; "
+              "DIAR1 is not graded on no data.")
+        return False
     print(f"  {r['runs']} runs over {r['audio_hours']} h of audio ({r['failed']} failed)")
     e, f = r["elapsed_sec"], r["rtf"]
     print(f"  elapsed  min {e['min']:.1f}s  median {e['median']:.1f}s  max {e['max']:.1f}s")

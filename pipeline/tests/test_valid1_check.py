@@ -94,6 +94,102 @@ def test_diar_counts_a_real_engine_failure():
     assert r["failed"] == 1
 
 
+def test_diar_fails_on_no_paired_runs():
+    """HYG24: an empty range used to print SKIP and return True, so the default all-sections
+    run graded DIAR1 as passed with no transcription at all."""
+    assert valid1_check.report_diar([]) is False
+
+
+# ------------------------------------------------------- HYG24 run pairing
+
+
+def _p(action: str, ts: str, wav: str | None = None, **attrs):
+    row = {"category": "pipeline", "action": action, "ts": ts, **attrs}
+    if wav is not None:
+        row["wav"] = wav
+    return row
+
+
+def _totals(events):
+    return [r["total_s"] for r in valid1_check.build_timings(events)["rows"]
+            if r["kind"] == "run" and "total_s" in r]
+
+
+def test_timings_survive_a_skipped_run_before_two_real_ones():
+    """The G019 reproduction: FIFO pairing printed 21640.00 s and 68430.00 s here."""
+    events = [
+        _p("run_started", "2026-11-13T09:00:00Z", "a.wav"),
+        _p("run_skipped", "2026-11-13T09:00:05Z", "a.wav", reason="no_speech"),
+        _p("run_started", "2026-11-13T15:00:00Z", "b.wav"),
+        _p("run_completed", "2026-11-13T15:00:40Z", "b.wav"),
+        _p("run_started", "2026-11-14T10:00:00Z", "c.wav"),
+        _p("run_completed", "2026-11-14T10:00:30Z", "c.wav"),
+    ]
+    t = valid1_check.build_timings(events)
+    assert _totals(events) == [40.0, 30.0]
+    assert [r["outcome"] for r in t["rows"] if r["kind"] == "run"] == [
+        "skipped (no_speech)", "completed", "completed"]
+    assert t["unpaired"] == 0
+
+
+def test_a_failed_run_closes_its_own_start():
+    events = [
+        _p("run_started", "2026-11-13T09:00:00Z", "a.wav"),
+        _p("run_failed", "2026-11-13T09:00:05Z", "a.wav", stage="publish"),
+        _p("run_started", "2026-11-13T10:00:00Z", "b.wav"),
+        _p("run_completed", "2026-11-13T10:00:20Z", "b.wav"),
+    ]
+    rows = [r for r in valid1_check.build_timings(events)["rows"] if r["kind"] == "run"]
+    assert rows[0]["outcome"] == "failed (publish)" and "total_s" not in rows[0]
+    assert _totals(events) == [20.0]
+
+
+def test_interleaved_runs_pair_each_with_its_own_completion():
+    events = [
+        _p("run_started", "2026-11-13T09:00:00Z", "a.wav"),
+        _p("run_started", "2026-11-13T09:00:10Z", "b.wav"),
+        _p("run_completed", "2026-11-13T09:00:15Z", "b.wav"),
+        _p("run_completed", "2026-11-13T09:01:00Z", "a.wav"),
+    ]
+    assert _totals(events) == [5.0, 60.0]
+
+
+def test_a_killed_run_is_replaced_by_the_next_start_for_the_same_wav():
+    events = [
+        _p("run_started", "2026-11-13T09:00:00Z", "a.wav"),  # SIGKILLed: no terminal row
+        _p("run_started", "2026-11-13T09:30:00Z", "a.wav"),
+        _p("run_completed", "2026-11-13T09:30:45Z", "a.wav"),
+    ]
+    assert _totals(events) == [45.0]
+
+
+def test_a_completion_with_no_start_is_counted_not_paired(capsys):
+    events = [
+        _p("run_completed", "2026-11-13T09:00:10Z", "orphan.wav"),
+        _p("run_completed", "2026-11-13T09:00:20Z"),  # no wav at all
+    ]
+    t = valid1_check.build_timings(events)
+    assert t["rows"] == [] and t["unpaired"] == 2
+    valid1_check.report_timings(events)
+    assert "2 run end(s) with no matching start" in capsys.readouterr().out
+
+
+# ------------------------------------------------------- HYG24 UX4 grading
+
+
+def _degraded(**attrs):
+    return {"category": "recording", "action": "degraded", "ts": "2026-11-13T09:00:00Z", **attrs}
+
+
+def test_ux4_does_not_pass_on_a_mic_channel_row_alone(capsys):
+    assert valid1_check.check_ux4([_degraded(channel="mic")]) is False
+    assert "excluded 1 mic-channel" in capsys.readouterr().out
+
+
+def test_ux4_passes_on_a_system_audio_row():
+    assert valid1_check.check_ux4([_degraded(channel="mic"), _degraded(reason="stream_stopped")])
+
+
 # ------------------------------------------------------- attribution coverage
 
 def test_classify_speaker_buckets():

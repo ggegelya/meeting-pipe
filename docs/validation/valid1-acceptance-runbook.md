@@ -137,7 +137,7 @@ Tracked as **EGRESS1 (P4)** in the backlog rather than kept as a VALID1 remainde
 3. Watch the HUD for the degraded banner. Restore the permission (the app needs a relaunch to pick it back up) and watch for recovery.
 4. `scripts/valid1_check.py --ux4`.
 
-**Threshold:** the banner appears within a second or two; `--ux4` exits 0 with at least one `recording.degraded` (and a `recording.recovered` after restore).
+**Threshold:** the banner appears within a second or two; `--ux4` exits 0 with at least one system-audio `recording.degraded` (and a `recording.recovered` after restore). Since HYG24 the check ignores the `channel: "mic"` rows a failed mic device change also writes (REC16), and says how many it ignored.
 
 ---
 
