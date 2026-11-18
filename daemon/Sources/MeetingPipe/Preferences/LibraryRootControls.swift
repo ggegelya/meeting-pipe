@@ -8,8 +8,9 @@ import SwiftUI
 /// `StorageStatsStore`, which is the one seam that moves or re-points the library.
 struct LibraryRootButtons: View {
     @ObservedObject var stats: StorageStatsStore
-    /// STOR16: a backup or restore in the Storage pane (`StorageBusyGate`). The Recording pane
-    /// cannot see those, and the execute-time check covers it there.
+    /// STOR16: a backup or restore in the Storage pane (`StorageBusyGate`). The guard registers
+    /// those too (`storageJobStarted`), so the Recording pane's buttons and every execute-time
+    /// check see a backup or restore that outlived the pane that started it.
     var storageBusy: Bool = false
 
     /// Disabled while anything owns the library: a backup or restore, a move already running, a
@@ -17,7 +18,7 @@ struct LibraryRootButtons: View {
     private var blockedReason: String? {
         if stats.isMoving || stats.moveGuard.moveInProgress { return "A library move is running." }
         if storageBusy { return "A backup or restore is running." }
-        return stats.moveGuard.busyReason().map { "Not now: \($0)." }
+        return stats.moveGuard.currentBusyReason.map { "Not now: \($0)." }
     }
 
     var body: some View {

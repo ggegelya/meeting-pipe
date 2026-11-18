@@ -44,7 +44,7 @@ struct StorageSectionView: View {
             configStore: store, workflowStore: workflowStore, moveGuard: moveGuard
         ))
         _restore = StateObject(wrappedValue: RestoreFlow(
-            launcher: PipelineLauncher(), onRestored: onRestored ?? {}
+            launcher: PipelineLauncher(), onRestored: onRestored ?? {}, moveGuard: moveGuard
         ))
     }
 
@@ -146,7 +146,7 @@ struct StorageSectionView: View {
                         }
                         Button("Move library…") { LibraryRootPanels.chooseMoveDestination(stats: stats) }
                             .buttonStyle(.mpGhost)
-                            .disabled(stats.isPlanningMove || busy.isBusy || stats.moveGuard.busyReason() != nil)
+                            .disabled(stats.isPlanningMove || busy.isBusy || stats.moveGuard.currentBusyReason != nil)
                     }
                 }
             } footer: {
@@ -367,12 +367,17 @@ struct StorageSectionView: View {
         guard let dest = ui.backupDestinationPath, busy.backupEnabled else { return }
         backupError = nil
         backupInFlight = true
+        // STOR16: registered on the Coordinator's guard, which outlives this pane, so a move or a
+        // switch from another pane is refused while the backup reads the library.
+        let moveGuard = stats.moveGuard
+        moveGuard.storageJobStarted()
         // STOR12: the pane's last scan sizes the watchdog cap; before the first
         // scan lands this is 0, which is the cap's floor.
         launcher.backup(dir: URL(fileURLWithPath: dest),
                         libraryBytes: stats.stats?.libraryBytes ?? 0) { result in
             Task { @MainActor in
                 backupInFlight = false
+                moveGuard.storageJobFinished()
                 switch result {
                 case .success:
                     refreshLastBackup()

@@ -14,6 +14,13 @@ final class LibraryMoveGuard {
     /// Called on main when a move finishes, success or failure, so a held start can go ahead.
     var onMoveFinished: () -> Void = {}
     private(set) var moveInProgress = false
+    /// Backups and restores this app started (`mp backup`, `mp restore`), registered here rather
+    /// than on the Storage pane, whose state dies with the pane while the job keeps running. A
+    /// scheduled backup run by launchd is invisible to the app and stays out of scope.
+    private(set) var storageJobs = 0
+
+    func storageJobStarted() { storageJobs += 1 }
+    func storageJobFinished() { storageJobs = max(0, storageJobs - 1) }
 
     init(busyReason: @escaping () -> String? = { nil }) {
         self.busyReason = busyReason
@@ -23,9 +30,15 @@ final class LibraryMoveGuard {
     /// the reason it may not.
     func begin() -> String? {
         if moveInProgress { return "a library move is already running" }
-        if let reason = busyReason() { return reason }
+        if let reason = currentBusyReason { return reason }
         moveInProgress = true
         return nil
+    }
+
+    /// Why a move or a switch may not start now: a storage job, or whatever the owners report.
+    var currentBusyReason: String? {
+        if storageJobs > 0 { return "a backup or restore is running" }
+        return busyReason()
     }
 
     func end() {

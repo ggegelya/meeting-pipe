@@ -30,6 +30,8 @@ extension Coordinator {
     var libraryBusyReason: String? {
         if !MainActor.assumeIsolated({ recorder.ownedStems }).isEmpty { return "a recording is in progress" }
         if jobDispatcher.queueDepth > 0 { return "a meeting is still being processed" }
+        // Merge, publish-from-paste and the summary preview spawn outside the lane (STOR16 follow-up).
+        if launcher.meetingSpawnsInFlight > 0 { return "a meeting is still being processed" }
         return nil
     }
 

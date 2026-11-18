@@ -318,6 +318,23 @@ final class RestoreFlowTests: XCTestCase {
         XCTAssertEqual(restored, 1)
     }
 
+    /// STOR16: a running restore is registered on the move guard, which outlives the Storage pane,
+    /// so a move from the Recording pane is refused until the restore lands.
+    func testARunningRestoreHoldsTheLibraryMove() async throws {
+        let driver = FakeDriver()
+        let moveGuard = LibraryMoveGuard()
+        let flow = RestoreFlow(launcher: driver, moveGuard: moveGuard)
+        flow.preview(archive: URL(fileURLWithPath: "/Users/x/Backups/b.tar.gz"))
+        driver.landPreview(try fixturePlan())
+        await settle()
+        XCTAssertNil(moveGuard.currentBusyReason, "the dry run writes nothing, so it holds nothing")
+        flow.confirm()
+        XCTAssertEqual(moveGuard.begin(), "a backup or restore is running")
+        driver.landRestore()
+        await settle()
+        XCTAssertNil(moveGuard.begin(), "free once the restore lands")
+    }
+
     func testTheRealRunIsUnreachableWithoutAConfirmedPlan() async throws {
         let driver = FakeDriver()
         let flow = RestoreFlow(launcher: driver)

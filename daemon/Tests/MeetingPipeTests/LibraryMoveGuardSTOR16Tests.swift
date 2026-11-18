@@ -135,6 +135,29 @@ final class LibraryMoveGuardSTOR16Tests: XCTestCase {
         XCTAssertEqual(config.outputDirPath, lib.path, "a failed move repoints nothing")
     }
 
+    func test_a_storage_job_refuses_a_move_and_a_switch() async throws {
+        let moveGuard = LibraryMoveGuard()
+        let stats = store(try config(), guard: moveGuard) { _ in }
+        moveGuard.storageJobStarted()
+        await stats.requestMove(to: base)
+        XCTAssertNil(stats.pendingMove)
+        XCTAssertEqual(stats.moveError, LibraryMover.MoveError.busy("a backup or restore is running").localizedDescription)
+        await stats.requestSwitch(to: base)
+        XCTAssertNil(stats.pendingSwitch)
+        moveGuard.storageJobFinished()
+        XCTAssertNil(moveGuard.currentBusyReason)
+    }
+
+    /// Merge, paste and preview spawn outside the lane, so the Coordinator also asks the launcher.
+    func test_the_coordinator_asks_the_launcher_for_meeting_spawns_outside_the_lane() throws {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/MeetingPipe")
+        let wiring = try String(contentsOf: sources.appendingPathComponent("Coordinator+LibraryRoot.swift"), encoding: .utf8)
+        XCTAssertTrue(wiring.contains("if launcher.meetingSpawnsInFlight > 0 { return \"a meeting is still being processed\" }"))
+        XCTAssertEqual(PipelineLauncher().meetingSpawnsInFlight, 0)
+    }
+
     func test_busy_gate_counts_a_running_move() {
         let moving = StorageBusyGate(backupRunning: false, restoreRunning: false, hasBackupDestination: true, moveRunning: true)
         XCTAssertTrue(moving.isBusy)

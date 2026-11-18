@@ -214,9 +214,13 @@ final class RestoreFlow: ObservableObject {
     /// main. Called on main, after the phase moves to `.finished`.
     private let onRestored: () -> Void
 
-    init(launcher: PipelineDriver, onRestored: @escaping () -> Void = {}) {
+    /// STOR16: a restore writes into the library, so a move or a switch waits for it.
+    private let moveGuard: LibraryMoveGuard?
+
+    init(launcher: PipelineDriver, onRestored: @escaping () -> Void = {}, moveGuard: LibraryMoveGuard? = nil) {
         self.launcher = launcher
         self.onRestored = onRestored
+        self.moveGuard = moveGuard
     }
 
     /// True while either invocation is out, which is what blocks a backup.
@@ -273,8 +277,10 @@ final class RestoreFlow: ObservableObject {
     func confirm() {
         guard case .confirming(let plan) = phase else { return }
         phase = .restoring(plan)
+        moveGuard?.storageJobStarted()
         launcher.restore(archive: plan.archiveURL) { result in
             Task { @MainActor in
+                self.moveGuard?.storageJobFinished()
                 switch result {
                 case .success:
                     self.phase = .finished(RestorePreview.summary(for: plan))

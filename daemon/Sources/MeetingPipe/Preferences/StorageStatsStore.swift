@@ -176,7 +176,7 @@ final class StorageStatsStore: ObservableObject {
     func requestMove(to destinationParent: URL) async {
         pendingSwitch = nil
         // STOR16: the owners first, so a busy library never gets as far as a confirmation.
-        if let reason = moveGuard.busyReason() {
+        if let reason = moveGuard.currentBusyReason {
             moveError = LibraryMover.MoveError.busy(reason).localizedDescription
             return
         }
@@ -230,7 +230,7 @@ final class StorageStatsStore: ObservableObject {
         let fileReason = await Task.detached(priority: .userInitiated) {
             inFlightCheck(source)
         }.value
-        if let reason = fileReason ?? moveGuard.busyReason() {
+        if let reason = fileReason ?? moveGuard.currentBusyReason {
             moveError = LibraryMover.MoveError.busy(reason).localizedDescription
             return
         }
@@ -246,7 +246,7 @@ final class StorageStatsStore: ObservableObject {
         guard let folder = pendingSwitch else { return }
         pendingSwitch = nil
         // STOR16: the confirmation may have waited; ask the owners again before re-pointing.
-        if let reason = moveGuard.busyReason() {
+        if let reason = moveGuard.currentBusyReason {
             moveError = LibraryMover.MoveError.busy(reason).localizedDescription
             return
         }

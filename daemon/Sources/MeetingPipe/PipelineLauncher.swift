@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// One live progress sample from a running pipeline subprocess (TECH-UX5).
 ///
@@ -137,6 +138,9 @@ protocol PipelineDriver: AnyObject {
     func mergeMeetings(primary: URL, fragments: [URL], completion: @escaping (Result<URL?, Error>) -> Void)
     /// SIGTERM every live supervised spawn and return at once (PIPE37): the meeting-bound ones and the ask. Called from `Coordinator.shutdown`, under the 9 s termination ceiling, so it never waits and sends no SIGKILL. Defaulted no-op.
     func terminateSupervised()
+    /// STOR16: `mp` processes anchored on a meeting that are running now: run-all and every Library
+    /// re-run, and the merge, paste and preview spawns that do not go through the lane. Defaulted 0.
+    var meetingSpawnsInFlight: Int { get }
 }
 
 extension PipelineDriver {
@@ -155,6 +159,8 @@ extension PipelineDriver {
     func cancelActiveRun() {}
 
     func terminateSupervised() {}
+
+    var meetingSpawnsInFlight: Int { 0 }
 
     /// Default no-op; `PipelineLauncher` overrides.
     func cancelAsk() {}
@@ -735,6 +741,9 @@ final class PipelineLauncher: PipelineDriver {
     /// The two Cancel slots and the cancel intent aimed at whatever is in them.
     /// Internal so `PipelineLauncherDrainTests` can see that a failed spawn left no handle behind (CONC7).
     let slots = PipelineRunSlots()
+    /// STOR16: see `PipelineDriver.meetingSpawnsInFlight`. Counted in `runMP`, the one spawner.
+    private let meetingSpawns = OSAllocatedUnfairLock(initialState: 0)
+    var meetingSpawnsInFlight: Int { meetingSpawns.withLock { $0 } }
 
     /// Terminate the in-flight run-all (TECH-UX5 Cancel). The termination handler
     /// then completes the job as `LaunchError.cancelled`, so the row is still
@@ -1460,6 +1469,14 @@ final class PipelineLauncher: PipelineDriver {
         // with it, so the finish step reads this run's intent and not a later run's. PIPE37: and the
         // supervisor's write end, which `release` closes.
         let handle = slots.retain(p, in: retain, supervisor: spawn.supervisor)
+        let countsAsMeeting = meeting != nil
+        if countsAsMeeting { meetingSpawns.withLock { $0 += 1 } }
+        let releaseMeeting = OneWayFlag()
+        let endMeeting = { [meetingSpawns] in
+            guard countsAsMeeting, !releaseMeeting.isSet else { return }
+            releaseMeeting.set()
+            meetingSpawns.withLock { $0 -= 1 }
+        }
         // PERF13: every chunk is its own locked `O_APPEND` `Log.append`; the file is created 0600 up front (SEC14).
         let logURL = Log.logsDir.appendingPathComponent("pipeline.log")
         Log.append(Data(), to: logURL)
@@ -1474,6 +1491,7 @@ final class PipelineLauncher: PipelineDriver {
             },
             onFinished: { [self] status, stderrTail in
                 defer { try? FileManager.default.removeItem(at: spawn.failureURL) }
+                endMeeting()
                 Self.deliverNotices(from: Self.noticeURL(for: spawn.failureURL))
                 watchdog.cancel()
                 slots.release(handle, from: retain)   // TECH-UX5 / UX37: run finished/killed
@@ -1498,6 +1516,7 @@ final class PipelineLauncher: PipelineDriver {
             // the watchdog timer and the slot, which only a finish step would have released.
             watchdog.cancel()
             slots.release(handle, from: retain)
+            endMeeting()
             completion(.failure(error))
         }
     }
