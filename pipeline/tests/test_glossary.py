@@ -119,6 +119,43 @@ def test_workflow_name_resolved_from_meta_sidecar(tmp_path: Path):
     assert g.apply("the standup ran long")[0] == "the Stand-up ran long"
 
 
+WF11_ID = "6F1C2B9A-0D3E-4F5A-9B8C-7D6E5F4A3B2C"
+
+
+def _workflow_dir(tmp_path: Path, monkeypatch, name: str) -> None:
+    import mp.workflows as workflows_mod
+
+    wdir = tmp_path / "workflows"
+    wdir.mkdir()
+    (wdir / f"{WF11_ID}.toml").write_text(f'id = "{WF11_ID}"\nname = "{name}"\n', encoding="utf-8")
+    monkeypatch.setattr(workflows_mod, "WORKFLOWS_DIR", wdir)
+
+
+def _meeting(tmp_path: Path, meta: dict) -> Path:
+    stem = "20260707-1100"
+    (tmp_path / f"{stem}.meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    return tmp_path / f"{stem}.wav"
+
+
+def test_wf11_a_renamed_workflows_meeting_finds_its_moved_table_by_id(tmp_path: Path, monkeypatch):
+    """The meeting recorded "Weekly Sync"; the workflow is now "Team Sync" and its
+    table moved with the rename. The sidecar's id resolves to the current name."""
+    _workflow_dir(tmp_path, monkeypatch, "Team Sync")
+    p = _write_glossary(tmp_path, '[workflow."Team Sync".terms]\n"standup" = "Stand-up"\n')
+    wav = _meeting(tmp_path, {"workflow_id": WF11_ID.lower(), "workflow_name": "Weekly Sync"})
+    assert load_glossary(wav, path=p).apply("the standup ran long")[0] == "the Stand-up ran long"
+
+
+def test_wf11_an_unknown_or_absent_id_falls_back_to_the_recorded_name(tmp_path: Path, monkeypatch):
+    _workflow_dir(tmp_path, monkeypatch, "Team Sync")
+    p = _write_glossary(tmp_path, '[workflow."Weekly Sync".terms]\n"standup" = "Stand-up"\n')
+    unknown = _meeting(tmp_path, {"workflow_id": "00000000-0000-0000-0000-000000000000",
+                                  "workflow_name": "Weekly Sync"})
+    assert load_glossary(unknown, path=p).apply("standup")[0] == "Stand-up"
+    absent = _meeting(tmp_path, {"workflow_name": "Weekly Sync"})
+    assert load_glossary(absent, path=p).apply("standup")[0] == "Stand-up"
+
+
 def test_fuzzy_settings_load(tmp_path: Path):
     p = _write_glossary(
         tmp_path,

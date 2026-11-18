@@ -1,6 +1,6 @@
 import Foundation
 
-/// Smart-folder rail scope (TECH-B). Narrows the library before filter chips run. The `workflow` case carries `Workflow.ID` rather than the name so a rename can't silently drop the scope.
+/// Smart-folder rail scope (TECH-B). Narrows the library before filter chips run. The `workflow` case carries `Workflow.ID` rather than the name so a rename can't silently drop the scope, and since WF11 the meetings inside it resolve by their sidecar's `workflow_id` first too (`Context.workflow(for:)`), so a rename can't empty it either.
 enum LibraryScope: Hashable {
     case allMeetings
     case today
@@ -143,6 +143,8 @@ enum LibraryScope: Hashable {
         let last7Cutoff: Date?
         let last30Cutoff: Date?
         private let workflowsByName: [String: Workflow]
+        /// WF11: keyed by `WorkflowIdentity.idKey`, the case-insensitive UUID string.
+        private let workflowsByID: [String: Workflow]
 
         init(workflows: [Workflow], now: Date = Date(), calendar: Calendar = .current) {
             todayStart = calendar.startOfDay(for: now)
@@ -150,12 +152,21 @@ enum LibraryScope: Hashable {
             last30Cutoff = calendar.date(byAdding: .day, value: -30, to: now)
             // First wins, matching the `first(where:)` this replaces when two workflows share a name.
             workflowsByName = Dictionary(workflows.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+            workflowsByID = Dictionary(
+                workflows.map { (WorkflowIdentity.idKey($0.id.uuidString), $0) }, uniquingKeysWith: { first, _ in first }
+            )
         }
 
-        /// Lookup by name because the meta sidecar persists the name, not the id (cross-machine portability - TECH-B4). The rail's scope uses id, so a rename can't orphan it; this lookup bridges the two.
+        /// The live workflow a meeting belongs to (WF11): by the sidecar's `workflow_id` first, so
+        /// renaming a workflow cannot orphan its meetings and two same-named workflows keep their
+        /// own; by the recorded name when the sidecar predates the id or its id names no workflow
+        /// on this Mac (a library moved between Macs, TECH-B4). The rail, the counts, NDA only and
+        /// the inspector all ask this one function.
         func workflow(for meeting: Meeting) -> Workflow? {
-            guard let name = meeting.workflowName, !name.isEmpty else { return nil }
-            return workflowsByName[name]
+            WorkflowIdentity.resolve(
+                workflowID: meeting.workflowID, workflowName: meeting.workflowName,
+                byID: workflowsByID, byName: workflowsByName
+            )
         }
     }
 
@@ -195,6 +206,12 @@ enum LibraryScope: Hashable {
                 return false
             }
         case .ndaOnly:
+            // WF11: the posture the meeting was recorded under, which is what its row's lock and
+            // the egress clamp read too, so a rename cannot move it out and a later NDA toggle on
+            // the workflow cannot move past meetings in. Not `isZeroEgress`, which also counts a
+            // regulated-mode meeting and an unreadable sidecar. The live workflow answers only
+            // for a sidecar written before `workflow_nda_mode` existed.
+            if let recorded = meeting.workflowNDAMode { return recorded }
             return context.workflow(for: meeting)?.flags.ndaMode == true
         case .untagged:
             return (meeting.workflowName?.isEmpty ?? true)

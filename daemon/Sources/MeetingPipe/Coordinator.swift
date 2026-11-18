@@ -1049,7 +1049,8 @@ final class Coordinator: NSObject {
             guard let store = self?.configStore else { return [] }
             return LocalPublishRoots.roots(filesystemOutputDir: store.filesystemOutputDir, obsidianVaultPath: store.obsidianVaultPath)
         },
-        pruneSearchIndex: { [weak self] stems in self?.launcher.pruneSearchIndex(stems: stems) }
+        pruneSearchIndex: { [weak self] stems in self?.launcher.pruneSearchIndex(stems: stems) },
+        liveWorkflows: { [weak self] in self?.workflowStore.workflows ?? [] }
     )
 
     /// Config-change responses: eager local-model prefetch, model-download

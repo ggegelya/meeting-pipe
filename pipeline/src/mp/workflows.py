@@ -78,6 +78,9 @@ def load_workflows(directory: Path | None = None) -> tuple[list[dict], list[tupl
         # An empty or absent name falls back to the filename, matching the prior
         # per-caller `doc.get("name") or path.stem`, so callers read `doc["name"]`.
         doc["name"] = str(doc.get("name") or path.stem)
+        # Likewise the id: `strict_problem` already required the file name to be the UUID
+        # when the key is absent, so this is always a UUID string (WF11 reads it).
+        doc["id"] = str(doc.get("id") or path.stem)
         docs.append(doc)
     return docs, broken
 
@@ -91,6 +94,26 @@ def _load_workflow_docs(directory: Path | None) -> list[dict]:
     """The workflow docs that load (one bad file must not hide the others, matching
     `WorkflowStore.load`). Broken ones are `broken_workflow_files`' to report."""
     return load_workflows(directory)[0]
+
+
+def workflow_name_for_id(workflow_id: object, directory: Path | None = None) -> str | None:
+    """The current name of the workflow whose id is ``workflow_id``, or None when it
+    is absent, not a string, or names no workflow on this Mac (WF11).
+
+    A meeting's `<stem>.meta.json` records both the workflow's id and the name it had
+    at recording time. Renaming a workflow changes only the name, so a lookup keyed
+    on the recorded name stops finding things a rename moved (its glossary table).
+    The id is compared case-insensitively, as Swift's `PrepCardStore.matches` does.
+    Callers fall back to the recorded name on None, which keeps a library moved to a
+    Mac whose workflows carry other ids working (TECH-B4).
+    """
+    if not isinstance(workflow_id, str) or not workflow_id.strip():
+        return None
+    wanted = workflow_id.strip().lower()
+    for doc in _load_workflow_docs(directory):
+        if doc["id"].lower() == wanted:
+            return doc["name"]
+    return None
 
 
 def nda_workflow_names(directory: Path | None = None) -> list[str]:

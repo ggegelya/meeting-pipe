@@ -20,7 +20,7 @@ struct LibraryListView: View {
     /// smart folder. It already owns `scope`, and the two are peer state.
     @Binding var filter: MeetingFilter
 
-    /// Cached derived state, recomputed only when the (revision, scope, workflowsCount, filter) fingerprint changes. Without this, each body re-execution ran six O(n) walks over the meeting array.
+    /// Cached derived state, recomputed only when the (revision, scope, workflow fingerprint, filter) key changes. Without this, each body re-execution ran six O(n) walks over the meeting array.
     @State private var derived: DerivedList = .empty
     @State private var lastDerivedKey: DerivedKey = .empty
     /// PERF20: the free-text query the list currently reflects and the FTS answers computed for it
@@ -210,7 +210,7 @@ struct LibraryListView: View {
         let key = DerivedKey(
             storeRevision: store.revision,
             scope: scope,
-            workflowsCount: workflows.count,
+            workflows: WorkflowIdentity.Fingerprint(workflows),
             filter: effective,
             searchGeneration: settled.generation,
             savedSearch: savedSearch,
@@ -323,7 +323,9 @@ struct LibraryListView: View {
     private struct DerivedKey: Equatable {
         let storeRevision: Int
         let scope: LibraryScope
-        let workflowsCount: Int
+        /// WF11: each workflow's id, name and NDA flag (shared with the rail's `CountsKey`), so a
+        /// rename or an NDA toggle re-derives the list.
+        let workflows: WorkflowIdentity.Fingerprint
         let filter: MeetingFilter
         /// UX16 / PERF20: bumps each time an FTS lookup settles, including the re-lookup a finished
         /// index build triggers, so a held query re-derives against the now-complete transcript
@@ -343,7 +345,7 @@ struct LibraryListView: View {
         static let empty = DerivedKey(
             storeRevision: -1,
             scope: .allMeetings,
-            workflowsCount: 0,
+            workflows: .empty,
             filter: MeetingFilter(),
             searchGeneration: -1,
             savedSearch: nil,

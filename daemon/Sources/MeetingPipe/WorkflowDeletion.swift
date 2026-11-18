@@ -23,15 +23,16 @@ enum WorkflowDeletion {
     ///
     /// The sidecar claim was always true (a recorded meeting keeps its workflow block),
     /// but the rail claim was not: `LibraryScope.Context.workflow(for:)` resolves a meeting to a
-    /// workflow by **name** (TECH-B4's portability call), while a rail scope is keyed by
-    /// id. Delete a workflow and every past meeting naming it resolves to nil, so it
+    /// workflow by its sidecar's id, then by **name** (WF11, TECH-B4's portability call), while a
+    /// rail scope is keyed by id. Delete a workflow and every past meeting naming it resolves to
+    /// nil (neither its id nor its name matches a live workflow), so it
     /// matches no workflow scope; it is not swept into `Untagged` either, because that
     /// scope tests for an *absent* name and the name is still there. Those meetings drop
     /// out of the `WORKFLOWS` rail entirely, and nothing else in the UI explains it.
     static let confirmMessage =
         "Nothing recorded is deleted: those meetings keep this workflow's name in their metadata. "
         + "They do drop out of the WORKFLOWS rail, and they do not reappear under Untagged, because "
-        + "the rail resolves a meeting by workflow name and theirs will no longer match one. "
+        + "the rail can no longer match them to a workflow. "
         + "Future meetings stop matching this workflow too."
 
     /// Destructive confirm button.

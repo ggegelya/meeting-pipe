@@ -261,6 +261,60 @@ final class GlossaryStore: ObservableObject {
         try saveNow()
     }
 
+    // MARK: - Workflow rename (WF11)
+
+    /// Move `[workflow."<old>"]` to `[workflow."<new>"]` after a workflow is renamed.
+    ///
+    /// `glossary.toml` keys a workflow's table by name (UX44 keeps it hand-editable that way),
+    /// and every reader resolves a meeting to a name, so without this a rename stranded the
+    /// table: the Vocabulary editor lists only current names, and no meeting resolved to the
+    /// old one again. A destination table that already exists is merged into, its own keys
+    /// winning (compared folded, the pipeline's identity). `[terms]` and every other table are
+    /// untouched. Returns how many terms moved and how many the destination kept, or nil when
+    /// there was no source table (nothing to do, nothing written).
+    ///
+    /// Written straight to the file rather than through the debounced row editor, which models
+    /// one scope's rows and has no notion of a table changing its name. An editor instance open
+    /// on the old scope with unsaved rows can still re-create the old table on its next save;
+    /// that is the same narrow race `addVocabularyTerm` documents.
+    @discardableResult
+    func renameWorkflowTable(from old: String, to new: String) throws -> (moved: Int, kept: Int)? {
+        guard !old.isEmpty, !new.isEmpty, old != new else { return nil }
+        if let readError { throw GlossaryReadRefusal(message: readError) }
+        let disk: TOMLTable
+        switch GlossaryStore.readDocument(at: fileURL) {
+        case .loaded(let doc): disk = doc
+        case .missing: return nil
+        case .unparseable(let error), .unreadable(let error):
+            throw GlossaryReadRefusal(message: GlossaryStore.readErrorText(fileURL, error))
+        }
+        guard let workflows = disk["workflow"]?.table, let source = workflows[old]?.table else { return nil }
+        let destination = ensureTable(new, in: workflows)
+        var moved = 0
+        var kept = 0
+        if let sourceTerms = source["terms"]?.table {
+            let destinationTerms = ensureTable("terms", in: destination)
+            let present = Set(destinationTerms.keys.map { $0.lowercased() })
+            for key in sourceTerms.keys {
+                if present.contains(key.lowercased()) {
+                    kept += 1
+                } else if let value = sourceTerms[key] {
+                    destinationTerms[key] = value
+                    moved += 1
+                }
+            }
+        }
+        for key in source.keys where key != "terms" && destination[key] == nil {
+            if let value = source[key] { destination[key] = value }
+        }
+        workflows.remove(at: old)
+        rawDocument = disk
+        try writeToDisk(currentTOML())
+        // Counts only: the names are workflow names and the terms are meeting vocabulary.
+        Log.writeLine("daemon", "glossary: a renamed workflow's table moved, \(moved) terms moved, \(kept) kept from the destination")
+        return (moved, kept)
+    }
+
     // MARK: - Resolution (the `mp.glossary` mirror)
 
     /// The substitutions the pipeline would apply to a meeting in `workflowName`,

@@ -129,6 +129,8 @@ Open the Library (menu bar ▸ **Open Library…**). Under the **WORKFLOWS** hea
 
 The menu bar's **Manage Workflows…** is the same editor without opening the Library first.
 
+Renaming a workflow is safe to do at any time. Its meetings stay under it, its confidential meetings stay under **NDA only**, and its vocabulary terms move to the new name when you save (if a workflow already had terms under the new name, those are kept and the rest join them). Each meeting still remembers the name it was recorded under, which is what the filter bar's workflow chips show.
+
 The editor's **Sinks** are where the workflow's summaries go. Uncheck every one and the workflow publishes nowhere: its summaries stay in the Library and are never published, and the editor says so under the checkboxes. Those meetings still read **Ready** (hover the pill and it says the workflow publishes nowhere) and never land in **Needs you**, because nothing went wrong. To keep a plain Markdown copy on your Mac as well, check **Filesystem** instead.
 
 ### How a meeting picks one

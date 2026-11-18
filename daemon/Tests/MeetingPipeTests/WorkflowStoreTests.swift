@@ -424,11 +424,11 @@ final class WorkflowStoreTests: XCTestCase {
     func test_collision_copy_is_singular_and_plural_and_names_the_cost() {
         XCTAssertEqual(
             WorkflowNameCollision.explanation(name: "Client work", others: 1),
-            "Another workflow is also called \"Client work\". A meeting remembers its workflow by name, so they share one scope in the Library: one row collects every meeting and the rest read zero."
+            "Another workflow is also called \"Client work\". Meetings follow their workflow by id, but older ones and vocabulary terms go by name, so those all land on just one of them."
         )
         XCTAssertEqual(
             WorkflowNameCollision.explanation(name: "Client work", others: 3),
-            "3 other workflows are also called \"Client work\". A meeting remembers its workflow by name, so they share one scope in the Library: one row collects every meeting and the rest read zero."
+            "3 other workflows are also called \"Client work\". Meetings follow their workflow by id, but older ones and vocabulary terms go by name, so those all land on just one of them."
         )
         XCTAssertEqual(WorkflowNameCollision.railCaption(others: 1), "· duplicate name")
     }

@@ -1104,12 +1104,12 @@ struct LibraryRootView: View {
         }
     }
 
-    /// Rebuild rail counts, guarded by a cheap fingerprint. Adding a workflow changes `workflows.count`; renaming one does not, and shouldn't trigger a recount.
+    /// Rebuild rail counts, guarded by a cheap fingerprint. WF11: a rename or an NDA toggle changes it (membership and NDA only both read them), an unrelated re-render does not.
     private func recomputeCounts() {
         let workflows = model.workflowStore?.workflows ?? []
         let key = CountsKey(
             storeRevision: meetingStore.revision,
-            workflowIDs: workflows.map(\.id),
+            workflows: WorkflowIdentity.Fingerprint(workflows),
             savedSearches: savedSearches.searches,
             searchRevision: model.searchIndexRevision,
             day: Calendar.current.startOfDay(for: Date()),
@@ -1138,7 +1138,8 @@ struct LibraryRootView: View {
 
     private struct CountsKey: Equatable {
         let storeRevision: Int
-        let workflowIDs: [Workflow.ID]
+        /// WF11: each workflow's id, name and NDA flag, shared with the list's `DerivedKey`.
+        let workflows: WorkflowIdentity.Fingerprint
         /// UX24: the whole folder, not just its id, so editing one recounts its row.
         let savedSearches: [SavedSearch]
         /// PERF20: a folder's count rides the index, so a rebuild finishing recounts it too (the
@@ -1151,7 +1152,7 @@ struct LibraryRootView: View {
         /// UX101: the stem `LiveRecordingOverlay` marks `.recording`.
         let live: String?
         static let empty = CountsKey(
-            storeRevision: -1, workflowIDs: [], savedSearches: [], searchRevision: -1, day: .distantPast, live: nil
+            storeRevision: -1, workflows: .empty, savedSearches: [], searchRevision: -1, day: .distantPast, live: nil
         )
     }
 
@@ -1271,14 +1272,15 @@ struct LibraryRootView: View {
     }
 
     /// This workflow's meetings, newest first, so the inspector doesn't duplicate
-    /// `MeetingStore`'s filter logic. Name-based, matching how `LibraryScope` and
-    /// the rail counts resolve a meeting to a workflow (TECH-B4), so the count
+    /// `MeetingStore`'s filter logic. Resolved through `LibraryScope.Context.workflow(for:)`,
+    /// the same id-first-then-name rule the rail counts use (WF11, TECH-B4), so the count
     /// this feeds the inspector and the rail's own badge cannot disagree. UX33
     /// hands over the whole scope rather than a pre-cut five: the count and the
     /// last-meeting date come off the same list, and the cap belongs to the
     /// presentation, where it is testable.
     private func meetings(for workflow: Workflow) -> [Meeting] {
-        model.meetingStore.meetings.filter { $0.workflowName == workflow.name }
+        let context = LibraryScope.Context(workflows: model.workflowStore?.workflows ?? [workflow])
+        return model.meetingStore.meetings.filter { context.workflow(for: $0)?.id == workflow.id }
     }
 
     /// Notion database id to its title, from the picker's on-disk cache (UX22).

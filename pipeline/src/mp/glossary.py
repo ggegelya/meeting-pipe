@@ -36,6 +36,7 @@ from pathlib import Path
 
 from .config import CONFIG_PATH
 from .workflow import read_meta
+from .workflows import workflow_name_for_id
 
 log = logging.getLogger("mp.glossary")
 
@@ -162,6 +163,19 @@ def _merge_terms(dst: dict[str, str], section: object) -> None:
             dst[key.lower()] = value
 
 
+def meeting_workflow_name(meta: dict) -> str | None:
+    """The workflow name a meeting's glossary table is keyed by: the current name of
+    the workflow its `workflow_id` points at, else the `workflow_name` it recorded
+    (WF11). Renaming a workflow moves its `[workflow."<name>"]` table, so a meeting
+    recorded under the old name has to find it by id; an absent or unknown id falls
+    back to the recorded name, so a library on another Mac still resolves."""
+    current = workflow_name_for_id(meta.get("workflow_id"))
+    if current:
+        return current
+    recorded = meta.get("workflow_name")
+    return recorded if isinstance(recorded, str) and recorded else None
+
+
 def load_glossary(
     meeting_path: Path | None = None,
     *,
@@ -189,7 +203,7 @@ def load_glossary(
     _merge_terms(terms, raw.get("terms"))
 
     if workflow_name is None and meeting_path is not None:
-        workflow_name = read_meta(meeting_path).get("workflow_name")
+        workflow_name = meeting_workflow_name(read_meta(meeting_path))
     if workflow_name:
         wf = (raw.get("workflow") or {}).get(workflow_name)
         if isinstance(wf, dict):

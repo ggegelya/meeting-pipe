@@ -5,12 +5,12 @@ import TOMLKit
 /// WF9: which workflow names more than one workflow carries, and the copy the two
 /// surfaces that say so share.
 ///
-/// Collisions matter because a meeting remembers its workflow by **name**, not by id
-/// (the meta sidecar persists the name for cross-machine portability, TECH-B4), so
-/// `LibraryScope.Context.workflow(for:)`, which `ScopeCounts.build` uses too, resolves
-/// by exact name with the first workflow winning. Four workflows called "Client work" therefore
-/// collapse into one rail scope: one of them collects every meeting and the other
-/// three read zero however many they recorded, which no UI can explain.
+/// Collisions matter less since WF11, but still matter. `LibraryScope.Context.workflow(for:)`,
+/// which `ScopeCounts.build` uses too, resolves a meeting by its sidecar's `workflow_id` first,
+/// so same-named workflows keep their own id-bearing meetings. A meeting recorded before the id
+/// existed (or whose id names no workflow on this Mac, TECH-B4) still resolves by exact name with
+/// the first workflow winning, and `glossary.toml` keys a workflow's vocabulary by name, so those
+/// halves still collapse onto one of the four "Client work"s, which no UI can explain.
 ///
 /// Exact match, deliberately: that is what the two resolvers compare with, so a
 /// case-different name is genuinely a different scope and claiming otherwise would be
@@ -45,7 +45,7 @@ enum WorkflowNameCollision {
         let lead = others == 1
             ? "Another workflow is also called \"\(name)\"."
             : "\(others) other workflows are also called \"\(name)\"."
-        return lead + " A meeting remembers its workflow by name, so they share one scope in the Library: one row collects every meeting and the rest read zero."
+        return lead + " Meetings follow their workflow by id, but older ones and vocabulary terms go by name, so those all land on just one of them."
     }
 }
 

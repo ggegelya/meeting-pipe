@@ -806,6 +806,17 @@ struct WorkflowEditor: View {
                 saveError = WorkflowDeletion.saveAfterDeleteReason
                 return
             }
+            // WF11: `glossary.toml` keys this workflow's vocabulary by name, so a rename moves
+            // the table with it. The workflow is already saved; a glossary that will not read is
+            // reported by the store's own refusal path and does not undo the rename.
+            if workflow.name != clone.name {
+                do {
+                    try GlossaryStore(fileURL: GlossaryStore.defaultURL)
+                        .renameWorkflowTable(from: workflow.name, to: clone.name)
+                } catch {
+                    Log.failure(category: "daemon", action: "glossary_workflow_rename_failed", error: error)
+                }
+            }
             saveError = nil
             onCommit?()
         } catch {

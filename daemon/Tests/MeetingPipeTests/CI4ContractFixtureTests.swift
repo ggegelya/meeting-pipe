@@ -233,7 +233,15 @@ final class CI4ContractFixtureTests: XCTestCase {
         for c in all {
             let name = c["name"] as? String ?? "?"
             let toml = try XCTUnwrap(c["toml"] as? String, name)
-            let workflow = c["workflow"] as? String
+            var workflow = c["workflow"] as? String
+            // WF11: a case with `meta` resolves its workflow through the sidecar's id to the
+            // live workflow's current name, as `mp.glossary.meeting_workflow_name` does.
+            if let meta = c["meta"] as? [String: String] {
+                let live = (c["workflows"] as? [[String: String]] ?? []).map { (id: $0["id"] ?? "", name: $0["name"] ?? "") }
+                workflow = WorkflowIdentity.currentName(
+                    workflowID: meta["workflow_id"], recordedName: meta["workflow_name"], live: live
+                )
+            }
             let expected = try XCTUnwrap(c["terms"] as? [String: String], name)
 
             let dir = try tempDir()

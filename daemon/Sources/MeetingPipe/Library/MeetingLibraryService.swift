@@ -176,6 +176,8 @@ final class MeetingLibraryService {
     private let trash: (URL) throws -> Void
     /// STOR7: drop these stems' rows from the semantic index (`mp index-prune`). No-op unless wired.
     private let pruneSearchIndex: ([String]) -> Void
+    /// WF11: the live workflows, for resolving a meeting's glossary table by its workflow id.
+    private let liveWorkflows: () -> [Workflow]
     private var pendingPrune: [String] = []
 
     init(
@@ -197,8 +199,10 @@ final class MeetingLibraryService {
         correctionsDir: @escaping () -> URL? = { nil },
         publishedRoots: @escaping () -> [URL] = { [] },
         trash: @escaping (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) },
-        pruneSearchIndex: @escaping ([String]) -> Void = { _ in }
+        pruneSearchIndex: @escaping ([String]) -> Void = { _ in },
+        liveWorkflows: @escaping () -> [Workflow] = { [] }
     ) {
+        self.liveWorkflows = liveWorkflows
         self.deletionBlock = deletionBlock
         self.correctionsDir = correctionsDir
         self.publishedRoots = publishedRoots
@@ -725,7 +729,7 @@ final class MeetingLibraryService {
             // `mp finalize` resolves them, global table under the workflow's.
             terms: GlossaryStore.resolvedTerms(
                 at: GlossaryStore.defaultURL,
-                workflowName: Self.workflowName(stem: stem, in: dir)
+                workflowName: Self.workflowName(stem: stem, in: dir, workflows: liveWorkflows())
             )
         )
         let writesOverlay = carry.speakerOverlay != overlay
@@ -753,17 +757,23 @@ final class MeetingLibraryService {
         )
     }
 
-    /// The meeting's workflow name from `<stem>.meta.json`, or nil when the
-    /// meeting matched no workflow. Read from the sidecar rather than from a
-    /// `Meeting` row so the carry does not depend on the library having been
-    /// scanned; `MeetingStore` reads the same key.
-    private static func workflowName(stem: String, in dir: URL) -> String? {
+    /// The name the meeting's glossary table is keyed by, from `<stem>.meta.json`, or nil
+    /// when the meeting matched no workflow. Read from the sidecar rather than from a
+    /// `Meeting` row so the carry does not depend on the library having been scanned.
+    /// WF11: the sidecar's `workflow_id` resolves to the workflow's current name first, so a
+    /// meeting recorded before a rename still finds the table the rename moved; the recorded
+    /// `workflow_name` is the fallback (`mp.glossary.meeting_workflow_name` is the mirror).
+    static func workflowName(stem: String, in dir: URL, workflows: [Workflow]) -> String? {
         let url = dir.appendingPathComponent("\(stem).meta.json")
         guard let data = try? Data(contentsOf: url),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
-        return obj["workflow_name"] as? String
+        return WorkflowIdentity.currentName(
+            workflowID: obj["workflow_id"] as? String,
+            recordedName: obj["workflow_name"] as? String,
+            workflows: workflows
+        )
     }
 
     /// Parse `<stem>.json` into carry anchors. Deliberately `TranscriptLoader.parse`
