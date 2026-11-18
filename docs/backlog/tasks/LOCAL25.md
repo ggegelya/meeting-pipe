@@ -2,9 +2,9 @@
 id: LOCAL25
 title: The local map-reduce merge call drops the caller's system prompt, so workflow extra sections, team context and flagged-moment instructions never reach a long meeting's merged summary
 category: Local models
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). Every reduce call in `LocalSummaryClient._reduce_messages` sends `_reduce_instructions()` plus the schema and the language reinforcement, never the caller's `system_prompt`, so team context, the WF7 extra-section directive and FEAT8's flagged-moment instruction stop at the map calls of every long local meeting (plain `local`, keyless `auto`, and every long regulated or NDA meeting); the schema tells the model to leave `extra_sections` empty unless the system prompt asks. Carry the caller's prompt into the reduce system turn, pinned by a fake-server test on the reduce request. [Spec](./LOCAL25.md)
+comment: Shipped 2026-11-18 (all four scope items). Every reduce's system turn is the merge brief, a one-line framing, then the caller's system prompt, then the schema and language reinforcement; the repair passes its full prompt and extra_instructions is gone; pinned by fake-server tests on the reduce request. Owner: nothing to run; a dogfood note on whether a long local meeting now keeps its extra sections is worth having, not a gate.
 ---
 
 # LOCAL25: The local map-reduce merge call drops the caller's system prompt, so workflow extra sections, team context and flagged-moment instructions never reach a long meeting's merged summary
@@ -52,3 +52,13 @@ Correction at filing: the audit's other half, that partial summaries enter the r
 - `pipeline/tests/test_summarize.py`: a `summarize()` run with a fake local client and a workflow overlay that defines extra sections reaches the reduce with the directive (end to end through the real prompt builder, not a hand-built string).
 - `cd pipeline && uv run --extra dev ruff check src tests`, `uv run --extra dev --extra mcp pyright` and `uv run --extra dev pytest -q` green, with the number of new tests in the commit body; `bash scripts/ci-local.sh` green.
 - [pipeline/docs/gotchas.md](../../../pipeline/docs/gotchas.md) updated in the same commit.
+
+**Progress (2026-11-18): all four scope items shipped.**
+
+- Premise check: the defect held as specified at pickup. PIPE26 (landed the same day) changed the base prompt's wording, not `_load_system_prompt`, so nothing here moved.
+- `_summarize_map_reduce` threads `system_prompt` through `_reduce_partials`, `_reduce_batches` and `_reduce_group` into `_reduce_messages`. The reduce's system turn is `_reduce_instructions()`, then `_REDUCE_CALLER_FRAMING` ("The instructions below were given for the whole meeting; apply them to the merged summary."), then the caller's prompt, then `augment_with_schema` and the language reinforcement as before.
+- LANG1's reuse path passes the repair's new full prompt, so the `extra_instructions` parameter is gone. The repair's merge still differs from the merge it repairs.
+- Budget: `_reduce_batches` already measures `_reduce_messages`, so the longer turn is counted. A new test pins every multi-partial group at or under a budget that admits two partials plus the turn.
+- Tests: `test_summarize_local.py` adds 3 (the reduce request carries team context, both extra-section names and `FLAGGED_INSTRUCTION` beside the brief and the schema; the reduce-only repair carries the caller's prompt and differs; the budget case). `test_summarize.py` adds 1, end to end from `<stem>.meta.json`'s `workflow_extra_sections` through the real prompt builder into every reduce.
+- SEC29 note: the prior-meeting block now reaches the reduce exactly as it reaches every map call, which gives it no more trust than it has today. When SEC29 moves it out of the system prompt, it leaves both paths together.
+

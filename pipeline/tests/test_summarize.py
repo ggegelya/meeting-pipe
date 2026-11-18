@@ -785,3 +785,51 @@ def test_run_sidecar_rewrite_never_fails_the_summary(tmp_path: Path, monkeypatch
     monkeypatch.setattr("mp.summarize.corrections.write_run_sidecar", boom)
 
     assert summarize_mod.main([str(transcript)]) == 0
+
+
+def test_a_workflows_extra_sections_reach_a_long_local_meetings_merge(tmp_path: Path, monkeypatch):
+    """LOCAL25, end to end through the real prompt builder: a workflow's extra-section directive
+    rides from `<stem>.meta.json` into every reduce of a map-reduced local summary."""
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from mp.summarize_local import LocalSummaryClient
+
+    from .test_summarize_local import _FakeHandler
+
+    monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: None)
+    monkeypatch.setattr("mp.local_server.served_identity", lambda _port, home=None: None)
+    requests: list[dict] = []
+    reply = {"title": "T", "summary": ["s"], "decisions": [], "actions": [], "questions": [],
+             "attendees": [], "detected_language": "en"}
+
+    def builder(payload: dict) -> dict:
+        requests.append(payload)
+        return {"choices": [{"message": {"content": json.dumps(reply)}}]}
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeHandler)
+    server.builder = builder  # type: ignore[attr-defined]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        md = tmp_path / "20261118-1000.md"
+        md.write_text("# Transcript\n\n" + "\n".join(
+            f"**A**: point {i} about the rollout plan and its owners." for i in range(300)
+        ), encoding="utf-8")
+        (tmp_path / "20261118-1000.meta.json").write_text(json.dumps({
+            "workflow_name": "Client work",
+            "workflow_extra_sections": [{"name": "Risks register", "instruction": "Each risk."}],
+        }), encoding="utf-8")
+        client = LocalSummaryClient(
+            host="127.0.0.1", port=server.server_address[1],
+            manage_subprocess=False, map_reduce_above_chars=1_000,
+        )
+        summarize(md, cfg=Config(recording=Recording(output_dir=tmp_path)), client=client)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    reduces = [r for r in requests if any(
+        m["role"] == "user" and m["content"].startswith("Merge these partial") for m in r["messages"]
+    )]
+    assert reduces
+    assert all("Risks register" in r["messages"][0]["content"] for r in reduces)

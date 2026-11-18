@@ -1892,3 +1892,79 @@ def test_sigterm_during_a_local_summarize_leaves_no_server_and_no_marker(tmp_pat
             proc.kill()
         if server_pid is not None and _alive(server_pid):
             os.killpg(server_pid, signal.SIGKILL)
+
+
+# ----- LOCAL25: every reduce carries the caller's system prompt -----
+
+
+def _directive_prompt() -> str:
+    from mp.config import ExtraSectionSpec
+    from mp.summarize import _load_system_prompt
+
+    return _load_system_prompt(
+        "The platform migration group; the QA lead owns release sign-off.",
+        "auto",
+        flagged_note=True,
+        extra_sections=[
+            ExtraSectionSpec(name="Risks register", instruction="Each risk with its owner."),
+            ExtraSectionSpec(name="Customer asks", instruction="Requests the customer made."),
+        ],
+    )
+
+
+def test_every_reduce_carries_the_callers_directives(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reduce used to send only the merge brief and the schema, whose own wording tells
+    the model to leave `extra_sections` empty unless the system prompt asks for them."""
+    from mp.summarize import FLAGGED_INSTRUCTION
+
+    requests = _recording(fake_server[2], lambda _p: _valid_summary_obj())
+    with _local23_client(
+        fake_server, monkeypatch, model=_7B, ram_gb=None, map_reduce_above_chars=2_000,
+    ) as c:
+        c.summarize(
+            system_prompt=_directive_prompt(), transcript=_english(12_000),
+            model="ignored", max_tokens=512,
+        )
+    reduces = [r for r in requests if _is_reduce(r)]
+    assert reduces
+    for r in reduces:
+        system = r["messages"][0]["content"]
+        assert "platform migration group" in system
+        assert "Risks register" in system and "Customer asks" in system
+        assert FLAGGED_INSTRUCTION in system
+        assert "You merge several partial summaries" in system  # the merge brief stays
+        assert '"extra_sections"' in system  # and so does the schema
+
+
+def test_a_reduce_only_repair_carries_the_callers_prompt_and_differs_from_the_merge(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _first, _repaired, first_reduce, repair_requests = _lang1_round(
+        fake_server, monkeypatch, lang1_heals=True,
+    )
+    repair_reduce = next(r for r in repair_requests if _is_reduce(r))
+    merged = first_reduce["messages"][0]["content"]
+    repaired = repair_reduce["messages"][0]["content"]
+    assert "Summarize." in merged and "Summarize." in repaired  # the caller's prompt, both times
+    assert repaired != merged
+    assert repaired.startswith(merged[: merged.index("Summarize.")])  # same brief, longer prompt
+
+
+def test_the_longer_reduce_turn_is_measured_against_the_budget() -> None:
+    """LOCAL23's batching sizes groups on the real request, so the caller's prompt in the
+    system turn is counted, not assumed. A budget that admits two partials plus that turn
+    keeps every multi-partial reduce at or under it."""
+    from mp.schemas import MeetingSummary
+    from mp.summarize_local import request_tokens
+
+    client = LocalSummaryClient(host="127.0.0.1", port=1, manage_subprocess=False)
+    prompt = _production_prompt()
+    partials = [MeetingSummary.model_validate(_uk_partial_obj()) for _ in range(6)]
+    budget = request_tokens(client._reduce_messages(partials[:2], None, prompt)) + 50
+    groups = client._reduce_batches(partials, None, budget, prompt)
+    assert len(groups) > 1
+    for group in groups:
+        if len(group) >= 2:
+            assert request_tokens(client._reduce_messages(group, None, prompt)) <= budget

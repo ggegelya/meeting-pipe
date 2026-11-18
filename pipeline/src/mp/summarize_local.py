@@ -242,6 +242,14 @@ def _reduce_instructions() -> str:
     )
 
 
+# LOCAL25: what sits between the merge brief and the caller's prompt in a reduce's system
+# turn, so the model reads the caller's instructions as about the whole meeting.
+_REDUCE_CALLER_FRAMING = (
+    "\n\nThe instructions below were given for the whole meeting; apply them to the "
+    "merged summary.\n\n"
+)
+
+
 # Loopback hosts the local model server may bind / be reached on.
 # meeting-pipe always runs that server on the same machine; a
 # non-loopback host (a stray "0.0.0.0" in config) would bind the
@@ -699,10 +707,10 @@ class LocalSummaryClient:
                 "map-reduce: reusing %d map partials, re-running only the reduce",
                 len(cached.partials),
             )
-            return self._reduce_partials(
-                list(cached.partials), target, max_tokens, budget,
-                extra_instructions=system_prompt[len(cached.system_prompt):],
-            )
+            # LOCAL25: the repair's full prompt rides into the reduce, so its merge carries the
+            # caller's directives plus the repair's addition, and still differs from the merge
+            # it repairs (the system turn is longer by exactly that addition).
+            return self._reduce_partials(list(cached.partials), target, max_tokens, budget, system_prompt)
         size_budget = budget if budget is not None else NATIVE_CONTEXT_TOKENS - max(0, max_tokens)
         windows = self._map_windows(system_prompt, transcript, target, size_budget)
         log.info("map-reduce: %d chars -> %d windows", len(transcript), len(windows))
@@ -717,7 +725,7 @@ class LocalSummaryClient:
             return summary
         partials = [self._map_window(system_prompt, w, target, max_tokens) for w in windows]
         self.map_partials = MapPartials(transcript, target, system_prompt, tuple(partials))
-        return self._reduce_partials(partials, target, max_tokens, budget)
+        return self._reduce_partials(partials, target, max_tokens, budget, system_prompt)
 
     def _map_window(
         self, system_prompt: str, text: str, target: str | None, max_tokens: int,
@@ -736,15 +744,16 @@ class LocalSummaryClient:
         target: str | None,
         max_tokens: int,
         budget: int | None,
-        extra_instructions: str = "",
+        system_prompt: str,
     ) -> MeetingSummary:
         """Merge partials in batches until one remains, so every reduce call's input
-        also stays under the budget (``_reduce_batches``)."""
+        also stays under the budget (``_reduce_batches``). ``system_prompt`` is the
+        caller's, which every reduce carries (LOCAL25)."""
         while len(partials) > 1:
             nxt: list[MeetingSummary] = []
-            for group in self._reduce_batches(partials, target, budget, extra_instructions):
+            for group in self._reduce_batches(partials, target, budget, system_prompt):
                 nxt.append(group[0] if len(group) == 1 else self._reduce_group(
-                    group, target, max_tokens, extra_instructions,
+                    group, target, max_tokens, system_prompt,
                 ))
             partials = nxt
         return partials[0]
@@ -754,7 +763,7 @@ class LocalSummaryClient:
         partials: list[MeetingSummary],
         target: str | None,
         budget: int | None,
-        extra_instructions: str,
+        system_prompt: str,
     ) -> list[list[MeetingSummary]]:
         """Group partials for one reduce round: at most ``_REDUCE_BATCH`` each, and a
         group stops growing once the next partial would take its request over
@@ -768,7 +777,7 @@ class LocalSummaryClient:
             if current and (
                 len(current) >= _REDUCE_BATCH
                 or (len(current) >= 2 and request_tokens(self._reduce_messages(
-                    [*current, partial], target, extra_instructions,
+                    [*current, partial], target, system_prompt,
                 )) > budget)
             ):
                 groups.append(current)
@@ -779,10 +788,18 @@ class LocalSummaryClient:
         return groups
 
     def _reduce_messages(
-        self, group: list[MeetingSummary], target: str | None, extra_instructions: str,
+        self, group: list[MeetingSummary], target: str | None, system_prompt: str,
     ) -> list[dict[str, str]]:
+        """One reduce request. Its system turn is the merge brief, then the caller's own
+        prompt (LOCAL25): team context, a workflow's extra-section directive, the
+        flagged-moment instruction, the prior-meeting block and the untrusted-input
+        guidance all reach the merge, as they reach every map call. Without them the
+        schema's own wording ("leave `extra_sections` empty unless the system prompt
+        asks") told the merge to drop the sections the partials had filled."""
         combined = "\n\n---\n\n".join(_render_for_reduce(p) for p in group)
-        system_content = self._augment_with_schema(_reduce_instructions() + extra_instructions)
+        system_content = self._augment_with_schema(
+            _reduce_instructions() + _REDUCE_CALLER_FRAMING + system_prompt
+        )
         if target:
             system_content += language_reinforcement(target)
         return [
@@ -799,10 +816,10 @@ class LocalSummaryClient:
         group: list[MeetingSummary],
         target: str | None,
         max_tokens: int,
-        extra_instructions: str = "",
+        system_prompt: str,
     ) -> MeetingSummary:
         self._reset_idle_timer()
-        messages = self._reduce_messages(group, target, extra_instructions)
+        messages = self._reduce_messages(group, target, system_prompt)
         summary, last_text = self._summarize_with_schema_retry(messages, max_tokens)
         if target:
             summary = self._retry_on_language_mismatch(summary, last_text, messages, target, max_tokens)
