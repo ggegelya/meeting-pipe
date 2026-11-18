@@ -74,6 +74,10 @@ final class PermissionsCenterTests: XCTestCase {
     /// needs an app bundle the test host does not have.
     func test_refreshMic_from_a_detached_task_commits_on_main() async {
         let center = PermissionsCenter.shared
+        // OBS5's commit publishes only on a change, and the shared center may already hold the probe's
+        // value from an earlier test. The real probe never answers `.unknown`, so seeding it makes the
+        // refresh a change on every host.
+        center.simulateStatusForTesting(.unknown, kind: .microphone)
         var changeThreads: [Bool] = []
         let cancel = center.objectWillChange.sink { _ in changeThreads.append(Thread.isMainThread) }
         defer { cancel.cancel() }

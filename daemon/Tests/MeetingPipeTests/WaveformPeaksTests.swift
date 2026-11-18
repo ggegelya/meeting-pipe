@@ -154,11 +154,13 @@ final class WaveformPeaksTests: XCTestCase {
         // most optimisations and run the per-frame max/min loop 4-5×
         // slower on the same hardware (measured ~8 s on M-series at
         // -Onone). Use a generous budget under debug so a developer
-        // running `swift test` locally doesn't see a spurious failure;
-        // the release-mode acceptance criterion still gets enforced
-        // by CI / production builds.
+        // running `swift test` locally doesn't see a spurious failure.
+        // CI also runs debug, on a shared runner that read 15.77 s on
+        // 2026-11-18 with no change to the loader, so the debug budget
+        // is 30 s: it still catches a gross regression, and the 2 s
+        // release criterion holds only for a release build.
         #if DEBUG
-        let budgetSec = 15.0
+        let budgetSec = 30.0
         #else
         let budgetSec = 2.0
         #endif
