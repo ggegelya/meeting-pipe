@@ -2,9 +2,9 @@
 id: ASR10
 title: audio_seconds in every transcript is the end of the last word, not the audio's length, because the pinned FluidAudio returns duration 0 for chunked audio and the runner falls back to the last segment end
 category: Transcription
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). audio_seconds equals the last segment end on 112 of 112 field transcripts (mic file longer by 60 s or more on 9 of 72, up to 550 s; 0 on a 173 s file) because FluidAudio 0.14.8's chunked path reports duration 0; the Library length, the Audio tab trim caption and a merged meeting's length all read it. Write the sample-count length as audio_seconds plus a new last_speech_sec, fix the merge writer, and make readers trust only transcripts that carry the new field.
+comment: Shipped 2026-11-18 (ci-local pipeline + daemon green, shellcheck lane not run): audio_seconds is the sample-count length and last_speech_sec the last word's end, the merge writer writes both, MeetingStore trusts audio_seconds only with last_speech_sec present, the duration cache is schema 2. Owed - the owner reads the next recording over 15 s: engine_succeeded audio_seconds within 0.1 s of the WAV header, and the Library row for 20261113-093231 about 654 s.
 ---
 
 # ASR10: audio_seconds in every transcript is the end of the last word, not the audio's length, because the pinned FluidAudio returns duration 0 for chunked audio and the runner falls back to the last segment end
@@ -53,3 +53,5 @@ Related: [UX74](./UX74.md) (owns the Library duration order), [PERF22](./PERF22.
 - New pytest: a merge of two fragments writes `audio_seconds` equal to the sum of their durations and `last_speech_sec` equal to the last segment end.
 - `bash scripts/ci-local.sh` green (swift test, pytest, ruff, pyright, truth fences).
 - After a fresh build, the next `engine_succeeded` row for a recording over 15 s carries an `audio_seconds` within 0.1 s of the WAV header, and the Library row for `20261113-093231` reads about 654 s.
+
+**Progress (2026-11-18): all four scope items shipped.** Premises re-checked at HEAD: FluidAudio is still pinned `exact: "0.14.8"`, `FluidAudioRunner` still held `samples.count / 16_000` and used `asrResult.duration` for the sidecar, and `MeetingStore.measuredDuration` still let any positive `audio_seconds` win. The writer fix is in one place, `FluidAudioRunner.transcribe`, via the pure `FluidAudioRunner.lengths(sampleCount:segments:)`. `HeldEndTrim.apply` recomputes `lastSpeechSec` only when the sidecar carries one, so a legacy sidecar stays legacy. Tests: `TranscriptionSidecarTests` x2, `HeldEndTrimTests` x1 (which also pins the caption's minutes form once the length is the real one), `MeetingStoreTests` x3, `MeetingStoreScanCostTests` x1 (a version-1 cache loads empty), and one pytest for the merge writer. The existing UX74 tests passed unchanged because their transcripts fall back to the legacy value when the WAV is an empty stand-in. Not done: no transcript on disk was rewritten (the reader rule makes them read correctly, and a re-transcribe rewrites them). Owed by the owner: the post-build live check in the Acceptance section.

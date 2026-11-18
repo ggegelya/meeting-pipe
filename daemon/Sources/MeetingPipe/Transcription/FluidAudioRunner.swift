@@ -157,9 +157,10 @@ final class FluidAudioRunner: TranscriptionRunner {
         // rows into readable speaker turns before they reach the sidecar (DIAR2).
         let segments = SegmentBuilder.coalesce(built)
 
-        let audioSeconds = asrResult.duration > 0
-            ? asrResult.duration
-            : (segments.last?.end ?? 0)
+        // ASR10: the audio's length is the sample count this runner holds, never `asrResult.duration`:
+        // the pinned FluidAudio returns 0 for anything over 15 s (its chunked path builds the result from
+        // an empty array), which used to fall back to the last word's end.
+        let lengths = Self.lengths(sampleCount: samples.count, segments: segments)
         let modelName = "parakeet-tdt-0.6b-\(asrVersion == .v3 ? "v3" : "v2")"
         let writtenLanguage = language?.rawValue ?? languageHint?.lowercased() ?? "auto"
 
@@ -167,7 +168,7 @@ final class FluidAudioRunner: TranscriptionRunner {
             language: writtenLanguage,
             segments: segments,
             audioPath: wavURL.path,
-            audioSeconds: audioSeconds,
+            audioSeconds: lengths.audioSeconds,
             model: modelName,
             backend: backendName,
             diarization: diarizationOK,
@@ -176,8 +177,16 @@ final class FluidAudioRunner: TranscriptionRunner {
             streaming: false,
             finalized: true,
             speakerEmbeddings: speakerEmbeddings.isEmpty ? nil : speakerEmbeddings,
-            diarizationFailureType: diarizationFailureType
+            diarizationFailureType: diarizationFailureType,
+            lastSpeechSec: lengths.lastSpeechSec
         )
+    }
+
+    /// The two lengths a sidecar carries (ASR10): `audioSeconds` is the audio's length from the 16 kHz
+    /// sample count, `lastSpeechSec` the end of the last word (0 for no words). Pure, so it is testable
+    /// without models.
+    static func lengths(sampleCount: Int, segments: [SidecarSegment]) -> (audioSeconds: Double, lastSpeechSec: Double) {
+        (Double(sampleCount) / 16_000, segments.last?.end ?? 0)
     }
 
     // MARK: - Model lifecycle

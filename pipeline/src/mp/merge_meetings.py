@@ -174,6 +174,14 @@ def merge_transcripts(fragments: list[dict], durations: list[float]) -> dict:
     merged["streaming"] = False
     merged["finalized"] = True
     merged["diarization_failed"] = diarization_failed
+    # ASR10: `dict(primary)` carried the first fragment's `audio_seconds`, while the segments run across
+    # every fragment. The merged audio is the fragments laid end to end, and `last_speech_sec` (also the
+    # mark the Library trusts `audio_seconds` by) is where the last merged word ends.
+    merged["audio_seconds"] = float(sum(durations))
+    ends: list[float] = [
+        float(seg["end"]) for seg in merged_segments if isinstance(seg.get("end"), (int, float))
+    ]
+    merged["last_speech_sec"] = max(ends, default=0.0)
     # DIAR8: `dict(primary)` carried the first fragment's fallback. It describes the merged
     # transcript only when every fragment failed the same way.
     fallbacks = {f.get("speaker_fallback") for f in fragments}

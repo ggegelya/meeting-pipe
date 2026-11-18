@@ -39,6 +39,22 @@ final class HeldEndTrimTests: XCTestCase {
         XCTAssertEqual(trimmed.audioSeconds, 840, "the file still has the tail, so its length is unchanged")
     }
 
+    /// ASR10: a sidecar from a corrected writer keeps the audio's length, recomputes where speech ends so it
+    /// never points past the cut, and so the Audio tab caption's length is above the trim again.
+    func test_a_trim_keeps_audio_seconds_and_recomputes_last_speech_sec_ASR10() {
+        var corrected = sidecar()
+        corrected.lastSpeechSec = 140
+        let trimmed = HeldEndTrim.apply(corrected, at: 100)
+        XCTAssertEqual(trimmed.audioSeconds, 840)
+        XCTAssertEqual(trimmed.lastSpeechSec, 100, "the straddling segment ends at the cut")
+        XCTAssertEqual(
+            HeldEndTrim.caption(trimSec: 100, durationSec: trimmed.audioSeconds),
+            "Trimmed 13 min after the call ended. The recording still has it.",
+            "a chunked recording's real length is longer than the trim, so the minutes form reads"
+        )
+        XCTAssertNil(HeldEndTrim.apply(sidecar(), at: 100).lastSpeechSec, "a legacy sidecar stays legacy")
+    }
+
     /// A voice heard only in the tail must not be enrolled or matched from it.
     func test_a_voiceprint_heard_only_in_the_tail_is_dropped() {
         let trimmed = HeldEndTrim.apply(sidecar(), at: 100)

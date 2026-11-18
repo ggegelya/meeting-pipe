@@ -66,7 +66,9 @@ enum HeldEndTrim {
     /// `sidecar` with nothing at or after `seconds`. A segment that straddles the cut keeps the
     /// words that start before it, and a voiceprint whose speaker only talked in the tail is
     /// dropped with them, so the tail cannot enrol or match a voice either. `audioSeconds` stays
-    /// the file's real length, because the file still has it.
+    /// the file's real length, because the file still has it (ASR10: since that field became the sample
+    /// count; before, it was the last word's end and a trim could not leave it above the cut). A
+    /// `lastSpeechSec` the sidecar carries is recomputed from the kept segments, so it never points past the cut.
     static func apply(_ sidecar: TranscriptSidecar, at seconds: Double) -> TranscriptSidecar {
         var trimmed = sidecar
         trimmed.segments = sidecar.segments.compactMap { segment in
@@ -81,6 +83,7 @@ enum HeldEndTrim {
             }
             return cut
         }
+        if sidecar.lastSpeechSec != nil { trimmed.lastSpeechSec = trimmed.segments.last?.end ?? 0 }
         if let embeddings = sidecar.speakerEmbeddings {
             let speakers = Set(trimmed.segments.map(\.speaker))
             let kept = embeddings.filter { speakers.contains($0.key) }

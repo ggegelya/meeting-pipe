@@ -207,6 +207,15 @@ final class MeetingStoreScanCostTests: XCTestCase {
         XCTAssertTrue(MeetingDurationCache.load(from: url).entries.isEmpty)
     }
 
+    /// ASR10: a version-1 cache may hold a legacy `audio_seconds` (the last word's end) as a length, so it is
+    /// discarded once and every row recomputes.
+    func test_a_version_one_duration_cache_loads_empty_ASR10() throws {
+        let url = try tempDir().appendingPathComponent("durations.json")
+        try write(url, #"{"version": 1, "entries": {"20261113-093231": {"seconds": 589.84, "transcript": null, "audio": null}}}"#)
+        XCTAssertTrue(MeetingDurationCache.load(from: url).entries.isEmpty)
+        XCTAssertEqual(MeetingDurationCache.schemaVersion, 2)
+    }
+
     // MARK: Item 4: an aged failed row is cached
 
     /// Past the staleness window only a file change can move an age-inferred `.failed` row, so it

@@ -384,6 +384,44 @@ final class MeetingStoreTests: XCTestCase {
         )
     }
 
+    // MARK: ASR10: audio_seconds is a length only from a writer that measures the audio
+
+    func test_a_transcript_with_last_speech_sec_reports_its_audio_seconds_over_the_header_ASR10() throws {
+        let dir = try tempDir()
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-3600))
+        try writeWAV(dir.appendingPathComponent("\(stem).wav"), seconds: 2.0)
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{}")
+        try writeFile(dir.appendingPathComponent("\(stem).json"), #"{"audio_seconds": 654.2, "last_speech_sec": 589.8}"#)
+
+        let rows = MeetingStore(recordingsDir: dir).performScan(directory: dir)
+
+        XCTAssertEqual(rows.first?.durationSec ?? -1, 654.2, accuracy: 0.001, "a corrected writer's value is the length")
+    }
+
+    func test_a_legacy_transcript_shorter_than_its_audio_header_reports_the_header_ASR10() throws {
+        let dir = try tempDir()
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-3600))
+        try writeWAV(dir.appendingPathComponent("\(stem).wav"), seconds: 3.0)
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{}")
+        // The last word's end, 1.0 s, where the recording is 3.0 s: no `last_speech_sec`, so not a length.
+        try writeFile(dir.appendingPathComponent("\(stem).json"), #"{"audio_seconds": 1.0, "segments": []}"#)
+
+        let rows = MeetingStore(recordingsDir: dir).performScan(directory: dir)
+
+        XCTAssertEqual(rows.first?.durationSec ?? -1, 3.0, accuracy: 0.01)
+    }
+
+    func test_a_legacy_transcript_with_no_audio_still_reports_its_audio_seconds_ASR10() throws {
+        let dir = try tempDir()
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{}")
+        try writeFile(dir.appendingPathComponent("\(stem).json"), #"{"audio_seconds": 1830.5}"#)
+
+        let rows = MeetingStore(recordingsDir: dir).performScan(directory: dir)
+
+        XCTAssertEqual(rows.first?.durationSec, 1830.5, "the only answer left once the audio is reclaimed")
+    }
+
     func test_duration_still_comes_from_mtime_for_audio_with_no_transcript() throws {
         // The floor, and the reason mtime is demoted rather than deleted. This
         // file is not decodable audio, so the header read has nothing to say, and

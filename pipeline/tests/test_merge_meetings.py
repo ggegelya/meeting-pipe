@@ -672,3 +672,13 @@ def test_a_merged_transcript_keeps_the_speaker_fallback_only_when_every_fragment
     assert same["speaker_fallback"] == "channel"
     assert "speaker_fallback" not in mixed
     assert "speaker_fallback" not in healthy
+
+
+def test_a_merge_writes_the_summed_audio_length_and_the_last_word_end_ASR10():
+    first = {**_transcript(_seg(0.0, 4.0, "a", "speaker_user")), "audio_seconds": 4.0}
+    second = {**_transcript(_seg(0.0, 7.5, "b", "speaker_user")), "audio_seconds": 7.5}
+
+    merged = merge_transcripts([first, second], [10.0, 20.0])
+
+    assert merged["audio_seconds"] == 30.0, "the fragments laid end to end, not the first fragment's value"
+    assert merged["last_speech_sec"] == 10.0 + 7.5

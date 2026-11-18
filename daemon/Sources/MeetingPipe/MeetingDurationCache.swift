@@ -54,7 +54,8 @@ struct MeetingDurationCache: Equatable {
     }
 
     /// Bumped when the meaning of an entry changes; a mismatched file loads as empty.
-    static let schemaVersion = 1
+    /// 2 (ASR10): a version-1 entry may hold a legacy `audio_seconds`, the last word's end, as a length.
+    static let schemaVersion = 2
 
     private(set) var entries: [String: Entry] = [:]
 

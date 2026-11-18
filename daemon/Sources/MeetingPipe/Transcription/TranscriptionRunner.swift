@@ -24,6 +24,11 @@ struct TranscriptSidecar: Codable, Equatable {
     /// DIAR8: the Swift type of the error the diarizer threw (`diarization_failed` event only). Deliberately
     /// not a coding key: the sidecar contract with Python is unchanged, and a decoded sidecar has none.
     var diarizationFailureType: String? = nil
+    /// ASR10: the end of the last word, which `audioSeconds` used to be. Written only by a runner that
+    /// also writes `audioSeconds` as the audio's real length, so its presence is the mark of a corrected
+    /// writer: a transcript without it carries the legacy `audio_seconds` (last word end), which a reader
+    /// must not trust as a length. Optional so every older sidecar still decodes.
+    var lastSpeechSec: Double? = nil
 
     enum CodingKeys: String, CodingKey {
         case language
@@ -38,6 +43,7 @@ struct TranscriptSidecar: Codable, Equatable {
         case streaming
         case finalized
         case speakerEmbeddings = "speaker_embeddings"
+        case lastSpeechSec = "last_speech_sec"
     }
 }
 

@@ -807,8 +807,12 @@ final class MeetingStore: ObservableObject {
     ///
     ///   1. `audio_seconds` from the transcript sidecar: the transcriber's own
     ///      measurement of the audio, exact, and the only source left once a
-    ///      `drop` retention policy has reclaimed the file. 220 of the owner's
-    ///      249 transcripts carry it.
+    ///      `drop` retention policy has reclaimed the file. ASR10: trusted only
+    ///      when the same sidecar carries `last_speech_sec`, the mark of a writer
+    ///      that measures the audio. Before that the key held the last word's
+    ///      end (112 of 112 field transcripts), so such a value is demoted to
+    ///      the answer of last resort, after the header, for a row with no
+    ///      readable audio.
     ///   2. The audio's header, via `AudioTranscoder.duration(of:)`, which opens
     ///      the file and divides frames by sample rate. It decodes nothing, so it
     ///      costs an open and a header parse, not a pass over the samples. This
@@ -841,13 +845,15 @@ final class MeetingStore: ObservableObject {
     /// UX74's first two sources, the ones that measure the audio. Their answer is
     /// a fact about the files it read, which is what lets PERF22 keep it.
     private static func measuredDuration(audio: URL?, transcriptJSON: URL?) -> TimeInterval? {
-        if let seconds = transcriptJSON
-            .flatMap({ readJSON(at: $0) })
-            .flatMap({ $0["audio_seconds"] as? Double }),
-            seconds.isFinite, seconds > 0 {
+        let transcript = transcriptJSON.flatMap { readJSON(at: $0) }
+        let transcriptSeconds = (transcript?["audio_seconds"] as? Double).flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        // ASR10: `audio_seconds` is the audio's length only when the writer also wrote `last_speech_sec`.
+        // Every transcript before that carries the last word's end there, up to minutes short of the
+        // recording, so it is a fallback for a row with no readable audio and no longer wins.
+        if let seconds = transcriptSeconds, transcript?["last_speech_sec"] is NSNumber {
             return seconds
         }
-        guard let audio = audio else { return nil }
+        guard let audio = audio else { return transcriptSeconds }
         // Only a *final* recording's header is a measurement. A capture
         // intermediate is still being written and a WAV's frame count is only
         // truthful once the file is closed, so a live row falls through to the
@@ -859,7 +865,7 @@ final class MeetingStore: ObservableObject {
            seconds.isFinite, seconds > 0 {
             return seconds
         }
-        return nil
+        return transcriptSeconds
     }
 
     /// UX74's last resort: the audio's mtime minus the stem's start. Never kept

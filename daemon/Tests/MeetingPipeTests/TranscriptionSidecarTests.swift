@@ -76,6 +76,34 @@ final class TranscriptionSidecarTests: XCTestCase {
         XCTAssertEqual(decoded.diarizationFailureReason, "skipped: no segments")
     }
 
+    /// ASR10: the audio's length is the sample count, whatever the segments say, and speech ends at the last word.
+    func test_the_lengths_come_from_the_sample_count_not_the_last_word_ASR10() {
+        let words = [SidecarSegment(start: 1, end: 100, text: "x", words: [], speaker: "s")]
+        let long = FluidAudioRunner.lengths(sampleCount: 16_000 * 654, segments: words)  // over the 15 s chunk bound
+        XCTAssertEqual(long.audioSeconds, 654, accuracy: 0.001)
+        XCTAssertEqual(long.lastSpeechSec, 100)
+        let silent = FluidAudioRunner.lengths(sampleCount: 16_000 * 174, segments: [])
+        XCTAssertEqual(silent.audioSeconds, 174, accuracy: 0.001, "an empty transcript is still 174 s of audio")
+        XCTAssertEqual(silent.lastSpeechSec, 0)
+    }
+
+    func test_last_speech_sec_round_trips_and_an_old_sidecar_decodes_without_it_ASR10() throws {
+        var sidecar = TranscriptSidecar(
+            language: "en", segments: [], audioPath: "/x.wav", audioSeconds: 654, model: "m", backend: "b",
+            diarization: true, diarizationFailed: false, diarizationFailureReason: nil, streaming: false,
+            finalized: true, lastSpeechSec: 590.5)
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(sidecar)) as? [String: Any]
+        XCTAssertEqual(json?["last_speech_sec"] as? Double, 590.5)
+        let decoded = try JSONDecoder().decode(TranscriptSidecar.self, from: JSONEncoder().encode(sidecar))
+        XCTAssertEqual(decoded.lastSpeechSec, 590.5)
+
+        sidecar.lastSpeechSec = nil
+        json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(sidecar)) as? [String: Any]
+        XCTAssertNil(json?["last_speech_sec"], "absent, not null: the mark of a legacy writer")
+        let old = #"{"language":"en","segments":[],"audio_path":"/x","audio_seconds":9,"model":"m","backend":"b","diarization":true,"diarization_failed":false,"streaming":false,"finalized":true}"#
+        XCTAssertNil(try JSONDecoder().decode(TranscriptSidecar.self, from: Data(old.utf8)).lastSpeechSec)
+    }
+
     func test_write_lands_owner_only_permissions() throws {
         // SEC14: transcripts carry meeting content, so the writer lands them 0600
         // (like originals/ and the logs), not the 0644 default.
