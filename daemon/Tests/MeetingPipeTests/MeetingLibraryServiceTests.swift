@@ -1480,6 +1480,13 @@ final class MeetingLibraryServiceTests: XCTestCase {
         let rows = try XCTUnwrap(backedCorrections["segments"] as? [[String: Any]])
         XCTAssertEqual(rows.first?["index"] as? Int, 2)
         XCTAssertEqual((backup["anchors"] as? [[String: Any]])?.count, 3, "the request-time anchors")
+
+        // A caller that only presents the failure (Restore, Merge) sees the finalize's own error.
+        let shown = FailurePresentation(error: rewritten, operation: .transcribe)
+        let underlying = FailurePresentation(error: rewritten.underlying, operation: .transcribe)
+        XCTAssertEqual(shown.diagnostics, underlying.diagnostics)
+        XCTAssertEqual(shown.title, underlying.title)
+        XCTAssertEqual(shown.metadata, underlying.metadata)
     }
 
     /// A failure in the transcription leg itself leaves `<stem>.json` as it was, so there is

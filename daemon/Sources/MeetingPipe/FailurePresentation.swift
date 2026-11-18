@@ -92,6 +92,10 @@ struct FailurePresentation: Equatable {
     let isSearchModelMissing: Bool
 
     init(error: Error, operation: FailureMetadata.Operation = .processing, title: String? = nil) {
+        // ASR12: a re-transcribe whose finalize failed after the rewrite wraps the real error to
+        // carry its edit counts; the diagnostics and cause come from the error underneath, so a
+        // caller that only presents the failure (Restore, Merge) loses nothing.
+        let error = (error as? MeetingLibraryService.RetranscribeFailedAfterRewrite)?.underlying ?? error
         self.init(diagnostics: PipelineLauncher.diagnostics(for: error), operation: operation,
                   metadata: FailureMetadata.from(error), title: title)
     }
