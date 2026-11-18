@@ -104,6 +104,19 @@ def overlaid_structured(transcript_md: Path) -> tuple[dict, bool] | None:
     return data, changed
 
 
+def publish_text(transcript_md: Path | None) -> str:
+    """The transcript every publisher sends (PIPE51): the overlaid view when an
+    overlay changes anything, else `<stem>.md` as it is, else empty. The sinks used
+    to read `<stem>.md` raw, so a Library rename or line edit never reached a
+    destination and a filesystem correction read as "unchanged". Fail-open exactly
+    as `summarize` is: an overlay that cannot be read falls back to the raw text
+    (STOR9 owns making that visible)."""
+    if transcript_md is None or not transcript_md.exists():
+        return ""
+    overlaid = overlaid_markdown(transcript_md)
+    return overlaid if overlaid is not None else transcript_md.read_text(encoding="utf-8")
+
+
 def overlaid_markdown(transcript_md: Path) -> str | None:
     """The transcript markdown re-rendered with BOTH reversible overlays applied:
     the speaker-label overlay (FEAT3) and these text corrections (PIPE9). Returns

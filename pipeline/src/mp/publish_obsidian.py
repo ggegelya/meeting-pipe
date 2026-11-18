@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from . import storage
+from .transcript_corrections import publish_text
 from .markdown import deeplink_stem, evidence_suffix
 from .schemas import MeetingSummary
 
@@ -107,9 +108,13 @@ class ObsidianPublisher:
         summary: MeetingSummary,
         transcript_md: Path | None,
         sidecar_path: Path,
+        transcript_text: str | None = None,
     ) -> dict[str, Any]:
+        if transcript_text is None:  # PIPE51: the overlaid view, resolved once
+            transcript_text = publish_text(transcript_md)
         body = self._render_note(
             summary, transcript_md, date=_today_iso(), generated=_now_iso(),
+            transcript_text=transcript_text,
         )
         # Idempotency fingerprint: hash a canonical render with the
         # volatile date/generated values pinned. Without this every
@@ -119,6 +124,7 @@ class ObsidianPublisher:
         canonical = self._render_note(
             summary, transcript_md,
             date=_HASH_PINNED_DATE, generated=_HASH_PINNED_GENERATED,
+            transcript_text=transcript_text,
         )
         body_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -211,6 +217,7 @@ class ObsidianPublisher:
         *,
         date: str,
         generated: str,
+        transcript_text: str | None = None,
     ) -> str:
         template = (
             self._template_path.read_text(encoding="utf-8")
@@ -254,7 +261,9 @@ class ObsidianPublisher:
         extra_sections = ("\n\n".join(extra_blocks) + "\n") if extra_blocks else ""
         transcript_section = ""
         if transcript_md and transcript_md.exists():
-            transcript_section = "## Transcript\n\n" + transcript_md.read_text(encoding="utf-8")
+            if transcript_text is None:
+                transcript_text = publish_text(transcript_md)
+            transcript_section = "## Transcript\n\n" + transcript_text
 
         # The title lands in YAML frontmatter and the H1. Collapse it to one
         # line, then route the frontmatter copy through _yaml_str so a ':' or a

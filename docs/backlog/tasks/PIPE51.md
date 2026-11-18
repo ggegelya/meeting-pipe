@@ -2,9 +2,9 @@
 id: PIPE51
 title: All four publishers send the raw transcript, so speaker names and text corrections made in the Library never reach Notion, Obsidian, the filesystem or LAN
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). Speaker names and line edits live only in the Swift-written overlays; summarize, embed_index and MCP read through transcript_corrections.overlaid_markdown, but the Notion, Obsidian, filesystem and LAN publishers read `<stem>.md` directly, so a Republish keeps the old words and raw labels beside a summary that uses the names (F107; FEAT3-SEGMENT's republish acceptance does not hold for the published transcript; no overlay sidecars in the field window). One publish view of the transcript resolved in fanout and handed to every sink, pinned by a test per sink.
+comment: Shipped 2026-11-18 (tested, all four sinks plus fanout and publish_notion.publish); owner owes one real rename + Republish to Notion/Obsidian to see the names land
 ---
 
 # PIPE51: All four publishers send the raw transcript, so speaker names and text corrections made in the Library never reach Notion, Obsidian, the filesystem or LAN

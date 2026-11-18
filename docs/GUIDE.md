@@ -266,6 +266,8 @@ The report also tells you when an edit and a vocabulary term have started disagr
 
 The transcript and the People rail resolve names every time you open them. The summary does not: it is prose an engine wrote with whatever names existed at the time. So a meeting can read a person's name in the transcript and a cluster label in the summary bullets. The detail header says so, with a **Re-summarize** button beside the sentence. Nothing re-runs on its own, because that is an engine call you should choose.
 
+The transcript copy each destination holds is different: **Republish** sends the transcript as the Library shows it, with the names you gave voices and the line edits you made, in Notion, Obsidian, the folder on disk and a shared folder alike. A Republish after a naming or a correction is enough to bring them up to date; no re-summarize is needed for that part.
+
 ---
 
 ## 5. Finding things

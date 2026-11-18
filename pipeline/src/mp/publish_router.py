@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import events, storage
+from .transcript_corrections import publish_text
 from .config import Config, effective_sinks, zero_egress
 from .schemas import MeetingSummary
 from .services import MeetingPublisher
@@ -262,6 +263,9 @@ def fanout(
     summary = apply_meeting_title(summary, summary_json)
     stem = summary_json.name.removesuffix(".summary.json")
     base = summary_json.parent
+    # PIPE51: one publish view of the transcript (the Library's speaker names and
+    # line edits applied), resolved once and handed to every sink.
+    transcript_text = publish_text(transcript_md)
 
     per_sink: dict[str, Any] = {}
     failures: list[tuple[str, str]] = []
@@ -273,6 +277,7 @@ def fanout(
                 summary=summary,
                 transcript_md=transcript_md,
                 sidecar_path=sidecar,
+                transcript_text=transcript_text,
             )
             per_sink[p.name] = res
             events.emit("publisher", "sink_completed", sink=p.name, file=stem,

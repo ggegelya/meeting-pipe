@@ -85,6 +85,7 @@ class MeetingPublisher(Protocol):
         summary: MeetingSummary,
         transcript_md: Path | None,
         sidecar_path: Path,
+        transcript_text: str | None = None,
     ) -> dict[str, Any]: ...
 
 

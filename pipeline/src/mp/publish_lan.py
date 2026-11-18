@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from . import storage
+from .transcript_corrections import publish_text
 from .markdown import deeplink_stem, render_summary_md
 from .publish_fs import (
     file_url,
@@ -64,6 +65,7 @@ class LanPublisher:
         summary: MeetingSummary,
         transcript_md: Path | None,
         sidecar_path: Path,
+        transcript_text: str | None = None,
     ) -> dict[str, Any]:
         target = self._check_reachable()
         target.mkdir(parents=True, exist_ok=True)
@@ -76,9 +78,8 @@ class LanPublisher:
             [a.model_dump(mode="json") for a in summary.actions],
             indent=2, sort_keys=True,
         )
-        transcript_text = (
-            transcript_md.read_text(encoding="utf-8") if transcript_md and transcript_md.exists() else ""
-        )
+        if transcript_text is None:  # PIPE51: the overlaid view, as the filesystem sink
+            transcript_text = publish_text(transcript_md)
 
         signature = hashlib.sha256(
             (summary_md + "\n---\n" + actions_json + "\n---\n" + transcript_text).encode("utf-8")

@@ -41,6 +41,7 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from . import entry, storage
+from .transcript_corrections import publish_text
 from .config import Config, require_env, zero_egress
 from .endpoints import NOTION_API_BASE, NOTION_API_VERSION, notion_page_url
 from .schemas import MeetingSummary
@@ -78,10 +79,12 @@ class NotionRestPublisher:
         summary: MeetingSummary,
         transcript_md: Path | None,
         sidecar_path: Path,
+        transcript_text: str | None = None,
     ) -> dict[str, Any]:
         existing = _load_sidecar(sidecar_path)
         body_blocks = _build_blocks(
-            summary, transcript_md, self._cfg.notion.include_full_transcript
+            summary, transcript_md, self._cfg.notion.include_full_transcript,
+            transcript_text=transcript_text,
         )
 
         with httpx.Client(
@@ -204,6 +207,7 @@ def publish(
         summary=summary,
         transcript_md=transcript_md,
         sidecar_path=sidecar,
+        transcript_text=publish_text(transcript_md),
     )
 
 
@@ -494,6 +498,8 @@ def _build_blocks(
     summary: MeetingSummary,
     transcript_md: Path | None,
     include_transcript: bool,
+    *,
+    transcript_text: str | None = None,
 ) -> list[dict]:
     """Compose the Notion page body.
 
@@ -548,7 +554,9 @@ def _build_blocks(
             blocks.append(_bullet(item))
 
     if include_transcript and transcript_md and transcript_md.exists():
-        blocks.append(_transcript_toggle(transcript_md.read_text(encoding="utf-8")))
+        # PIPE51: the overlaid view (the caller usually resolved it once already).
+        text = transcript_text if transcript_text is not None else publish_text(transcript_md)
+        blocks.append(_transcript_toggle(text))
 
     return blocks
 

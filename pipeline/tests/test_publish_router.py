@@ -35,7 +35,7 @@ class _RecordingPublisher:
         self.calls: list[Path] = []
 
     def upsert(self, *, summary: MeetingSummary, transcript_md: Path | None,
-                sidecar_path: Path) -> dict[str, Any]:
+                sidecar_path: Path, transcript_text: str | None = None) -> dict[str, Any]:
         self.calls.append(sidecar_path)
         if self.fail:
             raise RuntimeError(f"sink {self.name} blew up")
@@ -144,7 +144,7 @@ class _TitleSpy:
         self.titles: list[str] = []
 
     def upsert(self, *, summary: MeetingSummary, transcript_md: Path | None,
-                sidecar_path: Path) -> dict[str, Any]:
+                sidecar_path: Path, transcript_text: str | None = None) -> dict[str, Any]:
         self.titles.append(summary.title)
         return {"page_id": "x", "page_url": "u", "idempotent": False}
 
