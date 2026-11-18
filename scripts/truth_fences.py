@@ -1065,7 +1065,9 @@ def check_blockers(
 
 # Where a roster name or the owner's label may not appear (as a whole word). One constant, so
 # widening the fence to `daemon/` or the docs is a one-line change.
-PERSONAL_NAME_PATHS = ("pipeline/", "scripts/")
+# T20: the detection corpus too, since a trace's `description` is hand-written prose bound for
+# the public repo; `redact_detection_trace.py --check` runs the same roster scan per trace.
+PERSONAL_NAME_PATHS = ("pipeline/", "scripts/", "daemon/Tests/MeetingPipeCoreTests/Fixtures/detection-corpus/")
 # Where a library stem may not appear. Narrower: docs cite real stems as measurements on purpose.
 PERSONAL_STEM_PATHS = ("pipeline/tests/", "scripts/")
 STEM = re.compile(r"\b20\d{6}-\d{6}\b")

@@ -514,3 +514,88 @@ def test_a_log_split_across_both_families_extracts_as_the_single_file_did(tmp_pa
     assert loaded_split == loaded_single
     window = ("2026-10-22T12:14:50Z", "2026-10-22T12:15:00Z")
     assert _extract(loaded_split, *window) == _extract(loaded_single, *window)
+
+
+# ------------------------------------------------------------------ T20: promotion and prose
+
+_PROMOTION = {
+    "scenario": "teams_native_clean_leave_en", "engine": "promotion",
+    "description": "Teams native call; the AX Leave button goes away and the call ends.",
+    "context": {"bundle_id": TEAMS, "kind": "native", "pid": 1234},
+    "events": [{"t": 0.0, "kind": "ax_leave_button", "state": "live"},
+               {"t": 5.0, "kind": "ax_leave_button", "state": "ended"}],
+    "expected_verdicts": [{"after": "events[0]", "verdict": "in_meeting", "leading": "ax_leave_button"},
+                          {"after": "events[1]", "verdict": "ended", "leading": "ax_leave_button",
+                           "confirmed_by": ["ax_leave_button"]}],
+}
+
+
+def test_a_clean_promotion_trace_passes():
+    assert redact.validate(_PROMOTION) == []
+
+
+def test_the_2026_11_13_promotion_trace_fails_once_per_defect(tmp_path: Path):
+    trace = json.loads(json.dumps(_PROMOTION))
+    trace["description"] = "Weekly sync with Quillon from Brightwater about the launch."
+    trace["notes"] = "call with the partner team"
+    trace["events"][0]["label"] = "planning"
+    trace["expected_verdicts"][1]["leading"] = "Quillon Example"
+    errors = redact.validate(trace)
+    # One per defect, and the description's defect is one per name in it.
+    assert len(errors) == 5, errors
+    assert any("'Quillon'" in e for e in errors) and any("'Brightwater'" in e for e in errors)
+    assert any("'notes'" in e for e in errors)
+    assert any("events[0]" in e and "label" in e for e in errors)
+    assert any("expected_verdicts[1]" in e for e in errors)
+    path = tmp_path / "t.json"
+    path.write_text(json.dumps(trace), encoding="utf-8")
+    assert redact.main([str(path), "--check"]) == 1
+
+
+def test_two_names_in_one_description_are_two_errors():
+    errors = redact.validate_description("A sync with Quillon from Brightwater.")
+    assert len(errors) == 2
+
+
+def test_an_unknown_context_key_fails():
+    trace = json.loads(json.dumps(_PROMOTION))
+    trace["context"]["meeting"] = "x"
+    assert any("context carries unknown key 'meeting'" in e for e in redact.validate(trace))
+
+
+def test_a_non_token_scenario_fails_for_every_engine():
+    lifecycle = {"scenario": "x", "description": "y", "engine": "lifecycle", "origin": "raw",
+                 "expected_outcome": "no_end", "until": 10.0, "events": [],
+                 "context": {"bundle_id": TEAMS, "kind": "native", "pid": 1234}}
+    micgate = {"scenario": "x", "description": "y", "engine": "micgate", "states": []}
+    for trace in (_PROMOTION, lifecycle, micgate):
+        assert not any("scenario" in e for e in redact.validate(trace))
+        bad = {**trace, "scenario": "Call with Quillon"}
+        assert any("scenario must be a snake_case token" in e for e in redact.validate(bad)), trace["engine"]
+
+
+def test_a_lifecycle_description_naming_someone_fails():
+    trace = {"scenario": "x", "engine": "lifecycle", "origin": "raw", "expected_outcome": "no_end",
+             "until": 10.0, "events": [], "context": {"bundle_id": TEAMS, "kind": "native", "pid": 1234},
+             "description": "The owner left the call and then Quillon kept talking."}
+    assert any("'Quillon'" in e for e in redact.validate(trace))
+
+
+def test_every_allowed_word_and_shape_passes_mid_sentence():
+    for word in sorted(redact.DESCRIPTION_WORDS) + ["AX", "VAD", "END17", "D048", "AUD-10",
+                                                    "ProcessAudio", "CallTeardownHoldTests"]:
+        assert redact.validate_description(f"the call used {word} here.") == [], word
+    # A capitalised word opening a sentence is not judged; a long description is.
+    assert redact.validate_description("Quillon. Then the call ended.") == []
+    assert redact.validate_description("x" * (redact.DESCRIPTION_MAX + 1))
+
+
+def test_the_roster_scan_reads_the_owners_roster_and_never_prints_the_name(tmp_path: Path):
+    roster = tmp_path / "roster.json"
+    roster.write_text(json.dumps({"people": [{"name": "Quillon Example"}]}), encoding="utf-8")
+    missing = tmp_path / "no-config.toml"
+    trace = {**_PROMOTION, "description": "quillon joined late."}  # lowercase: the heuristic misses it
+    hits = redact.scan_roster(trace, roster=roster, config=missing)
+    assert hits == ["description: roster name #1"]
+    assert redact.scan_roster(_PROMOTION, roster=roster, config=missing) == []
+    assert redact.scan_roster(trace, roster=tmp_path / "none.json", config=missing) == []

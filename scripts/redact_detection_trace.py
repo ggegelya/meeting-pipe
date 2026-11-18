@@ -10,8 +10,11 @@ enforces the redaction note in
   - rewrites every `pid` to the synthetic constant 1234,
   - replaces title-bearing fields with a neutral placeholder,
   - validates the trace shape and the closed promotion signal vocabulary,
-  - fails (nonzero exit, no write) on any residual PII (email, URL, @-mention),
-    so the stop-and-ask is mechanical, not a matter of remembering.
+  - fails (nonzero exit, no write) on any residual PII (email, URL, @-mention,
+    or on the owner's Mac a roster name, HYG21), so the stop-and-ask is
+    mechanical, not a matter of remembering,
+  - closes every key of a promotion or lifecycle trace, makes `scenario` a token,
+    and bounds the prose `description` (T20).
 
 It does NOT invent `expected_verdicts`; you author those from the real session.
 
@@ -84,14 +87,147 @@ def validate(trace: dict) -> list[str]:
     engine = trace.get("engine")
     if engine not in {"promotion", "micgate", "lifecycle"}:
         errors.append(f"engine must be 'promotion', 'micgate' or 'lifecycle', got {engine!r}")
+    # T20: every engine. `scenario` names the file and is a token; `description` is the one
+    # prose field, so it is bounded and its capitalised words checked.
+    scenario = trace.get("scenario")
+    if not (isinstance(scenario, str) and TOKEN.match(scenario)):
+        errors.append(f"scenario must be a snake_case token, got {scenario!r}")
+    errors += validate_description(trace.get("description"))
     if engine == "promotion":
-        for i, event in enumerate(trace.get("events", [])):
-            kind = event.get("kind") if isinstance(event, dict) else None
-            if kind not in SIGNAL_KINDS and kind not in CONTROL_KINDS:
-                errors.append(f"events[{i}].kind {kind!r} is not in the closed signal or control vocabulary")
+        errors += validate_promotion(trace)
     if engine == "lifecycle":
         errors += validate_lifecycle(trace)
     return errors
+
+
+# T20: the promotion schema, closed the way `validate_lifecycle` closes its own. Before this a
+# promotion trace (35 of 52 committed) accepted any key and any text, and printed OK for one
+# naming a person and a company. These are exactly the keys the committed traces use.
+PROMOTION_KEYS = {
+    "scenario", "description", "engine", "origin", "context", "events",
+    "expected_verdicts", "expected_outcome",
+}
+PROMOTION_EVENT_KEYS = {"t", "kind", "state", "rewalk_signal"}
+PROMOTION_VERDICT_KEYS = {"after", "verdict", "leading", "confirmed_by"}
+CONTEXT_KEYS = {"bundle_id", "kind", "pid"}
+BUNDLE_ID = re.compile(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
+AFTER = re.compile(r"^events\[\d+\]$")
+
+
+def validate_promotion(trace: dict) -> list[str]:
+    errors = [f"unknown top-level key {k!r}" for k in sorted(set(trace) - PROMOTION_KEYS)]
+    if "origin" in trace and trace["origin"] not in {"raw", "synthetic"}:
+        errors.append("origin must be 'raw' or 'synthetic'")
+    if trace.get("expected_outcome") not in {None, "no_end", "ended"}:
+        errors.append("expected_outcome must be 'no_end' or 'ended'")
+    context = trace.get("context")
+    if not isinstance(context, dict):
+        errors.append("context must be {bundle_id, kind: native|browser, pid}")
+    else:
+        errors += [f"context carries unknown key {k!r}" for k in sorted(set(context) - CONTEXT_KEYS)]
+        if context.get("kind") not in {"native", "browser"}:
+            errors.append("context.kind must be native or browser")
+        if not (isinstance(context.get("bundle_id"), str) and BUNDLE_ID.match(context["bundle_id"])):
+            errors.append("context.bundle_id must be a reverse-DNS bundle id")
+    for i, event in enumerate(trace.get("events", [])):
+        where = f"events[{i}]"
+        if not isinstance(event, dict):
+            errors.append(f"{where} must be an object")
+            continue
+        kind = event.get("kind")
+        if kind not in SIGNAL_KINDS and kind not in CONTROL_KINDS:
+            errors.append(f"{where}.kind {kind!r} is not in the closed signal or control vocabulary")
+        extra = set(event) - PROMOTION_EVENT_KEYS
+        if extra:
+            errors.append(f"{where} carries unknown key(s) {sorted(extra)}")
+        if "state" in event and event["state"] not in {"live", "ended"}:
+            errors.append(f"{where}.state must be live or ended")
+        if "rewalk_signal" in event and not (isinstance(event["rewalk_signal"], str)
+                                             and TOKEN.match(event["rewalk_signal"])):
+            errors.append(f"{where}.rewalk_signal must be a snake_case token")
+    for i, rec in enumerate(trace.get("expected_verdicts", [])):
+        where = f"expected_verdicts[{i}]"
+        if not isinstance(rec, dict):
+            errors.append(f"{where} must be an object")
+            continue
+        extra = set(rec) - PROMOTION_VERDICT_KEYS
+        if extra:
+            errors.append(f"{where} carries unknown key(s) {sorted(extra)}")
+        if rec.get("verdict") not in VERDICTS:
+            errors.append(f"{where}.verdict must be one of {sorted(VERDICTS)}")
+        if not (isinstance(rec.get("after"), str) and AFTER.match(rec["after"])):
+            errors.append(f"{where}.after must be events[<n>]")
+        confirmed = rec.get("confirmed_by", [])
+        tokens = ([rec["leading"]] if "leading" in rec else []) + (
+            list(confirmed) if isinstance(confirmed, list) else [confirmed])
+        if not all(isinstance(tok, str) and TOKEN.match(tok) for tok in tokens):
+            errors.append(f"{where} leading/confirmed_by must be snake_case signal tokens")
+    return errors
+
+
+# T20: `description` is the one prose field in a trace, so it is where a person's or a
+# company's name would land. Bounded in length (the longest committed is 1,003 characters),
+# and a capitalised word that does not open a sentence must be an all-caps token (AX, VAD,
+# END17, D048), a CamelCase code symbol (ProcessAudio, CallTeardownHoldTests), or one of
+# these words, each a product, vendor, UI label or language the committed traces discuss.
+# A heuristic, not a guarantee: a name opening a sentence passes, and so does a lowercase one.
+# On the owner's Mac the HYG21 roster check (`scan_roster`) covers both.
+DESCRIPTION_MAX = 1200
+DESCRIPTION_WORDS = {
+    "Teams", "Zoom", "Meet", "Google", "Webex", "Cisco", "Chrome", "Safari",  # products, vendors
+    "Leave", "Center",  # UI labels: the Leave button, Control Center
+    "English", "German",  # the locales a trace is recorded in
+}
+CAPS_TOKEN = re.compile(r"^[A-Z][A-Z0-9]*(?:-\d+)?$")
+CAMEL_SYMBOL = re.compile(r"^[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+$")
+
+
+def validate_description(description: object) -> list[str]:
+    if not isinstance(description, str):
+        return ["description must be a string"]
+    errors: list[str] = []
+    if len(description) > DESCRIPTION_MAX:
+        errors.append(f"description is {len(description)} characters, over the {DESCRIPTION_MAX} cap")
+    for sentence in re.split(r"(?<=[.!?:;])\s+", description):
+        words = re.findall(r"[A-Za-z][A-Za-z0-9-]*", sentence)
+        for word in words[1:]:
+            if not word[0].isupper() or word in DESCRIPTION_WORDS:
+                continue
+            if CAPS_TOKEN.match(word) or CAMEL_SYMBOL.match(word):
+                continue
+            errors.append(f"description: capitalised word {word!r} is not an allowed product, "
+                          "acronym or code symbol (a name? reword it generically)")
+    return errors
+
+
+def scan_roster(trace: object, roster: Path | None = None, config: Path | None = None) -> list[str]:
+    """HYG21's personal fence, applied to a trace: any whole-word roster name or the owner's
+    label in any string fails. Read from the owner's own files through `truth_fences`, never
+    from the repo, so it runs on the owner's Mac and is a no-op elsewhere. Reports the path
+    and which roster entry, never the name, so the output carries none."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        import truth_fences
+    finally:
+        sys.path.pop(0)
+    names, _stems, _found = truth_fences.personal_sources(
+        roster or truth_fences.DEFAULT_ROSTER, config or truth_fences.DEFAULT_CONFIG, None)
+    patterns = [(tag, re.compile(r"(?<![^\W_])" + re.escape(tok) + r"(?![^\W_])", re.IGNORECASE))
+                for tag, tok in names]
+    findings: list[str] = []
+
+    def walk(obj: object, path: str) -> None:
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                walk(value, f"{path}.{key}" if path else key)
+        elif isinstance(obj, list):
+            for i, item in enumerate(obj):
+                walk(item, f"{path}[{i}]")
+        elif isinstance(obj, str):
+            findings.extend(f"{path}: {tag}" for tag, pat in patterns if pat.search(obj))
+
+    walk(trace, "")
+    return findings
 
 
 # T8: an `engine: "lifecycle"` trace (raw from `extract_detection_trace.py --raw`, or a
@@ -266,7 +402,7 @@ def main(argv: list[str]) -> int:
     errors = validate(trace)
     if unredacted:
         errors.append("the file still needs redacting (a real pid or a title); run without --check and commit the output")
-    pii = scan_pii(trace)
+    pii = scan_pii(trace) + [f"{hit} (HYG21 roster)" for hit in scan_roster(trace)]
 
     for err in errors:
         print(f"INVALID  {err}", file=sys.stderr)

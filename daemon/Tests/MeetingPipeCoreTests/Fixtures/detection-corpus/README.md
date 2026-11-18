@@ -168,8 +168,15 @@ structural signal, never meeting content. Before a real trace lands:
   before it; only the legacy set may carry it, T17). Anything else the loader
   rejects; do not invent kinds to carry extra data.
 - **No free text, anywhere.** No emails, URLs, `@`-mentions, or notes. The only
-  human-readable strings should be `scenario`, `description` (write it yourself,
-  generic), and a `label`. This matches the SEC6 owner/attendee scrub posture.
+  human-readable string is `description` (write it yourself, generic, at most 1,200
+  characters). `scenario` is a snake_case token, and so is a `label`, which exists
+  only on micgate `states[]`, never on a promotion or lifecycle event. This matches
+  the SEC6 owner/attendee scrub posture. `redact_detection_trace.py --check` enforces
+  it (T20): every promotion and lifecycle key is closed, and a capitalised word in
+  `description` that does not open a sentence must be an acronym, a task id, a
+  CamelCase code symbol, or one of the product words beside `DESCRIPTION_WORDS`, so
+  a person's or company's name fails. That is a heuristic; on the owner's Mac the
+  same check, and `truth_fences.py personal`, also refuse any roster name.
 - **Never commit raw `events.jsonl`.** It is the unredacted source. Derive a
   trace from it, redact, and commit only the trace.
 - **Locale:** meetings are English or Ukrainian here. Keep `expected_locale` /

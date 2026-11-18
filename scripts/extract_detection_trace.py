@@ -625,7 +625,8 @@ def extract_raw(
 
     app = "teams" if bundle == "com.microsoft.teams2" else bundle.split(".")[-1]
     trace: dict = {
-        "scenario": scenario or f"{app}_{kind}_raw_{start.strftime('%Y%m%dT%H%M%SZ')}",
+        # T20: a scenario is a snake_case token, so the default is lowercased (`...t120000z`).
+        "scenario": scenario or f"{app}_{kind}_raw_{start.strftime('%Y%m%dT%H%M%SZ')}".lower(),
         "description": (f"Raw lifecycle trace (redacted), extracted by scripts/extract_detection_trace.py --raw: "
                         f"{bundle} {kind}, {len(out)} events. Titles dropped and pid set to 1234; readings from "
                         "before the window are carried at their real offsets; logged_verdicts is what the engine "

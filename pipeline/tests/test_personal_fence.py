@@ -80,3 +80,13 @@ def test_synthetic_names_pass(tmp_path, capsys):
     root, *src = _setup(tmp_path, {"pipeline/tests/test_x.py": 'speakers = ["Avery", "Blake"]\n'})
     ok, _ = _run(root, *src, capsys)
     assert ok
+
+
+def test_a_roster_name_in_a_detection_corpus_trace_fails(tmp_path: Path, capsys):
+    # T20: a trace's description is prose bound for the public repo.
+    corpus = "daemon/Tests/MeetingPipeCoreTests/Fixtures/detection-corpus/x.json"
+    root, roster, config, library = _setup(tmp_path, {corpus: f'{{"description": "a call with {NAME}"}}\n'})
+    ok, out = _run(root, roster, config, library, capsys)
+    assert not ok
+    assert f"{corpus}:1: roster name #1" in out
+    assert NAME not in out
