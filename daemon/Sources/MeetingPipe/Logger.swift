@@ -55,7 +55,7 @@ enum Log {
     /// if a future toolchain stops exporting them. The production app never links XCTest.
     /// Memoized (PERF13): whether XCTest is loaded cannot change within a process, and the
     /// production answer used to be an `NSClassFromString` lookup on every line.
-    private static let isRunningUnderTests: Bool = {
+    static let isRunningUnderTests: Bool = {
         if getenv("XCTestConfigurationFilePath") != nil
             || getenv("XCTestBundlePath") != nil
             || getenv("XCTestSessionIdentifier") != nil {

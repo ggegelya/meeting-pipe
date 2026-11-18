@@ -69,6 +69,29 @@ final class LibraryDefaultSTOR6Tests: XCTestCase {
         XCTAssertEqual(store.outputDirPath, "~/Mine/raw")
     }
 
+    /// The advisor's case: one typo in config.toml makes the store run on defaults and refuse
+    /// saves, so the pin cannot write; the in-memory default must still be the library the owner
+    /// has, or the next recording lands in an empty new folder and the Library reads empty.
+    func test_a_config_that_did_not_parse_still_records_into_the_old_library() throws {
+        let url = tempDir.appendingPathComponent("broken.toml")
+        try "[recording\noutput_dir = ".write(to: url, atomically: true, encoding: .utf8)
+        let store = ConfigStore(configURL: url, legacyHasEntries: { $0 == ConfigDefaults.legacyOutputDirPath })
+        XCTAssertNotNil(store.parseError)
+        XCTAssertEqual(store.outputDirPath, ConfigDefaults.legacyOutputDirPath)
+        XCTAssertTrue(store.config.recording.outputDir.path.hasSuffix("Documents/Meetings/raw"))
+        XCTAssertEqual(store.filesystemOutputDir, ConfigDefaults.filesystemOutputDirPath, "an empty old default moves")
+    }
+
+    func test_with_no_old_library_a_fresh_store_reads_the_new_defaults() throws {
+        let store = ConfigStore(configURL: tempDir.appendingPathComponent("absent.toml"), legacyHasEntries: { _ in false })
+        XCTAssertEqual(store.outputDirPath, ConfigDefaults.outputDirPath)
+        XCTAssertEqual(store.filesystemOutputDir, ConfigDefaults.filesystemOutputDirPath)
+    }
+
+    func test_the_suite_never_reads_a_real_old_library() {
+        XCTAssertFalse(LibraryDefaultPin.defaultHasEntries(ConfigDefaults.legacyOutputDirPath))
+    }
+
     func test_a_config_that_did_not_parse_is_not_written() throws {
         let store = try store("[recording\noutput_dir = ")
         XCTAssertNotNil(store.parseError)

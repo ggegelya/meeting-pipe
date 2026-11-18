@@ -295,9 +295,11 @@ final class ConfigStore: ObservableObject {
     private var isInitialized: Bool = false
 
     init(configURL: URL = Config.defaultPath,
-         writeQueue: DispatchQueue = DebouncedSaver.makeQueue(label: "com.meetingpipe.configstore.write")) {
+         writeQueue: DispatchQueue = DebouncedSaver.makeQueue(label: "com.meetingpipe.configstore.write"),
+         legacyHasEntries: @escaping (String) -> Bool = LibraryDefaultPin.defaultHasEntries) {
         self.configURL = configURL
         self.writeQueue = writeQueue
+        self.legacyHasEntries = legacyHasEntries
         let file = Self.read(configURL)
         apply(file)
         markSynced(bytes: file.bytes)
@@ -497,7 +499,9 @@ final class ConfigStore: ObservableObject {
         let lan = doc["lan"]?.table
         let mcp = doc["mcp"]?.table
 
-        self.outputDirPath = rec?["output_dir"]?.string ?? ConfigDefaults.outputDirPath
+        // STOR6: a missing key falls to the old default while it holds files (`LibraryDefaultPin`).
+        self.outputDirPath = rec?["output_dir"]?.string
+            ?? LibraryDefaultPin.effectiveDefault(LibraryDefaultPin.recordings, hasEntries: legacyHasEntries)
         self.autoConsentApps = (rec?["auto_consent_apps"]?.array?.compactMap { $0.string })
             ?? ConfigDefaults.autoConsentApps
         self.voiceProcessing = rec?["voice_processing"]?.bool ?? ConfigDefaults.voiceProcessing
@@ -561,10 +565,14 @@ final class ConfigStore: ObservableObject {
         self.obsidianAttachmentsSubfolder = obsidian?["attachments_subfolder"]?.string
             ?? "_attachments"
         self.filesystemOutputDir = filesystem?["output_dir"]?.string
-            ?? ConfigDefaults.filesystemOutputDirPath
+            ?? LibraryDefaultPin.effectiveDefault(LibraryDefaultPin.published, hasEntries: legacyHasEntries)
         self.lanMountPath = lan?["mount_path"]?.string ?? "/Volumes/meetings"
         self.lanHost = lan?["host"]?.string ?? ""
     }
+
+    /// STOR6: whether an old default directory holds files; injected so a test never reads the
+    /// developer's real library.
+    private let legacyHasEntries: (String) -> Bool
 
     /// STOR6 item 2: whether the file names `[table] key` itself, as opposed to the value being
     /// the default this store filled in.
@@ -576,8 +584,9 @@ final class ConfigStore: ObservableObject {
     /// not name, then save at once. Returns the keys pinned. Never on a file that did not parse
     /// (saves are refused there anyway, and the store is running on defaults).
     @discardableResult
-    func pinLegacyDefaults(hasEntries: (String) -> Bool = { LibraryDefaultPin.hasEntries($0) }) -> [LibraryDefaultPin.Key] {
+    func pinLegacyDefaults(hasEntries: ((String) -> Bool)? = nil) -> [LibraryDefaultPin.Key] {
         guard parseError == nil else { return [] }
+        let hasEntries = hasEntries ?? legacyHasEntries
         var pinned: [LibraryDefaultPin.Key] = []
         for key in [LibraryDefaultPin.recordings, LibraryDefaultPin.published]
         where LibraryDefaultPin.shouldPin(configNamesKey: namesKey(key), legacyHasEntries: hasEntries(key.legacy)) {

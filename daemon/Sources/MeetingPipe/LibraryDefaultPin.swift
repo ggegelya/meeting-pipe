@@ -33,6 +33,23 @@ enum LibraryDefaultPin {
         !configNamesKey && legacyHasEntries
     }
 
+    /// The default a config that names no path gets: the old one while it holds files, else the
+    /// new one. Applied to the in-memory value as well as written by the pin, so a `config.toml`
+    /// that does not parse (the store then runs on defaults and writes nothing) still records into
+    /// the library the owner has, not an empty new folder; and so does every `ConfigStore()` reader
+    /// that never runs the pin (the `doctor` subcommand, `RosterRename`).
+    static func effectiveDefault(_ key: Key, hasEntries: (String) -> Bool) -> String {
+        hasEntries(key.legacy) ? key.legacy : key.current
+    }
+
+    /// The production check. Under XCTest it reads nothing and answers false, the way `Log`
+    /// redirects its directory there: a developer's Mac holds a real library at the old default,
+    /// and a suite that read it would see the old default wherever it expects the new one. A test
+    /// that wants the old library injects its own.
+    static let defaultHasEntries: @Sendable (String) -> Bool = { path in
+        Log.isRunningUnderTests ? false : hasEntries(path)
+    }
+
     /// Whether `path` (tilde allowed) is a directory with at least one entry.
     static func hasEntries(_ path: String, fileManager: FileManager = .default) -> Bool {
         let expanded = (path as NSString).expandingTildeInPath
