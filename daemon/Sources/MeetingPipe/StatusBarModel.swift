@@ -445,6 +445,8 @@ enum StatusBarModel {
     enum ConfigUnreadable: Equatable {
         /// It does not parse; the app runs on the last library it knew, regulated, saves refused.
         case syntaxError
+        /// PIPE42: it parses but its regulated switch cannot be trusted; regulated, saves refused.
+        case cannotBeTrusted
         /// It does not parse and nothing says where the library is, so recordings are refused (F056).
         case recordingsPaused
     }
@@ -452,7 +454,8 @@ enum StatusBarModel {
     static func configUnreadableTitle(_ state: ConfigUnreadable) -> String {
         switch state {
         case .syntaxError: return "⚠ Settings file has a syntax error - open Preferences"
-        case .recordingsPaused: return "⚠ Settings file has a syntax error - recordings paused until it is fixed"
+        case .cannotBeTrusted: return "⚠ Settings file needs fixing - open Preferences"
+        case .recordingsPaused: return "⚠ Settings file cannot be read - recordings paused until it is fixed"
         }
     }
 

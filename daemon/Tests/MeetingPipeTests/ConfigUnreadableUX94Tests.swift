@@ -66,7 +66,7 @@ final class ConfigUnreadableUX94Tests: XCTestCase {
         XCTAssertTrue(rows.contains(.configUnreadable(title: "⚠ Settings file has a syntax error - open Preferences")))
         let paused = StatusBarModel.rows(.init(configUnreadable: .recordingsPaused))
         XCTAssertTrue(paused.contains(.configUnreadable(
-            title: "⚠ Settings file has a syntax error - recordings paused until it is fixed")))
+            title: "⚠ Settings file cannot be read - recordings paused until it is fixed")))
     }
 
     func test_finish_setup_lists_the_settings_file_first() {
@@ -104,6 +104,21 @@ final class ConfigUnreadableUX94Tests: XCTestCase {
         XCTAssertNil(store.parseError)
         XCTAssertFalse(store.recordingRootUnknown)
         XCTAssertEqual(store.outputDirPath, "~/Back/raw")
+    }
+
+    /// PIPE42: the file parses but its regulated switch is wrong. Its own `output_dir` is the library,
+    /// not the memory or a default, and nothing is refused.
+    func test_a_file_that_parses_but_cannot_be_trusted_keeps_its_own_output_dir() throws {
+        let memory = Memory()
+        memory.value = "~/Remembered/raw"
+        let url = try write("[recording]\noutput_dir = \"~/Named/raw\"\n[modes]\nregulated_mode = \"true\"\n")
+        let store = ConfigStore(configURL: url, legacyHasEntries: { _ in false }, lastGoodOutputDir: memory.store)
+        XCTAssertNotNil(store.parseError?.summary, "a PIPE42 refusal, not a syntax error")
+        XCTAssertEqual(store.outputDirPath, "~/Named/raw")
+        XCTAssertFalse(store.recordingRootUnknown)
+        XCTAssertEqual(memory.value, "~/Remembered/raw", "an untrusted file is not remembered")
+        XCTAssertEqual(StatusBarModel.configUnreadableTitle(.cannotBeTrusted),
+                       "⚠ Settings file needs fixing - open Preferences")
     }
 
     func test_with_nothing_remembered_stor6s_old_library_is_still_used() throws {

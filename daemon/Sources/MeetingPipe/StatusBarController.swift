@@ -505,7 +505,9 @@ final class StatusBarController {
             unsavedSetting: coordinator?.configStore?.saveError != nil || coordinator?.secretsStore?.saveError != nil,
             notificationsOff: notificationsOff,
             configUnreadable: coordinator?.configStore.flatMap { store in
-                store.parseError == nil ? nil : (store.recordingRootUnknown ? .recordingsPaused : .syntaxError)
+                guard let error = store.parseError else { return nil }
+                if store.recordingRootUnknown { return .recordingsPaused }
+                return error.summary == nil ? .syntaxError : .cannotBeTrusted
             },
             scheduledRunTitle: scheduledRunTitle,
             relaunchAfterQuit: UISettings.shared.relaunchAfterQuit,

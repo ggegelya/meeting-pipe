@@ -556,11 +556,16 @@ final class ConfigStore: ObservableObject {
         // F056: a file that does not parse keeps the library the last parsed file named; with
         // nothing remembered it falls to STOR6's default, and a start is refused when that default
         // is not one the owner's library is known to be in (`recordingRootUnknown`).
+        // A PIPE42 file parses (the document is the file's) but cannot be trusted for regulated mode;
+        // its `output_dir` is still the owner's, so a value in the document always wins.
         let stor6Default = LibraryDefaultPin.effectiveDefault(LibraryDefaultPin.recordings, hasEntries: legacyHasEntries)
-        if file.parseError == nil {
-            let path = rec?["output_dir"]?.string ?? stor6Default
-            self.outputDirPath = path
-            lastGoodOutputDir.set(path)
+        if let named = rec?["output_dir"]?.string {
+            self.outputDirPath = named
+            if file.parseError == nil { lastGoodOutputDir.set(named) }
+            self.recordingRootUnknown = false
+        } else if file.parseError == nil {
+            self.outputDirPath = stor6Default
+            lastGoodOutputDir.set(stor6Default)
             self.recordingRootUnknown = false
         } else if let remembered = lastGoodOutputDir.get() {
             self.outputDirPath = remembered

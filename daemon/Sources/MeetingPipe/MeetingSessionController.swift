@@ -863,7 +863,7 @@ final class MeetingSessionController: @unchecked Sendable {
         if coordinator.recordingRootUnknown {
             Log.event(category: "coordinator", action: "recording_blocked", attributes: ["reason": "config_unreadable"])
             coordinator.notifications.notifyError(
-                "Recordings are paused until config.toml is fixed: it has a syntax error, and MeetingPipe cannot tell where your recordings go.",
+                "Recordings are paused until config.toml is fixed: MeetingPipe cannot read it, so it cannot tell where your recordings go.",
                 operation: .recording, title: nil
             )
             coordinator.menuPreferences()
