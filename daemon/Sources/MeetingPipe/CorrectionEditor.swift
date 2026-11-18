@@ -18,21 +18,21 @@ struct CorrectionEditorBody: View {
             VStack(alignment: .leading, spacing: 18) {
                 titleField
                 listSection(
-                    title: "Summary", items: $model.summary,
+                    title: "Summary", items: $model.summaryLines,
                     placeholder: "One summary bullet",
                     limit: MeetingSummary.summaryMaxItems
                 )
                 listSection(
-                    title: "Decisions", items: $model.decisions,
+                    title: "Decisions", items: $model.decisionLines,
                     placeholder: "Explicit commitment, e.g. \"agreed to ship Friday\""
                 )
                 actionsSection
                 listSection(
-                    title: "Open questions", items: $model.questions,
+                    title: "Open questions", items: $model.questionLines,
                     placeholder: "Unresolved question raised in the meeting"
                 )
                 listSection(
-                    title: "Attendees", items: $model.attendees,
+                    title: "Attendees", items: $model.attendeeLines,
                     placeholder: "Name or speaker label"
                 )
                 languageRow
@@ -66,9 +66,21 @@ struct CorrectionEditorBody: View {
         }
     }
 
+    /// HYG22: an id-keyed binding into one row's text. A row removed meanwhile reads empty and
+    /// ignores writes, rather than trapping on a stale index (`WorkflowEditor.ruleBinding`).
+    static func lineBinding(_ items: Binding<[EditableLine]>, _ id: EditableLine.ID) -> Binding<String> {
+        Binding(
+            get: { items.wrappedValue.first { $0.id == id }?.text ?? "" },
+            set: { newValue in
+                guard let i = items.wrappedValue.firstIndex(where: { $0.id == id }) else { return }
+                items.wrappedValue[i].text = newValue
+            }
+        )
+    }
+
     private func listSection(
         title: String,
-        items: Binding<[String]>,
+        items: Binding<[EditableLine]>,
         placeholder: String,
         limit: Int? = nil
     ) -> some View {
@@ -77,7 +89,7 @@ struct CorrectionEditorBody: View {
                 Text(title).font(.headline)
                 Spacer()
                 Button {
-                    items.wrappedValue.append("")
+                    items.wrappedValue.append(EditableLine(text: ""))
                 } label: {
                     Label("Add", systemImage: "plus")
                         .labelStyle(.iconOnly)
@@ -86,13 +98,15 @@ struct CorrectionEditorBody: View {
                 .disabled(limit.map { items.wrappedValue.count >= $0 } ?? false)
             }
             VStack(spacing: 6) {
-                ForEach(items.wrappedValue.indices, id: \.self) { i in
+                // HYG22: rows keyed by their own id and bound through `lineBinding`, never by
+                // position (`WorkflowEditor.ruleBinding`'s fix).
+                ForEach(items.wrappedValue) { line in
                     HStack(alignment: .top, spacing: 8) {
-                        TextField(placeholder, text: items[i], axis: .vertical)
+                        TextField(placeholder, text: Self.lineBinding(items, line.id), axis: .vertical)
                             .textFieldStyle(.roundedBorder)
                             .lineLimit(1...6)
                         Button {
-                            items.wrappedValue.remove(at: i)
+                            items.wrappedValue.removeAll { $0.id == line.id }
                         } label: {
                             Image(systemName: "minus.circle")
                         }

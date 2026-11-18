@@ -251,6 +251,28 @@ enum CorrectionOutcome {
     }
 }
 
+/// HYG22 (G017): one row of the editor's string lists, with an identity of its own so a row's
+/// binding and focus follow the row, not its position. Deleting a middle row used to shift every
+/// later row's identity onto its neighbour, and a positional `items[i]` read after the array shrank
+/// traps. `EditableAction` below already had this shape.
+struct EditableLine: Identifiable, Equatable {
+    let id = UUID()
+    var text: String
+
+    /// `texts` as rows, keeping the identity of each row that is still at its position, so a
+    /// whole-list write (a test, a reset) does not re-key rows the user is in.
+    static func rows(_ texts: [String], keeping existing: [EditableLine] = []) -> [EditableLine] {
+        texts.enumerated().map { i, text in
+            if i < existing.count {
+                var row = existing[i]
+                row.text = text
+                return row
+            }
+            return EditableLine(text: text)
+        }
+    }
+}
+
 struct EditableAction: Identifiable, Equatable {
     let id = UUID()
     var task: String
@@ -280,11 +302,31 @@ final class CorrectionViewModel: ObservableObject {
     let loadedIdentity: SummaryIdentity?
 
     @Published var title: String
-    @Published var summary: [String]
-    @Published var decisions: [String]
+    /// HYG22: the four string lists as id-keyed rows, which the editor binds; the `[String]`
+    /// accessors below are what the save path, the schema check and FEAT10's evidence remap read,
+    /// so they see exactly what they saw before.
+    @Published var summaryLines: [EditableLine]
+    @Published var decisionLines: [EditableLine]
     @Published var actions: [EditableAction]
-    @Published var questions: [String]
-    @Published var attendees: [String]
+    @Published var questionLines: [EditableLine]
+    @Published var attendeeLines: [EditableLine]
+
+    var summary: [String] {
+        get { summaryLines.map(\.text) }
+        set { summaryLines = EditableLine.rows(newValue, keeping: summaryLines) }
+    }
+    var decisions: [String] {
+        get { decisionLines.map(\.text) }
+        set { decisionLines = EditableLine.rows(newValue, keeping: decisionLines) }
+    }
+    var questions: [String] {
+        get { questionLines.map(\.text) }
+        set { questionLines = EditableLine.rows(newValue, keeping: questionLines) }
+    }
+    var attendees: [String] {
+        get { attendeeLines.map(\.text) }
+        set { attendeeLines = EditableLine.rows(newValue, keeping: attendeeLines) }
+    }
     @Published var detectedLanguage: String
     @Published var notes: String = ""
     /// UX99: the editor's own rendering of the summary it opened on (`makeCorrectedSummary()` before
@@ -307,10 +349,10 @@ final class CorrectionViewModel: ObservableObject {
         self.loadedIdentity = loadedIdentity
 
         self.title = originalSummary.title
-        self.summary = originalSummary.summary
-        self.decisions = originalSummary.decisions
-        self.questions = originalSummary.questions
-        self.attendees = originalSummary.attendees
+        self.summaryLines = EditableLine.rows(originalSummary.summary)
+        self.decisionLines = EditableLine.rows(originalSummary.decisions)
+        self.questionLines = EditableLine.rows(originalSummary.questions)
+        self.attendeeLines = EditableLine.rows(originalSummary.attendees)
         self.detectedLanguage = originalSummary.detectedLanguage ?? "en"
         self.actions = originalSummary.actions.map {
             EditableAction(

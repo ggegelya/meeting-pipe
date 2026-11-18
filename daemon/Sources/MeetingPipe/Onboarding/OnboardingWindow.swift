@@ -83,15 +83,7 @@ final class OnboardingWindowController {
             self?.deps.onFinish()
             self?.close()
         }
-        let host = NSHostingController(rootView: MPControlAccent(root))
-        let w = NSWindow(contentViewController: host)
-        w.title = "Welcome to MeetingPipe"
-        w.styleMask = [.titled, .fullSizeContentView]
-        w.titlebarAppearsTransparent = true
-        w.titleVisibility = .hidden
-        w.isMovableByWindowBackground = true
-        w.setContentSize(NSSize(width: 560, height: 520))
-        w.center()
+        let w = Self.makeWindow(content: MPControlAccent(root))
         window = w
         w.makeKeyAndOrderFront(nil)
         NSApp.activate()
@@ -100,6 +92,26 @@ final class OnboardingWindowController {
     func close() {
         window?.close()
         window = nil
+    }
+
+    /// HYG22 (F077): the window, built where its lifetime flag is set. `NSWindow`'s
+    /// `isReleasedWhenClosed` defaults to true, so `close()` released it once and clearing
+    /// `window` released it again under ARC; every other closing window controller already set
+    /// it false (`LibraryWindow`, `PreferencesWindow`, `DiagnosticsWindow`, `GuideWindow`,
+    /// `CorrectionWindow`). Static so a test can build one without `show()`, which activates the
+    /// app and needs the full dependency set (and would consume `OnboardingResume`).
+    static func makeWindow<Content: View>(content: Content) -> NSWindow {
+        let host = NSHostingController(rootView: content)
+        let w = NSWindow(contentViewController: host)
+        w.isReleasedWhenClosed = false
+        w.title = "Welcome to MeetingPipe"
+        w.styleMask = [.titled, .fullSizeContentView]
+        w.titlebarAppearsTransparent = true
+        w.titleVisibility = .hidden
+        w.isMovableByWindowBackground = true
+        w.setContentSize(NSSize(width: 560, height: 520))
+        w.center()
+        return w
     }
 }
 
