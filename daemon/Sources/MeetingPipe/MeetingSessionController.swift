@@ -739,7 +739,7 @@ final class MeetingSessionController: @unchecked Sendable {
     func beginRecording(source: AppSource?, summaryMode: SummaryMode) {
         assertMainQueue()
         coordinator.stateMachine.cancelPromptTimeout()
-        // STOR16 (owner decision, option b): while the library folder is being moved, no capture
+        // STOR16 (option b, the spec's proposal; the owner's choice is still pending): while the library folder is being moved, no capture
         // file may open under the old root or the new one. Defer the start, before anything below
         // consumes routing state, and replay it unchanged when the move ends. The opening of the
         // meeting is lost for the move's length: milliseconds for a same-volume rename.
