@@ -147,6 +147,11 @@ final class SpyStatusPresenter: SessionStatusPresenting {
         self.isStillOffered = isStillOffered
     }
     func refreshMenuForPermissionChange() { permissionRefreshCount += 1 }
+    /// UX106: the Starting state and the press-ignored flashes, in order.
+    private(set) var startingSources: [AppSource?] = []
+    private(set) var flashes: [String] = []
+    func setStarting(source: AppSource?) { startingSources.append(source) }
+    func flashNote(_ text: String) { flashes.append(text) }
 }
 
 final class SpyNotifier: SessionNotifying {
@@ -289,9 +294,14 @@ final class SpyRecorder: SessionRecording {
     /// END9 records what it was handed so a test can assert a held end trims and an ordinary one
     /// does not.
     var lastStopLimitSeconds: Double??
+    /// UX106: while true, `stop` parks, so a test can press during `.stopping`. Clear it to finish.
+    var stopBehaviourHangs = false
     func stop(limitSeconds: Double?) async -> Bool {
         lastStopLimitSeconds = .some(limitSeconds)
         stopCallCount += 1
+        while stopBehaviourHangs {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
         return stopResult
     }
 
@@ -321,6 +331,9 @@ final class SpyHUD: SessionHUDPresenting {
         presentedWorkflows.append(workflow)
     }
     func dismiss(animated: Bool) { dismissCount += 1 }
+    /// UX106: the Starting HUD, counted apart from a recording's `present`.
+    private(set) var startingPresentCount = 0
+    func presentStarting(source: AppSource?) { startingPresentCount += 1 }
     func acknowledgeFlag(count: Int) {
         flagCount = count
         acknowledgedFlagCounts.append(count)

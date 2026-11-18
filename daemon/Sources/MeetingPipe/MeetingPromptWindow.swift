@@ -112,6 +112,8 @@ final class MeetingPromptWindow {
     private var hintSuggestion: WorkflowRoutingHint.Suggestion?
     private var ruleWorkflow: Workflow?
     private weak var lastTimeButton: PromptGhostButton?
+    /// UX106: the primary action, held so Record can settle into its Starting look first.
+    private weak var recordButton: PromptRecordButton?
     /// Constraints the "Last time" button collapses through when there is no card
     /// (an NSView keeps its constraints while hidden, so the width has to go too).
     private var lastTimeWidth: NSLayoutConstraint?
@@ -369,6 +371,7 @@ final class MeetingPromptWindow {
         // into one control; "Record (BYO)" and the other secondary actions live under
         // the ⌄ menu so the cluster stays quiet.
         let record = PromptRecordButton(target: bg, action: #selector(RoundedBackgroundView.didClickRecord))
+        self.recordButton = record
         record.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(record)
 
@@ -526,6 +529,20 @@ final class MeetingPromptWindow {
 
     // MARK: - Click handling
 
+    /// UX106: give the choice a visible first frame before the delegate's synchronous work runs. A
+    /// choice that starts a recording settles the Record capsule into its pressed Starting look and
+    /// draws it now, so the fade that follows carries it; Skip keeps the panel as it is and fades.
+    /// Before, every answer was the same fade after the delegate returned, so Record looked like Skip.
+    private func acknowledge(_ choice: PromptChoice) {
+        switch PromptChoice.look(for: choice) {
+        case .starting:
+            recordButton?.showStarting()
+            panel?.displayIfNeeded()
+        case .fadeOut:
+            break
+        }
+    }
+
     fileprivate func handleRecord() {
         let seq = UILatency.shared.action("prompt_record", surface: "prompt")
         guard let s = menuSource ?? currentSource else {
@@ -533,6 +550,7 @@ final class MeetingPromptWindow {
             return
         }
         actionSeq = seq
+        acknowledge(.record)
         delegate?.meetingPrompt(self, didChooseRecord: s)
         dismiss()
     }
@@ -544,6 +562,7 @@ final class MeetingPromptWindow {
             return
         }
         actionSeq = seq
+        acknowledge(.skip)
         delegate?.meetingPrompt(self, didChooseSkip: s)
         dismiss()
     }
@@ -555,6 +574,7 @@ final class MeetingPromptWindow {
             return
         }
         actionSeq = seq
+        acknowledge(.always)
         delegate?.meetingPrompt(self, didChooseAlways: s)
         dismiss()
     }
@@ -566,6 +586,7 @@ final class MeetingPromptWindow {
             return
         }
         actionSeq = seq
+        acknowledge(.recordBYO)
         delegate?.meetingPrompt(self, didChooseRecordBYO: s)
         dismiss()
     }
@@ -1227,6 +1248,34 @@ final class PromptRecordButton: NSControl {
     }
 
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+
+    /// UX106: the pressed, labelled look a Record (or Always, or BYO) choice settles into.
+    func showStarting() {
+        titleLabel.stringValue = StatusBarModel.startingLabel
+        layer?.opacity = 0.82
+        isEnabled = false
+        setAccessibilityLabel(StatusBarModel.startingLabel)
+        invalidateIntrinsicContentSize()
+    }
+}
+
+/// UX106: the prompt's four answers, and the first frame each gets before the delegate runs.
+enum PromptChoice: Equatable {
+    case record, recordBYO, always, skip
+
+    enum Look: Equatable {
+        /// The Record capsule reads "Starting…", pressed; the HUD's Starting state follows.
+        case starting
+        /// The panel fades as it is.
+        case fadeOut
+    }
+
+    static func look(for choice: PromptChoice) -> Look {
+        switch choice {
+        case .record, .recordBYO, .always: return .starting
+        case .skip: return .fadeOut
+        }
+    }
 }
 
 /// Quiet ghost capsule with a text label, matching `ChevronMenuButton`'s resting

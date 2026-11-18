@@ -113,6 +113,10 @@ enum StatusBarModel {
         /// declined, so it reads as a detected meeting (with the record row) rather than a
         /// suppression.
         var suppressedIsOffer: Bool
+        /// UX106: a recording start is in flight (the click is answered, the recorder is not up yet).
+        /// Not an `AppState` case: END20 owns making the in-flight start a state every switch
+        /// handles; until then it overrides the title, the header and the record rows.
+        var startingRecording: Bool
 
         init(
             state: AppState = .idle,
@@ -133,7 +137,8 @@ enum StatusBarModel {
             disableAutoRestart: Bool = false,
             launchAgentEnabled: Bool = true,
             suppressedCandidateAppName: String? = nil,
-            suppressedIsOffer: Bool = false
+            suppressedIsOffer: Bool = false,
+            startingRecording: Bool = false
         ) {
             self.state = state
             self.workflowName = workflowName
@@ -154,6 +159,7 @@ enum StatusBarModel {
             self.launchAgentEnabled = launchAgentEnabled
             self.suppressedCandidateAppName = suppressedCandidateAppName
             self.suppressedIsOffer = suppressedIsOffer
+            self.startingRecording = startingRecording
         }
     }
 
@@ -188,7 +194,9 @@ enum StatusBarModel {
     static func title(_ i: Inputs) -> String {
         let lock = i.regulatedMode ? " \u{1F512}" : ""
         let clause: String
-        if i.state == .idle, let download = downloadTitleClause(i.download) {
+        if i.startingRecording {
+            clause = startingLabel
+        } else if i.state == .idle, let download = downloadTitleClause(i.download) {
             clause = download
         } else if i.state == .idle, let queued = QueueActivityPresentation.menuLabel(i.queue) {
             clause = queued
@@ -242,8 +250,12 @@ enum StatusBarModel {
 
     // MARK: - Menu header
 
+    /// UX106: the words for a start in flight, on the title, the header and the Library pill.
+    static let startingLabel = "Starting…"
+
     static func headerLabel(_ i: Inputs) -> String {
         let suffix = QueueActivityPresentation.menuLabel(i.queue).map { " · \($0)" } ?? ""
+        if i.startingRecording { return "MeetingPipe: \(startingLabel)\(suffix)" }
         switch i.state {
         case .idle:                  return "MeetingPipe: Idle\(suffix)"
         case .prompting(let src):    return "MeetingPipe: Detected \(src.displayName)\(suffix)"
@@ -312,8 +324,10 @@ enum StatusBarModel {
         // DET7: keeping the affordance was only half the fix. The row it kept offering
         // recorded `source: nil`, so the skipped meeting was recordable but not
         // *attachable*. With a live candidate the same row names it instead.
+        // UX106: no record row while a start is in flight. The HUD's Stop is the one live control:
+        // it cancels the start through END20's latch, which stops the fresh recording at commit.
         switch i.state {
-        case .idle, .suppressed:
+        case .idle where !i.startingRecording, .suppressed where !i.startingRecording:
             if let appName = i.suppressedCandidateAppName {
                 rows.append(.recordSuppressedMeeting(
                     appName: appName,

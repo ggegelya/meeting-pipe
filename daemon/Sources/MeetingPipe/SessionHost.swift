@@ -104,6 +104,12 @@ protocol SessionStatusPresenting: AnyObject {
     /// which carries the same three values (ARCH6).
     func setStopping(file: URL, source: AppSource?, summaryMode: SummaryMode)
     func setSuppressed(_ source: AppSource, isStillSuppressed: @escaping () -> Bool)
+    /// UX106: a start is in flight. Set at the click, before the recorder is asked; `setRecording`
+    /// promotes it, `setIdle` reverts it.
+    func setStarting(source: AppSource?)
+    /// UX106: say briefly why a press did nothing ("Already starting", "Still saving the last
+    /// recording"), then return to the state's own title.
+    func flashNote(_ text: String)
     /// DET18: the prompt timed out into a one-click offer. Same presentation lifetime as
     /// `setSuppressed`, but it reads "Detected <app>" rather than a suppression, because nothing
     /// was declined.
@@ -178,6 +184,9 @@ protocol SessionRecording: AnyObject {
 /// The recording HUD (`RecordingHUDWindow`).
 protocol SessionHUDPresenting: AnyObject {
     func present(source: AppSource?, workflow: Workflow?, startedAt: Date, levelProvider: (() -> Float)?)
+    /// UX106: the HUD for a start in flight: no timer, no meter, shown at once without the fade.
+    /// `present` promotes it in place; `dismiss` removes it.
+    func presentStarting(source: AppSource?)
     func dismiss(animated: Bool)
     /// UX73: acknowledge a flagged moment on the flag control itself, carrying the running count of
     /// moments in this recording. Replaced FEAT8's `blink()`, a whole-panel opacity dip the owner

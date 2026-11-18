@@ -109,6 +109,8 @@ final class LibraryWindowModel: ObservableObject {
         case prompting(appName: String)
         case recording(appName: String?)
         case stopping
+        /// UX106: a start is in flight.
+        case starting(appName: String?)
     }
 
     @Published var status: Status = .idle
@@ -269,9 +271,11 @@ final class LibraryWindowModel: ObservableObject {
         return false
     }
 
-    /// Disabled only in `.stopping`: the recorder is mid-flush and a button press would race the async finalize.
+    /// Disabled in `.stopping` (the recorder is mid-flush and a press would race the async finalize)
+    /// and in `.starting` (UX106: the start in flight is answered; the HUD's Stop cancels it).
     var canToggleRecording: Bool {
         if case .stopping = status { return false }
+        if case .starting = status { return false }
         return true
     }
 

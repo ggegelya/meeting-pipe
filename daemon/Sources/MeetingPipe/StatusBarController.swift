@@ -1,4 +1,5 @@
 import AppKit
+import MeetingPipeCore
 
 /// Owns the NSStatusItem and its menu, and mirrors state to the menu bar.
 final class StatusBarController {
@@ -22,6 +23,10 @@ final class StatusBarController {
     /// The state the next open builds the menu for. Every state setter writes it through
     /// `rebuildMenu(state:)`; only `refreshMenuBeforeDisplay` reads it (PERF24).
     private var lastMenuState: AppState = .idle
+    /// UX106: a start is in flight; see `StatusBarModel.Inputs.startingRecording`.
+    private var startingRecording = false
+    /// UX106: cancels the pending end of a `flashNote`.
+    private var cancelFlash: (() -> Void)?
 
     /// The state the title and the icon are showing.
     ///
@@ -161,7 +166,28 @@ final class StatusBarController {
         applyTitle()
     }
 
+    /// UX106: set synchronously at the click, before the recorder is asked to start, so the press is
+    /// answered at once. Every other setter clears it.
+    func setStarting(source: AppSource?) {
+        startingRecording = true
+        applyTitle()
+        rebuildMenu(state: lastMenuState)
+        libraryModel?.status = .starting(appName: source?.displayName)
+    }
+
+    /// UX106: the press-ignored line, on the status item for two seconds. A newer flash or a
+    /// state change replaces it.
+    func flashNote(_ text: String) {
+        cancelFlash?()
+        item.button?.title = " \(text)"
+        cancelFlash = Schedulers.mainRunLoopOnce(2) { [weak self] in
+            self?.cancelFlash = nil
+            self?.applyTitle()
+        }
+    }
+
     func setIdle() {
+        startingRecording = false
         cancelSuppressedDisplay()
         titleState = .idle
         applyIcon()
@@ -172,6 +198,7 @@ final class StatusBarController {
     }
 
     func setPrompting(_ source: AppSource) {
+        startingRecording = false
         cancelSuppressedDisplay()
         titleState = .prompting(source: source)
         applyIcon()
@@ -186,6 +213,7 @@ final class StatusBarController {
         summaryMode: SummaryMode,
         workflow: Workflow? = nil
     ) {
+        startingRecording = false
         cancelSuppressedDisplay()
         recordingWorkflow = workflow
         titleState = .recording(file: file, source: source, summaryMode: summaryMode)
@@ -197,6 +225,7 @@ final class StatusBarController {
     }
 
     func setStopping(file: URL, source: AppSource?, summaryMode: SummaryMode) {
+        startingRecording = false
         cancelSuppressedDisplay()
         titleState = .stopping(file: file, source: source, summaryMode: summaryMode)
         applyIcon()
@@ -226,6 +255,7 @@ final class StatusBarController {
     /// stays `.idle` (re-entering the old global `.suppressed` is the START1 wedge),
     /// so detection keeps running for other apps the whole time.
     func setSuppressed(_ source: AppSource, isStillSuppressed: @escaping () -> Bool) {
+        startingRecording = false
         showSuppressed(source, isOffer: false, isStillActive: isStillSuppressed)
     }
 
@@ -233,6 +263,7 @@ final class StatusBarController {
     /// call's span lives. Same lifetime as a skip's label, different words: "Detected <app>", with
     /// the "Record this <app> meeting" row beneath it.
     func setOffered(_ source: AppSource, isStillOffered: @escaping () -> Bool) {
+        startingRecording = false
         showSuppressed(source, isOffer: true, isStillActive: isStillOffered)
     }
 
@@ -307,6 +338,8 @@ final class StatusBarController {
     /// agreed string-for-string when they were finally compared, but nothing had ever
     /// required them to.
     private func applyTitle() {
+        cancelFlash?()
+        cancelFlash = nil
         item.button?.title = StatusBarModel.title(titleInputs)
     }
 
@@ -330,7 +363,8 @@ final class StatusBarController {
             queue: queue,
             regulatedMode: regulatedMode,
             download: modelDownload,
-            suppressedIsOffer: suppressedIsOffer
+            suppressedIsOffer: suppressedIsOffer,
+            startingRecording: startingRecording
         )
     }
 
@@ -470,7 +504,8 @@ final class StatusBarController {
             disableAutoRestart: UISettings.shared.disableAutoRestart,
             launchAgentEnabled: launchAgentEnabled,
             suppressedCandidateAppName: coordinator?.stateMachine.liveSuppressedCandidate()?.displayName,
-            suppressedIsOffer: suppressedIsOffer
+            suppressedIsOffer: suppressedIsOffer,
+            startingRecording: startingRecording
         )
     }
 

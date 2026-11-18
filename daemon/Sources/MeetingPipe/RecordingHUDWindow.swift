@@ -106,7 +106,8 @@ enum HUDStateLabel {
         writerBehind: Bool = false,
         micVeryQuiet: Bool = false,
         offRecord: Bool,
-        confirmingEnd: Bool
+        confirmingEnd: Bool,
+        starting: Bool = false
     ) -> (text: String, tone: Tone) {
         if micCaptureLost { return ("Mic lost", .alert) }
         if let lowSpace { return (lowSpace, .alert) }
@@ -118,6 +119,8 @@ enum HUDStateLabel {
         if micVeryQuiet { return (MicCoverageCopy.hudLabel, .alert) }
         if offRecord { return ("Off the record", .alert) }
         if confirmingEnd { return ("Confirming end", .subtle) }
+        // UX106: a start in flight. Nothing above can be set before the recording commits.
+        if starting { return (StatusBarModel.startingLabel, .muted) }
         return ("Recording", .muted)
     }
 }
@@ -209,7 +212,34 @@ final class RecordingHUDWindow {
     /// than an assumption.
     private var isOffTheRecord: Bool { (contentView as? HUDBackgroundView)?.isOffRecord ?? false }
 
+    /// UX106: true while the panel on screen is the start-in-flight one.
+    private(set) var isStarting = false
+
+    /// UX106: answer the Record click before the recorder is up. The same panel as a recording's,
+    /// reading "Starting…", with the clock and the meter idle, shown at full opacity at once: the
+    /// 180 ms fade from zero was part of why a click looked unanswered.
+    func presentStarting(source: AppSource?) {
+        dismiss(animated: false)
+        let panel = makePanel(source: source, workflow: nil)
+        self.panel = panel
+        positionPanel(panel)
+        isStarting = true
+        applyStateLabel()
+        elapsedLabel?.stringValue = ""
+        // Nothing to flag and nothing to take off the record until the recording commits; both
+        // would be logged no-ops, which is a control that lies. Stop stays live: it cancels the start.
+        flagButton?.isEnabled = false
+        offRecordButton?.isEnabled = false
+        panel.alphaValue = 1
+        panel.orderFrontRegardless()
+        let paintSeq = UILatency.shared.recentActionSeq(.start)
+        UILatency.afterNextCommit { UILatency.shared.firstPaint(surface: "hud", phase: "starting", seq: paintSeq) }
+    }
+
     func present(source: AppSource?, workflow: Workflow? = nil, startedAt: Date, levelProvider: (() -> Float)? = nil) {
+        // UX106: promoting a Starting HUD swaps the panel in the same turn with no fade, so it
+        // reads as one panel changing state rather than a second one appearing.
+        let promoting = isStarting
         dismiss(animated: false)
         self.startedAt = startedAt
         self.levelProvider = levelProvider
@@ -218,12 +248,17 @@ final class RecordingHUDWindow {
         self.panel = panel
         positionPanel(panel)
 
-        panel.alphaValue = 0
-        panel.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = MPMotion.durBase
-            ctx.timingFunction = MPMotion.easeOut
-            panel.animator().alphaValue = 1
+        if promoting {
+            panel.alphaValue = 1
+            panel.orderFrontRegardless()
+        } else {
+            panel.alphaValue = 0
+            panel.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = MPMotion.durBase
+                ctx.timingFunction = MPMotion.easeOut
+                panel.animator().alphaValue = 1
+            }
         }
 
         // OBS7: the turn that presented the HUD has committed. `seq` is the click that started the recording, if one did.
@@ -296,6 +331,7 @@ final class RecordingHUDWindow {
     }
 
     func dismiss(animated: Bool = true) {
+        isStarting = false
         cancelTicker?()
         cancelTicker = nil
         stopMeterTicker()
@@ -481,7 +517,8 @@ final class RecordingHUDWindow {
             writerBehind: writerBehind,
             micVeryQuiet: micVeryQuiet,
             offRecord: isOffTheRecord,
-            confirmingEnd: confirmingEnd
+            confirmingEnd: confirmingEnd,
+            starting: isStarting
         )
         recordingLabel?.stringValue = label.text
         // MIC17: only the quiet-mic state explains itself in a tooltip and dismisses on a click.

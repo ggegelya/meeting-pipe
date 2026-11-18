@@ -477,7 +477,18 @@ final class MeetingSessionController: @unchecked Sendable {
             // means stop, so the split's prompt is not raised once it finishes.
             pendingSplit = nil
             UILatency.shared.discardPending()  // OBS7: a press on a state that ignores it has no feedback
+            notePressIgnored(state: "stopping", trigger: surface.rawValue)
         }
+    }
+
+    /// UX106: a press that meets a start or a stop in flight did nothing, so say so, in the log and
+    /// on the status item. A queued start after the stop is a separate, owner-gated decision.
+    private func notePressIgnored(state: String, trigger: String) {
+        Log.event(category: "coordinator", action: "record_press_ignored", attributes: [
+            "state": state,
+            "trigger": trigger,
+        ])
+        coordinator.statusUI.flashNote(state == "stopping" ? "Still saving the last recording" : "Already starting")
     }
 
     /// DET7: the one rule for an explicit start with no prompt in front of it, shared by
@@ -766,6 +777,7 @@ final class MeetingSessionController: @unchecked Sendable {
         // stacking another recorder.start().
         guard !startLatch.isInFlight else {
             Log.writeLine("daemon", "beginRecording ignored: a start is already in flight")
+            notePressIgnored(state: "starting", trigger: source == nil ? "manual" : "prompt")
             return
         }
         // END20: never a second recording. Every caller already guards on its own state, except
@@ -892,6 +904,13 @@ final class MeetingSessionController: @unchecked Sendable {
         // written off main too (PERF28). The commit can therefore wait up to those bounds while
         // audio is already being captured; the post-start wiring runs back on main.
         startLatch.begin(origin: startOrigin, bundleID: source?.bundleID)
+        // UX106: answer the click now, before the recorder is asked. `setRecording` and
+        // `hud.present` promote both at commit; the catch reverts them.
+        coordinator.statusUI.setStarting(source: source)
+        coordinator.hud.presentStarting(source: source)
+        // OBS7: Starting is now the first visible state of a Start, so the click is answered here,
+        // once; the commit's `hud.present` no longer answers it.
+        UILatency.shared.feedbackForLatest(.start)
         // PERF15: the start's one AX build, on `axWalkQueue` and overlapping the engine bring-up.
         // It replaces three: MicGate's (synchronous on main), the explicit-start lifecycle engage's
         // (also on main) and the Leave-button arm's (off main, its mute walks discarded).
@@ -994,8 +1013,6 @@ final class MeetingSessionController: @unchecked Sendable {
                     startedAt: Date(),
                     levelProvider: { [weak self] in self?.coordinator.audioRecorder.currentMicLevelDb() ?? -120 }
                 )
-                // OBS7: the HUD is the first visible state of a Start; `ms` is read on the next main turn.
-                UILatency.shared.feedbackForLatest(.start)
                 self.coordinator.notifications.notifyRecordingStarted(file: file)
                 // REC20 item 1: a start short of space still records, and says so on the HUD it
                 // just presented and in one notification. The recorder already logged the event.
@@ -1055,6 +1072,13 @@ final class MeetingSessionController: @unchecked Sendable {
                 // that recording's state. The old path went `setIdle` here with the recorder still
                 // running, and every stop path keys on `.recording`, so nothing could stop it.
                 if case MeetingRecorder.RecorderError.alreadyRecording = error {
+                    // UX106: take the Starting state back down; the running recording keeps its own.
+                    if case .recording(let file, let src, let mode) = self.coordinator.stateMachine.current {
+                        self.coordinator.statusUI.setRecording(file: file, source: src, summaryMode: mode, workflow: self.activeWorkflow)
+                    } else {
+                        self.coordinator.statusUI.setIdle()
+                        self.coordinator.hud.dismiss(animated: false)
+                    }
                     Log.event(category: "coordinator", action: "recording_error", attributes: [
                         "stage": "start",
                         "reason": "already_recording",
@@ -1085,9 +1109,11 @@ final class MeetingSessionController: @unchecked Sendable {
                     "cooldown_armed": source != nil,
                 ])
                 Log.main.error("failed to start recorder: \(error.localizedDescription)")
-                self.coordinator.notifications.notifyError("Could not start recording: \(error.localizedDescription)")
+                // UX106: revert the Starting state before the error says why.
+                self.coordinator.hud.dismiss(animated: false)
                 self.coordinator.stateMachine.setIdle()
                 self.coordinator.statusUI.setIdle()
+                self.coordinator.notifications.notifyError("Could not start recording: \(error.localizedDescription)")
             }
         }
     }

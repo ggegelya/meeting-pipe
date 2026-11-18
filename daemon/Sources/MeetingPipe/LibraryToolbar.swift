@@ -127,6 +127,8 @@ struct StatePill: View {
             recordingShape
         case .stopping:
             processingShape(label: "Stopping…")
+        case .starting:
+            processingShape(label: StatusBarModel.startingLabel)
         default:
             if let label = QueueActivityPresentation.pillLabel(queue) {
                 processingShape(label: label)
