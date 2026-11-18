@@ -42,7 +42,7 @@ def test_read_corrections_maps_index_to_edited_text(tmp_path):
     md = tmp_path / "m.md"
     _write_corrections(tmp_path, "m",
                        {"index": 0, "original_text": "helo wrld", "edited_text": "hello world"})
-    assert tc.read_corrections(md) == {0: "hello world"}
+    assert tc.read_corrections(md) == {0: tc.Correction("helo wrld", "hello world")}
 
 
 def test_read_corrections_missing_or_malformed_is_empty(tmp_path):
@@ -55,18 +55,19 @@ def test_read_corrections_missing_or_malformed_is_empty(tmp_path):
 def test_read_corrections_skips_malformed_entries(tmp_path):
     md = tmp_path / "m.md"
     _write_corrections(tmp_path, "m",
-                       {"index": 0, "edited_text": "kept"},           # missing original_text is fine here
-                       {"index": True, "edited_text": "bool index"},   # bool is not a valid index
-                       {"edited_text": "no index"},                    # no index
-                       {"index": 2})                                   # no edited_text
-    assert tc.read_corrections(md) == {0: "kept"}
+                       {"index": 0, "original_text": "a", "edited_text": "kept"},
+                       {"index": 1, "edited_text": "no original"},     # ASR12: ignored, as Swift does
+                       {"index": True, "original_text": "b", "edited_text": "bool index"},
+                       {"original_text": "c", "edited_text": "no index"},
+                       {"index": 2, "original_text": "d"})             # no edited_text
+    assert tc.read_corrections(md) == {0: tc.Correction("a", "kept")}
 
 
 # --- apply_corrections (pure) ---------------------------------------------
 
 def test_apply_corrections_rewrites_by_index():
     segs = _segs()
-    assert tc.apply_corrections(segs, {0: "hello world"})
+    assert tc.apply_corrections(segs, {0: tc.Correction("helo wrld", "hello world")})
     assert segs[0]["text"] == "hello world"
     assert segs[1]["text"] == "second line"  # untouched
 
@@ -79,8 +80,34 @@ def test_apply_corrections_empty_is_noop():
 
 def test_apply_corrections_ignores_out_of_range_index():
     segs = _segs()
-    assert not tc.apply_corrections(segs, {5: "ghost"})
+    assert not tc.apply_corrections(segs, {5: tc.Correction("gone", "ghost")})
     assert [s["text"] for s in segs] == ["helo wrld", "second line"]
+
+
+def test_apply_corrections_skips_a_drifted_entry_and_warns_once(caplog):
+    """ASR12: an entry whose snapshot no longer matches its segment points at a
+    different sentence now. It is skipped (and left in the sidecar), while a live
+    entry beside it still applies, and one warning names the stem and the count."""
+    segs = _segs()
+    corrections = {
+        0: tc.Correction("helo wrld", "hello world"),
+        1: tc.Correction("a sentence that is gone", "edited"),
+    }
+    with caplog.at_level("WARNING", logger="mp.transcript_corrections"):
+        assert tc.apply_corrections(segs, corrections, stem="20260101-090000")
+    assert [s["text"] for s in segs] == ["hello world", "second line"]
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "20260101-090000" in warnings[0].getMessage()
+    assert "1 of 2" in warnings[0].getMessage()
+
+
+def test_apply_corrections_compares_the_trimmed_pipeline_text():
+    """The pipeline may pad a segment's text; Swift compares the trimmed form, so
+    Python has to as well or it would skip every edit Swift applies."""
+    segs = [{"text": "  helo wrld \n"}]
+    assert tc.apply_corrections(segs, {0: tc.Correction("helo wrld", "hello world")})
+    assert segs[0]["text"] == "hello world"
 
 
 # --- overlaid_markdown (composed view) ------------------------------------

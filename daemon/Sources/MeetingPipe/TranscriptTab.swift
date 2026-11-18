@@ -86,6 +86,9 @@ enum TranscriptLoader {
         /// from the same sidecar. Offered on the chip menu as a suggestion; nothing
         /// here writes it.
         var nearMisses: [String: String] = [:]
+        /// ASR12: text corrections skipped because the line they were written against is no
+        /// longer what `<stem>.json` says at that index. The tab shows a notice when above zero.
+        var driftedCorrections: Int = 0
     }
 
     static func path(stem: String, in directory: URL) -> URL {
@@ -120,20 +123,21 @@ enum TranscriptLoader {
         guard let obj = readPayload(stem: stem, in: directory) else { return nil }
         let parsed = parse(obj)
         let corrections = TranscriptCorrectionStore.read(stem: stem, in: directory)
-        let overlaid = TranscriptCorrectionStore.apply(
+        let overlaid = TranscriptCorrectionStore.applyCounting(
             corrections: corrections,
             to: parsed.segments
         )
         // One read of `<stem>.embeddings.json` for both values (PERF23); it used to be two.
         let embeddings = MeetingStore.embeddingsSidecar(stem: stem, in: directory)
         return Result(
-            segments: overlaid,
+            segments: overlaid.segments,
             language: parsed.language,
             speakerOrder: parsed.speakerOrder,
             diarizationNote: parsed.diarizationNote,
             speakerOverlay: SpeakerLabelStore.read(stem: stem, in: directory),
             voiceprintLabels: embeddings.voiceprintLabels,
-            nearMisses: embeddings.nearMisses
+            nearMisses: embeddings.nearMisses,
+            driftedCorrections: overlaid.drifted
         )
     }
 
@@ -295,6 +299,13 @@ struct TranscriptTab: View {
     @State private var segments: [TranscriptSegment] = []
     @State private var language: String? = nil
     @State private var diarizationNote: TranscriptDiarizationNote? = nil
+    /// ASR12: corrections skipped on the last load because their line drifted.
+    @State private var driftedCorrections = 0
+
+    /// ASR12: the predicate both edit surfaces read. While true every overlay writer refuses.
+    private var editsLocked: Bool {
+        libraryModel.overlayEditsLocked(stem: meeting.stem)
+    }
     /// Reversible speaker-label overrides (FEAT3-UNDO). Resolved at display time so
     /// the diarization label in `<stem>.json` is never overwritten.
     @State private var speakerOverlay: SpeakerLabelStore.Overlay = .empty
@@ -591,6 +602,8 @@ struct TranscriptTab: View {
                 playback: playback,
                 pendingSeek: pendingSeek,
                 onSeekHandled: { pendingSeek = nil },
+                editsLocked: editsLocked,
+                driftedCorrections: driftedCorrections,
                 onEdit: { seg in editingSegment = seg },
                 onClarify: { seg in
                     let speaker = MeetingCast.rowSpeaker(
@@ -647,6 +660,7 @@ struct TranscriptTab: View {
         newText: String,
         offerVocabulary: Bool = true
     ) -> String? {
+        if editsLocked { return LibraryWindowModel.overlayEditsLockedReason }
         let edited = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         let pipelineOriginal = segment.text
         if let message = editActions.saveLine(
@@ -679,6 +693,7 @@ struct TranscriptTab: View {
     ///
     /// Returns nil on success, or a message the sheet renders inline while staying open.
     private func applyClarify(_ plan: Clarify.Plan) -> String? {
+        if case .correctLine = plan, editsLocked { return LibraryWindowModel.overlayEditsLockedReason }
         // T19: the write and its one-destination switch live in `TranscriptEditActions.apply`;
         // this keeps only what the View owns: the row patch, closing the sheet, the rebuild.
         if let message = editActions.apply(plan, lineOriginal: { index in
@@ -809,6 +824,7 @@ struct TranscriptTab: View {
         segments = result?.segments ?? []
         language = result?.language
         diarizationNote = result?.diarizationNote
+        driftedCorrections = result?.driftedCorrections ?? 0
         speakerOverlay = result?.speakerOverlay ?? .empty
         voiceprintLabels = result?.voiceprintLabels ?? []
         cast = MeetingCast.members(segments: segments, overlay: speakerOverlay)
@@ -824,6 +840,19 @@ struct TranscriptTab: View {
         loadedForStem = stem
         loadedFingerprint = fingerprint
         loading = false
+    }
+}
+
+/// ASR12: the Transcript tab's one-line notice, pure so its wording is pinned.
+enum TranscriptNotices {
+    static func text(driftedCorrections: Int, editsLocked: Bool) -> String? {
+        var parts: [String] = []
+        if editsLocked { parts.append(LibraryWindowModel.overlayEditsLockedReason) }
+        if driftedCorrections > 0 {
+            let n = driftedCorrections
+            parts.append("\(n) of your text edit\(n == 1 ? " is" : "s are") not shown: the transcript has changed under \(n == 1 ? "it" : "them") since you made \(n == 1 ? "it" : "them"). \(n == 1 ? "It is" : "They are") kept, not deleted.")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 }
 
@@ -850,6 +879,11 @@ private struct TranscriptList: View {
     let pendingSeek: Double?
     /// Called once the pending seek has been resolved to a row and scrolled to.
     let onSeekHandled: () -> Void
+    /// ASR12: a re-transcribe of this meeting is queued or running, so every action that
+    /// writes an overlay (text, speaker) is disabled; `LibraryWindowModel.overlayEditsLocked`.
+    var editsLocked: Bool = false
+    /// ASR12: corrections the loader skipped as drifted (`TranscriptLoader.Result`).
+    var driftedCorrections: Int = 0
     /// Called on "Edit text" context-menu action; the host owns sheet presentation.
     let onEdit: (TranscriptSegment) -> Void
     /// Called on "Clarify a word…" (FEAT13); the host owns sheet presentation.
@@ -902,6 +936,16 @@ private struct TranscriptList: View {
                             .help(note.help)
                             .padding(.top, language == nil ? 12 : 2)
                     }
+                    // ASR12: the two reasons a line edit is not what it seems, said where
+                    // the lines are. A drifted correction is skipped, not lost; an edit lock
+                    // lasts while a re-transcribe of this meeting is queued or running.
+                    if let notice = TranscriptNotices.text(driftedCorrections: driftedCorrections, editsLocked: editsLocked) {
+                        Text(notice)
+                            .font(.caption)
+                            .foregroundStyle(Color(MPColors.fgMuted))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, language == nil ? 12 : 2)
+                    }
                     // Discoverability caption (DSN22 #10): the rows are clickable to
                     // edit or seek, which is not otherwise obvious.
                     Text("Click a line to edit or seek.")
@@ -936,6 +980,7 @@ private struct TranscriptList: View {
                                 for: seg, cast: cast, overlay: overlay
                             ),
                             isReassigned: overlay.segments[seg.index] != nil,
+                            editsLocked: editsLocked,
                             onSelect: { kind in
                                 switch kind {
                                 case .plain:
@@ -1091,6 +1136,8 @@ private struct TranscriptRow: View {
     let assignTargets: [CastMember]
     /// True when this segment carries a per-segment reassignment (offers "Reset").
     let isReassigned: Bool
+    /// ASR12: overlay edits are paused while the meeting re-transcribes.
+    let editsLocked: Bool
     /// A modifier-classified click: plain seeks, Cmd toggles, Shift range-selects.
     let onSelect: (SegmentClick) -> Void
     let onEdit: () -> Void
@@ -1163,7 +1210,7 @@ private struct TranscriptRow: View {
         // line, so it never overlaps wrapped body text. The overlay is a sibling
         // layer over the row button, so its tap goes to Edit, not to seek.
         .overlay(alignment: .topTrailing) {
-            if isHovered {
+            if isHovered, !editsLocked {
                 MPGhostIconButton(
                     systemImage: "pencil",
                     help: "Edit this line",
@@ -1179,17 +1226,25 @@ private struct TranscriptRow: View {
             if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
         .contextMenu {
-            Button("Edit text…", action: onEdit)
-            // FEAT13. The row's own menu, and not a menu over the selected text, because
-            // there is no such menu to extend: SwiftUI's `.textSelection(.enabled)` is
-            // backed by a `SelectionTextField` that refuses first responder, engages no
-            // field editor, and answers nil to `validRequestor(forSendType: .string,…)`,
-            // so nothing in this process can be handed the words under the pointer
-            // (measured 2026-08-04, extending UX48's probe). The full reasoning, and the
-            // pasteboard hack that was rejected, are in `docs/backlog/tasks/FEAT13.md`.
-            Button("Clarify a word…", action: onClarify)
-            speakerItems
-            assignMenu
+            if editsLocked {
+                // ASR12: the reason, as the menu's first (inert) line, so a disabled item is
+                // never a mystery. The tab's caption carries the full sentence.
+                Text("Editing paused while re-transcribing")
+            }
+            Group {
+                Button("Edit text…", action: onEdit)
+                // FEAT13. The row's own menu, and not a menu over the selected text, because
+                // there is no such menu to extend: SwiftUI's `.textSelection(.enabled)` is
+                // backed by a `SelectionTextField` that refuses first responder, engages no
+                // field editor, and answers nil to `validRequestor(forSendType: .string,…)`,
+                // so nothing in this process can be handed the words under the pointer
+                // (measured 2026-08-04, extending UX48's probe). The full reasoning, and the
+                // pasteboard hack that was rejected, are in `docs/backlog/tasks/FEAT13.md`.
+                Button("Clarify a word…", action: onClarify)
+                speakerItems
+                assignMenu
+            }
+            .disabled(editsLocked)
         }
     }
 

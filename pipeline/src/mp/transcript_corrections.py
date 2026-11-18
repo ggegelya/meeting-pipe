@@ -11,7 +11,12 @@ consumers stop running on text the Library no longer shows.
 The resolution matches the Swift side exactly (a Swift-to-Python contract, like
 the speaker overlay): for each segment, a correction at that segment's array
 index replaces the segment text with its `edited_text`, else the text is left
-as-is. The index is the position in the `<stem>.json` `segments` array, the same
+as-is. ASR12: only when the correction's `original_text` is still what that
+segment says (compared after trimming outer whitespace, which is the text Swift's
+`TranscriptLoader.parse` hands its own check). An entry whose original no longer
+matches has drifted (the transcript was rewritten under it, so its index points
+at another sentence) and is skipped, never deleted, so a later carry can still
+recover it. An entry without `original_text` is ignored, as Swift's reader does. The index is the position in the `<stem>.json` `segments` array, the same
 zero-based `enumerate` convention `SpeakerLabelStore` / `TranscriptTab.parse`
 use.
 
@@ -25,55 +30,95 @@ Schema mirror of Swift's `TranscriptCorrectionStore`:
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from typing import NamedTuple
 
 from . import storage
 
 SCHEMA_VERSION = 1
+
+log = logging.getLogger("mp.transcript_corrections")
+
+
+class Correction(NamedTuple):
+    """One entry of the sidecar: what the pipeline said when the line was edited,
+    and what the owner edited it to."""
+
+    original_text: str
+    edited_text: str
 
 
 def corrections_path(transcript_md: Path) -> Path:
     return transcript_md.parent / f"{transcript_md.stem}.transcript_corrections.json"
 
 
-def read_corrections(transcript_md: Path) -> dict[int, str]:
-    """The ``{segment index: edited text}`` map for a meeting, or empty when the
-    sidecar is missing or malformed (so a bad file never breaks a re-read)."""
+def read_corrections(transcript_md: Path) -> dict[int, Correction]:
+    """The ``{segment index: Correction}`` map for a meeting, or empty when the
+    sidecar is missing or malformed (so a bad file never breaks a re-read).
+    ``original_text`` is kept (ASR12) so `apply_corrections` can tell a live
+    entry from a drifted one; an entry without it is dropped, as in Swift."""
     obj = storage.read_json_object(corrections_path(transcript_md))
     if obj is None:
         return {}
     segments = obj.get("segments")
     if not isinstance(segments, list):
         return {}
-    out: dict[int, str] = {}
+    out: dict[int, Correction] = {}
     for raw in segments:
         if not isinstance(raw, dict):
             continue
         idx = raw.get("index")
+        original = raw.get("original_text")
         edited = raw.get("edited_text")
         # `bool` is an `int` subclass; a JSON `true` must not become an index.
-        if isinstance(idx, bool) or not isinstance(idx, int) or not isinstance(edited, str):
+        if isinstance(idx, bool) or not isinstance(idx, int):
             continue
-        out[idx] = edited
+        if not isinstance(original, str) or not isinstance(edited, str):
+            continue
+        out[idx] = Correction(original, edited)
     return out
 
 
-def is_empty(corrections: dict[int, str]) -> bool:
+def is_empty(corrections: dict[int, Correction]) -> bool:
     return not corrections
 
 
-def apply_corrections(segments: list[dict], corrections: dict[int, str]) -> bool:
+def is_live(correction: Correction, segment_text: object) -> bool:
+    """Whether a correction still describes this segment (ASR12's drift check):
+    its snapshot equals the pipeline text, compared trimmed as Swift compares it."""
+    text = segment_text.strip() if isinstance(segment_text, str) else ""
+    return correction.original_text == text
+
+
+def apply_corrections(
+    segments: list[dict],
+    corrections: dict[int, Correction],
+    *,
+    stem: str | None = None,
+) -> bool:
     """Rewrite each segment's ``text`` in place per the corrections, keyed by the
     segment's array index (mirrors Swift's `TranscriptCorrectionStore.apply`).
-    Returns True if any text changed. Pure over the list; the caller re-renders."""
+    A drifted entry (`is_live` false) is skipped and counted in one warning per
+    call naming ``stem``. Returns True if any text changed. Pure over the list
+    apart from that log line; the caller re-renders."""
     if not corrections:
         return False
     changed = False
+    drifted = 0
     for i, seg in enumerate(segments):
-        edited = corrections.get(i)
-        if edited is not None and edited != seg.get("text"):
-            seg["text"] = edited
+        c = corrections.get(i)
+        if c is None:
+            continue
+        if not is_live(c, seg.get("text")):
+            drifted += 1
+            continue
+        if c.edited_text != seg.get("text"):
+            seg["text"] = c.edited_text
             changed = True
+    if drifted:
+        log.warning("transcript corrections: %d of %d skipped for %s, the transcript no longer reads "
+                    "what they were written against", drifted, len(corrections), stem or "this meeting")
     return changed
 
 
@@ -100,7 +145,7 @@ def overlaid_structured(transcript_md: Path) -> tuple[dict, bool] | None:
     changed = speaker_overlay.apply_overlay(segments, overlay)
     # `or changed` order matters: apply_corrections must always run, not be
     # short-circuited away when the speaker overlay already reported a change.
-    changed = apply_corrections(segments, corrections) or changed
+    changed = apply_corrections(segments, corrections, stem=transcript_md.stem) or changed
     return data, changed
 
 

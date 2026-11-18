@@ -65,6 +65,14 @@ final class MeetingFootprintTests: XCTestCase {
 
     // MARK: - locate
 
+    /// ASR12's backup is a stem file like the overlays it copies, so a delete takes it along.
+    func test_the_overlay_backup_is_part_of_the_footprint() throws {
+        try write(lib.appendingPathComponent("\(stem).wav"))
+        try write(lib.appendingPathComponent("\(stem).overlay_backup.json"))
+        let names = Set(locate().rawFiles.map(\.lastPathComponent))
+        XCTAssertTrue(names.contains("\(stem).overlay_backup.json"))
+    }
+
     func test_a_filesystem_sidecar_locates_both_published_paths() throws {
         try seedPublished()
         let names = Set(locate().publishedCopies.map(\.lastPathComponent))

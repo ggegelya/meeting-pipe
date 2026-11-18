@@ -2,7 +2,7 @@ import Foundation
 
 /// Per-line transcript corrections in `<stem>.transcript_corrections.json`. Keeps user edits separate from the pipeline's `<stem>.json` so re-transcription doesn't trample them; the sidecar overlays pipeline output at load time.
 ///
-/// Schema: `{ "schema_version": 1, "segments": [{ "index": 3, "original_text": "...", "edited_text": "..." }, ...] }`. `index` is zero-based, matching `TranscriptSegment.index`. `original_text` is the pipeline snapshot at edit time so downstream tools can detect drift if the pipeline later rewrites the file.
+/// Schema: `{ "schema_version": 1, "segments": [{ "index": 3, "original_text": "...", "edited_text": "..." }, ...] }`. `index` is zero-based, matching `TranscriptSegment.index`. `original_text` is the pipeline snapshot at edit time, and both readers check it (ASR12): an entry applies only while the segment still reads that text, so an index that now points at a different sentence is skipped rather than laid over it. A skipped entry stays in the file for a later carry to recover.
 ///
 /// This is a Swift-to-Python contract (PIPE9): the pipeline's `mp.transcript_corrections` reads the same sidecar so a regenerate / re-index reflects these edits. Both sides resolve by segment index and are pinned by a golden parity fixture (`Fixtures/transcript-corrections-golden.json`); a reader is fail-open, so `schema_version` is stamped but unknown values are ignored, not rejected.
 enum TranscriptCorrectionStore {
@@ -76,7 +76,12 @@ enum TranscriptCorrectionStore {
         in directory: URL
     ) throws -> [Int: Correction] {
         var existing = try loadForWrite(stem: stem, in: directory)
-        let resolvedOriginal = existing[segmentIndex]?.originalText ?? pipelineOriginal
+        // `pipelineOriginal` is the line as the tab shows it: the prior edit when that entry is
+        // live, the pipeline's text when `apply` skipped it as drifted (ASR12). Keeping a drifted
+        // entry's stale snapshot would save the new edit and skip it on every load after.
+        let prior = existing[segmentIndex]
+        let priorIsLive = prior.map { $0.editedText == pipelineOriginal || $0.originalText == pipelineOriginal } ?? false
+        let resolvedOriginal = priorIsLive ? (prior?.originalText ?? pipelineOriginal) : pipelineOriginal
         if edited == resolvedOriginal {
             existing.removeValue(forKey: segmentIndex)
         } else {
@@ -123,9 +128,31 @@ enum TranscriptCorrectionStore {
         corrections: [Int: Correction],
         to segments: [TranscriptSegment]
     ) -> [TranscriptSegment] {
-        guard !corrections.isEmpty else { return segments }
-        return segments.map { seg in
-            if let c = corrections[seg.index], c.editedText != seg.text {
+        applyCounting(corrections: corrections, to: segments).segments
+    }
+
+    /// Whether a correction still describes this segment (ASR12's drift check): its snapshot is
+    /// the text the pipeline wrote there. `seg.text` is `TranscriptLoader.parse`'s trimmed text,
+    /// and `mp.transcript_corrections.is_live` trims the same way, so the trees agree.
+    static func isLive(_ c: Correction, on seg: TranscriptSegment) -> Bool {
+        c.originalText == seg.text
+    }
+
+    /// `apply`, plus how many entries were skipped because their segment drifted (ASR12). The
+    /// Transcript tab says so when the count is above zero; nothing is deleted.
+    static func applyCounting(
+        corrections: [Int: Correction],
+        to segments: [TranscriptSegment]
+    ) -> (segments: [TranscriptSegment], drifted: Int) {
+        guard !corrections.isEmpty else { return (segments, 0) }
+        var drifted = 0
+        let out = segments.map { seg -> TranscriptSegment in
+            guard let c = corrections[seg.index] else { return seg }
+            guard isLive(c, on: seg) else {
+                drifted += 1
+                return seg
+            }
+            if c.editedText != seg.text {
                 return TranscriptSegment(
                     index: seg.index,
                     start: seg.start,
@@ -136,6 +163,7 @@ enum TranscriptCorrectionStore {
             }
             return seg
         }
+        return (out, drifted)
     }
 
     // MARK: - Internal

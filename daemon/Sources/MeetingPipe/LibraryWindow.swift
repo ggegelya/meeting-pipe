@@ -101,6 +101,21 @@ struct ActiveProcessing: Equatable {
     var stageElapsedSec: Int? = nil
 }
 
+/// Stems held by in-flight work, counted so two requests for one stem keep it held until the
+/// second finishes (ASR12's re-transcribe edit lock).
+struct StemCounter: Equatable {
+    private var counts: [String: Int] = [:]
+
+    func contains(_ stem: String) -> Bool { (counts[stem] ?? 0) > 0 }
+
+    mutating func insert(_ stem: String) { counts[stem, default: 0] += 1 }
+
+    mutating func remove(_ stem: String) {
+        guard let n = counts[stem] else { return }
+        counts[stem] = n > 1 ? n - 1 : nil
+    }
+}
+
 final class LibraryWindowModel: ObservableObject {
 
     /// Display-only summary of `AppState`; the UI never branches on the underlying URL / SummaryMode.
@@ -322,8 +337,33 @@ final class LibraryWindowModel: ObservableObject {
     /// across. Same async-wrap pattern as `regenerateMeeting`. Never summarizes
     /// or publishes, so the meeting keeps the summary it has; the caller offers
     /// re-summarize as the follow-up.
+    @MainActor
     func retranscribeMeeting(stem: String) async -> Result<MeetingLibraryService.RetranscribeOutcome, Error> {
-        await bridge { library, done in library.retranscribeMeeting(stem: stem) { done($0) } }
+        // ASR12: from the request until the carry has written, covering the time the job waits in
+        // the queue, because the carry rewrites both overlays from what is on disk at completion.
+        // Main-actor so the published set is only ever written on main.
+        retranscribingStems.insert(stem)
+        defer { retranscribingStems.remove(stem) }
+        return await bridge { library, done in library.retranscribeMeeting(stem: stem) { done($0) } }
+    }
+
+    /// Stems with a re-transcribe requested and not yet finished, queued or running (ASR12).
+    /// A multiset in effect: two requests for one stem leave it locked until the second lands.
+    @Published private(set) var retranscribingStems = StemCounter()
+
+    /// The one predicate both edit surfaces read (ASR12): true while a re-transcribe of `stem`
+    /// is queued or running. The Transcript tab disables its correction and speaker actions on
+    /// it, and the overlay writers below refuse on it, so an edit cannot be made against a
+    /// numbering the carry is about to replace.
+    func overlayEditsLocked(stem: String) -> Bool {
+        retranscribingStems.contains(stem)
+    }
+
+    /// Why an overlay edit was refused while `overlayEditsLocked` holds. Also the tab's caption.
+    static let overlayEditsLockedReason = "Editing is paused while this meeting is re-transcribed. Your edits so far are carried onto the new transcript when it finishes."
+
+    struct OverlayEditsLocked: LocalizedError {
+        var errorDescription: String? { LibraryWindowModel.overlayEditsLockedReason }
     }
 
     /// END17: undo a suggested trim. Drops the trim point, re-transcribes the whole recording, and
@@ -517,19 +557,22 @@ final class LibraryWindowModel: ObservableObject {
     /// records the name in the reversible overlay. Async-wrapped like `askMeetings`;
     /// the transcript naming sheet awaits it.
     func nameSpeaker(stem: String, label: String, name: String) async -> Result<Void, Error> {
-        await bridge { library, done in library.nameSpeaker(stem: stem, label: label, name: name) { done($0) } }
+        if overlayEditsLocked(stem: stem) { return .failure(OverlayEditsLocked()) }
+        return await bridge { library, done in library.nameSpeaker(stem: stem, label: label, name: name) { done($0) } }
     }
 
     /// Undo a speaker naming (FEAT3-UNDO): revert the label and un-enroll the voice.
     func undoSpeakerNaming(stem: String, label: String, name: String) async -> Result<Void, Error> {
-        await bridge { library, done in
+        if overlayEditsLocked(stem: stem) { return .failure(OverlayEditsLocked()) }
+        return await bridge { library, done in
             library.undoSpeakerNaming(stem: stem, label: label, name: name) { done($0) }
         }
     }
 
     /// Rename an already-named speaker (FEAT3-UNDO): re-enroll under the new name.
     func renameSpeaker(stem: String, label: String, oldName: String, newName: String) async -> Result<Void, Error> {
-        await bridge { library, done in
+        if overlayEditsLocked(stem: stem) { return .failure(OverlayEditsLocked()) }
+        return await bridge { library, done in
             library.renameSpeaker(stem: stem, label: label, oldName: oldName, newName: newName) { done($0) }
         }
     }
@@ -538,13 +581,15 @@ final class LibraryWindowModel: ObservableObject {
     /// (a local overlay write); the transcript view reloads to pick it up.
     @discardableResult
     func reassignSegments(stem: String, indices: [Int], toLabel label: String) -> Result<Void, Error> {
-        library?.reassignSegments(stem: stem, indices: indices, toLabel: label) ?? .failure(Unwired.libraryUnavailable)
+        if overlayEditsLocked(stem: stem) { return .failure(OverlayEditsLocked()) }
+        return library?.reassignSegments(stem: stem, indices: indices, toLabel: label) ?? .failure(Unwired.libraryUnavailable)
     }
 
     /// Revert a batch of per-segment reassignments (FEAT3-SEGMENT).
     @discardableResult
     func resetSegmentReassignment(stem: String, indices: [Int]) -> Result<Void, Error> {
-        library?.resetSegmentReassignment(stem: stem, indices: indices) ?? .failure(Unwired.libraryUnavailable)
+        if overlayEditsLocked(stem: stem) { return .failure(OverlayEditsLocked()) }
+        return library?.resetSegmentReassignment(stem: stem, indices: indices) ?? .failure(Unwired.libraryUnavailable)
     }
 
     /// Re-enqueue the full `mp run-all` pipeline for a stalled/failed meeting.

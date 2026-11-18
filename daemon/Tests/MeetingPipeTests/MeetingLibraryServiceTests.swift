@@ -1427,6 +1427,136 @@ final class MeetingLibraryServiceTests: XCTestCase {
         XCTAssertEqual(SpeakerLabelStore.read(stem: stem, in: dir).labels, ["THEM-A": "Alice"])
     }
 
+    // MARK: - ASR12: the carry's lifecycle
+
+    /// A finalize that failed after the runner rewrote `<stem>.json` leaves the old index-keyed
+    /// overlays on a new segmentation. The label-independent half is carried onto it, cluster
+    /// names are left out (they would key on raw labels the Reprocess finalize will relabel) and
+    /// counted, and the pre-carry sidecars are backed up first.
+    func test_asr12_a_failed_finalize_after_the_rewrite_carries_the_text_edit() throws {
+        let stem = "20260101-1010"
+        try touch("\(stem).wav")
+        try writeTranscript(stem, segments: [
+            segment(0, 10, "hi", "ME"),
+            segment(10, 12, "um", "ME"),
+            segment(12, 20, "we shipped perfecta", "Alice"),
+        ])
+        _ = try SpeakerLabelStore.setLabel("ME", to: "Georgy", stem: stem, in: dir)
+        _ = try TranscriptCorrectionStore.upsert(
+            segmentIndex: 2, pipelineOriginal: "we shipped perfecta",
+            edited: "we shipped Perfeqta", stem: stem, in: dir
+        )
+        let labelsBefore = try Data(contentsOf: SpeakerLabelStore.path(stem: stem, in: dir))
+
+        var captured: Result<MeetingLibraryService.RetranscribeOutcome, Error>?
+        service.retranscribeMeeting(stem: stem) { captured = $0 }
+        // The runner wrote its raw output, then `mp finalize` failed.
+        try writeTranscript(stem, segments: [
+            segment(0, 12, "hi um", "speaker_0"),
+            segment(12, 20, "we shipped perfecta", "speaker_1"),
+        ])
+        finishRetranscribe(.failure(NSError(domain: "finalize", code: 1)))
+        XCTAssertTrue(drainMainSync())
+
+        guard case .failure(let error)? = captured,
+              let rewritten = error as? MeetingLibraryService.RetranscribeFailedAfterRewrite
+        else { return XCTFail("expected a failure carrying the counts") }
+        let corrections = TranscriptCorrectionStore.read(stem: stem, in: dir)
+        XCTAssertEqual(corrections[1]?.editedText, "we shipped Perfeqta", "carried to its time-anchored index")
+        XCTAssertEqual(corrections[1]?.originalText, "we shipped perfecta")
+        XCTAssertNil(corrections[2], "not left at its old index")
+        XCTAssertTrue(SpeakerLabelStore.read(stem: stem, in: dir).labels.isEmpty, "cluster names are left out")
+        XCTAssertEqual(rewritten.outcome.carried, 1)
+        XCTAssertEqual(rewritten.outcome.dropped, 1, "the cluster name is reported as dropped")
+
+        let backup = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: OverlayBackup.path(stem: stem, in: dir))) as? [String: Any]
+        )
+        let backedLabels = try XCTUnwrap(backup["speaker_labels"] as? [String: Any])
+        XCTAssertEqual(backedLabels as NSDictionary,
+                       try JSONSerialization.jsonObject(with: labelsBefore) as? NSDictionary,
+                       "the backup holds the pre-carry contents")
+        let backedCorrections = try XCTUnwrap(backup["transcript_corrections"] as? [String: Any])
+        let rows = try XCTUnwrap(backedCorrections["segments"] as? [[String: Any]])
+        XCTAssertEqual(rows.first?["index"] as? Int, 2)
+        XCTAssertEqual((backup["anchors"] as? [[String: Any]])?.count, 3, "the request-time anchors")
+    }
+
+    /// A failure in the transcription leg itself leaves `<stem>.json` as it was, so there is
+    /// nothing to carry onto and nothing is written, not even a backup.
+    func test_asr12_a_transcription_failure_writes_nothing() throws {
+        let stem = "20260101-1020"
+        try touch("\(stem).wav")
+        try writeTranscript(stem, segments: [segment(0, 10, "hi", "THEM-A")])
+        _ = try TranscriptCorrectionStore.upsert(
+            segmentIndex: 0, pipelineOriginal: "hi", edited: "hey", stem: stem, in: dir)
+        let before = try Data(contentsOf: TranscriptCorrectionStore.path(stem: stem, in: dir))
+
+        var captured: Result<MeetingLibraryService.RetranscribeOutcome, Error>?
+        service.retranscribeMeeting(stem: stem) { captured = $0 }
+        finishRetranscribe(.failure(NSError(domain: "asr", code: 1)))
+        XCTAssertTrue(drainMainSync())
+
+        guard case .failure(let error)? = captured else { return XCTFail("expected failure") }
+        XCTAssertFalse(error is MeetingLibraryService.RetranscribeFailedAfterRewrite)
+        XCTAssertEqual(try Data(contentsOf: TranscriptCorrectionStore.path(stem: stem, in: dir)), before)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: OverlayBackup.path(stem: stem, in: dir).path))
+    }
+
+    /// An edit written while the job waited is carried with the rest, not overwritten by the
+    /// request-time snapshot.
+    func test_asr12_an_edit_made_during_the_run_is_carried_not_overwritten() throws {
+        let stem = "20260101-1030"
+        try touch("\(stem).wav")
+        try writeTranscript(stem, segments: [
+            segment(0, 10, "hi", "ME"),
+            segment(10, 12, "um", "ME"),
+            segment(12, 20, "we shipped perfecta", "THEM-A"),
+        ])
+        _ = try TranscriptCorrectionStore.upsert(
+            segmentIndex: 1, pipelineOriginal: "um", edited: "uhm", stem: stem, in: dir)
+
+        service.retranscribeMeeting(stem: stem) { _ in }
+        // Written mid-run, on the numbering the job started from.
+        _ = try TranscriptCorrectionStore.upsert(
+            segmentIndex: 2, pipelineOriginal: "we shipped perfecta",
+            edited: "we shipped Perfeqta", stem: stem, in: dir)
+        try writeTranscript(stem, segments: [
+            segment(0, 12, "hi um", "ME"),
+            segment(12, 20, "we shipped perfecta", "THEM-A"),
+        ])
+        finishRetranscribe()
+        XCTAssertTrue(drainMainSync())
+
+        let corrections = TranscriptCorrectionStore.read(stem: stem, in: dir)
+        XCTAssertEqual(corrections[0]?.editedText, "hi uhm", "the request-time edit, spliced")
+        XCTAssertEqual(corrections[1]?.editedText, "we shipped Perfeqta", "the mid-run edit, carried")
+        XCTAssertNil(corrections[2])
+    }
+
+    /// A roster rename lands in `.speaker_labels.json` while the job runs. The carry reads the
+    /// file at completion, so the new name is what is carried.
+    func test_asr12_a_roster_rename_during_the_run_survives() throws {
+        let stem = "20260101-1040"
+        try touch("\(stem).wav")
+        try writeTranscript(stem, segments: [
+            segment(0, 10, "hi", "ME"),
+            segment(10, 20, "we shipped it", "THEM-A"),
+        ])
+        _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Alice", stem: stem, in: dir)
+
+        service.retranscribeMeeting(stem: stem) { _ in }
+        _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Alicia", stem: stem, in: dir)
+        try writeTranscript(stem, segments: [
+            segment(0, 10, "hi", "ME"),
+            segment(10, 20, "we shipped it", "THEM-B"),
+        ])
+        finishRetranscribe()
+        XCTAssertTrue(drainMainSync())
+
+        XCTAssertEqual(SpeakerLabelStore.read(stem: stem, in: dir).labels, ["THEM-B": "Alicia"])
+    }
+
     /// UX52's acceptance, pinned at the service rather than at the rendering: a
     /// re-transcribe that lands asks the store to rescan, and that rescan's
     /// `revision` bump is what the open detail pane's reload tasks key on. Before
@@ -1541,5 +1671,57 @@ final class MeetingLibraryServiceTests: XCTestCase {
         driver.finishMerge(.success(nil))
         XCTAssertTrue(drainMainSync())
         XCTAssertNil(try meta("a")[HeldEndTrim.metaKey])
+    }
+}
+
+// MARK: - ASR12: the in-flight edit lock
+
+@MainActor
+final class RetranscribeEditLockTests: XCTestCase {
+
+    /// The predicate both edit surfaces read: true while a re-transcribe of the stem is queued
+    /// or running, false for any other stem and once it has finished.
+    func test_asr12_overlay_edits_lock_for_the_stem_while_its_retranscribe_is_in_flight() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mp-asr12-lock-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let stem = "20260101-1100"
+        try Data("x".utf8).write(to: dir.appendingPathComponent("\(stem).wav"))
+
+        var pending: [(Result<Void, Error>) -> Void] = []
+        let model = LibraryWindowModel(recordingsDir: dir, savedSearchesURL: dir.appendingPathComponent("searches.json"))
+        model.library = MeetingLibraryService(
+            outputDir: { dir },
+            launcher: FakePipelineDriver(),
+            notifyError: { _ in },
+            enqueue: { _, _, _ in },
+            enqueueRetranscribe: { _, done in pending.append(done) }
+        )
+
+        XCTAssertFalse(model.overlayEditsLocked(stem: stem))
+        let run = Task { await model.retranscribeMeeting(stem: stem) }
+        while pending.isEmpty { await Task.yield() }
+
+        XCTAssertTrue(model.overlayEditsLocked(stem: stem), "queued or running locks the stem")
+        XCTAssertFalse(model.overlayEditsLocked(stem: "20260101-1200"), "only that stem")
+        guard case .failure(let refused) = model.reassignSegments(stem: stem, indices: [0], toLabel: "Bob") else {
+            return XCTFail("a reassignment is refused while locked")
+        }
+        XCTAssertTrue(refused is LibraryWindowModel.OverlayEditsLocked)
+
+        pending.removeFirst()(.success(()))
+        _ = await run.value
+        XCTAssertFalse(model.overlayEditsLocked(stem: stem), "released once the carry has run")
+    }
+
+    /// The tab's caption names each reason it is shown for, and nothing when neither holds.
+    func test_asr12_the_transcript_notice_names_the_lock_and_the_drift() {
+        XCTAssertNil(TranscriptNotices.text(driftedCorrections: 0, editsLocked: false))
+        XCTAssertEqual(TranscriptNotices.text(driftedCorrections: 0, editsLocked: true),
+                       LibraryWindowModel.overlayEditsLockedReason)
+        let drift = TranscriptNotices.text(driftedCorrections: 2, editsLocked: false) ?? ""
+        XCTAssertTrue(drift.hasPrefix("2 of your text edits are not shown"))
+        XCTAssertTrue(drift.contains("kept, not deleted"))
     }
 }

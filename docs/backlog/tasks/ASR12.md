@@ -2,9 +2,9 @@
 id: ASR12
 title: Transcript overlays are applied by index with no drift check, are not carried when a re-transcribe fails after rewriting the transcript, and are carried from a request-time snapshot
 category: Transcription
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). ASR3's carry does not hold on two paths: a re-transcribe whose finalize fails leaves the old index-keyed corrections and reassignments on the new segmentation (displayed, summarized, published), and a successful one writes back overlays snapshotted at request time, overwriting edits made while it ran; neither applier ever compares original_text. Skip and report drifted corrections in both trees, carry on the failed-finalize path, re-read overlays at completion and block overlay edits while the job is queued, and keep a pre-carry backup.
+comment: Shipped 2026-11-19. Drift check in both trees (Swift applyCounting + loader count + tab notice; Python read_corrections keeps original_text, apply_corrections skips and warns once; golden gains drifted and padded cases); upsert re-snapshots a drifted line; the carry re-reads both sidecars at completion; failed-finalize path carries text corrections and name reassignments, cluster names counted dropped, failure alert and batch note report counts; <stem>.overlay_backup.json written before any carry write; LibraryWindowModel.overlayEditsLocked disables the tab's edit and speaker actions and refuses the overlay writers. Caveat: a Reprocess finalize that applies a glossary term to a carried line makes that correction drift (skipped, backed up). Owner still owes one live check: start a re-transcribe and see the tab's actions grey out with the caption, then the edits land.
 ---
 
 # ASR12: Transcript overlays are applied by index with no drift check, are not carried when a re-transcribe fails after rewriting the transcript, and are carried from a request-time snapshot

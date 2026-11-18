@@ -107,6 +107,35 @@ enum LibraryDialogs {
         case .success(let outcome):
             alert.messageText = "Re-transcribed \(meetingTitle)."
             var lines = ["The transcript now reflects the current ASR, glossary, and roster."]
+            lines += carryLines(outcome)
+            lines.append("Re-summarize from the ... menu if you want the summary to reflect it.")
+            alert.informativeText = lines.joined(separator: "\n\n")
+            alert.addButton(withTitle: "Done")
+        case .failure(let error):
+            // ASR12: a finalize that failed after the transcript was rewritten still carried the
+            // owner's edits onto it, so the failure says what happened to them in the same words.
+            guard let rewritten = error as? MeetingLibraryService.RetranscribeFailedAfterRewrite else {
+                FailureDialog.show(FailurePresentation(error: error, operation: .transcribe))
+                return
+            }
+            let failure = FailurePresentation(error: rewritten.underlying, operation: .transcribe)
+            let failed = FailureDialog.alert(for: failure)
+            let lines = [failure.explanation]
+                + ["The transcript was rewritten before it failed, so your edits were moved onto it."]
+                + carryLines(rewritten.outcome)
+            failed.informativeText = lines.joined(separator: "\n\n")
+            if failed.runModal() == .alertSecondButtonReturn {
+                FailureDialog.showDetails(failure)
+            }
+            return
+        }
+        alert.runModal()
+    }
+
+    /// What happened to the owner's edits, one sentence per non-zero count. Shared by the success
+    /// report and ASR12's failed-finalize report so the two cannot word a count differently.
+    static func carryLines(_ outcome: MeetingLibraryService.RetranscribeOutcome) -> [String] {
+            var lines: [String] = []
             if outcome.carried > 0 {
                 lines.append("\(outcome.carried) of your edits carried over.")
             }
@@ -121,16 +150,9 @@ enum LibraryDialogs {
                 lines.append("\(outcome.contradicted) of your edits now disagree\(outcome.contradicted == 1 ? "s" : "") with a vocabulary rule. Your edit is still what you see; open the line and re-edit it if the rule is the one you want.")
             }
             if outcome.dropped > 0 {
-                lines.append("\(outcome.dropped) could not be placed on the new transcript and were dropped.")
+                lines.append("\(outcome.dropped) could not be placed on the new transcript and were dropped. A copy of them is kept beside the meeting.")
             }
-            lines.append("Re-summarize from the ... menu if you want the summary to reflect it.")
-            alert.informativeText = lines.joined(separator: "\n\n")
-            alert.addButton(withTitle: "Done")
-        case .failure(let error):
-            FailureDialog.show(FailurePresentation(error: error, operation: .transcribe))
-            return
-        }
-        alert.runModal()
+            return lines
     }
 
     /// Folder picker for an export, returning the chosen directory or nil on cancel.

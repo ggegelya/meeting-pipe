@@ -499,6 +499,22 @@ final class MeetingLibraryService {
         /// overlay still wins on screen, and a conflict counted as a success is
         /// how the rule came to look broken.
         let contradicted: Int
+
+        static func none(_ stem: String) -> RetranscribeOutcome {
+            RetranscribeOutcome(stem: stem, carried: 0, dropped: 0, retired: 0, contradicted: 0)
+        }
+
+        var touchedAnything: Bool { carried + dropped + retired + contradicted > 0 }
+    }
+
+    /// A re-transcribe whose finalize failed after the transcription leg had already rewritten
+    /// `<stem>.json` (ASR12). The overlays were carried onto the raw transcript, so the failure
+    /// carries the counts too and the report can say what happened to the owner's edits. Its
+    /// description is the underlying error's, so a caller that only shows the error loses nothing.
+    struct RetranscribeFailedAfterRewrite: LocalizedError {
+        let underlying: Error
+        let outcome: RetranscribeOutcome
+        var errorDescription: String? { underlying.localizedDescription }
     }
 
     /// Re-transcribe an existing recording against the current stack (ASR3).
@@ -580,9 +596,8 @@ final class MeetingLibraryService {
                 switch result {
                 case .success:
                     let outcome = self.applyOverlayCarry(
-                        stem: stem, in: dir,
-                        before: before, overlay: overlay, corrections: corrections
-                    )
+                        stem: stem, in: dir, before: before, afterFailedFinalize: false
+                    ) ?? .none(stem)
                     // UX52: after the carry, never before it. The rows and the cast
                     // strip are read from the transcript and the overlay together,
                     // so a rescan published between the two would put the new text
@@ -614,12 +629,32 @@ final class MeetingLibraryService {
                     // Cancel cannot reach this leg today (`finalize` runs through
                     // `runMP` with no retain slot, so `cancelActiveRun` never sees
                     // it), and if it ever does the publish is still the right call.
+                    //
+                    // ASR12: when it was the finalize leg that failed, `<stem>.json` is already the
+                    // runner's new segmentation, and the old index-keyed overlays would sit on it by
+                    // index (shown, summarized and published by the Reprocess the failure offers).
+                    // So the label-independent half is carried here; the carry is a no-op when the
+                    // transcript did not change (a failure in the transcription leg itself).
+                    let carried = self.applyOverlayCarry(
+                        stem: stem, in: dir, before: before, afterFailedFinalize: true
+                    )
                     self.refreshLibrary()
-                    Log.event(category: "coordinator", action: "retranscribe_failed", attributes: [
+                    var attributes: [String: Any] = [
                         "stem": stem,
                         "error_type": PipelineOutcomeLog.errorType(err),  // SEC38: the text can quote the title
-                    ])
-                    completion(.failure(err))
+                    ]
+                    if let carried {
+                        attributes["carried"] = carried.carried
+                        attributes["dropped"] = carried.dropped
+                        attributes["retired"] = carried.retired
+                        attributes["contradicted"] = carried.contradicted
+                    }
+                    Log.event(category: "coordinator", action: "retranscribe_failed", attributes: attributes)
+                    if let carried, carried.touchedAnything {
+                        completion(.failure(RetranscribeFailedAfterRewrite(underlying: err, outcome: carried)))
+                    } else {
+                        completion(.failure(err))
+                    }
                 }
             }
         }
@@ -628,20 +663,56 @@ final class MeetingLibraryService {
     /// Re-anchor the overlays onto the transcript the run just wrote and persist
     /// them. A write failure is reported through the notifier but does not fail
     /// the run: the new transcript landed, which is the thing the owner asked
-    /// for, and the stale sidecar on disk is the recoverable half.
+    /// for, and the backup plus the stale sidecar on disk are the recoverable half.
+    ///
+    /// ASR12: both sidecars are re-read here, at completion, not taken from the
+    /// request. The job can wait in the queue for minutes, and a roster rename or
+    /// an edit written meanwhile is keyed on the same old numbering as everything
+    /// else in the file, so it is carried with the rest instead of overwritten by
+    /// a snapshot. Returns nil when there was nothing to carry or nothing moved.
+    ///
+    /// `afterFailedFinalize`: the transcript on disk is the runner's raw output,
+    /// whose cluster labels the Reprocess finalize will relabel. Cluster names and
+    /// reassignments to a raw label would key on labels about to change, so only
+    /// the label-independent half is carried (text corrections, reassignments to a
+    /// name); the rest is counted as dropped and kept in the backup.
     private func applyOverlayCarry(
         stem: String,
         in dir: URL,
         before: [TranscriptOverlayCarry.Anchor],
-        overlay: SpeakerLabelStore.Overlay,
-        corrections: [Int: TranscriptCorrectionStore.Correction]
-    ) -> RetranscribeOutcome {
-        guard !overlay.isEmpty || !corrections.isEmpty else {
-            return RetranscribeOutcome(stem: stem, carried: 0, dropped: 0, retired: 0, contradicted: 0)
+        afterFailedFinalize: Bool
+    ) -> RetranscribeOutcome? {
+        let overlay: SpeakerLabelStore.Overlay
+        let corrections: [Int: TranscriptCorrectionStore.Correction]
+        do {
+            overlay = try StoreGuard.valueForCarry(
+                SpeakerLabelStore.load(stem: stem, in: dir), empty: .empty,
+                url: SpeakerLabelStore.path(stem: stem, in: dir), store: "speaker_labels"
+            )
+            corrections = try StoreGuard.valueForCarry(
+                TranscriptCorrectionStore.load(stem: stem, in: dir), empty: [:],
+                url: TranscriptCorrectionStore.path(stem: stem, in: dir), store: "transcript_corrections"
+            )
+        } catch {
+            notifyError("Re-transcribed \(stem), but couldn't read your edits to carry them: \(error.localizedDescription)")
+            return nil
         }
+        guard !overlay.isEmpty || !corrections.isEmpty else { return nil }
         let after = Self.transcriptAnchors(stem: stem, in: dir)
+        // A failed run that never rewrote the transcript changed nothing to carry onto, and an
+        // empty one would read as "everything dropped" and delete both sidecars on a guess.
+        if afterFailedFinalize, after == before || after.isEmpty { return nil }
+
+        var carryInput = overlay
+        var withheld = 0
+        if afterFailedFinalize {
+            let rawLabels = Set(before.compactMap(\.speaker)).union(overlay.labels.keys)
+            let toNames = overlay.segments.filter { !rawLabels.contains($0.value) }
+            withheld = overlay.labels.count + (overlay.segments.count - toNames.count)
+            carryInput = SpeakerLabelStore.Overlay(labels: [:], segments: toNames)
+        }
         let carry = TranscriptOverlayCarry.carry(
-            old: before, new: after, speakerOverlay: overlay, corrections: corrections,
+            old: before, new: after, speakerOverlay: carryInput, corrections: corrections,
             // UX66: the terms this meeting's finalize just applied, so the carry
             // can tell a stale override from a live one. Resolved the same way
             // `mp finalize` resolves them, global table under the workflow's.
@@ -650,20 +721,26 @@ final class MeetingLibraryService {
                 workflowName: Self.workflowName(stem: stem, in: dir)
             )
         )
-        do {
-            if carry.speakerOverlay != overlay {
-                _ = try SpeakerLabelStore.replace(overlay: carry.speakerOverlay, stem: stem, in: dir)
+        let writesOverlay = carry.speakerOverlay != overlay
+        let writesCorrections = carry.corrections != corrections
+        if writesOverlay || writesCorrections {
+            do {
+                // ASR12: before anything is rewritten, so a drop is recoverable by hand.
+                try OverlayBackup.write(stem: stem, in: dir, anchors: before)
+                if writesOverlay {
+                    _ = try SpeakerLabelStore.replace(overlay: carry.speakerOverlay, stem: stem, in: dir)
+                }
+                if writesCorrections {
+                    try TranscriptCorrectionStore.replace(carry.corrections, stem: stem, in: dir)
+                }
+            } catch {
+                notifyError("Re-transcribed \(stem), but couldn't rewrite your edits: \(error.localizedDescription)")
             }
-            if carry.corrections != corrections {
-                try TranscriptCorrectionStore.replace(carry.corrections, stem: stem, in: dir)
-            }
-        } catch {
-            notifyError("Re-transcribed \(stem), but couldn't rewrite your edits: \(error.localizedDescription)")
         }
         return RetranscribeOutcome(
             stem: stem,
             carried: carry.carried,
-            dropped: carry.dropped,
+            dropped: carry.dropped + withheld,
             retired: carry.retired,
             contradicted: carry.contradicted
         )

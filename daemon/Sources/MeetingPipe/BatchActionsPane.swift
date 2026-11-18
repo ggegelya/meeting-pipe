@@ -574,8 +574,15 @@ struct BatchActionsPane: View {
                 dropped += outcome.dropped
                 retired += outcome.retired
                 contradicted += outcome.contradicted
-            case .failure:
+            case .failure(let error):
                 bad += 1
+                // ASR12: a finalize that failed after the rewrite still carried the edits.
+                if let rewritten = error as? MeetingLibraryService.RetranscribeFailedAfterRewrite {
+                    carried += rewritten.outcome.carried
+                    dropped += rewritten.outcome.dropped
+                    retired += rewritten.outcome.retired
+                    contradicted += rewritten.outcome.contradicted
+                }
             }
             state = .running(label: "Re-transcribing", done: i + 1, total: stems.count)
         }

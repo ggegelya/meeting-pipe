@@ -54,6 +54,58 @@ final class TranscriptCorrectionStoreTests: XCTestCase {
         XCTAssertEqual(out[1].speakerID, segs[1].speakerID)
     }
 
+    // MARK: - Drift check (ASR12)
+
+    /// An entry whose snapshot is no longer what its segment says points at a different
+    /// sentence now. It is skipped and counted, while a live entry beside it still applies.
+    func test_apply_skips_a_drifted_entry_and_counts_it() {
+        let segs = [segment(0, "hello"), segment(1, "a rewritten sentence")]
+        let corrections: [Int: TranscriptCorrectionStore.Correction] = [
+            0: .init(segmentIndex: 0, originalText: "hello", editedText: "Hello!"),
+            1: .init(segmentIndex: 1, originalText: "the old sentence", editedText: "an edit for it"),
+        ]
+        let out = TranscriptCorrectionStore.applyCounting(corrections: corrections, to: segs)
+        XCTAssertEqual(out.segments.map(\.text), ["Hello!", "a rewritten sentence"])
+        XCTAssertEqual(out.drifted, 1)
+        XCTAssertEqual(TranscriptCorrectionStore.apply(corrections: corrections, to: segs).map(\.text),
+                       ["Hello!", "a rewritten sentence"])
+    }
+
+    /// The loader reports the skipped count, and the drifted entry stays on disk.
+    func test_loader_reports_drifted_corrections_and_keeps_them() throws {
+        let transcript: [String: Any] = ["segments": [
+            ["start": 0.0, "end": 1.0, "text": "hello", "speaker": "ME"],
+            ["start": 1.0, "end": 2.0, "text": "a rewritten sentence", "speaker": "ME"],
+        ]]
+        try JSONSerialization.data(withJSONObject: transcript)
+            .write(to: dir.appendingPathComponent("\(stem).json"))
+        _ = try TranscriptCorrectionStore.upsert(
+            segmentIndex: 1, pipelineOriginal: "the old sentence", edited: "an edit", stem: stem, in: dir)
+
+        let loaded = try XCTUnwrap(TranscriptLoader.load(stem: stem, in: dir))
+        XCTAssertEqual(loaded.driftedCorrections, 1)
+        XCTAssertEqual(loaded.segments[1].text, "a rewritten sentence")
+        XCTAssertNotNil(TranscriptCorrectionStore.read(stem: stem, in: dir)[1], "skipped, never deleted")
+    }
+
+    /// Editing a line whose entry drifted re-snapshots against what the line says now.
+    /// Keeping the stale snapshot would save the edit and then skip it on every load.
+    func test_reediting_a_drifted_line_resnapshots_its_original() throws {
+        _ = try TranscriptCorrectionStore.upsert(
+            segmentIndex: 0, pipelineOriginal: "the old sentence", edited: "old edit", stem: stem, in: dir)
+        // The tab shows the pipeline's text, because `apply` skipped the drifted entry.
+        _ = try TranscriptCorrectionStore.upsert(
+            segmentIndex: 0, pipelineOriginal: "the new sentence", edited: "new edit", stem: stem, in: dir)
+        let stored = TranscriptCorrectionStore.read(stem: stem, in: dir)[0]
+        XCTAssertEqual(stored?.originalText, "the new sentence")
+        XCTAssertEqual(stored?.editedText, "new edit")
+
+        // A live entry still keeps its earliest snapshot across re-edits.
+        _ = try TranscriptCorrectionStore.upsert(
+            segmentIndex: 0, pipelineOriginal: "new edit", edited: "newer edit", stem: stem, in: dir)
+        XCTAssertEqual(TranscriptCorrectionStore.read(stem: stem, in: dir)[0]?.originalText, "the new sentence")
+    }
+
     // MARK: - upsert + read round-trip
 
     func test_upsert_then_read_returns_the_correction() throws {
@@ -208,8 +260,10 @@ final class TranscriptCorrectionStoreTests: XCTestCase {
             try JSONSerialization.data(withJSONObject: corrections).write(to: sidecar)
             let dict = TranscriptCorrectionStore.read(stem: caseStem, in: dir)
 
+            // Trimmed the way `TranscriptLoader.parse` trims, which is the text the app's drift
+            // check sees (ASR12's padded case pins that Python compares the same form).
             let segs = rawSegments.enumerated().map { i, raw in
-                segment(i, (raw["text"] as? String) ?? "")
+                segment(i, ((raw["text"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
             }
             let out = TranscriptCorrectionStore.apply(corrections: dict, to: segs)
             XCTAssertEqual(out.map { $0.text }, expected, "golden case \(name)")
