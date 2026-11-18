@@ -888,10 +888,17 @@ final class MeetingStore: ObservableObject {
         do {
             try durationCache.write(to: url)
             persistedDurationCache = durationCache
+            durationCacheFailureLogged = false
         } catch {
+            // A failed write is retried on every scan; one row per failure streak, not per scan.
+            guard !durationCacheFailureLogged else { return }
+            durationCacheFailureLogged = true
             Log.failure(category: "library", action: "duration_cache_write_failed", error: error)
         }
     }
+
+    /// Whether the current duration-cache write failure has been logged. On `scanQueue`.
+    private var durationCacheFailureLogged = false
 
     private static func buildMeeting(
         stem: String,

@@ -48,6 +48,8 @@ final class SearchIndexer: ObservableObject {
     }
     private let indexQueue = DispatchQueue(label: "MeetingPipe.SearchIndexer", qos: .utility)
     private var cancellable: AnyCancellable?
+    /// Whether the current run of skipped reconciles has been logged. On `indexQueue`.
+    private var reconcileSkipLogged = false
 
     /// Default cache location, alongside the waveform cache (ADR 0003: a rebuildable index over files).
     static func defaultIndexURL() -> URL {
@@ -154,7 +156,10 @@ final class SearchIndexer: ObservableObject {
                 start = end
             }
             changed = !actions.isEmpty
-        } else {
+            reconcileSkipLogged = false
+        } else if !reconcileSkipLogged {
+            // Every scan of an unreadable folder skips again; one row per streak, not per scan.
+            reconcileSkipLogged = true
             Log.failure(category: "library", action: "search_index_reconcile_skipped", reason: "the library scan listed nothing and could not read the recordings folder; keeping the index", attributes: [
                 "indexed": indexed.count,
             ])

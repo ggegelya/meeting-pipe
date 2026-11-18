@@ -119,8 +119,8 @@ final class ObservabilityOBS5Tests: XCTestCase {
         XCTAssertEqual(row["recording_open"] as? Bool, true)
     }
 
-    /// `flushAndExit` exits, so the order is pinned on its source: the row before the ceiling and
-    /// the shutdown, so a wedged teardown still leaves it.
+    /// `flushAndExit` exits, so the order is pinned on its source: REC13's ceiling first, then the
+    /// row, then the shutdown, so a wedged teardown still leaves the row and cannot hold the exit.
     func test_the_terminating_row_is_written_before_anything_that_can_block() throws {
         let app = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -131,7 +131,7 @@ final class ObservabilityOBS5Tests: XCTestCase {
         let record = try XCTUnwrap(rest.range(of: "AppDelegate.recordTermination("))
         let ceiling = try XCTUnwrap(rest.range(of: "armTerminationCeiling()"))
         let shutdown = try XCTUnwrap(rest.range(of: "coordinator?.shutdown()"))
-        XCTAssertLessThan(record.lowerBound, ceiling.lowerBound)
+        XCTAssertLessThan(ceiling.lowerBound, record.lowerBound)
         XCTAssertLessThan(record.lowerBound, shutdown.lowerBound)
     }
 

@@ -300,6 +300,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the flush: bounding the flush's own internals, which REC13 also does, would not
     /// have saved that recording, because the flush never started.
     private func flushAndExit(reason: TerminationReason) -> Never {
+        // REC13: the ceiling first, so nothing after it (the logger's lock included) can hold the exit.
+        armTerminationCeiling()
         AppDelegate.recordTermination(
             reason: reason,
             relaunch: AppDelegate.shouldRelaunchOnQuit(
@@ -309,7 +311,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             uptimeSec: Int(ProcessInfo.processInfo.systemUptime - AppDelegate.launchUptime),
             recordingOpen: coordinator?.recorder.isRecording ?? false
         )
-        armTerminationCeiling()
         localModelPreloader.stop()
         coordinator?.shutdown()
         let relaunch = AppDelegate.shouldRelaunchOnQuit(
