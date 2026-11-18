@@ -59,7 +59,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import egress_guard, entry, events, storage
+from . import egress_guard, entry, events, run_attempt, storage
 from .config import KEYCHAIN_SERVICE, MANAGED_SECRET_KEYS, Config
 
 MANIFEST_NAME = "manifest.json"
@@ -113,7 +113,7 @@ class BackupError(Exception):
 #: Never archived, whatever root it is found under. `secrets.env` is the legacy
 #: plaintext file; `.last-backup.json` is a fact about *this* Mac, and restoring a
 #: stale one would make doctor report a backup that never happened here.
-EXCLUDED_NAMES = {"secrets.env", ".last-backup.json"}
+EXCLUDED_NAMES = {"secrets.env", ".last-backup.json", ".last-backup-attempt.json", ".last-digest-attempt.json"}
 
 #: `config.toml` names this machine's library path, so a restore must not clobber
 #: the one the user just wrote on the new Mac. Everything else under `config/`
@@ -718,17 +718,30 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
 
-    # SEC13: local-only work, but the entry contract is the entry contract.
-    # `secrets=False`: a backup names the Keychain items, it never reads them.
-    cfg = entry.prepare(secrets=False)
-
     include_audio = not args.no_audio
+    # STOR10: every run leaves an attempt marker and an event, so a scheduled run that fails
+    # is seen in Preferences and the menu rather than only in a launchd log nobody reads. The
+    # event carries the error's class, never its text (SEC38); the marker carries the text.
+    run_trigger = run_attempt.trigger()
     try:
+        # SEC13: local-only work, but the entry contract is the entry contract.
+        # `secrets=False`: a backup names the Keychain items, it never reads them.
+        cfg = entry.prepare(secrets=False)
         result = run_backup(cfg, args.directory, include_audio=include_audio)
     except BackupError as exc:
         # STOR14: stderr, the only stream `runMP` keeps for the failure text.
         print(f"[FAIL] {exc}", file=sys.stderr)
+        run_attempt.record(run_attempt.BACKUP, outcome="failed", reason=str(exc), run_trigger=run_trigger)
+        events.emit("pipeline", "backup_failed", error_type=type(exc).__name__, trigger=run_trigger)
         return 1
+    except Exception as exc:
+        run_attempt.record(run_attempt.BACKUP, outcome="failed",
+                           reason=f"{type(exc).__name__}: {exc}", run_trigger=run_trigger)
+        events.emit("pipeline", "backup_failed", error_type=type(exc).__name__, trigger=run_trigger)
+        raise
+    run_attempt.record(run_attempt.BACKUP, outcome="ok", run_trigger=run_trigger)
+    events.emit("pipeline", "backup_completed", bytes=result.archive.stat().st_size,
+                audio_included=include_audio, trigger=run_trigger)
 
     # STOR12: printed from the manifest this run built. Reading it back out of
     # the archive meant decompressing the whole thing again for a summary.

@@ -25,13 +25,61 @@ enum LaunchAgentScheduler {
         let minute: Int
     }
 
-    static func plistURL(label: String) -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
+    /// STOR10: what the install and the remove touch, injectable so a test never writes, loads or
+    /// removes the owner's real agents. `runner` is UX42's watchdogged `launchctl` seam.
+    struct Environment {
+        var runner: LaunchctlRunning = ProcessLaunchctl()
+        var agentsDir: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+        var findMP: () -> PipelineLauncher.MPInvocation? = { PipelineLauncher.findMP() }
+        var uid: uid_t = getuid()
+
+        static var live: Environment { Environment() }
     }
 
-    static func isInstalled(label: String) -> Bool {
-        FileManager.default.fileExists(atPath: plistURL(label: label).path)
+    /// STOR10: why a schedule did not take. `launchctl`'s exit status and output are kept, since a
+    /// refused bootstrap used to go to `/dev/null` and the toggle read as on.
+    enum InstallError: Error, Equatable, LocalizedError {
+        case mpNotFound
+        case plistWriteFailed(String)
+        case bootstrapFailed(status: Int32, output: String)
+        case notLoaded(output: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .mpNotFound:
+                return "the mp command could not be found, so nothing can run on the schedule"
+            case .plistWriteFailed(let reason):
+                return "the schedule file could not be written: \(reason)"
+            case .bootstrapFailed(let status, let output):
+                return "macOS refused the schedule (launchctl \(status))\(Self.detail(output))"
+            case .notLoaded(let output):
+                return "macOS accepted the schedule but did not load it\(Self.detail(output))"
+            }
+        }
+
+        /// The fixed class an event carries; the text above can name a path.
+        var kind: String {
+            switch self {
+            case .mpNotFound: return "mp_not_found"
+            case .plistWriteFailed: return "plist_write_failed"
+            case .bootstrapFailed: return "bootstrap_failed"
+            case .notLoaded: return "not_loaded"
+            }
+        }
+
+        private static func detail(_ output: String) -> String {
+            let line = output.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+            return line.isEmpty ? "" : ": \(line.prefix(200))"
+        }
+    }
+
+    static func plistURL(label: String, env: Environment = .live) -> URL {
+        env.agentsDir.appendingPathComponent("\(label).plist")
+    }
+
+    static func isInstalled(label: String, env: Environment = .live) -> Bool {
+        FileManager.default.fileExists(atPath: plistURL(label: label, env: env).path)
     }
 
     /// The plist body. Pure, so the schedule mapping is unit-tested without
@@ -58,6 +106,8 @@ enum LaunchAgentScheduler {
             "StandardErrorPath": "\(logDir)/\(logBasename).err.log",
             "EnvironmentVariables": [
                 "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+                // STOR10: `mp` stamps its attempt marker and events `trigger: scheduled`.
+                "MP_TRIGGER": "scheduled",
             ],
         ]
     }
@@ -68,17 +118,17 @@ enum LaunchAgentScheduler {
             .appendingPathComponent("Library/Logs/MeetingPipe").path
     }
 
-    /// Write and bootstrap the agent. `arguments` are appended to the resolved `mp`
-    /// invocation, so a caller passes `["digest"]` / `["backup", dir]`, never a path.
-    /// Returns false when `mp` could not be resolved or the plist could not be written.
-    @discardableResult
+    /// Write and bootstrap the agent, then confirm launchd holds it. `arguments` are appended to the
+    /// resolved `mp` invocation, so a caller passes `["digest"]` / `["backup", dir]`, never a path.
+    ///
+    /// STOR10: success is `launchctl print` finding the agent, not bootstrap's exit status: the
+    /// bootout before it can exit non-zero harmlessly, and a bootstrap that exits zero for a plist
+    /// launchd then drops would read as on. Off main: every call is a `launchctl` round trip (UX67).
     static func install(
-        label: String, arguments: [String], schedule: Schedule, logBasename: String
-    ) -> Bool {
-        guard let mp = PipelineLauncher.findMP() else {
-            Log.failure(category: "daemon", action: "schedule_install_failed", reason: "mp not found", attributes: ["label": label])
-            return false
-        }
+        label: String, arguments: [String], schedule: Schedule, logBasename: String,
+        env: Environment = .live
+    ) -> Result<Void, InstallError> {
+        guard let mp = env.findMP() else { return .failure(.mpNotFound) }
         let dict = plistDictionary(
             label: label,
             program: [mp.shell] + mp.args + arguments,
@@ -86,7 +136,7 @@ enum LaunchAgentScheduler {
             logBasename: logBasename,
             logDir: logDir
         )
-        let url = plistURL(label: label)
+        let url = plistURL(label: label, env: env)
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true
@@ -94,42 +144,21 @@ enum LaunchAgentScheduler {
             let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
             try data.write(to: url, options: .atomic)
         } catch {
-            Log.failure(category: "daemon", action: "schedule_install_failed", error: error, attributes: ["label": label])
-            return false
+            return .failure(.plistWriteFailed(error.localizedDescription))
         }
-        // Re-bootstrap so a schedule change takes effect: bootout the old (may be absent),
-        // then bootstrap the freshly written plist.
-        bootout(label: label)
-        launchctl(["bootstrap", "gui/\(getuid())", url.path])
-        return true
+        // Re-bootstrap so a schedule change takes effect: bootout the old (may be absent, so its
+        // status is ignored), then bootstrap the freshly written plist.
+        _ = env.runner.run(["bootout", "gui/\(env.uid)", url.path])
+        let bootstrap = env.runner.run(["bootstrap", "gui/\(env.uid)", url.path])
+        let loaded = env.runner.run(["print", "gui/\(env.uid)/\(label)"])
+        if loaded.ok { return .success(()) }
+        if !bootstrap.ok { return .failure(.bootstrapFailed(status: bootstrap.status, output: bootstrap.output)) }
+        return .failure(.notLoaded(output: loaded.output))
     }
 
-    static func remove(label: String) {
-        bootout(label: label)
-        try? FileManager.default.removeItem(at: plistURL(label: label))
-    }
-
-    private static func bootout(label: String) {
-        // The agent may not be loaded, so ignore a non-zero exit.
-        launchctl(["bootout", "gui/\(getuid())", plistURL(label: label).path])
-    }
-
-    @discardableResult
-    private static func launchctl(_ args: [String]) -> Bool {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        p.arguments = args
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
-        do {
-            try p.run()
-            p.waitUntilExit()
-            return p.terminationStatus == 0
-        } catch {
-            Log.failure(category: "daemon", action: "schedule_launchctl_failed", error: error, attributes: [
-                "subcommand": args.first ?? "",
-            ])
-            return false
-        }
+    static func remove(label: String, env: Environment = .live) {
+        let url = plistURL(label: label, env: env)
+        _ = env.runner.run(["bootout", "gui/\(env.uid)", url.path])
+        try? FileManager.default.removeItem(at: url)
     }
 }

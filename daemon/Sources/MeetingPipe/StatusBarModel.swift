@@ -57,6 +57,9 @@ enum StatusBarModel {
         case finishSetup(title: String)
         /// UX91: a Preferences change did not reach `config.toml` or the Keychain.
         case unsavedSetting(title: String)
+        /// STOR10: a scheduled backup or digest failed, or the backup fell behind. Opens
+        /// Preferences ▸ Storage; stays until the next success.
+        case scheduledRunFailed(title: String)
         case startRecording
         /// DET7: `startRecording` when a meeting the user skipped is still running, so
         /// the row names what a click will attach to. Same action, honest label: the
@@ -95,6 +98,8 @@ enum StatusBarModel {
         var finishSetupTitle: String?
         /// UX91: `ConfigStore.saveError` or `SecretsStore.saveError` is set.
         var unsavedSetting: Bool
+        /// STOR10: the scheduled-run row's title (`LastBackup.menuTitle`), read off main, or nil.
+        var scheduledRunTitle: String?
         var disableAutoRestart: Bool
         /// UX55: whether the `com.meetingpipe.daemon` launch agent is enabled, which is
         /// whether anything is left that *could* relaunch the app after a quit
@@ -134,6 +139,7 @@ enum StatusBarModel {
             staleRecordingCount: Int = 0,
             finishSetupTitle: String? = nil,
             unsavedSetting: Bool = false,
+            scheduledRunTitle: String? = nil,
             disableAutoRestart: Bool = false,
             launchAgentEnabled: Bool = true,
             suppressedCandidateAppName: String? = nil,
@@ -155,6 +161,7 @@ enum StatusBarModel {
             self.staleRecordingCount = staleRecordingCount
             self.finishSetupTitle = finishSetupTitle
             self.unsavedSetting = unsavedSetting
+            self.scheduledRunTitle = scheduledRunTitle
             self.disableAutoRestart = disableAutoRestart
             self.launchAgentEnabled = launchAgentEnabled
             self.suppressedCandidateAppName = suppressedCandidateAppName
@@ -304,6 +311,9 @@ enum StatusBarModel {
         if i.unsavedSetting {
             rows.append(.unsavedSetting(title: unsavedSettingTitle))
         }
+        if let title = i.scheduledRunTitle {
+            rows.append(.scheduledRunFailed(title: title))
+        }
 
         // UX22: the "Finish setup" checklist, a quiet holistic "am I done?" view.
         // Present only while something is unmet; the submenu lists each gap and
@@ -402,6 +412,12 @@ enum StatusBarModel {
     /// The failed-pipeline row's title, or nil when there is nothing to show.
     /// Backed by the durable error sidecar, so a notification missed under Focus
     /// is not the only surface; it stays until retry or delete.
+    /// STOR10: one row for both scheduled jobs; the backup's state wins, since it is the one the
+    /// corpus depends on.
+    static func scheduledRunTitle(backup: LastBackup.ScheduledState, digest: LastBackup.ScheduledState) -> String? {
+        LastBackup.menuTitle(backup, job: "backup") ?? LastBackup.menuTitle(digest, job: "digest")
+    }
+
     static func failedMeetingsTitle(count: Int) -> String? {
         guard count > 0 else { return nil }
         let noun = count == 1 ? "meeting" : "meetings"

@@ -24,6 +24,10 @@ struct StorageSectionView: View {
     @State private var backupSyncWarning: String?
     private let workflowStore: WorkflowStore
     @State private var lastBackupAge: String?
+    /// STOR10: why the last schedule change did not take (launchd refused it, `mp` not found), and
+    /// what the scheduled runs themselves say (a failed run, an overdue one).
+    @State private var backupScheduleError: String?
+    @State private var scheduledBackupLine: String?
 
     // STOR5: the restore's two-step state lives on its own object, not in this
     // view, so the dry-run-then-confirm sequence is testable. Its own launcher:
@@ -288,12 +292,17 @@ struct StorageSectionView: View {
             // has something to say, because it is the thing that just happened.
             if let error = backupError {
                 FailureNotice(failure: FailurePresentation(diagnostics: error, operation: .storage, title: "Couldn't finish the file operation")).foregroundStyle(.mpDanger)
+            } else if let error = backupScheduleError {
+                Text(error).foregroundStyle(.mpDanger)
             } else if let line = restore.footerText {
                 if restore.hasFailed {
                     FailureNotice(failure: FailurePresentation(diagnostics: line, operation: .storage, title: "Couldn't restore the backup"))
                 } else { Text(line).foregroundStyle(Color(MPColors.fgMuted)) }
             } else if let warning = backupSyncWarning {
                 Text(warning).foregroundStyle(.mpDanger)
+            } else if let line = scheduledBackupLine {
+                // STOR10: an unattended run that failed or fell behind outranks the plain age.
+                Text("\(line).").foregroundStyle(.mpDanger)
             } else {
                 Text("\(lastBackupAge ?? "No backup has run on this Mac yet"). Restoring here recovers meetings this Mac lost; a first restore onto a new Mac still runs from the Terminal, see the README backup runbook.")
             }
@@ -376,6 +385,10 @@ struct StorageSectionView: View {
 
     private func refreshLastBackup() {
         lastBackupAge = LastBackup.ageDescription()
+        scheduledBackupLine = LastBackup.scheduledLine(
+            LastBackup.backupState(scheduleOn: ui.backupScheduleEnabled, weekly: ui.backupFrequency == .weekly),
+            job: "backup"
+        )
     }
 
     // MARK: Automatic backup (STOR4)
@@ -397,13 +410,27 @@ struct StorageSectionView: View {
 
     /// (Re)install or remove the launch agent so a change takes effect immediately,
     /// mirroring the digest toggle in Preferences ▸ Pipeline.
+    ///
+    /// STOR10: off main, since it is several watchdogged `launchctl` round trips (UX67), and the
+    /// outcome comes back to say beside the toggle whether the schedule actually took.
     private func applyBackupSchedule() {
-        BackupSchedulerService.apply(
-            enabled: ui.backupScheduleEnabled,
-            destination: ui.backupDestinationPath,
-            frequency: ui.backupFrequency,
-            weekday: ui.backupWeekday, hour: ui.backupHour, minute: ui.backupMinute
-        )
+        let enabled = ui.backupScheduleEnabled, destination = ui.backupDestinationPath
+        let frequency = ui.backupFrequency
+        let weekday = ui.backupWeekday, hour = ui.backupHour, minute = ui.backupMinute
+        Task.detached(priority: .userInitiated) {
+            let result = BackupSchedulerService.apply(
+                enabled: enabled, destination: destination, frequency: frequency,
+                weekday: weekday, hour: hour, minute: minute
+            )
+            await MainActor.run {
+                if case .failure(let error) = result {
+                    backupScheduleError = "Automatic backup is not on: \(error.localizedDescription)."
+                } else {
+                    backupScheduleError = nil
+                }
+                refreshLastBackup()
+            }
+        }
     }
 
     private var backupScheduleEnabledBinding: Binding<Bool> {

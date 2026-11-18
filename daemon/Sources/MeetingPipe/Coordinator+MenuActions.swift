@@ -57,6 +57,11 @@ extension Coordinator {
         preferencesWindow?.show(initial: .permissions)
     }
 
+    /// STOR10: the scheduled-run row opens the pane that says what failed.
+    @objc func menuPreferencesStorage() {
+        preferencesWindow?.show(initial: .storage)
+    }
+
     /// Deeplink to Preferences -> Integrations, the fix for the "Finish setup"
     /// checklist's Anthropic-key and Notion items (UX22).
     @objc func menuPreferencesIntegrations() {

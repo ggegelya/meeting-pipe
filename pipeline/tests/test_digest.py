@@ -520,3 +520,30 @@ def test_narrate_still_reaches_the_cloud_when_the_opt_out_is_off(
     monkeypatch.setattr(digest.engine, "complete_text", _spy)
     digest.narrate(_cfg_backend("anthropic"), _scope(tmp_path), [], TODAY, 7)
     assert seen == ["anthropic"]
+
+
+# ----- STOR10: a failed digest leaves a marker and an event -----
+
+
+def test_a_raising_digest_writes_a_failed_attempt_and_event(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from mp import run_attempt
+
+    root = tmp_path / "raw"
+    root.mkdir()
+    monkeypatch.setattr(digest.Config, "load", classmethod(lambda cls: _cfg()))
+
+    def boom(*_a, **_k):
+        raise RuntimeError("library unreadable")
+
+    monkeypatch.setattr(digest, "generate", boom)
+    monkeypatch.setenv("MP_TRIGGER", "scheduled")
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(digest.events, "emit", lambda c, a, **kw: emitted.append((c, a, kw)))
+
+    with pytest.raises(RuntimeError):
+        digest.main(["--dir", str(root), "--out-dir", str(tmp_path / "digests")])
+
+    attempt = run_attempt.read(run_attempt.DIGEST)
+    assert attempt is not None and attempt["outcome"] == "failed"
+    assert attempt["reason"] == "RuntimeError: library unreadable"
+    assert emitted == [("pipeline", "digest_failed", {"error_type": "RuntimeError", "trigger": "scheduled"})]

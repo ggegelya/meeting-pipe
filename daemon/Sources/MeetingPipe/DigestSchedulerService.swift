@@ -15,21 +15,36 @@ enum DigestSchedulerService {
 
     /// Install (enabled) or remove (disabled) the weekly digest agent. `weekday` is
     /// 1=Monday … 7=Sunday (ISO 8601); `hour` 0–23, `minute` 0–59.
-    static func apply(enabled: Bool, weekday: Int, hour: Int, minute: Int) {
+    ///
+    /// STOR10: `digest_schedule_installed` only once launchd holds the agent, else
+    /// `digest_schedule_failed`, and the error returned for Preferences. Call it off main (UX67).
+    @discardableResult
+    static func apply(
+        enabled: Bool, weekday: Int, hour: Int, minute: Int,
+        env: LaunchAgentScheduler.Environment = .live
+    ) -> Result<Void, LaunchAgentScheduler.InstallError> {
         guard enabled else {
-            LaunchAgentScheduler.remove(label: label)
+            LaunchAgentScheduler.remove(label: label, env: env)
             Log.event(category: "coordinator", action: "digest_schedule_removed", attributes: [:])
-            return
+            return .success(())
         }
-        let installed = LaunchAgentScheduler.install(
+        let result = LaunchAgentScheduler.install(
             label: label,
             arguments: ["digest"],
             schedule: .init(weekday: weekday, hour: hour, minute: minute),
-            logBasename: "digest"
+            logBasename: "digest",
+            env: env
         )
-        guard installed else { return }
-        Log.event(category: "coordinator", action: "digest_schedule_installed", attributes: [
-            "weekday": weekday, "hour": hour, "minute": minute,
-        ])
+        switch result {
+        case .success:
+            Log.event(category: "coordinator", action: "digest_schedule_installed", attributes: [
+                "weekday": weekday, "hour": hour, "minute": minute,
+            ])
+        case .failure(let error):
+            Log.failure(category: "coordinator", action: "digest_schedule_failed", error: error, attributes: [
+                "reason": error.kind,
+            ])
+        }
+        return result
     }
 }

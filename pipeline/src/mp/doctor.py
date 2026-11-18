@@ -18,13 +18,13 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import NamedTuple
 
 import httpx
 
-from . import cloudsync, resource_guard, storage, workflows
+from . import cloudsync, resource_guard, run_attempt, storage, workflows
 from .config import CONFIG_PATH, KEYCHAIN_SERVICE, Config, load_secrets
 from .model_check import check_anthropic_model
 from .endpoints import (
@@ -704,26 +704,61 @@ def check_user_stores(home: Path | None = None) -> None:
         _warn(f"glossary.toml can't be read ({e}); vocabulary is being ignored until it is fixed")
 
 
+BACKUP_AGENT_LABEL = "com.meetingpipe.backup"
+
+
+def backup_agent_interval_days(home: Path | None = None) -> int | None:
+    """STOR10: the installed backup LaunchAgent's interval in days (7 when its
+    `StartCalendarInterval` carries a `Weekday`, else 1), or None when no agent is installed."""
+    plist = (home or Path.home()) / "Library" / "LaunchAgents" / f"{BACKUP_AGENT_LABEL}.plist"
+    try:
+        with plist.open("rb") as f:
+            data = plistlib.load(f)
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return None
+    interval = data.get("StartCalendarInterval") if isinstance(data, dict) else None
+    return 7 if isinstance(interval, dict) and "Weekday" in interval else 1
+
+
+def _parse_at(raw: object) -> datetime | None:
+    try:
+        when = datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return None
+    return when if when.tzinfo is not None else when.replace(tzinfo=timezone.utc)
+
+
 def check_last_backup(home: Path | None = None, now: datetime | None = None) -> None:
     """How long since `mp backup` last ran (STOR2).
 
-    Informational, never a failure: the owner may well be relying on Time Machine.
-    A missing marker means no `mp backup` has run on this Mac, which is worth
-    saying once rather than nagging about.
+    Informational while no backup schedule is installed: the owner may well be relying on
+    Time Machine. With the backup LaunchAgent installed (STOR10) it warns when the newest
+    attempt failed, or when the last success is older than two of the schedule's intervals,
+    since then the schedule is the backup and nobody is watching it run.
     """
+    now = now or datetime.now(timezone.utc)
+    interval_days = backup_agent_interval_days(home)
     marker = storage.backup_marker(home)
     data = storage.read_json_object(marker)
-    try:
-        if data is None:
-            raise ValueError("no marker")
-        taken = datetime.fromisoformat(data["at"])
-    except (ValueError, KeyError, TypeError):
+    taken = _parse_at(data.get("at")) if data is not None else None
+    attempt = run_attempt.read(run_attempt.BACKUP, home)
+    attempt_at = _parse_at(attempt.get("at")) if attempt is not None else None
+
+    if interval_days is not None:
+        if attempt is not None and attempt.get("outcome") == "failed" and attempt_at is not None \
+                and (taken is None or attempt_at > taken):
+            days = (now - attempt_at).days
+            when = "today" if days == 0 else f"{days} day{'s' if days != 1 else ''} ago"
+            _warn(f"the last automatic backup failed {when}: {attempt.get('reason') or 'no reason recorded'}")
+        elif taken is None or now - taken > timedelta(days=2 * interval_days):
+            _warn("automatic backup is on but has not succeeded "
+                  + ("yet" if taken is None else f"in {(now - taken).days} days")
+                  + f" (it runs {'weekly' if interval_days == 7 else 'daily'})")
+
+    if taken is None:
         _info("no `mp backup` has run on this Mac (see the README backup runbook)")
         return
-
-    now = now or datetime.now(timezone.utc)
-    if taken.tzinfo is None:
-        taken = taken.replace(tzinfo=timezone.utc)
+    assert data is not None
     days = (now - taken).days
     when = "today" if days == 0 else f"{days} day{'s' if days != 1 else ''} ago"
     suffix = "" if data.get("audio_included", True) else ", without recordings"

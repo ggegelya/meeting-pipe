@@ -338,7 +338,7 @@ Turn on **Let AI tools read your meetings** in **Preferences ▸ Integrations �
 
 ### Digests
 
-**Digests** in the Library rail is a list of dated review summaries. Click **Generate now** for one covering the last week, or turn on a schedule in **Preferences ▸ Pipeline ▸ Weekly digest** and pick the day and time; a Mac asleep at that hour catches up when it wakes.
+**Digests** in the Library rail is a list of dated review summaries. Click **Generate now** for one covering the last week, or turn on a schedule in **Preferences ▸ Pipeline ▸ Weekly digest** and pick the day and time; a Mac asleep at that hour catches up when it wakes. A schedule macOS would not take, or a scheduled digest that failed, is said in red under that group, and a failed one also puts an **Automatic digest failed** row in the menu bar's menu.
 
 A digest is a review, not a dump. It shows the commitments this period is actually about, which means the ones raised in the window plus anything already overdue or falling due inside it, grouped by workflow and most-pressing-first. It then says exactly what it left out, and links to Facts for the full list. Age alone never drops an item: a promise from February that is months past due is exactly what a weekly review is for, so it leads the list.
 
@@ -370,7 +370,7 @@ The done mark is stored with the meeting, so it survives. It does not go out to 
 
 **Preferences ▸ Storage ▸ Backup**. Choose a destination once (it is remembered) and click **Back up now**. The section shows how long ago the last backup ran, and says so inline if one failed.
 
-Turn on **Automatic backup** for the same thing on a schedule: daily, or a weekday you pick, at a time you pick. Because those runs are unattended, the last-backup line here is where you read their outcome.
+Turn on **Automatic backup** for the same thing on a schedule: daily, or a weekday you pick, at a time you pick. Because those runs are unattended, the line here is where you read their outcome. If macOS will not take the schedule when you turn it on, it says so in red right here instead of looking on. If a scheduled backup fails (an unplugged drive is the usual reason), the line reads **Last automatic backup failed** with the reason, and the menu bar's menu gains an **Automatic backup failed** row that opens this pane; if the schedule is on but nothing has succeeded for two of its intervals, both read **overdue** instead. Both clear on the next backup that works.
 
 The archive carries your recordings and everything written beside them, your settings and workflows, your saved voices and vocabulary, and your corrections. It deliberately does **not** carry your API keys: the archive names which ones you had, but the values themselves are never exported, and you re-enter them by hand. It also leaves out the pre-redaction original recordings, which are the most sensitive thing on your disk and are kept locked down for exactly that reason.
 

@@ -106,6 +106,8 @@ final class StatusBarController {
     /// repopulates in place if the recount differs). It used to list all of `raw/` on main on
     /// every open and every rebuild, including every 2 s download tick.
     private var failedMeetingCount = 0
+    /// STOR10: the scheduled-run row's title, read on `countQueue` with the failed count.
+    private var scheduledRunTitle: String?
     private let countFailedMeetings: @Sendable (URL) -> Int
     /// REC32: the stale-recordings row's count, read in the same off-main pass as the failed one.
     private var staleRecordingCount = 0
@@ -501,6 +503,7 @@ final class StatusBarController {
             staleRecordingCount: staleRecordingCount,
             finishSetupTitle: finishSetupTitle,
             unsavedSetting: coordinator?.configStore?.saveError != nil || coordinator?.secretsStore?.saveError != nil,
+            scheduledRunTitle: scheduledRunTitle,
             disableAutoRestart: UISettings.shared.disableAutoRestart,
             launchAgentEnabled: launchAgentEnabled,
             suppressedCandidateAppName: coordinator?.stateMachine.liveSuppressedCandidate()?.displayName,
@@ -573,6 +576,7 @@ final class StatusBarController {
     /// Recount the failed meetings on `countQueue`. The count lands on main, and a changed one
     /// repopulates the menu if it is open; a closed menu picks it up on its next open.
     func refreshFailedMeetingCount() {
+        refreshScheduledRunTitle()
         guard let dir = recordingsDir() else { return }
         let count = countFailedMeetings
         let countStale = countStaleRecordings
@@ -583,6 +587,26 @@ final class StatusBarController {
                 guard let self, n != self.failedMeetingCount || stale != self.staleRecordingCount else { return }
                 self.failedMeetingCount = n
                 self.staleRecordingCount = stale
+                self.repopulateIfOpen()
+            }
+        }
+    }
+
+    /// STOR10: read the backup and digest markers on `countQueue`; the settings they are judged
+    /// against are read here, on main. A manual failure is not a menu row: Back up now says it inline.
+    private func refreshScheduledRunTitle() {
+        let ui = UISettings.shared
+        let backupOn = ui.backupScheduleEnabled && ui.backupDestinationPath != nil
+        let weekly = ui.backupFrequency == .weekly
+        let digestOn = ui.digestScheduleEnabled
+        countQueue.async {
+            let title = StatusBarModel.scheduledRunTitle(
+                backup: LastBackup.backupState(scheduleOn: backupOn, weekly: weekly),
+                digest: LastBackup.digestState(scheduleOn: digestOn)
+            )
+            DispatchQueue.main.async { [weak self] in
+                guard let self, title != self.scheduledRunTitle else { return }
+                self.scheduledRunTitle = title
                 self.repopulateIfOpen()
             }
         }
@@ -773,7 +797,7 @@ final class StatusBarController {
         case .modelDownload:                             return .download
         case .permissionConsequence, .screenRecordingShortcut: return .permissions
         case .accessibilityDegraded:                     return .accessibility
-        case .failedMeetings, .staleRecordings, .unsavedSetting: return .failedMeetings
+        case .failedMeetings, .staleRecordings, .unsavedSetting, .scheduledRunFailed: return .failedMeetings
         case .finishSetup:                               return .finishSetup
         case .startRecording, .recordSuppressedMeeting, .stopRecording: return .transport
         case .quitWithoutRelaunch:                       return .quit
@@ -846,6 +870,10 @@ final class StatusBarController {
         // missed under Focus isn't the only surface. Stays until retry or delete.
         case .failedMeetings(_, let title):
             menu.addItem(actionRow(title: title, action: #selector(Coordinator.menuOpenLibrary)))
+
+        // STOR10: an unattended backup or digest that failed or fell behind; Storage says why.
+        case .scheduledRunFailed(let title):
+            menu.addItem(actionRow(title: title, action: #selector(Coordinator.menuPreferencesStorage)))
 
         // REC32: recordings an interruption left unfinished over a day ago. The sweep stopped
         // recovering them on its own (no marker, past `maxOrphanAge`), so the owner chooses.

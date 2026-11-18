@@ -29,25 +29,39 @@ enum BackupSchedulerService {
     /// `destination` removes it however the toggle is set: an agent whose
     /// `ProgramArguments` have no directory would fail every night into a log
     /// nobody reads, which is worse than no schedule at all.
+    ///
+    /// STOR10: `backup_schedule_installed` is written only once launchd holds the agent; anything
+    /// else is `backup_schedule_failed` with the reason's class, and the error comes back so
+    /// Preferences can say it beside the toggle. Runs `launchctl`, so call it off main (UX67).
+    @discardableResult
     static func apply(
         enabled: Bool, destination: String?, frequency: Frequency,
-        weekday: Int, hour: Int, minute: Int
-    ) {
+        weekday: Int, hour: Int, minute: Int,
+        env: LaunchAgentScheduler.Environment = .live
+    ) -> Result<Void, LaunchAgentScheduler.InstallError> {
         guard enabled, let destination, !destination.isEmpty else {
-            LaunchAgentScheduler.remove(label: label)
+            LaunchAgentScheduler.remove(label: label, env: env)
             Log.event(category: "coordinator", action: "backup_schedule_removed", attributes: [:])
-            return
+            return .success(())
         }
-        let installed = LaunchAgentScheduler.install(
+        let result = LaunchAgentScheduler.install(
             label: label,
             arguments: ["backup", destination],
             schedule: schedule(frequency: frequency, weekday: weekday, hour: hour, minute: minute),
-            logBasename: "backup"
+            logBasename: "backup",
+            env: env
         )
-        guard installed else { return }
-        Log.event(category: "coordinator", action: "backup_schedule_installed", attributes: [
-            "frequency": frequency.rawValue, "weekday": weekday, "hour": hour, "minute": minute,
-        ])
+        switch result {
+        case .success:
+            Log.event(category: "coordinator", action: "backup_schedule_installed", attributes: [
+                "frequency": frequency.rawValue, "weekday": weekday, "hour": hour, "minute": minute,
+            ])
+        case .failure(let error):
+            Log.failure(category: "coordinator", action: "backup_schedule_failed", error: error, attributes: [
+                "reason": error.kind, "frequency": frequency.rawValue,
+            ])
+        }
+        return result
     }
 
     /// Daily drops the weekday entirely (launchd reads a missing `Weekday` as

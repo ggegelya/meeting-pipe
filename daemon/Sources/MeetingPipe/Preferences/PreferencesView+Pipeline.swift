@@ -44,6 +44,9 @@ struct PipelineSectionView: View {
     @State private var rosterPeople: [RosterProfile.Person] = []
     @State private var rosterError: String?
     @State private var launcher = PipelineLauncher()
+    /// STOR10: why the digest schedule did not take, and what its scheduled runs say.
+    @State private var digestScheduleError: String?
+    @State private var scheduledDigestLine: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -300,14 +303,21 @@ struct PipelineSectionView: View {
                     isOn: $store.summarizationDigestLocalOnly,
                     showsDivider: false)
             } footer: {
-                Text(DigestNarration.footer(
-                    configuredBackend: store.summarizationBackend,
-                    regulatedMode: store.regulatedMode,
-                    localOnly: store.summarizationDigestLocalOnly
-                ))
+                // STOR10: a schedule that did not take, or a scheduled run that failed, outranks
+                // the narration note.
+                if let line = digestScheduleError ?? scheduledDigestLine.map({ "\($0)." }) {
+                    Text(line).foregroundStyle(.mpDanger)
+                } else {
+                    Text(DigestNarration.footer(
+                        configuredBackend: store.summarizationBackend,
+                        regulatedMode: store.regulatedMode,
+                        localOnly: store.summarizationDigestLocalOnly
+                    ))
+                }
             }
         }
         .onAppear {
+            refreshScheduledDigest()
             voiceprintMeetings = VoiceprintProfile.meetingsLearned()
             refreshRoster()
             // UX43: a config already holding a non-preset id opens on Custom, so the
@@ -381,10 +391,28 @@ struct PipelineSectionView: View {
 
     /// Re-render from UISettings, then (re)install or remove the launch agent so a
     /// schedule change takes effect immediately, mirroring the launch-at-login toggle.
+    ///
+    /// STOR10: off main (several watchdogged `launchctl` round trips, UX67), and the outcome is said
+    /// in the group's footer.
     private func applyDigestSchedule() {
-        DigestSchedulerService.apply(
-            enabled: ui.digestScheduleEnabled,
-            weekday: ui.digestWeekday, hour: ui.digestHour, minute: ui.digestMinute
+        let enabled = ui.digestScheduleEnabled
+        let weekday = ui.digestWeekday, hour = ui.digestHour, minute = ui.digestMinute
+        Task.detached(priority: .userInitiated) {
+            let result = DigestSchedulerService.apply(enabled: enabled, weekday: weekday, hour: hour, minute: minute)
+            await MainActor.run {
+                if case .failure(let error) = result {
+                    digestScheduleError = "The weekly digest is not scheduled: \(error.localizedDescription)."
+                } else {
+                    digestScheduleError = nil
+                }
+                refreshScheduledDigest()
+            }
+        }
+    }
+
+    private func refreshScheduledDigest() {
+        scheduledDigestLine = LastBackup.scheduledLine(
+            LastBackup.digestState(scheduleOn: ui.digestScheduleEnabled), job: "digest"
         )
     }
 

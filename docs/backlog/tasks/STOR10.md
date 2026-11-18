@@ -2,9 +2,9 @@
 id: STOR10
 title: A scheduled backup or digest that fails, or whose LaunchAgent never loaded, leaves no event and no in-app trace while the schedule-installed event still fires
 category: Storage
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (observability band, O15: UI-5, SW-11, LG-15): install discards the launchctl bootstrap status and stderr yet logs backup_schedule_installed; mp backup prints [FAIL] to a launchd log nothing reads, no event; Preferences shows only the last success age; doctor is info only. Checked bootstrap, last-attempt markers, run events, a menu row and Storage line, doctor WARN when scheduled and overdue. [Spec](./STOR10.md)
+comment: Shipped 2026-11-18 - checked install (launchctl print confirms the agent, watchdogged runner, injectable agents dir) with *_schedule_failed and an inline Preferences error; mp backup and mp digest write last-attempt markers and backup_completed / backup_failed / digest_failed with trigger; Storage and Weekly digest lines plus one menu row for a failed or overdue scheduled run; doctor warns when the schedule is installed. Owner owes the evidence run: automatic backup to an external drive, unplug it, and see the row and the Storage line after the scheduled hour.
 ---
 
 # STOR10: a scheduled backup or digest that fails, or whose LaunchAgent never loaded, leaves no event and no in-app trace, while `backup_schedule_installed` still fires and Preferences only ever shows the age of the last success
@@ -55,3 +55,5 @@ return true
 - `test_doctor.py`: WARN with the plist present and a stale or failed run, INFO with no plist.
 - New actions documented in `CONVENTIONS.md`; `python3 scripts/truth_fences.py` green. `cd daemon && swift test` and `cd pipeline && uv run --extra dev pytest -q` green, ruff and pyright clean, N new tests per tree in the commit body.
 - Evidence (confirms, does not gate): owner turns on Automatic backup to an external drive, unplugs it, and after the scheduled hour sees the menu row and the Storage line naming the unmounted volume.
+
+**Progress (2026-11-18):** shipped all six scope items. Decisions not in the spec: the failure events carry `error_type` (the exception's class), not `reason` text, since `BackupError` names the destination and volume (SEC38); the text is in the attempt marker, which the app and doctor read. The marker is written in explicit success and failure branches rather than a bare `finally`, so it cannot change the exit code or mask the exception; any exception outside `BackupError` still propagates after the marker. Install verification is `launchctl print gui/<uid>/<label>`, so a bootout exiting non-zero before the bootstrap is harmless and a bootstrap that exits zero without loading is a failure (`not_loaded`). `apply` now runs off main through `ProcessLaunchctl` (UX67) and the Preferences toggle shows its error. The digest has no success marker, so its last `ok` attempt stands for one; a schedule with no success and no attempt yet reads as fine (it has not had a chance to run). The menu row is shared by both jobs, the backup's state first.

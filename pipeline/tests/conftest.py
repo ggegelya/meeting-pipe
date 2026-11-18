@@ -234,6 +234,18 @@ def _private_server_marker(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _private_attempt_markers(monkeypatch, tmp_path_factory):
+    """STOR10: `mp backup` and `mp digest` write their attempt markers under the real
+    `~/.config/meeting-pipe/` when called without a `home`, which every `main` test does.
+    Keep each test's markers private; a test that passes `home` gets that path."""
+    from mp import run_attempt
+
+    home = tmp_path_factory.mktemp("attempt-home")
+    real = run_attempt.marker_path
+    monkeypatch.setattr(run_attempt, "marker_path", lambda name, h=None: real(name, h or home))
+
+
+@pytest.fixture(autouse=True)
 def _fixed_server_token(monkeypatch, tmp_path_factory):
     """SEC27: the client verifies a model server with the per-spawn token, and
     the real record of it lives in Application Support. Give every test the one

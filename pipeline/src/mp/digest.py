@@ -47,7 +47,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from . import actions as actions_mod
-from . import engine, entry, events, storage, visibility
+from . import engine, entry, events, run_attempt, storage, visibility
 from .config import Config
 from .schemas import ActionItem, Confidence, ExtraSection, MeetingSummary
 from .markdown import render_summary_md
@@ -499,6 +499,20 @@ def main(argv: list[str]) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
+    # STOR10: every run leaves an attempt marker, and a failure an event with its class (SEC38),
+    # so a scheduled digest that raised is seen in Preferences rather than only as a traceback
+    # in a launchd log. The exception still propagates.
+    run_trigger = run_attempt.trigger()
+    try:
+        return _run(args, run_trigger)
+    except Exception as exc:
+        run_attempt.record(run_attempt.DIGEST, outcome="failed",
+                           reason=f"{type(exc).__name__}: {exc}", run_trigger=run_trigger)
+        events.emit("pipeline", "digest_failed", error_type=type(exc).__name__, trigger=run_trigger)
+        raise
+
+
+def _run(args: argparse.Namespace, run_trigger: str) -> int:
     # SEC13: arm, then secrets. Library-wide, so no meeting anchor, which is why
     # `generate` gates the corpus through `visibility` (AUTO3 leg 0).
     cfg = entry.prepare()
@@ -538,7 +552,10 @@ def main(argv: list[str]) -> int:
     events.emit("pipeline", "digest_generated", actions=len(summary.actions),
                 actions_in_window=scope.window_total, actions_open=scope.library_total,
                 decisions=len(summary.decisions), backend=backend, published=published,
-                publish_failed=publish_failed)
+                publish_failed=publish_failed, trigger=run_trigger)
+    run_attempt.record(run_attempt.DIGEST, outcome="failed" if publish_failed else "ok",
+                       reason="every configured sink failed to publish" if publish_failed else None,
+                       run_trigger=run_trigger)
 
     if args.as_json:
         print(json.dumps({

@@ -927,3 +927,50 @@ def test_doctor_warns_when_the_last_backup_went_to_an_unencrypted_volume(capsys,
         assert ("[WARN]" in out) is (warning is not None), (extra, out)
         if warning:
             assert warning in out
+
+
+# ---------- STOR10: a scheduled backup that failed or fell behind ------------------
+
+
+def _install_backup_agent(home: Path, *, weekly: bool = False) -> None:
+    import plistlib
+
+    plist = home / "Library" / "LaunchAgents" / "com.meetingpipe.backup.plist"
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    interval = {"Hour": 2, "Minute": 0, **({"Weekday": 1} if weekly else {})}
+    plist.write_bytes(plistlib.dumps({"Label": "com.meetingpipe.backup", "StartCalendarInterval": interval}))
+
+
+def _stamp_attempt(home: Path, at: datetime, outcome: str, reason: str | None = None) -> None:
+    from mp import run_attempt
+
+    run_attempt.record(run_attempt.BACKUP, outcome=outcome, reason=reason, run_trigger="scheduled", home=home, now=at)
+
+
+def test_check_last_backup_warns_when_the_newest_scheduled_attempt_failed(capsys, tmp_path) -> None:
+    now = datetime(2026, 7, 10, 12, tzinfo=timezone.utc)
+    _install_backup_agent(tmp_path)
+    _stamp_backup(tmp_path, now - timedelta(days=1))
+    _stamp_attempt(tmp_path, now - timedelta(hours=3), "failed", "/Volumes/Drive is not mounted")
+    check_last_backup(home=tmp_path, now=now)
+    out = capsys.readouterr().out
+    assert "WARN" in out
+    assert "last automatic backup failed today: /Volumes/Drive is not mounted" in out
+
+
+def test_check_last_backup_warns_when_the_schedule_is_overdue(capsys, tmp_path) -> None:
+    now = datetime(2026, 7, 10, tzinfo=timezone.utc)
+    _install_backup_agent(tmp_path, weekly=True)
+    _stamp_backup(tmp_path, now - timedelta(days=15))
+    check_last_backup(home=tmp_path, now=now)
+    assert "has not succeeded in 15 days (it runs weekly)" in capsys.readouterr().out
+
+
+def test_check_last_backup_stays_informational_without_a_schedule(capsys, tmp_path) -> None:
+    now = datetime(2026, 7, 10, tzinfo=timezone.utc)
+    _stamp_backup(tmp_path, now - timedelta(days=40))
+    _stamp_attempt(tmp_path, now - timedelta(days=1), "failed", "boom")
+    check_last_backup(home=tmp_path, now=now)
+    out = capsys.readouterr().out
+    assert "WARN" not in out
+    assert "last backup 40 days ago" in out

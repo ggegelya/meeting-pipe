@@ -1521,3 +1521,54 @@ def test_an_interrupted_restore_leaves_no_temp_behind(
 
     assert (library / "20260101-120000.md").read_bytes() == before
     assert _restoring_temps(here) == []
+
+
+# ---------- STOR10: every run leaves an attempt marker and an event -----------------
+
+
+def test_an_unmounted_destination_writes_a_failed_attempt_and_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from mp import run_attempt
+
+    home = _make_home(tmp_path)
+    _populate(home)
+    volumes = tmp_path / "Volumes"
+    volumes.mkdir()
+    monkeypatch.setattr(backup_mod, "VOLUMES_ROOT", volumes)
+    monkeypatch.setenv("MP_TRIGGER", "scheduled")
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(backup_mod.events, "emit", lambda c, a, **kw: emitted.append((c, a, kw)))
+
+    assert _backup_main([str(volumes / "Drive" / "meeting-pipe")], home, monkeypatch) == 1
+
+    attempt = run_attempt.read(run_attempt.BACKUP)
+    assert attempt is not None
+    assert attempt["outcome"] == "failed"
+    assert attempt["trigger"] == "scheduled"
+    assert "is not mounted" in attempt["reason"]
+    assert emitted == [("pipeline", "backup_failed", {"error_type": "BackupError", "trigger": "scheduled"})]
+    assert "[FAIL]" in capsys.readouterr().err
+
+
+def test_a_successful_backup_writes_an_ok_attempt_and_a_completed_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mp import run_attempt
+
+    home = _make_home(tmp_path)
+    _populate(home)
+    monkeypatch.delenv("MP_TRIGGER", raising=False)
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(backup_mod.events, "emit", lambda c, a, **kw: emitted.append((c, a, kw)))
+
+    assert _backup_main([str(tmp_path / "out")], home, monkeypatch) == 0
+
+    attempt = run_attempt.read(run_attempt.BACKUP)
+    assert attempt is not None and attempt["outcome"] == "ok" and attempt["trigger"] == "manual"
+    completed = [kw for _c, a, kw in emitted if a == "backup_completed"]
+    assert len(completed) == 1 and completed[0]["audio_included"] is True and completed[0]["bytes"] > 0
+
+
+def test_the_attempt_markers_are_not_archived() -> None:
+    assert {".last-backup-attempt.json", ".last-digest-attempt.json"} <= backup_mod.EXCLUDED_NAMES

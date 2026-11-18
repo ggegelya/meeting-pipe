@@ -59,6 +59,109 @@ enum LastBackup {
         return "Last backup \(when)\(suffix)\(volume)"
     }
 
+    // MARK: - STOR10: the last attempt, and what a scheduled run's state says
+
+    /// One `mp backup` / `mp digest` run, success or not, from `.last-<job>-attempt.json`
+    /// (`mp.run_attempt`). `trigger` is `scheduled` for a LaunchAgent run, else `manual`.
+    struct Attempt: Equatable {
+        let at: Date
+        let failed: Bool
+        let reason: String?
+        let scheduled: Bool
+    }
+
+    static var backupAttemptURL: URL {
+        fileURL.deletingLastPathComponent().appendingPathComponent(".last-backup-attempt.json")
+    }
+
+    static var digestAttemptURL: URL {
+        fileURL.deletingLastPathComponent().appendingPathComponent(".last-digest-attempt.json")
+    }
+
+    static func readAttempt(at url: URL) -> Attempt? {
+        guard
+            let data = try? Data(contentsOf: url),
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let raw = obj["at"] as? String,
+            let at = parseISO8601(raw)
+        else { return nil }
+        return Attempt(
+            at: at,
+            failed: (obj["outcome"] as? String) == "failed",
+            reason: obj["reason"] as? String,
+            scheduled: (obj["trigger"] as? String) == "scheduled"
+        )
+    }
+
+    /// What the scheduled job's own surfaces should say, beyond the plain age line.
+    enum ScheduledState: Equatable {
+        case fine
+        /// The newest attempt was a scheduled run that failed, after the last success.
+        case failed(at: Date, reason: String?)
+        /// The schedule is on and the last success is older than two of its intervals.
+        case overdue(lastSuccess: Date)
+    }
+
+    /// Pure. A manual failure is not reported here: Back up now shows its own error inline. A
+    /// schedule with no success and no attempt yet is `fine`: it was just turned on and has not
+    /// had its first chance to run.
+    static func scheduledState(
+        lastSuccess: Date?, attempt: Attempt?, scheduleOn: Bool, intervalDays: Int, now: Date
+    ) -> ScheduledState {
+        if let attempt, attempt.failed, attempt.scheduled, lastSuccess.map({ attempt.at > $0 }) ?? true {
+            return .failed(at: attempt.at, reason: attempt.reason)
+        }
+        if scheduleOn, let lastSuccess,
+           now.timeIntervalSince(lastSuccess) > Double(2 * intervalDays) * 86_400 {
+            return .overdue(lastSuccess: lastSuccess)
+        }
+        return .fine
+    }
+
+    /// The line a non-fine state reads as, on the Storage pane and the Weekly digest group;
+    /// `job` is "backup" or "digest".
+    static func scheduledLine(_ state: ScheduledState, job: String, now: Date = Date()) -> String? {
+        switch state {
+        case .fine:
+            return nil
+        case .failed(let at, let reason):
+            let because = reason.map { ": \($0)" } ?? ""
+            return "Last automatic \(job) failed \(dayPhrase(from: at, to: now))\(because)"
+        case .overdue(let lastSuccess):
+            return "Automatic \(job) overdue: last success \(dayPhrase(from: lastSuccess, to: now))"
+        }
+    }
+
+    /// The menu row's title for a scheduled run that failed or fell behind.
+    static func menuTitle(_ state: ScheduledState, job: String) -> String? {
+        switch state {
+        case .fine: return nil
+        case .failed: return "Automatic \(job) failed"
+        case .overdue: return "Automatic \(job) overdue"
+        }
+    }
+
+    private static func dayPhrase(from date: Date, to now: Date) -> String {
+        let days = max(0, Calendar.current.dateComponents([.day], from: date, to: now).day ?? 0)
+        return days == 0 ? "today" : "\(days) day\(days == 1 ? "" : "s") ago"
+    }
+
+    /// The backup's state from the markers on disk and the remembered schedule. Reads two small
+    /// files, so off main for the menu (PERF24).
+    static func backupState(scheduleOn: Bool, weekly: Bool, now: Date = Date()) -> ScheduledState {
+        scheduledState(
+            lastSuccess: read()?.takenAt, attempt: readAttempt(at: backupAttemptURL),
+            scheduleOn: scheduleOn, intervalDays: weekly ? 7 : 1, now: now
+        )
+    }
+
+    /// The digest has no success marker of its own; its last `ok` attempt is the success.
+    static func digestState(scheduleOn: Bool, now: Date = Date()) -> ScheduledState {
+        let attempt = readAttempt(at: digestAttemptURL)
+        let success = attempt.flatMap { $0.failed ? nil : $0.at }
+        return scheduledState(lastSuccess: success, attempt: attempt, scheduleOn: scheduleOn, intervalDays: 7, now: now)
+    }
+
     /// Python writes `datetime.now(timezone.utc).isoformat()`, e.g.
     /// "2026-07-11T14:32:05.123456+00:00" (microsecond fraction + colon offset).
     /// `ISO8601DateFormatter`'s fractional-seconds mode expects milliseconds, so on a
