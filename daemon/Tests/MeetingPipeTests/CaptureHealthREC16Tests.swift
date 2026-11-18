@@ -188,28 +188,44 @@ final class CaptureHealthREC16Tests: XCTestCase {
         )
     }
 
-    /// The clock choice itself, which no runtime test in this repo can reach: stamping
-    /// `systemLostAt` needs a live SCStream outage on a real machine. The planner tests above pin
-    /// the arithmetic and the cap; this pins the input those numbers come from, which is the half
-    /// that was actually wrong. Red against `main`, where both marks came from `systemUptime`.
-    func test_theSystemOutageMarksAreStampedOnTheWallClock() throws {
-        let text = try String(
-            contentsOf: URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent().deletingLastPathComponent()
-                .deletingLastPathComponent().deletingLastPathComponent()
-                .appendingPathComponent("daemon/Sources/MeetingPipe/SystemAudioChannel.swift"),
-            encoding: .utf8
-        )
-        let marks = text.components(separatedBy: "systemLostAt = ").dropFirst()
-        XCTAssertGreaterThanOrEqual(marks.count, 2, "expected the loss mark and the stall mark")
-        for mark in marks {
-            let line = mark.prefix(while: { $0 != "\n" })
-            guard line.contains("ProcessInfo") || line.contains("Date()") else { continue }
-            XCTAssertFalse(
-                line.contains("systemUptime"),
-                "systemUptime stops while the Mac sleeps, which is the REC16 defect: \(line)"
-            )
-            XCTAssertTrue(line.contains("Date()"), "the outage span is wall clock: \(line)")
+    /// T19: the outage span, measured through a real loss and retry on an injected wall clock.
+    /// The source fence this replaces inspected one of `systemLostAt`'s four assignments, so
+    /// `armSystemCapture`'s retry mark could go back to `systemUptime` (the REC16 defect: the
+    /// monotonic clock stops while the Mac sleeps) with the fence green.
+    @MainActor
+    func test_aRetryPadsTheWallClockGapSinceTheLoss() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mp-rec16-\(UUID().uuidString)", isDirectory: true)
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        let channel = SystemAudioChannel()
+        defer {
+            _ = channel.finishWriterForTermination(timeout: 2)
+            channel.dropCaptureForTermination()
+            unsetenv("MEETINGPIPE_LOGS_DIR")
+            try? FileManager.default.removeItem(at: dir)
         }
+        var now = 1_800_000_000.0
+        channel.wallClock = { now }
+        channel.isRecordingProvider = { true }
+        let url = dir.appendingPathComponent("rec16.system.wav")
+
+        _ = channel.armSystemCapture(systemURL: url, isRetry: false)
+        channel.markFirstSystemFrameForTesting(uptime: ProcessInfo.processInfo.systemUptime)
+        channel.handleSystemAudioLost(reason: "rec16_test", autoRetry: false)
+        now += 30
+        _ = channel.armSystemCapture(systemURL: url, isRetry: true)
+
+        let text = try String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)
+        let resumed = text.split(separator: "\n").compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }.filter { $0["action"] as? String == "system_capture_resumed" }
+        XCTAssertEqual(resumed.count, 1, "a retry over a file holding audio resumes it")
+        XCTAssertEqual(resumed.first?["gap_sec"] as? Double ?? -1, 30, accuracy: 0.001)
+        XCTAssertEqual(
+            resumed.first?["pad_frames"] as? Int,
+            Int(CaptureRecoveryPlanner.silenceFrames(gapSeconds: 30, sampleRate: SystemAudioCapture.captureFormat.sampleRate))
+        )
     }
 }

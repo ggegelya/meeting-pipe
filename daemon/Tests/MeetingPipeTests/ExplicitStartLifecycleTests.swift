@@ -153,18 +153,6 @@ final class ExplicitStartLifecycleTests: XCTestCase {
         XCTAssertEqual(host.micHolderSpy.levels.count, 1)
         XCTAssertNil(host.micHolderSpy.levels.first?.system)
     }
-
-    /// Engaging is idempotent, and that is not an optimisation: `engage()` opens with
-    /// `disengage()`, so an unguarded call on an explicit start would stop a healthy
-    /// discovery-engaged adapter and reset the engine to `.idle` mid-meeting.
-    func test_engageIsSkippedWhenAnAdapterIsAlreadyLive() throws {
-        let (controller, host) = makeController()
-        XCTAssertFalse(host.lifecycleCoord.isEngaged)
-        controller.engageLifecycleIfNeeded(source: source("com.microsoft.teams2"), handles: nil)
-        // No pid in a unit test, so nothing engages; the guard's real proof is the Core-level
-        // `MeetingLifecycleCoordinatorTests` engage/disengage pair plus the ordering fence below.
-        XCTAssertFalse(host.lifecycleCoord.isEngaged)
-    }
 }
 
 /// END11's wiring fence, in END10's shape and for the same reason: the defect is a call that was

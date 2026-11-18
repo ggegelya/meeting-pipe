@@ -304,6 +304,7 @@ final class ClarifyTests: XCTestCase {
 
     // MARK: - Confirming reaches the same writers the other surfaces use
 
+    @MainActor
     func test_confirming_a_line_fix_writes_only_the_correction_overlay() throws {
         let dir = try makeTempDir()
         let glossary = dir.appendingPathComponent("glossary.toml")
@@ -318,9 +319,9 @@ final class ClarifyTests: XCTestCase {
             segmentIndex: 7, line: line, heard: "sitting", intended: "staging",
             destination: .thisLine, scope: "Client work", retranscribe: true
         ) else { return XCTFail("expected a line fix") }
-        try TranscriptCorrectionStore.upsert(
-            segmentIndex: index, pipelineOriginal: line, edited: newText, stem: stem, in: dir
-        )
+        // T19: through the tab's own writer, which holds the one-destination switch.
+        let actions = TranscriptEditActions(stem: stem, directory: dir, glossaryURL: glossary)
+        XCTAssertNil(actions.apply(.correctLine(segmentIndex: index, newText: newText), lineOriginal: { _ in self.line }))
 
         XCTAssertEqual(
             TranscriptCorrectionStore.read(stem: stem, in: dir)[7]?.editedText,
@@ -332,6 +333,7 @@ final class ClarifyTests: XCTestCase {
         )
     }
 
+    @MainActor
     func test_confirming_a_rule_writes_only_the_glossary_term() throws {
         let dir = try makeTempDir()
         let glossary = dir.appendingPathComponent("glossary.toml")
@@ -349,11 +351,13 @@ final class ClarifyTests: XCTestCase {
             intended: "staging environment", destination: .everyMeeting,
             scope: "Client work", retranscribe: false
         ) else { return XCTFail("expected a term") }
-        // The same one writer FEAT11's editor and FEAT12's offer both ride, which is what
-        // keeps `[fuzzy]` and every unmodeled key alive across an add.
-        try GlossaryStore(fileURL: glossary).addTerm(
-            heard: heard, canonical: canonical, workflow: workflow
-        )
+        // T19: through the tab's own writer, which rides the same one `GlossaryStore.addTerm`
+        // FEAT11's editor and FEAT12's offer use, keeping `[fuzzy]` and every unmodeled key.
+        let actions = TranscriptEditActions(stem: stem, directory: dir, glossaryURL: glossary)
+        XCTAssertNil(actions.apply(
+            .addTerm(heard: heard, canonical: canonical, workflow: workflow, retranscribe: false),
+            lineOriginal: { _ in XCTFail("the rule path reads no line"); return nil }
+        ))
 
         XCTAssertEqual(
             GlossaryStore.resolvedTerms(at: glossary, workflowName: "Client work"),
@@ -366,6 +370,45 @@ final class ClarifyTests: XCTestCase {
             ),
             "the rule path must not also write the per-meeting overlay: an overlay laid over a term makes a rule that never matched look like it worked"
         )
+    }
+
+    /// T19: the editor's save. An empty edit reverts the line instead of storing "", which the
+    /// pipeline's reader would apply as a blank line.
+    @MainActor
+    func test_an_editor_save_of_an_empty_edit_reverts_the_override() throws {
+        let dir = try makeTempDir()
+        let stem = "20260723-103118"
+        let actions = TranscriptEditActions(stem: stem, directory: dir, glossaryURL: dir.appendingPathComponent("glossary.toml"))
+        XCTAssertNil(actions.saveLine(segmentIndex: 3, pipelineOriginal: "before", newText: " after "))
+        XCTAssertEqual(TranscriptCorrectionStore.read(stem: stem, in: dir)[3]?.editedText, "after")
+        XCTAssertNil(actions.saveLine(segmentIndex: 3, pipelineOriginal: "before", newText: "   "))
+        XCTAssertNil(TranscriptCorrectionStore.read(stem: stem, in: dir)[3], "an empty edit reverts")
+    }
+
+    /// T19: a store that cannot write returns its message and leaves the other destination alone.
+    @MainActor
+    func test_a_failed_write_returns_the_message_and_touches_neither_other_file() throws {
+        let dir = try makeTempDir()
+        let stem = "20260723-103118"
+        let glossaryDir = dir.appendingPathComponent("config", isDirectory: true)
+        try FileManager.default.createDirectory(at: glossaryDir, withIntermediateDirectories: true)
+        let glossary = glossaryDir.appendingPathComponent("glossary.toml")
+        let actions = TranscriptEditActions(stem: stem, directory: dir, glossaryURL: glossary)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: dir.path)
+        let lineFailure = actions.apply(.correctLine(segmentIndex: 1, newText: "x"), lineOriginal: { _ in "y" })
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+        XCTAssertNotNil(lineFailure, "a line fix that cannot write says so")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: glossary.path))
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: glossaryDir.path)
+        let ruleFailure = actions.apply(
+            .addTerm(heard: "sitting", canonical: "staging", workflow: nil, retranscribe: false),
+            lineOriginal: { _ in nil }
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: glossaryDir.path)
+        XCTAssertNotNil(ruleFailure, "a rule that cannot write says so")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: TranscriptCorrectionStore.path(stem: stem, in: dir).path))
     }
 
     func test_a_term_added_here_resolves_like_one_typed_in_preferences() throws {

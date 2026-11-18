@@ -16,7 +16,7 @@ import XCTest
 ///
 /// `data.write(to:options:.atomic)` already writes to a temporary file and renames it into place,
 /// so the manual dance was both redundant and strictly less safe than the one-liner it wrapped.
-/// T7 source fence (deliberate): test_no_sidecar_writer_removes_its_destination_before_replacing_it bans the remove-then-move write (`moveItem(at: temp`) in four store files. Missing seam: none; the claim is about the source text itself.
+/// T7 source fence (deliberate): test_no_sidecar_writer_removes_its_destination_before_replacing_it bans a `removeItem(at:` followed by a `moveItem(` in one function of any `*Store.swift` or `*Sidecar.swift` (T19 widened it from a four-file substring). Missing seam: none; the claim is about the source text itself.
 final class AtomicSidecarWriteTests: XCTestCase {
 
     private var dir: URL!
@@ -37,8 +37,9 @@ final class AtomicSidecarWriteTests: XCTestCase {
 
     // MARK: - The reported defect
 
-    /// The load-bearing one. A save that cannot complete must leave the previous overlay readable.
-    /// Against the old shape the destination was already deleted by the time anything could fail.
+    /// A failed save throws and the previous overlay survives. This cannot catch the remove-then-move
+    /// shape by itself: the read-only directory that makes the save fail also stops that writer at
+    /// its first step, before it removes anything (T19). The shape fence at the bottom is what does.
     func test_a_failed_overlay_write_leaves_the_previous_overlay_intact() throws {
         let stem = "20260814-163455"
         _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Sudip", stem: stem, in: dir)
@@ -74,7 +75,8 @@ final class AtomicSidecarWriteTests: XCTestCase {
     }
 
     /// The same guarantee for the transcript corrections store, which holds the other class of
-    /// hand-made edit the pipeline cannot regenerate.
+    /// hand-made edit the pipeline cannot regenerate: a failed save throws and the previous
+    /// corrections survive. Like the overlay case it does not by itself catch the shape (T19).
     func test_a_failed_correction_write_leaves_the_previous_corrections_intact() throws {
         let stem = "20260814-163455"
         _ = try TranscriptCorrectionStore.upsert(segmentIndex: 4, pipelineOriginal: "DMS one two three four", edited: "DMS-1234", stem: stem, in: dir)
@@ -96,21 +98,67 @@ final class AtomicSidecarWriteTests: XCTestCase {
 
     /// The shape, not just its effect. Every model-level test above stays green if a later edit
     /// reinstates remove-then-move somewhere else, and this defect was already copy-pasted into
-    /// four writers, so the copy is the thing to fence.
+    /// four writers, so the copy is the thing to fence. T19: by shape, not by a variable name, and
+    /// across every `*Store.swift` and `*Sidecar.swift`, where it used to grep four named files
+    /// for `moveItem(at: temp`, so the same dance with another variable name passed.
     func test_no_sidecar_writer_removes_its_destination_before_replacing_it() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("daemon/Sources/MeetingPipe")
-
-        for name in ["SpeakerLabelStore", "TranscriptCorrectionStore", "CorrectionStore", "PipelineFailureSidecar"] {
-            let source = try String(
-                contentsOf: root.appendingPathComponent("\(name).swift"), encoding: .utf8
-            )
-            XCTAssertFalse(
-                source.contains("moveItem(at: temp"),
+        let files = try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .filter { $0.hasSuffix("Store.swift") || $0.hasSuffix("Sidecar.swift") }
+        XCTAssertGreaterThanOrEqual(files.count, 10, "the fence must actually be reading the stores")
+        for name in files.sorted() {
+            let source = try String(contentsOf: root.appendingPathComponent(name), encoding: .utf8)
+            XCTAssertEqual(
+                Self.removeThenMoveFunctions(in: source), [],
                 "\(name) reinstated the remove-then-move write; use .atomic, which already does this safely"
             )
         }
+    }
+
+    /// The fence's own negative: the 2026-08 dance with a renamed temp, which the old substring
+    /// check (`moveItem(at: temp`) passed, and a delete path beside a save path, which is fine.
+    func test_the_shape_fence_catches_a_renamed_dance_and_spares_a_separate_delete() {
+        let dance = """
+            func save(_ data: Data) throws {
+                let scratch = url.appendingPathExtension("partial")
+                try data.write(to: scratch)
+                try FileManager.default.removeItem(at: url)
+                try FileManager.default.moveItem(at: scratch, to: url)
+            }
+            """
+        XCTAssertEqual(Self.removeThenMoveFunctions(in: dance), ["save"])
+        let separate = """
+            func delete() throws {
+                try FileManager.default.removeItem(at: url)
+            }
+            // A comment saying removeItem(at: url) then moveItem(at: x, to: url) is not code.
+            func save(_ data: Data) throws {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+                } else {
+                    try FileManager.default.moveItem(at: tmp, to: url)
+                }
+            }
+            """
+        XCTAssertEqual(Self.removeThenMoveFunctions(in: separate), [])
+    }
+
+    /// Names of the functions in `source` that call `removeItem(at:` and then `moveItem(` later in
+    /// the same body. Comments are dropped first; a function runs from its `func` to the next one.
+    static func removeThenMoveFunctions(in source: String) -> [String] {
+        let code = source.split(separator: "\n", omittingEmptySubsequences: false).map { line -> Substring in
+            guard let slash = line.range(of: "//") else { return line }
+            return line[..<slash.lowerBound]
+        }.joined(separator: "\n")
+        var hits: [String] = []
+        for chunk in code.components(separatedBy: "func ").dropFirst() {
+            guard let remove = chunk.range(of: "removeItem(at:"),
+                  chunk.range(of: "moveItem(", range: remove.upperBound..<chunk.endIndex) != nil else { continue }
+            hits.append(String(chunk.prefix(while: { $0.isLetter || $0.isNumber || $0 == "_" })))
+        }
+        return hits
     }
 }

@@ -840,13 +840,22 @@ final class Coordinator: NSObject {
         await self?.recoverOrphanedRecordings(sweep: sweep)
     }
 
+    /// What the orphan sweep is told about the live recording (REC23), split out so a test can
+    /// drive it with a claimed stem (T19): the stems owned at scan time are never scanned, and
+    /// `isOwned` re-asks the recorder per stem right before its merge.
+    @MainActor
+    static func orphanSweepInput(
+        _ ownership: RecordingStemOwnership
+    ) -> (excludingStems: Set<String>, isOwned: @MainActor (String) -> Bool) {
+        (excludingStems: ownership.stems, isOwned: { ownership.contains($0) })
+    }
+
     @MainActor
     private func recoverOrphanedRecordings(sweep: OrphanRecordingRecovery.Sweep) async {
         let dir = liveOutputDir
-        let ownedStems = recorder.ownedStems
-        let ownership = recorder.stemOwnership
+        let input = Self.orphanSweepInput(recorder.stemOwnership)
         let result = await OrphanRecordingRecovery.scanAndRecover(
-            in: dir, excludingStems: ownedStems, sweep: sweep, isOwned: { ownership.contains($0) }
+            in: dir, excludingStems: input.excludingStems, sweep: sweep, isOwned: input.isOwned
         )
         for rec in result.ready {
             let modeLabel = rec.summaryMode == .byo ? "byo" : "auto"

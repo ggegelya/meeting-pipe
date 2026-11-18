@@ -129,8 +129,21 @@ final class RecordingStemOwnershipREC23Tests: XCTestCase {
     func test_coordinatorNoLongerReadsTheUIMirror() throws {
         let source = try repoFile("daemon/Sources/MeetingPipe/Coordinator.swift")
         XCTAssertNil(source.range(of: "liveRecordingStem"), "the row pulse's mirror is not a storage guard (REC23)")
-        XCTAssertNotNil(source.range(of: "recorder.ownedStems"))
-        XCTAssertNotNil(source.range(of: "isOwned:"), "the sweep re-asks per stem, not only at scan")
+    }
+
+    /// T19: the orphan sweep's input, driven with a claimed stem. The `recorder.ownedStems`
+    /// substring this replaced was also met by the retention sweep, so dropping the orphan
+    /// sweep's exclusion left that fence green.
+    @MainActor
+    func test_theOrphanSweepExcludesAndReasksForAClaimedStem() {
+        let ownership = RecordingStemOwnership()
+        ownership.claim("20260101-120000")
+        let input = Coordinator.orphanSweepInput(ownership)
+        XCTAssertEqual(input.excludingStems, ["20260101-120000"], "a stem being recorded is never scanned")
+        XCTAssertTrue(input.isOwned("20260101-120000"))
+        XCTAssertFalse(input.isOwned("20260101-110000"))
+        ownership.claim("20260101-130000")  // a start after the scan snapshot
+        XCTAssertTrue(input.isOwned("20260101-130000"), "the merge re-asks the recorder, not the snapshot")
     }
 
     /// STOR18: the Library's delete guard reads the same ownership the sweeps do. The file-wide

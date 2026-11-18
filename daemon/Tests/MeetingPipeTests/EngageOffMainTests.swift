@@ -189,6 +189,26 @@ final class EngageOffMainTests: XCTestCase {
         XCTAssertEqual(adapter.starts.map(\.pid), [4001, 4002])
     }
 
+    /// T19: the explicit-start guard the old `test_engageIsSkippedWhenAnAdapterIsAlreadyLive` was named
+    /// for and never reached (it had no pid, so nothing ever engaged). `engage()` opens with
+    /// `disengage()`, so without `guard !isEngaged` an explicit start would stop this live adapter
+    /// and reset the engine to `.idle` mid-meeting.
+    func test_anExplicitStartOnTheAppAlreadyEngaged_isSkippedAndKeepsTheEngine() async {
+        let build = GatedBuild(gated: false)
+        let (controller, host, adapter) = makeController(build: build)
+
+        controller.handleDiscovery(teams)
+        await waitUntil({ adapter.starts.count == 1 }, "the discovery engage")
+        XCTAssertTrue(host.lifecycleCoord.isEngaged)
+
+        controller.engageLifecycleIfNeeded(source: teams, handles: build.build(teams))
+
+        XCTAssertEqual(adapter.starts.count, 1, "an explicit start must not restart a live adapter")
+        XCTAssertTrue(host.lifecycleCoord.isEngaged)
+        await waitUntil({ self.skipReasons().contains("already_engaged") }, "the skip row")
+        XCTAssertEqual(skipReasons().filter { $0 == "already_engaged" }.count, 1)
+    }
+
     // MARK: - Item 2: one build per recording start
 
     func test_recordStart_runsOneBuildOffMain_andAttachesEverythingFromIt() async {

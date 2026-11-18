@@ -38,6 +38,10 @@ final class SystemAudioChannel {
     var isRecordingProvider: () -> Bool = { false }
     private var isRecording: Bool { isRecordingProvider() }
 
+    /// REC16's wall clock for the outage marks, injectable so a test can measure a gap without
+    /// sleeping (T19). Seconds since 1970; production never sets it.
+    var wallClock: () -> Double = { Date().timeIntervalSince1970 }
+
     /// The recorder's write-failure router (REC3 / AUD-7). Each system writer gets its own outcome
     /// handler from it, built with the writer, so the failure tracker belongs to that writer and the
     /// escalation to the recording it was opened for (REC25). Set once by the recorder.
@@ -390,7 +394,7 @@ final class SystemAudioChannel {
     /// arm a channel headlessly. Main.
     func armSystemCapture(systemURL: URL, isRetry: Bool) -> ArmedSystemCapture {
         // REC16: wall clock, matching the mic channel and surviving a sleep.
-        let now = Date().timeIntervalSince1970
+        let now = wallClock()
         let plan: SystemCaptureRetryPlan = isRetry
             ? SystemCaptureRetryPlanner.plan(
                 hasOpenFile: systemFile != nil && systemWriter != nil,
@@ -562,6 +566,13 @@ final class SystemAudioChannel {
     /// Open `<stem>.system.wav` for writing and wire its serial writer. The one place
     /// the system WAV is truncated, which is why `startSystemCapture` reaches it only
     /// on the `.openFresh` branch (REC10).
+    /// T19: what the capture's buffer handler records for the file's first frame, for a test that
+    /// arms headlessly (no ScreenCaptureKit, so no buffer ever arrives) and needs a retry to plan
+    /// `.resumeOpenFile`, which it does only once the open file has captured audio.
+    func markFirstSystemFrameForTesting(uptime: Double) {
+        systemFirstFrameUptime = uptime
+    }
+
     private func openSystemFile(at systemURL: URL) {
         // SCStream's delivered format may differ from captureFormat; write
         // each PCM buffer as-is.
@@ -690,7 +701,7 @@ final class SystemAudioChannel {
     func handleSystemAudioLost(reason: String, stalledForSeconds: TimeInterval = 0, autoRetry: Bool = true) {
         guard isRecording, let dying = systemCapture else { return }
         // REC10: date the outage now, so a retry knows how much silence to pad.
-        systemLostAt = max(0, Date().timeIntervalSince1970 - max(0, stalledForSeconds))
+        systemLostAt = max(0, wallClock() - max(0, stalledForSeconds))
         Log.writeLine("recorder", "system audio lost mid-recording (\(reason)); banner + retry now live")
         Log.event(category: "recorder", action: "system_capture_lost", attributes: [
             "reason": reason,

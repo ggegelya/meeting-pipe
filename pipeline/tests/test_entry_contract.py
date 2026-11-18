@@ -63,6 +63,11 @@ SECRET_LOADER = "load_secrets"
 #: pins that the convention still describes the real surface.
 GATE_SUFFIXES = ("Client", "Publisher")
 
+#: T19: the real construction seams, which the naming convention above misses. A
+#: `main` calling `_select_backend(cfg)`, `build_publishers` or `require_env`
+#: before `entry.prepare` used to come back clean.
+GATED_NAMES = {SECRET_LOADER, "_select_backend", "build_publishers", "fanout", "require_env"}
+
 #: Client constructions the gate has to keep recognising. A rename that slips
 #: past the naming convention above empties the ordering check silently, and the
 #: check would then pass forever, so it is pinned rather than trusted.
@@ -71,6 +76,10 @@ KNOWN_GATED_CALLS = {
     "LocalSummaryClient",
     "NotionRestPublisher",
     "load_secrets",
+    "_select_backend",
+    "build_publishers",
+    "fanout",
+    "require_env",
 }
 
 
@@ -88,7 +97,7 @@ def _is_gated_call(node: ast.Call) -> bool:
     name = _called_name(node.func)
     if name is None:
         return False
-    return name == SECRET_LOADER or name.endswith(GATE_SUFFIXES)
+    return name in GATED_NAMES or name.endswith(GATE_SUFFIXES)
 
 
 def _imports_prepare_directly(tree: ast.Module) -> bool:
@@ -155,9 +164,62 @@ def _entry_contract_violations(source: str, label: str) -> list[str]:
         for node in ast.walk(scope)
         if isinstance(node, ast.Call) and _is_gated_call(node) and node.lineno < first.lineno
     )
-    return [
+    violations = [
         f"{label}: {name}() at line {line} runs before entry.prepare(...) at line {first.lineno}"
         for line, name in early
+    ]
+    seen = {f"{name}() at line {line}" for line, name in early}
+    return violations + [
+        v for v in _main_arm_violations(tree, calls, label)
+        if v.split(": ", 1)[1].split(" in main")[0] not in seen
+    ]
+
+
+def _main_arm_violations(tree: ast.Module, prepares: list[ast.Call], label: str) -> list[str]:
+    """T19: the check above reads only the scope around the first `prepare`, so a
+    `main` that builds a client and then arms through a helper (`_arm()` wrapping
+    `entry.prepare`) was clean. Read `main` itself: its arm is the first call that
+    is `prepare` or a module function reaching `prepare`, transitively, and any
+    gated call above that line in `main` is a violation. Six real targets
+    (`summarize`, `orchestrate`, ...) arm inside a helper and must stay clean."""
+    functions = {
+        node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    main = functions.get("main")
+    if main is None:
+        return []
+    prepare_ids = {id(call) for call in prepares}
+    direct = {
+        name for name, fn in functions.items()
+        if any(id(node) in prepare_ids for node in ast.walk(fn))
+    }
+    calls_of = {
+        name: {_called_name(n.func) for n in ast.walk(fn) if isinstance(n, ast.Call)} & set(functions)
+        for name, fn in functions.items()
+    }
+    reaches = set(direct)
+    changed = True
+    while changed:
+        changed = False
+        for name, callees in calls_of.items():
+            if name not in reaches and callees & reaches:
+                reaches.add(name)
+                changed = True
+    arms = [
+        node.lineno for node in ast.walk(main)
+        if isinstance(node, ast.Call)
+        and (id(node) in prepare_ids or (_called_name(node.func) in reaches - {"main"}))
+    ]
+    if not arms:
+        return [f"{label}: main never reaches entry.prepare(...)"]
+    arm = min(arms)
+    return [
+        f"{label}: {_called_name(node.func)}() at line {node.lineno} in main runs before its arm at line {arm}"
+        for node in sorted(
+            (n for n in ast.walk(main) if isinstance(n, ast.Call) and _is_gated_call(n)),
+            key=lambda n: n.lineno,
+        )
+        if node.lineno < arm
     ]
 
 
@@ -299,3 +361,74 @@ def test_the_gate_predicate_still_names_the_real_client_surface():
         "check GATE_SUFFIXES still matches the new name; otherwise the ordering "
         "assertion above has quietly stopped checking anything."
     )
+
+
+# T19: the three shapes the audit wrote on 2026-11-13, each of which the old checker passed.
+_SELECTS_A_BACKEND_FIRST = '''
+from . import entry
+
+
+def main(argv):
+    backend = _select_backend(argv)
+    cfg = entry.prepare(anchor=argv[0])
+    return backend.summarize(cfg)
+'''
+
+_BUILDS_SINKS_AND_READS_A_TOKEN_FIRST = '''
+from . import entry
+
+
+def main(argv):
+    sinks = build_publishers(argv)
+    token = require_env("NOTION_TOKEN")
+    cfg = entry.prepare(anchor=argv[0])
+    return sinks, token, cfg
+'''
+
+_ARMS_THROUGH_A_HELPER_TOO_LATE = '''
+from . import entry
+
+
+def _arm(argv):
+    return entry.prepare(anchor=argv[0])
+
+
+def main(argv):
+    client = AnthropicSummaryClient(api_key="k")
+    cfg = _arm(argv)
+    return client.summarize(cfg)
+'''
+
+_ARMS_THROUGH_A_HELPER_IN_TIME = '''
+from . import entry
+
+
+def _arm(argv):
+    return entry.prepare(anchor=argv[0])
+
+
+def _run(argv):
+    cfg = _arm(argv)
+    return AnthropicSummaryClient(api_key="k").summarize(cfg)
+
+
+def main(argv):
+    return _run(argv)
+'''
+
+
+def test_the_2026_11_13_shapes_are_violations():
+    assert _entry_contract_violations(_SELECTS_A_BACKEND_FIRST, "select") == [
+        "select: _select_backend() at line 6 runs before entry.prepare(...) at line 7",
+    ]
+    sinks = _entry_contract_violations(_BUILDS_SINKS_AND_READS_A_TOKEN_FIRST, "sinks")
+    assert any("build_publishers() at line 6" in v for v in sinks)
+    assert any("require_env() at line 7" in v for v in sinks)
+    assert _entry_contract_violations(_ARMS_THROUGH_A_HELPER_TOO_LATE, "helper") == [
+        "helper: AnthropicSummaryClient() at line 10 in main runs before its arm at line 11",
+    ]
+
+
+def test_arming_through_a_helper_before_any_work_is_clean():
+    assert _entry_contract_violations(_ARMS_THROUGH_A_HELPER_IN_TIME, "helper-ok") == []
+

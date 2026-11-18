@@ -641,46 +641,12 @@ struct TranscriptTab: View {
     ) -> String? {
         let edited = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         let pipelineOriginal = segment.text
-        do {
-            _ = try TranscriptCorrectionStore.upsert(
-                segmentIndex: segment.index,
-                pipelineOriginal: pipelineOriginal,
-                edited: edited,
-                stem: meeting.stem,
-                in: meeting.recordingsDir
-            )
-        } catch {
-            Log.event(category: "correction", action: "transcript_correction_failed",
-                      attributes: [
-                        "stem": meeting.stem,
-                        "segment_index": segment.index,
-                        "error": error.localizedDescription,
-                      ])
-            return error.localizedDescription
+        if let message = editActions.saveLine(
+            segmentIndex: segment.index, pipelineOriginal: pipelineOriginal, newText: newText
+        ) {
+            return message
         }
-        // SEC14: the event log is grepped and shared in diagnostics, so it carries lengths by
-        // default, not the verbatim transcript sentences. The full text lands only under verbose.
-        var attributes: [String: Any] = [
-            "stem": meeting.stem,
-            "segment_index": segment.index,
-            "original_len": pipelineOriginal.count,
-            "edited_len": edited.count,
-        ]
-        if UISettings.shared.verboseLogging {
-            attributes["original_text"] = pipelineOriginal
-            attributes["edited_text"] = edited
-        }
-        Log.event(category: "correction", action: "transcript_correction", attributes: attributes)
-        // Patch in-memory list immediately. Reverting to original drops the override from the store; we apply the same resolution the loader does so the text flips back too.
-        if let i = segments.firstIndex(where: { $0.index == segment.index }) {
-            segments[i] = TranscriptSegment(
-                index: segment.index,
-                start: segment.start,
-                end: segment.end,
-                text: edited.isEmpty ? pipelineOriginal : edited,
-                speakerID: segment.speakerID
-            )
-        }
+        patchSegment(segment, edited: edited)
         // FEAT12: the only moment both sides of a vocabulary pair are known. `make` is
         // pure, so this decides whether to *offer*, never whether to write; on a nil it
         // says nothing at all rather than nagging with an empty sheet.
@@ -705,27 +671,45 @@ struct TranscriptTab: View {
     ///
     /// Returns nil on success, or a message the sheet renders inline while staying open.
     private func applyClarify(_ plan: Clarify.Plan) -> String? {
+        // T19: the write and its one-destination switch live in `TranscriptEditActions.apply`;
+        // this keeps only what the View owns: the row patch, closing the sheet, the rebuild.
+        if let message = editActions.apply(plan, lineOriginal: { index in
+            segments.first(where: { $0.index == index })?.text
+        }) {
+            return message
+        }
+        clarifyTarget = nil
         switch plan {
         case .correctLine(let index, let newText):
-            guard let segment = segments.first(where: { $0.index == index }) else {
-                return "That line is no longer on screen. Close this and try again."
+            if let segment = segments.first(where: { $0.index == index }) {
+                patchSegment(segment, edited: newText.trimmingCharacters(in: .whitespacesAndNewlines))
             }
-            if let message = saveCorrection(for: segment, newText: newText, offerVocabulary: false) {
-                return message
-            }
-            clarifyTarget = nil
-            return nil
-        case .addTerm(let heard, let canonical, let workflow, let retranscribe):
-            if let message = addVocabularyTerm(heard: heard, canonical: canonical, workflow: workflow) {
-                return message
-            }
-            clarifyTarget = nil
+        case .addTerm(_, _, _, let retranscribe):
             // No second confirmation: the tick box in the sheet was the ask, and the
             // sheet said what a rebuild does. Re-asking is the friction this task exists
             // to remove.
             if retranscribe { runRetranscribe() }
-            return nil
         }
+        return nil
+    }
+
+    /// Patch the in-memory row so it updates without a full reload. An empty edit reverts the
+    /// line (the store dropped the override), so the row flips back to the pipeline's text.
+    private func patchSegment(_ segment: TranscriptSegment, edited: String) {
+        if let i = segments.firstIndex(where: { $0.index == segment.index }) {
+            segments[i] = TranscriptSegment(
+                index: segment.index,
+                start: segment.start,
+                end: segment.end,
+                text: edited.isEmpty ? segment.text : edited,
+                speakerID: segment.speakerID
+            )
+        }
+    }
+
+    /// T19: where the tab's two edit paths write, out of the View so a test can drive it.
+    private var editActions: TranscriptEditActions {
+        TranscriptEditActions(stem: meeting.stem, directory: meeting.recordingsDir)
     }
 
     /// FEAT13: the rule path's optional rebuild. Reports through the shared dialog the
@@ -764,34 +748,9 @@ struct TranscriptTab: View {
     /// a vocabulary term the user confirmed and the pipeline never sees is exactly the
     /// silent failure FEAT11 existed to remove.
     private func addVocabularyTerm(heard: String, canonical: String, workflow: String?) -> String? {
-        do {
-            try GlossaryStore().addTerm(heard: heard, canonical: canonical, workflow: workflow)
-        } catch {
-            Log.event(category: "correction", action: "vocabulary_term_add_failed",
-                      attributes: [
-                        "stem": meeting.stem,
-                        "error": error.localizedDescription,
-                      ])
-            return error.localizedDescription
-        }
-        // SEC14, the same split `transcript_correction` above makes: the term comes out of
-        // a transcript line, so the log carries lengths and the scope by default and the
-        // words themselves only under verbose.
-        var attributes: [String: Any] = [
-            "stem": meeting.stem,
-            "scope": workflow == nil ? "global" : "workflow",
-            "heard_len": heard.count,
-            "canonical_len": canonical.count,
-        ]
-        if UISettings.shared.verboseLogging {
-            attributes["heard"] = heard
-            attributes["canonical"] = canonical
-        }
-        Log.event(category: "correction", action: "vocabulary_term_added", attributes: attributes)
         // Deliberately not closing a sheet here: this is the writer, and the two callers
-        // own their own presentation. It closed `vocabularyOffer` when FEAT12 was the
-        // only caller, which would have made FEAT13's rule path dismiss the wrong sheet.
-        return nil
+        // own their own presentation.
+        editActions.addTerm(heard: heard, canonical: canonical, workflow: workflow)
     }
 
     @ViewBuilder
