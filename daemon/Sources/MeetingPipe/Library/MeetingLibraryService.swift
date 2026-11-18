@@ -117,7 +117,8 @@ final class MeetingLibraryService {
     /// the real location.
     private let originalsDir: () -> URL
     private let launcher: PipelineDriver
-    private let notifyError: (String) -> Void
+    /// A stem-less failure notice: the message, what failed (UX93), and an optional title.
+    private let postError: (_ message: String, _ operation: FailureMetadata.Operation, _ title: String?) -> Void
     private let notifyFailure: ((String?, FailurePresentation) -> Void)?
     /// The third argument is `redactionOwed` (REC21), from a recovery manifest a failed quarantine kept.
     private let enqueue: (URL, SummaryMode, Bool) -> Void
@@ -180,7 +181,7 @@ final class MeetingLibraryService {
     init(
         outputDir: @escaping () -> URL,
         launcher: PipelineDriver,
-        notifyError: @escaping (String) -> Void,
+        notifyError: @escaping (_ message: String, _ operation: FailureMetadata.Operation, _ title: String?) -> Void,
         enqueue: @escaping (URL, SummaryMode, Bool) -> Void,
         summarizationBackend: @escaping () -> String = { "local" },
         regulatedMode: @escaping () -> Bool = { false },
@@ -206,7 +207,7 @@ final class MeetingLibraryService {
         self.outputDir = outputDir
         self.originalsDir = originalsDir
         self.launcher = launcher
-        self.notifyError = notifyError
+        self.postError = notifyError
         self.notifyFailure = notifyFailure
         self.enqueue = enqueue
         self.summarizationBackend = summarizationBackend
@@ -222,7 +223,12 @@ final class MeetingLibraryService {
         guard !PipelineLauncher.isCancellation(error) else { return }
         let failure = FailurePresentation(error: error, operation: operation)
         if let notifyFailure { notifyFailure(stem, failure) }
-        else { notifyError(failure.title) }
+        else { notifyError(failure.title, operation: operation) }
+    }
+
+    /// UX93: every stem-less notice names its operation; the compiler holds callers to it.
+    private func notifyError(_ message: String, operation: FailureMetadata.Operation, title: String? = nil) {
+        postError(message, operation, title)
     }
 
     /// Run `work` inside the pipeline lane, or inline when no lane is wired
@@ -433,7 +439,8 @@ final class MeetingLibraryService {
                             ])
                             self.notifyError(nowRead.isUnreadable
                                 ? "Summary regenerated but not published: the workflow settings for \(stem) could not be read, so it stays on this Mac. Republish it once they can be read."
-                                : "Summary regenerated but not published: \(stem) moved into an NDA workflow while it was running. Republish it to send it to that workflow's sinks."
+                                : "Summary regenerated but not published: \(stem) moved into an NDA workflow while it was running. Republish it to send it to that workflow's sinks.",
+                                operation: .storage, title: "Summary regenerated, not published"
                             )
                             token.finish(.success(nil))
                             return
@@ -694,7 +701,7 @@ final class MeetingLibraryService {
                 url: TranscriptCorrectionStore.path(stem: stem, in: dir), store: "transcript_corrections"
             )
         } catch {
-            notifyError("Re-transcribed \(stem), but couldn't read your edits to carry them: \(error.localizedDescription)")
+            notifyError("Re-transcribed \(stem), but couldn't read your edits to carry them: \(error.localizedDescription)", operation: .storage)
             return nil
         }
         guard !overlay.isEmpty || !corrections.isEmpty else { return nil }
@@ -734,7 +741,7 @@ final class MeetingLibraryService {
                     try TranscriptCorrectionStore.replace(carry.corrections, stem: stem, in: dir)
                 }
             } catch {
-                notifyError("Re-transcribed \(stem), but couldn't rewrite your edits: \(error.localizedDescription)")
+                notifyError("Re-transcribed \(stem), but couldn't rewrite your edits: \(error.localizedDescription)", operation: .storage)
             }
         }
         return RetranscribeOutcome(
@@ -985,7 +992,7 @@ final class MeetingLibraryService {
                 ])
                 completion(.success(()))
             } catch {
-                self.notifyError("Couldn't record the name: \(error.localizedDescription)")
+                self.notifyError("Couldn't record the name: \(error.localizedDescription)", operation: .people)
                 completion(.failure(error))
             }
             return
@@ -1002,7 +1009,7 @@ final class MeetingLibraryService {
                     do {
                         _ = try SpeakerLabelStore.setLabel(label, to: trimmed, stem: stem, in: dir)
                     } catch {
-                        self?.notifyError("Enrolled the voice, but couldn't record the name: \(error.localizedDescription)")
+                        self?.notifyError("Enrolled the voice, but couldn't record the name: \(error.localizedDescription)", operation: .people)
                         completion(.failure(error))
                         return
                     }
@@ -1014,7 +1021,7 @@ final class MeetingLibraryService {
                     Log.event(category: "coordinator", action: "roster_enroll_failed", attributes: [
                         "stem": stem, "error": err.localizedDescription,
                     ])
-                    self?.notifyError("Naming failed: \(err.localizedDescription)")
+                    self?.notifyError("Naming failed: \(err.localizedDescription)", operation: .people)
                     completion(.failure(err))
                 }
             }
@@ -1069,7 +1076,7 @@ final class MeetingLibraryService {
                     Log.event(category: "coordinator", action: "roster_undo_failed", attributes: [
                         "stem": stem, "label": label, "error": err.localizedDescription,
                     ])
-                    self?.notifyError("Reverted the name here, but couldn't take this meeting's voice sample back from \(name): \(err.localizedDescription)")
+                    self?.notifyError("Reverted the name here, but couldn't take this meeting's voice sample back from \(name): \(err.localizedDescription)", operation: .people)
                 }
                 completion(result)
             }
@@ -1111,7 +1118,7 @@ final class MeetingLibraryService {
                 ])
                 completion(.success(()))
             } catch {
-                self.notifyError("Couldn't record the new name: \(error.localizedDescription)")
+                self.notifyError("Couldn't record the new name: \(error.localizedDescription)", operation: .people)
                 completion(.failure(error))
             }
             return
@@ -1125,7 +1132,7 @@ final class MeetingLibraryService {
                     do {
                         _ = try SpeakerLabelStore.setLabel(label, to: trimmed, stem: stem, in: dir)
                     } catch {
-                        self.notifyError("Enrolled the new name, but couldn't record it: \(error.localizedDescription)")
+                        self.notifyError("Enrolled the new name, but couldn't record it: \(error.localizedDescription)", operation: .people)
                         completion(.failure(error))
                         return
                     }
@@ -1142,13 +1149,13 @@ final class MeetingLibraryService {
                                 Log.event(category: "coordinator", action: "roster_rename_unenroll_failed", attributes: [
                                     "stem": stem, "label": label, "error": err.localizedDescription,
                                 ])
-                                self?.notifyError("Renamed, but couldn't take this meeting's voice sample back from \(oldName): \(err.localizedDescription)")
+                                self?.notifyError("Renamed, but couldn't take this meeting's voice sample back from \(oldName): \(err.localizedDescription)", operation: .people)
                             }
                         }
                     }
                     completion(.success(()))
                 case .failure(let err):
-                    self.notifyError("Rename failed: \(err.localizedDescription)")
+                    self.notifyError("Rename failed: \(err.localizedDescription)", operation: .people)
                     completion(.failure(err))
                 }
             }
@@ -1171,7 +1178,7 @@ final class MeetingLibraryService {
             ])
             return .success(())
         } catch {
-            notifyError("Reassign failed: \(error.localizedDescription)")
+            notifyError("Reassign failed: \(error.localizedDescription)", operation: .people)
             return .failure(error)
         }
     }
@@ -1184,7 +1191,7 @@ final class MeetingLibraryService {
             _ = try SpeakerLabelStore.removeSegments(indices, stem: stem, in: outputDir())
             return .success(())
         } catch {
-            notifyError("Reset failed: \(error.localizedDescription)")
+            notifyError("Reset failed: \(error.localizedDescription)", operation: .people)
             return .failure(error)
         }
     }
@@ -1702,7 +1709,7 @@ final class MeetingLibraryService {
                         "primary": primaryStem,
                         "error_type": PipelineOutcomeLog.errorType(err),  // SEC38: the text can quote the title
                     ])
-                    self.notifyError("Merge failed: \(err.localizedDescription)")
+                    self.notifyError("Merge failed: \(err.localizedDescription)", operation: .storage)
                     completion(.failure(err))
                 }
             }

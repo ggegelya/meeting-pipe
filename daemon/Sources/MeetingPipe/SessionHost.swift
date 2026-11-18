@@ -124,7 +124,7 @@ protocol SessionStatusPresenting: AnyObject {
 protocol SessionNotifying: AnyObject {
     func notifyRecordingStarted(file: URL)
     func notifyProcessing(file: URL, cause: StopCause)
-    func notifyError(_ message: String)
+    func notifyError(_ message: String, operation: FailureMetadata.Operation, title: String?)
     func notifySkippedMeeting(source: AppSource, origin: SkipOrigin)
     func notifyStillMeeting()
     func notifyMicOnlyRecording(file: URL, permissionState: SystemAudioCapture.PermissionState)

@@ -16,6 +16,17 @@ struct FailureMetadata: Codable, Equatable, Hashable {
     enum Operation: String, Codable {
         case summary, ask, digest, publish, transcribe, processing, storage, integrations, model
         case renameVoice = "rename_voice"
+        /// UX93: Swift-only. They label notifications and are never written to a `<stem>.error.json`,
+        /// so `failure_details.OPERATIONS` and the sidecar contract do not carry them, and `decode`
+        /// refuses them.
+        case recording, people
+
+        /// Never in a sidecar (UX93).
+        var isNotificationOnly: Bool { self == .recording || self == .people }
+
+        /// Whether a surface showing this failure offers a retry. Nothing stem-less in these is
+        /// retryable as a job, so their explanation is the message, never "Retry when you are ready".
+        var offersRetry: Bool { !(self == .recording || self == .people || self == .storage) }
 
         var failureTitle: String {
             switch self {
@@ -29,6 +40,8 @@ struct FailureMetadata: Codable, Equatable, Hashable {
             case .integrations: return "Couldn't connect the integration"
             case .model: return "Couldn't prepare the model"
             case .processing: return "Processing could not finish"
+            case .recording: return "Couldn't record the meeting"
+            case .people: return "Couldn't save the name"
             }
         }
     }
@@ -49,7 +62,7 @@ struct FailureMetadata: Codable, Equatable, Hashable {
 
     static func decode(_ data: Data) -> FailureMetadata? {
         guard data.count < 4096, var value = try? JSONDecoder().decode(Self.self, from: data),
-              value.schemaVersion == 1 else { return nil }
+              value.schemaVersion == 1, !value.operation.isNotificationOnly else { return nil }
         if let provider = value.provider, !providers.contains(provider) { value.provider = nil }
         if let status = value.httpStatus, !(100...599).contains(status) { value.httpStatus = nil }
         value.requestID = safeRequestID(value.requestID)
@@ -159,6 +172,8 @@ struct FailurePresentation: Equatable {
             explanation = "Retry when you are ready, or open Details to inspect the failure."
             if Self.isValidation(diagnostics) { explanation = diagnostics }
             else if let refusal = Self.storageRefusal(diagnostics, operation: facts.operation) { explanation = refusal }
+            // UX93: no retry is offered for these, so the message itself is the explanation.
+            else if !facts.operation.offersRetry, Self.isOneLine(diagnostics) { explanation = diagnostics }
         }
         var saved: [String] = []
         if savedRecording && savedTranscript { saved.append("Your recording and transcript are saved.") }
@@ -168,6 +183,21 @@ struct FailurePresentation: Equatable {
         self.title = title ?? heading
         let operationLine = facts.cause == .credits || facts.cause == .quota ? [facts.operation == .summary ? "The summary could not be created." : facts.operation.failureTitle + "."] : []
         self.explanation = (operationLine + saved + [explanation]).joined(separator: " ")
+    }
+
+    /// A message short and plain enough to stand as an explanation: one line, no traceback.
+    static func isOneLine(_ text: String) -> Bool {
+        !text.isEmpty && text.count <= 300 && !text.contains(where: \.isNewline)
+    }
+
+    /// UX93: the operation a failure stage names, one mapping for the Library row's notice and the
+    /// job-failure banner, so the two agree by construction.
+    static func operation(forStage stage: String?) -> FailureMetadata.Operation {
+        switch stage {
+        case "publish": return .publish
+        case "transcribe": return .transcribe
+        default: return .summary
+        }
     }
 
     /// The sentence `summarize.refuse_unreadable_overlays` writes, picked out of the stderr tail.

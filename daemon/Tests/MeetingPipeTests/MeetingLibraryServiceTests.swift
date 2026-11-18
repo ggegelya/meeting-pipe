@@ -42,7 +42,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         service = MeetingLibraryService(
             outputDir: { [unowned self] in self.dir },
             launcher: driver,
-            notifyError: { [unowned self] message in self.errors.append(message) },
+            notifyError: { [unowned self] message, _, _ in self.errors.append(message) },
             enqueue: { [unowned self] file, mode, _ in self.enqueued.append((file, mode)) },
             originalsDir: { [unowned self] in self.originalsDir },
             recordCorrection: { [unowned self] bundleID, title, workflow in
@@ -201,7 +201,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         let unwritable = MeetingLibraryService(
             outputDir: { URL(fileURLWithPath: "/dev/null/nope") },
             launcher: driver,
-            notifyError: { [unowned self] message in self.errors.append(message) },
+            notifyError: { [unowned self] message, _, _ in self.errors.append(message) },
             enqueue: { _, _, _ in },
             recordCorrection: { [unowned self] bundleID, title, workflow in
                 self.corrections.append((bundleID, title, workflow))
@@ -440,7 +440,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         MeetingLibraryService(
             outputDir: { [unowned self] in self.dir },
             launcher: driver,
-            notifyError: { [unowned self] message in self.errors.append(message) },
+            notifyError: { [unowned self] message, _, _ in self.errors.append(message) },
             enqueue: { _, _, _ in },
             originalsDir: { [unowned self] in self.originalsDir },
             deletionBlock: block
@@ -651,7 +651,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         MeetingLibraryService(
             outputDir: { [unowned self] in self.dir },
             launcher: driver,
-            notifyError: { [unowned self] message in self.errors.append(message) },
+            notifyError: { [unowned self] message, _, _ in self.errors.append(message) },
             enqueue: { [unowned self] file, mode, _ in self.enqueued.append((file, mode)) },
             originalsDir: { [unowned self] in self.originalsDir },
             enqueueRetranscribe: { _, _ in },
@@ -1120,7 +1120,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         let appleService = MeetingLibraryService(
             outputDir: { [unowned self] in self.dir },
             launcher: driver,
-            notifyError: { _ in },
+            notifyError: { _, _, _ in },
             enqueue: { _, _, _ in },
             summarizationBackend: { "apple_intelligence" }
         )
@@ -1206,7 +1206,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
         let service = MeetingLibraryService(
             outputDir: { [unowned self] in self.dir },
             launcher: driver,
-            notifyError: { _ in },
+            notifyError: { _, _, _ in },
             enqueue: { _, _, _ in },
             originalsDir: { [unowned self] in self.originalsDir },
             failedSetMayHaveChanged: { moved += 1 }
@@ -1694,7 +1694,7 @@ final class RetranscribeEditLockTests: XCTestCase {
         model.library = MeetingLibraryService(
             outputDir: { dir },
             launcher: FakePipelineDriver(),
-            notifyError: { _ in },
+            notifyError: { _, _, _ in },
             enqueue: { _, _, _ in },
             enqueueRetranscribe: { _, done in pending.append(done) }
         )

@@ -309,6 +309,8 @@ final class Coordinator: NSObject {
 
     /// Bind subsystem callbacks back to self. Post-super.init so self is valid.
     private func wireSubsystems() {
+        // UX93: a done banner carries only its stem; a click re-derives the directory from config.
+        notifier.recordingsDir = { [weak self] in self?.liveOutputDir }
         stateMachine.onIdleTransition = { [weak self] in
             // Every path back to idle (record then stop, skip, prompt
             // timeout, stale-prompt end) tears down the lifecycle
@@ -367,7 +369,7 @@ final class Coordinator: NSObject {
                 )
             },
             onError: { [weak self] message in
-                self?.notifier.notifyError(message)
+                self?.notifier.notifyError(message, operation: .processing)
             },
             onQueueActivity: { [weak self] activity in self?.statusBar.setQueueActivity(activity) },
             onProgress: { [weak self] stem, progress in
@@ -426,8 +428,14 @@ final class Coordinator: NSObject {
                     label: run.progressLabel
                 )
             },
-            onFailure: { [weak self] stem, error in
-                self?.notifier.notifyFailure(FailurePresentation(error: error, operation: .summary), stem: stem)
+            onFailure: { [weak self] stem, recordingsDir, error in
+                // UX93: the stage the dispatcher just wrote to `<stem>.error.json` names the operation,
+                // through the same mapping the Library row uses, so the banner and the row agree.
+                let stage = PipelineFailureSidecar.read(stem: stem, in: recordingsDir)?.stage.rawValue
+                    ?? SinkDispatcher.stage(for: error).rawValue
+                self?.notifier.notifyFailure(
+                    FailurePresentation(error: error, operation: FailurePresentation.operation(forStage: stage)), stem: stem
+                )
             },
             // PERF24: the menu's failed row is a cached count recounted off main, and a job
             // landing is what usually moves it.
@@ -498,7 +506,7 @@ final class Coordinator: NSObject {
         // is no lingering banner to clear.
         recorder.onWriteFailure = { [weak self] decision in
             guard let self = self else { return }
-            self.notifier.notifyError(decision.message)
+            self.notifier.notifyError(decision.message, operation: .recording, title: "Recording stopped early")
             self.session.forceStop(reason: "write_failure_\(decision.channel)")
         }
         // REC20: the recorder's once-a-minute free-space watch. Its stop is the ordinary stop
@@ -907,7 +915,8 @@ final class Coordinator: NSObject {
             // (TECH-MIC5 review). Tell the user so they can recover manually.
             let n = result.quarantined.count
             notifier.notifyError(
-                "\(n) interrupted recording\(n == 1 ? "" : "s") were kept for review but not auto-published: the mute timeline was lost when the app stopped unexpectedly, so muted moments could not be removed. They are in the MeetingPipe originals folder (held) and are not deleted automatically."
+                "\(n) interrupted recording\(n == 1 ? "" : "s") were kept for review but not auto-published: the mute timeline was lost when the app stopped unexpectedly, so muted moments could not be removed. They are in the MeetingPipe originals folder (held) and are not deleted automatically.",
+                operation: .recording, title: "Recordings kept for review"
             )
         }
     }
@@ -984,7 +993,9 @@ final class Coordinator: NSObject {
             self?.liveOutputDir ?? URL(fileURLWithPath: NSTemporaryDirectory())
         },
         launcher: launcher,
-        notifyError: { [weak self] message in self?.notifier.notifyError(message) },
+        notifyError: { [weak self] message, operation, title in
+            self?.notifier.notifyError(message, operation: operation, title: title)
+        },
         enqueue: { [weak self] file, mode, owed in
             self?.jobDispatcher.enqueue(file: file, summaryMode: mode, redactionOwed: owed)
         },

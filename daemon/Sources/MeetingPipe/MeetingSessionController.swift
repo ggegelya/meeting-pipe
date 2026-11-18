@@ -846,7 +846,10 @@ final class MeetingSessionController: @unchecked Sendable {
                 "reason": "mic_permission",
                 "status": "\(micStatus.rawValue)",
             ])
-            coordinator.notifications.notifyError("Microphone permission is required. Grant it in Preferences → Permissions, then try again.")
+            coordinator.notifications.notifyError(
+                "Microphone permission is required. Grant it in Preferences → Permissions, then try again.",
+                operation: .recording, title: nil
+            )
             // Deeplink to the Permissions section so the user can act.
             coordinator.menuPreferencesPermissions()
             coordinator.stateMachine.setIdle()
@@ -1125,7 +1128,9 @@ final class MeetingSessionController: @unchecked Sendable {
                 self.coordinator.hud.dismiss(animated: false)
                 self.coordinator.stateMachine.setIdle()
                 self.coordinator.statusUI.setIdle()
-                self.coordinator.notifications.notifyError("Could not start recording: \(error.localizedDescription)")
+                self.coordinator.notifications.notifyError(
+                    "Could not start recording: \(error.localizedDescription)", operation: .recording, title: nil
+                )
             }
         }
     }
@@ -1271,7 +1276,8 @@ final class MeetingSessionController: @unchecked Sendable {
         // live `sample` of the process.
         stopStallWatchdog.arm(file: file) { [weak self] elapsed in
             self?.coordinator.notifications.notifyError(
-                StopStallWatchdog.stallMessage(elapsed: elapsed)
+                StopStallWatchdog.stallMessage(elapsed: elapsed),
+                operation: .recording, title: "Still finishing the recording"
             )
         }
         // END9: the cut a concluded hold left (since END21 the mic release, not the hold's start,
@@ -1418,7 +1424,7 @@ final class MeetingSessionController: @unchecked Sendable {
                             stem: stem, in: file.deletingLastPathComponent(),
                             stage: .pipeline, reason: MetaWriteFailure.heldReason
                         )
-                        self.coordinator.notifications.notifyError(MetaWriteFailure.heldReason)
+                        self.coordinator.notifications.notifyError(MetaWriteFailure.heldReason, operation: .storage, title: nil)
                     } else {
                         self.coordinator.notifications.notifyProcessing(file: file, cause: cause)
                         self.coordinator.jobs.enqueue(file: file, summaryMode: summaryMode, redactionOwed: redactionOwed)
@@ -1459,7 +1465,8 @@ final class MeetingSessionController: @unchecked Sendable {
                     )
                 }
                 self.coordinator.notifications.notifyError(
-                    "Could not finalize \(file.lastPathComponent). The raw recording was kept and will be recovered automatically."
+                    "Could not finalize \(file.lastPathComponent). The raw recording was kept and will be recovered automatically.",
+                    operation: .recording, title: "Couldn't finish the recording file"
                 )
                 // REC32: make "automatically" true with an empty queue too. `recorder.stop` has
                 // returned, so the stem is handed back (REC23) unless an abandoned drain still
@@ -2450,7 +2457,7 @@ final class MeetingSessionController: @unchecked Sendable {
             coordinator.hud.setLowSpace(hudText)
             coordinator.notifications.notifyLowSpace(title: title, body: body)
         case .stop(let message):
-            coordinator.notifications.notifyError(message)
+            coordinator.notifications.notifyError(message, operation: .recording, title: "Recording stopped early")
             forceStop(reason: "low_space")
         }
     }

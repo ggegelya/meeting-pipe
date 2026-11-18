@@ -75,7 +75,7 @@ final class RunMPWiringT19Tests: XCTestCase {
         }
         wait(for: [done, reaped], timeout: 20)
 
-        guard case .failure(let error)? = outcome, case PipelineLauncher.LaunchError.timeout(let limit) = error else {
+        guard case .failure(let error)? = outcome, case PipelineLauncher.LaunchError.timeout(let limit, _) = error else {
             return XCTFail("expected LaunchError.timeout, got \(String(describing: outcome))")
         }
         XCTAssertEqual(limit, 1)

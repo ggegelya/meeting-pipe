@@ -184,7 +184,7 @@ final class MeetingFootprintTests: XCTestCase {
         MeetingLibraryService(
             outputDir: { [unowned self] in self.lib },
             launcher: FakePipelineDriver(),
-            notifyError: { _ in },
+            notifyError: { _, _, _ in },
             enqueue: { _, _, _ in },
             originalsDir: { [unowned self] in self.originals },
             correctionsDir: { [unowned self] in self.corrections },
@@ -293,7 +293,7 @@ final class MeetingFootprintTests: XCTestCase {
         XCTAssertTrue(footprint.publishedCopies.isEmpty)
         let svc = MeetingLibraryService(
             outputDir: { [unowned self] in self.lib }, launcher: FakePipelineDriver(),
-            notifyError: { _ in }, enqueue: { _, _, _ in },
+            notifyError: { _, _, _ in }, enqueue: { _, _, _ in },
             originalsDir: { [unowned self] in self.originals },
             publishedRoots: { [unowned self] in [self.lib] }, trash: moveToTrash
         )

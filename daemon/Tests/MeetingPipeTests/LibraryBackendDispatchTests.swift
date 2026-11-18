@@ -27,7 +27,7 @@ final class LibraryBackendDispatchTests: XCTestCase {
         MeetingLibraryService(
             outputDir: { [unowned self] in self.dir },
             launcher: driver,
-            notifyError: { [unowned self] in self.errors.append($0) },
+            notifyError: { [unowned self] message, _, _ in self.errors.append(message) },
             enqueue: { _, _, _ in XCTFail("no transcription expected") },
             summarizationBackend: { global },
             regulatedMode: { regulated }

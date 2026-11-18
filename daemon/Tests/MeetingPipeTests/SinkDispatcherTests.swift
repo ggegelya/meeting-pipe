@@ -1016,7 +1016,7 @@ final class SinkDispatcherTests: XCTestCase {
     }
 
     func test_a_timeout_is_not_mistaken_for_a_publish_failure() {
-        let err = PipelineLauncher.LaunchError.timeout(90 * 60)
+        let err = PipelineLauncher.LaunchError.timeout(90 * 60, job: "run-all")
         XCTAssertEqual(SinkDispatcher.stage(for: err), .pipeline)
     }
 

@@ -503,7 +503,7 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertFalse(PipelineLauncher.isCancellation(
             PipelineLauncher.LaunchError.nonZeroExit(15, "tail")
         ))
-        XCTAssertFalse(PipelineLauncher.isCancellation(PipelineLauncher.LaunchError.timeout(60)))
+        XCTAssertFalse(PipelineLauncher.isCancellation(PipelineLauncher.LaunchError.timeout(60, job: "run-all")))
         struct Boom: Error {}
         XCTAssertFalse(PipelineLauncher.isCancellation(Boom()))
         XCTAssertTrue(PipelineLauncher.isCancellation(PipelineLauncher.LaunchError.cancelled))

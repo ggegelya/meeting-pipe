@@ -240,7 +240,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
         let service = MeetingLibraryService(
             outputDir: { dir },
             launcher: FakePipelineDriver(),
-            notifyError: { _ in },
+            notifyError: { _, _, _ in },
             enqueue: { file, mode, _ in
                 sidecarAtEnqueue = MeetingMetaRead.load(stem: stem, in: dir).dictionary
                 enqueued.append((file, mode))
@@ -266,7 +266,7 @@ final class MeetingSessionControllerMetaWriteTests: XCTestCase {
         var enqueued: [URL] = []
         let dir = tempDir!
         let service = MeetingLibraryService(
-            outputDir: { dir }, launcher: FakePipelineDriver(), notifyError: { _ in },
+            outputDir: { dir }, launcher: FakePipelineDriver(), notifyError: { _, _, _ in },
             enqueue: { file, _, _ in enqueued.append(file) }
         )
         guard case .failure(let error) = service.retryMeeting(stem: stem) else {

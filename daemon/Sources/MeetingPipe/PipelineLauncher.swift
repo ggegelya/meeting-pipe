@@ -609,7 +609,9 @@ final class PipelineLauncher: PipelineDriver {
         /// Full output remains in `pipeline.log`. Optional native metadata travels separately.
         case nonZeroExit(Int32, String)
         case reportedFailure(Int32, FailureMetadata, String)
-        case timeout(TimeInterval)
+        /// The limit and the `mp` subcommand that hit it (UX93): every job shares the one `runMP`
+        /// watchdog, so the caption has to say which job, and only run-all has a wav to re-run.
+        case timeout(TimeInterval, job: String)
         /// This app terminated the run itself, on the owner's Cancel (UX50).
         /// Distinct from `nonZeroExit(15, …)` because a SIGTERM the app sent is
         /// not a fault: every surface that would report a failure asks
@@ -625,12 +627,23 @@ final class PipelineLauncher: PipelineDriver {
                 return PipelineLauncher.failureCaption(stderr: diagnostics)
             case .reportedFailure(_, let metadata, let diagnostics):
                 return FailurePresentation(diagnostics: diagnostics, metadata: metadata).title
-            case .timeout(let seconds):
-                return "pipeline timed out after \(Int(seconds / 60)) min - killed to free CPU. The audio file is preserved; re-run `mp run-all <wav>` manually after diagnosing."
+            case .timeout(let seconds, let job):
+                return PipelineLauncher.timeoutCaption(seconds: seconds, job: job)
             case .cancelled:
                 return "cancelled"
             }
         }
+    }
+
+    /// UX93: the timeout caption names the job and its limit (seconds under a minute, minutes above).
+    /// The re-run sentence is run-all's alone: it is the only job with a wav, and the 2026-10-15
+    /// action-clusters timeout told the owner to re-run run-all on one.
+    static func timeoutCaption(seconds: TimeInterval, job: String) -> String {
+        let limit = seconds < 60 ? "\(Int(seconds)) s" : "\(Int(seconds / 60)) min"
+        if job == "run-all" {
+            return "pipeline timed out after \(limit) - killed to free CPU. The audio file is preserved; re-run `mp run-all <wav>` manually after diagnosing."
+        }
+        return "pipeline timed out: `mp \(job)` did not finish within \(limit) and was stopped to free CPU."
     }
 
     /// True when the run ended because this app stopped it on the owner's
@@ -1571,7 +1584,7 @@ final class PipelineLauncher: PipelineDriver {
                 watchdog.cancel()
                 slots.release(handle, from: retain)   // TECH-UX5 / UX37: run finished/killed
                 if timedOut.isSet || handle.isCancelled { reapServerAfterStop() }
-                if timedOut.isSet { return completion(.failure(LaunchError.timeout(timeout))) }
+                if timedOut.isSet { return completion(.failure(LaunchError.timeout(timeout, job: args.first ?? "mp"))) }
                 // UX50: the cancel flag is read here, not at the call sites.
                 completion(Self.outcome(
                     status: status,

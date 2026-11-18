@@ -44,7 +44,8 @@ final class PipelineJobDispatcher: LibraryRunLane {
     private let sinkDispatcher: SinkDispatcher
     private let onDone: (_ stem: String, _ recordingsDir: URL, _ pageURL: URL?) -> Void
     private let onError: (String) -> Void
-    private let onFailure: ((String, Error) -> Void)?
+    /// The stem, its recordings directory (so the caller can read the stage just written) and the error.
+    private let onFailure: ((String, URL, Error) -> Void)?
     private let onQueueActivity: (QueueActivity) -> Void
     private let onProgress: (_ stem: String, _ progress: PipelineProgress) -> Void
     private let onProgressEnded: () -> Void
@@ -71,7 +72,7 @@ final class PipelineJobDispatcher: LibraryRunLane {
         onStalled: @escaping (_ stem: String) -> Void = { _ in },
         onPending: @escaping ([QueuedJob]) -> Void = { _ in },
         onLibraryRun: @escaping (LibraryRun?) -> Void = { _ in },
-        onFailure: ((String, Error) -> Void)? = nil,
+        onFailure: ((String, URL, Error) -> Void)? = nil,
         onJobSettled: @escaping () -> Void = {},
         onJobSucceeded: @escaping () -> Void = {}
     ) {
@@ -190,7 +191,9 @@ final class PipelineJobDispatcher: LibraryRunLane {
             // ("Regenerate failed: ..."), so routing it here too would say the
             // same thing twice in less specific words.
             if case .libraryRun = job.kind { return }
-            if let onFailure { onFailure(job.file.deletingPathExtension().lastPathComponent, err) }
+            if let onFailure {
+                onFailure(job.file.deletingPathExtension().lastPathComponent, job.file.deletingLastPathComponent(), err)
+            }
             else { onError("Pipeline failed: \(err.localizedDescription)") }
         }
     }

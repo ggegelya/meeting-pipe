@@ -203,7 +203,7 @@ struct MeetingDetailView: View {
 
     private var failureNotice: some View {
         let problem = FailurePresentation(diagnostics: meeting.failureReason ?? "",
-            operation: meeting.failureStage == "publish" ? .publish : meeting.failureStage == "transcribe" ? .transcribe : .summary,
+            operation: FailurePresentation.operation(forStage: meeting.failureStage),
             metadata: meeting.failureMetadata, timestamp: meeting.failureTimestamp,
             savedRecording: meeting.audioURL != nil, savedTranscript: meeting.hasTranscriptMD,
             savedSummary: meeting.hasSummaryJSON)

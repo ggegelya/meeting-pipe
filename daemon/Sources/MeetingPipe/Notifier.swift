@@ -85,14 +85,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private static let actionMoveLibrary = NotificationRouter.actionMoveLibrary
     private static let skipLateIDPrefix = NotificationRouter.skipLateIDPrefix
 
-    /// Per-notification state kept so "Looks good" can find the recording without re-deriving paths on click.
-    private struct DoneEntry {
-        let stem: String
-        let recordingsDir: URL
-        let pageURL: URL?
-    }
-    private var doneEntries: [String: DoneEntry] = [:]
-    private var failures: [String: (FailurePresentation, String?)] = [:]
+    /// UX93: a done banner's state rides in its `userInfo` (`DoneNotificationPayload`); the click
+    /// re-derives the recordings directory through this, from the current config.
+    var recordingsDir: () -> URL? = { nil }
+    /// This session's failure presentations, for the full Details. A click after a relaunch rebuilds
+    /// one from `userInfo` (`FailureNotificationPayload`). Evicted oldest first.
+    private var failures = InsertionOrderedStore<(FailurePresentation, String?)>(capacity: 30)
 
     override init() {
         super.init()
@@ -129,8 +127,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// a local Markdown file as if it were a Notion page. The action was always
     /// correct: it opens `pageURL`, which is whatever published.
     func notifyDone(
-        stem: String? = nil,
-        recordingsDir: URL? = nil,
+        stem: String,
+        recordingsDir: URL,
         pageURL: URL?
     ) {
         let canCorrect = Self.canCorrect(stem: stem, recordingsDir: recordingsDir)
@@ -145,19 +143,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
         let id = "done-\(UUID().uuidString)"
 
-        if let url = pageURL,
+        // UX93: the stem is the banner's whole state; the click re-derives the rest.
+        content.userInfo = DoneNotificationPayload.userInfo(stem: stem)
+        if pageURL != nil,
            let category = NotificationRouter.doneCategory(for: landing, canCorrect: canCorrect) {
             content.categoryIdentifier = category
-            doneEntries[id] = DoneEntry(
-                stem: stem ?? "",
-                recordingsDir: recordingsDir ?? URL(fileURLWithPath: "/"),
-                pageURL: url
-            )
-        } else if canCorrect, let stem = stem, let dir = recordingsDir {
+        } else if canCorrect {
             // Nothing landed anywhere, so there is nothing to open; the summary
             // is still gradeable.
             content.categoryIdentifier = Self.doneCorrectableLocalCategory
-            doneEntries[id] = DoneEntry(stem: stem, recordingsDir: dir, pageURL: nil)
         } else {
             // Nothing to open and nothing to grade: a plain terminal banner.
             post(title: copy.title, body: copy.body)
@@ -194,8 +188,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// True when `<stem>.run.json` exists (pipeline produced a gradeable summary). Skipped paths (no_speech, byo, too_long) never write the run sidecar, so the correction action is correctly disabled for them.
-    private static func canCorrect(stem: String?, recordingsDir: URL?) -> Bool {
-        guard let stem = stem, let dir = recordingsDir else { return false }
+    private static func canCorrect(stem: String, recordingsDir dir: URL) -> Bool {
         let runURL = dir.appendingPathComponent("\(stem).run.json")
         return FileManager.default.fileExists(atPath: runURL.path)
     }
@@ -207,25 +200,27 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// (`page_url` alone says what to open, not who wrote it). Nil is a real
     /// answer: every `run-all` short-circuit stops before publish and writes no
     /// sidecar at all.
-    private static func publishResult(stem: String?, recordingsDir: URL?) -> PublishResult? {
-        guard let stem = stem, let dir = recordingsDir else { return nil }
-        return PublishResult.load(stem: stem, in: dir)
+    private static func publishResult(stem: String, recordingsDir dir: URL) -> PublishResult? {
+        PublishResult.load(stem: stem, in: dir)
     }
 
-    func notifyError(_ message: String) {
-        notifyFailure(FailurePresentation(diagnostics: message))
+    /// A stem-less failure (UX93). `operation` is required so every caller names what failed: it
+    /// used to default to `.processing`, which titled a refused recording start, a stop-stall and a
+    /// failed rename alike "Processing could not finish". `title` is for the few notices whose title
+    /// must say more than the operation. The message is the banner's body.
+    func notifyError(_ message: String, operation: FailureMetadata.Operation, title: String? = nil) {
+        notifyFailure(FailurePresentation(diagnostics: message, operation: operation, title: title), message: message)
     }
 
-    func notifyFailure(_ failure: FailurePresentation, stem: String? = nil) {
+    func notifyFailure(_ failure: FailurePresentation, stem: String? = nil, message: String? = nil) {
         guard failure.metadata.cause != .cancelled else { return }
         let id = NotificationRouter.failureIDPrefix + UUID().uuidString
-        if failures.count >= 30, let first = failures.keys.sorted().first { failures.removeValue(forKey: first) }
-        failures[id] = (failure, stem)
+        failures.insert((failure, stem), for: id)
         let content = UNMutableNotificationContent()
         content.title = failure.title
-        content.body = stem == nil ? "Review failure details." : "Review in Library."
+        content.body = FailureNotificationPayload.body(failure: failure, stem: stem, message: message)
         content.categoryIdentifier = NotificationRouter.failureCategory
-        if let stem { content.userInfo = ["failureStem": stem] }
+        content.userInfo = FailureNotificationPayload.userInfo(failure: failure, stem: stem, message: message)
         content.sound = .default
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
     }
@@ -238,7 +233,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.title = count == 1 ? "A meeting still has no summary" : "\(count) meetings still have no summary"
         content.body = "They failed a day or more ago. Open the Library to retry."
         content.categoryIdentifier = NotificationRouter.failureCategory
-        content.userInfo = ["failureStem": oldestStem]
+        content.userInfo = [FailureNotificationPayload.stemKey: oldestStem]
         UNUserNotificationCenter.current().add(UNNotificationRequest(
             identifier: NotificationRouter.failureIDPrefix + "unresolved-" + UUID().uuidString,
             content: content, trigger: nil
@@ -607,7 +602,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                                  didReceive response: UNNotificationResponse,
                                  withCompletionHandler completionHandler: @escaping () -> Void) {
         let id = response.notification.request.identifier
-        let entry = doneEntries[id]
+        let userInfo = response.notification.request.content.userInfo
+        // UX93: rebuilt from the notification itself, never from a map, so a relaunch keeps it.
+        let done = DoneNotificationPayload.resolve(userInfo: userInfo, recordingsDir: recordingsDir())
 
         // The whole matrix lives in `NotificationRouter.route`, which is pure and
         // table-tested (T3). This method is the effect half: look up state, ask
@@ -616,7 +613,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             id: id,
             action: response.actionIdentifier,
             isDefault: response.actionIdentifier == UNNotificationDefaultActionIdentifier,
-            doneEntry: entry.map { .init(stem: $0.stem, hasPageURL: $0.pageURL != nil) }
+            doneEntry: done?.entry
         )
 
         for route in decision.routes {
@@ -626,17 +623,20 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                 else { continue }
                 delegate?.notifier(self, didRequestOpenMeeting: stem)
             case .openFailure:
-                let failure = failures.removeValue(forKey: id)
-                let stem = failure?.1 ?? response.notification.request.content.userInfo["failureStem"] as? String
-                delegate?.notifier(self, didRequestFailure: failure?.0 ?? FailurePresentation(diagnostics: ""), stem: stem)
+                let failure = failures.remove(id)
+                let stem = failure?.1 ?? userInfo[FailureNotificationPayload.stemKey] as? String
+                let presentation = failure?.0
+                    ?? FailureNotificationPayload.rebuild(userInfo: userInfo)
+                    ?? FailurePresentation(diagnostics: "", operation: .processing)
+                delegate?.notifier(self, didRequestFailure: presentation, stem: stem)
             case .markLooksGood(let stem):
-                guard let entry else { continue }
-                delegate?.notifier(self, didMarkLooksGoodFor: stem, recordingsDir: entry.recordingsDir)
+                guard let done else { continue }
+                delegate?.notifier(self, didMarkLooksGoodFor: stem, recordingsDir: done.recordingsDir)
             case .editSummary(let stem):
-                guard let entry else { continue }
-                delegate?.notifier(self, didRequestEditSummaryFor: stem, recordingsDir: entry.recordingsDir)
+                guard let done else { continue }
+                delegate?.notifier(self, didRequestEditSummaryFor: stem, recordingsDir: done.recordingsDir)
             case .openPage:
-                guard let url = entry?.pageURL else { continue }
+                guard let url = done?.pageURL else { continue }
                 delegate?.notifier(self, didOpenPage: url)
             case .openAccessibilitySettings:
                 delegate?.notifierDidRequestAccessibilitySettings(self)
@@ -658,9 +658,6 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             }
         }
 
-        if decision.consumeDoneEntry {
-            doneEntries.removeValue(forKey: id)
-        }
         completionHandler()
     }
 }

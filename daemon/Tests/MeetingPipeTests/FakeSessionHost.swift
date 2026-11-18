@@ -164,6 +164,8 @@ final class SpyStatusPresenter: SessionStatusPresenting {
 
 final class SpyNotifier: SessionNotifying {
     private(set) var errors: [String] = []
+    private(set) var errorOperations: [FailureMetadata.Operation] = []
+    private(set) var errorTitles: [String?] = []
     private(set) var recordingStarted: [URL] = []
     private(set) var processing: [URL] = []
     /// OBS5: the cause each stop notification was posted with.
@@ -181,7 +183,11 @@ final class SpyNotifier: SessionNotifying {
         processing.append(file)
         processingCauses.append(cause)
     }
-    func notifyError(_ message: String) { errors.append(message) }
+    func notifyError(_ message: String, operation: FailureMetadata.Operation, title: String?) {
+        errors.append(message)
+        errorOperations.append(operation)
+        errorTitles.append(title)
+    }
     func notifySkippedMeeting(source: AppSource, origin: SkipOrigin) {
         skipped.append((source: source, origin: origin))
     }

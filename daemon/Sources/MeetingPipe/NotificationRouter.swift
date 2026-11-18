@@ -115,7 +115,7 @@ enum NotificationRouter {
 
     struct Decision: Equatable {
         var routes: [Route]
-        /// Whether the host drops its `doneEntries` record for this id.
+        /// Whether the action spends the banner (UX93: the host keeps no map, so it only informs the table).
         var consumeDoneEntry: Bool
     }
 
