@@ -162,6 +162,56 @@ def _write_meeting(dir: Path, stem: str, *segs: dict) -> Path:
     return wav
 
 
+# PIPE48: a file-driven fake soundfile. An audio "file" is the bytes `WAV<seconds>`,
+# so the real `_verify_concat` and the resume logic run with no codec, and a test
+# can compare the primary's bytes to the audio it should now hold.
+
+def _wav_seconds(path: Path) -> float:
+    return float(path.read_bytes()[3:].decode())
+
+
+def _put_wav(path: Path, seconds: float) -> Path:
+    path.write_bytes(f"WAV{float(seconds)}".encode())
+    return path
+
+
+def _install_wav_fakes(monkeypatch, counter: dict | None = None) -> None:
+    fake = types.ModuleType("soundfile")
+    fake.info = lambda path: _FakeInfo(1000, 2, int(_wav_seconds(Path(path)) * 1000))  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "soundfile", fake)
+
+    def _concat(inputs, out_path):
+        if counter is not None:
+            counter["n"] = counter.get("n", 0) + 1
+        durations = [_wav_seconds(p) for p in inputs]
+        _put_wav(out_path, sum(durations))
+        return durations
+
+    monkeypatch.setattr("mp.merge_meetings.concat_audio", _concat)
+
+
+def _gap_seg(at: float) -> dict:
+    return {"start": at, "end": at, "speaker": None, "text": GAP_TEXT, "kind": "gap"}
+
+
+def _two_meetings(tmp_path: Path, primary_s: float = 10.0, frag_s: float = 20.0):
+    primary = _write_meeting(tmp_path, "20260101-0900", _seg(0.0, 2.0, "start", "Me"))
+    frag = _write_meeting(tmp_path, "20260101-0930", _seg(0.0, 2.0, "back", "Me"))
+    _put_wav(primary, primary_s)
+    _put_wav(frag, frag_s)
+    return primary, frag
+
+
+def _commit_merged_transcript(primary: Path, primary_s: float = 10.0) -> None:
+    """The transcript a merge that crashed after its first commit leaves behind."""
+    jp = primary.with_suffix(".json")
+    t = json.loads(jp.read_text(encoding="utf-8"))
+    t["merged_from"] = ["20260101-0930"]
+    t["segments"] = [*t["segments"], _gap_seg(primary_s),
+                     {**_seg(primary_s, primary_s + 2.0, "back", "Me")}]
+    jp.write_text(json.dumps(t), encoding="utf-8")
+
+
 def test_merge_meetings_produces_one_meeting(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("mp.merge_meetings.concat_audio", _fake_concat)
     monkeypatch.setattr("mp.merge_meetings._verify_concat", lambda *a, **k: None)
@@ -187,50 +237,40 @@ def test_merge_meetings_produces_one_meeting(monkeypatch, tmp_path: Path):
 
 
 def test_merge_meetings_is_idempotent_after_publish_failure(monkeypatch, tmp_path: Path):
-    """A retry when the primary already carries the fragments must NOT concat the
-    audio again (that would double the recording); it just re-publishes."""
-    def _explode(*a, **k):
-        raise AssertionError("concat_audio must not run on a resumed merge")
+    """A retry when the primary already carries the fragments AND already holds the
+    merged audio must NOT concat again (that would double the recording); it just
+    re-renders the markdown and re-publishes."""
+    counter: dict = {}
+    _install_wav_fakes(monkeypatch, counter)
 
-    monkeypatch.setattr("mp.merge_meetings.concat_audio", _explode)
-
-    primary = _write_meeting(tmp_path, "20260101-0900", _seg(0.0, 2.0, "start", "Me"))
-    # simulate a prior committed merge: transcript already carries the provenance
-    merged = json.loads(primary.with_suffix(".json").read_text(encoding="utf-8"))
-    merged["merged_from"] = ["20260101-0930"]
-    primary.with_suffix(".json").write_text(json.dumps(merged), encoding="utf-8")
-    primary.with_suffix(".md").write_text("# Transcript\n\n**Me**: start\n", encoding="utf-8")
-    frag = _write_meeting(tmp_path, "20260101-0930", _seg(0.0, 2.0, "back", "Me"))
+    primary, frag = _two_meetings(tmp_path)
+    _commit_merged_transcript(primary)
+    _put_wav(primary, 30.0)  # a prior run fully swapped the audio, then failed at publish
+    primary.with_suffix(".md").write_text("# stale\n", encoding="utf-8")
 
     client = _FakeClient()
     result = merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=client)
     assert client.calls == 1
+    assert counter.get("n", 0) == 0
     assert "publish_failed" not in result
+    assert _wav_seconds(primary) == 30.0
+    assert GAP_TEXT in primary.with_suffix(".md").read_text(encoding="utf-8")
 
 
 def test_merge_meetings_retry_after_crash_between_commits_does_not_double_concat(
     monkeypatch, tmp_path: Path
 ):
-    """PIPE8: the transcript carrying `merged_from` is committed BEFORE the audio
-    swap. A crash in that window (the audio `os.replace` fails) still records the
-    merge, so a retry takes the re-publish-only branch instead of concatenating
-    the fragments a second time onto already-merged audio."""
+    """PIPE8 + PIPE48 (F116): the transcript carrying `merged_from` is committed
+    BEFORE the audio swap. A crash in that window leaves the verified temp, and the
+    retry finishes the swap from it: one concat, the primary holds the merged
+    audio (not part one), and no temp is left behind."""
     import mp.merge_meetings as mm
 
-    concat_calls = {"n": 0}
+    counter: dict = {}
+    _install_wav_fakes(monkeypatch, counter)
+    primary, frag = _two_meetings(tmp_path)
+    tmp_file = primary.with_name(primary.name + ".merging.tmp")
 
-    def _counting_concat(inputs, out_path):
-        concat_calls["n"] += 1
-        return _fake_concat(inputs, out_path)
-
-    monkeypatch.setattr("mp.merge_meetings.concat_audio", _counting_concat)
-    monkeypatch.setattr("mp.merge_meetings._verify_concat", lambda *a, **k: None)
-
-    primary = _write_meeting(tmp_path, "20260101-0900", _seg(0.0, 2.0, "start", "Me"))
-    frag = _write_meeting(tmp_path, "20260101-0930", _seg(0.0, 2.0, "back", "Me"))
-
-    # Fail only the audio swap (dst ends in .wav), and only once, so the atomic
-    # transcript writes (.json/.md) still land before the simulated crash.
     real_replace = mm.os.replace
     crashed = {"done": False}
 
@@ -245,15 +285,173 @@ def test_merge_meetings_retry_after_crash_between_commits_does_not_double_concat
     with pytest.raises(OSError):
         merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
 
-    # The transcript recorded the merge despite the crash on the audio swap.
     merged = json.loads(primary.with_suffix(".json").read_text(encoding="utf-8"))
     assert merged["merged_from"] == ["20260101-0930"]
-    assert concat_calls["n"] == 1
+    assert _wav_seconds(primary) == 10.0  # still part one
+    assert tmp_file.exists()  # the verified merged audio is kept for the resume
+    assert counter["n"] == 1
 
-    # Retry: the guard sees merged_from and re-publishes only; no second concat.
     result = merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
-    assert concat_calls["n"] == 1
     assert "publish_failed" not in result
+    assert counter["n"] == 1  # no second concat
+    assert primary.read_bytes() == b"WAV30.0"  # the merged audio, not part one
+    assert not tmp_file.exists()
+
+
+def test_merge_meetings_resumes_after_the_markdown_write_fails(monkeypatch, tmp_path: Path):
+    """PIPE48: the JSON commit succeeds, then the markdown write raises. The retry
+    re-renders `<stem>.md` from the committed JSON (gap divider included) and swaps
+    the audio in; the publishers never see the primary's old part-one markdown."""
+    import mp.merge_meetings as mm
+
+    _install_wav_fakes(monkeypatch)
+    primary, frag = _two_meetings(tmp_path)
+    primary.with_suffix(".md").write_text("# part one only\n", encoding="utf-8")
+
+    real_write = mm.storage.atomic_write_text
+    failed = {"done": False}
+
+    def _flaky_write(path, text, *a, **k):
+        if str(path).endswith(".md") and not failed["done"]:
+            failed["done"] = True
+            raise OSError("disk full")
+        return real_write(path, text, *a, **k)
+
+    monkeypatch.setattr(mm.storage, "atomic_write_text", _flaky_write)
+    with pytest.raises(OSError):
+        merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    assert "part one only" in primary.with_suffix(".md").read_text(encoding="utf-8")
+
+    merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    md = primary.with_suffix(".md").read_text(encoding="utf-8")
+    assert GAP_TEXT in md and "part one only" not in md
+    assert primary.read_bytes() == b"WAV30.0"
+    assert not primary.with_name(primary.name + ".merging.tmp").exists()
+
+
+def test_merge_meetings_resume_with_short_primary_and_no_temp_refuses(
+    monkeypatch, tmp_path: Path, capsys
+):
+    """PIPE48: `merged_from` is recorded but the primary is still part one and no
+    merged audio is left. The retry must not publish and exit 0 (the daemon would
+    then trash the fragments): it fails with exit 1 and touches nothing."""
+    import mp.merge_meetings as mm
+
+    _install_wav_fakes(monkeypatch)
+    primary, frag = _two_meetings(tmp_path)
+    _commit_merged_transcript(primary)
+    before = {p: p.read_bytes() for p in tmp_path.iterdir()}
+
+    with pytest.raises(MergeError, match="no merged audio is left"):
+        merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    assert {p: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+    monkeypatch.setattr(mm.entry, "prepare", lambda cfg, audio: _local_cfg(tmp_path))
+    assert mm.main([str(primary), str(frag)]) == 1
+    assert "merge failed" in capsys.readouterr().err
+    assert {p: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+def test_merge_meetings_resume_rejects_a_leftover_temp_that_fails_verification(
+    monkeypatch, tmp_path: Path
+):
+    """A leftover temp of the wrong length is never swapped in, and is removed."""
+    _install_wav_fakes(monkeypatch)
+    primary, frag = _two_meetings(tmp_path)
+    _commit_merged_transcript(primary)
+    tmp_file = primary.with_name(primary.name + ".merging.tmp")
+    _put_wav(tmp_file, 12.0)  # a truncated concat
+
+    with pytest.raises(MergeError, match="refusing to replace"):
+        merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    assert primary.read_bytes() == b"WAV10.0"
+    assert not tmp_file.exists()
+
+
+def test_merge_meetings_resume_catches_a_short_fragment_on_a_long_call(
+    monkeypatch, tmp_path: Path
+):
+    """PIPE48: a 20 s fragment rejoined to a one-hour call is under 1% of the whole,
+    so a percentage slack would call the part-one primary full length."""
+    _install_wav_fakes(monkeypatch)
+    primary, frag = _two_meetings(tmp_path, primary_s=3600.0, frag_s=20.0)
+    _commit_merged_transcript(primary, primary_s=3600.0)
+    with pytest.raises(MergeError, match="no merged audio is left"):
+        merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+
+
+def test_merge_meetings_resume_with_two_fragments_swaps_the_temp(monkeypatch, tmp_path: Path):
+    """The expected length comes from the LAST gap marker plus the last fragment, so
+    pin it with two fragments: a crash at the swap, then a retry."""
+    import mp.merge_meetings as mm
+
+    counter: dict = {}
+    _install_wav_fakes(monkeypatch, counter)
+    primary, frag1 = _two_meetings(tmp_path)
+    frag2 = _write_meeting(tmp_path, "20260101-1000", _seg(0.0, 2.0, "third", "Me"))
+    _put_wav(frag2, 5.0)
+
+    real_replace = mm.os.replace
+    crashed = {"done": False}
+
+    def _flaky_replace(src, dst):
+        if str(dst).endswith(".wav") and not crashed["done"]:
+            crashed["done"] = True
+            raise OSError("simulated crash during the audio swap")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(mm.os, "replace", _flaky_replace)
+    with pytest.raises(OSError):
+        merge_meetings(primary, [frag1, frag2], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    merge_meetings(primary, [frag1, frag2], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    assert counter["n"] == 1
+    assert primary.read_bytes() == b"WAV35.0"
+    assert not primary.with_name(primary.name + ".merging.tmp").exists()
+
+
+def test_merge_meetings_refuses_before_writing_when_disk_is_short(monkeypatch, tmp_path: Path):
+    """PIPE48: too little free space on the primary's volume raises MergeError
+    before the temp or any transcript is written."""
+    counter: dict = {}
+    _install_wav_fakes(monkeypatch, counter)
+    primary, frag = _two_meetings(tmp_path)
+    before = {p: p.read_bytes() for p in tmp_path.iterdir()}
+    monkeypatch.setattr("mp.merge_meetings.storage.free_bytes", lambda path: 1024)
+
+    with pytest.raises(MergeError, match="free disk space"):
+        merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    assert counter.get("n", 0) == 0
+    assert {p: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+@pytest.mark.parametrize("fail_at", ["merge_transcripts", "json_commit"])
+def test_merge_meetings_failure_after_concat_leaves_no_temp(
+    monkeypatch, tmp_path: Path, fail_at: str
+):
+    """PIPE48: anything failing after the concat but before the transcript commit
+    deletes the temp (a copy of every input) instead of orphaning it."""
+    import mp.merge_meetings as mm
+
+    _install_wav_fakes(monkeypatch)
+    primary, frag = _two_meetings(tmp_path)
+    if fail_at == "merge_transcripts":
+        monkeypatch.setattr(mm, "merge_transcripts",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    else:
+        real_write = mm.storage.atomic_write_text
+
+        def _write(path, text, *a, **k):
+            if str(path).endswith(".json"):
+                raise OSError("disk full")
+            return real_write(path, text, *a, **k)
+
+        monkeypatch.setattr(mm.storage, "atomic_write_text", _write)
+
+    with pytest.raises(Exception):
+        merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    assert not primary.with_name(primary.name + ".merging.tmp").exists()
+    assert primary.read_bytes() == b"WAV10.0"
+    assert "merged_from" not in json.loads(primary.with_suffix(".json").read_text(encoding="utf-8"))
 
 
 def test_merge_meetings_requires_a_fragment(tmp_path: Path):

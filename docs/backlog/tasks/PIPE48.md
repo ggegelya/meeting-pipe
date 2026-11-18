@@ -2,9 +2,9 @@
 id: PIPE48
 title: A merge that fails after recording merged_from but before the audio swap is resumed as complete, and the daemon then trashes the fragments
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). PIPE8 (done) does not hold. `merge_meetings` commits the transcript carrying `merged_from` before it writes `<stem>.md` and swaps in the merged audio. The retry's resume branch looks only at `merged_from`, so it never finishes the swap from `.merging.tmp`, never re-renders the markdown, publishes whatever `.md` is on disk and exits 0, and the daemon then trashes the fragments. The meeting is left with part-one audio and possibly a part-one published transcript. `test_merge_meetings_retry_after_crash_between_commits_does_not_double_concat` pins that path as clean (F116). Code-derived; no merge has run in the field since 2026-07-14. Fix: resume based on the audio's actual state, always re-render the markdown, delete the temp on failure, and check free space first.
+comment: Shipped 2026-11-18 (all but the owner run): resume decides from the audio (temp swapped in, full-length primary republished, short primary refuses), markdown always re-rendered, temp removed on pre-commit failure, free-space check; owner owes only a first real merge run (none in the field since 2026-07-14); a short primary with no temp refuses rather than re-concats.
 ---
 
 # PIPE48: A merge that fails after recording merged_from but before the audio swap is resumed as complete, and the daemon then trashes the fragments
