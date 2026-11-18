@@ -96,27 +96,60 @@ final class ProcessOutputDrainTests: XCTestCase {
         Self.assertNoPerSpawnLeak("a failed spawn", spawnOnce)
     }
 
-    static func openDescriptors() -> Int {
-        (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? 0
+    static func openDescriptors() -> Int { openDescriptorSet().count }
+
+    static func openDescriptorSet() -> Set<Int32> {
+        Set(((try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd")) ?? []).compactMap { Int32($0) })
     }
 
-    /// `/dev/fd` counts the whole test process, so a single before/after count fails whenever unrelated
-    /// work opens descriptors inside the window (CI saw +3, +4 and +55 on a clean drain). A leak grows with
-    /// every spawn and noise does not, so count across two equal batches and fail only when both grew by
-    /// half a descriptor per spawn or more. The leak CONC7 fixed was one per spawn: +40 in each batch.
+    /// The kind of an open descriptor, and its path where the kernel has one.
+    static func describeDescriptor(_ fd: Int32) -> (kind: String, path: String?) {
+        var st = stat()
+        guard fstat(fd, &st) == 0 else { return ("closed", nil) }
+        let kind: String
+        switch st.st_mode & S_IFMT {
+        case S_IFIFO: kind = "fifo"
+        case S_IFREG: kind = "file"
+        case S_IFSOCK: kind = "socket"
+        case S_IFCHR: kind = "chr"
+        case S_IFDIR: kind = "dir"
+        default: kind = "other"
+        }
+        var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let path = fcntl(fd, F_GETPATH, &buf) == 0 ? String(cString: buf) : nil
+        return (kind, path)
+    }
+
+    /// A leak is a count that does not come back. Two things move `/dev/fd` without one: it counts the
+    /// whole test process, and a read end that had a `readabilityHandler` is closed by Foundation only when
+    /// its dispatch source's cancel handler runs, after `close()` returns. Under load that lags, so GitHub's
+    /// macOS 15 runner read +3 to +160 on a drain that leaks nothing (CONC7 amendment 2026-11-18). So the
+    /// test spawns a batch, then waits up to 10 s for the count to fall back to within a quarter of the batch
+    /// of where it started. The leak CONC7 fixed was one per spawn: +40 that never falls back.
     static func assertNoPerSpawnLeak(
         _ what: String, batch: Int = 40, file: StaticString = #filePath, line: UInt = #line, _ spawn: () -> Void
     ) {
         spawn()   // warm anything lazily opened
-        let start = openDescriptors()
+        let startSet = openDescriptorSet()
+        let start = startSet.count, limit = start + batch / 4
         for _ in 0..<batch { spawn() }
-        let mid = openDescriptors()
-        for _ in 0..<batch { spawn() }
-        let end = openDescriptors()
-        let first = mid - start, second = end - mid
-        XCTAssertFalse(
-            first >= batch / 2 && second >= batch / 2,
-            "\(what) leaked descriptors: +\(first) then +\(second) over two batches of \(batch) (\(start) -> \(mid) -> \(end))",
+        let peak = openDescriptors()
+        var now = peak
+        let deadline = Date().addingTimeInterval(10)
+        while now > limit, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.1)
+            now = openDescriptors()
+        }
+        guard now > limit else { return }
+
+        let described = openDescriptorSet().subtracting(startSet).sorted().map { ($0, describeDescriptor($0)) }
+        let kinds = Dictionary(grouping: described, by: { $0.1.kind }).mapValues(\.count)
+            .sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+        let samples = described.prefix(6).map { "\($0.0):\($0.1.kind)\($0.1.path.map { " \($0)" } ?? "")" }
+            .joined(separator: ", ")
+        XCTFail(
+            "\(what) leaked descriptors: \(start) before \(batch) spawns, \(peak) after, still \(now) after 10 s "
+                + "(limit \(limit)); new by kind: \(kinds); samples: \(samples)",
             file: file, line: line
         )
     }
