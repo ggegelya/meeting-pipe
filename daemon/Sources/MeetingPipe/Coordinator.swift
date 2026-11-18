@@ -294,6 +294,13 @@ final class Coordinator: NSObject {
         // coordinator reference above survives only for start/stop, Preferences,
         // job cancellation, and the backend read.
         libraryModel.library = library
+        // UX101: the scan asks the recorder which stems it owns (REC23), so a recording past the
+        // two-hour staleness window is never aged into a failure. `refresh()` is main-confined;
+        // a caller off main gets the old age rule rather than a trap.
+        let recorder = self.recorder
+        libraryModel.meetingStore.ownedStems = {
+            Thread.isMainThread ? MainActor.assumeIsolated { recorder.ownedStems } : []
+        }
         statusBar.libraryModel = libraryModel
         // The meeting-lifetime owner (TECH-ARCH2); holds an unowned backref.
         session = MeetingSessionController(coordinator: self)

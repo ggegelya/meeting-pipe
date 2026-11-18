@@ -756,6 +756,7 @@ struct LibraryRootView: View {
         ) { _ in recomputeCounts() }
         .onChange(of: model.workflowStore?.workflows.count ?? 0) { _, _ in recomputeCounts() }
         .onChange(of: model.searchIndexRevision) { _, _ in recomputeCounts() }
+        .onChange(of: model.liveRecordingStem) { _, _ in recomputeCounts() }
         // UX24: adding, editing, or deleting a folder changes its rail count.
         .onChange(of: savedSearches.searches) { _, _ in
             recomputeCounts()
@@ -1111,13 +1112,15 @@ struct LibraryRootView: View {
             workflowIDs: workflows.map(\.id),
             savedSearches: savedSearches.searches,
             searchRevision: model.searchIndexRevision,
-            day: Calendar.current.startOfDay(for: Date())
+            day: Calendar.current.startOfDay(for: Date()),
+            live: model.liveRecordingStem
         )
         // PERF13: the commitments' aging labels are per day too; a no-op on the same day.
         facts.refreshAging()
         if key == lastCountsKey { return }
         lastCountsKey = key
-        let meetings = meetingStore.meetings
+        // UX101: a live stem counts as recording, never toward Needs you or a Failed folder.
+        let meetings = LiveRecordingOverlay.apply(meetingStore.meetings, live: model.liveRecordingStem)
         let searches = savedSearches.searches
         // UX24: a folder's free-text half counts through the FTS index, so its rail count matches
         // what selecting it actually shows. PERF20: those lookups run off main; the counts land when
@@ -1145,8 +1148,10 @@ struct LibraryRootView: View {
         /// nothing new no longer bumps the store revision, so a re-open on a new day recounts on the
         /// day rather than waiting for a file to change.
         let day: Date
+        /// UX101: the stem `LiveRecordingOverlay` marks `.recording`.
+        let live: String?
         static let empty = CountsKey(
-            storeRevision: -1, workflowIDs: [], savedSearches: [], searchRevision: -1, day: .distantPast
+            storeRevision: -1, workflowIDs: [], savedSearches: [], searchRevision: -1, day: .distantPast, live: nil
         )
     }
 

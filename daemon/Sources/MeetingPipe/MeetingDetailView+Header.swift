@@ -308,9 +308,9 @@ extension MeetingDetailView {
             return ("exclamationmark.circle", Color(MPColors.warning600),
                     "Too long for an automatic summary. The transcript bundle is ready to paste.")
         case .done:
-            if meeting.isZeroEgress {
-                return ("lock.fill", Color(MPColors.fgSubtle),
-                        "Kept local. On this Mac by design (NDA workflow).")
+            if let reason = KeptLocalReason.of(meeting) {
+                // UX101: the help names the flag that set it, the same text as the row's pill.
+                return ("lock.fill", Color(MPColors.fgSubtle), "Kept local. " + reason.help)
             }
             if meeting.publishState == "none" {
                 return ("exclamationmark.circle", Color(MPColors.warning600), "Not published yet.")

@@ -204,17 +204,19 @@ struct MeetingRow: View, Equatable {
                 MPStatusPill(kind: .warning, label: "Mic silent")
                     .help("Your microphone recorded almost nothing while the other side was captured. The wrong input device may be selected in System Settings, Sound, Input.")
             }
-            statusPill
+            // UX101 (G038): Kept local sits beside the lifecycle pill rather than in its place.
+            if let keptLocal = MeetingStatusPill.keptLocal(KeptLocalReason.of(meeting)) {
+                pillView(keptLocal)
+            }
+            pillView(MeetingStatusPill.decide(
+                status: effectiveStatus, publishState: meeting.publishState,
+                emptyReason: meeting.emptyReason, failureReason: meeting.failureReason
+            ))
         }
     }
 
-    /// The publish/lifecycle status pill, decided by `MeetingStatusPill.decide`.
     @ViewBuilder
-    private var statusPill: some View {
-        let pill = MeetingStatusPill.decide(
-            status: effectiveStatus, isNDA: isNDA, publishState: meeting.publishState,
-            emptyReason: meeting.emptyReason, failureReason: meeting.failureReason
-        )
+    private func pillView(_ pill: MeetingStatusPill) -> some View {
         if let help = pill.help {
             MPStatusPill(kind: pill.kind, label: pill.label).help(help)
         } else {
@@ -584,9 +586,10 @@ struct MeetingRow: View, Equatable {
         FailureDialog.show(FailurePresentation(diagnostics: message, title: title))
     }
 
-    /// On-disk status alone can't distinguish "wav being written" from "pipeline running"; escalate to `.recording` when `isLiveRecording` is set.
+    /// On-disk status alone can't distinguish "wav being written" from "pipeline running"; the
+    /// same rule the list's corpus went through (UX101), so a row rendered outside the list agrees.
     private var effectiveStatus: Meeting.Status {
-        isLiveRecording ? .recording : meeting.status
+        LiveRecordingOverlay.status(of: meeting, isLive: isLiveRecording)
     }
 
     static func formatDuration(_ s: TimeInterval) -> String {
@@ -603,43 +606,72 @@ struct MeetingRow: View, Equatable {
 
 // MARK: - Row status pill
 
-/// The row's status pill: `(effectiveStatus, isNDA)` plus the few sidecar facts the label and
-/// hover text need, to a pill kind, label and help (PERF26 lifted it out of the view so it is
-/// testable). NDA rows read "Kept local" whatever the status (DSN22 #8): intent, not failure, so
-/// it never scans as a sibling of Failed/Unpublished. Paste pending is terminal, so it takes the
-/// static `.pastePending` kind, never the processing spinner (owner's option (a), 2026-11-12).
+/// Why a row is zero-egress (`Meeting.isZeroEgress`), so the Kept local pill's help names the flag
+/// that set it rather than always saying "NDA workflow" (UX101, G038). Checked in this order when
+/// more than one is set.
+enum KeptLocalReason: Equatable {
+    case ndaWorkflow
+    case regulatedMode
+    /// `<stem>.meta.json` exists but could not be read, so the row is treated as local (SEC25).
+    case unreadableSidecar
+
+    static func of(_ meeting: Meeting) -> KeptLocalReason? {
+        if meeting.workflowNDAMode == true { return .ndaWorkflow }
+        if meeting.regulatedMode == true { return .regulatedMode }
+        if meeting.metaUnreadable { return .unreadableSidecar }
+        return nil
+    }
+
+    var help: String {
+        switch self {
+        case .ndaWorkflow: return "On this Mac by design (NDA workflow)."
+        case .regulatedMode: return "On this Mac by design (regulated mode was on when it was recorded)."
+        case .unreadableSidecar: return "Kept on this Mac because its settings file could not be read, so it is treated as local."
+        }
+    }
+}
+
+/// The row's status pill: `effectiveStatus` plus the few sidecar facts the label and hover text
+/// need, to a pill kind, label and help (PERF26 lifted it out of the view so it is testable).
+/// Kept local is its own pill beside this one (UX101, G038): it used to win the switch, so a
+/// failed, empty or paste-pending zero-egress row read only "Kept local". DSN22 #8's tone stays
+/// (a lock glyph, intent not failure); only the precedence over the lifecycle went. Paste pending
+/// is terminal, so it takes the static `.pastePending` kind, never the processing spinner (owner's
+/// option (a), 2026-11-12).
 struct MeetingStatusPill: Equatable {
     let kind: MPStatusPill.Kind
     let label: String
     let help: String?
 
+    /// The Kept local pill for a zero-egress row, or nil.
+    static func keptLocal(_ reason: KeptLocalReason?) -> MeetingStatusPill? {
+        reason.map { MeetingStatusPill(kind: .nda, label: "Kept local", help: $0.help) }
+    }
+
     static func decide(
         status: Meeting.Status,
-        isNDA: Bool,
         publishState: String?,
         emptyReason: EmptyReason?,
         failureReason: String?
     ) -> MeetingStatusPill {
-        switch (status, isNDA) {
-        case (_, true):
-            return MeetingStatusPill(kind: .nda, label: "Kept local", help: "On this Mac by design (NDA workflow).")
-        case (.recording, _):
+        switch status {
+        case .recording:
             return MeetingStatusPill(kind: .recording, label: "Recording", help: nil)
-        case (.processing, _):
+        case .processing:
             return MeetingStatusPill(kind: .processing, label: "Processing", help: nil)
-        case (.manualPasteReady, _):
+        case .manualPasteReady:
             return MeetingStatusPill(kind: .pastePending, label: "Paste pending", help: nil)
-        case (.failed, _):
+        case .failed:
             // Persisted reason when available, generic fallback for staleness-age-inferred failures.
             let help = (failureReason?.isEmpty == false) ? failureReason : "The pipeline did not finish for this meeting."
             return MeetingStatusPill(kind: .failed, label: "Failed", help: help)
-        case (.done, _):
+        case .done:
             let badge = DonePublishBadge.decide(publishState: publishState)
             return MeetingStatusPill(kind: badge.kind, label: badge.label, help: badge.help)
-        case (.empty, _):
+        case .empty:
             let reason = emptyReason ?? .noSpeech
             return MeetingStatusPill(kind: .neutral, label: reason.pillLabel, help: reason.detail)
-        case (.unknown, _):
+        case .unknown:
             return MeetingStatusPill(kind: .neutral, label: "-", help: nil)
         }
     }

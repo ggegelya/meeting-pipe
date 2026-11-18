@@ -100,13 +100,12 @@ final class IndicatorCadenceTests: XCTestCase {
 
     private func pill(
         _ status: Meeting.Status,
-        nda: Bool = false,
         publishState: String? = nil,
         emptyReason: EmptyReason? = nil,
         failureReason: String? = nil
     ) -> MeetingStatusPill {
         MeetingStatusPill.decide(
-            status: status, isNDA: nda, publishState: publishState,
+            status: status, publishState: publishState,
             emptyReason: emptyReason, failureReason: failureReason
         )
     }
@@ -134,13 +133,14 @@ final class IndicatorCadenceTests: XCTestCase {
         XCTAssertEqual(pill(.recording), MeetingStatusPill(kind: .recording, label: "Recording", help: nil))
     }
 
-    func test_nda_still_reads_kept_local_whatever_the_status() {
-        for status: Meeting.Status in [.done, .processing, .recording, .manualPasteReady, .failed, .empty, .unknown] {
-            let p = pill(status, nda: true)
-            XCTAssertEqual(p.kind, .nda, "\(status)")
-            XCTAssertEqual(p.label, "Kept local", "\(status)")
-            XCTAssertEqual(p.help, "On this Mac by design (NDA workflow).")
-        }
+    /// UX101 (G038) replaced "Kept local whatever the status": the lifecycle pill no longer
+    /// depends on zero-egress at all, and Kept local is a second pill (`KeptLocalPillUX101Tests`).
+    func test_kept_local_keeps_the_nda_tone() {
+        let p = MeetingStatusPill.keptLocal(.ndaWorkflow)
+        XCTAssertEqual(p?.kind, .nda)
+        XCTAssertEqual(p?.label, "Kept local")
+        XCTAssertEqual(p?.help, "On this Mac by design (NDA workflow).")
+        XCTAssertNil(MeetingStatusPill.keptLocal(nil))
     }
 
     func test_the_other_statuses_map_as_they_did_before_the_lift() {

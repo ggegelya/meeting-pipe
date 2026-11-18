@@ -113,6 +113,7 @@ struct LibraryListView: View {
         // PERF9: the pinned "In progress" block is part of the derived sections, so what pins a
         // meeting (the live recording, the active job, the queue) re-derives them.
         .onChange(of: pinnedInputs) { _, _ in recomputeDerived() }
+        .onChange(of: libraryModel.liveRecordingStem) { _, _ in recomputeDerived() }
         // A selection changed from outside (Quick Find, a recent-meeting click, the rail).
         .onChange(of: selection) { _, new in nav.adopt(new) }
         .onChange(of: scope) { _, _ in recomputeDerived() }
@@ -214,14 +215,18 @@ struct LibraryListView: View {
             searchGeneration: settled.generation,
             savedSearch: savedSearch,
             day: Calendar.current.startOfDay(for: Date()),
-            pinned: pinnedInputs
+            pinned: pinnedInputs,
+            live: libraryModel.liveRecordingStem
         )
         if key == lastDerivedKey { return }
         lastDerivedKey = key
 
+        // UX101: the live stem reads `.recording` to the scope, the chips, a saved folder and the
+        // row (its Reprocess gate included), not only to the row's pill.
+        let corpus = LiveRecordingOverlay.apply(store.meetings, live: libraryModel.liveRecordingStem)
         let scoped: [Meeting]
         if case .allMeetings = scope {
-            scoped = store.meetings
+            scoped = corpus
         } else if case .saved = scope {
             // UX24: a saved folder is a base scope plus its own filter, so it resolves
             // through `SavedSearch.apply` (which needs the FTS index) rather than the
@@ -231,7 +236,7 @@ struct LibraryListView: View {
             // snaps the rail back to All meetings.
             scoped = savedSearch.map {
                 $0.apply(
-                    to: store.meetings,
+                    to: corpus,
                     workflows: workflows,
                     // A folder selected a moment ago has no settled answer yet: nil, so the
                     // in-memory corpus answers until its lookup lands.
@@ -240,7 +245,7 @@ struct LibraryListView: View {
             } ?? []
         } else {
             let context = LibraryScope.Context(workflows: workflows)
-            scoped = store.meetings.filter { scope.includes($0, in: context) }
+            scoped = corpus.filter { scope.includes($0, in: context) }
         }
         // UX16: the free-text field runs through the FTS index (transcript + summary depth); the
         // chips stay in-memory equality filters inside `apply`. nil = no index / empty or
@@ -333,6 +338,8 @@ struct LibraryListView: View {
         let day: Date
         /// PERF9: what is pinned under "In progress" when the sections were built.
         let pinned: PinnedInputs
+        /// UX101: the live stem the overlay marked, in every scope (pinning is All meetings only).
+        let live: String?
         static let empty = DerivedKey(
             storeRevision: -1,
             scope: .allMeetings,
@@ -341,7 +348,8 @@ struct LibraryListView: View {
             searchGeneration: -1,
             savedSearch: nil,
             day: .distantPast,
-            pinned: PinnedInputs(live: nil, active: nil, queued: [])
+            pinned: PinnedInputs(live: nil, active: nil, queued: []),
+            live: nil
         )
     }
 

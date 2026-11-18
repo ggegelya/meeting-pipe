@@ -57,7 +57,9 @@ struct Meeting: Identifiable, Hashable {
     var fallbackFrom: String? = nil
     var fallbackCause: String? = nil
 
-    let status: Status
+    /// A `var` only so `LiveRecordingOverlay` can mark the live stem `.recording` on a copy (UX101);
+    /// the scan never assigns `.recording` itself.
+    var status: Status
 
     /// From `<stem>.error.json`, or a failed destination in a partial publish. Nil for staleness-age-inferred failures.
     let failureReason: String?
@@ -338,6 +340,11 @@ final class MeetingStore: ObservableObject {
 
     /// The clock the age-inferred status reads. Tests move it; set it before scanning.
     var now: () -> Date = { Date() }
+    /// UX101: the stems the recorder owns (`MeetingRecorder.ownedStems`, REC23), read on main as each
+    /// scan starts. An owned stem is never aged into `.failed` and never cached, so a recording past
+    /// `staleProcessingThresholdSec` stays live and the first scan after its release re-decides it.
+    /// The Coordinator wires it; a headless store owns nothing.
+    var ownedStems: () -> Set<String> = { [] }
     /// How many times a scan opened a transcript to measure a duration. `scanQueue` only (or the
     /// test thread driving `performScan` directly).
     private(set) var transcriptDurationReads = 0
@@ -441,9 +448,10 @@ final class MeetingStore: ObservableObject {
         scanRunning = true
         let dir = recordingsDir
         let generation = rootGeneration
+        let owned = ownedStems()
         scanQueue.async { [weak self] in
             guard let self = self else { return }
-            let result = self.performScan(directory: dir)
+            let result = self.performScan(directory: dir, ownedStems: owned)
             let snapshot = ScanSnapshot(
                 listedDirectory: self.scanListingSucceeded,
                 rootState: self.scanRootState,
@@ -557,7 +565,7 @@ final class MeetingStore: ObservableObject {
     // MARK: Scan
 
     /// Enumerate the recordings dir and materialize `Meeting` rows, reusing cached rows whose on-disk signature is unchanged since the last scan. Instance method (not static) because it reads and updates `scanCache`. Runs on `scanQueue`; also the entry point unit tests drive directly.
-    func performScan(directory: URL) -> [Meeting] {
+    func performScan(directory: URL, ownedStems: Set<String> = []) -> [Meeting] {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
         let entries: [URL]
@@ -599,15 +607,17 @@ final class MeetingStore: ObservableObject {
         for (stem, files) in byStem {
             let signature = MeetingStore.signature(of: files)
             signatures[stem] = signature
+            // UX101: ownership is not in the signature, so an owned stem is always rebuilt.
+            let owned = ownedStems.contains(stem)
             // The cache holds only rows that no wall clock can move, so a signature match is always safe to reuse and skips the per-sidecar JSON parse (the audit's perf finding).
-            if let cached = scanCache[stem], cached.signature == signature {
+            if !owned, let cached = scanCache[stem], cached.signature == signature {
                 out.append(cached.meeting)
                 nextCache[stem] = cached
                 continue
             }
             rowBuilds += 1
             guard let built = MeetingStore.buildMeeting(
-                stem: stem, files: files, directory: directory, now: now,
+                stem: stem, files: files, directory: directory, now: now, owned: owned,
                 duration: { audio, transcript, startedAt in
                     self.duration(stem: stem, audio: audio, transcriptJSON: transcript, startedAt: startedAt)
                 }
@@ -615,7 +625,7 @@ final class MeetingStore: ObservableObject {
                 continue
             }
             out.append(built.meeting)
-            if built.cacheable {
+            if built.cacheable && !owned {
                 nextCache[stem] = CacheEntry(signature: signature, meeting: built.meeting)
             }
         }
@@ -937,6 +947,7 @@ final class MeetingStore: ObservableObject {
         files: [URL],
         directory: URL,
         now: Date,
+        owned: Bool = false,
         duration: (_ audio: URL?, _ transcriptJSON: URL?, _ startedAt: Date) -> TimeInterval?
     ) -> (meeting: Meeting, cacheable: Bool)? {
         // The merged recording is `<stem>.wav` (or `<stem>.flac` once STOR1's
@@ -1043,9 +1054,15 @@ final class MeetingStore: ObservableObject {
             status = .empty
             cacheable = true
         } else {
-            // No summary, no failure sidecar: in-flight, never started, or stalled. Use age as a proxy; anything older than the staleness window is `.failed`. The live-recording overlay supersedes this via `LibraryWindowModel.liveRecordingStem`.
+            // No summary, no failure sidecar: in-flight, never started, or stalled. Use age as a proxy; anything older than the staleness window is `.failed`. The Library's `LiveRecordingOverlay` then shows the live stem as `.recording` to every reader.
             let age = now.timeIntervalSince(startedAt)
-            if age > Meeting.staleProcessingThresholdSec {
+            if owned {
+                // UX101: the recorder still owns this stem, so its age says nothing about a stall:
+                // two hours into a long meeting it was reading as failed. Not cacheable, so the
+                // first scan after the release decides it on age like any other.
+                status = .processing
+                cacheable = false
+            } else if age > Meeting.staleProcessingThresholdSec {
                 status = .failed
                 // PERF22: past the window, age can no longer move the status, so only a file
                 // change (which changes the signature) can, and the row is cacheable. Not when its
