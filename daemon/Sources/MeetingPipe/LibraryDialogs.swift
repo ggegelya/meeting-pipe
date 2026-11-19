@@ -47,6 +47,41 @@ enum LibraryDialogs {
         }
     }
 
+    /// The single-meeting re-summarize gate (UX108), shared by the detail header's Reprocess and
+    /// Re-summarize with, the row's Regenerate summary and the failure banner's local re-summarize.
+    /// Returns true when the action may run: at once when nothing on disk would be overwritten
+    /// (`SingleMeetingResummarize.needsConfirmation`), otherwise only on Re-summarize.
+    ///
+    /// An `NSAlert` rather than UX61's SwiftUI `.alert`, for the reason `confirmWorkflowDelete`
+    /// gives below: a row and a menu item have no alert state of their own, and the detail header's
+    /// neighbouring confirmations (Re-transcribe, the NDA crossing) are already `NSAlert`s, so a
+    /// SwiftUI alert there would be the second idiom in one file that UX61 avoided in the batch
+    /// pane. The strings are `BatchActionConfirmation`'s, unmodified. The backend is resolved at
+    /// the click through `PipelineLauncher.expectedBackend`, the same resolution the run makes, so
+    /// a cloud-pinned workflow's Re-summarize with the local engine is not called paid.
+    @MainActor
+    static func confirmResummarize(_ action: SingleMeetingResummarize.Action, meeting: Meeting) -> Bool {
+        guard SingleMeetingResummarize.needsConfirmation(action, hasSummaryJSON: meeting.hasSummaryJSON) else {
+            return true
+        }
+        let resolved = PipelineLauncher.expectedBackend(
+            for: meeting.recordingsDir.appendingPathComponent("\(meeting.stem).wav"),
+            backendOverride: action.backendOverride
+        ).backend
+        let copy = SingleMeetingResummarize.confirmation(
+            for: action,
+            reachesCloud: SingleMeetingResummarize.reachesCloud(isZeroEgress: meeting.isZeroEgress, resolvedBackend: resolved)
+        )
+        let alert = NSAlert()
+        alert.messageText = copy.title
+        alert.informativeText = copy.message
+        alert.addButton(withTitle: copy.confirmButton)
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        alert.alertStyle = .warning
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     /// Confirm deleting one workflow from a rail row (UX32). Returns true when the user
     /// chose Delete.
     ///

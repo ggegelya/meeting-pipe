@@ -233,6 +233,10 @@ struct MeetingDetailView: View {
                 Text(label).font(.mpTextXS).lineLimit(1)
             } else if meeting.failureSuggestsLocalReSummarize {
                 Button("Re-summarize with \(SummarizationEngine.local.qualified)") {
+                    // UX108: a failed meeting can still hold an earlier summary with hand edits.
+                    guard LibraryDialogs.confirmResummarize(
+                        .reSummarizeWith(backend: SummarizationEngine.local.id), meeting: meeting
+                    ) else { return }
                     Task { _ = await libraryModel.regenerateMeeting(stem: meeting.stem, backend: SummarizationEngine.local.id) }
                 }
             }

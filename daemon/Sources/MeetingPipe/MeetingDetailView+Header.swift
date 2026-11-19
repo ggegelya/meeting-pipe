@@ -405,9 +405,7 @@ extension MeetingDetailView {
             // Reprocess sits between Edit summary and Corrections (DSN22 #5) so the
             // re-run is findable, not buried under the publish verbs. It re-runs the
             // whole pipeline; Republish (below) only re-pushes the existing summary.
-            Button("Reprocess\u{2026}") {
-                toolbarAction("reprocess") { _ = libraryModel.retryMeeting(stem: meeting.stem) }
-            }
+            Button("Reprocess\u{2026}") { runReprocess() }
             // PIPE6: re-summarize the existing transcript on a one-shot backend
             // without rewriting the workflow (that stays WF8's Reprocess). Regulated
             // / NDA still force local. Reuses regenerate (summarize + republish).
@@ -742,9 +740,27 @@ extension MeetingDetailView {
 
     /// PIPE6: re-summarize the existing transcript on a one-shot backend (summarize
     /// + republish via `regenerateMeeting`), from the "Re-summarize with..." menu.
+    ///
+    /// UX108: asks first when a summary is on disk, and the `toolbar_action` row is written only
+    /// once the run actually goes, so the audit trail counts runs rather than clicks.
     func runReSummarize(backend: String) {
+        guard LibraryDialogs.confirmResummarize(.reSummarizeWith(backend: backend), meeting: meeting) else { return }
         toolbarAction("re_summarize_\(backend)") {
             Task { _ = await libraryModel.regenerateMeeting(stem: meeting.stem, backend: backend) }
+        }
+    }
+
+    /// The More actions menu's Reprocess, through `retryMeeting` (UX108). Asks first unless the
+    /// run would overwrite nothing (no summary on disk, or a publish-stage failure that only
+    /// republishes), and shows a refusal (no audio, held back, sidecar unwritable) instead of
+    /// dropping it, which used to leave the click doing nothing visible.
+    func runReprocess() {
+        let action = SingleMeetingResummarize.reprocessAction(stem: meeting.stem, in: meeting.recordingsDir)
+        guard LibraryDialogs.confirmResummarize(action, meeting: meeting) else { return }
+        toolbarAction("reprocess") {
+            if let refusal = SingleMeetingResummarize.reprocessRefusal(libraryModel.retryMeeting(stem: meeting.stem)) {
+                FailureDialog.show(refusal)
+            }
         }
     }
 

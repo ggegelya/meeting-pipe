@@ -88,4 +88,35 @@ struct BatchActionConfirmation: Equatable {
             confirmButton: "Re-summarize"
         )
     }
+
+    /// One meeting (UX108), from the detail header's Reprocess and Re-summarize with, the row's
+    /// Regenerate summary and the failure banner's local re-summarize.
+    /// `SingleMeetingResummarize` decides whether it is raised at all.
+    ///
+    /// - Parameters:
+    ///   - reachesCloud: the engine this run resolves to is a cloud one and the meeting is not zero
+    ///     egress. Taken from the chosen engine rather than from `isZeroEgress` alone, so
+    ///     Re-summarize with the local engine is never told it is a paid call.
+    ///   - retranscribes: a Reprocess that runs from the recording (no reusable transcript, or
+    ///     transcription itself failed), where saying the transcript is untouched would be untrue.
+    static func resummarizeOne(reachesCloud: Bool, retranscribes: Bool = false) -> BatchActionConfirmation {
+        var message: String
+        if retranscribes {
+            message = "The meeting is processed again from its recording, so its transcript and summary are both replaced, "
+                + "and any edits you made to this summary, and any actions you ticked done, are lost. "
+                + "The recording is not touched.\n\n"
+        } else {
+            message = "The summary is generated again from the transcript already on disk and replaces the one there now, "
+                + "so any edits you made to this summary, and any actions you ticked done, are lost. "
+                + "The recording and transcript are not touched.\n\n"
+        }
+        message += reachesCloud
+            ? "This is a paid engine call, and the meeting is published again afterwards, rewriting the page it already has."
+            : "It summarizes on this Mac, so there is nothing to pay. The meeting is published again afterwards."
+        return BatchActionConfirmation(
+            title: "Re-summarize this meeting?",
+            message: message,
+            confirmButton: "Re-summarize"
+        )
+    }
 }

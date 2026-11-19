@@ -490,6 +490,8 @@ struct MeetingRow: View, Equatable {
         .disabled(!summaryExists || processing.isBusy)
 
         Button("Regenerate summary") {
+            // UX108: asks first when a summary (with any hand edits and done ticks) is on disk.
+            guard LibraryDialogs.confirmResummarize(.regenerate, meeting: meeting) else { return }
             Task { await onRegenerate() }
         }
         .disabled(!transcriptExists || processing.isBusy)

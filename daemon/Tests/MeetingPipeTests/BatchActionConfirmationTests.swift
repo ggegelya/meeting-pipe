@@ -101,6 +101,125 @@ final class BatchActionConfirmationTests: XCTestCase {
         )
     }
 
+    // MARK: - Re-summarize one meeting (UX108)
+
+    func testResummarizeOneIsSingular() {
+        let c = BatchActionConfirmation.resummarizeOne(reachesCloud: true)
+        XCTAssertEqual(c.title, "Re-summarize this meeting?")
+        XCTAssertFalse(c.message.contains("these summaries"), c.message)
+        XCTAssertEqual(c.confirmButton, "Re-summarize")
+    }
+
+    func testResummarizeOneNamesTheLostEditsAndSparesTheRecording() {
+        let m = BatchActionConfirmation.resummarizeOne(reachesCloud: false).message
+        XCTAssertTrue(m.contains("edits you made to this summary"), m)
+        XCTAssertTrue(m.contains("ticked done"), m)
+        XCTAssertTrue(m.contains("recording and transcript are not touched"), m)
+    }
+
+    func testResummarizeOneThatRetranscribesDoesNotPromiseTheTranscript() {
+        let m = BatchActionConfirmation.resummarizeOne(reachesCloud: false, retranscribes: true).message
+        XCTAssertFalse(m.contains("transcript are not touched"), m)
+        XCTAssertTrue(m.contains("transcript and summary are both replaced"), m)
+        XCTAssertTrue(m.contains("ticked done"), m)
+    }
+
+    /// The paid clause follows the engine this run resolves to, not the meeting's posture alone:
+    /// the three cases the spec names.
+    func testResummarizeOnePaidClauseFollowsTheChosenEngine() {
+        func message(zeroEgress: Bool, backend: String) -> String {
+            SingleMeetingResummarize.confirmation(
+                for: .reSummarizeWith(backend: backend),
+                reachesCloud: SingleMeetingResummarize.reachesCloud(isZeroEgress: zeroEgress, resolvedBackend: backend)
+            ).message
+        }
+        let cloud = message(zeroEgress: false, backend: SummarizationEngine.anthropic.id)
+        XCTAssertTrue(cloud.contains("paid engine call"), cloud)
+
+        let zeroEgress = message(zeroEgress: true, backend: SummarizationEngine.anthropic.id)
+        XCTAssertFalse(zeroEgress.contains("paid"), zeroEgress)
+        XCTAssertTrue(zeroEgress.contains("nothing to pay"), zeroEgress)
+
+        let localOnCloudMeeting = message(zeroEgress: false, backend: SummarizationEngine.local.id)
+        XCTAssertFalse(localOnCloudMeeting.contains("paid"), localOnCloudMeeting)
+    }
+
+    func testReachesCloudTreatsBothOnDeviceEnginesAsLocalAndAutoAsCloud() {
+        XCTAssertFalse(SingleMeetingResummarize.reachesCloud(isZeroEgress: false, resolvedBackend: "apple_intelligence"))
+        XCTAssertFalse(SingleMeetingResummarize.reachesCloud(isZeroEgress: false, resolvedBackend: "local"))
+        XCTAssertTrue(SingleMeetingResummarize.reachesCloud(isZeroEgress: false, resolvedBackend: "auto"))
+        XCTAssertTrue(SingleMeetingResummarize.reachesCloud(isZeroEgress: false, resolvedBackend: "claude_cli"))
+    }
+
+    // MARK: - Single-meeting gate (UX108)
+
+    func testNoDialogWithoutASummaryOnDisk() {
+        let actions: [SingleMeetingResummarize.Action] = [
+            .regenerate,
+            .reSummarizeWith(backend: "local"),
+            .reprocess(failureStage: nil, reusableTranscript: true),
+            .reprocess(failureStage: .transcribe, reusableTranscript: false),
+        ]
+        for a in actions {
+            XCTAssertFalse(SingleMeetingResummarize.needsConfirmation(a, hasSummaryJSON: false), "\(a)")
+        }
+    }
+
+    func testEveryRegeneratingActionAsksWhenASummaryExists() {
+        // Regenerate summary, each Re-summarize with row, and the failure banner's local re-summarize
+        // (which is `.reSummarizeWith(local)`).
+        let actions: [SingleMeetingResummarize.Action] = [
+            .regenerate,
+            .reSummarizeWith(backend: SummarizationEngine.local.id),
+            .reSummarizeWith(backend: SummarizationEngine.anthropic.id),
+        ]
+        for a in actions {
+            XCTAssertTrue(SingleMeetingResummarize.needsConfirmation(a, hasSummaryJSON: true), "\(a)")
+        }
+    }
+
+    func testReprocessOnAPublishFailureOnlyRepublishesSoDoesNotAsk() {
+        XCTAssertFalse(SingleMeetingResummarize.needsConfirmation(
+            .reprocess(failureStage: .publish, reusableTranscript: true), hasSummaryJSON: true))
+    }
+
+    func testReprocessOnAHealthyMeetingAsks() {
+        XCTAssertTrue(SingleMeetingResummarize.needsConfirmation(
+            .reprocess(failureStage: nil, reusableTranscript: true), hasSummaryJSON: true))
+        // Other failure stages regenerate or run in full, both overwriting the summary.
+        XCTAssertTrue(SingleMeetingResummarize.needsConfirmation(
+            .reprocess(failureStage: .pipeline, reusableTranscript: true), hasSummaryJSON: true))
+    }
+
+    func testReprocessRetranscribesOnlyOnRetryMeetingsFullRunPath() {
+        XCTAssertFalse(SingleMeetingResummarize.retranscribes(.reprocess(failureStage: nil, reusableTranscript: true)))
+        XCTAssertTrue(SingleMeetingResummarize.retranscribes(.reprocess(failureStage: nil, reusableTranscript: false)))
+        XCTAssertTrue(SingleMeetingResummarize.retranscribes(.reprocess(failureStage: .transcribe, reusableTranscript: true)))
+        XCTAssertFalse(SingleMeetingResummarize.retranscribes(.regenerate))
+    }
+
+    /// The header Reprocess used to drop `retryMeeting`'s refusal with `_ =`.
+    func testHeaderReprocessSurfacesNoAudio() {
+        XCTAssertNil(SingleMeetingResummarize.reprocessRefusal(.success(())))
+        let refusal = SingleMeetingResummarize.reprocessRefusal(
+            .failure(MeetingLibraryService.LibraryError.noAudio(stem: "2026-01-01_10-00-00")))
+        XCTAssertEqual(refusal?.title, "Couldn't reprocess this meeting")
+        XCTAssertEqual(refusal?.diagnostics,
+                       PipelineLauncher.diagnostics(for: MeetingLibraryService.LibraryError.noAudio(stem: "2026-01-01_10-00-00")))
+    }
+
+    func testReprocessActionReadsRetryMeetingsInputsOffDisk() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ux108-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stem = "2026-01-01_10-00-00"
+        XCTAssertEqual(SingleMeetingResummarize.reprocessAction(stem: stem, in: dir),
+                       .reprocess(failureStage: nil, reusableTranscript: false))
+        PipelineFailureSidecar.write(stem: stem, in: dir, stage: .publish, reason: "sinks failed")
+        XCTAssertEqual(SingleMeetingResummarize.reprocessAction(stem: stem, in: dir),
+                       .reprocess(failureStage: .publish, reusableTranscript: false))
+    }
+
     // MARK: - House rules
 
     func testNoEmDashesInAnyConfirmationCopy() {
@@ -110,6 +229,8 @@ final class BatchActionConfirmationTests: XCTestCase {
             BatchActionConfirmation.resummarize(count: 4, cloudCount: 4),
             BatchActionConfirmation.resummarize(count: 4, cloudCount: 0),
             BatchActionConfirmation.resummarize(count: 4, cloudCount: 2),
+            BatchActionConfirmation.resummarizeOne(reachesCloud: true),
+            BatchActionConfirmation.resummarizeOne(reachesCloud: false, retranscribes: true),
         ]
         for c in all {
             for s in [c.title, c.message, c.confirmButton] {
