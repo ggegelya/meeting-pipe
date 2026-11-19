@@ -61,6 +61,11 @@ struct Meeting: Identifiable, Hashable {
     var fallbackLanguage: String? = nil
     /// PIPE27: `<stem>.run.json`'s `usage`, the tokens the run's metered calls spent.
     var tokenUsage: TokenUsage? = nil
+    /// OBS8: `<stem>.run.json`'s citation and speaker-cleanup counts, for `RunQualityNote`.
+    var evidenceKept: Int? = nil
+    var evidenceDropped: Int? = nil
+    var cleanupSegmentsChanged: Int? = nil
+    var cleanupSegments: Int? = nil
 
     /// A `var` only so `LiveRecordingOverlay` can mark the live stem `.recording` on a copy (UX101);
     /// the scan never assigns `.recording` itself.
@@ -1135,6 +1140,10 @@ final class MeetingStore: ObservableObject {
             fallbackCause: (run?["fallback_cause"] as? String),
             fallbackLanguage: (run?["fallback_language"] as? String),
             tokenUsage: TokenUsage(json: run?["usage"]),
+            evidenceKept: (run?["evidence_kept"] as? NSNumber)?.intValue,
+            evidenceDropped: (run?["evidence_dropped"] as? NSNumber)?.intValue,
+            cleanupSegmentsChanged: (run?["cleanup_segments_changed"] as? NSNumber)?.intValue,
+            cleanupSegments: (run?["cleanup_segments"] as? NSNumber)?.intValue,
             status: status,
             failureReason: failure?.reason ?? (publishResult?.state == "partial" ? publishResult?.sinks.filter { !$0.ok }.compactMap(\.error).joined(separator: "\n\n") : nil),
             failureStage: failure?.stage.rawValue ?? (publishResult?.state == "partial" ? "publish" : nil),

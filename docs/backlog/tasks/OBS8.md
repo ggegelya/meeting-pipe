@@ -2,9 +2,9 @@
 id: OBS8
 title: A quarter of model-proposed citations are dropped by verification with no reason logged, and a quarter of action items end up with no anchor
 category: Observability
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). evidence_verified carries only kept and dropped counts, so 661 of 2,676 anchors dropped (24.7 percent, 110 stems, worst kept 1 of 21 in 20261021-120034, 176 of 761 actions left unanchored) cannot be split into model error and rule strictness, and the speaker cleanup's 18.1 percent relabel rate has no per-meeting surface either. Scope: a drop reason per anchor counted on evidence_verified, resolve idempotent on its own snapped time, the drop and relabel shares persisted per meeting and flagged in the Library above one half.
+comment: Shipped 2026-11-19 (batch 10): `evidence.resolve` returns a `Resolution` with a drop reason, `evidence_verified` counts `dropped_<reason>` and `dropped_quote_elsewhere` (no quote text), resolve is idempotent on its own snapped time (the spanning fallback snaps to where the quote begins), run.json carries `evidence_kept`/`evidence_dropped` and `cleanup_segments_changed`/`cleanup_segments` (pinned by the new run-sidecar-golden.json), and the detail header notes over half dropped or over a quarter relabelled. Still owed: walkthrough steps 1 and 2 (a week of drop reasons tabulated by a session) and step 3 (the owner grades relabels on three meetings, about 20 minutes). [Spec](./OBS8.md)
 ---
 
 # OBS8: A quarter of model-proposed citations are dropped by verification with no reason logged, and a quarter of action items end up with no anchor

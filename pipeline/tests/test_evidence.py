@@ -434,3 +434,64 @@ def test_evidence_survives_json_recovery():
     s = parse_summary(noisy, error=ValueError, message="unparseable")
     assert s.evidence["summary"][0][0].t == 12.0
     assert s.actions[0].evidence[0].quote == "send the revised SOP to QA"
+
+
+# --------------------------------------------------------------------------
+# OBS8: why an anchor was dropped, and resolve idempotent on its own answer
+# --------------------------------------------------------------------------
+
+
+def _one_anchor(quote: str, t: float) -> MeetingSummary:
+    return MeetingSummary.model_validate({
+        "title": "t", "attendees": [], "detected_language": "en",
+        "summary": [{"text": "b", "evidence": [{"quote": quote, "t": t}]}],
+    })
+
+
+@pytest.mark.parametrize("quote,t,reason", [
+    ("  ...  ", 12.0, "quote_empty"),
+    (" ".join(["word"] * 26), 12.0, "quote_too_long"),
+    ("We will ship the export on Friday", 400.0, "no_segment_in_window"),
+    ("we agreed to cancel the project", 12.0, "quote_not_found"),
+])
+def test_each_drop_carries_its_reason(quote: str, t: float, reason: str):
+    result = ev.verify(_one_anchor(quote, t), SEGMENTS)
+    assert result.dropped == 1
+    assert result.dropped_by_reason == {reason: 1}
+    assert sum(result.dropped_by_reason.values()) == result.dropped
+    assert ev.resolve(Evidence(quote=quote, t=t), ev._prepare(SEGMENTS)).reason == reason
+
+
+def test_a_quote_outside_its_window_but_in_the_transcript_counts_as_elsewhere():
+    # "Is the QMS export green yet" is real, at 12:34; cited at 0:20 it is three
+    # minutes off the window, the shape of a misread timestamp.
+    result = ev.verify(_one_anchor("Is the QMS export green yet", 20.0), SEGMENTS)
+    assert result.dropped_by_reason == {"quote_not_found": 1}
+    assert result.dropped_quote_elsewhere == 1
+    invented = ev.verify(_one_anchor("we agreed to cancel the project", 20.0), SEGMENTS)
+    assert invented.dropped_quote_elsewhere == 0
+
+
+SPANNING = [
+    {"start": 0.0, "end": 10.0, "speaker": "A", "text": "alpha beta gamma"},
+    {"start": 10.0, "end": 20.0, "speaker": "B", "text": "delta epsilon"},
+]
+# The first turn runs 60 s, so re-centring on its start leaves the second out of window.
+LONG_FIRST_TURN = [
+    {"start": 0.0, "end": 60.0, "speaker": "A", "text": "alpha beta gamma"},
+    {"start": 60.0, "end": 70.0, "speaker": "B", "text": "delta epsilon"},
+]
+
+
+@pytest.mark.parametrize("segments,quote,t,snapped", [
+    (SEGMENTS, "ship the export", 35.0, 12.0),
+    # Spans the turn boundary; it begins in the first segment. HEAD snapped it to
+    # the second (nearest to t=18), and re-resolving from there gave 0.
+    (SPANNING, "gamma delta", 18.0, 0.0),
+    (LONG_FIRST_TURN, "gamma delta", 65.0, 0.0),
+])
+def test_resolve_is_idempotent_on_its_own_snapped_time(segments, quote, t, snapped):
+    prepared = ev._prepare(segments)
+    first = ev.resolve(Evidence(quote=quote, t=t), prepared)
+    assert first.t == snapped
+    assert ev.resolve(Evidence(quote=quote, t=first.t), prepared).t == first.t

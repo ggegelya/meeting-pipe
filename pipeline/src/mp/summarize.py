@@ -107,6 +107,10 @@ class SummaryOutput(TypedDict):
     fallback_language: NotRequired[str]
     # PIPE27: tokens every metered call in this process spent, absent when none ran.
     usage: NotRequired[dict[str, int]]
+    # OBS8: anchors the model proposed that survived verification, and that did not;
+    # absent when it proposed none.
+    evidence_kept: NotRequired[int]
+    evidence_dropped: NotRequired[int]
 
 # Retry only on transient failures. BadRequestError / AuthenticationError /
 # PermissionDeniedError / NotFoundError are caller bugs, so failing fast is right.
@@ -669,7 +673,7 @@ def summarize(
         # summary actually won the language repair. Every backend goes through
         # here, including the ones that emit no evidence at all, so "a stored
         # anchor resolves to a real segment" holds without exception.
-        summary = _verify_evidence(summary, segments, transcript_md)
+        summary, verified = _verify_evidence(summary, segments, transcript_md)
     finally:
         # The plain `local` backend owns an mlx_lm.server subprocess;
         # close it so it does not outlive this CLI process, matching the
@@ -736,21 +740,31 @@ def summarize(
     spent = usage.snapshot()
     if spent:
         result["usage"] = spent
+    if verified.kept or verified.dropped:
+        result["evidence_kept"] = verified.kept
+        result["evidence_dropped"] = verified.dropped
     return result
 
 
 def _verify_evidence(
     summary: MeetingSummary, segments: list[dict], transcript_md: Path
-) -> MeetingSummary:
+) -> tuple[MeetingSummary, evidence.VerifyResult]:
     """FEAT10: drop every anchor that does not resolve against the transcript.
 
     Thin wrapper over `evidence.verify` so `summarize` keeps one line and the
     event emission lives next to the decision it reports. Emitted only when the
     summary carried anchors at all, so the ~half of backends that emit none (the
     local map-reduce path, Apple Intelligence) do not fill the log with zeroes.
+
+    OBS8: the row also counts each drop by reason (`dropped_<reason>`, a zero
+    reason omitted) and `dropped_quote_elsewhere`, the `quote_not_found` quotes that
+    are in the transcript outside their window. Counts only, never quote text.
     """
     result = evidence.verify(summary, segments)
     if result.kept or result.dropped:
+        reasons = {f"dropped_{r}": n for r, n in result.dropped_by_reason.items() if n}
+        if result.dropped_quote_elsewhere:
+            reasons["dropped_quote_elsewhere"] = result.dropped_quote_elsewhere
         events.emit(
             "pipeline",
             "evidence_verified",
@@ -758,12 +772,13 @@ def _verify_evidence(
             kept=result.kept,
             dropped=result.dropped,
             segments=len(segments),
+            **reasons,
         )
         log.info(
             "FEAT10: kept %d evidence anchor(s), dropped %d that did not resolve",
             result.kept, result.dropped,
         )
-    return result.summary
+    return result.summary, result
 
 
 def _verify_and_repair_language(
@@ -1058,6 +1073,9 @@ def rewrite_run_sidecar(transcript_md: Path, out: SummaryOutput) -> None:
         sidecar_path = transcript_md.parent / f"{transcript_md.stem}.run.json"
         prior = corrections.read_run_sidecar(sidecar_path) or {}
         publish_state = prior.get("publish_state") if isinstance(prior, dict) else None
+        # OBS8: a standalone re-summarize does not re-run speaker cleanup, so the cleanup
+        # the transcript still carries is the earlier run's; carry its counts across.
+        cleanup = corrections.cleanup_counts(prior) if isinstance(prior, dict) else None
         written = corrections.write_run_sidecar(
             recordings_dir=transcript_md.parent,
             stem=transcript_md.stem,
@@ -1071,6 +1089,9 @@ def rewrite_run_sidecar(transcript_md: Path, out: SummaryOutput) -> None:
             fallback_cause=out.get("fallback_cause"),
             fallback_language=out.get("fallback_language"),
             usage=out.get("usage"),
+            evidence_kept=out.get("evidence_kept"),
+            evidence_dropped=out.get("evidence_dropped"),
+            cleanup=cleanup,
         )
         if isinstance(publish_state, str):
             corrections.set_publish_state(written, publish_state)

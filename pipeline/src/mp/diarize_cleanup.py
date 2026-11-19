@@ -357,6 +357,8 @@ def cleanup_transcript(
         "refusals_count": len(refused),
         "latency_ms": latency_ms,
         "parse_failed_windows": parse_failed,
+        # OBS8: the denominator for the run sidecar's relabel share.
+        "segments": len(segments),
     }
 
 

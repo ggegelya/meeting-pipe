@@ -36,6 +36,7 @@ from .config import (
     with_backend_override,
     zero_egress,
 )
+from .corrections import cleanup_counts as corrections_cleanup_counts
 from .corrections import set_publish_state, write_empty_marker, write_run_sidecar
 from .diarize import (
     MicTier,
@@ -604,6 +605,8 @@ def _run_all_inner(
     # when summarize closed its own; a cleanup failure, an Apple hand-off, or a
     # summarize that raises all still close it.
     shared = _shared_local_client(cfg)
+    # OBS8: (segments changed, segments) when this run's cleanup pass ran, for run.json.
+    cleanup_counts: tuple[int, int] | None = None
     try:
         # Diarization cleanup (TECH-DIAR1): opt-in LLM pass that tidies the
         # speaker labels before summarizing. Placed after every cost-guard skip
@@ -625,6 +628,13 @@ def _run_all_inner(
                 events.emit("pipeline", "stage_completed", stage="diarize_cleanup",
                             merges=cr["merges_count"],
                             reattributions=cr["reattributions_count"])
+                if "segments" in cr:
+                    # Each applied edit is one segment, so the two counts are its changes.
+                    cleanup_counts = (cr["merges_count"] + cr["reattributions_count"], cr["segments"])
+                elif cr.get("skipped"):
+                    # Already cleaned by an earlier run: that run's counts still describe it.
+                    prior = storage.read_json_object(t["md"].with_name(f"{t['md'].stem}.run.json"))
+                    cleanup_counts = corrections_cleanup_counts(prior) if prior else None
                 md_text = t["md"].read_text(encoding="utf-8")
             except Exception as e:  # noqa: BLE001
                 # PIPE19: non-fatal, but never silent. This used to be the log line
@@ -678,6 +688,9 @@ def _run_all_inner(
             fallback_from=s.get("fallback_from"),
             fallback_cause=s.get("fallback_cause"),
             usage=s.get("usage"),
+            evidence_kept=s.get("evidence_kept"),
+            evidence_dropped=s.get("evidence_dropped"),
+            cleanup=cleanup_counts,
         )
         log.info("Wrote run sidecar: %s", sidecar)
     except Exception as e:  # noqa: BLE001

@@ -68,6 +68,7 @@ extension MeetingDetailView {
             titleField
             captionRow
             provenanceRow
+            runQualityNotes
             if meeting.hasCorrections { editedCaption }
             if meeting.namesChangedSinceSummary { namesChangedCaption }
             if let earlier = resumedEarlierPart { resumedCaption(earlier: earlier) }
@@ -515,6 +516,20 @@ extension MeetingDetailView {
     /// empty chip. Quiet about the AI: no sparkle, no teal, no coral; the model
     /// id lives only in the tooltip. Uses `fgSubtle` (not the mockup's fainter
     /// `fg-faint`) so the label clears the 4.5:1 text contrast floor.
+    /// OBS8: a quiet line per run-quality signal, under the provenance line.
+    @ViewBuilder
+    var runQualityNotes: some View {
+        ForEach(RunQualityNote.notes(
+            evidenceKept: meeting.evidenceKept, evidenceDropped: meeting.evidenceDropped,
+            cleanupChanged: meeting.cleanupSegmentsChanged, cleanupSegments: meeting.cleanupSegments
+        ), id: \.self) { note in
+            Text(note)
+                .font(.mpTextXS)
+                .foregroundStyle(Color(MPColors.fgSubtle))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     @ViewBuilder
     var provenanceRow: some View {
         if let label = provenanceLabel {

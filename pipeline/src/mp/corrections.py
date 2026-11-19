@@ -54,6 +54,17 @@ READINESS_MIN_TRANSCRIPT_CHARS = 200_000
 # ---------------------------------------------------------------------------
 
 
+def cleanup_counts(run: dict[str, Any]) -> tuple[int, int] | None:
+    """OBS8: `(cleanup_segments_changed, cleanup_segments)` from a run sidecar, or None
+    when it records no cleanup (or a malformed one)."""
+    changed, total = run.get("cleanup_segments_changed"), run.get("cleanup_segments")
+    if isinstance(changed, bool) or isinstance(total, bool):
+        return None
+    if isinstance(changed, int) and isinstance(total, int) and changed >= 0 and total >= 0:
+        return changed, total
+    return None
+
+
 def write_run_sidecar(
     *,
     recordings_dir: Path,
@@ -69,6 +80,9 @@ def write_run_sidecar(
     fallback_cause: str | None = None,
     fallback_language: str | None = None,
     usage: dict[str, int] | None = None,
+    evidence_kept: int | None = None,
+    evidence_dropped: int | None = None,
+    cleanup: tuple[int, int] | None = None,
 ) -> Path:
     """Snapshot the run that produced ``<stem>.summary.json``.
 
@@ -110,6 +124,14 @@ def write_run_sidecar(
     # on-device run, so its absence is never read as a zero-cost cloud run.
     if usage:
         payload["usage"] = dict(usage)
+    # OBS8: per-meeting verification and cleanup shares, so the Library can flag a meeting
+    # whose citations mostly failed or whose speaker labels the cleanup largely rewrote.
+    # Each pair is written whole or not at all.
+    if evidence_kept is not None and evidence_dropped is not None:
+        payload["evidence_kept"] = int(evidence_kept)
+        payload["evidence_dropped"] = int(evidence_dropped)
+    if cleanup is not None:
+        payload["cleanup_segments_changed"], payload["cleanup_segments"] = (int(n) for n in cleanup)
     out = recordings_dir / f"{stem}.run.json"
     try:
         storage.atomic_write_text(out, json.dumps(payload, indent=2, sort_keys=True))

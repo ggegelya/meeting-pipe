@@ -13,8 +13,8 @@ within `SNAP_WINDOW_SEC` of) a real segment AND its quote is really in the
 transcript around that time. Survivors get their `t` snapped to the source
 segment's start, so a chip click lands on that row rather than near it. Everything
 else is dropped silently, per the standing "absence over wrong anchors" call, and
-the kept/dropped counts go to the event log so a backend that cites badly is
-visible rather than merely quiet.
+the kept/dropped counts go to the event log, the drops split by reason (OBS8), so a
+backend that cites badly is visible rather than merely quiet.
 
 This is `mp ask`'s `rag.verify_citations` applied one level down: same shape (the
 model cites, we check it against ground truth, unverifiable citations are
@@ -29,7 +29,7 @@ verifier below. One rule, one implementation, two call sites.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .schemas import EVIDENCE_SECTIONS, Evidence, MeetingSummary
@@ -72,6 +72,18 @@ class _Segment:
         return min(abs(self.start - t), abs(self.end - t))
 
 
+#: OBS8: why `resolve` refused an anchor, a closed set so the event log can count them.
+DROP_REASONS = ("quote_empty", "quote_too_long", "no_segment_in_window", "quote_not_found")
+
+
+@dataclass(frozen=True)
+class Resolution:
+    """What `resolve` decided for one anchor: the snapped time, or why it was dropped."""
+
+    t: float | None = None
+    reason: str | None = None
+
+
 @dataclass(frozen=True)
 class VerifyResult:
     """The verified summary plus what the pass did, for the event log."""
@@ -79,6 +91,11 @@ class VerifyResult:
     summary: MeetingSummary
     kept: int
     dropped: int
+    # OBS8: `dropped` split by `DROP_REASONS` (only the reasons that occurred), and how
+    # many `quote_not_found` quotes do appear in the transcript outside their window,
+    # which is the line between a misread timestamp and an invented or paraphrased quote.
+    dropped_by_reason: dict[str, int] = field(default_factory=dict)
+    dropped_quote_elsewhere: int = 0
 
 
 def _prepare(segments: list[dict[str, Any]]) -> list[_Segment]:
@@ -145,8 +162,8 @@ def _as_float(value: Any) -> float | None:
     return float(value)
 
 
-def resolve(anchor: Evidence, segments: list[_Segment]) -> float | None:
-    """The snapped start time for `anchor`, or None when it does not check out.
+def resolve(anchor: Evidence, segments: list[_Segment]) -> Resolution:
+    """The snapped start time for `anchor`, or the reason it does not check out.
 
     Two gates, both required:
 
@@ -154,36 +171,67 @@ def resolve(anchor: Evidence, segments: list[_Segment]) -> float | None:
     2. **Quote.** The normalized quote appears in that window's text.
 
     The returned time is the start of the segment that actually carries the
-    quote, when one does. That is a shade stricter than "snap to whichever
-    segment the timestamp landed nearest", and it is what makes a chip click land
-    on the cited row instead of merely near it. A quote that spans a turn
-    boundary matches the joined window and falls back to the nearest segment.
+    quote, when one does (the one nearest `anchor.t`), so a chip click lands on
+    the cited row instead of merely near it. A quote that spans a turn boundary
+    snaps to the window segment where the quote begins, read on into the turns that
+    follow it (OBS8). Both choices make `resolve` idempotent on its own answer: re-resolving
+    from the snapped time returns that time, which a later re-verify (a
+    regenerate over an edited transcript) relies on. The fallback used to return
+    the segment nearest the model's time, and re-centring the window there could
+    lose the far half of the quote.
     """
     quote = normalize(anchor.quote)
-    if not quote or len(quote.split()) > MAX_QUOTE_WORDS:
-        return None
-    window = [s for s in segments if s.distance(anchor.t) <= SNAP_WINDOW_SEC]
-    if not window:
-        return None
-    for seg in window:
-        if quote in seg.norm:
-            return seg.start
-    if quote in " ".join(s.norm for s in window):
-        return min(window, key=lambda s: (s.distance(anchor.t), s.start)).start
-    return None
+    if not quote:
+        return Resolution(reason="quote_empty")
+    if len(quote.split()) > MAX_QUOTE_WORDS:
+        return Resolution(reason="quote_too_long")
+    in_window = [i for i, s in enumerate(segments) if s.distance(anchor.t) <= SNAP_WINDOW_SEC]
+    if not in_window:
+        return Resolution(reason="no_segment_in_window")
+    containing = [segments[i] for i in in_window if quote in segments[i].norm]
+    if containing:
+        return Resolution(t=min(containing, key=lambda s: (s.distance(anchor.t), s.start)).start)
+    # A quote spanning a turn boundary begins in a window segment and runs on into the
+    # ones after it, which need not be in the window themselves: a 60 s turn re-centred on
+    # its own start leaves the next one 60 s away. The run is bounded, since a quote is at
+    # most `MAX_QUOTE_WORDS` words and so crosses at most that many boundaries.
+    def begins_in(i: int) -> bool:
+        joined = " ".join(s.norm for s in segments[i:i + MAX_QUOTE_WORDS + 1])
+        at = joined.find(quote)
+        return at != -1 and at < len(segments[i].norm)
+
+    begins = [i for i in in_window if begins_in(i)]
+    if begins:
+        return Resolution(t=segments[min(begins, key=lambda i: (segments[i].distance(anchor.t), i))].start)
+    return Resolution(reason="quote_not_found")
 
 
-def _verify_anchors(anchors: list[Evidence], segments: list[_Segment]) -> tuple[list[Evidence], int]:
-    """Surviving anchors (times snapped) and how many were dropped."""
+@dataclass
+class _Tally:
+    kept: int = 0
+    dropped: int = 0
+    by_reason: dict[str, int] = field(default_factory=dict)
+    elsewhere: int = 0
+
+
+def _verify_anchors(
+    anchors: list[Evidence], segments: list[_Segment], tally: _Tally, whole: str
+) -> list[Evidence]:
+    """Surviving anchors (times snapped); the drops are counted on `tally` by reason.
+    `whole` is the full normalized transcript, for the `quote_not_found` split."""
     kept: list[Evidence] = []
-    dropped = 0
     for anchor in anchors:
-        snapped = resolve(anchor, segments)
-        if snapped is None:
-            dropped += 1
+        result = resolve(anchor, segments)
+        if result.t is None:
+            reason = result.reason or "quote_not_found"
+            tally.dropped += 1
+            tally.by_reason[reason] = tally.by_reason.get(reason, 0) + 1
+            if reason == "quote_not_found" and normalize(anchor.quote) in whole:
+                tally.elsewhere += 1
             continue
-        kept.append(Evidence(quote=anchor.quote, t=snapped))
-    return kept, dropped
+        tally.kept += 1
+        kept.append(Evidence(quote=anchor.quote, t=result.t))
+    return kept
 
 
 def verify(summary: MeetingSummary, segments: list[dict[str, Any]]) -> VerifyResult:
@@ -198,14 +246,12 @@ def verify(summary: MeetingSummary, segments: list[dict[str, Any]]) -> VerifyRes
     Returns a new summary; the input is not mutated.
     """
     prepared = _prepare(segments)
-    kept_total = 0
-    dropped_total = 0
+    whole = " ".join(s.norm for s in prepared)
+    tally = _Tally()
 
     actions = []
     for action in summary.actions:
-        kept, dropped = _verify_anchors(action.evidence, prepared)
-        kept_total += len(kept)
-        dropped_total += dropped
+        kept = _verify_anchors(action.evidence, prepared, tally, whole)
         actions.append(action.model_copy(update={"evidence": kept}))
 
     evidence: dict[str, list[list[Evidence]]] = {}
@@ -213,17 +259,14 @@ def verify(summary: MeetingSummary, segments: list[dict[str, Any]]) -> VerifyRes
         anchors_per_item = summary.evidence.get(section)
         if not anchors_per_item:
             continue
-        verified: list[list[Evidence]] = []
-        for anchors in anchors_per_item:
-            kept, dropped = _verify_anchors(anchors, prepared)
-            kept_total += len(kept)
-            dropped_total += dropped
-            verified.append(kept)
+        verified = [_verify_anchors(anchors, prepared, tally, whole) for anchors in anchors_per_item]
         if any(verified):
             evidence[section] = verified
 
     return VerifyResult(
         summary=summary.model_copy(update={"actions": actions, "evidence": evidence}),
-        kept=kept_total,
-        dropped=dropped_total,
+        kept=tally.kept,
+        dropped=tally.dropped,
+        dropped_by_reason=dict(tally.by_reason),
+        dropped_quote_elsewhere=tally.elsewhere,
     )

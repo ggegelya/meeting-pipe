@@ -1017,3 +1017,65 @@ def test_an_invalid_substitution_flag_is_a_usage_error(tmp_path: Path, argv, cap
     transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
     assert summarize_mod.main([str(transcript), *argv]) == 2
     assert "error:" in capsys.readouterr().err
+
+
+# ----- OBS8: evidence_verified says why anchors were dropped; run.json keeps the shares -----
+
+
+def test_evidence_verified_counts_drops_by_reason_and_carries_no_quote_text(monkeypatch, tmp_path: Path):
+    from mp.schemas import MeetingSummary
+
+    emitted: list[dict] = []
+    monkeypatch.setattr("mp.summarize.events.emit", lambda cat, action, **a: emitted.append({"action": action, **a}))
+    segments = [
+        {"start": 0.0, "end": 10.0, "text": "We will ship the export on Friday."},
+        {"start": 300.0, "end": 310.0, "text": "Is the QMS export green yet?"},
+    ]
+    secret = "we agreed to cancel the project"
+    summary = MeetingSummary.model_validate({
+        "title": "t", "attendees": [], "detected_language": "en",
+        # Two items, since an item keeps at most two anchors.
+        "summary": [
+            {"text": "b", "evidence": [{"quote": "ship the export", "t": 0.0}, {"quote": secret, "t": 0.0}]},
+            {"text": "c", "evidence": [{"quote": "Is the QMS export green yet", "t": 0.0}]},
+        ],
+    })
+    _, result = summarize_mod._verify_evidence(summary, segments, tmp_path / "20260101-090000.md")
+
+    row = next(e for e in emitted if e["action"] == "evidence_verified")
+    assert (row["kept"], row["dropped"]) == (1, 2)
+    assert row["dropped_quote_not_found"] == 2
+    assert row["dropped_quote_elsewhere"] == 1
+    assert "dropped_quote_empty" not in row and "dropped_quote_too_long" not in row
+    assert secret not in json.dumps(row) and "QMS" not in json.dumps(row)
+    assert (result.kept, result.dropped) == (1, 2)
+
+
+def test_the_run_sidecar_keeps_evidence_and_cleanup_shares(tmp_path: Path):
+    from mp import corrections
+
+    common = dict(recordings_dir=tmp_path, transcript_path=tmp_path / "a.md", transcript_chars=1,
+                  summary_json_path=tmp_path / "a.summary.json", backend="anthropic", model="m")
+    out = corrections.write_run_sidecar(stem="a", evidence_kept=3, evidence_dropped=9,
+                                        cleanup=(30, 100), **common)
+    run = json.loads(out.read_text(encoding="utf-8"))
+    assert (run["evidence_kept"], run["evidence_dropped"]) == (3, 9)
+    assert (run["cleanup_segments_changed"], run["cleanup_segments"]) == (30, 100)
+    assert corrections.cleanup_counts(run) == (30, 100)
+    bare = json.loads(corrections.write_run_sidecar(stem="b", **common).read_text(encoding="utf-8"))
+    assert not {"evidence_kept", "evidence_dropped", "cleanup_segments", "cleanup_segments_changed"} & set(bare)
+
+
+def test_a_standalone_re_summarize_carries_the_earlier_cleanup_counts(tmp_path: Path, monkeypatch):
+    stem = "20260101-090005"
+    transcript = tmp_path / f"{stem}.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    (tmp_path / f"{stem}.run.json").write_text(json.dumps(
+        {"stem": stem, "backend": "anthropic", "cleanup_segments_changed": 12, "cleanup_segments": 40}
+    ), encoding="utf-8")
+    _fake_summarize(tmp_path, stem, monkeypatch, backend="anthropic", model="claude-x")
+
+    assert summarize_mod.main([str(transcript)]) == 0
+
+    run = json.loads((tmp_path / f"{stem}.run.json").read_text(encoding="utf-8"))
+    assert (run["cleanup_segments_changed"], run["cleanup_segments"]) == (12, 40)

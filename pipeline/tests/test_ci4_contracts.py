@@ -123,6 +123,14 @@ def test_summary_limits_fixture_matches_the_schema() -> None:
     )
 
 
+def test_run_sidecar_fixture_matches_the_live_writer(tmp_path: Path) -> None:
+    # OBS8: Swift's MeetingStore decodes the same file in RunSidecarFixtureTests.
+    assert _generator().gen_run_sidecar(tmp_path) == _committed("run-sidecar-golden.json"), (
+        "corrections.write_run_sidecar changed; regenerate with "
+        "`cd pipeline && uv run python ../scripts/gen_contract_fixtures.py`"
+    )
+
+
 # --------------------------------------------------------------------------
 # Guard the guards: a vacuously-empty fixture must not read as agreement
 # --------------------------------------------------------------------------
@@ -136,6 +144,7 @@ def test_summary_limits_fixture_matches_the_schema() -> None:
         ("speaker-overlay-golden.json", 10),
         ("regulated-mode-golden.json", 10),
         ("restore-plan-golden.json", 1),
+        ("run-sidecar-golden.json", 4),
     ],
 )
 def test_fixtures_are_not_vacuous(name: str, minimum: int) -> None:
