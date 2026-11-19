@@ -149,12 +149,11 @@ enum RestorePreview {
         n == 1 ? "1 file" : "\(count(n)) files"
     }
 
-    /// The manifest's ISO-8601 timestamp as a date a person reads, through the
-    /// one parser that already knows what Python's `isoformat()` actually emits
-    /// (microseconds, which `ISO8601DateFormatter` will not take). An unparseable
-    /// string falls back to itself rather than to a wrong date.
+    /// The manifest's ISO-8601 timestamp as a date a person reads, through
+    /// `ISO8601.parse`, which takes what Python's `isoformat()` emits (microseconds
+    /// included). An unparseable string falls back to itself rather than to a wrong date.
     static func taken(_ createdAt: String) -> String {
-        guard let date = LastBackup.parseISO8601(createdAt) else { return createdAt }
+        guard let date = ISO8601.parse(createdAt) else { return createdAt }
         let out = DateFormatter()
         out.dateStyle = .medium
         out.timeStyle = .short

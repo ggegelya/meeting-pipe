@@ -1513,7 +1513,7 @@ final class PipelineLauncher: PipelineDriver {
             "summary_json_path": summaryJSON.path,
             "backend": "apple_intelligence",
             "model": "apple-foundation-models",
-            "ts": ISO8601DateFormatter().string(from: Date()),
+            "ts": ISO8601.format(Date()),
         ]
         guard JSONSerialization.isValidJSONObject(payload),
               let data = try? JSONSerialization.data(

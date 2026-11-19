@@ -92,7 +92,7 @@ enum CorrectionStore {
             "summary_json_path": summaryJsonPath,
             "model_id": modelId,
             "backend": backend,
-            "ts": Self.iso8601.string(from: timestamp),
+            "ts": ISO8601.format(timestamp),
             "verdict": verdict.rawValue,
             "original_summary": originalSummary,
         ]
@@ -185,11 +185,4 @@ enum CorrectionStore {
     static func read(stem: String, directoryOverride: URL? = nil) -> [String: Any]? {
         guard let data = readData(stem: stem, directoryOverride: directoryOverride) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-    }
-
-    private static let iso8601: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
-}
+    }}

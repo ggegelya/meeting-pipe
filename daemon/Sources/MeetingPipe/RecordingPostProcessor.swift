@@ -316,13 +316,6 @@ enum RecordingPostProcessor {
         return PostProcessFailureRecord(attempts: attempts, reason: object["reason"] as? String)
     }
 
-    private static let attemptTimestamp: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        f.timeZone = TimeZone(identifier: "UTC")
-        return f
-    }()
-
     /// The breadcrumb reason when a two-channel recording cannot be merged for want of ffmpeg (DEP2/F052).
     /// The launch sweep ignores REC24's attempt cap, so a relaunch after installing ffmpeg is what retries it.
     static let ffmpegMissingReason =
@@ -342,7 +335,7 @@ enum RecordingPostProcessor {
             "reason": reason,
             "retained": names,
             "attempts": attempts,
-            "last_attempt_at": attemptTimestamp.string(from: Date()),
+            "last_attempt_at": ISO8601.format(Date()),
         ]
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: recordFailURL(forFinal: final), options: .atomic)

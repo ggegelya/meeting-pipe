@@ -252,9 +252,7 @@ struct CorrectionsTab: View {
     }
 
     private func prettyTimestamp(_ iso: String) -> String {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        if let date = f.date(from: iso) {
+        if let date = ISO8601.parse(iso) {
             return MeetingFormatters.fullDateTime.string(from: date)
         }
         return iso

@@ -7,12 +7,6 @@ enum Log {
     static let detector = Logger(subsystem: Endpoints.logSubsystem, category: "detector")
     static let recorder = Logger(subsystem: Endpoints.logSubsystem, category: "recorder")
 
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
     /// The resolved logs directory, created the first time each resolution is seen.
     ///
     /// Resolved per call, never frozen: eleven test files `setenv("MEETINGPIPE_LOGS_DIR", ...)`
@@ -85,7 +79,7 @@ enum Log {
 
     private static func writeLine(_ category: String, _ message: String, at date: Date) {
         let url = logsDir.appendingPathComponent("\(category).log")
-        let line = "[\(isoFormatter.string(from: date))] \(message)\n"
+        let line = "[\(ISO8601.format(date, fractional: true))] \(message)\n"
         guard let data = line.data(using: .utf8) else { return }
         append(data, to: url)
     }
@@ -220,7 +214,7 @@ enum Log {
     /// cannot be encoded even after coercion.
     private static func eventLine(category: String, action: String, attributes: [String: Any]) -> Data? {
         var dict: [String: Any] = attributes
-        dict["ts"] = isoFormatter.string(from: Date())
+        dict["ts"] = ISO8601.format(Date(), fractional: true)
         dict["category"] = category
         dict["action"] = action
         // OBS5: every row names the process that wrote it, so a launch's rows group without
@@ -274,7 +268,7 @@ enum Log {
         case let dict as [String: Any]:
             return coerced(dict)
         case let date as Date:
-            return isoFormatter.string(from: date)
+            return ISO8601.format(date, fractional: true)
         case let url as URL:
             // A file URL reads as its path, the way Python's `str(Path)` does.
             return url.isFileURL ? url.path : url.absoluteString

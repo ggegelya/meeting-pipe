@@ -247,12 +247,10 @@ enum UnresolvedFailureNotice {
         excluding: Set<String>,
         now: Date
     ) -> [String] {
-        let parse = ISO8601DateFormatter()
-        parse.formatOptions = [.withInternetDateTime]
         return failures
             .filter { !excluding.contains($0.stem) }
             .compactMap { f -> (String, Date)? in
-                guard let date = parse.date(from: f.ts), now.timeIntervalSince(date) >= minAge else { return nil }
+                guard let date = ISO8601.parse(f.ts), now.timeIntervalSince(date) >= minAge else { return nil }
                 return (f.stem, date)
             }
             .sorted { ($0.1, $0.0) < ($1.1, $1.0) }

@@ -43,7 +43,7 @@ enum OverlayBackup {
         }
         let payload: [String: Any] = [
             "schema_version": schemaVersion,
-            "written_at": ISO8601DateFormatter().string(from: now),
+            "written_at": ISO8601.format(now),
             "speaker_labels": object(SpeakerLabelStore.path(stem: stem, in: directory)),
             "transcript_corrections": object(TranscriptCorrectionStore.path(stem: stem, in: directory)),
             "anchors": anchors.map { a -> [String: Any] in

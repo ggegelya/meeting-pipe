@@ -106,7 +106,7 @@ struct FailurePresentation: Equatable {
         let facts = metadata ?? Self.legacy(diagnostics, operation: operation)
         self.metadata = facts
         self.diagnostics = diagnostics
-        self.timestamp = timestamp ?? ISO8601DateFormatter().string(from: Date())
+        self.timestamp = timestamp ?? ISO8601.format(Date())
         let searchModelMissing = facts.cause == .modelMissing && diagnostics.contains("Embedding model ")
             && diagnostics.contains("is not in the local HuggingFace cache")
         self.isSearchModelMissing = searchModelMissing

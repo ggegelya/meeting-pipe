@@ -1257,21 +1257,7 @@ final class MeetingStore: ObservableObject {
     /// spelled `Z` (`corrections._now_utc_iso`). The fractional pass is a
     /// fallback rather than the contract, since `write_run_sidecar` also accepts
     /// a caller-supplied `ts` that is only promised to be ISO 8601.
-    private static func parseRunTimestamp(_ raw: String) -> Date? {
-        runTimestampParser.date(from: raw) ?? runTimestampParserWithFraction.date(from: raw)
-    }
-
-    private static let runTimestampParser: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
-
-    private static let runTimestampParserWithFraction: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
+    private static func parseRunTimestamp(_ raw: String) -> Date? { ISO8601.parse(raw) }
 
     /// Build the lowercased filter haystack from user-visible fields (titles, source app, summary bullets, decisions, action tasks). Internal so tests can drive it directly.
     static func buildSearchableText(
@@ -1392,13 +1378,24 @@ final class MeetingStore: ObservableObject {
 
 /// Shared DateFormatter instances. Construction is expensive; one-time init here avoids paying it per row.
 enum MeetingFormatters {
+    /// The stem's one formatter, writer and reader alike (ARCH17). `en_US_POSIX` is load-bearing
+    /// (Apple QA1480): without it a Buddhist-calendar Mac renders the year as 2569 and an `ar_SA`
+    /// one in Arabic-Indic digits, and a stem is every meeting's primary key. The zone follows the
+    /// Mac's (autoupdating), as the recorder's per-recording formatter did before it shared this one.
     static let stem: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyyMMdd-HHmmss"
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone.current
+        f.calendar = Calendar(identifier: .gregorian)
+        f.timeZone = TimeZone.autoupdatingCurrent
         return f
     }()
+
+    /// A new recording's stem, `yyyyMMdd-HHmmss` in ASCII digits on the Gregorian calendar
+    /// whatever the user's locale. `DateFormatter` formatting is thread-safe on macOS.
+    static func stemString(from date: Date) -> String {
+        stem.string(from: date)
+    }
 
     static let shortTime: DateFormatter = {
         let f = DateFormatter()

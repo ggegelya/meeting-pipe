@@ -473,9 +473,9 @@ final class MeetingRecorder {
         micConverter = nil
         deviceRecovery.resetForRecording()
 
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let stamp = formatter.string(from: Date())
+        // ARCH17: the shared POSIX formatter, never a local formatter, which takes the
+        // user's calendar and digits.
+        let stamp = MeetingFormatters.stemString(from: Date())
         // REC23: owned before any file of this stem exists, so an after-job orphan sweep
         // landing during the engine start cannot merge the growing `.mic.wav`. Every throwing
         // exit below releases it; a successful start hands it to `stop()`.

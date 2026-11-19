@@ -62,7 +62,7 @@ enum PipelineFailureSidecar {
             "stem": stem,
             "stage": stage.rawValue,
             "reason": reason,
-            "ts": iso8601.string(from: timestamp),
+            "ts": ISO8601.format(timestamp),
         ]
         if let metadata, let data = try? JSONEncoder().encode(metadata) {
             payload["failure"] = try? JSONSerialization.jsonObject(with: data)
@@ -121,11 +121,4 @@ enum PipelineFailureSidecar {
         } catch {
             Log.failure(category: "coordinator", action: "failure_sidecar_clear_failed", error: error, attributes: ["stem": stem])
         }
-    }
-
-    private static let iso8601: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
-}
+    }}

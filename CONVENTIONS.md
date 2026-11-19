@@ -296,6 +296,8 @@ Every line is one JSON object with at least three fields:
 }
 ```
 
+On the Swift side every ISO 8601 timestamp, this `ts` and every other one the daemon writes or reads, goes through `ISO8601.parse` / `ISO8601.format` (`daemon/Sources/MeetingPipe/Util/ISO8601.swift`, ARCH17): writers emit UTC with `Z`, the reader takes any fraction length (Python's microseconds included) with `Z` or an offset and refuses a naive timestamp. A recording's stem is named through `MeetingFormatters.stemString(from:)`, the same `en_US_POSIX` Gregorian formatter `MeetingStore.parseStem` reads with. `ISO8601Tests` fences both: no `ISO8601DateFormatter(` outside the owner, no formatter of its own in `MeetingRecorder`.
+
 ### Categories
 
 | Source | Categories |

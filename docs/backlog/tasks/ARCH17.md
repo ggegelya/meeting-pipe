@@ -2,9 +2,9 @@
 id: ARCH17
 title: Date formatting has no owner: the recorder's stem formatter lacks the en_US_POSIX locale its reader sets, and ISO-8601 parsing is hand-rolled four ways
 category: Architecture
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (code-quality audit SW7): MeetingRecorder names every stem with a DateFormatter lacking en_US_POSIX (QA1480), so a Buddhist-calendar Mac writes 2569 stems both readers misdate; four ISO-8601 parsers use 3 strategies (the microsecond half is latent on macOS 26.5.1, and LastBackup's comment claiming it fails is wrong). MeetingFormatters.stemString in the recorder, one ISO8601.parse/format. [Spec](./ARCH17.md)
+comment: Shipped 2026-11-19: MeetingFormatters.stemString (POSIX, Gregorian, autoupdating zone) names every stem in MeetingRecorder; ISO8601.parse/format in Util/ISO8601.swift owns all 13 former ISO8601DateFormatter sites (4 parsers, 9 writers); LastBackup's false comment corrected; 9 ISO8601Tests incl. two source fences. Owner owes nothing live beyond a normal recording landing with a 2026... stem. [Spec](./ARCH17.md)
 ---
 
 # ARCH17: Date formatting has no owner: the recorder's stem formatter lacks the en_US_POSIX locale its reader sets, and ISO-8601 parsing is hand-rolled four ways

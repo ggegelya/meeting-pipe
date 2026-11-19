@@ -94,7 +94,7 @@ final class RecordingStemOwnershipREC23Tests: XCTestCase {
             to: "private func unwindFailedEngineStart("
         )
         let claim = try XCTUnwrap(body.range(of: "stemOwnership.claim(stamp)"), "start() must claim its stem")
-        let stamp = try XCTUnwrap(body.range(of: "let stamp = formatter.string(from: Date())"))
+        let stamp = try XCTUnwrap(body.range(of: "let stamp = MeetingFormatters.stemString(from: Date())"))
         let marker = try XCTUnwrap(body.range(of: ".capturemode\")"))
         let micChain = try XCTUnwrap(body.range(of: "buildMicChain(voiceProcessing:"))
         XCTAssertLessThan(stamp.lowerBound, claim.lowerBound)

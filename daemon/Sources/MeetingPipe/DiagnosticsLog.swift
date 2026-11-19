@@ -185,21 +185,7 @@ enum DiagnosticsLog {
         }
     }
 
-    private static let isoFractional: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
-    private static let isoPlain: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
-
-    static func isoDate(_ s: String) -> Date? {
-        isoFractional.date(from: s) ?? isoPlain.date(from: s)
-    }
+    static func isoDate(_ s: String) -> Date? { ISO8601.parse(s) }
 }
 
 /// The Diagnostics window's loader (PERF13). A reload runs `DiagnosticsLog.load` off main and
