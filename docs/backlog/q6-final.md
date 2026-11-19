@@ -1178,6 +1178,15 @@ Toggling the real mic flips **only** win[0]. win[2], the full meeting window the
 | Pipeline (`src/mp`) | **84%** (5376/6393 lines, 894 tests) |
 | Daemon (`Sources/`) | **30.4%** (12908/42446 lines, 1389 tests) |
 
+**Re-recorded 2026-11-19 by T16, both bundles merged.** The 2026-07-20 row above and CI6's 37.3% (2026-08-18) were taken when SwiftPM built one combined `MeetingPipePackageTests` bundle. The toolchain now builds one bundle per test target, and `coverage.sh` measured whichever single `.xctest` `find` returned first (90.0% for the Core bundle alone, or nothing for a stale bundle from the old layout). It now measures every bundle under `swift build --show-bin-path`, merged with llvm-cov's `-object`, and prints the list.
+
+| Tree | Line coverage (2026-11-19) |
+|---|---|
+| Pipeline (`src/mp`) | **92%** (11083/12079 statements, 2424 passed, 2 skipped) |
+| Daemon (`Sources/`, MeetingPipeCoreTests + MeetingPipeTests merged) | **58.2%** (47687/81871 lines, 4251 + 685 tests) |
+
+The merged figure equals the MeetingPipeTests bundle alone: that bundle links MeetingPipeCore, and llvm-profdata merges the two bundles' counters for the same Core functions into one record, so the Core suite's execution already shows through it. MeetingPipeCoreTests alone reads 7340/7855 = 93.4% over Core's sources. Measuring both stays correct if a future bundle is not a superset.
+
 Per-file, for the surfaces this task targeted:
 
 | File | Before | After |
