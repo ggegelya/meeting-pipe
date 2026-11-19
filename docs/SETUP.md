@@ -194,6 +194,8 @@ That is the whole loop. From here, meetings turn into summaries without you doin
 
 **The installer stops with "Homebrew not found" even though you installed it.** The Next steps commands Homebrew printed did not run, so it is not on your PATH. Re-run them, then open a new Terminal window and try again.
 
+**The installer stops with "Required uv version `>=0.13.9` does not match".** An older `uv` was already on your Mac, and the installer needs 0.13.9 or newer. If Homebrew installed it, run `brew upgrade uv`; otherwise run `uv self update`. Then re-run the installer.
+
 **There is no icon in the menu bar.** Open `~/Applications` in Finder and double-click `MeetingPipe.app`; there is no security dialog to get past for an app you built yourself. If it still does not appear, re-run `./scripts/install.sh`: it now checks that the app actually started, and if it did not, it stops with a pointer to the log that says why.
 
 **The app does not come up when you search for it.** Type its name into Spotlight (the magnifying glass, or Cmd+Space) and nothing appears, even though the app is installed and works. This is your Mac's search index not having noticed the app, rather than anything wrong with the install. The installer already asks it to look, and you can ask again by opening Terminal and running `mdimport ~/Applications/MeetingPipe.app`. To check whether it worked, run `mp doctor` and read the **Spotlight index** section near the end. If it still cannot find it, your Mac's search index itself needs attention, which is a separate thing worth looking at on its own time. Nothing is broken meanwhile: open `~/Applications` in Finder to launch the app, and drag it to your Dock if you want it one click away.

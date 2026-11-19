@@ -68,6 +68,10 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
+          # CI11: exactly the uv the owner runs, so the lock is read by one uv
+          # version in both places. pipeline/pyproject.toml carries the matching
+          # floor (`[tool.uv] required-version`); bump the two together.
+          version: "0.13.9"
           enable-cache: true
       - name: Lint, typecheck, test from the lock
         run: bash scripts/ci-local.sh pipeline

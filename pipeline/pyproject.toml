@@ -183,3 +183,9 @@ markers = [
 # bump as the anthropic cap rather than riding on SEC19.
 [tool.uv]
 constraint-dependencies = ["huggingface-hub<2"]
+# CI11. A floor, not an exact pin: CI pins setup-uv to exactly 0.13.9 (.github/workflows/
+# ci.yml), so CI and the owner resolve and sync the lock with the same uv, while a newer
+# uv from `brew install uv` (what scripts/install.sh installs on a clean Mac) still works.
+# An older uv fails loudly here instead of reading the lock differently. Owner's decision
+# 2026-11-19: move to 0.13.9 rather than pin 0.11.8.
+required-version = ">=0.13.9"
