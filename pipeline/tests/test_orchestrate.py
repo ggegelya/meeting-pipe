@@ -26,9 +26,9 @@ from mp.config import Config
 from mp.diarize import cosine_similarity
 from mp.orchestrate import (
     PIPELINE_LOG_OWNER_ENV,
+    _bills_per_token,
     _check_too_long,
     _configure_logging,
-    _will_summarize_locally,
     _write_manual_bundle,
     finalize_streamed_transcript,
     run_all,
@@ -1156,29 +1156,30 @@ def test_apple_intelligence_bypasses_long_meeting_guard(tmp_path: Path, monkeypa
 
 # --- PIPE4: the long-meeting guard is cloud-only ----------------------------
 
-def test_will_summarize_locally_by_backend(monkeypatch):
-    """The guard exemption predicate (PIPE4): on-device backends are exempt, and
-    `auto` counts as local only when no Anthropic key is available (mirroring the
-    backend-fallback resolution). Regulated forces local even with a key."""
+def test_bills_per_token_by_backend(monkeypatch):
+    """The gate predicate (PIPE4, narrowed by PIPE27): only per-token engines are
+    gated; `auto` only while it has a key to bill; `claude_cli` never (it runs on the
+    user's subscription). Regulated forces local even with a key."""
     def cfg_for(backend: str) -> Config:
         c = Config()
         c.summarization.backend = backend
         return c
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    assert _will_summarize_locally(cfg_for("local")) is True
-    assert _will_summarize_locally(cfg_for("apple_intelligence")) is True
-    assert _will_summarize_locally(cfg_for("anthropic")) is False
-    # `auto` with a key tries the cloud first, so it is not exempt.
-    assert _will_summarize_locally(cfg_for("auto")) is False
-    # Regulated forces local regardless of the key.
+    assert _bills_per_token(cfg_for("local")) is False
+    assert _bills_per_token(cfg_for("apple_intelligence")) is False
+    assert _bills_per_token(cfg_for("claude_cli")) is False
+    assert _bills_per_token(cfg_for("anthropic")) is True
+    assert _bills_per_token(cfg_for("openai")) is True
+    # `auto` with a key tries the cloud first, so it is gated.
+    assert _bills_per_token(cfg_for("auto")) is True
     regulated = cfg_for("anthropic")
     regulated.modes.regulated_mode = True
-    assert _will_summarize_locally(regulated) is True
+    assert _bills_per_token(regulated) is False
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     # Keyless `auto` resolves to local, so it is exempt (the owner's choice).
-    assert _will_summarize_locally(cfg_for("auto")) is True
+    assert _bills_per_token(cfg_for("auto")) is False
 
 
 def test_check_too_long_bundles_for_cloud_but_not_local(tmp_path: Path, monkeypatch):

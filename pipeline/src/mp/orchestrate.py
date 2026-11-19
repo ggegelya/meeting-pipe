@@ -28,7 +28,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from . import entry, events, providers, storage
+from . import entry, events, providers, storage, usage
 from .config import (
     Config,
     effective_backend,
@@ -210,8 +210,8 @@ def _write_manual_bundle(transcript_md: Path, char_count: int, threshold: int) -
     body = f"""# Manual processing required
 
 This meeting's transcript is **{char_count:,} characters** (threshold: {threshold:,}).
-The pipeline did NOT call the Anthropic API to summarize it — that would
-cost noticeable money on a meeting this size.
+The pipeline did NOT call the configured engine to summarize it, since that
+engine is billed per token and a meeting this size costs noticeable money.
 
 ## How to process it
 
@@ -228,8 +228,10 @@ If you decide later that you DO want this meeting auto-summarized, run:
 
     mp run-all "{transcript_md.with_suffix('.wav')}"
 
-after raising `summarization.skip_above_chars` in
-`~/.config/meeting-pipe/config.toml` (or set it to 0 to disable the guard).
+after raising **Pay-per-token limit** in Preferences > Pipeline > Long meetings
+(`summarization.skip_above_chars` in `~/.config/meeting-pipe/config.toml`), or
+set it to 0 to turn the guard off. Local chunking has its own knob since PIPE27,
+so turning this off no longer changes how the local model splits a meeting.
 
 ---
 
@@ -328,6 +330,7 @@ def run_all(
     log.info("=" * 60)
     log.info("run-all: %s%s", wav, " (BYO summary)" if force_byo else "")
     log.info("=" * 60)
+    usage.reset()  # PIPE27: this run's tokens, not an earlier in-process run's
     events.emit("pipeline", "run_started", wav=str(wav), force_byo=force_byo)
 
     heartbeat = _ProgressHeartbeat().start()
@@ -449,31 +452,34 @@ def _check_byo(
     return _skip_result(t, "byo", manual_bundle=str(bundle))
 
 
-def _will_summarize_locally(cfg: Config) -> bool:
-    """Whether this run summarizes on-device, so the long-meeting guard should route
-    rather than bundle (PIPE4). Read off the backend's `providers` row (PIPE19):
-    ``on_device`` always, ``cloud_then_local`` (``auto``) only when no Anthropic key
-    is available (mirroring ``backend_fallback.run_with_local_fallback``'s
-    resolution), ``cloud`` never. ``entry.prepare`` ran before this and loaded
-    secrets, so the env is authoritative. Regulated / NDA already fold to ``local``
-    in ``effective_backend``."""
-    locality = providers.lookup(effective_backend(cfg)).locality
-    if locality == "cloud_then_local":
-        return not os.environ.get("ANTHROPIC_API_KEY")
-    return locality == "on_device"
+def _bills_per_token(cfg: Config) -> bool:
+    """Whether this run's engine is billed per token, so the long-meeting gate applies
+    (PIPE27). Read off the backend's `providers` row (PIPE19): `bills_per_token`, and
+    for `auto` (``cloud_then_local``) only while an Anthropic key is available
+    (mirroring ``backend_fallback.run_with_local_fallback``'s resolution); keyless
+    `auto` summarizes locally. On-device engines and `claude_cli`, which runs on the
+    user's subscription, are never gated. ``entry.prepare`` loaded secrets before
+    this, so the env is authoritative; regulated / NDA already fold to ``local`` in
+    ``effective_backend``."""
+    row = providers.lookup(effective_backend(cfg))
+    if not row.bills_per_token:
+        return False
+    if row.locality == "cloud_then_local":
+        return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return True
 
 
 def _check_too_long(wav: Path, t: dict[str, Path], md_text: str, cfg: Config) -> dict | None:
-    """Long-meeting guard, cloud-only (PIPE4). It exists to avoid Anthropic costs on a
-    1+ hour transcript by handing it to the user for manual processing. An on-device run
-    is free and does not overflow the bill, so it is exempt: Apple Intelligence chunks
-    long transcripts in the daemon, and the local MLX backend map-reduces them in
-    ``summarize_local`` (both above the same ``skip_above_chars`` threshold). The
-    paste-bundle escape hatch stays the cloud-over-threshold behaviour and the fallback."""
+    """Long-meeting guard for per-token engines (PIPE4, narrowed by PIPE27). It exists
+    to avoid a large API bill on a long transcript by handing it to the user for manual
+    processing. An engine with no per-token bill is exempt: on-device runs (Apple
+    Intelligence chunks in the daemon, local MLX map-reduces above
+    ``local_chunk_above_chars``) and ``claude_cli`` (the user's subscription). The
+    paste-bundle escape hatch stays the per-token-over-threshold behaviour."""
     threshold = cfg.summarization.skip_above_chars
     if not threshold or len(md_text) <= threshold:
         return None
-    if _will_summarize_locally(cfg):
+    if not _bills_per_token(cfg):
         return None
     bundle = _write_manual_bundle(t["md"], len(md_text), threshold)
     log.warning(
@@ -586,8 +592,8 @@ def _run_all_inner(
     if skip is not None:
         log.debug("summarize path: none (%s)", skip.get("skipped"))
         return skip
-    log.debug("summarize path: backend=%s effective=%s on_device=%s chars=%d",
-              cfg.summarization.backend, effective_backend(cfg), _will_summarize_locally(cfg),
+    log.debug("summarize path: backend=%s effective=%s per_token=%s chars=%d",
+              cfg.summarization.backend, effective_backend(cfg), _bills_per_token(cfg),
               len(md_text))
 
     # PERF25: on the local backend, speaker cleanup and summarize share one
@@ -671,6 +677,7 @@ def _run_all_inner(
             adapter_path=s.get("adapter_path", ""),
             fallback_from=s.get("fallback_from"),
             fallback_cause=s.get("fallback_cause"),
+            usage=s.get("usage"),
         )
         log.info("Wrote run sidecar: %s", sidecar)
     except Exception as e:  # noqa: BLE001
@@ -721,7 +728,7 @@ def _run_all_inner(
     landed = published_sinks(pub)
     log.info("done: sinks=%s", ",".join(landed) or "local-only")
     events.emit("pipeline", "run_completed", wav=str(wav),
-                published=bool(landed), sinks=landed)
+                published=bool(landed), sinks=landed, **(usage.snapshot() or {}))
     return result
 
 

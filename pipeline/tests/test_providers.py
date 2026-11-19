@@ -12,7 +12,7 @@ import pytest
 
 from mp import providers
 from mp.config import BACKENDS, Config
-from mp.orchestrate import _will_summarize_locally
+from mp.orchestrate import _bills_per_token
 
 
 def test_every_backend_has_a_row() -> None:
@@ -37,6 +37,18 @@ EXPECTED_LOCALITY = {
 }
 
 
+# PIPE27: the engines the long-meeting gate applies to. `claude_cli` is cloud but runs
+# on the user's subscription, so it is not billed per token and is never gated.
+EXPECTED_PER_TOKEN = {
+    "local": False,
+    "apple_intelligence": False,
+    "anthropic": True,
+    "claude_cli": False,
+    "openai": True,
+    "auto": True,
+}
+
+
 def test_locality_matches_what_callers_expect() -> None:
     assert {k: v.locality for k, v in providers.PROVIDERS.items()} == EXPECTED_LOCALITY
 
@@ -47,9 +59,9 @@ def test_long_meeting_guard_reads_the_row(
 ) -> None:
     cfg = Config.model_validate({"summarization": {"backend": backend}})
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    assert _will_summarize_locally(cfg) is (EXPECTED_LOCALITY[backend] == "on_device")
+    assert _bills_per_token(cfg) is EXPECTED_PER_TOKEN[backend]
     monkeypatch.delenv("ANTHROPIC_API_KEY")
-    assert _will_summarize_locally(cfg) is (EXPECTED_LOCALITY[backend] != "cloud")
+    assert _bills_per_token(cfg) is (EXPECTED_PER_TOKEN[backend] and backend != "auto")
 
 
 def test_unknown_id_raises_at_lookup_with_the_id() -> None:

@@ -2,7 +2,7 @@
 
 Before this, backend choice was an if/elif over the same ids in four places
 (`summarize._select_backend`, `engine.complete_text`,
-`diarize_cleanup._select_cleanup_backend`, `orchestrate._will_summarize_locally`),
+`diarize_cleanup._select_cleanup_backend`, `orchestrate._bills_per_token`),
 each with its own subset. Cleanup's subset missed `openai` and `claude_cli`, raised
 a `ValueError` that `run_all` swallowed as non-fatal, and so the Preferences
 cleanup toggle silently did nothing on two offered engines. Adding a backend now
@@ -54,6 +54,9 @@ class Provider:
     build_text: Callable[[Config, str | None], Any] | None
     build_cleanup: Callable[[Config], CleanupClient] | None
     stand_in: str | None = None
+    # PIPE27: billed per token, so the long-meeting gate applies (`auto` only while
+    # it has a key to bill). `claude_cli` runs on the user's subscription: not gated.
+    bills_per_token: bool = False
 
 
 def lookup(backend: str) -> Provider:
@@ -240,9 +243,11 @@ PROVIDERS: dict[str, Provider] = {
     ),
     "anthropic": Provider(
         "anthropic", "cloud", _anthropic_summary, _anthropic_text, _anthropic_cleanup,
+        bills_per_token=True,
     ),
     "auto": Provider(
         "auto", "cloud_then_local", _auto_summary, _auto_text, _auto_cleanup,
+        bills_per_token=True,
     ),
     "claude_cli": Provider(
         "claude_cli", "cloud", _claude_cli_summary, _plain_text(_claude_cli_summary),
@@ -250,5 +255,6 @@ PROVIDERS: dict[str, Provider] = {
     ),
     "openai": Provider(
         "openai", "cloud", _openai_summary, _plain_text(_openai_summary), _openai_cleanup,
+        bills_per_token=True,
     ),
 }

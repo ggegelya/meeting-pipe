@@ -55,6 +55,7 @@ from . import (
     speaker_overlay,
     storage,
     transcript_corrections,
+    usage,
 )
 from .backend_fallback import run_with_local_fallback
 from .config import (
@@ -104,6 +105,8 @@ class SummaryOutput(TypedDict):
     fallback_cause: NotRequired[str]
     # PIPE25: the language the refused engine could not take, when the caller knew it.
     fallback_language: NotRequired[str]
+    # PIPE27: tokens every metered call in this process spent, absent when none ran.
+    usage: NotRequired[dict[str, int]]
 
 # Retry only on transient failures. BadRequestError / AuthenticationError /
 # PermissionDeniedError / NotFoundError are caller bugs, so failing fast is right.
@@ -196,6 +199,7 @@ def _create_message(
     try:
         response = client.messages.create(**kwargs)
         events.note_progress()  # PIPE53: a finished request is the unit of progress
+        usage.record_anthropic(response)  # PIPE27
         return response
     except anthropic.APITimeoutError:
         wall = time.time() - wall_start
@@ -220,6 +224,7 @@ def _create_message(
 
     response = client.messages.create(**kwargs)
     events.note_progress()
+    usage.record_anthropic(response)
     return response
 
 
@@ -728,6 +733,9 @@ def summarize(
     if backend_used == "local" and isinstance(fallback_cause, str):
         result["fallback_from"] = "anthropic"
         result["fallback_cause"] = fallback_cause
+    spent = usage.snapshot()
+    if spent:
+        result["usage"] = spent
     return result
 
 
@@ -1001,6 +1009,7 @@ def main(argv: list[str]) -> int:
         print(f"No such file: {md}", file=sys.stderr)
         return 1
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    usage.reset()  # PIPE27: this re-summarize's tokens only
     try:
         out = summarize(md, out_suffix="candidate" if candidate else None, backend=backend_override)
     except Exception as error:
@@ -1061,6 +1070,7 @@ def rewrite_run_sidecar(transcript_md: Path, out: SummaryOutput) -> None:
             fallback_from=out.get("fallback_from"),
             fallback_cause=out.get("fallback_cause"),
             fallback_language=out.get("fallback_language"),
+            usage=out.get("usage"),
         )
         if isinstance(publish_state, str):
             corrections.set_publish_state(written, publish_state)

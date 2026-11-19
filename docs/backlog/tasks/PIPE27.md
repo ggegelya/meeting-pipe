@@ -2,9 +2,9 @@
 id: PIPE27
 title: The long-meeting gate stops automatic summaries on every non-local engine past about an hour, shares its knob with local chunking, and no token spend is recorded anywhere
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-24 (audit band, go-live FQ-5, UX-6, PP-9): past 80,000 chars every non-local engine, claude_cli included, gets a paste bundle instead of a summary; the same knob drives local chunking, so setting 0 as told disables windowing; no token usage is recorded. Scope: split the knob, gate only per-token engines, record usage in run.json and show it. [Spec](./PIPE27.md)
+comment: Shipped 2026-11-19 (batch 10): `local_chunk_above_chars` splits local map-reduce from the cloud gate (absent follows a non-zero `skip_above_chars`, else 80000), two Preferences rows, the gate bills only per-token rows (`Provider.bills_per_token`; claude_cli exempt), `mp.usage` sums Anthropic and OpenAI token usage into run.json `usage` and `run_completed`, and the detail header shows it. Still owed: the owner's pick for config.example.toml's new-install gate default (left at 80000, the status quo), then the owner check that an Anthropic meeting's header shows its tokens. [Spec](./PIPE27.md)
 ---
 
 # PIPE27: the long-meeting gate stops automatic summaries on every non-local engine past about an hour, shares its knob with local chunking, and no token spend is recorded anywhere

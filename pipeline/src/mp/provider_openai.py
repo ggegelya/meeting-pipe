@@ -21,7 +21,7 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
-from . import events
+from . import events, usage
 from .config import SAMPLING_TEMPERATURE
 from .endpoints import OPENAI_API_BASE, OPENAI_CHAT_PATH
 from .json_extract import parse_summary
@@ -154,7 +154,9 @@ class OpenAIClient:
             )
         events.note_progress()  # PIPE53
         try:
-            content = r.json()["choices"][0]["message"]["content"]
+            body = r.json()
+            usage.record_openai(body)  # PIPE27
+            content = body["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:
             raise OpenAIError(f"unexpected openai response shape: {r.text[:500]}") from e
         return content or ""

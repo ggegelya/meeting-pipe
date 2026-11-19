@@ -178,13 +178,18 @@ class Summarization(BaseModel):
     # Force a specific ISO 639-1 code to override (e.g. "en" to always
     # produce an English summary regardless of transcript language).
     summary_language: str = "auto"
-    # Long-meeting guard: if the transcript markdown is longer than this
-    # many characters, the orchestrator skips summarize + publish so we
-    # don't burn Anthropic tokens on a long meeting. The transcript stays
-    # on disk along with a `.READY_FOR_MANUAL.md` paste-into-Claude-Code
-    # bundle. 0 disables the guard. 80 000 chars ≈ 20 000 tokens ≈ 1 hour
-    # of speech.
+    # Long-meeting guard for engines billed per token (anthropic, keyed auto,
+    # openai; PIPE27): past this many transcript characters the orchestrator
+    # skips summarize + publish and leaves a `.READY_FOR_MANUAL.md` paste
+    # bundle. On-device engines and `claude_cli` are never gated. 0 disables
+    # the guard. 80 000 chars is roughly 95 to 165 minutes of speech.
     skip_above_chars: int = 80000
+    # PIPE27: the local backend's map-reduce bound, split from the cloud gate
+    # above so setting that one to 0 no longer turns windowing off. Absent
+    # (None) falls back to `skip_above_chars` when that is non-zero, else
+    # 80 000, so an existing config keeps its behaviour. Read through
+    # `local_chunk_above_chars(cfg)`.
+    local_chunk_above_chars: int | None = None
     # Backend selection (P2.3):
     #   "anthropic": current behaviour, requires ANTHROPIC_API_KEY.
     #   "local":     never call Anthropic; force the on-device MLX path.
@@ -672,6 +677,22 @@ def extract_backend_flag(argv: list[str]) -> tuple[list[str], str | None]:
             f"unknown backend {override!r}; choose one of {', '.join(sorted(BACKENDS))}"
         )
     return out, override
+
+
+#: PIPE27: the local map-reduce bound when neither knob says otherwise.
+DEFAULT_LOCAL_CHUNK_ABOVE_CHARS = 80_000
+
+
+def local_chunk_above_chars(cfg: Config) -> int:
+    """The local backend's map-reduce char bound (PIPE27). An explicit
+    `local_chunk_above_chars` wins; absent, an old config's non-zero
+    `skip_above_chars` keeps meaning what it meant, and a `0` there (which used to
+    disable windowing along with the cloud gate) no longer does."""
+    explicit = cfg.summarization.local_chunk_above_chars
+    if explicit is not None:
+        return explicit
+    gate = cfg.summarization.skip_above_chars
+    return gate if gate else DEFAULT_LOCAL_CHUNK_ABOVE_CHARS
 
 
 #: PIPE25: why a caller ran `local` in place of the engine the meeting asked for, as

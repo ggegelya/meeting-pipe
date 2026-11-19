@@ -69,7 +69,7 @@ from pydantic import ValidationError
 
 from . import events, local_server, local_snapshot, resource_guard, summarize_staged
 from .chunking import chunked_windows
-from .config import SAMPLING_TEMPERATURE, Config, parse_local_endpoint
+from .config import SAMPLING_TEMPERATURE, Config, local_chunk_above_chars, parse_local_endpoint
 from .json_extract import largest_balanced_json_object, repair_missing_commas
 from .prompt_safety import wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
@@ -107,8 +107,9 @@ _SECONDS_PER_OUTPUT_TOKEN_FLOOR = 0.1
 # batches. Since LOCAL23 it routes on estimated tokens (`request_budget`), and this
 # char threshold is only an upper bound on one request: a transcript over it is
 # always windowed, and no window is longer than it. It is
-# `summarization.skip_above_chars` in production (the cloud paste-bundle knob); the
-# default here matches its default. 0 removes the char bound, not the token one.
+# `config.local_chunk_above_chars(cfg)` in production (PIPE27 split it from the
+# cloud paste-bundle knob); the default here matches its default. 0 removes the char
+# bound, not the token one.
 DEFAULT_MAP_REDUCE_ABOVE_CHARS = 80_000
 # Qwen2.5's native context window: `max_position_embeddings` in every curated
 # preset's config.json (read off the cached 3B on 2026-10-25). Used for a Custom
@@ -448,9 +449,9 @@ class LocalSummaryClient:
             "request_timeout_sec": cfg.summarization.local_request_timeout_sec,
             # LOCAL7: the target output language; "auto" defers to the transcript.
             "summary_language": cfg.summarization.summary_language,
-            # PIPE4: the cloud paste-bundle knob, here only an upper bound on one
-            # local request; the client routes on estimated tokens below it (LOCAL23).
-            "map_reduce_above_chars": cfg.summarization.skip_above_chars,
+            # PIPE4/PIPE27: the local chunking knob, an upper bound on one local
+            # request; the client routes on estimated tokens below it (LOCAL23).
+            "map_reduce_above_chars": local_chunk_above_chars(cfg),
             # LOCAL9: opt-in fine-tuned adapter; empty config keeps the base model.
             "adapter_path": cfg.summarization.local_adapter_path or None,
             # LOCAL16: the free-RAM floor a run aborts under, on every local path.

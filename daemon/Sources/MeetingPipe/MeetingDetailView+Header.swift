@@ -525,10 +525,16 @@ extension MeetingDetailView {
                 Text(label)
                     .font(.mpTextXS)
                     .foregroundStyle(Color(MPColors.fgSubtle))
+                // PIPE27: what the run spent on a per-token engine; nothing on an on-device run.
+                if let spent = TokenUsage.label(meeting.tokenUsage) {
+                    Text("· \(spent)")
+                        .font(.mpTextXS)
+                        .foregroundStyle(Color(MPColors.fgSubtle))
+                }
             }
             .help(provenanceTooltip ?? label)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Summarized by \(label)")
+            .accessibilityLabel("Summarized by \(label)\(TokenUsage.label(meeting.tokenUsage).map { ", \($0)" } ?? "")")
         }
     }
 

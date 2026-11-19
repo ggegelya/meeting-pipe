@@ -272,7 +272,9 @@ struct PipelineSectionView: View {
             .tutorialAnchor(.speakerLabels)
 
             SettingsGroup("Long meetings") {
-                SettingsStackRow("Chunking threshold", showsDivider: false) {
+                // PIPE27: two knobs, so turning the paid-engine gate off no longer turns local
+                // windowing off with it.
+                SettingsStackRow("Pay-per-token limit") {
                     SettingsSlider(
                         value: Binding(
                             get: { Double(store.summarizationSkipAboveChars) },
@@ -284,8 +286,20 @@ struct PipelineSectionView: View {
                         valueWidth: 100
                     )
                 }
+                SettingsStackRow("Local chunk size", showsDivider: false) {
+                    SettingsSlider(
+                        value: Binding(
+                            get: { Double(store.summarizationLocalChunkAboveChars) },
+                            set: { store.summarizationLocalChunkAboveChars = Int($0) }
+                        ),
+                        range: 0...300_000,
+                        step: 5_000,
+                        format: chunkSizeLabel,
+                        valueWidth: 100
+                    )
+                }
             } footer: {
-                Text("When the transcript exceeds this size, a cloud backend writes a paste-into-Claude bundle instead of calling the Anthropic API; a local backend summarizes it on-device with a map-reduce, no bundle. 0 disables the guard. ~80,000 chars ≈ 1 hour of speech.")
+                Text("Pay-per-token limit: past this size, Anthropic, OpenAI and Auto with a key write a paste-into-Claude bundle instead of a summary, so a long meeting costs nothing until you choose. Claude CLI and the on-device engines are never stopped. 0 turns the limit off. Local chunk size: the longest piece Local MLX summarizes in one request; a longer meeting is split and the pieces merged. ~80,000 chars is about 1.5 to 2.5 hours of speech.")
             }
 
             SettingsGroup("Weekly digest") {
@@ -618,11 +632,11 @@ struct PipelineSectionView: View {
     }
 
     private func skipThresholdLabel(_ value: Double) -> String {
-        let n = Int(value)
-        if n == 0 { return "Disabled" }
-        let hours = Double(n) / 80_000.0
-        if hours >= 1 { return String(format: "%.1f h", hours) }
-        return "\(n / 1000)k chars"
+        Int(value) == 0 ? "Off" : "\(Int(value) / 1000)k chars"
+    }
+
+    private func chunkSizeLabel(_ value: Double) -> String {
+        Int(value) == 0 ? "By tokens only" : "\(Int(value) / 1000)k chars"
     }
 
     private var activeModelName: String {

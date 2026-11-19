@@ -59,6 +59,8 @@ struct Meeting: Identifiable, Hashable {
     /// PIPE25: the language Apple Intelligence refused, when the daemon knew it, so the provenance
     /// line can name it. Present only beside `fallback_cause` `unsupported_language`.
     var fallbackLanguage: String? = nil
+    /// PIPE27: `<stem>.run.json`'s `usage`, the tokens the run's metered calls spent.
+    var tokenUsage: TokenUsage? = nil
 
     /// A `var` only so `LiveRecordingOverlay` can mark the live stem `.recording` on a copy (UX101);
     /// the scan never assigns `.recording` itself.
@@ -1132,6 +1134,7 @@ final class MeetingStore: ObservableObject {
             fallbackFrom: (run?["fallback_from"] as? String),
             fallbackCause: (run?["fallback_cause"] as? String),
             fallbackLanguage: (run?["fallback_language"] as? String),
+            tokenUsage: TokenUsage(json: run?["usage"]),
             status: status,
             failureReason: failure?.reason ?? (publishResult?.state == "partial" ? publishResult?.sinks.filter { !$0.ok }.compactMap(\.error).joined(separator: "\n\n") : nil),
             failureStage: failure?.stage.rawValue ?? (publishResult?.state == "partial" ? "publish" : nil),

@@ -330,8 +330,9 @@ const PWPipelinePane = () => (
       </PWRow>
       <PWToggleRow on={false} label="Clean up speaker labels after transcription" sublabel="An extra model call per multi-speaker meeting: after transcription the model merges labels that are one person and fixes obvious mis-attributions. Applies to meetings recorded from now on; neither Re-transcribe… nor Re-summarize runs it over a meeting you already have. It follows your summarization backend, so a regulated or NDA meeting runs it on this Mac instead."/>
     </PWGroup>
-    <PWGroup label="Long meetings" footer="When the transcript exceeds this size, the pipeline writes a paste-into-Claude bundle instead of calling the Anthropic API. 0 disables the guard. ~80,000 chars ≈ 1 hour of speech.">
-      <PWStackRow first label="Chunking threshold"><PWSlider value={80000} max={300000} format="80.0k chars" valueWidth={100}/></PWStackRow>
+    <PWGroup label="Long meetings" footer="Pay-per-token limit: past this size, Anthropic, OpenAI and Auto with a key write a paste-into-Claude bundle instead of a summary, so a long meeting costs nothing until you choose. Claude CLI and the on-device engines are never stopped. 0 turns the limit off. Local chunk size: the longest piece Local MLX summarizes in one request; a longer meeting is split and the pieces merged. ~80,000 chars is about 1.5 to 2.5 hours of speech.">
+      <PWStackRow first label="Pay-per-token limit"><PWSlider value={80000} max={300000} format="80k chars" valueWidth={100}/></PWStackRow>
+      <PWStackRow label="Local chunk size"><PWSlider value={80000} max={300000} format="80k chars" valueWidth={100}/></PWStackRow>
     </PWGroup>
   </div>
 );

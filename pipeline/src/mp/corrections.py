@@ -68,6 +68,7 @@ def write_run_sidecar(
     fallback_from: str | None = None,
     fallback_cause: str | None = None,
     fallback_language: str | None = None,
+    usage: dict[str, int] | None = None,
 ) -> Path:
     """Snapshot the run that produced ``<stem>.summary.json``.
 
@@ -105,6 +106,10 @@ def write_run_sidecar(
         payload["fallback_cause"] = fallback_cause
         if fallback_language:
             payload["fallback_language"] = fallback_language
+    # PIPE27: tokens the run's metered calls spent (`usage.snapshot`); absent on an
+    # on-device run, so its absence is never read as a zero-cost cloud run.
+    if usage:
+        payload["usage"] = dict(usage)
     out = recordings_dir / f"{stem}.run.json"
     try:
         storage.atomic_write_text(out, json.dumps(payload, indent=2, sort_keys=True))

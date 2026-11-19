@@ -181,6 +181,13 @@ final class ConfigStore: ObservableObject {
     /// scheduled or on demand, with no relaunch.
     @Published var summarizationDigestLocalOnly: Bool = false { didSet { scheduleSave() } }
     @Published var summarizationSkipAboveChars: Int = 0 { didSet { scheduleSave() } }
+    /// PIPE27: the local backend's map-reduce bound, split from the cloud gate above. Absent from
+    /// the file it reads as the gate when that is non-zero, else 80,000 (`mp.config
+    /// .local_chunk_above_chars`). Written when changed here, and pinned at its shown value when
+    /// the gate is changed here (`prepareWrite`), so the two sliders stay independent.
+    @Published var summarizationLocalChunkAboveChars: Int = 0 { didSet { scheduleSave() } }
+    static let cloudGateKey = "summarization.skip_above_chars"
+    static let localChunkKey = "summarization.local_chunk_above_chars"
     /// Summarize backend: "anthropic" | "local" | "auto". Mirrors
     /// `summarization.backend`.
     @Published var summarizationBackend: String = "" { didSet { scheduleSave() } }
@@ -618,6 +625,8 @@ final class ConfigStore: ObservableObject {
         self.summarizationDiarizeCleanup = summ?["diarize_cleanup"]?.bool ?? false
         self.summarizationDigestLocalOnly = summ?["digest_local_only"]?.bool ?? false
         self.summarizationSkipAboveChars = summ?["skip_above_chars"]?.int ?? 80000
+        self.summarizationLocalChunkAboveChars = summ?["local_chunk_above_chars"]?.int
+            ?? (summarizationSkipAboveChars != 0 ? summarizationSkipAboveChars : 80000)
         self.summarizationBackend = summ?["backend"]?.string ?? "anthropic"
         // Mirrors `Summarization.model` in config.py; ConfigStoreTests reads that source.
         self.summarizationModel = summ?["model"]?.string ?? "claude-sonnet-5-5"
@@ -784,7 +793,13 @@ final class ConfigStore: ObservableObject {
             throw error
         }
         let current = currentValues()
-        let changed = Set(current.keys.filter { !Self.same(current[$0], syncedValues[$0]) })
+        var changed = Set(current.keys.filter { !Self.same(current[$0], syncedValues[$0]) })
+        // PIPE27: a file without `local_chunk_above_chars` derives the local bound from the
+        // cloud gate, so moving the gate alone would move local chunking with it while the
+        // Local chunk size slider showed the old value. Pin the shown value with the gate.
+        if changed.contains(Self.cloudGateKey), Self.value(at: Self.localChunkKey, in: file.document) == nil {
+            changed.insert(Self.localChunkKey)
+        }
         let ownWrite = queuedWrites.contains { Data($0.toml.utf8) == file.bytes }
         if file.bytes != syncedBytes, !ownWrite, !changed.isEmpty {
             let synced = syncedBytes.map { Self.parse($0).document } ?? TOMLTable()
@@ -838,6 +853,7 @@ final class ConfigStore: ObservableObject {
             ("summarization", "diarize_cleanup", summarizationDiarizeCleanup),
             ("summarization", "digest_local_only", summarizationDigestLocalOnly),
             ("summarization", "skip_above_chars", summarizationSkipAboveChars),
+            ("summarization", "local_chunk_above_chars", summarizationLocalChunkAboveChars),
             ("summarization", "backend", summarizationBackend),
             ("summarization", "model", summarizationModel),
             ("summarization", "local_model", summarizationLocalModel),
