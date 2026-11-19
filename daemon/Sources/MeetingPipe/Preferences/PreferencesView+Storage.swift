@@ -174,6 +174,13 @@ struct StorageSectionView: View {
             SettingsRow("Recordings folder", sublabel: store.outputDirPath) {
                 LibraryRootButtons(stats: stats, storageBusy: busy.isBusy)
             }
+            // UX105: a cross-volume move copies the whole library, which takes minutes, and the
+            // pane used to look idle for all of it.
+            if let destination = stats.movingTo {
+                SettingsRow("Moving the library", sublabel: "To \(destination.path). Back up, Restore and the folder actions wait until it finishes.") {
+                    ProgressView().controlSize(.small)
+                }
+            }
             SettingsRow("Total size",
                 sublabel: "Recordings, transcripts, summaries, and every sidecar.") {
                 valueText(stats.stats?.libraryBytes)
@@ -496,22 +503,22 @@ struct StorageSectionView: View {
             SettingsRow("Waveform peaks",
                 sublabel: "Recomputed the next time you open a meeting's Audio tab.") {
                 HStack(spacing: MPSpace.s2) {
-                    valueText(stats.stats?.waveformCacheBytes)
+                    cacheSize(stats.stats?.waveformCacheBytes, clearing: stats.clearingCache == .waveformPeaks)
                     Button("Clear") {
                         Task { await stats.clearWaveformCache() }
                     }
                     .buttonStyle(.mpGhost)
-                    .disabled((stats.stats?.waveformCacheBytes ?? 0) == 0)
+                    .disabled((stats.stats?.waveformCacheBytes ?? 0) == 0 || stats.clearingCache != nil)
                 }
             }
             SettingsRow("Downloaded models",
                 sublabel: modelsSublabel,
                 showsDivider: false) {
                 HStack(spacing: MPSpace.s2) {
-                    valueText(stats.stats?.modelCacheBytes)
+                    cacheSize(stats.stats?.modelCacheBytes, clearing: stats.clearingCache == .unusedModels)
                     Button("Evict unused") { confirmingEviction = true }
                         .buttonStyle(.mpGhost)
-                        .disabled((stats.stats?.evictableModelBytes ?? 0) == 0)
+                        .disabled((stats.stats?.evictableModelBytes ?? 0) == 0 || stats.clearingCache != nil)
                 }
             }
         }
@@ -566,6 +573,17 @@ struct StorageSectionView: View {
         Text(byteText(bytes))
             .font(.mpTextBase.monospacedDigit())
             .foregroundStyle(Color(MPColors.fgMuted))
+    }
+
+    /// UX105: a spinner in place of the size while that cache is being emptied, so the pre-clear
+    /// size is never shown beside the action that is already removing it.
+    @ViewBuilder
+    private func cacheSize(_ bytes: Int?, clearing: Bool) -> some View {
+        if clearing {
+            ProgressView().controlSize(.small)
+        } else {
+            valueText(bytes)
+        }
     }
 
     private func byteText(_ bytes: Int?) -> String {

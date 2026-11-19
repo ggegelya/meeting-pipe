@@ -150,16 +150,24 @@ struct SettingsToggleRow: View {
     let sublabel: String?
     @Binding var isOn: Bool
     var showsDivider: Bool
+    /// UX105: a write is in flight. A small spinner sits before the switch and the switch is
+    /// disabled, so a control that moves only once the machine answers (Launch at login, UX42)
+    /// reads as busy between the click and the answer rather than as ignoring the click.
+    var isBusy: Bool
 
-    init(_ label: String, sublabel: String? = nil, isOn: Binding<Bool>, showsDivider: Bool = true) {
+    init(_ label: String, sublabel: String? = nil, isOn: Binding<Bool>, showsDivider: Bool = true, isBusy: Bool = false) {
         self.label = label
         self.sublabel = sublabel
         self._isOn = isOn
         self.showsDivider = showsDivider
+        self.isBusy = isBusy
     }
 
     var body: some View {
         SettingsRow(label, sublabel: sublabel, showsDivider: showsDivider) {
+            if isBusy {
+                ProgressView().controlSize(.small)
+            }
             // DSN28: the locked mechanical toggle (DSN24) replaces the stock switch.
             // The switch was innately accessible; the custom style is a Button, so
             // re-attach the setting name + on/off value to keep VoiceOver's floor.
@@ -168,6 +176,7 @@ struct SettingsToggleRow: View {
                 .toggleStyle(.mechanical)
                 .accessibilityLabel(label)
                 .accessibilityValue(isOn ? "On" : "Off")
+                .disabled(isBusy)
         }
     }
 }

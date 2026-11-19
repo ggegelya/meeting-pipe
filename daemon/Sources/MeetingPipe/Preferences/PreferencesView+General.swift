@@ -145,8 +145,8 @@ struct GeneralSectionView: View {
             SettingsGroup("Startup") {
                 SettingsToggleRow("Launch at login",
                     sublabel: launchAtLoginSublabel,
-                    isOn: launchAtLoginBinding)
-                    .disabled(launchAtLogin.isBusy)
+                    isOn: launchAtLoginBinding,
+                    isBusy: launchAtLogin.isBusy)
                 SettingsToggleRow("Relaunch after quitting",
                     sublabel: "Off: Quit closes MeetingPipe until you open it again or log in. On: Quit restarts it in the menu bar. Either way, a copy started at login comes back after a crash, and Restart MeetingPipe in the menu bar restarts it on purpose.",
                     isOn: $ui.relaunchAfterQuit,

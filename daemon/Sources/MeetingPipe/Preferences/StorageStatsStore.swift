@@ -33,10 +33,41 @@ final class StorageStatsStore: ObservableObject {
     /// The file-heuristic fallback re-checked at execute (STOR16): work no owner reports.
     typealias InFlightCheck = @Sendable (_ source: URL) -> String?
 
-    /// True from the execute-time check until the move returns (STOR16). Back up now and Restore
-    /// are disabled meanwhile, and so are both root actions.
-    @Published private(set) var isMoving = false
+    /// Where a confirmed move is going, from the moment `executeMove` starts until the post-move
+    /// scan has published (UX105; STOR16 set the flag only around the executor and cleared it
+    /// before the rescan). The Storage pane shows a progress row naming it.
+    @Published private(set) var movingTo: URL?
+    /// True while a confirmed move runs (STOR16, widened by UX105). Back up now and Restore are
+    /// disabled meanwhile, and so are both root actions.
+    var isMoving: Bool { movingTo != nil }
     let moveGuard: LibraryMoveGuard
+
+    /// UX105: which cache a Clear or Evict unused is emptying, from the click until the scan
+    /// taken after the delete has published. The row shows a spinner in place of its size and
+    /// disables its button meanwhile, so the old size never sits beside a live button.
+    enum CacheKind: Equatable { case waveformPeaks, unusedModels }
+    @Published private(set) var clearingCache: CacheKind?
+
+    /// Everything a scan reads, gathered on main and handed off main as one value.
+    struct ScanInputs: Sendable {
+        let libraryDir: URL
+        let originalsDir: URL
+        let waveformCacheDir: URL
+        let hubRoot: URL
+        let activeModelID: String
+        let retentionByWorkflow: [UUID: RetentionPolicy]
+        let defaultPolicy: RetentionPolicy?
+    }
+    /// `StorageScanner.scan`, injectable so a test can hold a scan in flight (UX105).
+    typealias Scanner = @Sendable (ScanInputs) -> StorageStats
+    /// Deletes the `.peaks` files in the waveform cache. Injectable for UX105's tests.
+    typealias PeaksClearer = @Sendable (_ cacheDir: URL) -> Void
+    /// Removes one evictable model directory. Injectable for UX105's tests.
+    typealias ModelRemover = @Sendable (_ directory: URL) throws -> Void
+
+    /// The scan running now, if any. A second `rescan()` waits on it rather than starting a
+    /// parallel walk; `rescanAfterChange()` waits on it and then scans again.
+    private var inFlightScan: Task<Void, Never>?
 
     private let workflowStore: WorkflowStore
     private let configStore: ConfigStore
@@ -44,6 +75,9 @@ final class StorageStatsStore: ObservableObject {
     private let executor: MoveExecutor
     private let inFlightCheck: InFlightCheck
     private let hubRoot: URL
+    private let scanner: Scanner
+    private let peaksClearer: PeaksClearer
+    private let modelRemover: ModelRemover
 
     init(
         configStore: ConfigStore,
@@ -54,8 +88,32 @@ final class StorageStatsStore: ObservableObject {
         hubRoot: URL = StorageScanner.hubRoot(home: FileManager.default.homeDirectoryForCurrentUser),
         moveGuard: LibraryMoveGuard = LibraryMoveGuard(),
         executor: @escaping MoveExecutor = { plan in try LibraryMover.execute(plan) },
-        inFlightCheck: @escaping InFlightCheck = { source in LibraryMover.inFlightReason(in: source) }
+        inFlightCheck: @escaping InFlightCheck = { source in LibraryMover.inFlightReason(in: source) },
+        scanner: @escaping Scanner = { inputs in
+            StorageScanner.scan(
+                libraryDir: inputs.libraryDir,
+                originalsDir: inputs.originalsDir,
+                waveformCacheDir: inputs.waveformCacheDir,
+                hubRoot: inputs.hubRoot,
+                activeModelID: inputs.activeModelID,
+                retentionByWorkflow: inputs.retentionByWorkflow,
+                defaultPolicy: inputs.defaultPolicy
+            )
+        },
+        peaksClearer: @escaping PeaksClearer = { dir in
+            let fm = FileManager.default
+            guard let entries = try? fm.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil, options: []
+            ) else { return }
+            for url in entries where url.pathExtension == "peaks" {
+                try? fm.removeItem(at: url)
+            }
+        },
+        modelRemover: @escaping ModelRemover = { try FileManager.default.removeItem(at: $0) }
     ) {
+        self.scanner = scanner
+        self.peaksClearer = peaksClearer
+        self.modelRemover = modelRemover
         self.hubRoot = hubRoot
         self.moveGuard = moveGuard
         self.executor = executor
@@ -69,10 +127,34 @@ final class StorageStatsStore: ObservableObject {
         URL(fileURLWithPath: (configStore.outputDirPath as NSString).expandingTildeInPath)
     }
 
+    /// Take a fresh reading. While a scan is already running this waits for it rather than
+    /// starting a second walk, which is what the pane's `.task` and Rescan want; a caller that has
+    /// just changed the disk wants `rescanAfterChange()` instead.
     func rescan() async {
-        guard !isScanning else { return }
+        if let running = inFlightScan {
+            await running.value
+            return
+        }
+        let task = Task { await self.performScan() }
+        inFlightScan = task
+        await task.value
+    }
+
+    /// A scan that starts after the caller's change, even when one was already in flight (UX105).
+    /// The running scan may have measured the disk before the delete or the move, and `rescan()`
+    /// used to return at `guard !isScanning`, which left the pre-clear size on screen.
+    func rescanAfterChange() async {
+        if let running = inFlightScan { await running.value }
+        await rescan()
+    }
+
+    private func performScan() async {
         isScanning = true
-        defer { isScanning = false }
+        // Cleared here, inside the task, so no waiter resuming later can clear a newer scan's handle.
+        defer {
+            isScanning = false
+            inFlightScan = nil
+        }
 
         let libraryDir = libraryURL
         promisesZeroEgress = configStore.regulatedMode
@@ -88,35 +170,26 @@ final class StorageStatsStore: ObservableObject {
             uniqueKeysWithValues: workflowStore.workflows.map { ($0.id, $0.retention.policy) }
         )
         let defaultPolicy = workflowStore.defaultWorkflow?.retention.policy
-
-        stats = await Task.detached(priority: .userInitiated) {
-            StorageScanner.scan(
-                libraryDir: libraryDir,
-                originalsDir: originalsDir,
-                waveformCacheDir: waveformCacheDir,
-                hubRoot: hubRoot,
-                activeModelID: activeModelID,
-                retentionByWorkflow: retention,
-                defaultPolicy: defaultPolicy
-            )
-        }.value
+        let inputs = ScanInputs(
+            libraryDir: libraryDir, originalsDir: originalsDir, waveformCacheDir: waveformCacheDir,
+            hubRoot: hubRoot, activeModelID: activeModelID,
+            retentionByWorkflow: retention, defaultPolicy: defaultPolicy
+        )
+        let scanner = self.scanner
+        stats = await Task.detached(priority: .userInitiated) { scanner(inputs) }.value
     }
 
     /// Delete the waveform peaks cache. Rebuildable: the next time a meeting's
     /// Audio tab opens, its peaks are recomputed from the recording.
     func clearWaveformCache() async {
+        guard clearingCache == nil else { return }
+        clearingCache = .waveformPeaks
+        defer { clearingCache = nil }
         let dir = WaveformPeaksLoader.cacheDirectory()
-        await Task.detached(priority: .userInitiated) {
-            let fm = FileManager.default
-            guard let entries = try? fm.contentsOfDirectory(
-                at: dir, includingPropertiesForKeys: nil, options: []
-            ) else { return }
-            for url in entries where url.pathExtension == "peaks" {
-                try? fm.removeItem(at: url)
-            }
-        }.value
+        let clearer = peaksClearer
+        await Task.detached(priority: .userInitiated) { clearer(dir) }.value
         Log.event(category: "coordinator", action: "waveform_cache_cleared", attributes: [:])
-        await rescan()
+        await rescanAfterChange()
     }
 
     /// Delete the app's own preset models the config no longer points at (STOR15). Never the
@@ -130,14 +203,17 @@ final class StorageStatsStore: ObservableObject {
         let nowConfigured = StorageScanner.hubDirectoryName(forRepo: configStore.summarizationLocalModel)
         guard let evictable = stats?.evictableModels
             .filter({ $0.directory.lastPathComponent.caseInsensitiveCompare(nowConfigured) != .orderedSame }),
-            !evictable.isEmpty else { return }
+            !evictable.isEmpty, clearingCache == nil else { return }
+        clearingCache = .unusedModels
+        defer { clearingCache = nil }
+        let remover = modelRemover
         let candidates = evictable.map { (directory: $0.directory, bytes: $0.bytes) }
         // STOR7 (SW-18): count what was actually removed. This logged every candidate's bytes as
         // freed before any removal, over a `try?` loop.
         let removed: [(directory: URL, bytes: Int)] = await Task.detached(priority: .userInitiated) {
             candidates.filter { candidate in
                 do {
-                    try FileManager.default.removeItem(at: candidate.directory)
+                    try remover(candidate.directory)
                     return true
                 } catch {
                     Log.failure(category: "coordinator", action: "model_evict_failed", error: error, describe: false)
@@ -150,7 +226,7 @@ final class StorageStatsStore: ObservableObject {
             "bytes_freed": removed.reduce(0) { $0 + $1.bytes },
             "failed": candidates.count - removed.count,
         ])
-        await rescan()
+        await rescanAfterChange()
     }
 
     /// Build the move plan for a user-chosen destination, or surface why not.
@@ -200,6 +276,10 @@ final class StorageStatsStore: ObservableObject {
             moveError = LibraryRootChange.unwritableConfig
             return
         }
+        // UX105: busy from here, the execute-time check included, until the scan after the move
+        // has published, so Move library is never live again while the pane still shows the old root.
+        movingTo = plan.destination
+        defer { movingTo = nil }
         // STOR16: the plan's check ran when the dialog opened, and the dialog waits for as long as
         // the owner does. Re-check now: the files first (off main, the fallback for work nothing
         // owns), then the owners and the claim in one main-actor turn, so nothing can start a
@@ -211,7 +291,6 @@ final class StorageStatsStore: ObservableObject {
             moveError = LibraryMover.MoveError.busy(reason).localizedDescription
             return
         }
-        isMoving = true
         let executor = self.executor
         do {
             try await Task.detached(priority: .userInitiated) {
@@ -222,9 +301,8 @@ final class StorageStatsStore: ObservableObject {
         } catch {
             moveError = error.localizedDescription
         }
-        isMoving = false
         moveGuard.end()
-        await rescan()
+        await rescanAfterChange()
     }
 
     /// **Use another folder…** (UX89): check, then hold the pick for confirmation. Refused while a
