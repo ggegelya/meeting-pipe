@@ -244,7 +244,7 @@ allow = visibility.visible_stems(root)             # AUTO3: which meetings may l
 
 ### Test discipline
 
-- pytest + monkeypatch. No live HTTP, no network sockets.
+- pytest + monkeypatch. No live HTTP, no network sockets, except `live`-marked contract tests that skip unless the owner opts in (T10, `tests/test_anthropic_live.py`; never in CI).
 - Outbound HTTP (Notion / Anthropic / OpenAI) is faked with `httpx.MockTransport`: monkeypatch `httpx.Client` to inject `transport=httpx.MockTransport(handler)` and answer from a handler function. See `tests/test_publish_notion.py`. No cassettes, so nothing to re-record.
 - Services depend on `Protocol`s from `services.py`. Tests inject in-memory fakes, not vendor SDK mocks.
 - Fixtures and examples use synthetic names and stems (`Avery`, `Blake`, `Casey`, `20260101-120000`), never a roster name, the owner's label or a library stem; describe a field failure by its shape, not as "the real" meeting. `truth_fences.py personal` checks this on the owner's Mac against the roster, config and library (HYG21).

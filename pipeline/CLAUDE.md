@@ -55,7 +55,7 @@ CI also runs pyright (TYPE1), configured in `pyproject.toml`'s `[tool.pyright]`.
 
 ## Tests
 
-- pytest + monkeypatch. No live HTTP, no real network sockets.
+- pytest + monkeypatch. No live HTTP, no real network sockets. The one exception is a `live`-marked test (T10, `test_anthropic_live.py`): opt-in by env var and key, never in CI. The Anthropic request bodies are pinned by `tests/goldens/` snapshots instead; regenerate with `MP_UPDATE_GOLDENS=1` (module docstring) and review the diff.
 - **The suite is sealed from the machine by conftest (T12):** `_no_network` fails any non-loopback resolve or connect, the Keychain reader and `CONFIG_PATH` are stubbed. Don't add a per-test Keychain stub, and mark an egress-guard proof `guard_proof` rather than loosening the wrapper. → [gotchas](docs/gotchas.md#the-suites-network-wrapper-is-installed-once-t12)
 - **Outbound HTTP is faked with `httpx.MockTransport`, not recorded.** Monkeypatch `httpx.Client` to inject `transport=httpx.MockTransport(handler)` and answer from a handler function (`test_publish_notion.py` is the template; `test_summarize_backend.py` and `test_publish_from_paste.py` use the same shape). There are no cassettes and no `tests/cassettes/` directory: responses are written inline, so a test says what it expects instead of hiding it in a recorded fixture, and nothing ever needs re-recording. `pytest-vcr` / `vcrpy` were declared as dev deps for years without a single import; DOC9 dropped them.
 

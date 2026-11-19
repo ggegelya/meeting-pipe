@@ -150,6 +150,13 @@ venv = ".venv"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+# T10: `live` tests send real requests (tests/test_anthropic_live.py). Each one also
+# skips itself unless its opt-in env var and key are set, so the default run, CI
+# included, only ever reports them skipped. `_no_network` in conftest stands aside
+# for this marker, since reaching the API is the point.
+markers = [
+    "live: sends a real request to a cloud API; opt-in, never in CI (T10)",
+]
 
 # SEC31. Holds huggingface-hub on 1.x. 2.x moves its HTTP onto httpx2/httpcore2 and
 # truststore. SEC19's socket layer now refuses those connects under regulated mode

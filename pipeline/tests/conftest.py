@@ -105,9 +105,11 @@ def _no_network(request):
 
     Raised as `pytest.fail` (a BaseException, so a library `except Exception` cannot
     swallow it) and also recorded, so a caller that catches BaseException still fails
-    the test at teardown. A `guard_proof` test stands it aside. A test that stubs
+    the test at teardown. A `guard_proof` or `live` test stands it aside. A test that stubs
     `socket.getaddrinfo` itself replaces that half for its own duration."""
-    if request.node.get_closest_marker("guard_proof") is not None:
+    # T10: a `live` test exists to reach the real API, and skips itself unless the
+    # owner opted in with a key, so it is the one other case that stands aside.
+    if any(request.node.get_closest_marker(m) is not None for m in ("guard_proof", "live")):
         yield
         return
     blocked: list[str] = []

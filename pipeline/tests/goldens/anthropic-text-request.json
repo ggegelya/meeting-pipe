@@ -1,0 +1,44 @@
+{
+  "client": {
+    "max_retries": 0,
+    "timeout": {
+      "connect": 10.0,
+      "pool": 120.0,
+      "read": 120.0,
+      "write": 120.0
+    }
+  },
+  "request": {
+    "body": {
+      "max_tokens": 12000,
+      "messages": [
+        {
+          "content": "When is the release?\n\n**A:** Morning. Two things today: the release date and the flaky test.\n**B:** Release is Thursday unless the flaky test blocks it.\n**A:** Then B owns the flaky test and reports back tomorrow.\n",
+          "role": "user"
+        }
+      ],
+      "model": "claude-sonnet-5-5",
+      "output_config": {
+        "effort": "low"
+      },
+      "system": [
+        {
+          "cache_control": {
+            "type": "ephemeral"
+          },
+          "text": "Answer from the meetings.",
+          "type": "text"
+        }
+      ],
+      "thinking": {
+        "type": "adaptive"
+      }
+    },
+    "headers": {
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json"
+    },
+    "method": "POST",
+    "path": "/v1/messages"
+  }
+}

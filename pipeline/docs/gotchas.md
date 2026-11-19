@@ -279,7 +279,7 @@ Not done, on purpose: notes the old naming already wrote stay where they are (th
 
 Two leaks it found on its first run: the `--cluster` CLI tests and eight `test_ask.py` cases reached huggingface.co through `embed_index.default_embedder()`, which picks MLX e5 wherever `mlx_embeddings` imports. Both files now pin `HashingEmbedder`, and the full suite dropped from about 81 s to about 50 s on the dev Mac.
 
-A blocked call raises `pytest.fail` (a `BaseException`, so `except Exception` in library code cannot hide it) and is also recorded, so a caller that swallows `BaseException` still fails at teardown. The egress-guard proofs aim at public addresses on purpose with the downstream stubbed, so they carry `@pytest.mark.guard_proof`.
+A blocked call raises `pytest.fail` (a `BaseException`, so `except Exception` in library code cannot hide it) and is also recorded, so a caller that swallows `BaseException` still fails at teardown. The egress-guard proofs aim at public addresses on purpose with the downstream stubbed, so they carry `@pytest.mark.guard_proof`. The `live` marker (T10) also stands it aside: those tests exist to reach the real Anthropic API and skip unless `MP_LIVE_ANTHROPIC=1` and a key are set, so the default run and CI never leave the machine.
 
 ## A rename is its own key, because `meeting_title` is also a routing signal (PIPE55)
 

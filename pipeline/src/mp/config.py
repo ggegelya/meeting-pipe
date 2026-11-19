@@ -604,6 +604,12 @@ def anthropic_sampling(
     is not available there), the tool is steered with `auto` (each prompt already
     says to call it exactly once, and each caller already copes with a reply that
     has no tool_use block), and adaptive thinking runs at low effort.
+
+    T10: the full request each call site builds from this is pinned by
+    `tests/test_anthropic_request_goldens.py`, which says what we send, not that the
+    API accepts it. Before changing this function, the default model, or the
+    `anthropic` lock entry, run the opt-in live test as well:
+    `MP_LIVE_ANTHROPIC=1 uv run --extra dev pytest -m live -q` (needs ANTHROPIC_API_KEY).
     """
     if _ANTHROPIC_SAMPLING_MODEL.match(model):
         legacy: dict[str, Any] = {"max_tokens": max_tokens}

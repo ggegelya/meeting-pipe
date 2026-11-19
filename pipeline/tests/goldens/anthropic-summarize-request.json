@@ -1,0 +1,311 @@
+{
+  "client": {
+    "max_retries": 0,
+    "timeout": {
+      "connect": 10.0,
+      "pool": 120.0,
+      "read": 120.0,
+      "write": 120.0
+    }
+  },
+  "request": {
+    "body": {
+      "max_tokens": 12000,
+      "messages": [
+        {
+          "content": "Summarize this meeting. Call `emit_meeting_summary` exactly once.\n\n<<<UNTRUSTED_TRANSCRIPT_BEGIN>>>\n**A:** Morning. Two things today: the release date and the flaky test.\n**B:** Release is Thursday unless the flaky test blocks it.\n**A:** Then B owns the flaky test and reports back tomorrow.\n\n<<<UNTRUSTED_TRANSCRIPT_END>>>",
+          "role": "user"
+        }
+      ],
+      "model": "claude-sonnet-5-5",
+      "output_config": {
+        "effort": "low"
+      },
+      "system": [
+        {
+          "cache_control": {
+            "type": "ephemeral"
+          },
+          "text": "Summarize the meeting.",
+          "type": "text"
+        }
+      ],
+      "thinking": {
+        "type": "adaptive"
+      },
+      "tool_choice": {
+        "type": "auto"
+      },
+      "tools": [
+        {
+          "description": "Emit the structured meeting summary. Call exactly once. Do not invent action items: if no clear owner is stated, set owner to null and confidence to \"low\".",
+          "input_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "actions": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "confidence": {
+                      "enum": [
+                        "low",
+                        "medium",
+                        "high"
+                      ],
+                      "type": "string"
+                    },
+                    "due": {
+                      "description": "ISO 8601 date if extractable.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "evidence": {
+                      "description": "Up to 2 anchors backing this point, or an empty list. Each is a phrase copied VERBATIM from the transcript plus the timestamp of the turn it came from. Never paraphrase a quote and never invent a timestamp: an anchor that does not match the transcript is discarded.",
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "quote": {
+                            "description": "Verbatim transcript phrase, at most 15 words, in the transcript's own language.",
+                            "type": "string"
+                          },
+                          "t": {
+                            "description": "The cited turn's timestamp: the `[mm:ss]` marker copied from the start of that transcript line, or the same value in seconds.",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "quote",
+                          "t"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 2,
+                      "type": "array"
+                    },
+                    "owner": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "resolved": {
+                      "description": "True only if the meeting states the item is already done; default false (open).",
+                      "type": "boolean"
+                    },
+                    "task": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "task",
+                    "owner",
+                    "due",
+                    "confidence",
+                    "evidence"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "attendees": {
+                "description": "Inferred from speaker labels and content.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "decisions": {
+                "description": "Only include statements with explicit commitment language (will/agreed/decided/approved).",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "evidence": {
+                      "description": "Up to 2 anchors backing this point, or an empty list. Each is a phrase copied VERBATIM from the transcript plus the timestamp of the turn it came from. Never paraphrase a quote and never invent a timestamp: an anchor that does not match the transcript is discarded.",
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "quote": {
+                            "description": "Verbatim transcript phrase, at most 15 words, in the transcript's own language.",
+                            "type": "string"
+                          },
+                          "t": {
+                            "description": "The cited turn's timestamp: the `[mm:ss]` marker copied from the start of that transcript line, or the same value in seconds.",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "quote",
+                          "t"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 2,
+                      "type": "array"
+                    },
+                    "text": {
+                      "description": "The point itself.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "text",
+                    "evidence"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "detected_language": {
+                "description": "ISO 639-1 code, e.g. 'en' or 'uk'.",
+                "type": "string"
+              },
+              "extra_sections": {
+                "description": "Only the extra sections the system prompt explicitly requests, each filled per its instruction. Omit or leave empty when none are requested.",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "content": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "name": {
+                      "description": "The requested section's exact name.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "content"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "questions": {
+                "description": "Unresolved questions raised during the meeting.",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "evidence": {
+                      "description": "Up to 2 anchors backing this point, or an empty list. Each is a phrase copied VERBATIM from the transcript plus the timestamp of the turn it came from. Never paraphrase a quote and never invent a timestamp: an anchor that does not match the transcript is discarded.",
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "quote": {
+                            "description": "Verbatim transcript phrase, at most 15 words, in the transcript's own language.",
+                            "type": "string"
+                          },
+                          "t": {
+                            "description": "The cited turn's timestamp: the `[mm:ss]` marker copied from the start of that transcript line, or the same value in seconds.",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "quote",
+                          "t"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 2,
+                      "type": "array"
+                    },
+                    "text": {
+                      "description": "The point itself.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "text",
+                    "evidence"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "summary": {
+                "description": "≤5 bullets, ≤30 words each. Total under 150 words.",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "evidence": {
+                      "description": "Up to 2 anchors backing this point, or an empty list. Each is a phrase copied VERBATIM from the transcript plus the timestamp of the turn it came from. Never paraphrase a quote and never invent a timestamp: an anchor that does not match the transcript is discarded.",
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "quote": {
+                            "description": "Verbatim transcript phrase, at most 15 words, in the transcript's own language.",
+                            "type": "string"
+                          },
+                          "t": {
+                            "description": "The cited turn's timestamp: the `[mm:ss]` marker copied from the start of that transcript line, or the same value in seconds.",
+                            "type": [
+                              "number",
+                              "string"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "quote",
+                          "t"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 2,
+                      "type": "array"
+                    },
+                    "text": {
+                      "description": "The point itself.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "text",
+                    "evidence"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 5,
+                "type": "array"
+              },
+              "title": {
+                "description": "Short title derived from content (≤60 chars preferred).",
+                "maxLength": 120,
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "summary",
+              "decisions",
+              "actions",
+              "questions",
+              "attendees",
+              "detected_language"
+            ],
+            "type": "object"
+          },
+          "name": "emit_meeting_summary"
+        }
+      ]
+    },
+    "headers": {
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json"
+    },
+    "method": "POST",
+    "path": "/v1/messages"
+  }
+}
