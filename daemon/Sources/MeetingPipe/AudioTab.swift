@@ -384,6 +384,9 @@ private struct WaveformBody: View {
                         seekFromLocation(v.location.x, width: width)
                     }
             )
+            // UX102: one accessibility element with the playhead as its value, and arrow keys
+            // and VoiceOver's adjust stepping it. The modifier observes the clock, not this view.
+            .modifier(WaveformAccessibility(clock: playback.clock, durationSec: peaks.durationSec, playback: playback))
     }
 
     private func seekFromLocation(_ x: CGFloat, width: CGFloat) {
@@ -391,6 +394,39 @@ private struct WaveformBody: View {
         let clamped = max(0, min(x, width))
         let t = peaks.durationSec * Double(clamped / width)
         playback.seek(to: t)
+    }
+}
+
+/// The waveform's accessibility element and keyboard seek (UX102). The waveform used to be a
+/// `Canvas` reached only by pointer: VoiceOver had no element, label or value on it, and the tab's
+/// only key was Space. A modifier rather than a change to `WaveformBody` because the value moves
+/// with the clock: this observes `PlaybackClock` itself, as `PlayheadOverlay` does, so the ~15 Hz
+/// tick re-evaluates this modifier and never `StaticWaveform`'s per-column stroking (TECH-A13).
+private struct WaveformAccessibility: ViewModifier {
+    @ObservedObject var clock: PlaybackClock
+    let durationSec: Double
+    let playback: AudioPlaybackController
+
+    func body(content: Content) -> some View {
+        content
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Recording waveform, mic and system audio")
+            .accessibilityValue(WaveformSeek.value(current: clock.currentTime, durationSec: durationSec))
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: step(forward: true)
+                case .decrement: step(forward: false)
+                @unknown default: break
+                }
+            }
+            .focusable()
+            .onKeyPress(.leftArrow) { step(forward: false); return .handled }
+            .onKeyPress(.rightArrow) { step(forward: true); return .handled }
+    }
+
+    private func step(forward: Bool) {
+        guard durationSec > 0 else { return }
+        playback.seek(to: WaveformSeek.step(from: clock.currentTime, forward: forward, durationSec: durationSec))
     }
 }
 

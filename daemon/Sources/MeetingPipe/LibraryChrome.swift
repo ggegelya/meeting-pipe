@@ -192,8 +192,8 @@ struct MPStatusPill: View {
 struct MPSteadyPulseDot: View {
     let color: Color
     var size: CGFloat = 6
-
-    private static let periodSec: Double = 1.6
+    /// UX102: under Reduce Motion the dot is drawn once at full opacity, with no `TimelineView`.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// 12 fps cap (PERF26): a 1.6 s opacity envelope needs no more, and an uncapped
     /// `.animation` schedule redraws at the display rate (120 Hz on ProMotion). Keep it equal
@@ -201,17 +201,26 @@ struct MPSteadyPulseDot: View {
     static let frameInterval: TimeInterval = 1.0 / 12
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: Self.frameInterval)) { ctx in
-            let t = ctx.date.timeIntervalSinceReferenceDate
-            let phase = (t.truncatingRemainder(dividingBy: Self.periodSec)) / Self.periodSec
-            // 1..0.35..1 envelope - "steady, not urgent" per design system.
-            let envelope = 0.675 + 0.325 * cos(phase * 2 * .pi)
-            Circle()
-                .fill(color)
-                .frame(width: size, height: size)
-                .opacity(envelope)
+        Group {
+            if reduceMotion {
+                dot(opacity: PulseEnvelope.steadyDot(at: 0, reduceMotion: true))
+            } else {
+                // 1..0.35..1 envelope - "steady, not urgent" per design system.
+                TimelineView(.animation(minimumInterval: Self.frameInterval)) { ctx in
+                    dot(opacity: PulseEnvelope.steadyDot(
+                        at: ctx.date.timeIntervalSinceReferenceDate, reduceMotion: false
+                    ))
+                }
+            }
         }
         .frame(width: size, height: size)
+    }
+
+    private func dot(opacity: Double) -> some View {
+        Circle()
+            .fill(color)
+            .frame(width: size, height: size)
+            .opacity(opacity)
     }
 }
 
@@ -219,22 +228,34 @@ struct MPSteadyPulseDot: View {
 struct MPRingSpinner: View {
     let color: Color
     var size: CGFloat = 7
+    /// UX102: under Reduce Motion a still, partial ring, with no `TimelineView`.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// 20 fps cap (PERF26): 18 degrees a frame on a 7 pt ring on a 1 s period still reads as
     /// a smooth turn, where the uncapped schedule drew up to 120 frames a second.
     static let frameInterval: TimeInterval = 1.0 / 20
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: Self.frameInterval)) { ctx in
-            let t = ctx.date.timeIntervalSinceReferenceDate
-            let phase = (t.truncatingRemainder(dividingBy: 1.0)) / 1.0
-            Circle()
-                .trim(from: 0, to: 0.7)
-                .stroke(color, style: StrokeStyle(lineWidth: 1, lineCap: .round))
-                .frame(width: size, height: size)
-                .rotationEffect(.degrees(360 * phase))
+        Group {
+            if reduceMotion {
+                ring(degrees: PulseEnvelope.ringDegrees(at: 0, reduceMotion: true))
+            } else {
+                TimelineView(.animation(minimumInterval: Self.frameInterval)) { ctx in
+                    ring(degrees: PulseEnvelope.ringDegrees(
+                        at: ctx.date.timeIntervalSinceReferenceDate, reduceMotion: false
+                    ))
+                }
+            }
         }
         .frame(width: size, height: size)
+    }
+
+    private func ring(degrees: Double) -> some View {
+        Circle()
+            .trim(from: 0, to: 0.7)
+            .stroke(color, style: StrokeStyle(lineWidth: 1, lineCap: .round))
+            .frame(width: size, height: size)
+            .rotationEffect(.degrees(degrees))
     }
 }
 

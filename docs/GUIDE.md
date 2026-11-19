@@ -498,6 +498,7 @@ Open a window and MeetingPipe puts a menu bar across the top of the screen, the 
 | `⌘M` | Minimise the window to the Dock. Click it there to bring it back |
 | `⌘W` | Hides the Library. The app keeps running and the window comes back the way you left it |
 | `Space` | Play or pause, on the Transcript and Audio tabs. Once audio is playing, a play/pause control and the position also appear in the meeting's header, so you can stop it from the Summary tab without going back. Closing the Library window, or leaving the meeting for another view, pauses it |
+| `←` `→` | Move the play position back or forward 5 seconds on the Audio tab, once you have clicked the waveform or tabbed to it. VoiceOver reads the waveform's position and adjusts it the same way |
 | `Return` | Commit a title you are editing in the detail header |
 | `Esc` | Close a sheet without saving |
 | `⌘` or `⇧` click | Select several meetings in the list, or several lines in a transcript |

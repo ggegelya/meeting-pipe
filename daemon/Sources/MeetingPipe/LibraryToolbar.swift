@@ -214,8 +214,8 @@ struct StatePill: View {
 
 /// 1.6s opacity-only pulse for the recording dot ("scale pulses read as urgent; the dot should feel steady"). Uses `TimelineView(.animation)` rather than `withAnimation.repeatForever`: the old pattern restarted on every parent re-render, causing a ~1s stutter. TimelineView reads a free-running clock and invalidates only this subtree.
 private struct PulseDot: View {
-    /// One full opacity cycle, matching the legacy `easeInOut(duration: 1.6).autoreverses` envelope.
-    private static let periodSec: Double = 1.6
+    /// UX102: under Reduce Motion the dot is drawn once, still, with no `TimelineView`.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// 12 fps cap (PERF26), equal to `MPSteadyPulseDot.frameInterval` so the toolbar dot and the
     /// row pill's dot step together. Uncapped, this redrew at the display rate for the whole of
@@ -223,22 +223,30 @@ private struct PulseDot: View {
     private static let frameInterval: TimeInterval = 1.0 / 12
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: Self.frameInterval)) { context in
-            // Cosine maps phase [0,1) to a 0..1..0 envelope without `withAnimation`.
-            let t = context.date.timeIntervalSinceReferenceDate
-            let phase = (t.truncatingRemainder(dividingBy: Self.periodSec)) / Self.periodSec
-            let envelope = 0.5 + 0.5 * cos(phase * 2 * .pi)   // 0..1..0
-            ZStack {
-                Circle()
-                    .fill(Color(MPColors.pulse600).opacity(0.35 * envelope))
-                    .frame(width: 14, height: 14)
-                Circle()
-                    .fill(Color(MPColors.pulse600))
-                    .frame(width: 8, height: 8)
+        Group {
+            if reduceMotion {
+                dot(envelope: PulseEnvelope.toolbarAura(at: 0, reduceMotion: true))
+            } else {
+                TimelineView(.animation(minimumInterval: Self.frameInterval)) { context in
+                    dot(envelope: PulseEnvelope.toolbarAura(
+                        at: context.date.timeIntervalSinceReferenceDate, reduceMotion: false
+                    ))
+                }
             }
         }
         // Pin frame to the 14pt aura so adjacent layout doesn't shimmy.
         .frame(width: 14, height: 14)
+    }
+
+    private func dot(envelope: Double) -> some View {
+        ZStack {
+            Circle()
+                .fill(Color(MPColors.pulse600).opacity(0.35 * envelope))
+                .frame(width: 14, height: 14)
+            Circle()
+                .fill(Color(MPColors.pulse600))
+                .frame(width: 8, height: 8)
+        }
     }
 }
 

@@ -16,9 +16,21 @@ final class WorkflowChipView: NSButton {
         didSet { refreshGlyph() }
     }
     /// Display name shown next to the glyph, truncated tail-side.
+    ///
+    /// UX102: also the chip's accessibility label. The button's own title is empty (the name is
+    /// drawn by `titleLabel`), so VoiceOver reached a nameless button exactly where the owner picks
+    /// which workflow a meeting records under. Set here so the " · NDA" suffix `applyWorkflow`
+    /// adds is spoken too.
     var workflowName: String = "" {
-        didSet { titleLabel.stringValue = workflowName }
+        didSet {
+            titleLabel.stringValue = workflowName
+            setAccessibilityLabel(workflowName)
+        }
     }
+
+    /// The chip's help and tool tip, matching the prompt's other controls ("Record this meeting",
+    /// "More options", "Dismiss").
+    static let helpText = "Change workflow"
 
     /// Click handler set by the caller (the prompt window builds and presents the workflow NSMenu).
     var onClick: (() -> Void)?
@@ -32,6 +44,8 @@ final class WorkflowChipView: NSButton {
         wantsLayer = true
         target = self
         action = #selector(handleClick)
+        toolTip = Self.helpText
+        setAccessibilityHelp(Self.helpText)
 
         leadingGlyph.translatesAutoresizingMaskIntoConstraints = false
         leadingGlyph.wantsLayer = true

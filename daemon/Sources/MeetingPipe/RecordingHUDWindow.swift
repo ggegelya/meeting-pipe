@@ -176,7 +176,8 @@ final class RecordingHUDWindow {
     weak var delegate: RecordingHUDDelegate?
 
     private var panel: NSPanel?
-    private var elapsedLabel: NSTextField?
+    /// Readable by tests (UX102 pins its colour after a reverted end hold).
+    private(set) var elapsedLabel: NSTextField?
     private var pulseDot: PulseDotView?
     /// Cancels the clock tick. Both HUD tickers are common-mode (CONC10), so the clock and meter
     /// keep moving while an alert is up or a menu is open.
@@ -262,7 +263,8 @@ final class RecordingHUDWindow {
             panel.alphaValue = 0
             panel.orderFrontRegardless()
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = MPMotion.durBase
+                // UX102: zero under Reduce Motion (`PanelMotion`).
+                ctx.duration = PanelMotion.decide(reduceMotion: MPMotion.reduceMotion).fadeIn
                 ctx.timingFunction = MPMotion.easeOut
                 panel.animator().alphaValue = 1
             }
@@ -283,7 +285,10 @@ final class RecordingHUDWindow {
             self?.refreshElapsedLabel()
         }
         refreshElapsedLabel()
-        pulseDot?.startPulsing()
+        // UX102: under Reduce Motion the dot stays at full opacity rather than looping.
+        if PanelMotion.decide(reduceMotion: MPMotion.reduceMotion).pulses {
+            pulseDot?.startPulsing()
+        }
 
         // 10 Hz poll for the voice-activity meter (TECH-UX8). Polling keeps
         // the audio render thread free of any UI push.
@@ -306,6 +311,23 @@ final class RecordingHUDWindow {
         occlusionVisible && hasProvider
     }
 
+    /// What one 10 Hz meter tick writes (UX102). Zero while the mic has been given up on or while
+    /// off the record: the recorder's level is frozen at its last value once a tap is abandoned
+    /// or stalls, and the ticker used to write that frozen level back over the setters' zero
+    /// within 100 ms, lighting the meter beside a label saying the mic is gone. The provider is a
+    /// closure so a gated tick does not read the recorder at all.
+    static func meterTickLevel(micCaptureLost: Bool, offRecord: Bool, providerDb: () -> Float) -> Float {
+        if micCaptureLost || offRecord { return 0 }
+        return normalizedLevel(db: providerDb())
+    }
+
+    /// The elapsed readout's colour (UX102): `fgSubtle` while a held end is being confirmed, and
+    /// the `fg` the readout is built with otherwise. It used to fall back to `fgMuted`, so a hold
+    /// that reverted left the clock muted for the rest of the recording.
+    static func elapsedColor(confirmingEnd: Bool) -> NSColor {
+        confirmingEnd ? MPColors.fgSubtle : MPColors.fg
+    }
+
     /// (Re)start the 10 Hz meter poll if a provider is set and it isn't already
     /// running. Idempotent, so the occlusion observer can call it freely.
     private func startMeterTickerIfNeeded() {
@@ -316,7 +338,9 @@ final class RecordingHUDWindow {
             tolerance: Self.meterTickTolerance
         ) { [weak self] in
             guard let self = self, let provider = self.levelProvider else { return }
-            self.levelMeter?.level = RecordingHUDWindow.normalizedLevel(db: provider())
+            self.levelMeter?.level = RecordingHUDWindow.meterTickLevel(
+                micCaptureLost: self.micCaptureLost, offRecord: self.isOffTheRecord, providerDb: provider
+            )
         }
     }
 
@@ -379,7 +403,7 @@ final class RecordingHUDWindow {
             return
         }
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = MPMotion.durFast + 0.03
+            ctx.duration = PanelMotion.decide(reduceMotion: MPMotion.reduceMotion).fadeOut
             ctx.timingFunction = MPMotion.easeOut
             panel.animator().alphaValue = 0
         }, completionHandler: {
@@ -581,7 +605,7 @@ final class RecordingHUDWindow {
         // (`HUDStateLabel`).
         confirmingEnd = on
         applyStateLabel()
-        elapsedLabel?.textColor = on ? MPColors.fgSubtle : MPColors.fgMuted
+        elapsedLabel?.textColor = Self.elapsedColor(confirmingEnd: on)
     }
 
     /// Resize keeping the panel's top-right corner fixed, so growing the
@@ -675,7 +699,7 @@ final class RecordingHUDWindow {
         // Monospaced digits keep the numerals tabular so they don't jitter.
         let elapsed = NSTextField(labelWithString: "0:00")
         elapsed.font = .monospacedDigitSystemFont(ofSize: MPType.textXL, weight: MPType.semibold)
-        elapsed.textColor = MPColors.fg
+        elapsed.textColor = Self.elapsedColor(confirmingEnd: false)
         elapsed.alignment = .center
         elapsed.translatesAutoresizingMaskIntoConstraints = false
         bg.addSubview(elapsed)

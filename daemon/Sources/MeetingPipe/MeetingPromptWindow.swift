@@ -188,7 +188,8 @@ final class MeetingPromptWindow {
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = MPMotion.durBase
+            // UX102: zero under Reduce Motion, the same decision the HUD makes (`PanelMotion`).
+            ctx.duration = PanelMotion.decide(reduceMotion: MPMotion.reduceMotion).fadeIn
             ctx.timingFunction = MPMotion.easeOut
             panel.animator().alphaValue = 1
         }
@@ -236,7 +237,7 @@ final class MeetingPromptWindow {
             return
         }
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = MPMotion.durFast + 0.03
+            ctx.duration = PanelMotion.decide(reduceMotion: MPMotion.reduceMotion).fadeOut
             ctx.timingFunction = MPMotion.easeOut
             panel.animator().alphaValue = 0
         }, completionHandler: {
