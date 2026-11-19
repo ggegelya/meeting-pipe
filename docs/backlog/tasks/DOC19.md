@@ -2,9 +2,9 @@
 id: DOC19
 title: Accepted ADRs and the user guides describe behaviour the code has left behind, with no amendment
 category: Docs
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). Five accepted ADRs (0003 FTS5 absent, 0004 rejected the activation-policy flip the app now does, 0007 daemon-stays-offline vs NotionDatabaseList, 0008 one AX walk per meeting, 0016 whole-file 85% guard) state superseded behaviour with no dated note, and GUIDE and SETUP name three controls the code does not have (Manage Workflows opens the Library, not the editor; Preferences has no Verify connection; the Finish setup row has no Download now). Dated amendment per ADR, recipes corrected, one docs-only commit.
+comment: Shipped 2026-11-19: dated DOC19 amendments on ADRs 0003 (FTS5 index exists, decision stands), 0004 (the app is Option C via WindowActivationManager), 0008 (one resolution at start, re-resolved on staleness) and 0016 (MIC12 per-span guard, MIC14 manual spans), Status rows updated; GUIDE Manage Workflows, SETUP Step 6 Verify connection and Step 7 Finish setup item corrected. Owed: ADR 0007's amendment, which waits on HYG10's owner call on the daemon-stays-offline rule (HYG10 still new). Nothing live for the owner to check.
 ---
 
 # DOC19: Accepted ADRs and the user guides describe behaviour the code has left behind, with no amendment

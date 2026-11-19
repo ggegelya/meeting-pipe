@@ -2,7 +2,7 @@
 
 | Property            | Value              |
 | ------------------- | ------------------ |
-| **Status**          | Accepted           |
+| **Status**          | Accepted; amended 2026-11-19 (DOC19): the shipped app is Option C |
 | **Date**            | 2026-05-18         |
 | **Decision Makers** | Project owner      |
 | **Technical Area**  | Surface / UX       |
@@ -78,3 +78,9 @@ window, and Recording HUD are transient windows opened from the menu.
 - Critical errors surface as system notifications via `Notifier.swift`;
   the menu bar alone is too quiet for failure modes that need
   immediate user attention.
+
+## Amendment 2026-11-19 (DOC19): the app is the hybrid, Option C
+
+**What changed.** The app now does what Option C described and this ADR rejected. `WindowActivationManager` toggles `NSApp.activationPolicy` between `.accessory` (no Dock icon) and `.regular` (Dock icon, Cmd+Tab) according to which windows are open, and every Dock-participating window shows itself through `WindowActivationManager.shared.showWindow`: `LibraryWindow`, `PreferencesWindow`, `DiagnosticsWindow` and `GuideWindow`. It arrived over three tasks: UX39 (the window waits for the policy flip and is fronted by the manager, which counts windows by identity), UX48 (the main menu bar is part of the same transition, so Cmd-key shortcuts work while a window is up) and UX56 (the sequence that reaches the promotion without making the window wait).
+
+**Whether the decision stands.** Not as written. Option B is the launch state and the resting state: the app starts as `.accessory`, the status-bar item is still the home, and with no window open there is no Dock icon. But "Option B" is no longer the decision; the shipped behaviour is Option C, and the cost this ADR named against it (tracking every open window and flipping the policy at the right moment) is the cost the project chose to pay, in one owner (`WindowActivationManager`) rather than in each window. The Consequences about the status-bar item, the floating Recording HUD, the hotkey and notifications still hold; "there is no app to alt-tab to" holds only while no window is open.

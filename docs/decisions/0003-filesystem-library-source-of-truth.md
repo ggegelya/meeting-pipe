@@ -2,7 +2,7 @@
 
 | Property            | Value              |
 | ------------------- | ------------------ |
-| **Status**          | Accepted           |
+| **Status**          | Accepted; amended 2026-11-19 (DOC19) |
 | **Date**            | 2026-05-18         |
 | **Decision Makers** | Project owner      |
 | **Technical Area**  | Library            |
@@ -90,3 +90,9 @@ the in-memory list and the on-disk transcripts.
 - TECH-A4 (orphan-recording reaper) is the natural complement: when the
   filesystem is the source of truth, file-vs-row drift is impossible,
   but a sidecar can still reference a missing WAV or vice versa.
+
+## Amendment 2026-11-19 (DOC19): the FTS5 index exists now, as a cache
+
+**What changed.** The Consequences line saying TECH-A2's FTS5 backend "is not present in the codebase" stopped being true with UX16. `SearchIndex.swift` is a SQLite FTS5 index over the library's searchable text and full transcripts, kept under `~/Library/Caches/MeetingPipe/search/`, filled in the background by `SearchIndexer` and reconciled against completed library scans by `SearchIndexReconciler`. It is read by `QuickFindRanker` (its FTS matches), the Library filter bar's search field (through `FTSLookup`) and saved searches (`SavedSearch`).
+
+**Whether the decision stands.** It does. The filesystem is still the source of truth: `MeetingStore` still scans the recording folder and builds the in-memory list, the index is rebuildable from the files and safe to delete, and search falls back to the in-memory corpus while the index catches up. What the index changed is search speed and reach (whole transcripts, not only titles and summaries), not where a meeting's state lives. The "revisit at 200 ms" trigger is answered rather than pending.

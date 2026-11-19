@@ -127,7 +127,7 @@ Open the Library (menu bar ▸ **Open Library…**). Under the **WORKFLOWS** hea
 - Right-click any workflow row (or swipe it left) for **Edit workflow…** and **Delete workflow…**.
 - Selecting a workflow shows a summary of it in the right pane, with **Edit workflow** at its top right.
 
-The menu bar's **Manage Workflows…** is the same editor without opening the Library first.
+The menu bar's **Manage Workflows…** opens the Library too, with the same **WORKFLOWS** heading in its left rail; from there **+ New workflow** or a workflow row's **Edit workflow…** opens the editor. It does not open a new, empty workflow by itself, so closing the window never leaves an unnamed workflow behind.
 
 Renaming a workflow is safe to do at any time. Its meetings stay under it, its confidential meetings stay under **NDA only**, and its vocabulary terms move to the new name when you save (if a workflow already had terms under the new name, those are kept and the rest join them). Each meeting still remembers the name it was recorded under, which is what the filter bar's workflow chips show.
 
