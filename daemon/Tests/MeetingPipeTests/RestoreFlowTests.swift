@@ -11,73 +11,25 @@ import MeetingPipeTestSupport
 @MainActor
 final class RestoreFlowTests: XCTestCase {
 
-
     // MARK: - The payload contract
 
-    /// Verbatim `mp.restore.plan_restore` output (paths shortened), produced by
-    /// running the real writer over a two-file backup restored onto a Mac that
-    /// already has one of the two files and its own config.toml. If this stops
-    /// decoding, the Python writer moved and the preview is about to render an
-    /// empty plan.
-    private static let planJSON = #"""
-    {
-      "archive": "/Users/x/Backups/meeting-pipe-backup-20260803-105419.tar.gz",
-      "created_at": "2026-08-03T10:54:19.738612+00:00",
-      "audio_included": true,
-      "keeps_config_toml": true,
-      "total_files": 3,
-      "added": 2,
-      "replaced": 1,
-      "roots": [
-        {
-          "name": "library",
-          "prefix": "library",
-          "destination": "/Users/x/Meetings/raw",
-          "files": 2,
-          "added": 1,
-          "replaced": 1,
-          "occupied": true
-        },
-        {
-          "name": "digests",
-          "prefix": "digests",
-          "destination": "/Users/x/Meetings/digests",
-          "files": 0,
-          "added": 0,
-          "replaced": 0,
-          "occupied": false
-        },
-        {
-          "name": "config",
-          "prefix": "config",
-          "destination": "/Users/x/.config/meeting-pipe",
-          "files": 1,
-          "added": 1,
-          "replaced": 0,
-          "occupied": false
-        },
-        {
-          "name": "corrections",
-          "prefix": "corrections",
-          "destination": "/Users/x/Library/Application Support/MeetingPipe/corrections",
-          "files": 0,
-          "added": 0,
-          "replaced": 0,
-          "occupied": false
-        }
-      ],
-      "added_sample": [
-        "library/20260801-1030.wav",
-        "config/roster.json"
-      ],
-      "replaced_sample": [
-        "library/20260801-1030.md"
-      ]
-    }
-    """#
-
+    /// T18: `mp.restore.plan_restore`'s real output, generated into
+    /// `Fixtures/restore-plan-golden.json` by `scripts/gen_contract_fixtures.py` from a
+    /// two-file backup restored onto a Mac that already has one of the two files and its
+    /// own config.toml (paths normalised to `/Users/x`). It used to be a JSON literal
+    /// pasted here on an unrecorded date, so a rename in the writer passed both suites;
+    /// `test_ci4_contracts.py` now fails until the fixture is regenerated, and this fails
+    /// if the regenerated shape no longer decodes.
     private func fixturePlan() throws -> RestorePlan {
-        try JSONDecoder().decode(RestorePlan.self, from: XCTUnwrap(Self.planJSON.data(using: .utf8)))
+        let url = try XCTUnwrap(
+            Bundle.module.url(forResource: "restore-plan-golden", withExtension: "json"),
+            "missing fixture restore-plan-golden.json")
+        let doc = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let cases = try XCTUnwrap(doc["cases"] as? [[String: Any]])
+        let plan = try XCTUnwrap(cases.first?["plan"])
+        return try JSONDecoder().decode(
+            RestorePlan.self, from: JSONSerialization.data(withJSONObject: plan))
     }
 
     private func plan(

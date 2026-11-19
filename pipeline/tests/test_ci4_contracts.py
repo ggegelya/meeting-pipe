@@ -58,8 +58,8 @@ def test_publish_fixture_matches_the_live_writer(tmp_path: Path) -> None:
     )
 
 
-def test_prefetch_fixture_matches_the_live_emitter() -> None:
-    assert _generator().gen_prefetch() == _committed("prefetch-progress-golden.json"), (
+def test_prefetch_fixture_matches_the_live_emitter(tmp_path: Path) -> None:
+    assert _generator().gen_prefetch(tmp_path) == _committed("prefetch-progress-golden.json"), (
         "prefetch_model's _emit call sites changed; regenerate with "
         "`cd pipeline && uv run python ../scripts/gen_contract_fixtures.py` and "
         "check ModelDownloadSupervisor.handleEvent still covers every event"
@@ -95,6 +95,24 @@ def test_regulated_fixture_matches_the_live_loader(tmp_path: Path) -> None:
     )
 
 
+def test_restore_plan_fixture_matches_the_live_planner(tmp_path: Path) -> None:
+    # T18: Swift's RestorePlan (RestoreFlowTests) decodes the same file.
+    assert _generator().gen_restore_plan(tmp_path) == _committed("restore-plan-golden.json"), (
+        "restore.plan_restore changed; regenerate with "
+        "`cd pipeline && uv run python ../scripts/gen_contract_fixtures.py` and "
+        "mirror the change in Swift's RestorePlan, or the in-app restore confirm renders empty"
+    )
+
+
+def test_publish_fixture_carries_a_failed_sink_from_the_real_fanout() -> None:
+    # T18: every other case hands the writer an `error` alone, so `failure` was null in
+    # every sink of the golden while the Library reads it as the row's failure metadata.
+    case = next(c for c in json.loads(_committed("publish-result-golden.json"))["cases"]
+                if c["name"] == "partial_failed_sink_from_fanout")
+    failed = [s for s in case["payload"]["sinks"].values() if not s["ok"]]
+    assert failed and all(s["error"] and s["failure"]["cause"] for s in failed)
+
+
 def test_summary_limits_fixture_matches_the_schema() -> None:
     # PIPE54: Swift's MeetingSummary.titleMaxLength / summaryMaxItems / confidenceValues are
     # asserted against the same file by SummaryLimitsTests.
@@ -117,6 +135,7 @@ def test_summary_limits_fixture_matches_the_schema() -> None:
         ("prefetch-progress-golden.json", 4),
         ("speaker-overlay-golden.json", 10),
         ("regulated-mode-golden.json", 10),
+        ("restore-plan-golden.json", 1),
     ],
 )
 def test_fixtures_are_not_vacuous(name: str, minimum: int) -> None:

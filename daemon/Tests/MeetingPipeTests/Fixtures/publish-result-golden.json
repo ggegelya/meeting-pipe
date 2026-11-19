@@ -35,6 +35,12 @@
       },
       "expected_state": "full",
       "expected_page_url": "https://www.notion.so/Meeting-abc123",
+      "expected_sinks": {
+        "notion": {
+          "error": null,
+          "failure": null
+        }
+      },
       "all_sinks_failed": false
     },
     {
@@ -61,6 +67,16 @@
       },
       "expected_state": "partial",
       "expected_page_url": "https://www.notion.so/Meeting-abc123",
+      "expected_sinks": {
+        "notion": {
+          "error": null,
+          "failure": null
+        },
+        "obsidian": {
+          "error": "vault path not writable",
+          "failure": null
+        }
+      },
       "all_sinks_failed": false
     },
     {
@@ -87,6 +103,16 @@
       },
       "expected_state": "none",
       "expected_page_url": null,
+      "expected_sinks": {
+        "notion": {
+          "error": "401 Unauthorized",
+          "failure": null
+        },
+        "obsidian": {
+          "error": "vault path not writable",
+          "failure": null
+        }
+      },
       "all_sinks_failed": true
     },
     {
@@ -107,6 +133,12 @@
       },
       "expected_state": "full",
       "expected_page_url": null,
+      "expected_sinks": {
+        "filesystem": {
+          "error": null,
+          "failure": null
+        }
+      },
       "all_sinks_failed": false
     },
     {
@@ -120,6 +152,55 @@
       },
       "expected_state": "local",
       "expected_page_url": null,
+      "expected_sinks": {},
+      "all_sinks_failed": false
+    },
+    {
+      "name": "partial_failed_sink_from_fanout",
+      "payload": {
+        "schema_version": 1,
+        "state": "partial",
+        "page_url": null,
+        "ts": "2026-01-01T00:00:00+00:00",
+        "sinks": {
+          "filesystem": {
+            "ok": true,
+            "page_url": null,
+            "error": null,
+            "failure": null
+          },
+          "notion": {
+            "ok": false,
+            "page_url": null,
+            "error": "synthetic connection failure",
+            "failure": {
+              "schema_version": 1,
+              "cause": "connection",
+              "operation": "publish",
+              "remedy": "retry",
+              "provider": "notion"
+            }
+          }
+        }
+      },
+      "expected_state": "partial",
+      "expected_page_url": null,
+      "expected_sinks": {
+        "filesystem": {
+          "error": null,
+          "failure": null
+        },
+        "notion": {
+          "error": "synthetic connection failure",
+          "failure": {
+            "schema_version": 1,
+            "cause": "connection",
+            "operation": "publish",
+            "remedy": "retry",
+            "provider": "notion"
+          }
+        }
+      },
       "all_sinks_failed": false
     },
     {
@@ -133,6 +214,7 @@
       },
       "expected_state": "unknown",
       "expected_page_url": null,
+      "expected_sinks": {},
       "all_sinks_failed": false
     }
   ]

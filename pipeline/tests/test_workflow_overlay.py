@@ -536,7 +536,7 @@ def test_contract_fixtures_carry_schema_version() -> None:
     for name in (
         "source-only-regulated", "workflow-full", "workflow-lan",
         "workflow-nda", "workflow-reassigned-to-nda", "held-end-trim",
-        "workflow-no-sinks", "split-from", "user-title",
+        "workflow-no-sinks", "split-from", "user-title", "workflow-extra-sections",
     ):
         data = json.loads((_CONTRACT / f"{name}.meta.json").read_text(encoding="utf-8"))
         assert data["schema_version"] == 6
@@ -578,6 +578,106 @@ def test_contract_fixture_user_title_is_informational_to_the_overlay() -> None:
     renamed = apply_overrides(cfg, fixture)
     plain = apply_overrides(cfg, _CONTRACT / "workflow-full.meta.json")
     assert renamed.model_dump() == plain.model_dump()
+
+
+# T18: the overlay assertions above pin what `apply_overrides` routes on. These pin every
+# OTHER key a Python reader takes from the sidecar, through that reader, so a rename on
+# either side turns this red instead of degrading silently (glossary falls back to global
+# terms, the Notion page loses its title and properties, extra sections vanish). Built by
+# reading each `read_meta` / `_load_meta_sidecar` caller on 2026-11-19; a new reader adds a
+# key here.
+#
+#   workflow_name            read_meta: actions, mcp_tools, glossary.meeting_workflow_name,
+#                            summarize's previous-meeting copy; publish_notion's Workflow property
+#   workflow_id              read_meta: summarize's previous-meeting lookup, glossary
+#   meeting_title/user_title publish_notion.apply_meeting_title (user_title wins)
+#   source_display_name      publish_notion's Source property
+#   workflow_extra_sections  workflow.apply_overrides -> summarization.extra_sections
+CONSUMED_SIDECAR_KEYS = (
+    "workflow_name", "workflow_id", "title", "source_display_name", "extra_sections",
+)
+
+_LLM_TITLE = "Title the model wrote"
+
+# Per fixture, what each reader must resolve. Literals, never read off the fixture, so a
+# renamed key in one file is a mismatch here. `title` falls back to the model's title when
+# the sidecar names none; `extra_sections` is () when the workflow defines none.
+_SIDECAR_EXPECTED: dict[str, dict[str, object]] = {
+    "held-end-trim": {"workflow_name": None, "workflow_id": None, "title": "Design review",
+                      "source_display_name": "Google Chrome", "extra_sections": ()},
+    "source-only-regulated": {"workflow_name": None, "workflow_id": None, "title": "Q3 board review",
+                              "source_display_name": "Zoom", "extra_sections": ()},
+    "split-from": {"workflow_name": None, "workflow_id": None, "title": "Release sync",
+                   "source_display_name": "Microsoft Teams", "extra_sections": ()},
+    "user-title": {"workflow_name": "Client work", "workflow_id": "0A2B3C4D-0000-0000-0000-00000000F001",
+                   "title": "My rename", "source_display_name": "Google Chrome", "extra_sections": ()},
+    "workflow-full": {"workflow_name": "Client work", "workflow_id": "0A2B3C4D-0000-0000-0000-00000000F001",
+                      "title": "Design review", "source_display_name": "Google Chrome",
+                      "extra_sections": ()},
+    "workflow-lan": {"workflow_name": "On-prem", "workflow_id": "0A2B3C4D-0000-0000-0000-00000000F003",
+                     "title": "Ops standup", "source_display_name": "Microsoft Teams",
+                     "extra_sections": ()},
+    "workflow-nda": {"workflow_name": "Legal review", "workflow_id": "0A2B3C4D-0000-0000-0000-00000000F002",
+                     "title": _LLM_TITLE, "source_display_name": "Microsoft Teams",
+                     "extra_sections": ()},
+    "workflow-no-sinks": {"workflow_name": "Library only",
+                          "workflow_id": "0A2B3C4D-0000-0000-0000-00000000F004",
+                          "title": "Weekly 1:1", "source_display_name": "Zoom", "extra_sections": ()},
+    "workflow-reassigned-to-nda": {"workflow_name": "Legal review",
+                                   "workflow_id": "0A2B3C4D-0000-0000-0000-00000000F002",
+                                   "title": "Design review", "source_display_name": "Google Chrome",
+                                   "extra_sections": ()},
+    "workflow-extra-sections": {
+        "workflow_name": "Coaching", "workflow_id": "0A2B3C4D-0000-0000-0000-00000000F005",
+        "title": "Weekly coaching", "source_display_name": "Zoom",
+        "extra_sections": (("Feedback", "Note feedback given or received."),
+                           ("Growth goals", "List goals the coachee named.")),
+    },
+}
+
+
+def _resolve_sidecar_key(name: str, key: str) -> object:
+    from mp import publish_notion
+    from mp.schemas import MeetingSummary
+
+    fixture = _CONTRACT / f"{name}.meta.json"
+    # The publish-side readers find `<stem>.meta.json` beside `<stem>.summary.json`, which
+    # need not exist for them to read the sidecar.
+    summary_json = _CONTRACT / f"{name}.summary.json"
+    summary = MeetingSummary(title=_LLM_TITLE, summary=["A point."], detected_language="en")
+    notion = publish_notion._optional_properties(
+        summary, publish_notion._load_meta_sidecar(summary_json) or {},
+        {"Workflow": "select", "Source": "select"},
+    )
+    if key == "workflow_name":
+        name_read = read_meta(fixture).get("workflow_name")
+        notion_name = notion.get("Workflow", {}).get("select", {}).get("name")
+        assert notion_name == name_read, "the Notion Workflow property and read_meta disagree"
+        return name_read
+    if key == "workflow_id":
+        return read_meta(fixture).get("workflow_id")
+    if key == "title":
+        return publish_notion.apply_meeting_title(summary, summary_json).title
+    if key == "source_display_name":
+        return notion.get("Source", {}).get("select", {}).get("name")
+    if key == "extra_sections":
+        specs = apply_overrides(Config(), fixture).summarization.extra_sections
+        return tuple((s.name, s.instruction) for s in specs)
+    raise AssertionError(f"no reader for {key}")
+
+
+def test_every_contract_fixture_has_sidecar_expectations() -> None:
+    on_disk = sorted(p.name.removesuffix(".meta.json") for p in _CONTRACT.glob("*.meta.json"))
+    assert on_disk == sorted(_SIDECAR_EXPECTED), "a fixture was added or removed; extend the table"
+    assert all(set(row) == set(CONSUMED_SIDECAR_KEYS) for row in _SIDECAR_EXPECTED.values())
+
+
+@pytest.mark.parametrize(
+    "name,key",
+    [(n, k) for n in _SIDECAR_EXPECTED for k in CONSUMED_SIDECAR_KEYS],
+)
+def test_contract_fixture_consumed_key_resolves_through_its_reader(name: str, key: str) -> None:
+    assert _resolve_sidecar_key(name, key) == _SIDECAR_EXPECTED[name][key]
 
 
 def test_on_device_preview_override_beats_a_cloud_workflow_pin(tmp_path: Path, monkeypatch) -> None:

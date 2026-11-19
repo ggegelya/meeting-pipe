@@ -78,6 +78,20 @@ final class CI4ContractFixtureTests: XCTestCase {
                     sink.pageURL?.absoluteString, raw["page_url"] as? String,
                     "\(name): \(sink.name) page_url"
                 )
+                // T18: the failure half too, against what the fanout result carried
+                // (`expected_sinks`), not the payload, so a writer that drops `failure`
+                // turns this red. `MeetingStore` takes the first failed sink's `failure`
+                // as the row's failure metadata, and `error` is what it shows.
+                let expectedSinkMap = try XCTUnwrap(c["expected_sinks"] as? [String: Any], name)
+                let want = try XCTUnwrap(expectedSinkMap[sink.name] as? [String: Any], "\(name): \(sink.name)")
+                XCTAssertEqual(sink.error, want["error"] as? String, "\(name): \(sink.name) error")
+                if let rawFailure = want["failure"] as? [String: Any] {
+                    let expected = try JSONDecoder().decode(
+                        FailureMetadata.self, from: JSONSerialization.data(withJSONObject: rawFailure))
+                    XCTAssertEqual(sink.failure, expected, "\(name): \(sink.name) failure")
+                } else {
+                    XCTAssertNil(sink.failure, "\(name): \(sink.name) failure")
+                }
             }
         }
     }

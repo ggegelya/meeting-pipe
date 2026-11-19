@@ -179,7 +179,7 @@ final class MetaContractFixtureTests: XCTestCase {
     }
 
     func test_all_fixtures_carry_schema_version_six() throws {
-        for name in ["source-only-regulated", "workflow-full", "workflow-lan", "workflow-nda", "workflow-reassigned-to-nda", "held-end-trim", "workflow-no-sinks", "split-from", "user-title"] {
+        for name in ["source-only-regulated", "workflow-full", "workflow-lan", "workflow-nda", "workflow-reassigned-to-nda", "held-end-trim", "workflow-no-sinks", "split-from", "user-title", "workflow-extra-sections"] {
             let f = try fixture(name)
             XCTAssertEqual(f["schema_version"] as? Int, 6, "\(name) must carry schema_version 6")
         }
@@ -241,6 +241,33 @@ final class MetaContractFixtureTests: XCTestCase {
         let bare = Workflow(id: UUID(), name: "Standup")
         let noSections = MeetingMetaSidecar.build(source: source, workflow: bare)
         XCTAssertNil(noSections["workflow_extra_sections"], "omitted when the workflow defines none")
+    }
+
+    /// T18: `workflow_extra_sections` crossing the contract. The test above pins that `build`
+    /// writes it only when set; this pins the exact bytes, so `test_workflow_overlay.py` can
+    /// assert the parsed sections off the file Swift writes rather than a hand-typed dict.
+    /// The blank row is dropped before writing, so the fixture carries two.
+    func test_workflow_extra_sections_matches_fixture() throws {
+        let source = AppSource(
+            bundleID: "us.zoom.xos",
+            displayName: "Zoom",
+            kind: .native,
+            meetingTitle: "Weekly coaching"
+        )
+        let wf = Workflow(
+            id: UUID(uuidString: "0A2B3C4D-0000-0000-0000-00000000F005")!,
+            name: "Coaching",
+            color: "#0E8C82",
+            contextPrompt: "Fortnightly coaching sessions.",
+            sinks: [.filesystem],
+            extraSections: [
+                WorkflowExtraSection(name: "Feedback", instruction: "Note feedback given or received."),
+                WorkflowExtraSection(name: "  ", instruction: "dropped: blank name"),
+                WorkflowExtraSection(name: "Growth goals", instruction: "List goals the coachee named."),
+            ]
+        )
+        let dict = MeetingMetaSidecar.build(source: source, workflow: wf)
+        XCTAssertEqual(dict as NSDictionary, try fixture("workflow-extra-sections"))
     }
 
     /// MIC15: `mic_device_name` + `mic_silent` are informational top-level keys the Python reader

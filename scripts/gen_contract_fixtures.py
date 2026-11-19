@@ -18,6 +18,9 @@ hand-authored expectations and a coordinated rename passed both suites:
   reachability-golden.json      UX107: which secret, binary or Notion database each
                                 backend and sink needs (`mp.reachability`, read by
                                 `mp doctor`), replayed by Swift's `SetupChecklist`.
+  restore-plan-golden.json      T18: the `mp restore --dry-run --json` payload, written by
+                                `restore.plan_restore` over a real archive, decoded by
+                                Swift's `RestorePlan` (the in-app restore's confirm).
   glossary-golden.json          `glossary.toml` resolution, read by
                                 `glossary.load_glossary`, mirrored by Swift's
                                 `GlossaryStore.resolvedTerms` (FEAT11). The one
@@ -25,9 +28,15 @@ hand-authored expectations and a coordinated rename passed both suites:
                                 the Vocabulary editor promises a substitution the
                                 pipeline never makes.
 
-Every case here is produced by CALLING the shipping Python code, never by hand,
-so a writer change lands in the fixture rather than being silently absent from
-it. `pipeline/tests/test_ci4_contracts.py` regenerates in-memory and diffs
+Every byte a fixture pins is produced by CALLING the shipping Python code, so a
+writer change lands in the fixture rather than being silently absent from it.
+Two families take their INPUTS from somewhere other than a live run, and say so
+(T18): the prefetch events and field names are AST-walked from `prefetch_model`'s
+`_emit` call sites, then each line is produced by calling `_emit` with stdout
+captured; and most publish cases run hand-written `fanout` results through the
+real `_write_publish_sidecar`, while the failed-sink case runs `fanout` itself
+with a publisher that raises, so its `error` and `failure` come from
+`emit_failure`. `pipeline/tests/test_ci4_contracts.py` regenerates in-memory and diffs
 against the committed files, so forgetting to run this is a red Python build;
 `daemon/Tests/MeetingPipeTests/CI4ContractFixtureTests.swift` parses the same
 committed files with the real Swift readers, so a regenerated fixture the Swift
@@ -42,8 +51,13 @@ Writes into `daemon/Tests/MeetingPipeTests/Fixtures/`. Diff before committing.
 from __future__ import annotations
 
 import ast
+import contextlib
+import io
 import json
+import os
+import shutil
 import sys
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -55,10 +69,30 @@ PIPELINE_SRC = REPO / "pipeline" / "src"
 sys.path.insert(0, str(PIPELINE_SRC))
 
 from mp import prefetch_model, publish_router, speaker_overlay  # noqa: E402
+from mp.schemas import MeetingSummary  # noqa: E402
 
 # `_write_publish_sidecar` stamps `datetime.now()`. The value cannot be golden,
 # so it is replaced by this sentinel and its FORMAT is asserted separately.
 TS_SENTINEL = "2026-01-01T00:00:00+00:00"
+
+
+@contextlib.contextmanager
+def _scratch_env(tmp: Path) -> Iterator[None]:
+    """Keep generation off the owner's machine state: the event log goes to `tmp`
+    (the writers called here emit events, and outside pytest `events.logs_dir` is
+    the real `~/Library/Logs/MeetingPipe`), and `MP_FAILURE_PATH` is unset so
+    `emit_failure` writes no file."""
+    saved = {k: os.environ.get(k) for k in ("MEETINGPIPE_LOGS_DIR", "MP_FAILURE_PATH")}
+    os.environ["MEETINGPIPE_LOGS_DIR"] = str(tmp / "logs")
+    os.environ.pop("MP_FAILURE_PATH", None)
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def _envelope(
@@ -125,17 +159,61 @@ PUBLISH_CASES: list[tuple[str, dict[str, Any]]] = [
 PUBLISH_KEYS = {"schema_version", "state", "page_url", "ts", "sinks"}
 
 
+#: T18: a failed sink as `fanout` records it. Every case above hands the writer a
+#: result with only `error`, so `failure` was null in every sink of the golden; this
+#: one runs `fanout` with a publisher that raises, so `error`, `error_type` and
+#: `failure` (from `emit_failure`) are what the shipping path writes.
+FANOUT_FAILED_CASE = "partial_failed_sink_from_fanout"
+
+
+class _StubPublisher:
+    def __init__(self, name: str, *, raises: BaseException | None = None,
+                 result: dict[str, Any] | None = None) -> None:
+        self.name = name
+        self._raises = raises
+        self._result = result or {}
+
+    def upsert(self, **_kwargs: Any) -> dict[str, Any]:
+        if self._raises is not None:
+            raise self._raises
+        return self._result
+
+
+def _fanout_with_a_failing_sink(summary_json: Path) -> dict[str, Any]:
+    import httpx
+    from mp.config import Config
+
+    summary = MeetingSummary(title="Weekly sync", summary=["A point."], detected_language="en")
+    summary_json.write_text(summary.model_dump_json(), encoding="utf-8")
+    publishers = [
+        _StubPublisher("filesystem", result={"path": "/synthetic/out/meeting.md"}),
+        _StubPublisher("notion", raises=httpx.ConnectError("synthetic connection failure")),
+    ]
+    return publish_router.fanout(
+        summary_json=summary_json, cfg=Config(), transcript_md=None,
+        publishers=publishers,
+    )
+
+
 #: PIPE34: the marker `fanout` writes before any sink runs, and what a run whose final write
 #: failed leaves on disk. Written by its own writer, not from a fanout result.
 PENDING_MARKER_CASE = "unknown_pending_marker_before_sinks"
 
 
 def gen_publish(tmp: Path) -> str:
+    with _scratch_env(tmp):
+        return _gen_publish(tmp)
+
+
+def _gen_publish(tmp: Path) -> str:
     cases: list[dict[str, Any]] = []
-    for name, result in [*PUBLISH_CASES, (PENDING_MARKER_CASE, None)]:
+    for name, result in [*PUBLISH_CASES, (FANOUT_FAILED_CASE, None), (PENDING_MARKER_CASE, None)]:
         summary_json = tmp / f"{name}.summary.json"
         summary_json.write_text("{}", encoding="utf-8")
-        if result is None:
+        if name == FANOUT_FAILED_CASE:
+            # `fanout` writes the sidecar itself.
+            result = _fanout_with_a_failing_sink(summary_json)
+        elif result is None:
             publish_router._write_pending_marker(summary_json)
             result = {"sinks": {}}
         else:
@@ -172,6 +250,16 @@ def gen_publish(tmp: Path) -> str:
                 # the payload comparison so a rename still breaks the build.
                 "expected_state": written["state"],
                 "expected_page_url": written["page_url"],
+                # T18: per sink, what the RESULT handed to the writer carried (for the
+                # fanout case, what `emit_failure` produced), not what the writer wrote,
+                # so a writer that drops `error` or `failure` is a red Swift build.
+                "expected_sinks": {
+                    sink: {
+                        "error": res.get("error") if isinstance(res, dict) else None,
+                        "failure": res.get("failure") if isinstance(res, dict) else None,
+                    }
+                    for sink, res in sorted((result.get("sinks") or {}).items())
+                },
                 "all_sinks_failed": publish_router.all_sinks_failed(result),
             }
         )
@@ -251,7 +339,25 @@ def _emit_call_sites() -> list[tuple[str, list[str]]]:
     return sites
 
 
-def gen_prefetch() -> str:
+def _emitted_line(event: str, fields: dict[str, Any]) -> str:
+    """The exact bytes `prefetch_model._emit` puts on stdout, which is what Swift
+    parses. Called, not re-serialized here (T18): a change to `_emit`'s envelope
+    (its `event` or `repo_id` key, or how it serializes) lands in the golden."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        prefetch_model._emit(event, REPO_ID, **fields)
+    text = out.getvalue()
+    if text.count("\n") != 1 or not text.endswith("\n"):
+        raise SystemExit(f"_emit('{event}') no longer writes exactly one line to stdout: {text!r}")
+    return text[:-1]
+
+
+def gen_prefetch(tmp: Path) -> str:
+    with _scratch_env(tmp):
+        return _gen_prefetch()
+
+
+def _gen_prefetch() -> str:
     cases: list[dict[str, Any]] = []
     seen: set[str] = set()
     for event, fields in _emit_call_sites():
@@ -267,10 +373,8 @@ def gen_prefetch() -> str:
                 f"_emit('{event}') carries unknown field(s) {missing}; add them to "
                 "PREFETCH_FIELD_VALUES so the fixture can pin them"
             )
-        record = {"event": event, "repo_id": REPO_ID}
-        record.update({f: PREFETCH_FIELD_VALUES[f] for f in fields})
-        # The exact bytes `_emit` puts on stdout, which is what Swift parses.
-        line = json.dumps(record, sort_keys=True)
+        line = _emitted_line(event, {f: PREFETCH_FIELD_VALUES[f] for f in fields})
+        record = json.loads(line)
 
         # Language-neutral facts about the state Swift must reach. Derived from
         # the record, so a field rename moves them too.
@@ -298,7 +402,8 @@ def gen_prefetch() -> str:
     return _envelope(
         "CI4 golden vectors for the `mp prefetch-model` stdout JSONL progress "
         "stream. Generated by scripts/gen_contract_fixtures.py, which AST-walks "
-        "every `_emit(...)` call site in pipeline/src/mp/prefetch_model.py; do "
+        "every `_emit(...)` call site in pipeline/src/mp/prefetch_model.py for the "
+        "event and field inventory and then calls `_emit` with stdout captured; do "
         "not hand-edit. `line` is the exact stdout bytes; `expect` is the state "
         "Swift's ModelDownloadSupervisor.handleEvent must reach. A new event "
         "name or a renamed field appears here on the next regeneration and "
@@ -552,15 +657,11 @@ REGULATED_CASES: list[tuple[str, str]] = [
 
 
 def gen_regulated(tmp: Path) -> str:
-    import os
-
     from mp import config as config_mod
 
     # `Config.load` reports unknown keys to the event log; keep generation out of
     # the owner's real `pipeline_events.jsonl`.
-    previous = os.environ.get("MEETINGPIPE_LOGS_DIR")
-    os.environ["MEETINGPIPE_LOGS_DIR"] = str(tmp / "logs")
-    try:
+    with _scratch_env(tmp):
         cases: list[dict[str, Any]] = []
         for name, toml_text in REGULATED_CASES:
             path = tmp / f"{name}.config.toml"
@@ -586,11 +687,6 @@ def gen_regulated(tmp: Path) -> str:
             "loads those.",
             cases,
         )
-    finally:
-        if previous is None:
-            os.environ.pop("MEETINGPIPE_LOGS_DIR", None)
-        else:
-            os.environ["MEETINGPIPE_LOGS_DIR"] = previous
 
 
 def gen_failures() -> str:
@@ -793,6 +889,76 @@ def gen_reachability() -> str:
     )
 
 
+# --------------------------------------------------------------------------
+# T18. `mp restore --dry-run --json` (STOR5)
+# --------------------------------------------------------------------------
+
+# What the Swift tests read off the plan is a backup of two meeting files and a
+# roster, restored onto a Mac that already has one of those files and its own
+# config.toml. The archive name and `created_at` are stamped by the writer, so they
+# are fixed after the run, and the scratch home is rewritten to `/Users/x`.
+RESTORE_ARCHIVE_NAME = "meeting-pipe-backup-20260803-105419.tar.gz"
+RESTORE_CREATED_AT_SENTINEL = "2026-08-03T10:54:19.738612+00:00"
+RESTORE_HOME_SENTINEL = "/Users/x"
+
+
+def gen_restore_plan(tmp: Path) -> str:
+    with _scratch_env(tmp):
+        return _gen_restore_plan(tmp)
+
+
+def _gen_restore_plan(tmp: Path) -> str:
+    from mp import storage
+    from mp.backup import create_backup
+    from mp.config import Config
+    from mp.restore import plan_restore
+
+    def cfg(home: Path) -> Config:
+        return Config.model_validate({"recording": {"output_dir": str(home / "Meetings" / "raw")}})
+
+    source = tmp / "restore-old-mac"
+    (source / "Meetings" / "raw").mkdir(parents=True)
+    (source / "Meetings" / "raw" / "20260801-1030.wav").write_bytes(b"RIFF" + b"\0" * 64)
+    (source / "Meetings" / "raw" / "20260801-1030.md").write_text("# transcript", encoding="utf-8")
+    source_config = storage.config_dir(source)
+    source_config.mkdir(parents=True)
+    (source_config / "config.toml").write_text('[recording]\noutput_dir = "~/Meetings/raw"\n')
+    (source_config / "roster.json").write_text('{"people": []}')
+
+    target = tmp / "restore-this-mac"
+    (target / "Meetings" / "raw").mkdir(parents=True)
+    (target / "Meetings" / "raw" / "20260801-1030.md").write_text("# kept", encoding="utf-8")
+    storage.config_dir(target).mkdir(parents=True)
+    (storage.config_dir(target) / "config.toml").write_text("[recording]\n")
+
+    backups = tmp / "restore-backups"
+    backups.mkdir()
+    made = create_backup(cfg(source), tmp / "restore-out", home=source)
+    archive = backups / RESTORE_ARCHIVE_NAME
+    shutil.move(str(made), archive)
+
+    plan = dict(plan_restore(archive, cfg(target), home=target))
+    created = datetime.fromisoformat(plan["created_at"])
+    if created.tzinfo is None:
+        raise SystemExit(f"restore plan `created_at` is no longer tz-aware: {plan['created_at']!r}")
+    plan["created_at"] = RESTORE_CREATED_AT_SENTINEL
+    text = json.dumps(plan, indent=2)
+    for real, shown in ((str(backups), f"{RESTORE_HOME_SENTINEL}/Backups"),
+                        (str(target), RESTORE_HOME_SENTINEL)):
+        text = text.replace(real, shown)
+    if str(tmp) in text:
+        raise SystemExit("restore plan still carries a scratch path after normalising")
+    return _envelope(
+        "T18 golden for the `mp restore --dry-run --json` payload (STOR5). Generated by "
+        "scripts/gen_contract_fixtures.py, which builds a real archive with backup.create_backup "
+        "and calls restore.plan_restore; do not hand-edit. `created_at` is replaced by a fixed "
+        "sentinel, and the scratch paths by `/Users/x`. Swift's RestorePlan decodes `plan` "
+        "(RestoreFlowTests): a renamed key here is an empty confirm for the app's most "
+        "destructive button.",
+        [{"name": "two_files_one_already_here_config_kept", "plan": json.loads(text)}],
+    )
+
+
 def main() -> int:
     import tempfile
 
@@ -800,13 +966,14 @@ def main() -> int:
         tmp = Path(td)
         written = {
             "publish-result-golden.json": gen_publish(tmp),
-            "prefetch-progress-golden.json": gen_prefetch(),
+            "prefetch-progress-golden.json": gen_prefetch(tmp),
             "speaker-overlay-golden.json": gen_overlay(tmp),
             "glossary-golden.json": gen_glossary(tmp),
             "failure-metadata-golden.json": gen_failures(),
             "regulated-mode-golden.json": gen_regulated(tmp),
             "summary-limits-golden.json": gen_summary_limits(),
             "reachability-golden.json": gen_reachability(),
+            "restore-plan-golden.json": gen_restore_plan(tmp),
         }
     for name, text in written.items():
         (FIXTURES / name).write_text(text, encoding="utf-8")
