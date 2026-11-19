@@ -2,9 +2,9 @@
 id: PIPE32
 title: LocalSummaryClient is assembled at seven sites from different subsets of its eleven parameters, which already caused LOCAL19 and PIPE12
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (code-quality audit PY2): 7 constructions after PIPE19 pass between 2 and 9 of the 9 config-backed parameters, the LOCAL19 fence checks one of them, and `providers._local_cleanup` already ignores both local timeouts. `LocalSummaryClient.from_config(cfg, **overrides)` at every site, the fence shrinks to "no direct construction". [Spec](./PIPE32.md)
+comment: Shipped 2026-11-19 (batch 10): `LocalSummaryClient.from_config(cfg, **overrides)` builds every local client (7 sites; cleanup now honours both local timeouts, dogfood's adapter A/B base rung clears a configured adapter), the LOCAL19 fence is now "no direct construction, no floor override", and the entry-contract gate reads `Cls.from_config` as its class. Owner still owes one live local-backend run with speaker cleanup on to confirm nothing changed in practice. [Spec](./PIPE32.md)
 ---
 
 # PIPE32: LocalSummaryClient is assembled at seven sites from different subsets of its eleven parameters, which already caused LOCAL19 and PIPE12

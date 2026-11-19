@@ -84,9 +84,20 @@ KNOWN_GATED_CALLS = {
 }
 
 
+#: Alternate constructors, read as a call to the class they build. PIPE32 moved
+#: every `LocalSummaryClient(...)` behind `LocalSummaryClient.from_config(cfg)`,
+#: which the suffix test would otherwise read as `from_config` and stop gating.
+ALTERNATE_CONSTRUCTORS = {"from_config"}
+
+
 def _called_name(func: ast.expr) -> str | None:
-    """The callee's name for a plain call or an attribute call, else None."""
+    """The callee's name for a plain call or an attribute call, else None. An
+    alternate constructor (`Cls.from_config(...)`) names the class."""
     if isinstance(func, ast.Attribute):
+        if func.attr in ALTERNATE_CONSTRUCTORS:
+            inner = _called_name(func.value)
+            if inner is not None:
+                return inner
         return func.attr
     if isinstance(func, ast.Name):
         return func.id

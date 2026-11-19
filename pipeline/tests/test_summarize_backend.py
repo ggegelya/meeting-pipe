@@ -363,6 +363,10 @@ def test_auto_falls_back_to_local_on_429_and_5xx(
     class _FakeLocal:
         def __init__(self, **_: Any) -> None: ...
 
+        @classmethod
+        def from_config(cls, _cfg: Any, **kw: Any) -> "_FakeLocal":
+            return cls(**kw)
+
         def __enter__(self) -> "_FakeLocal":
             return self
 
@@ -1020,6 +1024,10 @@ def _auto_run_sidecar(
 
     class _FakeLocal:
         def __init__(self, **_: Any) -> None: ...
+
+        @classmethod
+        def from_config(cls, _cfg: Any, **kw: Any) -> "_FakeLocal":
+            return cls(**kw)
 
         def __enter__(self) -> "_FakeLocal":
             return self

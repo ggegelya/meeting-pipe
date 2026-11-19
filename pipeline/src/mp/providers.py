@@ -32,7 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from .config import BACKENDS, Config, parse_local_endpoint, require_env
+from .config import BACKENDS, Config, require_env
 
 if TYPE_CHECKING:
     import anthropic
@@ -105,24 +105,7 @@ def make_anthropic_client(api_key: str) -> anthropic.Anthropic:
 def _local_summary(cfg: Config) -> SummaryClient:
     from .summarize_local import LocalSummaryClient
 
-    s = cfg.summarization
-    host, port = parse_local_endpoint(s.local_endpoint)
-    return LocalSummaryClient(
-        model=s.local_model,
-        host=host,
-        port=port,
-        startup_timeout_sec=s.local_startup_timeout_sec,
-        request_timeout_sec=s.local_request_timeout_sec,
-        summary_language=s.summary_language,
-        # PIPE4: the cloud paste-bundle knob, here only an upper bound on one local
-        # request; the client routes on estimated tokens below it (LOCAL23).
-        map_reduce_above_chars=s.skip_above_chars,
-        # LOCAL9: opt-in fine-tuned adapter; empty config keeps the base model.
-        adapter_path=s.local_adapter_path or None,
-        # LOCAL16: the free-RAM floor this run aborts under, rather than
-        # letting a long meeting push the Mac into swapping.
-        memory_floor_pct=s.local_memory_floor_pct,
-    )
+    return LocalSummaryClient.from_config(cfg)
 
 
 def _anthropic_summary(cfg: Config) -> SummaryClient:
@@ -196,14 +179,10 @@ def _local_cleanup(cfg: Config) -> CleanupClient:
     from .diarize_cleanup import LocalCleanupClient
     from .summarize_local import LocalSummaryClient
 
-    host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
+    # PIPE32: the whole config, so the configured local timeouts and floor apply
+    # to cleanup too (it ran on the constructor's 120 s defaults before).
     return LocalCleanupClient(
-        LocalSummaryClient(
-            model=cfg.summarization.local_model, host=host, port=port,
-            # LOCAL16: the configured floor, not the default, so turning the
-            # watchdog down (or off) means the same thing on every local path.
-            memory_floor_pct=cfg.summarization.local_memory_floor_pct,
-        ),
+        LocalSummaryClient.from_config(cfg),
         max_tokens=cfg.summarization.max_tokens,
     )
 

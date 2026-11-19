@@ -1,22 +1,19 @@
-"""LOCAL19: a memory-floor tripwire over every `LocalSummaryClient` construction.
+"""PIPE32 (was LOCAL19): no `LocalSummaryClient` is built by hand outside its module.
 
-`summarization.local_memory_floor_pct` is the free-RAM floor a local run aborts
-under (LOCAL16), and `LocalSummaryClient.__init__` defaults it to
-`resource_guard.DEFAULT_FLOOR_PCT`. So a construction that forgets the keyword
-does not fail, it silently runs at 10.0. `AutoFallbackClient._local` did exactly
-that, which meant the whole `auto` backend ignored a floor `diarize_cleanup`
-documents as universal ("means the same thing on every local path") and that both
-`README.md` and `config.example.toml` promise `0` turns off.
+`LocalSummaryClient.__init__` defaults every parameter, so a construction that
+forgets one does not fail, it silently runs on the constant. That happened three
+times: PIPE12 (`engine._local_client` dropped the adapter), LOCAL19
+(`AutoFallbackClient._local` dropped `local_memory_floor_pct`, so `auto` ignored
+the free-RAM floor), and `providers._local_cleanup` ran on the 120 s timeouts
+whatever the config said. LOCAL19's fence checked one keyword of nine.
 
-Nothing else could see it. CI5's dead-knob fence compares the config models
-against the docs, and the key is genuinely read at four other sites, so a fence
-built on set comparison is structurally blind to one site out of five.
-
-This walks every `LocalSummaryClient(...)` call under `src/mp` and asserts each
-one passes the configured floor, so a fifth construction cannot forget either.
-It reads the call out of the AST rather than grepping module text, so a mention
-in a comment or a docstring cannot satisfy it; `test_entry_contract.py`'s own
-walk is a substring test and CI6 covers strengthening that one.
+`LocalSummaryClient.from_config(cfg, **overrides)` threads every config-backed
+parameter in one place. This walks every call under `src/mp` and asserts that no
+module but `summarize_local` constructs the class directly, and that no
+`from_config` call overrides `memory_floor_pct` (re-pinning the floor at a site
+the user's config cannot reach is the LOCAL19 defect one step further along). It
+reads the AST rather than grepping module text, so a mention in a comment or a
+docstring cannot satisfy or trip it.
 """
 from __future__ import annotations
 
@@ -26,71 +23,93 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[1] / "src" / "mp"
 
 CLIENT = "LocalSummaryClient"
-#: The constructor keyword, and the config field its value has to come from.
+FACTORY = "from_config"
+#: The one module allowed to call the constructor (the factory lives there).
+HOME = "summarize_local"
 FLOOR_KWARG = "memory_floor_pct"
-CONFIGURED_FLOOR = "local_memory_floor_pct"
 
 #: Modules that build the client today. Named so a construction moving out of
 #: one is a deliberate edit here rather than a silently narrower walk.
-KNOWN_CONSTRUCTORS = {"summarize", "engine", "providers", "dogfood"}
+KNOWN_BUILDERS = {"summarize", "engine", "providers", "dogfood"}
 
 
-def _called_name(func: ast.expr) -> str | None:
-    """The callee's name for a plain call or an attribute call, else None."""
-    if isinstance(func, ast.Name):
-        return func.id
-    if isinstance(func, ast.Attribute):
-        return func.attr
-    return None
-
-
-def _client_constructions() -> list[tuple[str, int, ast.Call]]:
-    """Every `LocalSummaryClient(...)` call under `src/mp`, as (module, line, call)."""
-    found: list[tuple[str, int, ast.Call]] = []
-    for path in sorted(SRC.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and _called_name(node.func) == CLIENT:
-                found.append((path.stem, node.lineno, node))
+def _calls(tree: ast.AST) -> list[tuple[str, ast.Call]]:
+    """(`"direct"` | `"factory"`, call) for every construction in `tree`."""
+    found: list[tuple[str, ast.Call]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == CLIENT:
+            found.append(("direct", node))
+        elif isinstance(func, ast.Attribute) and func.attr == CLIENT:
+            found.append(("direct", node))
+        elif (isinstance(func, ast.Attribute) and func.attr == FACTORY
+              and isinstance(func.value, (ast.Name, ast.Attribute))
+              and (getattr(func.value, "id", None) == CLIENT
+                   or getattr(func.value, "attr", None) == CLIENT)):
+            found.append(("factory", node))
     return found
 
 
-def _threads_configured_floor(call: ast.Call) -> bool:
-    """True when the call passes `memory_floor_pct=<...>.local_memory_floor_pct`.
-
-    The value has to be the config attribute, not just any expression: a literal
-    would re-pin the floor at a site the user's config cannot reach, which is the
-    same defect one step further along.
-    """
-    for keyword in call.keywords:
-        if keyword.arg != FLOOR_KWARG:
-            continue
-        return isinstance(keyword.value, ast.Attribute) and keyword.value.attr == CONFIGURED_FLOOR
-    return False
+def _constructions() -> list[tuple[str, int, str, ast.Call]]:
+    out: list[tuple[str, int, str, ast.Call]] = []
+    for path in sorted(SRC.rglob("*.py")):
+        for kind, call in _calls(ast.parse(path.read_text(encoding="utf-8"))):
+            out.append((path.stem, call.lineno, kind, call))
+    return out
 
 
-def test_the_walk_finds_every_known_constructor() -> None:
-    """Guard the guard. If the extraction found nothing (a rename, a moved
-    import), the tripwire below would be vacuously green forever."""
-    modules = {module for module, _, _ in _client_constructions()}
-    assert KNOWN_CONSTRUCTORS <= modules, (
-        f"the {CLIENT} walk no longer sees {sorted(KNOWN_CONSTRUCTORS - modules)}. "
-        "If a construction legitimately moved, update KNOWN_CONSTRUCTORS; if the "
-        "class was renamed, update CLIENT, or this tripwire stops checking anything."
-    )
+def _direct_offenders(found: list[tuple[str, int, str, ast.Call]]) -> list[str]:
+    return [f"{m}.py:{line}" for m, line, kind, _ in found if kind == "direct" and m != HOME]
 
 
-def test_every_local_client_construction_threads_the_configured_floor() -> None:
-    offenders = [
-        f"{module}.py:{lineno}"
-        for module, lineno, call in _client_constructions()
-        if not _threads_configured_floor(call)
+def _floor_overrides(found: list[tuple[str, int, str, ast.Call]]) -> list[str]:
+    return [
+        f"{m}.py:{line}" for m, line, kind, call in found
+        if kind == "factory" and any(k.arg == FLOOR_KWARG for k in call.keywords)
     ]
-    assert not offenders, (
-        f"these {CLIENT} constructions do not pass "
-        f"{FLOOR_KWARG}=<cfg>.summarization.{CONFIGURED_FLOOR}: {offenders}. "
-        "Without it the free-RAM watchdog runs at resource_guard.DEFAULT_FLOOR_PCT "
-        "on that path, so raising the floor does nothing there and setting it to 0 "
-        "does not turn the watchdog off, both of which the docs promise it does "
-        "(LOCAL19)."
+
+
+def test_the_walk_finds_every_known_builder() -> None:
+    """Guard the guard. If the extraction found nothing (a rename, a moved
+    import), the tripwires below would be vacuously green forever."""
+    modules = {m for m, _, kind, _ in _constructions() if kind == "factory"}
+    assert KNOWN_BUILDERS <= modules, (
+        f"the {CLIENT}.{FACTORY} walk no longer sees {sorted(KNOWN_BUILDERS - modules)}. "
+        "If a construction legitimately moved, update KNOWN_BUILDERS; if the class "
+        "or the factory was renamed, update CLIENT or FACTORY."
     )
+
+
+def test_no_direct_construction_outside_its_module() -> None:
+    offenders = _direct_offenders(_constructions())
+    assert not offenders, (
+        f"these build {CLIENT}(...) directly: {offenders}. Use "
+        f"{CLIENT}.{FACTORY}(cfg, **overrides), which threads every config-backed "
+        "parameter; a hand-built client silently runs on the constructor's defaults "
+        "for whatever it forgets (PIPE12, LOCAL19, PIPE32)."
+    )
+
+
+def test_no_factory_call_overrides_the_memory_floor() -> None:
+    offenders = _floor_overrides(_constructions())
+    assert not offenders, (
+        f"these override {FLOOR_KWARG}: {offenders}. The free-RAM floor is the "
+        "configured one on every local path, so raising it or setting 0 means the "
+        "same everywhere (LOCAL16, LOCAL19)."
+    )
+
+
+def test_the_tripwires_fire_on_planted_offenders() -> None:
+    """The planted cases the acceptance asks for, kept as a test rather than tried
+    once and reverted, so the fence cannot quietly stop detecting them."""
+    planted = ast.parse(
+        "a = LocalSummaryClient(model='x')\n"
+        "b = sl.LocalSummaryClient()\n"
+        "c = LocalSummaryClient.from_config(cfg, memory_floor_pct=0.0)\n"
+        "d = LocalSummaryClient.from_config(cfg, model='y')\n"
+    )
+    found = [("planted", call.lineno, kind, call) for kind, call in _calls(planted)]
+    assert _direct_offenders(found) == ["planted.py:1", "planted.py:2"]
+    assert _floor_overrides(found) == ["planted.py:3"]

@@ -30,7 +30,6 @@ from .config import (
     Config,
     anthropic_sampling,
     effective_backend,
-    parse_local_endpoint,
 )
 
 log = logging.getLogger("mp.engine")
@@ -100,42 +99,37 @@ def _local_client(cfg: Config, model: str | None):
     """A `LocalSummaryClient` pinned to (host, port) from config. Lazy import so
     non-local installs never pay the mlx cost for an ask that never runs local.
 
-    Deliberately not every setting `summarize._select_backend` passes. Two are
-    skipped on purpose, recorded at the keyword arguments below, so a later reader
-    can tell a decision from an omission (PIPE12; the adapter was the omission).
+    Built from the whole config like every other local client (PIPE32), with two
+    settings overridden on purpose, recorded at the overrides below, so a later
+    reader can tell a decision from an omission (PIPE12; the adapter was the
+    omission).
     """
     from .summarize_local import LocalSummaryClient
 
-    host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
-    return LocalSummaryClient(
+    from .summarize_local import DEFAULT_MAP_REDUCE_ABOVE_CHARS
+
+    # PIPE32: the factory threads the configured endpoint, timeouts, the LOCAL16
+    # floor (`mp ask` answers through here, and the 2026-07-29 incident that
+    # hard-rebooted this Mac started on exactly this path) and the PIPE12/LOCAL9
+    # adapter (dropped here once, so a trained adapter answered every summary and
+    # no ask, digest, or classification). The overrides are the decisions.
+    return LocalSummaryClient.from_config(
+        cfg,
         model=model or cfg.summarization.local_model,
-        host=host,
-        port=port,
-        startup_timeout_sec=cfg.summarization.local_startup_timeout_sec,
-        request_timeout_sec=cfg.summarization.local_request_timeout_sec,
-        # LOCAL16: `mp ask` answers through here, and the 2026-07-29 incident
-        # that hard-rebooted this Mac started on exactly this path, so the same
-        # floor applies to an answer as to a summary.
-        memory_floor_pct=cfg.summarization.local_memory_floor_pct,
-        # PIPE12/LOCAL9: the configured LoRA adapter, served per request since
-        # LOCAL15. This was dropped, so a trained adapter answered every summary
-        # and no ask, digest, or classification, silently and with no way to tell
-        # from the answer. An adapter tuned on this owner's meetings is at least as
-        # relevant to a question about them as to a summary of one.
-        adapter_path=cfg.summarization.local_adapter_path or None,
-        # `summary_language` is deliberately NOT passed. It pins the *summary's*
-        # output language and drives a re-ask when the local model drifts off it
-        # (LOCAL7); a question is not a summary, and an ask answered in the
-        # configured summary language rather than the language it was asked in
-        # would be a bug, not parity. Free-form callers own their own language
-        # instruction in their prompt (`rag.RAG_SYSTEM`, digest's narrate system).
-        #
-        # `map_reduce_above_chars` is deliberately NOT passed either. It routes an
-        # over-long *transcript* through a windowed map-reduce (PIPE4); every
-        # free-form caller here packs its own prompt to a budget first (ask to
-        # `--context-tokens` clamped by RAM tier, digest to a formatted fact
-        # list), so there is nothing left for it to window. The default is what
-        # LocalSummaryClient already applies.
+        # `summary_language` is deliberately "auto", not the configured value. It
+        # pins the *summary's* output language and drives a re-ask when the local
+        # model drifts off it (LOCAL7); a question is not a summary, and an ask
+        # answered in the configured summary language rather than the language it
+        # was asked in would be a bug, not parity. Free-form callers own their own
+        # language instruction in their prompt (`rag.RAG_SYSTEM`, digest's
+        # narrate system).
+        summary_language="auto",
+        # `map_reduce_above_chars` is deliberately the constructor default, not the
+        # configured knob. It routes an over-long *transcript* through a windowed
+        # map-reduce (PIPE4); every free-form caller here packs its own prompt to a
+        # budget first (ask to `--context-tokens` clamped by RAM tier, digest to a
+        # formatted fact list), so there is nothing left for it to window.
+        map_reduce_above_chars=DEFAULT_MAP_REDUCE_ABOVE_CHARS,
     )
 
 

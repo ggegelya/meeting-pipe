@@ -64,7 +64,6 @@ from .config import (
     anthropic_sampling,
     effective_backend,
     extract_backend_flag,
-    parse_local_endpoint,
     with_backend_override,
 )
 from .markdown import render_markdown, render_summary_md
@@ -932,25 +931,9 @@ class AutoFallbackClient:
 
         def _local() -> MeetingSummary:
             from .summarize_local import LocalSummaryClient
-            host, port = parse_local_endpoint(self._cfg.summarization.local_endpoint)
-            with LocalSummaryClient(
-                model=self._cfg.summarization.local_model,
-                host=host, port=port,
-                startup_timeout_sec=self._cfg.summarization.local_startup_timeout_sec,
-                request_timeout_sec=self._cfg.summarization.local_request_timeout_sec,
-                summary_language=self._cfg.summarization.summary_language,
-                # PIPE4: the auto->local fallback map-reduces a long transcript too;
-                # the knob is an upper bound, routing is on tokens (LOCAL23).
-                map_reduce_above_chars=self._cfg.summarization.skip_above_chars,
-                # LOCAL9: opt-in fine-tuned adapter; empty config keeps the base model.
-                adapter_path=self._cfg.summarization.local_adapter_path or None,
-                # LOCAL16, and the omission LOCAL19 closed: the configured floor,
-                # same as the explicit local backend above. Left out, this rung took
-                # `resource_guard.DEFAULT_FLOOR_PCT` from the constructor default, so
-                # `auto` was the one local path where raising the floor did nothing
-                # and `0` did not turn the watchdog off.
-                memory_floor_pct=self._cfg.summarization.local_memory_floor_pct,
-            ) as fallback:
+            # PIPE32: the same factory as the explicit local backend, so this rung
+            # cannot drift from it (LOCAL19 was this rung missing the floor).
+            with LocalSummaryClient.from_config(self._cfg) as fallback:
                 fallback.map_partials = self._local_map_partials
                 out = fallback.summarize(
                     system_prompt=system_prompt, transcript=transcript,

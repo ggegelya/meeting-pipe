@@ -68,7 +68,7 @@ from pydantic import ValidationError
 
 from . import events, local_server, local_snapshot, resource_guard, summarize_staged
 from .chunking import chunked_windows
-from .config import SAMPLING_TEMPERATURE
+from .config import SAMPLING_TEMPERATURE, Config, parse_local_endpoint
 from .json_extract import largest_balanced_json_object, repair_missing_commas
 from .prompt_safety import wrap_untrusted
 from .schemas import MeetingSummary, SUMMARY_TOOL
@@ -422,6 +422,41 @@ class LocalSummaryClient:
     """
 
     backend_id = "local"
+
+    @classmethod
+    def from_config(cls, cfg: Config, **overrides: Any) -> LocalSummaryClient:
+        """The one way production code builds this client (PIPE32).
+
+        Threads every config-backed parameter, then applies ``overrides`` by
+        keyword. Every constructor parameter is defaulted, so a site that built the
+        client by hand and forgot one ran silently on the constant: PIPE12 lost the
+        adapter on ask and digest, LOCAL19 lost the memory floor on ``auto``, and
+        speaker cleanup ran on the 120 s timeouts whatever the config said. An
+        override naming no constructor parameter raises ``TypeError``, as the
+        constructor would. ``test_local_client_contract.py`` fences direct
+        construction outside this module.
+        """
+        # Spelled `cfg.summarization.<key>` rather than through an alias: CI5's
+        # dead-knob fence counts a read only through a config receiver.
+        host, port = parse_local_endpoint(cfg.summarization.local_endpoint)
+        kwargs: dict[str, Any] = {
+            "model": cfg.summarization.local_model,
+            "host": host,
+            "port": port,
+            "startup_timeout_sec": cfg.summarization.local_startup_timeout_sec,
+            "request_timeout_sec": cfg.summarization.local_request_timeout_sec,
+            # LOCAL7: the target output language; "auto" defers to the transcript.
+            "summary_language": cfg.summarization.summary_language,
+            # PIPE4: the cloud paste-bundle knob, here only an upper bound on one
+            # local request; the client routes on estimated tokens below it (LOCAL23).
+            "map_reduce_above_chars": cfg.summarization.skip_above_chars,
+            # LOCAL9: opt-in fine-tuned adapter; empty config keeps the base model.
+            "adapter_path": cfg.summarization.local_adapter_path or None,
+            # LOCAL16: the free-RAM floor a run aborts under, on every local path.
+            "memory_floor_pct": cfg.summarization.local_memory_floor_pct,
+        }
+        kwargs.update(overrides)
+        return cls(**kwargs)
 
     def __init__(
         self,
