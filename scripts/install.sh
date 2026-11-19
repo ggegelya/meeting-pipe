@@ -627,14 +627,16 @@ $INSTALL_DONE_LINE
 
 On first launch a Welcome window walks you through setup, in the order the app
 actually does it. No config file to edit:
-  1. Grant macOS permissions: Microphone, Screen Recording, Notifications,
+  1. Say what transcripts should call you (filled in with your account name;
+     blank reads "You").
+  2. Grant macOS permissions: Microphone, Screen Recording, Notifications,
      Accessibility. Each is requested on its own when you click its row, so the
      system dialogs never stack up unlabelled.
-  2. Pick a default workflow (Personal, Client / NDA, Internal team, or later).
-  3. Choose where summaries publish: add your Notion token and pick a database
+  3. Pick a default workflow (Personal, Client / NDA, Internal team, or later).
+  4. Choose where summaries publish: add your Notion token and pick a database
      from the list, or skip it. Every meeting is always saved on your Mac, so
      Notion is optional.
-  4. Try a short test recording, end to end.
+  5. Try a short test recording, end to end.
 
 Everything above is also in Preferences at any time. The menu bar's
 "Finish setup" row lists anything still missing (a key, a database, a

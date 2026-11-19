@@ -27,6 +27,18 @@ from .schemas import ActionItem, Evidence, MeetingSummary
 _UNSET: object = object()
 _UNKNOWN_SPEAKER = "Speaker?"
 
+# UX83: the reserved owner label (`diarize.USER_SPEAKER`) when no name is set, and the
+# channel fallback's mic side, rendered as a word: the transcript, the summarizer's
+# input and Ask's chunks read "You", never an id the model would list as an attendee.
+# Swift's `TranscriptDisplay.displayName` says the same. Overlays apply before this, so a
+# name the owner set ("Set your name...") replaces the label first.
+_SPEAKER_WORDS = {"speaker_user": "You"}
+
+
+def speaker_word(speaker: str) -> str:
+    """How a transcript renders one speaker label."""
+    return _SPEAKER_WORDS.get(speaker, speaker)
+
 # AUTO2: the daemon's registered URL scheme (Swift's `AutomationCommand.scheme`).
 _SCHEME = "meetingpipe"
 
@@ -85,7 +97,7 @@ def render_markdown(structured: dict[str, Any], *, timestamps: bool = False) -> 
             prefix = ""
             if timestamps and turn_start is not None:
                 prefix = f"[{format_timestamp(turn_start)}] "
-            lines.append(f"{prefix}**{current_speaker}**: " + " ".join(buffer).strip())
+            lines.append(f"{prefix}**{speaker_word(current_speaker)}**: " + " ".join(buffer).strip())
             lines.append("")
             buffer.clear()
         turn_start = None
@@ -128,7 +140,7 @@ def render_markdown(structured: dict[str, Any], *, timestamps: bool = False) -> 
         lines.append("")
         lines.append("Speakers (segment counts):")
         for spk, n in sorted(counts.items()):
-            lines.append(f"- {spk}: {n}")
+            lines.append(f"- {speaker_word(spk)}: {n}")
     return "\n".join(lines).rstrip() + "\n"
 
 

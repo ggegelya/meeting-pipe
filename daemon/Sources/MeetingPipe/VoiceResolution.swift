@@ -19,7 +19,8 @@ enum VoiceResolution {
 
     /// How this voice got the name it shows.
     enum Origin: Equatable {
-        /// The owner, stamped from `summarization.user_label`.
+        /// The owner, stamped from `summarization.user_label`, or with none set the reserved
+        /// `speaker_user` (UX83).
         case you
         /// The pipeline matched an enrolled roster voice.
         case roster
@@ -60,6 +61,9 @@ enum VoiceResolution {
         /// type, and a second place that answered "which colour is this person" is
         /// exactly how the strip and the rows came to disagree in the first place.
         let colorIndex: Int?
+        /// UX83: this is the owner's unnamed voice label (`OwnerName.isOwnerKey`), which is
+        /// what licenses the chip's **Set your name…**.
+        var isOwnerKey: Bool = false
 
         var id: String { assignKey }
 
@@ -157,6 +161,11 @@ enum VoiceResolution {
 
             if member.isUnattributed {
                 origin = .unattributed
+            } else if OwnerName.isOwnerKey(key, voiceprintLabels: voiceprintLabels) {
+                // UX83: the owner's unnamed voice, `speaker_user`, or a pre-UX83 meeting's
+                // raw numeric id. That id used to fall through to `canEnroll` and count as a
+                // roster match nobody had made.
+                origin = .you
             } else if MeetingCast.isUnnamedCluster(key) {
                 // A cluster the pipeline left anonymous. It still shows a name when the
                 // user renamed the cluster in-app, which the overlay carries; compare
@@ -209,7 +218,8 @@ enum VoiceResolution {
                     // the same number today. The point of UX59 is that one rule answers
                     // this for both surfaces; a second derivation that happens to agree
                     // is the shape that drifts.
-                    colorIndex: MeetingCast.colorIndex(displayName: member.displayName, in: cast)
+                    colorIndex: MeetingCast.colorIndex(displayName: member.displayName, in: cast),
+                    isOwnerKey: OwnerName.isOwnerKey(key, voiceprintLabels: voiceprintLabels)
                 )
             )
         }

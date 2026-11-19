@@ -246,6 +246,31 @@ def test_resolve_labels_no_me_when_user_did_not_speak():
     assert "Me" not in mapping.values()
 
 
+def test_an_identified_owner_with_no_name_set_takes_the_reserved_label_UX83():
+    # FluidAudio names clusters "1", "2", ... An unnamed owner used to keep "1", which the
+    # app counted as a roster match and the summarizer listed as an attendee.
+    segs = [_seg("1", 0, 5), _seg("2", 5, 6)]
+    emb = {"1": [1.0], "2": [2.0]}
+    resolved = resolve_speaker_labels(segs, emb, None, user_label="", mic_me="1")
+    assert resolved.mapping == {"1": USER_SPEAKER, "2": "THEM-A"}
+    assert resolved.owner_id == "1"
+    assert not any(v.isdigit() for v in resolved.mapping.values())
+
+
+def test_a_set_name_still_wins_over_the_reserved_label_UX83():
+    segs = [_seg("1", 0, 5), _seg("2", 5, 6)]
+    emb = {"1": [1.0], "2": [2.0]}
+    mapping = resolve_speaker_labels(segs, emb, None, user_label="  Alex ", mic_me="1").mapping
+    assert mapping == {"1": "Alex", "2": "THEM-A"}
+
+
+def test_with_nobody_identified_no_voice_takes_the_reserved_label_UX83():
+    segs = [_seg("1", 0, 5), _seg("2", 5, 6)]
+    emb = {"1": [1.0], "2": [2.0]}
+    mapping = resolve_speaker_labels(segs, emb, None, user_label="").mapping
+    assert mapping == {"1": "THEM-A", "2": "THEM-B"}
+
+
 def test_resolve_labels_roster_names_win_over_them():
     segs = [_seg("speaker_0", 0, 5), _seg("speaker_1", 5, 6), _seg("speaker_2", 6, 7)]
     emb = {"speaker_0": [1.0], "speaker_1": [2.0], "speaker_2": [3.0]}
@@ -433,6 +458,20 @@ def test_an_owner_matching_mic_side_cluster_is_folded_into_the_owner():
     res = _fold_case(second_mic_fraction=0.9)
     assert res.mapping == {"a": "Me", "b": "Me"}
     assert (res.owner.folded, res.owner.flagged) == (1, 0)
+
+
+def test_an_over_split_unnamed_owner_folds_into_the_reserved_label_UX83():
+    # An empty label used to switch DIAR11's folds off; the fallback turns them on, so the
+    # owner's fragment folds into `speaker_user` exactly as it folds into a set name.
+    vp = _unit_at(1.0)
+    embs = {"a": _unit_at(1.0), "b": _unit_at(0.7)}
+    tier = pick_mic_speaker({"a": 300.0, "b": 27.0}, {"a": 300.0, "b": 30.0})
+    res = resolve_speaker_labels(
+        [_seg("a", 0, 300), _seg("b", 300, 330)], embs, _FakeRoster([]), user_label="",
+        mic_me=tier.winner, mic_tier=tier, voiceprint=vp,
+    )
+    assert res.mapping == {"a": USER_SPEAKER, "b": USER_SPEAKER}
+    assert res.owner.folded == 1
 
 
 def test_an_owner_matching_system_side_cluster_is_left_alone_and_flagged():

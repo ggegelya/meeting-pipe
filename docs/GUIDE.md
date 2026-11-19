@@ -218,13 +218,17 @@ The same group has **Also catch near-misses (one letter off)**, which additional
 
 **Goal:** get names on the transcript instead of `Speaker 2`, and fix it when it lands on the wrong person.
 
+Your own voice is the one you never have to name voice by voice: the Welcome window asks what transcripts should call you, and you can change it any time in Preferences ▸ Pipeline ▸ **Your name**. Leave it blank and your voice reads **You**.
+
 ### The cast strip
 
 Above the transcript lines is a strip naming every voice in the meeting and saying how many of them are actually named. It is the fastest place to start, and it tells apart the two situations that look identical in the lines themselves: **nobody is enrolled yet**, so nothing could have been matched, versus **your list of voices is populated and this one was missed**, which is worth a re-transcribe once you have named them.
 
 Each chip carries two marks, and they mean different things. The coloured dot on the left is that person's colour in the lines below (see [the colours](#the-colours)). The small icon next to it says how the app got their name: your own voice, one matched from your saved voices, one you named here, or one still unnamed.
 
-Click **Name** on an unnamed voice to name it. Right-click a chip for the rest:
+Your own voice reads **You** until you give it a name. Click **Name** on an unnamed voice to name it. Right-click a chip for the rest:
+
+- Your own voice, while it reads **You**, offers **Set your name…**. The name you type is saved as your name in Preferences ▸ Pipeline and put on your voice in this meeting and in every past meeting where it still reads **You**; a past meeting where you had already named it something else keeps that name. Summaries use it from the next time you regenerate them.
 
 - A voice you named in **this** meeting offers **Rename…** and **Un-name**. **Un-name** takes back only the voice sample this meeting added; that person is still recognised from your other meetings, and disappears from your saved voices only if this was their one sample.
 - A voice matched from your saved voices offers **Rename everywhere…**, which renames that person here, in your saved voices, and in every past meeting they appear in.

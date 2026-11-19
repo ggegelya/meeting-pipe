@@ -140,14 +140,16 @@ max_tokens = 4000
 # Empty is fine. A fresh install copies it into the default "General" workflow's
 # context prompt, which is where per-meeting context lives (Workflows window).
 team_context = ""
-# Your name, stamped on your own diarized speaker so "me vs them" reads as a
-# real name instead of "Speaker 1". Which speaker is you: the mic channel on a
+# Your name, stamped on your own diarized speaker so "me vs them" reads as your
+# name. Which speaker is you: the mic channel on a
 # stereo recording, else a voice profile learned automatically from your stereo
 # recordings (holds on mono / merged calls). Both measure your own voice, so a
 # meeting you stayed silent through names nobody: the speakers stay unknown for
 # you to name in the app, rather than your name landing on whoever talked most.
-# Blank keeps generic labels. Also editable as "Your name" in Preferences ->
-# Pipeline.
+# Blank labels your own voice "You" (the reserved `speaker_user` on disk) rather than
+# a name; other voices are unaffected. The Welcome window asks for this once, and
+# it is also editable as "Your name" in Preferences -> Pipeline, or from the "You"
+# chip's "Set your name..." in a meeting's transcript.
 user_label = ""
 # Output language. "auto" (default) mirrors the transcript's detected
 # language (Russian transcript → Russian summary). A fixed ISO 639-1 code

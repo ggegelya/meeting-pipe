@@ -262,3 +262,14 @@ def test_assign_speakers_by_channel_clamps_segment_past_end(tmp_path):
     transcript = [{"start": 0.0, "end": 10.0, "text": "Runs past the end."}]
     out = assign_speakers_by_channel(transcript, wav)
     assert out[0]["speaker"] in (USER_SPEAKER, OTHER_SPEAKER)
+
+
+def test_the_reserved_owner_label_renders_as_a_word_UX83():
+    md = render_markdown({
+        "language": "en",
+        "audio_path": "/tmp/x.wav",
+        "segments": [{"speaker": "speaker_user", "text": "Hi."}, {"speaker": "THEM-A", "text": "Yo."}],
+    })
+    assert "**You**: Hi." in md
+    assert "- You: 1" in md
+    assert "speaker_user" not in md

@@ -107,6 +107,8 @@ struct StemCounter: Equatable {
     private var counts: [String: Int] = [:]
 
     func contains(_ stem: String) -> Bool { (counts[stem] ?? 0) > 0 }
+    /// Every stem held at least once (UX83's carry skips them).
+    var stems: Set<String> { Set(counts.keys) }
 
     mutating func insert(_ stem: String) { counts[stem, default: 0] += 1 }
 
@@ -577,6 +579,32 @@ final class LibraryWindowModel: ObservableObject {
         return await bridge { library, done in
             library.undoSpeakerNaming(stem: stem, label: label, name: name) { done($0) }
         }
+    }
+
+    /// UX83: **Set your name…** from the owner's cast chip. Saves the name as
+    /// `summarization.user_label`, then carries it onto the owner's unnamed voice in every
+    /// meeting's speaker overlay (`OwnerName.carry`), off main. Refused while config.toml
+    /// does not parse, since the app will not save over a file it cannot read (UX94).
+    /// Meetings being re-transcribed are skipped.
+    enum SetOwnerNameError: LocalizedError {
+        case settingsUnreadable
+        var errorDescription: String? {
+            "The settings file (config.toml) has an error, so your name could not be saved. Fix it from Preferences, then try again."
+        }
+    }
+
+    @MainActor
+    func setOwnerName(_ name: String, currentStem: String, directory: URL) async -> Result<RosterRename.Outcome, Error> {
+        guard let config = coordinator?.configStore else { return .failure(Unwired.libraryUnavailable) }
+        guard OwnerName.save(name, to: config) else { return .failure(SetOwnerNameError.settingsUnreadable) }
+        Log.event(category: "library", action: "owner_name_set", attributes: ["stem": currentStem])
+        let skip = retranscribingStems.stems
+        let outcome = await Task.detached(priority: .userInitiated) {
+            OwnerName.carry(name: name, currentStem: currentStem, in: directory, skip: skip)
+        }.value
+        Log.event(category: "library", action: "owner_name_carried",
+                  attributes: ["meetings_carried": outcome.carried, "meetings_failed": outcome.failed])
+        return .success(outcome)
     }
 
     /// Rename an already-named speaker (FEAT3-UNDO): re-enroll under the new name.

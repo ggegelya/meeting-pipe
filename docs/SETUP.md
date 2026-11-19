@@ -86,7 +86,7 @@ The installer copies everything it needs out of the `meeting-pipe` folder, so th
 
 Look at the right end of your menu bar. There should be a small icon reading **MeetingPipe: Idle** when clicked. The installer started it and checked that it came up. If it is not there, open your `~/Applications` folder in Finder and double-click `MeetingPipe.app`. No security warning appears: the app was built on your own Mac and signed there with its own self-signed identity, so macOS's "unverified developer" check (which applies to downloaded apps) never runs for it.
 
-On first launch a **Welcome** window opens and walks you through the four permissions one at a time. Each has its own row explaining what it is for, with a button that asks for just that one when you click it (so you are never faced with a stack of unlabelled system dialogs). All four are needed for the whole thing to work:
+On first launch a **Welcome** window opens. Its first page asks **What should transcripts call you?**, filled in with your Mac account's name: change it to what you want your own voice labelled as in transcripts and summaries (a nickname, or your full name), or clear it and your voice reads "You". Nothing is saved until you press **Continue**, and Preferences ▸ Pipeline ▸ **Your name** changes it later. The next page walks you through the four permissions one at a time. Each has its own row explaining what it is for, with a button that asks for just that one when you click it (so you are never faced with a stack of unlabelled system dialogs). All four are needed for the whole thing to work:
 
 | Permission | Why it is needed | If you deny it |
 |---|---|---|

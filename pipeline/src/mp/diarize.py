@@ -492,6 +492,7 @@ def resolve_speaker_labels(
     no-voiceprint over-split owner's cluster (DIAR11, below), which is named from its mic time. The "me"
     speaker is never roster-matched. `roster` may be None (no roster).
 
+    An identified user with an empty `user_label` is labelled `USER_SPEAKER` (UX83).
     When no signal identifies the user (`_resolve_me_id` returns None, the
     silent-owner case), no speaker is given `user_label`; every voice falls
     through to a roster match or a THEM-x cluster, which the user can name in
@@ -525,7 +526,13 @@ def resolve_speaker_labels(
         segments, channel_me=channel_me, mic_me=mic_me, voiceprint_me=voiceprint_me,
         mic_fractions=fractions,
     )
-    label = user_label.strip()
+    # UX83: an identified owner with no name set takes the reserved `speaker_user`, the
+    # label the channel fallback already gives the same person, never the diarizer's raw
+    # id ("1"), which the app counted as a roster match and summaries listed as an
+    # attendee. With nobody identified the label stays empty, as before. A non-empty
+    # label also turns on DIAR11's two folds below, so an over-split owner folds into
+    # `speaker_user` the way it folds into a set name.
+    label = user_label.strip() or (USER_SPEAKER if me is not None else "")
     if me is not None and label:
         mapping[me] = label
     order: list[str] = []

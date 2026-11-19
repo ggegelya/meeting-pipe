@@ -60,9 +60,14 @@ enum MeetingCast {
     /// then grouped by that resolved name. Two segments showing "Heorhii" are one
     /// person whether one got there from a baked raw label and the other from a
     /// per-segment override.
+    ///
+    /// UX83: with `voiceprintLabels`, a pre-UX83 meeting's numeric owner label with no
+    /// overlay name renders as "You", the way `speaker_user` does, so the strip, the rows
+    /// and the chip agree.
     static func members(
         segments: [TranscriptSegment],
-        overlay: SpeakerLabelStore.Overlay
+        overlay: SpeakerLabelStore.Overlay,
+        voiceprintLabels: Set<String> = []
     ) -> [CastMember] {
         // displayName -> the best assignKey seen so far, plus its ordering.
         var order: [String] = []
@@ -72,7 +77,8 @@ enum MeetingCast {
 
         for seg in segments {
             guard let base = overlay.segments[seg.index] ?? seg.speakerID else { continue }
-            let resolved = overlay.labels[base] ?? base
+            let resolved = overlay.labels[base]
+                ?? (OwnerName.isOwnerKey(base, voiceprintLabels: voiceprintLabels) ? OwnerName.reservedLabel : base)
             let display = TranscriptDisplay.displayName(for: resolved)
             // A raw cluster key (the segment carries no per-segment override) is the
             // durable one: point future assignments at it and a cluster rename moves
@@ -148,12 +154,16 @@ enum MeetingCast {
         /// all, which is a real answer: a per-segment "New person" has no whole-voice
         /// name to change and no voiceprint to enroll.
         let actions: [Action]
+        /// UX83: the owner's unnamed voice (`OwnerName.isOwnerKey`), which reads "You" while
+        /// no overlay name covers it.
+        var isOwner: Bool = false
 
         /// What the row shows. Same resolution `members` groups the cast by
         /// (`overlay.labels[base] ?? base`, through `TranscriptDisplay`), so the row and
         /// the cast strip cannot disagree about who a line belongs to.
         var displayName: String {
-            TranscriptDisplay.displayName(for: assignedName ?? label)
+            if isOwner, assignedName == nil { return OwnerName.word }
+            return TranscriptDisplay.displayName(for: assignedName ?? label)
         }
 
         /// One item in the row's speaker menu, carrying the label it writes to so the
@@ -193,6 +203,12 @@ enum MeetingCast {
         // because the cluster-name table is keyed on it: it is what an action writes.
         guard let label = overlay.segments[segment.index] ?? segment.speakerID else {
             return RowSpeaker(label: nil, assignedName: nil, actions: [])
+        }
+        // UX83: the owner's own voice. Naming, renaming or un-naming it here would run a
+        // roster enroll or forget on the owner, whose voice is the self-voiceprint's and is
+        // never roster-matched; the cast chip's **Set your name…** is its one name action.
+        if OwnerName.isOwnerKey(label, voiceprintLabels: voiceprintLabels) {
+            return RowSpeaker(label: label, assignedName: overlay.labels[label], actions: [], isOwner: true)
         }
         if let name = overlay.labels[label] {
             return RowSpeaker(

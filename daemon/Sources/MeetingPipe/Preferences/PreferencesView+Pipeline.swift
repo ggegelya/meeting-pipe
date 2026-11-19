@@ -161,7 +161,7 @@ struct PipelineSectionView: View {
 
             SettingsGroup("Your name") {
                 SettingsStackRow("Display name",
-                    sublabel: "Stamped on your own voice in the transcript so speaker labels read as your name, not \"Speaker 1\". Leave blank to keep generic labels.") {
+                    sublabel: "Stamped on your own voice in the transcript and the summary. Left blank, your voice reads \"You\".") {
                     TextField("e.g. Alex", text: $store.summarizationUserLabel)
                         .textFieldStyle(.roundedBorder)
                 }

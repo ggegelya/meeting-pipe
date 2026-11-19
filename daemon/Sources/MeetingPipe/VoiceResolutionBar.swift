@@ -24,6 +24,9 @@ struct VoiceResolutionBar: View {
     /// which is the same enroll the naming sheet runs, with the typing skipped. Only
     /// ever reached by a click on the menu item that spells the name out.
     let onAcceptSuggestion: (String, String) -> Void
+    /// UX83: name the owner's own voice (`assignKey`), writing `summarization.user_label`
+    /// and carrying the name into past meetings.
+    var onSetYourName: (String) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -116,6 +119,9 @@ struct VoiceResolutionBar: View {
             case .suggest(let name):
                 Button(Self.title(for: action)) { onAcceptSuggestion(voice.assignKey, name) }
                     .accessibilityLabel(Self.accessibilityLabel(for: action))
+            case .setYourName:
+                Button(Self.title(for: action)) { onSetYourName(voice.assignKey) }
+                    .accessibilityLabel(Self.accessibilityLabel(for: action))
             }
             if let caption = Self.caption(for: action) {
                 // An item whose consequence the reader cannot see from its own words
@@ -201,6 +207,9 @@ struct VoiceResolutionBar: View {
         /// a suggestion the reader cannot see before clicking is a guess applied for
         /// them.
         case suggest(name: String)
+        /// UX83: the owner's unnamed voice (or one named here for this meeting): set the
+        /// name transcripts call you, here and in past meetings.
+        case setYourName
     }
 
     /// What this chip's menu offers, in order. Empty means no menu.
@@ -234,7 +243,11 @@ struct VoiceResolutionBar: View {
             guard voice.canEnroll else { return [] }
             guard let suggested = voice.suggestedName else { return [.name] }
             return [.name, .suggest(name: suggested)]
-        case .you, .unattributed:
+        case .you:
+            // Only the reserved or raw-numeric owner label: a name the pipeline baked in
+            // from `user_label` is already yours, and Preferences ▸ Pipeline changes it.
+            return voice.isOwnerKey ? [.setYourName] : []
+        case .unattributed:
             return []
         }
     }
@@ -252,6 +265,7 @@ struct VoiceResolutionBar: View {
         // probability that the voice is that person, which is not what it measures,
         // and at one or two enrolment samples it is not even a good proxy for one.
         case .suggest(let name):    return "Name as \(name)"
+        case .setYourName:          return "Set your name\u{2026}"
         }
     }
 
@@ -273,6 +287,8 @@ struct VoiceResolutionBar: View {
             return "Renames this person in your roster and in every meeting they are in."
         case .suggest:
             return "The closest of your named voices, but not a certain match, so check it before accepting."
+        case .setYourName:
+            return "Saves it as your name and puts it on your voice in past meetings too."
         case .name, .rename, .unname:
             return nil
         }
@@ -322,7 +338,9 @@ struct VoiceResolutionBar: View {
     private static func help(for voice: VoiceResolution.Voice) -> String {
         switch voice.origin {
         case .you:
-            return "Your own voice, from the display name in Preferences ▸ Pipeline."
+            return voice.isOwnerKey
+                ? "Your own voice. Right-click to set the name transcripts call you."
+                : "Your own voice, from the display name in Preferences ▸ Pipeline."
         case .roster:
             return "Matched against your named voices, so this name came from the roster. Right-click to rename this person everywhere."
         case .namedHere:

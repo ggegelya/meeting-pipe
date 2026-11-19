@@ -206,6 +206,8 @@ enum TranscriptDisplay {
         // pass-through below and rendered the raw internal id, so the transcript
         // showed literal "speaker_unknown" rows to the user.
         if id == "speaker_unknown" { return "Unknown speaker" }
+        // UX83: the owner's voice with no name set, never the raw `speaker_user`.
+        if id == OwnerName.reservedLabel { return OwnerName.word }
         if id.hasPrefix("speaker_"),
            let n = Int(id.dropFirst("speaker_".count)) {
             return "Speaker \(n + 1)"
@@ -386,7 +388,8 @@ struct TranscriptTab: View {
                     onRenameEverywhere: { current in renameEverywhere(currentName: current) },
                     onAcceptSuggestion: { label, name in
                         acceptSuggestion(label: label, name: name)
-                    }
+                    },
+                    onSetYourName: { _ in setYourName() }
                 )
                 .frame(maxWidth: SummaryLayout.readingMeasure, alignment: .leading)
                 .padding(.horizontal, SummaryLayout.contentPadding)
@@ -593,6 +596,26 @@ struct TranscriptTab: View {
                 // A chip has no error slot, and a rename that changed nothing after a
                 // modal prompt has to say so (the UX32 rail-row precedent).
                 LibraryDialogs.reportRosterRenameProblem(PipelineLauncher.diagnostics(for: error))
+            }
+        }
+    }
+
+    /// UX83: name the owner's own voice. Prefilled with the saved name, else the Mac
+    /// account's full name; nothing is written until the prompt is confirmed.
+    private func setYourName() {
+        let current = libraryModel.ownerLabel.isEmpty ? NSFullUserName() : libraryModel.ownerLabel
+        guard let name = OwnerName.prompt(current: current) else { return }
+        Task {
+            let result = await libraryModel.setOwnerName(name, currentStem: meeting.stem, directory: meeting.recordingsDir)
+            await reload()
+            // Every meeting the carry touched changed on disk; the rescan is what the
+            // Library's other panes (People, Meeting time) read (UX52).
+            store.refresh()
+            switch result {
+            case .success(let outcome):
+                if let note = outcome.keptOldNameNote { LibraryDialogs.reportRosterRenameProblem(note) }
+            case .failure(let error):
+                LibraryDialogs.reportRosterRenameProblem(error.localizedDescription)
             }
         }
     }
@@ -845,7 +868,7 @@ struct TranscriptTab: View {
         driftedCorrections = result?.driftedCorrections ?? 0
         speakerOverlay = result?.speakerOverlay ?? .empty
         voiceprintLabels = result?.voiceprintLabels ?? []
-        cast = MeetingCast.members(segments: segments, overlay: speakerOverlay)
+        cast = MeetingCast.members(segments: segments, overlay: speakerOverlay, voiceprintLabels: voiceprintLabels)
         voices = VoiceResolution.derive(
             cast: cast,
             voiceprintLabels: voiceprintLabels,

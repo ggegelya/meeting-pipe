@@ -1728,3 +1728,34 @@ def test_finalizing_a_channel_fallback_transcript_twice_keeps_its_labels_without
     assert [s["speaker"] for s in second["segments"]] == ["speaker_user", "speaker_other"]
     assert second["speaker_fallback"] == "channel"
     assert second["diarization_failed"] is True
+
+
+def test_an_unnamed_owner_never_reaches_the_transcript_as_a_digit_UX83(tmp_path: Path, monkeypatch):
+    # FluidAudio's ids are "1", "2". With user_label empty the owner used to keep "1" in
+    # <stem>.json, <stem>.md and the embeddings sidecar; now it is `speaker_user`, which
+    # the Markdown (and so the summarizer's input) renders as "You".
+    wav = tmp_path / "20260501-1100.wav"
+    wav.write_bytes(b"")
+    streamed = _streamed_with_embeddings(
+        wav,
+        [
+            {"start": 0.0, "end": 60.0, "text": "hi", "speaker": "1"},
+            {"start": 60.0, "end": 120.0, "text": "hello", "speaker": "2"},
+        ],
+        {"1": _axis_emb(0), "2": _axis_emb(1)},
+    )
+    _mic_channel(monkeypatch, ["speaker_user", "speaker_other"])
+    out = finalize_streamed_transcript(
+        wav, streamed, user_label="",
+        voiceprint_store=VoiceprintStore(tmp_path / "vp.json"),
+        roster_store=RosterStore(tmp_path / "roster.json"),
+    )
+    data = json.loads(out["json"].read_text(encoding="utf-8"))
+    speakers = [seg["speaker"] for seg in data["segments"]]
+    assert speakers == ["speaker_user", "THEM-A"]
+    assert not any(s.isdigit() for s in speakers)
+    emb = json.loads((tmp_path / "20260501-1100.embeddings.json").read_text())["embeddings"]
+    assert set(emb) == {"speaker_user", "THEM-A"}
+    assert emb["speaker_user"] == _axis_emb(0)
+    md = out["md"].read_text(encoding="utf-8")
+    assert "**You**: hi" in md and "speaker_user" not in md and "**1**" not in md

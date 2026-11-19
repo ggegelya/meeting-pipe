@@ -123,11 +123,22 @@ struct OnboardingRootView: View {
     let onComplete: () -> Void
 
     @State private var step: Int
+    /// UX83: the Welcome step's name field, held here (the WF9 reason below) and saved only
+    /// when the step is left with Continue, so opening the window writes nothing.
+    @State private var ownerName: String
 
-    init(deps: OnboardingDependencies, initialStep: Int = 0, onComplete: @escaping () -> Void) {
+    init(
+        deps: OnboardingDependencies,
+        initialStep: Int = 0,
+        accountName: String = NSFullUserName(),
+        onComplete: @escaping () -> Void
+    ) {
         self.deps = deps
         self.onComplete = onComplete
         _step = State(initialValue: initialStep)
+        _ownerName = State(initialValue: OwnerNameDraft.initial(
+            saved: deps.configStore.summarizationUserLabel, accountName: accountName
+        ))
     }
     /// WF9: the workflow step's pick and the row it created, held here because the
     /// `switch step` below rebuilds that step on every Back/Continue. Held in the step's
@@ -153,7 +164,7 @@ struct OnboardingRootView: View {
 
             Group {
                 switch step {
-                case 0: OnboardingStepWelcome(store: deps.configStore, workflows: deps.workflowStore)
+                case 0: OnboardingStepWelcome(store: deps.configStore, workflows: deps.workflowStore, ownerName: $ownerName)
                 case 1: OnboardingStepPermissions(relaunch: deps.relaunchToPermissions)
                 case 2: OnboardingStepWorkflow(
                     workflowStore: deps.workflowStore,
@@ -177,6 +188,9 @@ struct OnboardingRootView: View {
                 }
                 Spacer()
                 Button(step == Self.stepCount - 1 ? "Finish" : "Continue") {
+                    if step == 0, let name = OwnerNameDraft.toSave(draft: ownerName, saved: deps.configStore.summarizationUserLabel) {
+                        deps.configStore.summarizationUserLabel = name
+                    }
                     if step == Self.stepCount - 1 {
                         onComplete()
                     } else {

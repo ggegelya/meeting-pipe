@@ -269,8 +269,8 @@ class Summarization(BaseModel):
     # assigned mic speaker (`speaker_user`) when present, else the speaker
     # identified on the mic channel, else the self-voiceprint match; nobody when
     # no signal finds the user, since they may simply not have spoken. Empty =
-    # no enrollment (labels stay speaker_user / speaker_other). Set once;
-    # reused on every meeting.
+    # the identified user is labelled `speaker_user` (UX83), rendered "You", never
+    # the diarizer's raw cluster id. Set once; reused on every meeting.
     user_label: str = ""
     # WF7: workflow-defined extra summary sections, overlaid per meeting by
     # `workflow.apply_overrides` from the meta sidecar. Empty for a workflow that
