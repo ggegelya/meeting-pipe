@@ -93,6 +93,11 @@ source "$REPO_ROOT/scripts/lib/login-agent.sh"
 # DIST9: the live-recording check (also used by rebuild.sh).
 # shellcheck source=scripts/lib/live-recording.sh
 source "$REPO_ROOT/scripts/lib/live-recording.sh"
+# DIST5: the verified stop and relaunch (shared with rebuild.sh), and the Swift floor.
+# shellcheck source=scripts/lib/relaunch.sh
+source "$REPO_ROOT/scripts/lib/relaunch.sh"
+# shellcheck source=scripts/lib/toolchain.sh
+source "$REPO_ROOT/scripts/lib/toolchain.sh"
 
 # 1. Prereqs ---------------------------------------------------------------
 
@@ -130,6 +135,18 @@ if ! xcode-select -p >/dev/null 2>&1 || ! command -v swift >/dev/null 2>&1; then
    Already installed but still failing after a macOS upgrade? Repoint it:
 
        sudo xcode-select -s /Library/Developer/CommandLineTools"
+fi
+
+# DIST5: Swift 6.0 or newer. The pinned FluidAudio declares tools 6.0, so an older
+# toolchain fails inside `swift build` with a package-resolution error that names
+# neither the version nor the fix.
+SWIFT_VERSION_OUTPUT="$(swift --version 2>&1 || true)"
+if ! swift_version_ok "$SWIFT_VERSION_OUTPUT"; then
+    die "Swift 6.0 or newer is required; this Mac has: $(printf '%s\n' "$SWIFT_VERSION_OUTPUT" | head -1)
+   Update the Command Line Tools (System Settings > General > Software Update,
+   or: xcode-select --install), or, if a newer full Xcode is installed, select it:
+
+       sudo xcode-select -s /Applications/Xcode.app"
 fi
 
 if ! command -v brew >/dev/null 2>&1; then
@@ -532,10 +549,19 @@ sed \
     -e "s|{{INSTALL_PREFIX}}/MeetingPipe.app/Contents/MacOS/MeetingPipe|$DAEMON_BIN|g" \
     "$REPO_ROOT/scripts/launchd.plist.template" >"$PLIST"
 
-# Reload if already running.
-if launchctl list | grep -q "$LAUNCHD_LABEL"; then
-    launchctl unload "$PLIST" || true
+# DIST5: stop the running daemon here, BEFORE the optional TCC reset below, and start
+# the new build only after it (both through lib/relaunch.sh). The agent's KeepAlive
+# respawns on a non-zero exit, so a reset that SIGKILLs a still-loaded job would have
+# launchd bring the old build straight back mid-reset. The stop boots the job out
+# first and, with launch at login off, stops a copy opened from Finder too.
+if login_agent_disabled "$LAUNCHD_LABEL"; then
+    LOGIN_AGENT_OFF=1
+else
+    LOGIN_AGENT_OFF=0
 fi
+say "Stopping the running daemon"
+relaunch_stop_daemon "$APP" "$LAUNCHD_LABEL" "$LOGIN_AGENT_OFF" \
+    || die "The previous build is still running, so the new one would stand itself down. Quit MeetingPipe from its menu and re-run this script."
 
 # 7. TCC reset (opt-in, --reset-tcc) ---------------------------------------
 #
@@ -576,23 +602,23 @@ fi
 # an *enabled* override into launchd's disabled-overrides database. That is what
 # re-armed a login-start the Preferences toggle had turned off, on every install.
 # `bootstrap` loads the job without touching that database, and a disabled agent
-# is left alone entirely, so the toggle stays the one owner of login-start.
-INSTALL_DONE_LINE="✓ Install complete. MeetingPipe is running in your menu bar (〰️)."
-if login_agent_disabled "$LAUNCHD_LABEL"; then
-    say "Launch at login is off (Preferences → General), so the agent is left disabled."
-    say "Open ~/Applications/MeetingPipe.app to run MeetingPipe now, or turn that toggle on."
-    INSTALL_DONE_LINE="✓ Install complete. Launch at login is off, so nothing started MeetingPipe: open ~/Applications/MeetingPipe.app, or turn the toggle on in Preferences → General."
+# is never bootstrapped, so the toggle stays the one owner of login-start.
+#
+# DIST5: the stop (above) and start are rebuild.sh's, shared through lib/relaunch.sh:
+# a full bootout and a retried bootstrap rather than `kickstart -k` (which reuses a
+# stale launch constraint after a cdhash change and returns 0 over a dead spawn),
+# and a pgrep that has to see the new build before the done line prints. With
+# launch at login off the stop took whatever ran from the installed binary (a copy
+# opened from Finder included, which used to survive every install) and this opens
+# the new bundle, so either way no old build is left running.
+if [[ "$LOGIN_AGENT_OFF" == 1 ]]; then
+    say "Launch at login is off (Preferences → General), so the agent is left disabled; opening the app directly."
+    INSTALL_DONE_LINE="✓ Install complete. Launch at login is off, so the installer stopped any running copy and opened the new build itself; it will not start at login until you turn that toggle on in Preferences → General."
 else
-    launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || true
-    # bootstrap is a no-op when the job is already loaded, and the `unload` above
-    # is swallowed by `|| true` when it fails, so a reinstall used to leave the
-    # PREVIOUS binary running: install.sh reported success while the old build
-    # stayed live (found 2026-07-19, a daemon from 22:50 surviving a 23:14
-    # install). kickstart -k force-restarts the job onto the freshly installed
-    # bundle, so "install finished" actually means "the new build is running".
-    # Confirm via the `app_rebuild` event, which logs the cdhash change.
-    launchctl kickstart -k "gui/$(id -u)/${LAUNCHD_LABEL}" 2>/dev/null || true
+    INSTALL_DONE_LINE="✓ Install complete. MeetingPipe is running in your menu bar (〰️)."
 fi
+relaunch_start_daemon "$APP" "$PLIST" "$LAUNCHD_LABEL" "$LOGIN_AGENT_OFF" || die "The new build did not start (above)."
+relaunch_verify_daemon "$APP" "$LAUNCHD_LABEL" || die "The new build did not start (above)."
 say "LaunchAgent installed → $PLIST"
 
 cat <<EOF

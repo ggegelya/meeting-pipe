@@ -8,6 +8,52 @@
 # exists nowhere else) and auto_consent.json. --purge is the one way to delete
 # them, so it lists what is about to go and asks first.
 
+# DIST5: every launchd job the app installs under ~/Library/LaunchAgents. The daemon
+# agent comes from install.sh; the digest and backup agents from the app itself
+# (`DigestSchedulerService.label`, `BackupSchedulerService.label` through
+# `LaunchAgentScheduler`). A plain uninstall used to leave those two loaded, firing
+# into a deleted venv on schedule. A fourth scheduled job is one more word here.
+# shellcheck disable=SC2034  # read by uninstall.sh, which sources this
+UNINSTALL_AGENT_LABELS=(com.meetingpipe.daemon com.meetingpipe.digest com.meetingpipe.backup)
+
+# DIST5 (F184): the Keychain accounts --purge clears. Must equal Swift's
+# `KeychainSecrets.managedKeys`; scripts/test-uninstall.sh fails when they differ.
+# It used to miss OPENAI_API_KEY.
+# shellcheck disable=SC2034  # read by uninstall.sh and test-uninstall.sh
+UNINSTALL_KEYCHAIN_ACCOUNTS=(ANTHROPIC_API_KEY NOTION_TOKEN HF_TOKEN OPENAI_API_KEY)
+
+# The search embedder (Swift `EmbedderModel.id`) and the default local summarizer
+# (`ConfigDefaults`), the two Hugging Face models the app downloads on its own.
+UNINSTALL_EMBEDDER_MODEL="mlx-community/multilingual-e5-small-mlx"
+UNINSTALL_DEFAULT_LOCAL_MODEL="mlx-community/Qwen2.5-7B-Instruct-4bit"
+
+# uninstall_configured_local_model <config.toml>: `summarization.local_model`, or the
+# default when the file or the key is absent. A line read, like live-recording.sh's.
+uninstall_configured_local_model() {
+    local config="$1" value=""
+    if [[ -f "$config" ]]; then
+        value="$(awk '
+            /^[[:space:]]*\[/ { in_s = ($0 ~ /^[[:space:]]*\[[[:space:]]*summarization[[:space:]]*\]/); next }
+            in_s && /^[[:space:]]*local_model[[:space:]]*=/ {
+                sub(/^[^=]*=[[:space:]]*/, ""); sub(/[[:space:]]*#.*$/, ""); gsub(/["\047]/, ""); print; exit
+            }' "$config")"
+    fi
+    printf '%s' "${value:-$UNINSTALL_DEFAULT_LOCAL_MODEL}"
+}
+
+# uninstall_model_dirs <hf-hub-dir> <config.toml>: the cache directories of the models
+# the app downloaded that exist, one per line (`models--<org>--<name>`, Hugging
+# Face's own layout). Only those two repos, never every mlx-community model: another
+# tool on this Mac may use the same cache.
+uninstall_model_dirs() {
+    local hub="$1" config="$2" repo dir
+    for repo in "$(uninstall_configured_local_model "$config")" "$UNINSTALL_EMBEDDER_MODEL"; do
+        dir="$hub/models--${repo//\//--}"
+        [[ -d "$dir" ]] && printf '%s\n' "$dir"
+    done
+    return 0
+}
+
 # uninstall_dir_summary <dir>: "N files, SIZE", or "none" when absent.
 uninstall_dir_summary() {
     local dir="$1" n size
@@ -35,12 +81,29 @@ uninstall_purge_listing() {
     printf '  %s  %s\n' "$config" "$(uninstall_dir_summary "$config")"
 }
 
-# uninstall_confirm_purge <assume-yes: 0|1> <app-support> <config-dir>
+# uninstall_model_listing <hf-hub-dir> <config.toml>: name and size of each model
+# directory the app downloaded, or nothing when there are none.
+uninstall_model_listing() {
+    local dir
+    while IFS= read -r dir; do
+        [[ -n "$dir" ]] || continue
+        printf '  %s  %s\n' "$dir" "$(du -sh "$dir" 2>/dev/null | awk '{print $1}')"
+    done < <(uninstall_model_dirs "$1" "$2")
+}
+
+# uninstall_confirm_purge <assume-yes: 0|1> <app-support> <config-dir> [hf-hub-dir]
 #
 # Return 0 to go ahead, 1 when declined, 2 when a non-interactive run did not pass --yes.
 uninstall_confirm_purge() {
-    local yes="$1" answer=""
+    local yes="$1" answer="" models=""
     uninstall_purge_listing "$2" "$3"
+    if [[ -n "${4:-}" ]]; then
+        models="$(uninstall_model_listing "$4" "$3/config.toml")"
+        if [[ -n "$models" ]]; then
+            echo "and the models MeetingPipe downloaded (a later install downloads them again):"
+            printf '%s\n' "$models"
+        fi
+    fi
     if (( yes )); then
         echo "--yes given: not asking."
         return 0

@@ -2,9 +2,9 @@
 id: DIST5
 title: Install.sh reports running without checking the daemon came up and never checks for Swift 6, uninstall.sh leaves the digest and backup agents and the local model behind, and the Gatekeeper guidance describes a dialog a local build never shows
 category: Distribution
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-24 (audit band, go-live DI-8, DI-9 toolchain, DI-10, DI-16, PP-14): install.sh swallows the bootstrap and kickstart errors rebuild.sh fixed, FluidAudio 0.14.8 needs Swift tools 6.0 but only swift presence is checked, uninstall leaves com.meetingpipe.digest and .backup loaded plus a 4.3 GB model, SETUP and README describe a Gatekeeper dialog. Shared relaunch helper, Swift check, uninstall agents, true text. [Spec](./DIST5.md) Amended 2026-11-13 by the audit band: the login-off branch of install.sh never stops a hand-started instance, so the old build keeps running, and --purge misses OPENAI_API_KEY (F102, F184).
+comment: Shipped 2026-11-19: lib/relaunch.sh (bootout, retried bootstrap, pgrep verify) shared by install.sh and rebuild.sh; the login-off branch stops a hand-started copy and opens the new build (never bootstraps); Swift 6.0 floor (lib/toolchain.sh); uninstall boots out daemon, digest and backup agents, --purge removes the configured local model and embedder and all four KeychainSecrets.managedKeys (fenced), prints the dev identity removal command; SETUP and README Gatekeeper text corrected. test-relaunch.sh new, test-uninstall.sh extended. Owner owes the spec's two live checks: install.sh confirms the daemon up (and with login off plus a hand-opened app leaves one new process); uninstall after enabling the digest leaves no com.meetingpipe.digest service.
 ---
 
 # DIST5: install.sh reports "running" without checking the daemon came up and never checks for Swift 6, uninstall.sh leaves the digest and backup agents and the local model behind, and the Gatekeeper guidance describes a dialog a local build never shows

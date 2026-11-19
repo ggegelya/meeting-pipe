@@ -64,6 +64,9 @@ source "$REPO_ROOT/scripts/lib/login-agent.sh"
 # DIST9: the live-recording check (also used by install.sh).
 # shellcheck source=scripts/lib/live-recording.sh
 source "$REPO_ROOT/scripts/lib/live-recording.sh"
+# DIST5: the verified stop and relaunch (also used by install.sh).
+# shellcheck source=scripts/lib/relaunch.sh
+source "$REPO_ROOT/scripts/lib/relaunch.sh"
 
 if [[ ! -d "$APP" ]]; then
     die "$APP missing. Run scripts/install.sh first for the cold-install path."
@@ -107,24 +110,11 @@ say "Stopping the daemon"
 # rather than letting the next meeting find it: a `die` below still exits non-zero,
 # and this trap runs after it.
 trap 'warn "The daemon was stopped and not restarted. Start it with: open \"$APP\" (or re-run this script)."' EXIT
-# Both branches boot the agent out. With launch at login off the toggle has only
-# disabled the label (UX42 never boots out), so a daemon launchd started earlier
-# is still a loaded KeepAlive job, and the SIGTERM path exits non-zero to ask for
-# a relaunch whenever Relaunch after quitting is on (UX82), and a crash mid-write
-# does too: a pkill alone would have launchd respawn it into the bundle being
-# written. A bootout of a label that is not loaded is a no-op.
-launchctl bootout "gui/$UID/$LAUNCHD_LABEL" 2>/dev/null || true
-if [[ "$LOGIN_AGENT_OFF" == 1 ]]; then
-    pkill -f "$APP/Contents/MacOS/MeetingPipe" 2>/dev/null || true
-fi
-# bootout and pkill return before the process is gone; wait for it, so the writes
-# below never race its exit.
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-    pgrep -f "$APP/Contents/MacOS/MeetingPipe" >/dev/null || break
-    sleep 1
-done
-pgrep -f "$APP/Contents/MacOS/MeetingPipe" >/dev/null \
-    && warn "The daemon is still running after 10 s; writing into the app anyway."
+# relaunch_stop_daemon boots the agent out in both branches and stops a copy
+# launchd does not own (lib/relaunch.sh), then waits for it to exit, so the
+# writes below never race its exit.
+relaunch_stop_daemon "$APP" "$LAUNCHD_LABEL" "$LOGIN_AGENT_OFF" \
+    || warn "Writing into the app anyway."
 
 say "Refreshing $APP"
 # DIST9: a new file renamed over the old one, never `cp` onto it: BSD cp truncates
@@ -170,49 +160,21 @@ if command -v mdimport >/dev/null 2>&1; then
         || warn "mdimport failed; the app may not appear in Spotlight search ('mp doctor' checks it)."
 fi
 
-# Full bootout (done above, before the writes) + bootstrap, NOT `kickstart -k`. A rebuild changes the binary's
-# cdhash, which staleifies launchd's cached launch constraint (the LWCR). The
-# cheaper `kickstart -k` reuses that stale constraint, so the respawn fails with
-# EX_CONFIG (78) — and kickstart still returns 0, so the failure is silent and the
-# daemon stays down while the script prints success (the "relaunch did nothing"
-# bug). A fresh bootout + bootstrap makes launchd recompute the constraint from
-# the new binary. RunAtLoad brings it straight back, so there is no 10 s
-# ThrottleInterval penalty (that throttles KeepAlive respawns, not a fresh load);
-# TCC grants are keyed on the signing identity, not the launchd registration, so
-# they survive this too.
+# Full bootout (done above, before the writes) + bootstrap, NOT `kickstart -k`, then
+# a pgrep that proves the new build came up: lib/relaunch.sh carries why. RunAtLoad
+# brings it straight back, so there is no 10 s ThrottleInterval penalty (that
+# throttles KeepAlive respawns, not a fresh load); TCC grants are keyed on the
+# signing identity, not the launchd registration, so they survive this too.
 say "Relaunching daemon"
-# UX42: the Preferences ▸ General toggle owns login-start now, and it expresses
-# "off" as a launchd disabled override. Bootstrapping a disabled service fails,
-# so without this branch a rebuild would die on a state the owner chose on
-# purpose, and re-enabling to get past it would silently undo the toggle.
-# Relaunch the app directly instead, which is exactly what "off" means: launchd
-# does not start MeetingPipe, you do. The verification below covers both paths.
+# UX42: the Preferences ▸ General toggle owns login-start, and it expresses "off" as
+# a launchd disabled override. Bootstrapping a disabled service fails, and
+# re-enabling to get past it would silently undo the toggle, so with it off the app
+# is opened directly instead, which is exactly what "off" means.
 if [[ "$LOGIN_AGENT_OFF" == 1 ]]; then
     say "Launch at login is off, so launchd is not starting the daemon; relaunching the app directly."
-    open "$APP"
-else
-    # The bootout above can still be settling in launchd, so bootstrap can lose a
-    # race with the teardown; retry briefly until launchd accepts the fresh job.
-    bootstrapped=false
-    for _ in 1 2 3 4 5; do
-        if launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null; then
-            bootstrapped=true
-            break
-        fi
-        sleep 1
-    done
-    [[ "$bootstrapped" == true ]] || die "launchctl bootstrap failed for $PLIST. See 'launchctl print gui/$UID/$LAUNCHD_LABEL'"
 fi
-
-# Verify the daemon actually came up. Without this the script reports success
-# even when the spawn failed (the very bug this rewrite fixes), so a dead relaunch
-# must be loud.
-for _ in 1 2 3 4 5; do
-    pgrep -f "$APP/Contents/MacOS/MeetingPipe" >/dev/null && break
-    sleep 1
-done
-pgrep -f "$APP/Contents/MacOS/MeetingPipe" >/dev/null \
-    || die "daemon did not relaunch. Check ~/Library/Logs/MeetingPipe/launchd.err.log and 'launchctl print gui/$UID/$LAUNCHD_LABEL'"
+relaunch_start_daemon "$APP" "$PLIST" "$LAUNCHD_LABEL" "$LOGIN_AGENT_OFF" || die "The relaunch failed (above)."
+relaunch_verify_daemon "$APP" "$LAUNCHD_LABEL" || die "The relaunch failed (above)."
 
 trap - EXIT
 ELAPSED=$(($(date +%s) - START_TS))

@@ -52,6 +52,15 @@ make_home() {
     echo cfg   > "$h/.config/meeting-pipe/config.yaml"
     echo log   > "$h/Library/Logs/MeetingPipe/daemon.log"
     echo plist > "$h/Library/LaunchAgents/com.meetingpipe.daemon.plist"
+    echo plist > "$h/Library/LaunchAgents/com.meetingpipe.digest.plist"
+    echo plist > "$h/Library/LaunchAgents/com.meetingpipe.backup.plist"
+    mkdir -p "$h/.cache/huggingface/hub/models--mlx-community--Qwen2.5-3B-Instruct-4bit/blobs" \
+             "$h/.cache/huggingface/hub/models--mlx-community--multilingual-e5-small-mlx/blobs" \
+             "$h/.cache/huggingface/hub/models--mlx-community--Someone-Elses-Model/blobs"
+    echo w > "$h/.cache/huggingface/hub/models--mlx-community--Qwen2.5-3B-Instruct-4bit/blobs/w"
+    echo w > "$h/.cache/huggingface/hub/models--mlx-community--multilingual-e5-small-mlx/blobs/w"
+    printf '[summarization]\nlocal_model = "mlx-community/Qwen2.5-3B-Instruct-4bit"  # Small\n' \
+        > "$h/.config/meeting-pipe/config.toml"
 }
 
 # run <home> <stdin-mode> args...: stdin-mode is devnull, or a pty answer (y/n).
@@ -104,8 +113,24 @@ survivors() {
 rebuildable_gone() {
     [[ ! -e "$1/.local/share/meeting-pipe" && ! -e "$1/Library/Logs/MeetingPipe" \
        && ! -e "$1/Applications/MeetingPipe.app" && ! -e "$1/Library/Application Support/FluidAudio" \
-       && ! -e "$1/Library/LaunchAgents/com.meetingpipe.daemon.plist" ]]
+       && ! -e "$1/Library/LaunchAgents/com.meetingpipe.daemon.plist" \
+       && ! -e "$1/Library/LaunchAgents/com.meetingpipe.digest.plist" \
+       && ! -e "$1/Library/LaunchAgents/com.meetingpipe.backup.plist" ]]
 }
+HUB='.cache/huggingface/hub'
+models_kept() {
+    [[ -d "$1/$HUB/models--mlx-community--Qwen2.5-3B-Instruct-4bit" \
+       && -d "$1/$HUB/models--mlx-community--multilingual-e5-small-mlx" ]]
+}
+
+# DIST5 (F184): the purge list must be Swift's KeychainSecrets.managedKeys.
+echo "keychain purge list"
+SWIFT_KEYS="$(sed -nE 's/.*static let managedKeys = \[(.*)\].*/\1/p' "$HERE/../daemon/Sources/MeetingPipe/KeychainSecrets.swift" | tr -d '" ' | tr ',' ' ')"
+# shellcheck source=scripts/lib/uninstall-purge.sh
+SHELL_KEYS="$(source "$HERE/lib/uninstall-purge.sh"; echo "${UNINSTALL_KEYCHAIN_ACCOUNTS[*]}")"
+check "found the Swift list" '[[ -n "$SWIFT_KEYS" ]]'
+check "uninstall purges exactly KeychainSecrets.managedKeys ($SHELL_KEYS vs $SWIFT_KEYS)" '[[ "$SHELL_KEYS" == "$SWIFT_KEYS" ]]'
+
 untouched() {
     survivors "$1" && [[ -d "$1/.config/meeting-pipe" && -d "$1/.local/share/meeting-pipe/venv" \
        && -d "$1/Applications/MeetingPipe.app" ]]
@@ -121,6 +146,12 @@ check "output names the kept folder" 'grep -q "Kept .*Application Support/Meetin
 check "launchctl and pkill stubs were used" 'grep -q "^launchctl " "$CALLS" && grep -q "^pkill " "$CALLS"'
 check "tccutil not called without --reset-tcc" '! grep -q "^tccutil " "$CALLS"'
 check "the signing identity is kept without --reset-tcc (SEC17)" '! grep -q "delete-identity" "$CALLS"'
+check "the digest and backup agents are booted out by label (DIST5)" \
+    'grep -q "^launchctl bootout gui/[0-9]*/com.meetingpipe.digest$" "$CALLS" && grep -q "^launchctl bootout gui/[0-9]*/com.meetingpipe.backup$" "$CALLS"'
+check "downloaded models are kept and listed with the flag" \
+    'models_kept "$H" && grep -q "Kept the models MeetingPipe downloaded (--purge removes them)" <<<"$OUT" && grep -q "models--mlx-community--Qwen2.5-3B-Instruct-4bit" <<<"$OUT"'
+check "says the signing identity stays and how to remove it (F184)" \
+    'grep -q "security delete-identity -c \"MeetingPipe Dev\"" <<<"$OUT"'
 
 echo "--reset-tcc"
 H="$ROOT/h2"; make_home "$H"; run "$H" devnull --reset-tcc
@@ -138,10 +169,16 @@ check "originals, corrections, consent and config are gone" \
     '[[ ! -e "$H/$S" && ! -e "$H/.config/meeting-pipe" ]]'
 check "listing named originals with count and size" 'grep -q "originals/ *2 files, " <<<"$OUT"'
 check "listing named held/, corrections, consent and config" \
-    'grep -q "held/: 1 files" <<<"$OUT" && grep -q "corrections/ *1 files" <<<"$OUT" && grep -q "auto_consent.json *present" <<<"$OUT" && grep -q ".config/meeting-pipe *1 files" <<<"$OUT"'
+    'grep -q "held/: 1 files" <<<"$OUT" && grep -q "corrections/ *1 files" <<<"$OUT" && grep -q "auto_consent.json *present" <<<"$OUT" && grep -q ".config/meeting-pipe *2 files" <<<"$OUT"'
 check "says originals are in no backup" 'grep -q "NO backup" <<<"$OUT"'
 check "keychain stub was used" 'grep -q "^security " "$CALLS"'
 check "--purge alone keeps the signing identity (SEC17)" '! grep -q "delete-identity" "$CALLS"'
+check "--purge clears every managed Keychain account, OPENAI_API_KEY included (F184)" \
+    'for k in $SWIFT_KEYS; do grep -q "^security delete-generic-password -s com.meetingpipe.daemon -a $k$" "$CALLS" || exit 1; done'
+check "--purge lists the configured local model and the embedder before asking" \
+    'grep -q "models MeetingPipe downloaded" <<<"$OUT" && grep -q "Qwen2.5-3B-Instruct-4bit" <<<"$OUT" && grep -q "multilingual-e5-small-mlx" <<<"$OUT"'
+check "--purge removes those two and leaves another model in the cache" \
+    '[[ ! -e "$H/$HUB/models--mlx-community--Qwen2.5-3B-Instruct-4bit" && ! -e "$H/$HUB/models--mlx-community--multilingual-e5-small-mlx" && -d "$H/$HUB/models--mlx-community--Someone-Elses-Model" ]]'
 
 echo "--purge, no TTY, no --yes"
 H="$ROOT/h4"; make_home "$H"; run "$H" devnull --purge

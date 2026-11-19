@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Reverse what install.sh did.
 #
-# Default: removes the app bundle, LaunchAgent, venv, logs and the FluidAudio
-# model cache, all of which a re-install rebuilds. Keeps your own data:
+# Default: removes the app bundle, the LaunchAgents (the daemon's and the digest
+# and backup schedules the app adds), venv, logs and the FluidAudio model cache,
+# all of which a re-install rebuilds. Keeps your own data:
 # ~/Library/Application Support/MeetingPipe (originals/ with any held-back
 # recording, which is in no backup; corrections/; auto_consent.json) and
 # ~/.config/meeting-pipe (config), so a re-install does not destroy your
@@ -11,8 +12,10 @@
 #
 # Flags:
 #   --purge        also remove Application Support/MeetingPipe and
-#                  ~/.config/meeting-pipe (config) and clear the API tokens
-#                  from the macOS Keychain. It lists what it will delete and
+#                  ~/.config/meeting-pipe (config), clear every API token the
+#                  app manages from the macOS Keychain, and remove the Hugging
+#                  Face models the app downloaded (the local summarizer and the
+#                  search embedder, under ~/.cache/huggingface/hub). It lists what it will delete and
 #                  asks y/N first; declining aborts before anything is stopped
 #                  or removed. Without a terminal it refuses (exit 2) unless
 #                  --yes is also given.
@@ -63,7 +66,6 @@ done
 CONFIG_DIR="$HOME/.config/meeting-pipe"
 DATA_DIR="$HOME/.local/share/meeting-pipe"
 LAUNCHAGENTS="$HOME/Library/LaunchAgents"
-LAUNCHD_LABEL="com.meetingpipe.daemon"
 LOG_DIR="$HOME/Library/Logs/MeetingPipe"
 APP_SUPPORT="$HOME/Library/Application Support/MeetingPipe"
 # FluidAudio (Parakeet TDT + pyannote) caches its CoreML models under
@@ -76,32 +78,41 @@ FLUID_AUDIO_SUPPORT="$HOME/Library/Application Support/FluidAudio"
 # soon. Safe to delete manually if you don't need them.
 LEGACY_DIAR_CACHE="$HOME/.cache/meeting-pipe"
 APP_BUNDLE="$HOME/Applications/MeetingPipe.app"
+# Where prefetch_model.py downloads (Hugging Face's default cache).
+HF_HUB="$HOME/.cache/huggingface/hub"
+
+# shellcheck source=scripts/lib/uninstall-purge.sh
+source "$(cd "$(dirname "$0")" && pwd)/lib/uninstall-purge.sh"
+# Read before --purge removes the config it names the local model in.
+MODEL_DIRS="$(uninstall_model_dirs "$HF_HUB" "$CONFIG_DIR/config.toml")"
+MODEL_LISTING="$(uninstall_model_listing "$HF_HUB" "$CONFIG_DIR/config.toml")"
 
 # DIST8: list and confirm before anything is stopped or removed, so declining
 # (or a non-interactive run without --yes) leaves the whole install untouched.
 if (( PURGE )); then
-    # shellcheck source=scripts/lib/uninstall-purge.sh
-    source "$(cd "$(dirname "$0")" && pwd)/lib/uninstall-purge.sh"
     rc=0
-    uninstall_confirm_purge "$ASSUME_YES" "$APP_SUPPORT" "$CONFIG_DIR" || rc=$?
+    uninstall_confirm_purge "$ASSUME_YES" "$APP_SUPPORT" "$CONFIG_DIR" "$HF_HUB" || rc=$?
     if (( rc != 0 )); then
         echo "Aborted: nothing was stopped or removed."
         exit "$(( rc == 1 ? 1 : 2 ))"
     fi
 fi
 
-PLIST="$LAUNCHAGENTS/${LAUNCHD_LABEL}.plist"
-if [[ -f "$PLIST" ]]; then
-    # Use bootout if the user-domain handle is available; falls back to
-    # the legacy unload form. Either way, swallow errors so a stale plist
-    # can still be removed.
-    UID_NUM=$(id -u)
-    launchctl bootout "gui/$UID_NUM" "$PLIST" 2>/dev/null \
-        || launchctl unload "$PLIST" 2>/dev/null \
+# DIST5: every agent the app installs, the digest and backup schedules included.
+# Booted out by label whether or not its plist is still there (a loaded job outlives
+# its file), then the plist removed. Errors are swallowed so a stale plist can still
+# be removed.
+UID_NUM=$(id -u)
+for label in "${UNINSTALL_AGENT_LABELS[@]}"; do
+    plist="$LAUNCHAGENTS/${label}.plist"
+    launchctl bootout "gui/$UID_NUM/$label" 2>/dev/null \
+        || { [[ -f "$plist" ]] && launchctl unload "$plist" 2>/dev/null; } \
         || true
-    rm -f "$PLIST"
-    echo "Removed LaunchAgent."
-fi
+    if [[ -f "$plist" ]]; then
+        rm -f "$plist"
+        echo "Removed LaunchAgent $label."
+    fi
+done
 
 # Belt-and-suspenders: if the daemon binary is still resident (LaunchAgent
 # already gone but the user launched it manually), kill it before pulling
@@ -186,14 +197,33 @@ if (( PURGE )); then
     # corrections corpus, consent list) goes only here, after the confirm above.
     rm -rf "$APP_SUPPORT"
     rm -rf "$CONFIG_DIR"
-    # SEC8: API tokens live in the login Keychain, not a file. Clear them too.
-    for key in ANTHROPIC_API_KEY NOTION_TOKEN HF_TOKEN; do
+    # SEC8: API tokens live in the login Keychain, not a file. Clear them too: every
+    # account the app manages (DIST5: the list is fenced against the Swift one).
+    for key in "${UNINSTALL_KEYCHAIN_ACCOUNTS[@]}"; do
         security delete-generic-password -s com.meetingpipe.daemon -a "$key" >/dev/null 2>&1 || true
     done
     echo "Removed $APP_SUPPORT and $CONFIG_DIR and cleared API tokens from the Keychain (per --purge)."
+    if [[ -n "$MODEL_DIRS" ]]; then
+        while IFS= read -r dir; do
+            [[ -n "$dir" ]] && rm -rf "$dir"
+        done <<<"$MODEL_DIRS"
+        echo "Removed the downloaded models:"
+        printf '%s\n' "$MODEL_LISTING"
+    fi
 else
     echo "Kept $APP_SUPPORT (originals incl. any held-back recording, corrections, consent), $CONFIG_DIR and Keychain tokens."
+    if [[ -n "$MODEL_LISTING" ]]; then
+        echo "Kept the models MeetingPipe downloaded (--purge removes them):"
+        printf '%s\n' "$MODEL_LISTING"
+    fi
     echo "Pass --purge to remove them too (it lists them and asks first), or --reset-tcc to clear permissions."
+fi
+
+if (( ! RESET_TCC )); then
+    # F184: the signing identity stays on purpose. The next install would mint a new
+    # one, and every permission would prompt again.
+    echo "Kept the self-signed 'MeetingPipe Dev' signing identity in your login keychain, so a reinstall keeps its permissions."
+    echo "To remove it: security delete-identity -c \"MeetingPipe Dev\" (or pass --reset-tcc, which also resets the permissions)."
 fi
 
 echo "✓ Uninstalled."

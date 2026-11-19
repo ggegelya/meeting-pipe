@@ -129,6 +129,13 @@ truth_fences() {
     bash scripts/test-uninstall.sh
     end
 
+    begin "Relaunch helper and Swift floor (DIST5)"
+    # lib/relaunch.sh, the stop, start and verify install.sh and rebuild.sh share,
+    # with launchctl, pkill, pgrep, open and sleep stubbed; the launch-at-login-off
+    # branch never bootstraps. Plus the Swift 6.0 floor on canned --version output.
+    bash scripts/test-relaunch.sh
+    end
+
     begin "macOS floor parity (DOC16)"
     # The floor is written three times: Package.swift's platforms, install.sh's
     # version check, and the LSMinimumSystemVersion install.sh writes into the

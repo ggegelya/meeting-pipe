@@ -44,7 +44,7 @@ To confirm it worked, paste this:
 swift --version
 ```
 
-You should see a version number. If you see an error mentioning `invalid active developer path`, the tools are installed but macOS has lost track of them, which happens after some system upgrades. Fix it with:
+You should see a line with `Swift version 6.0` or higher (`6.1`, `6.3.3` and so on are all fine). The app needs Swift 6.0 or later, and the installer stops with a message saying so if it finds an older one. If yours is older (`5.10`, say), update the tools through **System Settings ▸ General ▸ Software Update** or by running `xcode-select --install` again; if you have a newer full Xcode installed, `sudo xcode-select -s /Applications/Xcode.app` selects it instead. If you see an error mentioning `invalid active developer path`, the tools are installed but macOS has lost track of them, which happens after some system upgrades. Fix it with:
 
 ```bash
 sudo xcode-select -s /Library/Developer/CommandLineTools
@@ -84,7 +84,7 @@ The installer copies everything it needs out of the `meeting-pipe` folder, so th
 
 ## Step 4: Find the app and grant its permissions
 
-Look at the right end of your menu bar. There should be a small icon reading **MeetingPipe: Idle** when clicked. If it is not there, open your `~/Applications` folder in Finder, **right-click** `MeetingPipe.app`, and choose **Open**. Right-click rather than double-click matters the first time: the app is not signed by a paid Apple developer account, so macOS shows an "unverified developer" warning that only the right-click Open path lets you get past. Confirm once and macOS remembers.
+Look at the right end of your menu bar. There should be a small icon reading **MeetingPipe: Idle** when clicked. The installer started it and checked that it came up. If it is not there, open your `~/Applications` folder in Finder and double-click `MeetingPipe.app`. No security warning appears: the app was built on your own Mac and signed there with its own self-signed identity, so macOS's "unverified developer" check (which applies to downloaded apps) never runs for it.
 
 On first launch a **Welcome** window opens and walks you through the four permissions one at a time. Each has its own row explaining what it is for, with a button that asks for just that one when you click it (so you are never faced with a stack of unlabelled system dialogs). All four are needed for the whole thing to work:
 
@@ -194,7 +194,7 @@ That is the whole loop. From here, meetings turn into summaries without you doin
 
 **The installer stops with "Homebrew not found" even though you installed it.** The Next steps commands Homebrew printed did not run, so it is not on your PATH. Re-run them, then open a new Terminal window and try again.
 
-**There is no icon in the menu bar.** Open `~/Applications` in Finder, right-click `MeetingPipe.app`, choose **Open**, and confirm the unverified-developer dialog. A double-click will not get past it the first time.
+**There is no icon in the menu bar.** Open `~/Applications` in Finder and double-click `MeetingPipe.app`; there is no security dialog to get past for an app you built yourself. If it still does not appear, re-run `./scripts/install.sh`: it now checks that the app actually started, and if it did not, it stops with a pointer to the log that says why.
 
 **The app does not come up when you search for it.** Type its name into Spotlight (the magnifying glass, or Cmd+Space) and nothing appears, even though the app is installed and works. This is your Mac's search index not having noticed the app, rather than anything wrong with the install. The installer already asks it to look, and you can ask again by opening Terminal and running `mdimport ~/Applications/MeetingPipe.app`. To check whether it worked, run `mp doctor` and read the **Spotlight index** section near the end. If it still cannot find it, your Mac's search index itself needs attention, which is a separate thing worth looking at on its own time. Nothing is broken meanwhile: open `~/Applications` in Finder to launch the app, and drag it to your Dock if you want it one click away.
 
@@ -220,9 +220,9 @@ To remove meeting-pipe, from the `meeting-pipe` folder:
 ./scripts/uninstall.sh
 ```
 
-That leaves your recordings, your settings, and your macOS permissions alone. It removes only the app, its login item, the Python environment, the logs and the downloaded speech models. It keeps `~/Library/Application Support/MeetingPipe`, which holds any recording meeting-pipe held back (the only copy of that audio, and in no backup), the kept full-length originals and your summary gradings, plus your settings in `~/.config/meeting-pipe` (your "Always for this app" choices among them) and the API keys in your Keychain. Your recordings in `~/Documents/Meetings/` are never touched; delete them yourself if you want them gone.
+That leaves your recordings, your settings, and your macOS permissions alone. It removes only the app, its login item and the two schedules it may have added (the weekly digest and the automatic backup), the Python environment, the logs and the downloaded speech models. It keeps `~/Library/Application Support/MeetingPipe`, which holds any recording meeting-pipe held back (the only copy of that audio, and in no backup), the kept full-length originals and your summary gradings, plus your settings in `~/.config/meeting-pipe` (your "Always for this app" choices among them) and the API keys in your Keychain. It also keeps the summarizer and search models MeetingPipe downloaded (the on-device model alone is about 4.3 GB, under `~/.cache/huggingface/hub`), and says how big they are; `--purge` removes them. And it keeps the self-signed "MeetingPipe Dev" signing identity in your login keychain, so a reinstall keeps its permissions; it prints the one command that removes it (`security delete-identity -c "MeetingPipe Dev"`). Your recordings in `~/Documents/Meetings/` are never touched; delete them yourself if you want them gone.
 
-Add `--purge` to also delete all of that. It first lists what it will remove (with file counts and sizes, and a reminder that held-back recordings are in no backup) and asks `y/N`; answer `n` and nothing at all is stopped or removed. Run from a script with no terminal, it refuses unless you also pass `--yes`. Add `--all` (or `--reset-tcc`) to additionally reset the permissions so a future install prompts cleanly; `--reset-tcc` on its own deletes none of your data. It also removes the self-signed "MeetingPipe Dev" signing identity from your login keychain: the permissions it was keeping alive are being reset anyway, and a leftover key that can sign as the app is better gone. A later install creates a new one, which is why the permissions prompt again. A plain uninstall keeps the identity.
+Add `--purge` to also delete all of that, every API key the app manages (Anthropic, Notion, OpenAI, Hugging Face) and the downloaded models. It first lists what it will remove (with file counts and sizes, and a reminder that held-back recordings are in no backup) and asks `y/N`; answer `n` and nothing at all is stopped or removed. Run from a script with no terminal, it refuses unless you also pass `--yes`. Add `--all` (or `--reset-tcc`) to additionally reset the permissions so a future install prompts cleanly; `--reset-tcc` on its own deletes none of your data. It also removes the self-signed "MeetingPipe Dev" signing identity from your login keychain: the permissions it was keeping alive are being reset anyway, and a leftover key that can sign as the app is better gone. A later install creates a new one, which is why the permissions prompt again. A plain uninstall keeps the identity.
 
 ## A note on this being a from-source install
 
