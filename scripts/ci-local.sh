@@ -96,6 +96,21 @@ design_tokens() {
 }
 
 truth_fences() {
+    begin "No leftover merge conflict markers"
+    # A rebase once left conflict markers in CONVENTIONS.md and every lane still
+    # passed, since prose and fixtures compile and parse around them. Only the
+    # opening, base and closing markers are matched: a bare ======= line can be
+    # legitimate Markdown, and a real conflict always carries both ends.
+    local markers
+    markers=$(git grep -nIE '^(<{7}|[|]{7}|>{7})( |$)' || true)
+    if [ -n "$markers" ]; then
+        echo "::error::Merge conflict markers in tracked files. Resolve the conflict before landing."
+        echo "$markers"
+        return 1
+    fi
+    echo "No conflict markers in tracked files."
+    end
+
     # CI5: config keys, event categories, CLAUDE.md budgets and doc links match
     # what the code does. Stdlib only, so it needs no environment.
     begin "Truth fences (CI5)"
