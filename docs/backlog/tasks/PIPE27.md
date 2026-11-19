@@ -4,7 +4,7 @@ title: The long-meeting gate stops automatic summaries on every non-local engine
 category: Pipeline
 status: partial
 priority: P2
-comment: Shipped 2026-11-19 (batch 10): `local_chunk_above_chars` splits local map-reduce from the cloud gate (absent follows a non-zero `skip_above_chars`, else 80000), two Preferences rows, the gate bills only per-token rows (`Provider.bills_per_token`; claude_cli exempt), `mp.usage` sums Anthropic and OpenAI token usage into run.json `usage` and `run_completed`, and the detail header shows it. Still owed: the owner's pick for config.example.toml's new-install gate default (left at 80000, the status quo), then the owner check that an Anthropic meeting's header shows its tokens. [Spec](./PIPE27.md)
+comment: Shipped 2026-11-19 (batch 10): `local_chunk_above_chars` splits local map-reduce from the cloud gate (absent follows a non-zero `skip_above_chars`, else 80000), two Preferences rows, the gate bills only per-token rows (`Provider.bills_per_token`; claude_cli exempt), `mp.usage` sums Anthropic and OpenAI token usage into run.json `usage` and `run_completed`, and the detail header shows it. Owner decided 2026-11-19: new installs ship the gate at 200000 (config.example.toml, with `local_chunk_above_chars = 80000` written beside it); `Config`'s default stays 80000. Still owed: the owner check that an Anthropic meeting's header shows its tokens. [Spec](./PIPE27.md)
 ---
 
 # PIPE27: the long-meeting gate stops automatic summaries on every non-local engine past about an hour, shares its knob with local chunking, and no token spend is recorded anywhere
@@ -44,5 +44,5 @@ Verified on 2026-10-24 in `pipeline/src/mp/orchestrate.py`:
 
 ## Owner walkthrough
 
-1. [owner] Decide the cloud gate's default for new installs: off (`0`, every meeting summarized automatically) or a higher number. The audit recommends off or raised. Your own config keeps its current value either way.
+1. [owner] Decide the cloud gate's default for new installs: off (`0`, every meeting summarized automatically) or a higher number. The audit recommends off or raised. Your own config keeps its current value either way. **Decided 2026-11-19: "Raise to 200000"** (the owner's pick, relayed by the triage session). `config.example.toml` ships `skip_above_chars = 200000` and, so a new install's local chunking stays where it was, `local_chunk_above_chars = 80000`; `Config`'s default stays 80000, so a config without the key behaves as before.
 2. [owner] After the build is installed, open a meeting summarized by Anthropic in the Library. Pass: the header shows its input and output tokens. Cost: one look.

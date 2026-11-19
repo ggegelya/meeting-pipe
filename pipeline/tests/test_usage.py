@@ -148,3 +148,16 @@ def test_a_run_writes_its_usage_to_run_json_and_run_completed(tmp_path: Path, mo
     assert run["usage"] == spent
     completed = next(attrs for _, a, attrs in emitted if a == "run_completed")
     assert completed["input_tokens"] == 12_000 and completed["output_tokens"] == 900
+
+
+def test_a_new_install_ships_the_raised_gate_with_local_chunking_kept() -> None:
+    """The owner's call of 2026-11-19: `install.sh` copies `config.example.toml`, which ships
+    the gate at 200000 and pins local chunking at 80000 so it does not follow the gate up."""
+    import tomllib
+
+    example = Path(__file__).resolve().parents[2] / "config.example.toml"
+    with example.open("rb") as fh:
+        cfg = Config.model_validate(tomllib.load(fh))
+    assert cfg.summarization.skip_above_chars == 200_000
+    assert local_chunk_above_chars(cfg) == 80_000
+    assert Config().summarization.skip_above_chars == 80_000, "a config without the key is unchanged"

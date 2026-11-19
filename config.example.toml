@@ -161,22 +161,25 @@ user_label = ""
 summary_language = "auto"
 # Long-meeting guard for engines billed per token (anthropic, auto with a key,
 # openai; PIPE27): when the transcript markdown is longer than this many
-# characters (80 000 is roughly 95 to 165 minutes of speech, depending on how
-# densely people talk), the pipeline SKIPS automatic summarization and
-# publishing. The transcript is left on disk along with a
-# `.READY_FOR_MANUAL.md` file containing the exact prompt the pipeline would
-# have sent; paste both into Claude Code to process the meeting without paying
-# API costs. claude_cli and the on-device engines are never stopped. Set to 0
-# to turn the guard off. Each run records the tokens it spent in
-# `<stem>.run.json` (`usage`), shown under the meeting's title in the Library.
-skip_above_chars = 80000
+# characters, the pipeline SKIPS automatic summarization and publishing. The
+# transcript is left on disk along with a `.READY_FOR_MANUAL.md` file
+# containing the exact prompt the pipeline would have sent; paste both into
+# Claude Code to process the meeting without paying API costs. claude_cli and
+# the on-device engines are never stopped. Set to 0 to turn the guard off.
+# New installs ship 200 000 (roughly 4 to 7 hours of speech, depending on how
+# densely people talk; the owner's call of 2026-11-19); a config without this
+# key uses 80 000 (roughly 95 to 165 minutes). Each run records the tokens it
+# spent in `<stem>.run.json` (`usage`), shown under the meeting's title in the
+# Library.
+skip_above_chars = 200000
 # The local backend's map-reduce bound (PIPE27): a transcript longer than this
 # many characters is split into windows that are summarized and then merged,
-# and no window is longer than it. Leave it unset to follow skip_above_chars
-# (or 80 000 when that is 0); setting the guard above to 0 no longer turns
-# local windowing off. 0 here removes only the character bound: the local
-# client still windows a meeting too long for one request by tokens.
-# local_chunk_above_chars = 80000
+# and no window is longer than it. Written out here so a new install's local
+# chunking stays at 80 000 while the guard above is raised; leave it out to
+# follow skip_above_chars (or 80 000 when that is 0). 0 here removes only the
+# character bound: the local client still windows a meeting too long for one
+# request by tokens.
+local_chunk_above_chars = 80000
 # Backend selection (P2.3). One of:
 #   "anthropic" : current behaviour, requires ANTHROPIC_API_KEY in the Keychain
 #                 (set it in Preferences -> Integrations or via install.sh).
