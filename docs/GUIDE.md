@@ -528,9 +528,9 @@ Recording can also be driven from Shortcuts, Raycast, or a Stream Deck through t
 
 The menu bar's **Finish setup** row is the shorter version, present only while something is genuinely missing, with each item linking straight to its fix. It lists **Turn on notifications** when MeetingPipe's notifications are off or its banners are turned off. It asks only for what your workflows actually use: an Anthropic, OpenAI or Notion key only when some workflow summarizes or publishes through that service, a Notion database for each workflow that publishes to Notion without one (its own, or the default in **Preferences ▸ Integrations**), **Install Claude Code (for Claude CLI)** when a workflow uses Claude CLI and Claude Code is not installed, and **Download the on-device model** when a workflow summarizes on your Mac. **Run doctor…** fails on exactly the same things and says "not needed by any workflow" for the rest, so the two always agree. When the row is gone, you are set up.
 
-### Summarizing with your Claude subscription
+### Use your Claude subscription (Claude CLI)
 
-The **Claude CLI** engine writes summaries through Claude Code, using the Claude subscription you already pay for instead of an API key. It needs Claude Code installed on this Mac: follow the install steps at claude.com/claude-code, then open Terminal, type `claude` and sign in once. MeetingPipe finds it in the usual install places on its own; the **Install Claude Code** item disappears from **Finish setup** the next time you open the menu. Like Anthropic, it is a cloud engine, so the transcript leaves your Mac to be summarized.
+The **Claude CLI** engine writes summaries through Claude Code, using the Claude subscription you already pay for instead of an API key. It needs Claude Code installed on this Mac. Open Terminal, paste Claude Code's installer, `curl -fsSL https://claude.ai/install.sh | bash`, and press Return (claude.com/claude-code has the same line and the other ways to install it). Then type `claude` and sign in once. MeetingPipe finds it in the usual install places on its own; the **Install Claude Code** item disappears from **Finish setup** the next time you open the menu. Like Anthropic, it is a cloud engine, so the transcript leaves your Mac to be summarized.
 
 ### The Diagnostics window
 

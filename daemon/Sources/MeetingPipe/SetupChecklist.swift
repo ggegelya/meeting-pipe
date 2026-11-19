@@ -353,6 +353,6 @@ final class GuideJumpRequest: ObservableObject {
     static let shared = GuideJumpRequest()
     /// The `### ` heading in `docs/GUIDE.md` that says how to install Claude Code.
     /// `SetupChecklistTests` fails if the guide stops carrying it.
-    static let installClaudeCode = "Summarizing with your Claude subscription"
+    static let installClaudeCode = "Use your Claude subscription (Claude CLI)"
     @Published var heading: String?
 }
