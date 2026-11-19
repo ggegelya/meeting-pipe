@@ -28,7 +28,7 @@ import re
 import statistics
 import sys
 from collections import Counter, defaultdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 DEFAULT_DIR = Path("~/Library/Logs/MeetingPipe").expanduser()
@@ -43,7 +43,8 @@ def _parse_ts(raw: object) -> datetime | None:
         return None
     # A date-only --since (or any naive input) is treated as UTC so it compares
     # cleanly against the UTC event timestamps.
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    # Not `datetime.UTC` (3.11+): this script runs under macOS's system Python 3.9.
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)  # noqa: UP017
 
 
 def _log_files(path: Path) -> list[Path]:

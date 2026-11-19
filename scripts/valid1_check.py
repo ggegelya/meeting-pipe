@@ -787,7 +787,8 @@ _PIPELINE_SRC = Path(__file__).resolve().parents[1] / "pipeline" / "src"
 def _cosine(a: list[float], b: list[float]) -> float:
     if not a or len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    # No `strict=` (3.10+): this script runs under macOS's system Python 3.9.
+    dot = sum(x * y for x, y in zip(a, b))  # noqa: B905
     na = sum(x * x for x in a) ** 0.5
     nb = sum(y * y for y in b) ** 0.5
     return dot / (na * nb) if na > 1e-9 and nb > 1e-9 else 0.0
