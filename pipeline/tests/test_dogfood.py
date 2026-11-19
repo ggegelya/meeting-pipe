@@ -9,7 +9,6 @@ the ship-decision math.
 from __future__ import annotations
 
 from pathlib import Path
-
 from unittest.mock import Mock
 
 from mp.config import Config

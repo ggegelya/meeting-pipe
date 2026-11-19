@@ -15,7 +15,6 @@ import json
 
 from mp.json_extract import repair_missing_commas
 
-
 # ----- It fixes the defect it exists for -----
 
 def test_repairs_the_comma_the_local_model_dropped() -> None:

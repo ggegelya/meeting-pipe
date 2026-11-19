@@ -38,7 +38,9 @@ if TYPE_CHECKING:
     import anthropic
 
     from .diarize_cleanup import CleanupClient
-    from .services import SummaryClient
+    from .provider_claude_cli import ClaudeCLIClient
+    from .provider_openai import OpenAIClient
+    from .services import SummaryClient, TextClient
 
 Locality = Literal["on_device", "cloud", "cloud_then_local"]
 
@@ -122,7 +124,7 @@ def _auto_summary(cfg: Config) -> SummaryClient:
     return AutoFallbackClient(cfg)
 
 
-def _claude_cli_summary(cfg: Config) -> SummaryClient:
+def _claude_cli_summary(cfg: Config) -> ClaudeCLIClient:
     # PROV1: no API key; rides the user's Claude Code auth. A cloud backend, so it
     # is unreachable under zero_egress (effective_backend forced local) and refuses
     # to spawn if the guard is somehow armed.
@@ -131,7 +133,7 @@ def _claude_cli_summary(cfg: Config) -> SummaryClient:
     return ClaudeCLIClient()
 
 
-def _openai_summary(cfg: Config) -> SummaryClient:
+def _openai_summary(cfg: Config) -> OpenAIClient:
     from .provider_openai import OpenAIClient
 
     return OpenAIClient(api_key=require_env("OPENAI_API_KEY"), model=cfg.summarization.openai_model)
@@ -152,13 +154,13 @@ def _apple_summary(cfg: Config) -> SummaryClient:
 # Routed through `engine`'s module attributes so the engine tests' fakes apply.
 
 
-def _local_text(cfg: Config, model: str | None) -> Any:
+def _local_text(cfg: Config, model: str | None) -> TextClient:
     from . import engine
 
     return engine.LocalTextClient(cfg, model)
 
 
-def _anthropic_text(cfg: Config, model: str | None) -> Any:
+def _anthropic_text(cfg: Config, model: str | None) -> TextClient:
     from . import engine
 
     return engine.AnthropicTextClient(
@@ -166,7 +168,7 @@ def _anthropic_text(cfg: Config, model: str | None) -> Any:
     )
 
 
-def _auto_text(cfg: Config, model: str | None) -> Any:
+def _auto_text(cfg: Config, model: str | None) -> TextClient:
     from . import engine
 
     return engine.AutoTextClient(cfg, model)
@@ -218,12 +220,12 @@ def _openai_cleanup(cfg: Config) -> CleanupClient:
     oai = _openai_summary(cfg)
     # JSON mode: the reply is guaranteed to parse; the schema rides in the prompt.
     return TextCleanupClient(
-        functools.partial(oai.complete, json_mode=True),  # type: ignore[attr-defined]
+        functools.partial(oai.complete, json_mode=True),
         max_tokens=cfg.summarization.max_tokens,
     )
 
 
-def _plain_text(build: Callable[[Config], Any]) -> Callable[[Config, str | None], Any]:
+def _plain_text(build: Callable[[Config], TextClient]) -> Callable[[Config, str | None], TextClient]:
     """A provider whose one client is both its summary and its text client, and
     which is pinned to its configured model, so the per-call override is moot."""
     return lambda cfg, _model: build(cfg)

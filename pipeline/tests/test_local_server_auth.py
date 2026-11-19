@@ -29,7 +29,7 @@ class _Squatter(BaseHTTPRequestHandler):
     def log_message(self, *_a: object) -> None:
         pass
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         self.server.gets.append(self.path)  # type: ignore[attr-defined]
         body = json.dumps({"status": "ok", "proof": "0" * 64, "data": []}).encode()
         self.send_response(200)
@@ -37,7 +37,7 @@ class _Squatter(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         self.server.posts.append(self.headers.get("Authorization"))  # type: ignore[attr-defined]
         self.rfile.read(int(self.headers.get("Content-Length", "0")))
         self.send_response(200)
@@ -46,7 +46,7 @@ class _Squatter(BaseHTTPRequestHandler):
 
 
 class _Genuine(_Squatter):
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         self.server.gets.append(self.path)  # type: ignore[attr-defined]
         if not answer_health(self):
             self.send_response(404)

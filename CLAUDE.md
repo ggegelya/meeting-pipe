@@ -33,8 +33,8 @@ The active backlog lives in [`docs/backlog/`](./docs/backlog/): the highest-numb
 | Step | Command (from repo root unless noted) |
 |---|---|
 | **CI gate (run this before landing)** | `bash scripts/ci-local.sh [all\|fences\|design-tokens\|truth-fences\|pipeline\|daemon]` - CI8. The CI step list itself: every `ci.yml` job calls it after its own setup, so green here is green there. Covers the rows below plus the design-token greps and the engine suites under a one-thread cooperative pool. A new CI check goes in this script, never only in the YAML. `/tech-task` step 6 runs it. |
-| Pipeline lint | `cd pipeline && uv run --extra dev ruff check src tests` |
-| Pipeline typecheck | `cd pipeline && uv run --extra dev --extra mcp pyright` - pyright basic over `src/` (TYPE1); CI fails on a type regression. `--extra mcp` is load-bearing: without AUTO3's optional SDK `mcp_serve.py` reports 3 unresolved imports, and CI installs it so it never sees them. |
+| Pipeline lint | `cd pipeline && uv run --extra dev ruff check src tests ../scripts` - `../scripts` since TYPE2, so the generator and fences are linted too. |
+| Pipeline typecheck | `cd pipeline && uv run --extra dev --extra mcp pyright` - pyright standard over `src/` (TYPE1, TYPE2), with `# type: ignore` disabled; CI fails on a type regression. `--extra mcp` is load-bearing: without AUTO3's optional SDK `mcp_serve.py` reports 3 unresolved imports, and CI installs it so it never sees them. |
 | Pipeline tests | `cd pipeline && uv run --extra dev pytest -q` |
 | Daemon build (debug) | `cd daemon && swift build` |
 | Daemon build (release) | `cd daemon && swift build -c release` |

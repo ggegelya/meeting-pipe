@@ -39,19 +39,19 @@ def _fake_mlx_module() -> tuple[types.ModuleType, dict]:
         def log_message(self, *_a: object) -> None:
             pass
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             seen["get"] += 1
             self.send_response(200)
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(b'{"data": []}')
 
-        def do_OPTIONS(self) -> None:  # noqa: N802
+        def do_OPTIONS(self) -> None:
             seen["options"] += 1
             self.send_response(204)
             self.end_headers()
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             n = int(self.headers["Content-Length"])
             body = json.loads(self.rfile.read(n).decode())
             seen["post"].append(body)

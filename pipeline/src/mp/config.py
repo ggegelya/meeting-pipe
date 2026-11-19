@@ -381,7 +381,7 @@ class Config(BaseModel):
         return list(self._unknown_keys)
 
     @classmethod
-    def load(cls, path: Path | None = None) -> "Config":
+    def load(cls, path: Path | None = None) -> Config:
         path = path or CONFIG_PATH
         if not path.exists():
             empty: dict[str, Any] = {}
@@ -817,7 +817,7 @@ _ABSENT_SECRETS: set[str] = set()
 """Managed tokens the Keychain has no item for, remembered for the life of the process (CONC8, F208): a
 run reaches `entry.prepare` more than once, and each pass used to spawn a `security` per absent key."""
 
-_UNREADABLE_SECRETS: dict[str, "KeychainUnreadableError"] = {}
+_UNREADABLE_SECRETS: dict[str, KeychainUnreadableError] = {}
 """Managed tokens the last `load_secrets` could not read, by name (SEC23)."""
 
 

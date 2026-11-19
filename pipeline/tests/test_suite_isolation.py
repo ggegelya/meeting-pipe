@@ -16,7 +16,7 @@ from .conftest import _NETWORK
 
 def test_config_load_under_the_suite_returns_defaults_whatever_the_real_file_holds():
     real = Path("~/.config/meeting-pipe/config.toml").expanduser()
-    assert config.CONFIG_PATH != real
+    assert real != config.CONFIG_PATH
     assert not config.CONFIG_PATH.exists()
     assert Config.load().model_dump() == Config().model_dump()
 

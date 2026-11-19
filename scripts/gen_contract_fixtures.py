@@ -181,6 +181,7 @@ class _StubPublisher:
 
 def _fanout_with_a_failing_sink(summary_json: Path) -> dict[str, Any]:
     import httpx
+
     from mp.config import Config
 
     summary = MeetingSummary(title="Weekly sync", summary=["A point."], detected_language="en")
@@ -692,6 +693,7 @@ def gen_regulated(tmp: Path) -> str:
 def gen_failures() -> str:
     import anthropic
     import httpx
+
     from mp.config import ConfigUnreadableError, MissingSecretError
     from mp.failure_details import describe
     from mp.publish_router import SyncedTargetError

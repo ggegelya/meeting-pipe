@@ -37,7 +37,15 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from . import events
-from .config import BACKENDS, Config, ExtraSectionSpec, SinkName, effective_sinks, zero_egress
+from .config import (
+    BACKENDS,
+    BackendName,
+    Config,
+    ExtraSectionSpec,
+    SinkName,
+    effective_sinks,
+    zero_egress,
+)
 
 log = logging.getLogger("mp.workflow")
 
@@ -109,7 +117,7 @@ def _fail_closed(cfg: Config, read: MetaRead) -> Config:
     guard arms through `zero_egress` at entry."""
     overlay = cfg.model_copy(deep=True)
     overlay.modes.workflow_nda_mode = True
-    overlay.summarization.backend = "local"  # type: ignore[assignment]
+    overlay.summarization.backend = "local"
     overlay.output.sinks = ["filesystem"]
     if read.sidecar not in _reported_unreadable:
         _reported_unreadable.add(read.sidecar)
@@ -188,7 +196,8 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
     backend_raw = meta.get("workflow_backend")
     if isinstance(backend_raw, str) and backend_raw in BACKENDS:
         if overlay.summarization.backend != backend_raw:
-            overlay.summarization.backend = backend_raw  # type: ignore[assignment]
+            # `in BACKENDS` is the check; a `str` cannot narrow to the Literal by it.
+            overlay.summarization.backend = cast("BackendName", backend_raw)
             changed.append(f"backend={backend_raw}")
 
     ctx = meta.get("workflow_context_prompt")
@@ -241,7 +250,7 @@ def apply_overrides(cfg: Config, any_meeting_path: Path) -> Config:
     # meeting on-device.
     if clamped:
         if overlay.summarization.backend != "local":
-            overlay.summarization.backend = "local"  # type: ignore[assignment]
+            overlay.summarization.backend = "local"
             changed.append("zero_egress→backend=local")
         clamped_sinks = effective_sinks(overlay)
         if overlay.output.sinks != clamped_sinks:

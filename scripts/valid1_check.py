@@ -787,7 +787,7 @@ _PIPELINE_SRC = Path(__file__).resolve().parents[1] / "pipeline" / "src"
 def _cosine(a: list[float], b: list[float]) -> float:
     if not a or len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     na = sum(x * x for x in a) ** 0.5
     nb = sum(y * y for y in b) ** 0.5
     return dot / (na * nb) if na > 1e-9 and nb > 1e-9 else 0.0
@@ -974,7 +974,7 @@ def endpoint_is_warm(endpoint: str, timeout: float = 2.0) -> bool:
     `/health` (SEC27: the shim leaves it unauthenticated, and `/v1/models` now needs
     a bearer token this script does not hold)."""
     try:
-        with urllib.request.urlopen(f"{endpoint}/health?nonce={'x' * 16}", timeout=timeout) as r:
+        with urllib.request.urlopen(f"{endpoint}/health?nonce={'x' * 16}", timeout=timeout) as r:  # noqa: S310 - the owner's local endpoint, http by construction
             return 200 <= r.status < 300
     except (urllib.error.URLError, OSError, ValueError):
         return False

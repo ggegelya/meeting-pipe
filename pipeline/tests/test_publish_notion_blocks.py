@@ -6,7 +6,6 @@ page sees the deliberate layout the design pass is asking for.
 """
 from __future__ import annotations
 
-
 from mp.publish_notion import (
     _action_block,
     _build_blocks,

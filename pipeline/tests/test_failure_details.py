@@ -116,7 +116,7 @@ def test_transport_keeps_the_inner_operation_and_ignores_stale_implicit_context(
 
 def _chain(*errors):
     """Wrap `errors` outermost-first with explicit `from`, as the SDK does."""
-    for outer, inner in zip(errors, errors[1:]):
+    for outer, inner in zip(errors, errors[1:], strict=False):
         outer.__cause__ = inner
     return errors[0]
 

@@ -316,9 +316,8 @@ def main(argv: list[str]) -> int:
         server_module,
         Policy(port=args.port, token=token, model=args.model, adapter=args.adapter_path),
     )
-    from http.server import ThreadingHTTPServer
-
     import atexit
+    from http.server import ThreadingHTTPServer
 
     atexit.register(local_server.clear_token, os.getpid())
     record_token_when_listening(

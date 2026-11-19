@@ -23,8 +23,8 @@ from pathlib import Path
 
 from . import entry, events
 from .orchestrate import (
-    apply_glossary,
     DaemonTranscriptError,
+    apply_glossary,
     existing_daemon_transcript,
     finalize_streamed_transcript,
 )

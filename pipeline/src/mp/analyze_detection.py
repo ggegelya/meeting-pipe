@@ -57,10 +57,10 @@ import json
 import os
 import statistics
 import sys
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Iterator
 
 from . import events
 
@@ -197,7 +197,7 @@ def _sort_key(ev: dict) -> datetime:
     try:
         return _parse_ts(str(ev["ts"]))
     except (TypeError, ValueError):
-        return datetime.min.replace(tzinfo=timezone.utc)
+        return datetime.min.replace(tzinfo=UTC)
 
 
 def iter_events(path: Path, skipped: events.SkipCounter | None = None) -> Iterator[dict]:
@@ -500,7 +500,7 @@ def judge_sessions(
     for runs in by_bundle.values():
         runs.sort(key=lambda r: r.started_ts)
         chain = 1
-        for prev, nxt in zip(runs, runs[1:]):
+        for prev, nxt in zip(runs, runs[1:], strict=False):
             if nxt.started_ts - prev.stopped_ts <= window:
                 chain += 1
                 continue
@@ -988,10 +988,10 @@ def _parse_since(s: str) -> datetime:
     if s and s[-1] in "smhd" and s[:-1].isdigit():
         n = int(s[:-1])
         unit = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}[s[-1]]
-        return datetime.now(timezone.utc) - timedelta(**{unit: n})
+        return datetime.now(UTC) - timedelta(**{unit: n})
     dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
 
 

@@ -337,7 +337,7 @@ def validate_truth(truth: object, until: object = None) -> list[str]:
         errors.append("truth.max_overrun_sec must be a number or null")
     if ended is not None and overrun is None:
         errors.append("truth with a call end needs a max_overrun_sec")
-    if _num(ended) and _num(overrun) and _num(until) and not (0 <= ended and ended + overrun < until):
+    if _num(ended) and _num(overrun) and _num(until) and not (ended >= 0 and ended + overrun < until):
         # A missing end scores an overrun only up to `until`, so a window that cannot outlast the
         # allowed overrun would let a replay that never ends pass on its truth.
         errors.append("truth needs 0 <= call_ended_at and call_ended_at + max_overrun_sec < until")

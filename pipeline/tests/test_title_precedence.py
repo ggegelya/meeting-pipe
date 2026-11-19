@@ -12,9 +12,9 @@ from typing import Any
 
 import pytest
 
+from mp.config import Config
 from mp.publish_notion import apply_meeting_title
 from mp.publish_router import fanout
-from mp.config import Config
 from mp.schemas import MeetingSummary
 
 GOLDEN = (

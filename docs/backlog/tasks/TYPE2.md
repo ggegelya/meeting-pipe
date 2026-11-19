@@ -2,9 +2,9 @@
 id: TYPE2
 title: The Python lint and type config states more than it enforces: 34 noqa directives for rules that are off, an unchecked line length, an unlinted scripts tree, and blanket type ignores hiding two real errors
 category: CI
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-25 (code-quality audit PY14, CV1, CV5): 34 noqa name rules ruff never enables, line-length 100 goes unchecked, scripts/ is unlinted with a live F401, and 7 blanket type ignores hide 2 type errors. Select E4 E7 E9 F B A PIE SIM RUF100 I UP (137 findings over src, tests and scripts, BLE001 kept external), lint ../scripts, pyright standard with type ignores disabled, fix the 2. [Spec](./TYPE2.md)
+comment: Shipped 2026-11-19 - ruff selects E4 E7 E9 F S B A PIE SIM RUF100 I UP (BLE001 external; SIM105, SIM117, SIM102 ignored as churn), ci-local lints ../scripts, pyright standard with type ignores disabled; the 2 hidden errors fixed at their seam (concrete client returns and TextClient in providers, a BackendName cast in workflow), every `# type: ignore` in src removed, every B905 zip given strict=False. Planted F401 in scripts and planted ignored type error both fail; Linux-lane pyright simulated green. Owner owes: review and close.
 ---
 
 # TYPE2: The Python lint and type config states more than it enforces: 34 noqa directives for rules that are off, an unchecked line length, an unlinted scripts tree, and blanket type ignores hiding two real errors

@@ -14,7 +14,8 @@ from pathlib import Path
 import pytest
 
 from mp.config import Config
-from mp.finalize import finalize, main as finalize_main
+from mp.finalize import finalize
+from mp.finalize import main as finalize_main
 from mp.glossary import Glossary
 from mp.roster import EMBEDDING_DIM, RosterStore
 from mp.voiceprint import VoiceprintStore

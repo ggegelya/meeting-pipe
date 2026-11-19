@@ -9,7 +9,7 @@ that's the surface whose regression would silently regress the
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from mp import storage
@@ -443,7 +443,7 @@ def _stamp_backup(home: Path, at: datetime, *, audio: bool = True) -> None:
 
 
 def test_check_last_backup_reports_the_age(capsys, tmp_path) -> None:
-    now = datetime(2026, 7, 10, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 10, tzinfo=UTC)
     _stamp_backup(tmp_path, now - timedelta(days=3))
     check_last_backup(home=tmp_path, now=now)
     out = capsys.readouterr().out
@@ -452,7 +452,7 @@ def test_check_last_backup_reports_the_age(capsys, tmp_path) -> None:
 
 
 def test_check_last_backup_says_today_and_flags_a_no_audio_backup(capsys, tmp_path) -> None:
-    now = datetime(2026, 7, 10, 12, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 10, 12, tzinfo=UTC)
     _stamp_backup(tmp_path, now - timedelta(hours=2), audio=False)
     check_last_backup(home=tmp_path, now=now)
     out = capsys.readouterr().out
@@ -749,7 +749,7 @@ def test_a_non_empty_published_folder_adds_the_root_even_with_no_condition(capsy
 def _stamp_archive(tmp_path: Path, archive: str) -> None:
     marker = storage.backup_marker(tmp_path)
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(json.dumps({"at": datetime.now(timezone.utc).isoformat(), "archive": archive}))
+    marker.write_text(json.dumps({"at": datetime.now(UTC).isoformat(), "archive": archive}))
 
 
 def test_a_backup_archive_in_a_synced_folder_is_a_backups_line(capsys, tmp_path) -> None:
@@ -916,7 +916,7 @@ def test_doctor_warns_when_the_last_backup_went_to_an_unencrypted_volume(capsys,
 
     marker = storage.backup_marker(tmp_path)
     marker.parent.mkdir(parents=True, exist_ok=True)
-    now = datetime(2026, 11, 17, tzinfo=timezone.utc)
+    now = datetime(2026, 11, 17, tzinfo=UTC)
     cases = (({"destination_encrypted": False}, "is not encrypted"),
              ({"destination_encrypted": True}, None),
              ({"destination_encrypted": None}, "could not tell"),
@@ -949,7 +949,7 @@ def _stamp_attempt(home: Path, at: datetime, outcome: str, reason: str | None = 
 
 
 def test_check_last_backup_warns_when_the_newest_scheduled_attempt_failed(capsys, tmp_path) -> None:
-    now = datetime(2026, 7, 10, 12, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 10, 12, tzinfo=UTC)
     _install_backup_agent(tmp_path)
     _stamp_backup(tmp_path, now - timedelta(days=1))
     _stamp_attempt(tmp_path, now - timedelta(hours=3), "failed", "/Volumes/Drive is not mounted")
@@ -960,7 +960,7 @@ def test_check_last_backup_warns_when_the_newest_scheduled_attempt_failed(capsys
 
 
 def test_check_last_backup_warns_when_the_schedule_is_overdue(capsys, tmp_path) -> None:
-    now = datetime(2026, 7, 10, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 10, tzinfo=UTC)
     _install_backup_agent(tmp_path, weekly=True)
     _stamp_backup(tmp_path, now - timedelta(days=15))
     check_last_backup(home=tmp_path, now=now)
@@ -968,7 +968,7 @@ def test_check_last_backup_warns_when_the_schedule_is_overdue(capsys, tmp_path) 
 
 
 def test_check_last_backup_stays_informational_without_a_schedule(capsys, tmp_path) -> None:
-    now = datetime(2026, 7, 10, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 10, tzinfo=UTC)
     _stamp_backup(tmp_path, now - timedelta(days=40))
     _stamp_attempt(tmp_path, now - timedelta(days=1), "failed", "boom")
     check_last_backup(home=tmp_path, now=now)

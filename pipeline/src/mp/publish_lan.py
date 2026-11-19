@@ -31,16 +31,16 @@ from pathlib import Path
 from typing import Any
 
 from . import storage
-from .transcript_corrections import publish_text
 from .markdown import deeplink_stem, render_summary_md
 from .publish_fs import (
     file_url,
     load_sidecar,
-    recorded_target_is_live,
     now_iso,
+    recorded_target_is_live,
     stem_from_summary,
 )
 from .schemas import MeetingSummary
+from .transcript_corrections import publish_text
 
 log = logging.getLogger("mp.publish_lan")
 

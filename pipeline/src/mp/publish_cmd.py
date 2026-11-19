@@ -14,9 +14,9 @@ import logging
 import sys
 from pathlib import Path
 
-from . import entry
 from pydantic import ValidationError
 
+from . import entry
 from .publish_router import (
     EXIT_PUBLISH_FAILED,
     build_publishers,

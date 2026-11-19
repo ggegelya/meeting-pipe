@@ -21,7 +21,6 @@ from mp.config import (
     zero_egress,
 )
 
-
 # --- SEC8: load_secrets reads the managed tokens from the Keychain (via an injected reader) ---
 
 

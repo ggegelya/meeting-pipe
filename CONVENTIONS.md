@@ -252,20 +252,22 @@ allow = visibility.visible_stems(root)             # AUTO3: which meetings may l
 ### Ruff is strict in CI
 
 ```bash
-cd pipeline && uv run --extra dev ruff check src tests
+cd pipeline && uv run --extra dev ruff check src tests ../scripts
 ```
 
-Any F401 (unused import) fails CI. Run locally before committing. Config in `pipeline/pyproject.toml`.
+Any F401 (unused import) fails CI, in `scripts/` too since TYPE2. Run locally before committing. Config in `pipeline/pyproject.toml`; run from `pipeline/`, `ruff check ../scripts` resolves that same file.
+
+TYPE2 widened the rule set to `E4 E7 E9 F S B A PIE SIM RUF100 I UP`. `RUF100` fails a `noqa` that suppresses nothing, so a directive is evidence a rule is on; `BLE001` is declared `external` so the observability audit's markers survive until `BLE` is enabled. `SIM105`, `SIM117` and `SIM102` are ignored as pure style churn. `line-length = 100` checks no line (`E501` is off); it sets where `I` wraps imports. A `zip()` carries an explicit `strict=` (B905); the sweep wrote `strict=False` everywhere, which is what `zip` already did.
 
 CI12 added three security gates. Ruff selects `S` (flake8-bandit), so `shell=True`, pickle, `yaml.load` or `eval` fail the build; the ignores (argv-list subprocess, SEC17's bare executables, retry asserts, best-effort excepts) and the test-fixture per-file ignores each carry their reason in `pyproject.toml`, and a new one needs the same. `ci-local.sh`'s truth-fences job runs `shellcheck -S warning` over every tracked shell script (`git ls-files`), so a new script is covered with no list to edit; it fails with the install hint when `shellcheck` is missing (`brew install shellcheck`), and CI installs it explicitly. The pipeline job runs `scripts/pip-audit-check.sh`: pip-audit at a pinned version through `uvx` (nothing in `uv.lock`) over the lock's export, failing on any advisory not in `scripts/pip-audit-allowlist.txt`, where each line needs an id, the package, a date and a reason, and an unreachable advisory database fails rather than passes.
 
-### Pyright checks the annotations (TYPE1)
+### Pyright checks the annotations (TYPE1, TYPE2)
 
 ```bash
 cd pipeline && uv run --extra dev --extra mcp pyright
 ```
 
-Basic mode over `src/` only, config in `pipeline/pyproject.toml`. The package was near-universally annotated long before anything verified the annotations, so drift landed silently. CI runs it as its own step and fails on a type regression.
+Standard mode (TYPE2; basic until then, and standard cost no new error) over `src/` only, config in `pipeline/pyproject.toml`. `enableTypeIgnoreComments = false`: a `# type: ignore` does nothing, so a suppression must be a `# pyright: ignore[rule]` naming its rule. Turning that off surfaced two errors the blanket ignores hid, both fixed at their seam: `providers._openai_summary` and `_claude_cli_summary` now return their concrete clients and the text builders return `services.TextClient`, and `workflow.apply_overrides` casts the sidecar backend to `BackendName` after its `in BACKENDS` check. The package was near-universally annotated long before anything verified the annotations, so drift landed silently. CI runs it as its own step and fails on a type regression.
 
 `tests/` is out of scope for now (its fakes are deliberately partial); ratcheting to `strict` is a later decision. The darwin/arm64-only imports the Linux runner cannot resolve (`mlx_embeddings`, `mlx.core`, `huggingface_hub`) are suppressed per-site with `# pyright: ignore[reportMissingImports]` rather than globally, so a real typo in any other import still fails. A new heavy lazy import needs the same comment. AUTO3's `mcp` SDK goes the other way, resolved rather than ignored: it is pure-Python, CI installs it, and the local command carries `--extra mcp` so `mcp_serve.py`'s three imports resolve. Drop the extra and pyright is 3 errors red on a clean venv while CI stays green.
 

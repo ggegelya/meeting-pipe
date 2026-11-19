@@ -44,8 +44,10 @@ from .config import Config
 from .markdown import render_markdown
 from .publish_router import (
     EXIT_PUBLISH_FAILED,
-    fanout as publish_fanout,
     publish_failed,
+)
+from .publish_router import (
+    fanout as publish_fanout,
 )
 from .services import SummaryClient
 from .summarize import refuse_unreadable_overlays, summarize
@@ -147,7 +149,7 @@ def merge_transcripts(fragments: list[dict], durations: list[float]) -> dict:
     label_maps = fragment_label_maps(fragments)
     merged_segments: list[dict] = []
     offset = 0.0
-    for i, (frag, dur) in enumerate(zip(fragments, durations)):
+    for i, (frag, dur) in enumerate(zip(fragments, durations, strict=False)):
         if i > 0:
             merged_segments.append(
                 {"start": offset, "end": offset, "speaker": None,
@@ -204,7 +206,7 @@ def concat_audio(inputs: list[Path], out_path: Path) -> list[float]:
     infos = [sf.info(str(p)) for p in inputs]
     samplerate = infos[0].samplerate
     channels = infos[0].channels
-    for p, info in zip(inputs, infos):
+    for p, info in zip(inputs, infos, strict=False):
         if info.samplerate != samplerate or info.channels != channels:
             raise MergeError(
                 f"cannot merge {p.name}: {info.samplerate}Hz/{info.channels}ch "

@@ -182,9 +182,11 @@ pipeline() {
         bash ../scripts/pip-audit-check.sh
         end
         begin "Pipeline: ruff"
-        $run ruff check src tests
+        # TYPE2: ../scripts too (the generator and the fences import from src/mp, and an
+        # unused import there used to pass every gate).
+        $run ruff check src tests ../scripts
         end
-        begin "Pipeline: pyright (TYPE1)"
+        begin "Pipeline: pyright (TYPE1, standard since TYPE2)"
         $run pyright
         end
         begin "Pipeline: pytest"

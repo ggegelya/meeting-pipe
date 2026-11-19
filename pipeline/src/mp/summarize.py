@@ -1014,7 +1014,11 @@ def main(argv: list[str]) -> int:
     # PIPE25: the daemon re-ran a refused Apple Intelligence meeting here. Recorded only when
     # the run really answered on `local`, so the flag cannot relabel a run it did not describe.
     if substitution and out["backend"] == "local":
-        out.update(substitution)  # type: ignore[typeddict-item]
+        # TYPE2: key by key, so each lands on its declared `NotRequired[str]`; these three
+        # are the only keys `extract_fallback_flags` returns.
+        for key in ("fallback_from", "fallback_cause", "fallback_language"):
+            if key in substitution:
+                out[key] = substitution[key]
     if not candidate:
         rewrite_run_sidecar(md, out)
     return 0

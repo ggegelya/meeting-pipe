@@ -143,7 +143,7 @@ class Chunk:
         return {"stem": self.stem, "title": self.title, "index": self.index, "text": self.text}
 
     @classmethod
-    def from_json(cls, obj: dict) -> "Chunk":
+    def from_json(cls, obj: dict) -> Chunk:
         return cls(
             stem=str(obj["stem"]),
             title=str(obj.get("title", obj["stem"])),
@@ -214,7 +214,7 @@ class HashingEmbedder:
 
     def _tokens(self, text: str) -> list[str]:
         toks = _TOKEN.findall(text.lower())
-        bigrams = [f"{a}_{b}" for a, b in zip(toks, toks[1:])]
+        bigrams = [f"{a}_{b}" for a, b in zip(toks, toks[1:], strict=False)]
         return toks + bigrams
 
     def _bucket(self, token: str) -> int:
@@ -501,7 +501,7 @@ class EmbeddingIndex:
         chunk_chars: int = CHUNK_CHARS,
         overlap: int = CHUNK_OVERLAP,
         allow_stems: set[str] | None = None,
-    ) -> "EmbeddingIndex":
+    ) -> EmbeddingIndex:
         embedder = embedder or default_embedder()
         fingerprint = library_fingerprint(root)
         stems = library_stem_fingerprints(root, allow_stems=allow_stems)
@@ -574,7 +574,7 @@ class EmbeddingIndex:
             _sweep_generations(directory, keep=generation)
 
     @classmethod
-    def load(cls, directory: Path, embedder: Embedder | None = None) -> "EmbeddingIndex":
+    def load(cls, directory: Path, embedder: Embedder | None = None) -> EmbeddingIndex:
         """Read the generation the manifest names, under the directory's shared
         lock so a concurrent save cannot sweep it between the two reads."""
         directory = Path(directory).expanduser()
@@ -735,7 +735,7 @@ def _empty_vectors() -> np.ndarray:
     return np.zeros((0, 0), dtype=np.float32)
 
 
-def _load_reusable(index_dir: Path, embedder: Embedder) -> "EmbeddingIndex | None":
+def _load_reusable(index_dir: Path, embedder: Embedder) -> EmbeddingIndex | None:
     """The persisted index, when it is one this run may build on. None (rebuild
     from scratch) for a missing, corrupt, pre-AI11, or differently-embedded cache.
 
@@ -771,7 +771,7 @@ def _load_reusable(index_dir: Path, embedder: Embedder) -> "EmbeddingIndex | Non
     return index
 
 
-def _keep(prior: "EmbeddingIndex | None", keep: set[str]) -> tuple[list[Chunk], np.ndarray]:
+def _keep(prior: EmbeddingIndex | None, keep: set[str]) -> tuple[list[Chunk], np.ndarray]:
     """The prior index's chunks + rows for the stems still current."""
     if prior is None or not keep or not prior.chunks:
         return [], _empty_vectors()
@@ -788,7 +788,7 @@ def _assemble(
     *,
     stems: dict[str, str],
     fingerprint: str,
-) -> "EmbeddingIndex":
+) -> EmbeddingIndex:
     """Stack the accumulated vector blocks and pair them with their chunks,
     ordered by (stem, window) so a resumed build lands the same rows in the same
     order a single-pass build would."""
@@ -805,7 +805,7 @@ def _assemble(
     )
 
 
-def _persist(index: "EmbeddingIndex", index_dir: Path) -> None:
+def _persist(index: EmbeddingIndex, index_dir: Path) -> None:
     """Best-effort save. A cache that cannot be written costs speed, never
     correctness, so it warns and the run continues on the in-memory index."""
     try:
@@ -826,7 +826,7 @@ def refresh_index(
     overlap: int = CHUNK_OVERLAP,
     allow_stems: set[str] | None = None,
     clock: Callable[[], float] = time.monotonic,
-) -> "EmbeddingIndex":
+) -> EmbeddingIndex:
     """Bring the persisted index up to date with the library, incrementally.
 
     Only the stems whose own source files changed are re-chunked and re-embedded;
@@ -889,7 +889,7 @@ def refresh_index(
     save_s = 0.0
     tally = storage.UnreadableTally()
 
-    def _timed_persist(ix: "EmbeddingIndex") -> None:
+    def _timed_persist(ix: EmbeddingIndex) -> None:
         nonlocal save_s, last_save
         t0 = clock()
         _persist(ix, index_dir)
@@ -1000,7 +1000,7 @@ def load_or_build(
     watchdog: resource_guard.MemoryWatchdog | None = None,
     on_progress: Callable[[IndexProgress], None] | None = None,
     allow_stems: set[str] | None = None,
-) -> "EmbeddingIndex":
+) -> EmbeddingIndex:
     """Load a persisted index, refreshing whatever part of it went stale.
 
     The name every caller already uses; `refresh_index` is where the work lives.

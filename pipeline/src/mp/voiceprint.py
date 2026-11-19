@@ -96,7 +96,7 @@ class VoiceprintStore:
             # Equal-weight running mean: stable once learned, so one noisy
             # meeting can't swamp a voiceprint built from many clean samples.
             merged = _l2_normalize(
-                [(c * n + s) / (n + 1) for c, s in zip(current, sample)]
+                [(c * n + s) / (n + 1) for c, s in zip(current, sample, strict=False)]
             )
             new_n = n + 1
         self._write(merged, new_n)

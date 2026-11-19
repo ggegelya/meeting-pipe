@@ -20,9 +20,9 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
@@ -30,9 +30,9 @@ from mp import egress_guard, resource_guard
 from mp.prompt_safety import wrap_untrusted
 from mp.summarize_local import (
     DEFAULT_REQUEST_TIMEOUT_SEC,
+    SERVER_PROMPT_CACHE_SIZE,
     LocalSummaryClient,
     LocalSummaryError,
-    SERVER_PROMPT_CACHE_SIZE,
     _largest_balanced_json_object,
     build_server_command,
     repair_messages,
@@ -75,7 +75,7 @@ class _FakeHandler(BaseHTTPRequestHandler):
     def log_message(self, *_: object) -> None:  # silence test output
         pass
 
-    def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+    def do_GET(self) -> None:
         # PERF25: a test that fakes the spawn/terminate seam flips `healthy`, so
         # a terminated server stops answering and a respawn is observable.
         if not getattr(self.server, "healthy", True):
@@ -87,7 +87,7 @@ class _FakeHandler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         if self.path != "/v1/chat/completions":
             self.send_response(404)
             self.end_headers()

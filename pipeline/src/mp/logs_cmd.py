@@ -19,9 +19,9 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from collections.abc import Iterable, Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Iterator
 
 from . import events as events_mod
 
@@ -40,10 +40,10 @@ def _parse_since(s: str) -> datetime:
     if s and s[-1] in "smhd" and s[:-1].isdigit():
         n = int(s[:-1])
         unit = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}[s[-1]]
-        return datetime.now(timezone.utc) - timedelta(**{unit: n})
+        return datetime.now(UTC) - timedelta(**{unit: n})
     dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
 
 

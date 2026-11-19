@@ -33,7 +33,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import entry, train_adapter
@@ -236,7 +236,7 @@ def _render_comparison(
 ) -> str:
     front = _FRONTMATTER_TEMPLATE.format(
         transcript=str(transcript_md),
-        ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        ts=datetime.now(UTC).isoformat(timespec="seconds"),
     )
     parts: list[str] = [front]
     parts.append(f"# Dogfood comparison: `{transcript_md.name}`")
@@ -358,7 +358,7 @@ def render_report(stats: dict) -> str:
     lines: list[str] = []
     lines.append("# Local-LLM quality dogfood report")
     lines.append("")
-    lines.append(f"_Generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}_")
+    lines.append(f"_Generated: {datetime.now(UTC).isoformat(timespec='seconds')}_")
     lines.append("")
     lines.append(f"- Total transcripts:   {stats.get('n_total', 0)}")
     lines.append(f"- Scored:              {stats.get('n_scored', 0)}")

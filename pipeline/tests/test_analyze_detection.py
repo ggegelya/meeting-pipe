@@ -8,7 +8,7 @@ report rendering against synthetic event sequences. End-to-end via
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -232,7 +232,7 @@ def test_pair_sessions_filters_by_since() -> None:
         _event("2026-05-02T08:30:00Z", "coordinator", "recording_stopped",
                file="new.wav", bundle_id="us.zoom.xos"),
     ]
-    since = datetime(2026, 5, 2, tzinfo=timezone.utc)
+    since = datetime(2026, 5, 2, tzinfo=UTC)
     sessions = pair_sessions(events, since=since)
     assert [s.file for s in sessions] == ["new.wav"]
 
@@ -250,21 +250,21 @@ def test_pair_sessions_unterminated_session_is_skipped() -> None:
 def test_aggregate_buckets_by_bundle_id() -> None:
     sessions = [
         Session(
-            started_ts=datetime(2026, 5, 1, 10, tzinfo=timezone.utc),
-            stopped_ts=datetime(2026, 5, 1, 10, 30, tzinfo=timezone.utc),
+            started_ts=datetime(2026, 5, 1, 10, tzinfo=UTC),
+            stopped_ts=datetime(2026, 5, 1, 10, 30, tzinfo=UTC),
             bundle_id="us.zoom.xos",
             file="z1.wav",
-            detector_ended_ts=datetime(2026, 5, 1, 10, 29, 58, tzinfo=timezone.utc),
+            detector_ended_ts=datetime(2026, 5, 1, 10, 29, 58, tzinfo=UTC),
         ),
         Session(
-            started_ts=datetime(2026, 5, 1, 11, tzinfo=timezone.utc),
-            stopped_ts=datetime(2026, 5, 1, 11, 30, tzinfo=timezone.utc),
+            started_ts=datetime(2026, 5, 1, 11, tzinfo=UTC),
+            stopped_ts=datetime(2026, 5, 1, 11, 30, tzinfo=UTC),
             bundle_id="us.zoom.xos",
             file="z2.wav",
         ),
         Session(
-            started_ts=datetime(2026, 5, 1, 12, tzinfo=timezone.utc),
-            stopped_ts=datetime(2026, 5, 1, 12, 30, tzinfo=timezone.utc),
+            started_ts=datetime(2026, 5, 1, 12, tzinfo=UTC),
+            stopped_ts=datetime(2026, 5, 1, 12, 30, tzinfo=UTC),
             bundle_id="com.google.Chrome",
             file="c1.wav",
         ),
@@ -530,13 +530,13 @@ def test_collect_mic_input_faults_reads_only_its_own_action() -> None:
 
 def test_collect_mic_input_faults_filters_by_since() -> None:
     events = [_unavailable("2026-05-01T09:00:00Z"), _unavailable("2026-05-08T09:00:00Z")]
-    since = datetime(2026, 5, 5, tzinfo=timezone.utc)
+    since = datetime(2026, 5, 5, tzinfo=UTC)
     assert len(collect_mic_input_faults(events, since=since)) == 1
 
 
 def test_mic_input_status_reports_what_was_measured() -> None:
     spans = pair_mic_spans(_mic("us.zoom.xos", "2026-05-01T11:00:00Z", "2026-05-01T11:30:00Z"))
-    fault = [datetime(2026, 5, 1, 9, tzinfo=timezone.utc)]
+    fault = [datetime(2026, 5, 1, 9, tzinfo=UTC)]
     # Spans exist: a zero-miss count is a real measurement, whatever else is in the log.
     assert mic_input_status(spans, []) == MIC_INPUT_OBSERVED
     assert mic_input_status(spans, fault) == MIC_INPUT_OBSERVED
@@ -563,7 +563,7 @@ def test_a_week_with_no_mic_spans_does_not_render_as_zero_misses() -> None:
 
 
 def test_dead_input_names_the_daemon_event_as_the_cause() -> None:
-    fault = datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc)
+    fault = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
     report = render_report([], {}, mic_spans=[], mic_input_faults=[fault])
     assert "## Mic-busy misses (not audited)" in report
     assert "mic_device_unavailable" in report

@@ -273,7 +273,7 @@ class RosterStore:
         sources: list = (recorded + [None] * len(samples))[: len(samples)]
         pairs = [
             (smp, origin if isinstance(origin, dict) and origin.get("fp") == _fingerprint(smp) else None)
-            for smp, origin in zip(samples, sources)
+            for smp, origin in zip(samples, sources, strict=False)
             if isinstance(smp, list) and len(smp) == EMBEDDING_DIM
         ]
         return [s for s, _ in pairs], [src for _, src in pairs]
@@ -357,7 +357,7 @@ class RosterStore:
         samples, sources = self._aligned(person)
         keep_s: list[list[float]] = []
         keep_src: list[dict | None] = []
-        for sample, src in zip(samples, sources):
+        for sample, src in zip(samples, sources, strict=False):
             same_voice = target is not None and cosine_similarity(sample, target) >= UNENROLL_MATCH_MIN
             if src is None:
                 hit = same_voice

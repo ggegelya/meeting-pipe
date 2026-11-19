@@ -60,8 +60,9 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, NoReturn
+from typing import Any, NoReturn
 
 import httpx
 from pydantic import ValidationError
@@ -71,7 +72,7 @@ from .chunking import chunked_windows
 from .config import SAMPLING_TEMPERATURE, Config, parse_local_endpoint
 from .json_extract import largest_balanced_json_object, repair_missing_commas
 from .prompt_safety import wrap_untrusted
-from .schemas import MeetingSummary, SUMMARY_TOOL
+from .schemas import SUMMARY_TOOL, MeetingSummary
 from .summary_language import (
     divergent_sections,
     expected_summary_language,
@@ -968,7 +969,7 @@ class LocalSummaryClient:
 
     # Context-manager sugar so callers can scope the server lifetime
     # to a single ``with`` block (handy in tests and one-shot CLI runs).
-    def __enter__(self) -> "LocalSummaryClient":
+    def __enter__(self) -> LocalSummaryClient:
         return self
 
     def __exit__(self, *exc: Any) -> None:

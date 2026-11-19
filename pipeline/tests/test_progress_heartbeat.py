@@ -121,8 +121,9 @@ def test_note_progress_reaches_the_running_heartbeat_and_stops_with_it():
 
 
 def test_a_blocked_summarize_shows_stage_elapsed_growing_across_beats(tmp_path, monkeypatch):
-    from .test_orchestrate import _write_fluidaudio_sidecar
     from mp.config import Config
+
+    from .test_orchestrate import _write_fluidaudio_sidecar
 
     monkeypatch.delenv("MP_FORCE_BYO", raising=False)
     wav = tmp_path / "20260516-0900.wav"

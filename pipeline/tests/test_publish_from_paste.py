@@ -10,7 +10,8 @@ import httpx
 import pytest
 
 from mp.config import Config
-from mp.publish_from_paste import main as paste_main, parse_summary_md, publish_from_paste
+from mp.publish_from_paste import main as paste_main
+from mp.publish_from_paste import parse_summary_md, publish_from_paste
 from mp.publish_router import EXIT_PUBLISH_FAILED
 from mp.schemas import MeetingSummary
 
@@ -136,8 +137,8 @@ def test_resolved_round_trips_through_rendered_markdown():
     actions. The order is stable, so the resolved action stays resolved and the
     open one stays open. (The parser keeps the confidence suffix in the task
     text; that is a pre-existing BYO quirk and not what this test pins.)"""
-    from mp.schemas import ActionItem, MeetingSummary
     from mp.markdown import render_summary_md
+    from mp.schemas import ActionItem, MeetingSummary
 
     s = MeetingSummary(
         title="Recap",

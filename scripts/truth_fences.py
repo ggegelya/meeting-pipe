@@ -717,7 +717,7 @@ def check_claude() -> bool:
         raw = path.read_bytes()
         over = []
         for n, line in enumerate(raw.decode("utf-8").splitlines(), start=1):
-            if not (line.startswith("- ") or line.startswith("| ")):
+            if not (line.startswith(("- ", "| "))):
                 continue
             size = len(line.encode("utf-8"))
             if size > CLAUDE_MAX_ENTRY_BYTES:
@@ -1217,7 +1217,7 @@ def check_env() -> bool:
 
 def main(argv: list[str]) -> int:
     which = argv[0] if argv and not argv[0].startswith("--") else "both"
-    flags = dict(zip(argv[1::2], argv[2::2])) if argv and not argv[0].startswith("--") else dict(zip(argv[::2], argv[1::2]))
+    flags = dict(zip(argv[1::2], argv[2::2], strict=False)) if argv and not argv[0].startswith("--") else dict(zip(argv[::2], argv[1::2], strict=False))
     print(f"CI5 truth fences ({which})")
     ok = True
     if which in ("both", "config"):

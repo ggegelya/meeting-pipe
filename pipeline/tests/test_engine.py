@@ -43,7 +43,7 @@ class _FakeLocal:
 
 
 class _FakeAnthropic:
-    last: "_FakeAnthropic | None" = None
+    last: _FakeAnthropic | None = None
     backend_id = "anthropic"
 
     def __init__(self, *, api_key: str, model: str) -> None:
@@ -273,12 +273,12 @@ class _FakeMLXHandler(BaseHTTPRequestHandler):
     def log_message(self, *_: object) -> None:  # silence test output
         pass
 
-    def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+    def do_GET(self) -> None:
         if not answer_health(self):
             self.send_response(404)
             self.end_headers()
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         self.server.captured.append(json.loads(self.rfile.read(length) or b"{}"))  # type: ignore[attr-defined]
         self._respond(json.dumps({"choices": [{"message": {"content": "a local answer"}}]}).encode())

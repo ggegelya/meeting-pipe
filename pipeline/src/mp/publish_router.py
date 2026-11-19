@@ -21,16 +21,16 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from . import events, storage
-from .corrections import report_sidecar_write_failed
-from .transcript_corrections import publish_text
 from .config import Config, effective_sinks, zero_egress
+from .corrections import report_sidecar_write_failed
 from .schemas import MeetingSummary
 from .services import MeetingPublisher
+from .transcript_corrections import publish_text
 
 log = logging.getLogger("mp.publish_router")
 
@@ -170,8 +170,8 @@ def _build_one(name: str, cfg: Config) -> MeetingPublisher | None:
         # config.effective_sinks now (TECH-ARCH1 / TECH-SEC2): build_publishers
         # routes through it, so a "notion" name reaching here is already
         # allowed to egress.
-        from .publish_notion import NotionRestPublisher
         from .config import MissingSecretError, require_env
+        from .publish_notion import NotionRestPublisher
         if not cfg.notion.database_id:
             log.warning("notion.database_id is empty; Notion sink will fail at upsert")
         try:
@@ -418,7 +418,7 @@ def _write_pending_marker(summary_json: Path) -> bool:
         "schema_version": PUBLISH_SIDECAR_SCHEMA_VERSION,
         "state": PUBLISH_STATE_UNKNOWN,
         "page_url": None,
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "sinks": {},
     }
     try:
@@ -463,7 +463,7 @@ def _write_publish_sidecar(summary_json: Path, result: dict[str, Any]) -> bool:
         "schema_version": PUBLISH_SIDECAR_SCHEMA_VERSION,
         "state": publish_state(result),
         "page_url": result.get("page_url"),
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "sinks": {
             name: {
                 "ok": not (isinstance(res, dict) and res.get("error")),

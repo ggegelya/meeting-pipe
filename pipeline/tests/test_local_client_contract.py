@@ -40,9 +40,7 @@ def _calls(tree: ast.AST) -> list[tuple[str, ast.Call]]:
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if isinstance(func, ast.Name) and func.id == CLIENT:
-            found.append(("direct", node))
-        elif isinstance(func, ast.Attribute) and func.attr == CLIENT:
+        if isinstance(func, ast.Name) and func.id == CLIENT or isinstance(func, ast.Attribute) and func.attr == CLIENT:
             found.append(("direct", node))
         elif (isinstance(func, ast.Attribute) and func.attr == FACTORY
               and isinstance(func.value, (ast.Name, ast.Attribute))
@@ -75,7 +73,7 @@ def test_the_walk_finds_every_known_builder() -> None:
     """Guard the guard. If the extraction found nothing (a rename, a moved
     import), the tripwires below would be vacuously green forever."""
     modules = {m for m, _, kind, _ in _constructions() if kind == "factory"}
-    assert KNOWN_BUILDERS <= modules, (
+    assert modules >= KNOWN_BUILDERS, (
         f"the {CLIENT}.{FACTORY} walk no longer sees {sorted(KNOWN_BUILDERS - modules)}. "
         "If a construction legitimately moved, update KNOWN_BUILDERS; if the class "
         "or the factory was renamed, update CLIENT or FACTORY."

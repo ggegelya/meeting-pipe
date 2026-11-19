@@ -31,12 +31,17 @@ def _write_correction(
     (directory / f"{stem}.json").write_text(json.dumps(rec), encoding="utf-8")
 
 
+# TYPE2 (B006): a module constant, not a literal in the signature, and never mutated;
+# None already means "no summary file", so it cannot be the default.
+_DEFAULT_SUMMARY = {"title": "S"}
+
+
 def _write_run(
     directory: Path, stem: str, *, backend: str = "anthropic",
-    summary: dict | None = {"title": "S"}, transcript: str | None = "transcript",
+    summary: dict | None = _DEFAULT_SUMMARY, transcript: str | None = "transcript",
 ) -> None:
     """A run sidecar plus the transcript and summary it points at, as `mp run-all`
-    leaves them on disk."""
+    leaves them on disk. `summary=None` writes none."""
     transcript_path = directory / f"{stem}.md"
     summary_path = directory / f"{stem}.summary.json"
     if transcript is not None:

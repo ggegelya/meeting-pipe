@@ -31,7 +31,7 @@ import math
 import os
 import sys
 import wave
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 # The tier's provisional constants, mirrored from MicCoverageWarning.swift. The probe prints its

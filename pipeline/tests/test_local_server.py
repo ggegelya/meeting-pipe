@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 from mp import local_server
-
 from mp.summarize_local import build_server_command
 
 _REAL_LISTENING_PID = local_server.listening_pid

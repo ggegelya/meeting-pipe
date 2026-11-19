@@ -252,8 +252,8 @@ def arm(reason: str = "regulated/nda") -> None:
             raise EgressBlocked("egress guard installed without capturing the real transport")
         return await handler(self, request)
 
-    httpx.HTTPTransport.handle_request = _guarded_sync  # type: ignore[method-assign]
-    httpx.AsyncHTTPTransport.handle_async_request = _guarded_async  # type: ignore[method-assign]
+    httpx.HTTPTransport.handle_request = _guarded_sync
+    httpx.AsyncHTTPTransport.handle_async_request = _guarded_async
 
     _orig_connect = socket.socket.connect
     _orig_connect_ex = socket.socket.connect_ex
@@ -272,8 +272,8 @@ def arm(reason: str = "regulated/nda") -> None:
             raise EgressBlocked("egress guard installed without capturing socket.connect_ex")
         return handler(self, target)
 
-    socket.socket.connect = _guarded_connect  # type: ignore[method-assign]
-    socket.socket.connect_ex = _guarded_connect_ex  # type: ignore[method-assign]
+    socket.socket.connect = _guarded_connect
+    socket.socket.connect_ex = _guarded_connect_ex
     _patched = True
     log.info(
         "egress guard armed (%s): non-loopback HTTP and sockets are blocked, proxies "

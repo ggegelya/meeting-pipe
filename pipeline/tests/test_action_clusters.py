@@ -32,7 +32,7 @@ class DirectedEmbedder:
     def __init__(self, vectors: dict[str, list[float]]) -> None:
         self.vectors = vectors
 
-    def embed(self, texts, kind="passage"):  # noqa: ARG002 - Embedder protocol
+    def embed(self, texts, kind="passage"):
         rows = np.array([self.vectors[t] for t in texts], dtype=np.float32)
         norms = np.linalg.norm(rows, axis=1, keepdims=True)
         norms[norms == 0.0] = 1.0
@@ -127,7 +127,7 @@ def test_embedder_failure_falls_back_to_singletons():
     class Broken:
         name = "broken"
 
-        def embed(self, texts, kind="passage"):  # noqa: ARG002 - Embedder protocol
+        def embed(self, texts, kind="passage"):
             raise RuntimeError("no model")
 
     actions = [
@@ -142,7 +142,7 @@ def test_single_action_needs_no_embedder():
     class Exploding:
         name = "exploding"
 
-        def embed(self, texts, kind="passage"):  # noqa: ARG002 - Embedder protocol
+        def embed(self, texts, kind="passage"):
             raise AssertionError("embedder must not be called")
 
     assert action_clusters.cluster_actions(

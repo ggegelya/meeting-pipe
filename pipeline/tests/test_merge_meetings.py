@@ -155,10 +155,10 @@ def _fake_concat(inputs, out_path):
     return [10.0 * (i + 1) for i in range(len(inputs))]
 
 
-def _write_meeting(dir: Path, stem: str, *segs: dict) -> Path:
-    wav = dir / f"{stem}.wav"
+def _write_meeting(directory: Path, stem: str, *segs: dict) -> Path:
+    wav = directory / f"{stem}.wav"
     wav.write_bytes(b"RIFF")
-    (dir / f"{stem}.json").write_text(json.dumps(_transcript(*segs)), encoding="utf-8")
+    (directory / f"{stem}.json").write_text(json.dumps(_transcript(*segs)), encoding="utf-8")
     return wav
 
 
@@ -447,7 +447,7 @@ def test_merge_meetings_failure_after_concat_leaves_no_temp(
 
         monkeypatch.setattr(mm.storage, "atomic_write_text", _write)
 
-    with pytest.raises(Exception):
+    with pytest.raises((RuntimeError, OSError)):
         merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
     assert not primary.with_name(primary.name + ".merging.tmp").exists()
     assert primary.read_bytes() == b"WAV10.0"
@@ -498,8 +498,8 @@ def _jw(path: Path, obj) -> Path:
     return path
 
 
-def _meeting_with(dir: Path, stem: str, seconds: float, *segs: dict) -> Path:
-    wav = _write_meeting(dir, stem, *segs)
+def _meeting_with(directory: Path, stem: str, seconds: float, *segs: dict) -> Path:
+    wav = _write_meeting(directory, stem, *segs)
     return _put_wav(wav, seconds)
 
 

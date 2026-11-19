@@ -61,7 +61,8 @@ from typing import Any
 
 from . import events, resource_guard
 from .chunking import chunked_windows
-from .evidence import normalize, segments_from_timestamped_markdown, verify as verify_anchors
+from .evidence import normalize, segments_from_timestamped_markdown
+from .evidence import verify as verify_anchors
 from .json_extract import largest_balanced_json_object, repair_missing_commas
 from .prompt_safety import wrap_untrusted
 from .schemas import MAX_EVIDENCE_PER_ITEM, ActionItem, Evidence, MeetingSummary
@@ -859,7 +860,7 @@ def _verify(
     for section in _TEXT_SECTIONS:
         texts = list(getattr(checked, section))
         anchors = checked.evidence.get(section) or [[] for _ in texts]
-        pairs = list(zip(texts, anchors))
+        pairs = list(zip(texts, anchors, strict=False))
         if section == "decisions":
             # Only decisions and actions carry the trace-to-a-quote requirement;
             # a summary bullet or an open question is legitimately synthesized.
@@ -872,7 +873,7 @@ def _verify(
     actions: list[ActionItem] = []
     # `verify` copies each action in place, so the checked list stays aligned with
     # the composed one and each action can be paired back with the rows it cited.
-    for point, action in zip(composed["actions"], checked.actions):
+    for point, action in zip(composed["actions"], checked.actions, strict=False):
         if not action.evidence:
             dropped += 1
             continue

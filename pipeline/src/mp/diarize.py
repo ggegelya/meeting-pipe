@@ -31,7 +31,7 @@ OTHER_SPEAKER = "speaker_other"
 
 def is_stereo_recording(wav: Path) -> bool:
     """Cheap channel-count probe (reads only the WAV header)."""
-    import soundfile as sf  # type: ignore
+    import soundfile as sf
     try:
         return sf.info(str(wav)).channels == 2
     except Exception:  # noqa: BLE001
@@ -68,7 +68,7 @@ def assign_speakers_by_channel(
     full-amplitude audio.
     """
     import numpy as np
-    import soundfile as sf  # type: ignore
+    import soundfile as sf
 
     # Stream the WAV instead of reading the whole clip plus two float32 copies
     # (~2 GB peak on a 3-hour stereo file, in the exact degraded fallback we
@@ -234,7 +234,7 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     empty input, or a zero vector."""
     if not a or len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
     if na < 1e-9 or nb < 1e-9:
@@ -394,7 +394,7 @@ def analyze_mic_tier(
     mic_time: dict[str, float] = {}
     total_time: dict[str, float] = {}
     saw_other = False
-    for orig, chan in zip(segments, channel):
+    for orig, chan in zip(segments, channel, strict=False):
         spk = orig.get("speaker")
         if not spk:
             continue

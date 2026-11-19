@@ -13,13 +13,13 @@ import os
 import stat
 import tarfile
 from collections import namedtuple
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from mp import storage
 from mp import backup as backup_mod
+from mp import storage
 from mp.backup import MANIFEST_NAME, BackupError, check_destination, create_backup
 from mp.config import KEYCHAIN_SERVICE, MANAGED_SECRET_KEYS, Config
 from mp.restore import (
@@ -641,7 +641,7 @@ def test_cli_reports_a_bad_archive_without_a_traceback(
 def test_read_manifest_round_trips_the_creation_time(tmp_path: Path) -> None:
     home = _make_home(tmp_path)
     _populate(home)
-    when = datetime.now(timezone.utc) - timedelta(days=3)
+    when = datetime.now(UTC) - timedelta(days=3)
     archive = create_backup(_cfg(home), tmp_path / "out", home=home, now=when)
     assert archive.name == f"meeting-pipe-backup-{when.strftime('%Y%m%d-%H%M%S')}.tar.gz"
     assert read_manifest(archive)["created_at"] == when.isoformat()
@@ -761,7 +761,7 @@ def test_a_real_restore_walks_the_archive_twice(
 
 #: A Thursday, ISO week 46 of 2026. Injected, so the weeks cannot drift with the
 #: real calendar.
-_NOW = datetime(2026, 11, 12, 3, 0, 0, tzinfo=timezone.utc)
+_NOW = datetime(2026, 11, 12, 3, 0, 0, tzinfo=UTC)
 
 
 def _stamp(when: datetime) -> str:

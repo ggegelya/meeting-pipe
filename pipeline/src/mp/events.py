@@ -21,7 +21,7 @@ import re
 import sys
 import tempfile
 from collections.abc import Callable, Iterable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -268,7 +268,7 @@ def emit(category: str, action: str, **attrs: Any) -> None:
     event still helps a postmortem.
     """
     record: dict[str, Any] = dict(attrs)
-    record["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    record["ts"] = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     record["category"] = category
     record["action"] = action
     try:

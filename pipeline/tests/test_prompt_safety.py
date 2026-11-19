@@ -4,7 +4,6 @@ from __future__ import annotations
 from mp.prompt_safety import UNTRUSTED_GUIDANCE, clean_person, wrap_untrusted
 from mp.schemas import ActionItem, MeetingSummary
 
-
 # ----- wrap_untrusted -----
 
 def test_wrap_fences_text_in_markers() -> None:

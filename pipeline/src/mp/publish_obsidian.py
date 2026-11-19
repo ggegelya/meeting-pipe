@@ -30,15 +30,15 @@ import logging
 import re
 import shutil
 import unicodedata
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from . import storage
-from .transcript_corrections import publish_text
 from .markdown import deeplink_stem, evidence_suffix
 from .publish_fs import date_from_stem, file_url
 from .schemas import MeetingSummary
+from .transcript_corrections import publish_text
 
 log = logging.getLogger("mp.publish_obsidian")
 
@@ -371,11 +371,11 @@ def _slugify(s: str) -> str:
 
 
 def _today_iso() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
+    return datetime.now(UTC).date().isoformat()
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _load_sidecar(p: Path) -> dict[str, Any] | None:

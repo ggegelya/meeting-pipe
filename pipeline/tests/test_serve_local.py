@@ -14,6 +14,8 @@ from mp.summarize_local import (
     DEFAULT_HOST,
     _loopback_only,
     build_server_command,
+)
+from mp.summarize_local import (
     main as serve_local_main,
 )
 

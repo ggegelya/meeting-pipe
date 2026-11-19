@@ -18,7 +18,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -252,7 +252,7 @@ def quarantine(path: Path, *, now: datetime | None = None) -> Path:
     """Move an unparseable store aside as `<name>.corrupt-<UTC yyyyMMdd-HHmmss>`,
     beside it, and return where it went (STOR9). The owner's bytes are kept
     whole; restoring them is a Finder move."""
-    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%d-%H%M%S")
+    stamp = (now or datetime.now(UTC)).strftime("%Y%m%d-%H%M%S")
     dest = path.with_name(f"{path.name}.corrupt-{stamp}")
     n = 1
     while dest.exists():

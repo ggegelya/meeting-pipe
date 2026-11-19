@@ -9,7 +9,14 @@ import json
 import logging
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from .prompt_safety import clean_due, clean_language, clean_person, clean_text
 
@@ -332,7 +339,7 @@ class MeetingSummary(BaseModel):
         return clean_text(v).strip()
 
     @classmethod
-    def validate_generated(cls, data: Any) -> "MeetingSummary":
+    def validate_generated(cls, data: Any) -> MeetingSummary:
         """Validate model output before it is written: the content floor applies (PIPE43), so an
         empty answer raises `ValidationError` into the caller's repair or failure path."""
         return cls.model_validate(data, context=GENERATED)
@@ -347,7 +354,7 @@ class MeetingSummary(BaseModel):
         return missing
 
     @model_validator(mode="after")
-    def _content_floor(self, info: ValidationInfo) -> "MeetingSummary":
+    def _content_floor(self, info: ValidationInfo) -> MeetingSummary:
         shortfall = self.content_shortfall()
         if not shortfall:
             return self
@@ -377,7 +384,7 @@ class MeetingSummary(BaseModel):
         return [cleaned for a in v if (cleaned := clean_person(a)) is not None]
 
     @model_validator(mode="after")
-    def _align_evidence(self) -> "MeetingSummary":
+    def _align_evidence(self) -> MeetingSummary:
         """Keep each section's anchor list exactly as long as the section it
         indexes, and drop keys that are not one of the three string sections.
 

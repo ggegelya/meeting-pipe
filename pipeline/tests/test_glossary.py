@@ -12,7 +12,6 @@ from pathlib import Path
 
 from mp.glossary import Glossary, load_glossary
 
-
 # --- exact substitution -----------------------------------------------------
 
 def test_exact_is_case_insensitive_and_whole_word():

@@ -1,6 +1,7 @@
 """Tests for the transcript chunking primitive (TECH-SUM1-PRIMITIVE)."""
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -53,7 +54,7 @@ def test_consecutive_windows_overlap() -> None:
     assert len(windows) > 1
     # The start of each window after the first lies inside its predecessor:
     # the overlap region is shared text, not a fresh cut.
-    for prev, nxt in zip(windows, windows[1:]):
+    for prev, nxt in zip(windows, windows[1:], strict=False):
         assert nxt.text[:10] in prev.text
 
 
@@ -104,7 +105,7 @@ def test_overlap_clamped_below_max_chars() -> None:
 
 def test_window_is_frozen() -> None:
     w = ChunkedWindow(index=0, text="x", is_first=True, is_last=True)
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         w.text = "y"  # type: ignore[misc]
 
 

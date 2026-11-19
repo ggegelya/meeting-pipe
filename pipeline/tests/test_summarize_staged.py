@@ -23,10 +23,9 @@ import pytest
 from mp import summarize_staged as staged
 from mp.evidence import segments_from_timestamped_markdown
 from mp.schemas import Evidence
-from mp.summarize_local import LocalSummaryClient
+from mp.summarize_local import LocalSummaryClient, LocalSummaryError
 
 from .test_summarize_local import _FakeHandler  # the same fake mlx_lm.server
-
 
 # ----- Fixtures -----
 
@@ -597,7 +596,7 @@ def test_the_toggle_off_keeps_the_single_pass_shape(staged_server, monkeypatch) 
     host, port, script = staged_server
     monkeypatch.delenv(staged.STAGED_ENV, raising=False)
     with LocalSummaryClient(host=host, port=port, manage_subprocess=False) as client:
-        with pytest.raises(Exception):
+        with pytest.raises(LocalSummaryError):
             # The scripted server only knows the staged prompts, so a single-pass
             # call reaching it is exactly what the assertion below detects.
             client.summarize(

@@ -7,7 +7,7 @@ spec), plus pins for the meta-sidecar consumers SEC25 already made safe.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -43,7 +43,7 @@ def test_doctor_reads_a_list_shaped_backup_marker_as_no_backup(
     marker = storage.backup_marker(tmp_path)
     marker.parent.mkdir(parents=True)
     marker.write_text("[1]")
-    doctor.check_last_backup(home=tmp_path, now=datetime(2026, 11, 18, tzinfo=timezone.utc))
+    doctor.check_last_backup(home=tmp_path, now=datetime(2026, 11, 18, tzinfo=UTC))
     assert "no `mp backup` has run" in capsys.readouterr().out
 
 

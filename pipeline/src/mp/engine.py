@@ -104,9 +104,7 @@ def _local_client(cfg: Config, model: str | None):
     reader can tell a decision from an omission (PIPE12; the adapter was the
     omission).
     """
-    from .summarize_local import LocalSummaryClient
-
-    from .summarize_local import DEFAULT_MAP_REDUCE_ABOVE_CHARS
+    from .summarize_local import DEFAULT_MAP_REDUCE_ABOVE_CHARS, LocalSummaryClient
 
     # PIPE32: the factory threads the configured endpoint, timeouts, the LOCAL16
     # floor (`mp ask` answers through here, and the 2026-07-29 incident that

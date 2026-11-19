@@ -9,16 +9,17 @@ import anthropic
 import httpx
 import pytest
 
-from mp import corrections, summarize as summarize_mod
+from mp import corrections
+from mp import summarize as summarize_mod
 from mp.config import Config, Recording
 from mp.markdown import render_summary_md
+from mp.schemas import ActionItem, MeetingSummary
 from mp.summarize import (
     _load_system_prompt,
     _prior_meeting_context,
     _summary_language_directive,
     summarize,
 )
-from mp.schemas import ActionItem, MeetingSummary
 
 
 def _make_summary() -> MeetingSummary:

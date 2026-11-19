@@ -502,7 +502,7 @@ def test_owner_choice_reports_the_evidence_and_no_label_text():
     assert owner.voiceprint_score == 1.0
     assert owner.runner_up_seconds == 27.0 and owner.runner_up_fraction == 0.9
     assert all(isinstance(v, (int, float, str, type(None))) for v in owner._asdict().values())
-    assert not any("Me" == v for v in owner._asdict().values())
+    assert not any(v == "Me" for v in owner._asdict().values())
 
 
 def test_no_mic_tier_and_no_owner_still_reports_a_none_choice():

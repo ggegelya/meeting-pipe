@@ -14,9 +14,9 @@ import logging
 import math
 import stat
 import threading
+from collections.abc import Iterable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Iterable
 from unittest.mock import patch
 
 import pytest
@@ -28,11 +28,13 @@ from mp.orchestrate import (
     PIPELINE_LOG_OWNER_ENV,
     _check_too_long,
     _configure_logging,
-    finalize_streamed_transcript,
     _will_summarize_locally,
     _write_manual_bundle,
-    main as orchestrate_main,
+    finalize_streamed_transcript,
     run_all,
+)
+from mp.orchestrate import (
+    main as orchestrate_main,
 )
 from mp.publish_router import EXIT_PUBLISH_FAILED
 from mp.roster import EMBEDDING_DIM, RosterStore
@@ -384,7 +386,7 @@ def _mic_channel(monkeypatch, verdicts: list[str]) -> None:
     monkeypatch.setattr("mp.diarize.is_stereo_recording", lambda w: True)
     monkeypatch.setattr(
         "mp.diarize.assign_speakers_by_channel",
-        lambda segments, w: [{**seg, "speaker": v} for seg, v in zip(segments, verdicts)],
+        lambda segments, w: [{**seg, "speaker": v} for seg, v in zip(segments, verdicts, strict=False)],
     )
 
 
@@ -939,14 +941,14 @@ class _FakeMlxHandler(BaseHTTPRequestHandler):
     def log_message(self, *_: object) -> None:
         pass
 
-    def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+    def do_GET(self) -> None:
         up = self.server.up  # type: ignore[attr-defined]
         if up and answer_health(self):
             return
         self.send_response(503)
         self.end_headers()
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
         schema = ((body.get("response_format") or {}).get("json_schema") or {}).get("name")
         self.server.requests.append(schema)  # type: ignore[attr-defined]

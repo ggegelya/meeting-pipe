@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from mp import doctor, orchestrate, storage, summarize as summarize_mod
+from mp import doctor, orchestrate, storage
+from mp import summarize as summarize_mod
 from mp.config import Config, Recording
 from mp.roster import EMBEDDING_DIM, RosterStore
 from mp.voiceprint import VoiceprintStore

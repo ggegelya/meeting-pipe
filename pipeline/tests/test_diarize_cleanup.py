@@ -511,7 +511,7 @@ def test_openai_cleanup_runs_end_to_end_in_json_mode(
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     sent: list[dict[str, Any]] = []
 
-    def fake_chat(self, messages, *, max_tokens, json_mode):  # noqa: ANN001
+    def fake_chat(self, messages, *, max_tokens, json_mode):
         sent.append({"messages": messages, "json_mode": json_mode})
         return _EDITS_JSON
 
@@ -531,7 +531,7 @@ def test_claude_cli_cleanup_runs_end_to_end(
 ) -> None:
     prompts: list[str] = []
 
-    def fake_run(self, prompt: str) -> str:  # noqa: ANN001
+    def fake_run(self, prompt: str) -> str:
         prompts.append(prompt)
         return "Here you go:\n" + _EDITS_JSON  # prose around it is tolerated
 

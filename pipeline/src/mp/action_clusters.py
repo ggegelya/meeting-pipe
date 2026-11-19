@@ -61,7 +61,7 @@ def _owners_compatible(a: str | None, b: str | None) -> bool:
     return not left or not right or left == right
 
 
-def _series_groups(actions: list["OpenAction"]) -> dict[str, list[int]]:
+def _series_groups(actions: list[OpenAction]) -> dict[str, list[int]]:
     """Indices bucketed by workflow, keeping only the workflows with something to
     merge. An action with no workflow has no series, so it never enters a bucket."""
     groups: dict[str, list[int]] = {}
@@ -73,7 +73,7 @@ def _series_groups(actions: list["OpenAction"]) -> dict[str, list[int]]:
 
 
 def cluster_actions(
-    actions: list["OpenAction"],
+    actions: list[OpenAction],
     *,
     threshold: float | None = None,
     embedder: Any | None = None,

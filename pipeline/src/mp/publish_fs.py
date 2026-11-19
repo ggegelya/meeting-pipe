@@ -27,14 +27,14 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from . import storage
-from .transcript_corrections import publish_text
 from .markdown import deeplink_stem, render_summary_md
 from .schemas import MeetingSummary
+from .transcript_corrections import publish_text
 
 log = logging.getLogger("mp.publish_fs")
 
@@ -129,7 +129,7 @@ def stem_from_summary(summary: MeetingSummary) -> str:
     # an ISO timestamp prefix so two consecutive summaries with the
     # same title do not collide.
     safe = "".join(c if c.isalnum() else "-" for c in summary.title.lower())[:60].strip("-")
-    return f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}-{safe or 'meeting'}"
+    return f"{datetime.now(UTC).strftime('%Y%m%d-%H%M')}-{safe or 'meeting'}"
 
 
 def file_url(p: Path) -> str:
@@ -164,7 +164,7 @@ def recorded_target_is_live(existing: dict[str, Any] | None, key: str, target: P
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def load_sidecar(p: Path) -> dict[str, Any] | None:

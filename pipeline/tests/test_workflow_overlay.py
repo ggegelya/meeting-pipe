@@ -24,8 +24,8 @@ from mp.workflow import MetaRead, apply_overrides, load_meta, read_meta
 _EDEADLK_NAME = errno.errorcode[errno.EDEADLK]
 
 
-def _write_meta(dir: Path, stem: str, data: dict) -> None:
-    (dir / f"{stem}.meta.json").write_text(json.dumps(data), encoding="utf-8")
+def _write_meta(directory: Path, stem: str, data: dict) -> None:
+    (directory / f"{stem}.meta.json").write_text(json.dumps(data), encoding="utf-8")
 
 
 # CI2: the cross-language contract fixtures. These committed files live next to

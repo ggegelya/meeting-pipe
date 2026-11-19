@@ -222,7 +222,7 @@ def main(argv: list[str]) -> int:
         from .action_clusters import cluster_actions
         for action, cluster in zip(actions, cluster_actions(
             actions, threshold=args.cluster_threshold
-        )):
+        ), strict=False):
             action.cluster = cluster
     actions.sort(key=_sort_key)
 

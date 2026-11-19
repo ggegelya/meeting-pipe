@@ -170,7 +170,7 @@ def verify_snapshot(path: Path) -> None:
         if isinstance(data, dict) and "auto_map" in data:
             raise SnapshotRefused(f"{path}: {name} declares auto_map (custom code); refusing to serve it")
     has_weights = False
-    for root, dirs, files in os.walk(path, followlinks=False):
+    for _root, dirs, files in os.walk(path, followlinks=False):
         for name in (*dirs, *files):
             if name.lower().endswith(_CODE_SUFFIXES):
                 raise SnapshotRefused(

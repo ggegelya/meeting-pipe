@@ -31,10 +31,11 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from . import events, storage
 
@@ -195,7 +196,7 @@ def read_run_sidecar(path: Path) -> dict[str, Any] | None:
 
 def _now_utc_iso() -> str:
     return (
-        datetime.now(timezone.utc)
+        datetime.now(UTC)
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z")
     )

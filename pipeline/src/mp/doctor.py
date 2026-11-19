@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
@@ -26,7 +26,6 @@ import httpx
 
 from . import cloudsync, reachability, resource_guard, run_attempt, storage, workflows
 from .config import CONFIG_PATH, KEYCHAIN_SERVICE, Config, load_secrets
-from .model_check import check_anthropic_model
 from .endpoints import (
     ANTHROPIC_API_BASE,
     ANTHROPIC_API_VERSION,
@@ -42,6 +41,7 @@ from .endpoints import (
     OPENAI_KEYS_URL,
     OPENAI_MODELS_PATH,
 )
+from .model_check import check_anthropic_model
 
 
 def _ok(msg: str) -> None:
@@ -827,7 +827,7 @@ def _parse_at(raw: object) -> datetime | None:
         when = datetime.fromisoformat(str(raw))
     except (TypeError, ValueError):
         return None
-    return when if when.tzinfo is not None else when.replace(tzinfo=timezone.utc)
+    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
 
 
 def check_last_backup(home: Path | None = None, now: datetime | None = None) -> None:
@@ -838,7 +838,7 @@ def check_last_backup(home: Path | None = None, now: datetime | None = None) -> 
     attempt failed, or when the last success is older than two of the schedule's intervals,
     since then the schedule is the backup and nobody is watching it run.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     interval_days = backup_agent_interval_days(home)
     marker = storage.backup_marker(home)
     data = storage.read_json_object(marker)

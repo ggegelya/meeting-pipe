@@ -28,7 +28,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from . import entry, providers, storage
+from . import entry, events, providers, storage
 from .config import (
     Config,
     effective_backend,
@@ -37,32 +37,33 @@ from .config import (
     zero_egress,
 )
 from .corrections import set_publish_state, write_empty_marker, write_run_sidecar
-from .transcript_quality import below_content_floor, speech_span_sec, transcript_issues, word_count
 from .diarize import (
-    apply_speaker_labels,
-    assign_speakers_by_channel,
     MicTier,
     analyze_mic_tier,
+    apply_speaker_labels,
+    assign_speakers_by_channel,
     is_stereo_recording,
     label_me_speaker,
     match_voiceprint,
     resolve_speaker_labels,
 )
-from .roster import RosterStore
-from .voiceprint import VoiceprintStore
-from . import events
 from .glossary import load_glossary
 from .markdown import render_markdown
 from .markers import flagged_moments_block
 from .publish_router import (
     EXIT_PUBLISH_FAILED,
-    fanout as publish_fanout,
     publish_failed,
     publish_failure_reason,
     publish_state,
     published_sinks,
 )
+from .publish_router import (
+    fanout as publish_fanout,
+)
+from .roster import RosterStore
 from .summarize import summarize
+from .transcript_quality import below_content_floor, speech_span_sec, transcript_issues, word_count
+from .voiceprint import VoiceprintStore
 
 log = logging.getLogger("mp.run_all")
 
@@ -106,7 +107,7 @@ class _ProgressHeartbeat:
         with self._lock:
             self._progress_at = self._clock()
 
-    def start(self) -> "_ProgressHeartbeat":
+    def start(self) -> _ProgressHeartbeat:
         events.set_progress_hook(self.mark_progress)
         self._thread.start()
         return self
@@ -548,7 +549,7 @@ def _close_shared(shared: Any) -> None:
 
 def _run_all_inner(
     wav: Path, cfg: Config, *, force_byo: bool,
-    heartbeat: "_ProgressHeartbeat | None" = None, backend: str | None = None,
+    heartbeat: _ProgressHeartbeat | None = None, backend: str | None = None,
 ) -> dict:
     def _stage(name: str) -> None:
         if heartbeat is not None:

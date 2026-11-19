@@ -27,8 +27,7 @@ import anthropic
 import httpx
 import pytest
 
-from mp.config import SAMPLING_TEMPERATURE, Config, MissingSecretError
-from mp.config import parse_local_endpoint
+from mp.config import SAMPLING_TEMPERATURE, Config, MissingSecretError, parse_local_endpoint
 from mp.summarize import AutoFallbackClient, _select_backend
 
 
@@ -364,10 +363,10 @@ def test_auto_falls_back_to_local_on_429_and_5xx(
         def __init__(self, **_: Any) -> None: ...
 
         @classmethod
-        def from_config(cls, _cfg: Any, **kw: Any) -> "_FakeLocal":
+        def from_config(cls, _cfg: Any, **kw: Any) -> _FakeLocal:
             return cls(**kw)
 
-        def __enter__(self) -> "_FakeLocal":
+        def __enter__(self) -> _FakeLocal:
             return self
 
         def __exit__(self, *_: Any) -> None: ...
@@ -1026,10 +1025,10 @@ def _auto_run_sidecar(
         def __init__(self, **_: Any) -> None: ...
 
         @classmethod
-        def from_config(cls, _cfg: Any, **kw: Any) -> "_FakeLocal":
+        def from_config(cls, _cfg: Any, **kw: Any) -> _FakeLocal:
             return cls(**kw)
 
-        def __enter__(self) -> "_FakeLocal":
+        def __enter__(self) -> _FakeLocal:
             return self
 
         def __exit__(self, *_: Any) -> None: ...

@@ -10,7 +10,15 @@ from unittest.mock import patch
 
 import pytest
 
-from mp import events, failure_details, finalize, merge_meetings, orchestrate, publish_from_paste, summarize
+from mp import (
+    events,
+    failure_details,
+    finalize,
+    merge_meetings,
+    orchestrate,
+    publish_from_paste,
+    summarize,
+)
 from mp.config import Config, MissingSecretError
 
 

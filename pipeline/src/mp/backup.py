@@ -55,7 +55,7 @@ import sys
 import tarfile
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -159,9 +159,7 @@ def backup_roots(cfg: Config, home: Path | None = None) -> list[Root]:
 def _should_include(path: Path, *, holds_audio: bool, include_audio: bool) -> bool:
     if path.name in EXCLUDED_NAMES:
         return False
-    if holds_audio and not include_audio and path.suffix.lower() in AUDIO_SUFFIXES:
-        return False
-    return True
+    return not (holds_audio and not include_audio and path.suffix.lower() in AUDIO_SUFFIXES)
 
 
 def _root_files(root: Root, *, include_audio: bool) -> Iterator[Path]:
@@ -605,7 +603,7 @@ def run_backup(
     now: datetime | None = None,
 ) -> BackupResult:
     """Write a dated archive into `destination`, stamp the marker, apply retention."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     destination = destination.expanduser()
     check_library(cfg)
     previous = _previous_library_files(_previous_backup(home), include_audio=include_audio)

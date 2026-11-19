@@ -101,7 +101,8 @@ def test_resolved_flag_round_trips_through_republish(tmp_path: Path) -> None:
     it), so the flag persists and the action is not duplicated."""
     from mp.config import Config as Cfg
     from mp.publish_fs import FilesystemPublisher
-    from mp.schemas import ActionItem, MeetingSummary as MS
+    from mp.schemas import ActionItem
+    from mp.schemas import MeetingSummary as MS
 
     out = tmp_path / "out"
     summary_json = tmp_path / "20260601-0900.summary.json"
@@ -247,7 +248,7 @@ def test_fanout_regulated_mode_issues_no_request(tmp_path: Path, monkeypatch: py
     # and trip the transport. (TECH-SEC2)
     import httpx
 
-    def _blocking_handle(self: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+    def _blocking_handle(self: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
         raise AssertionError(f"unexpected egress under regulated_mode: {request.url}")
 
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _blocking_handle)

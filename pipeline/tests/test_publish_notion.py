@@ -399,7 +399,7 @@ def test_post_pages_does_not_retry_on_502(tmp_path: Path, monkeypatch):
 
     _install_mock_transport(monkeypatch, handler)
 
-    with pytest.raises(Exception):
+    with pytest.raises(httpx.HTTPStatusError):
         publish(summary_path, cfg=_cfg())
 
     assert len(post_calls) == 1, (
@@ -425,7 +425,7 @@ def test_post_pages_does_not_retry_on_transport_error(tmp_path: Path, monkeypatc
 
     _install_mock_transport(monkeypatch, handler)
 
-    with pytest.raises(Exception):
+    with pytest.raises(httpx.ConnectTimeout):
         publish(summary_path, cfg=_cfg())
 
     assert len(post_calls) == 1, (

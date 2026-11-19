@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import storage
@@ -47,7 +47,7 @@ def record(
 ) -> None:
     """Write the attempt marker. Never raises."""
     payload = {
-        "at": (now or datetime.now(timezone.utc)).isoformat(),
+        "at": (now or datetime.now(UTC)).isoformat(),
         "outcome": outcome,
         "reason": (reason or "")[:REASON_CAP] or None,
         "trigger": run_trigger,

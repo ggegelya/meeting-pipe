@@ -22,7 +22,6 @@ from mp.diarize import (
 )
 from mp.markdown import render_markdown
 
-
 # --- render_markdown ---------------------------------------------------------
 
 

@@ -49,9 +49,9 @@ from pathlib import Path
 from . import actions as actions_mod
 from . import engine, entry, events, run_attempt, storage, visibility
 from .config import Config
-from .schemas import ActionItem, Confidence, ExtraSection, MeetingSummary
 from .markdown import render_summary_md
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
+from .schemas import ActionItem, Confidence, ExtraSection, MeetingSummary
 
 log = logging.getLogger("mp.digest")
 

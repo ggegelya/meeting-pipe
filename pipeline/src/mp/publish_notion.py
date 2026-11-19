@@ -33,7 +33,7 @@ import json
 import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -41,12 +41,12 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from . import entry, storage
-from .transcript_corrections import publish_text
 from .config import Config, require_env, zero_egress
 from .endpoints import NOTION_API_BASE, NOTION_API_VERSION, notion_page_url
-from .schemas import MeetingSummary
 from .prompt_safety import clean_text
+from .schemas import MeetingSummary
 from .services import MeetingPublisher
+from .transcript_corrections import publish_text
 
 log = logging.getLogger("mp.publish_notion")
 
@@ -391,7 +391,7 @@ def _properties(
     `_optional_properties`. Without them (the default), only the three base
     columns are written, byte-identical to a pre-PIPE5 publish.
     """
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = datetime.now(UTC).date().isoformat()
     props: dict[str, Any] = {
         "Name": {
             "title": [{"type": "text", "text": {"content": summary.title[:120]}}],
@@ -776,7 +776,7 @@ def _load_sidecar(p: Path) -> dict[str, Any] | None:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def main(argv: list[str]) -> int:
