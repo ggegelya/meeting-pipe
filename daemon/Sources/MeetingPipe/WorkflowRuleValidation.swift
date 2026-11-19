@@ -15,7 +15,7 @@ enum WorkflowRuleValidation {
         var message: String {
             switch self {
             case .regexDoesNotCompile(let pattern):
-                return "The title rule \"\(pattern)\" is not a valid regular expression."
+                return "The title pattern \"\(pattern)\" is not valid."
             }
         }
     }
@@ -39,7 +39,7 @@ enum WorkflowRuleValidation {
     /// misses records under the default workflow (the owner's decision, 2026-11-16).
     static func caption(for rule: WorkflowMatchingRule, ndaMode: Bool) -> String? {
         guard !rule.titleRegex.isEmpty else { return nil }
-        if !WorkflowMatcher.regexCompiles(rule.titleRegex) { return "Not a valid regular expression." }
+        if !WorkflowMatcher.regexCompiles(rule.titleRegex) { return WorkflowRuleTitle.invalidPatternCaption }
         if ndaMode {
             return "Meeting titles are usually unknown when recording starts, so this title rule may match nothing; a meeting it misses records under the default workflow."
         }

@@ -894,6 +894,8 @@ final class MeetingSessionController: @unchecked Sendable {
         )
         let resolvedWorkflow = resolution.workflow
         noteRoutingUncertainty(source: source, reason: resolution.reason)
+        // UX88: a stored title rule that does not compile never matches; say so once per rule.
+        RuleRegexReporter.shared.report(coordinator.workflowStore.workflows)
 
         // Resolve the capture mode (TECH-MIC4): regulated (global) or NDA
         // (per-workflow) takes the no-audio-at-rest gate; everything else

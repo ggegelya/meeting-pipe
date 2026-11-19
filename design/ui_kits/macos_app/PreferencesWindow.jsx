@@ -267,14 +267,13 @@ const PWRecordingPane = () => (
     <PWGroup label="Auto-record allowlist" footer="When the daemon detects audio from these apps, recording starts without showing the prompt. Picking Always for an app on the prompt adds it here; remove it to be asked again from the next meeting on.">
       <PWFullRow first>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <PWTag>us.zoom.xos</PWTag>
-          <PWTag>com.microsoft.teams2</PWTag>
+          <PWTag>Zoom</PWTag>
+          <PWTag>Microsoft Teams</PWTag>
         </div>
       </PWFullRow>
       <PWFullRow>
         <div style={{ display: "flex", gap: 8 }}>
-          <PWField placeholder="us.zoom.xos" mono/>
-          <PWSmallButton>Add</PWSmallButton>
+          <PWSmallButton>Add app…</PWSmallButton>
         </div>
       </PWFullRow>
     </PWGroup>

@@ -3,7 +3,8 @@ import SwiftUI
 
 struct RecordingSectionView: View {
     @ObservedObject var store: ConfigStore
-    @State private var newConsentBundleID: String = ""
+    /// UX88: allowlist bundle id to installed app name, for the tags.
+    @State private var consentAppNames: [String: String] = [:]
     /// UX89: the library root changes only through this store's confirmed move or switch.
     @StateObject private var stats: StorageStatsStore
 
@@ -62,34 +63,48 @@ struct RecordingSectionView: View {
                             .foregroundStyle(Color(MPColors.fgSubtle))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
+                        // UX88: tags by app name; the stored value is still the bundle id.
                         WrappingHStack(items: store.autoConsentApps) { bundleID in
-                            SettingsTag(bundleID) {
+                            SettingsTag(consentAppNames[bundleID] ?? bundleID) {
                                 store.removeAutoConsentApp(bundleID)
                             }
+                            .help(bundleID)
                         }
                     }
                 }
                 SettingsFullRow {
-                    HStack(spacing: 8) {
-                        TextField("us.zoom.xos", text: $newConsentBundleID)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.body, design: .monospaced))
-                            .onSubmit(addBundle)
-                        Button("Add", action: addBundle)
-                            .buttonStyle(.mpGhost)
-                            .disabled(newConsentBundleID.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
+                    // UX88: the shared app picker in place of a raw bundle-id field. Preferences
+                    // holds no meeting list, so it offers the registry's apps, the ones already
+                    // here, and Other app…; the workflow editor adds the library's sources.
+                    MeetingAppPicker(
+                        selection: nil,
+                        placeholder: "Add app\u{2026}",
+                        librarySources: [:],
+                        current: store.autoConsentApps,
+                        excluding: Set(store.autoConsentApps),
+                        onPick: { picked in
+                            guard !picked.isEmpty else { return }
+                            store.addAutoConsentApp(picked)
+                        }
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } footer: {
                 Text("When the daemon detects audio from these apps, recording starts without showing the prompt. Picking Always for an app on the prompt adds it here; remove it to be asked again from the next meeting on.")
             }
         }
         .libraryRootDialogs(stats)
+        .onAppear { refreshConsentAppNames() }
+        .onChange(of: store.autoConsentApps) { _, _ in refreshConsentAppNames() }
     }
 
-    private func addBundle() {
-        store.addAutoConsentApp(newConsentBundleID)
-        newConsentBundleID = ""
+    /// Resolved once per change of the list, never per render (`InstalledApps` caches).
+    private func refreshConsentAppNames() {
+        var names: [String: String] = [:]
+        for id in store.autoConsentApps {
+            if let name = InstalledApps.name(for: id) { names[id] = name }
+        }
+        consentAppNames = names
     }
 }
 

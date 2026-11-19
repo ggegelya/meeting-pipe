@@ -83,6 +83,9 @@ struct WorkflowEditor: View {
     /// tests and any host with no `ConfigStore` behind it, which then show no
     /// captions rather than guessing.
     var publishTargets: PublishTargets? = nil
+    /// UX88: the apps the library has seen as meeting sources, bundle id to display name, offered
+    /// by the rule row's app picker beside the registry's apps. Empty in headless hosts.
+    var librarySources: [String: String] = [:]
     /// Notion DB list for the picker (TECH-B8). Held at editor level so the picker is populated on open, not only when Notion is toggled on.
     @StateObject private var notionDBs = NotionDatabaseList()
 
@@ -92,6 +95,10 @@ struct WorkflowEditor: View {
     @State private var contextPrompt: String = ""
     @State private var isDefault: Bool = false
     @State private var matchingRules: [WorkflowMatchingRule] = []
+    /// UX88: the rules showing **Use a pattern**. Seeded once in `hydrate` from what is stored
+    /// (`WorkflowRuleTitle.opensInPatternMode`) and changed only by the toggle, so typing a plain
+    /// word into a pattern field never flips the row back to "contains".
+    @State private var patternRules: Set<UUID> = []
     @State private var extraSections: [WorkflowExtraSection] = []
     @State private var sinks = SinkSelection()
     @State private var backend: WorkflowBackend? = nil
@@ -326,19 +333,41 @@ struct WorkflowEditor: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         } footer: {
-            Text("Bundle id matches the meeting app (e.g. `us.zoom.xos`, `com.microsoft.teams2`). Title regex is case-insensitive and tests the window title; useful to split a single browser into per-tab workflows.")
+            Text("Pick the app the meeting runs in, or Any app. Title contains matches part of the meeting's window title, ignoring case. Use a pattern takes a regular expression instead, which is how one browser is split into per-tab workflows.")
         }
     }
 
+    /// UX88: an app picker in place of a raw bundle-id field, and "title contains" in place of a raw
+    /// regex, stored escaped (`WorkflowRuleTitle`) so `title_regex` and the matcher are unchanged.
     private func matchingRuleRow(id: UUID) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            VStack(spacing: 4) {
-                TextField("bundle id", text: ruleBinding(id, \.bundleID))
-                    .textFieldStyle(.roundedBorder)
-                    .font(.mpTextBase.monospaced())
-                TextField("title regex (optional)", text: ruleBinding(id, \.titleRegex))
-                    .textFieldStyle(.roundedBorder)
-                    .font(.mpTextBase.monospaced())
+        let isPattern = patternRules.contains(id)
+        return HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text("App")
+                        .font(.mpTextSM)
+                        .foregroundStyle(Color(MPColors.fgMuted))
+                    MeetingAppPicker(
+                        selection: matchingRules.first(where: { $0.id == id })?.bundleID ?? "",
+                        placeholder: "Any app",
+                        librarySources: librarySources,
+                        current: matchingRules.map(\.bundleID),
+                        offersAnyApp: true,
+                        onPick: { picked in ruleBinding(id, \.bundleID).wrappedValue = picked }
+                    )
+                    Spacer(minLength: 0)
+                    Toggle("Use a pattern", isOn: patternBinding(id))
+                        .toggleStyle(.checkbox)
+                        .font(.mpTextSM)
+                }
+                if isPattern {
+                    TextField("title pattern (regular expression)", text: ruleBinding(id, \.titleRegex))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.mpTextBase.monospaced())
+                } else {
+                    TextField("title contains (optional)", text: containsBinding(id))
+                        .textFieldStyle(.roundedBorder)
+                }
                 // SEC21: an invalid regex, or a title rule an NDA workflow leans on, says so here.
                 if let rule = matchingRules.first(where: { $0.id == id }),
                    let caption = WorkflowRuleValidation.caption(for: rule, ndaMode: ndaMode) {
@@ -355,6 +384,36 @@ struct WorkflowEditor: View {
             }
             .buttonStyle(.borderless)
         }
+    }
+
+    /// UX88: the "title contains" field. Shows the literal a stored pattern stands for, and stores
+    /// what is typed escaped, so brackets and dots in a pasted title match themselves.
+    private func containsBinding(_ id: UUID) -> Binding<String> {
+        let stored = ruleBinding(id, \.titleRegex)
+        return Binding(
+            get: { WorkflowRuleTitle.literalText(of: stored.wrappedValue) ?? stored.wrappedValue },
+            set: { stored.wrappedValue = WorkflowRuleTitle.storedPattern(contains: $0) }
+        )
+    }
+
+    /// UX88: **Use a pattern**. On, the stored text is shown and edited as the regex it is. Off, a
+    /// stored pattern that is not an escaped literal is re-stored as the literal of what the field
+    /// showed, so the row means what it now says.
+    private func patternBinding(_ id: UUID) -> Binding<Bool> {
+        Binding(
+            get: { patternRules.contains(id) },
+            set: { on in
+                if on {
+                    patternRules.insert(id)
+                } else {
+                    patternRules.remove(id)
+                    let stored = ruleBinding(id, \.titleRegex)
+                    if !WorkflowRuleTitle.isLiteral(stored.wrappedValue) {
+                        stored.wrappedValue = WorkflowRuleTitle.storedPattern(contains: stored.wrappedValue)
+                    }
+                }
+            }
+        )
     }
 
     /// Id-keyed binding into `matchingRules`, so a row never holds a positional
@@ -746,6 +805,7 @@ struct WorkflowEditor: View {
         contextPrompt = workflow.contextPrompt
         isDefault = workflow.isDefault
         matchingRules = workflow.matchingRules
+        patternRules = Set(workflow.matchingRules.filter { WorkflowRuleTitle.opensInPatternMode($0.titleRegex) }.map(\.id))
         extraSections = workflow.extraSections
         sinks = SinkSelection.from(workflow.sinks)
         backend = workflow.backend

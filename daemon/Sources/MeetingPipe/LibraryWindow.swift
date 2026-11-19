@@ -825,7 +825,8 @@ struct LibraryRootView: View {
                 WorkflowEditorSheet(workflow: wf, store: store,
                                     localModelPreflight: model.coordinator?.localModelPreflight,
                                     onOpenVocabulary: openVocabularyPreferences,
-                                    publishTargets: model.coordinator?.publishTargets) {
+                                    publishTargets: model.coordinator?.publishTargets,
+                                    librarySources: sourceDisplayNames) {
                     editingWorkflow = nil
                 }
             }
@@ -835,7 +836,8 @@ struct LibraryRootView: View {
                 NewWorkflowSheet(store: store,
                                  localModelPreflight: model.coordinator?.localModelPreflight,
                                  onOpenVocabulary: openVocabularyPreferences,
-                                 publishTargets: model.coordinator?.publishTargets) { newID in
+                                 publishTargets: model.coordinator?.publishTargets,
+                                 librarySources: sourceDisplayNames) { newID in
                     isCreatingWorkflow = false
                     // Jump to the new workflow's scope so the rail + inspector confirm the action.
                     if let id = newID { scope = .workflow(id) }
@@ -1343,6 +1345,8 @@ private struct WorkflowEditorSheet: View {
     var onOpenVocabulary: ((String) -> Void)? = nil
     /// UX45: passed through to the editor's unconfigured-sink caption.
     var publishTargets: PublishTargets? = nil
+    /// UX88: passed through to the rule row's app picker.
+    var librarySources: [String: String] = [:]
     let onClose: () -> Void
 
     /// Live mirror of the editor's name field (TECH-UI-7). Nil until the editor
@@ -1367,7 +1371,7 @@ private struct WorkflowEditorSheet: View {
             .padding(.vertical, 12)
             Divider()
             // Save commits and closes; Cancel above discards unsaved edits.
-            WorkflowEditor(workflow: workflow, store: store, onNameChange: { liveName = $0 }, onCommit: onClose, localModelPreflight: localModelPreflight, onOpenVocabulary: onOpenVocabulary, publishTargets: publishTargets)
+            WorkflowEditor(workflow: workflow, store: store, onNameChange: { liveName = $0 }, onCommit: onClose, localModelPreflight: localModelPreflight, onOpenVocabulary: onOpenVocabulary, publishTargets: publishTargets, librarySources: librarySources)
                 .padding(20)
         }
         .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
@@ -1383,6 +1387,8 @@ private struct NewWorkflowSheet: View {
     var onOpenVocabulary: ((String) -> Void)? = nil
     /// UX45: passed through to the editor's unconfigured-sink caption.
     var publishTargets: PublishTargets? = nil
+    /// UX88: passed through to the rule row's app picker.
+    var librarySources: [String: String] = [:]
     let onClose: (Workflow.ID?) -> Void
     @State private var stub: Workflow? = nil
     /// Live name from the (blank-started) editor field (TECH-UI-7); header reads
@@ -1418,7 +1424,7 @@ private struct NewWorkflowSheet: View {
                     // the rail routes to it. Delete closes on nil instead (UX30): the
                     // stub is gone, and routing the rail to a workflow scope whose id no
                     // longer exists is the same stranding in a different place.
-                    WorkflowEditor(workflow: s, store: store, startsBlank: true, onNameChange: { liveName = $0 }, onCommit: { onClose(s.id) }, onDelete: { onClose(nil) }, localModelPreflight: localModelPreflight, onOpenVocabulary: onOpenVocabulary, publishTargets: publishTargets)
+                    WorkflowEditor(workflow: s, store: store, startsBlank: true, onNameChange: { liveName = $0 }, onCommit: { onClose(s.id) }, onDelete: { onClose(nil) }, localModelPreflight: localModelPreflight, onOpenVocabulary: onOpenVocabulary, publishTargets: publishTargets, librarySources: librarySources)
                         .padding(20)
                 }
             } else {

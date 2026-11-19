@@ -79,7 +79,7 @@ final class WorkflowFailClosedTests: XCTestCase {
     }
 
     func test_theEditorCaptions() {
-        XCTAssertEqual(WorkflowRuleValidation.caption(for: WorkflowMatchingRule(titleRegex: "(["), ndaMode: false), "Not a valid regular expression.")
+        XCTAssertEqual(WorkflowRuleValidation.caption(for: WorkflowMatchingRule(titleRegex: "(["), ndaMode: false), "This pattern is not valid.")
         XCTAssertNotNil(WorkflowRuleValidation.caption(for: WorkflowMatchingRule(titleRegex: "acme"), ndaMode: true))
         XCTAssertNil(WorkflowRuleValidation.caption(for: WorkflowMatchingRule(titleRegex: "acme"), ndaMode: false))
         XCTAssertNil(WorkflowRuleValidation.caption(for: WorkflowMatchingRule(bundleID: "us.zoom.xos"), ndaMode: true))

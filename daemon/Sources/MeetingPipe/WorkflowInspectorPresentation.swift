@@ -160,7 +160,8 @@ struct WorkflowInspectorPresentation: Equatable {
         }
 
         if !titles.isEmpty {
-            let quoted = titles.map { "\"\($0)\"" }
+            // UX88: a "title contains" rule is stored escaped; quote what the person typed.
+            let quoted = titles.map { "\"\(WorkflowRuleTitle.literalText(of: $0) ?? $0)\"" }
             // "must" is only honest when every rule carries a title rule; with a
             // mix, some meetings match on the app alone.
             if rules.allSatisfy({ !$0.titleRegex.isEmpty }) {
