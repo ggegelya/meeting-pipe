@@ -109,7 +109,7 @@ To see where you stand at any time, click the menu-bar icon, open **Preferences*
 
 ## Step 5: Confirm it is alive
 
-The menu-bar icon reading **MeetingPipe: Idle** is the first sign it works. For a full check you never need a terminal: click the icon, open **Preferences ▸ Integrations**, and click **Run doctor…**. It runs the app's own self-check (permissions, per-app reachability) followed by the credential and network checks, and shows both in one window. At this stage expect it to flag missing keys and a missing Notion database, which the next steps fix; what you want to see is that it runs at all and that the model and permission checks pass.
+The menu-bar icon reading **MeetingPipe: Idle** is the first sign it works. For a full check you never need a terminal: click the icon, open **Preferences ▸ Integrations**, and click **Run doctor…**. It runs the app's own self-check (permissions, per-app reachability) followed by the credential and network checks, and shows both in one window. At this stage expect it to flag the key and the Notion database your default workflow needs (Anthropic and Notion, unless you changed them), which the next steps fix; what you want to see is that it runs at all and that the model and permission checks pass.
 
 The menu bar also shows a **Finish setup** row for as long as anything is still missing: a key, a Notion database, a permission, or the on-device model. Each item there links straight to its fix, and the whole row disappears once you are set up. It is the quickest answer to "am I done?".
 
@@ -172,7 +172,7 @@ The installer did create a config file at `~/.config/meeting-pipe/config.toml` f
 sinks = ["obsidian"]
 ```
 
-`sinks` takes a list, so `["notion", "obsidian"]` writes to both, and each is independent: if one fails the other still lands. Most changes take effect on the next recording; a few need the app relaunched, and the comments say which. When you are done, re-run the doctor from **Preferences ▸ Integrations ▸ Run doctor…** and it should come up clean.
+`sinks` takes a list, so `["notion", "obsidian"]` writes to both, and each is independent: if one fails the other still lands. Most changes take effect on the next recording; a few need the app relaunched, and the comments say which. When you are done, re-run the doctor from **Preferences ▸ Integrations ▸ Run doctor…** and it should come up clean: no `[FAIL]` line. It asks only for what your workflows use, so a key or a Notion token nothing needs is reported as "not needed by any workflow" rather than failed, and the menu bar's **Finish setup** row lists exactly the same gaps.
 
 ## Step 9: Record your first meeting
 

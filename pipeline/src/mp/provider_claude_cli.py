@@ -51,7 +51,8 @@ CLAUDE_BINARY = "claude"
 # Where the `claude` binary may live when it is not on a non-login spawn's PATH.
 # `~/.local/bin` is the standalone-installer default; the others are common. Searched
 # before PATH (SEC17).
-_FALLBACK_DIRS = ("~/.local/bin", "~/.claude/local", "/opt/homebrew/bin", "/usr/local/bin")
+# Public since UX107: the Finish setup checklist mirrors this list (reachability-golden.json).
+CLAUDE_SEARCH_DIRS = ("~/.local/bin", "~/.claude/local", "/opt/homebrew/bin", "/usr/local/bin")
 
 # `claude -p` starts a full agent session; a summary is one turn but the model
 # can be slow, so allow a generous wall-clock. The daemon watchdog is the hard
@@ -86,7 +87,7 @@ def find_claude() -> str | None:
     PATH. PATH stays as the last resort for an install under nvm or a
     custom prefix; the path used is logged once per process either way.
     """
-    for d in _FALLBACK_DIRS:
+    for d in CLAUDE_SEARCH_DIRS:
         cand = Path(os.path.expanduser(d)) / CLAUDE_BINARY
         if cand.is_file() and os.access(cand, os.X_OK):
             return _note_claude(str(cand), "fixed install dir")

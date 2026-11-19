@@ -253,3 +253,12 @@ def test_overlay_reader_drops_what_swift_drops() -> None:
         assert case["read_labels"] == {}
         assert case["read_segments"] == {}
         assert case["changed"] is False
+
+
+def test_reachability_fixture_matches_the_table() -> None:
+    """UX107: the table `mp doctor` reads and the gaps it yields, replayed by Swift's
+    `SetupChecklistTests`."""
+    assert _generator().gen_reachability() == _committed("reachability-golden.json"), (
+        "reachability-golden.json is stale: run "
+        "`cd pipeline && uv run python ../scripts/gen_contract_fixtures.py` and commit the result"
+    )

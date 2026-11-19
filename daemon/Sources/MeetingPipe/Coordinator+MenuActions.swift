@@ -31,6 +31,12 @@ extension Coordinator {
         guideWindow.show()
     }
 
+    /// UX107: Finish setup's "Install Claude Code" row opens the Guide at the recipe that says how.
+    @objc func menuInstallClaudeCode() {
+        MainActor.assumeIsolated { GuideJumpRequest.shared.heading = GuideJumpRequest.installClaudeCode }
+        guideWindow.show()
+    }
+
     /// Run the guided tour over the app's own windows (FEAT15).
     ///
     /// Started from a menu item and never on launch. The deferral this reverses
@@ -313,18 +319,27 @@ extension Coordinator {
             return (center.microphone, center.screenRecording, center.accessibility, center.notificationsOff)
         }
         let globalBackend = configStore?.summarizationBackend ?? "anthropic"
+        let globalNotionDatabaseId = configStore?.notionDatabaseId ?? ""
         let workflows = workflowStore.workflows
+        let routes = SetupChecklist.workflowRoutes(
+            workflows, globalBackend: globalBackend, globalNotionDatabaseId: globalNotionDatabaseId
+        )
+        // A handful of stats, and only when some route summarizes with Claude CLI.
+        let usesClaudeCLI = (workflows.isEmpty ? [globalBackend] : routes.backends).contains("claude_cli")
         return SetupChecklist.Inputs(
             regulatedMode: configStore?.regulatedMode ?? false,
             globalBackend: globalBackend,
             globalSinks: configStore?.outputSinks ?? ["notion"],
             // A nil backend pin inherits the global backend; resolve it here so
             // the pure model never has to know about inheritance.
-            workflowBackends: workflows.map { $0.effectiveBackend?.rawValue ?? globalBackend },
-            workflowSinks: workflows.map { $0.effectiveSinkTypeNames },
+            workflowBackends: routes.backends,
+            workflowSinks: routes.sinks,
             anthropicKeyPresent: secretsStore.map { !$0.anthropicAPIKey.isEmpty } ?? true,
+            openaiKeyPresent: secretsStore.map { !$0.openaiAPIKey.isEmpty } ?? true,
+            claudeBinaryPresent: usesClaudeCLI ? ClaudeBinaryLocator.isInstalled() : true,
             notionTokenPresent: secretsStore.map { !$0.notionToken.isEmpty } ?? true,
             notionDatabaseIdPresent: configStore.map { !$0.notionDatabaseId.isEmpty } ?? true,
+            workflowNotionDatabasePresent: routes.notionDatabasePresent,
             localModelMissing: localModelPreflight.isModelMissing(),
             hasPermissionIssue: StatusBarModel.hasPendingPermissionIssue(.init(
                 microphone: mic,

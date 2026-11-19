@@ -24,7 +24,7 @@ from typing import NamedTuple
 
 import httpx
 
-from . import cloudsync, resource_guard, run_attempt, storage, workflows
+from . import cloudsync, reachability, resource_guard, run_attempt, storage, workflows
 from .config import CONFIG_PATH, KEYCHAIN_SERVICE, Config, load_secrets
 from .model_check import check_anthropic_model
 from .endpoints import (
@@ -62,27 +62,28 @@ def _info(msg: str) -> None:
 
 # ---------- secrets (macOS Keychain) ----------------------------------------
 
-def check_secrets() -> dict[str, bool]:
-    """Verify the required API tokens are present in the macOS Keychain (SEC8). Returns
-    {name: present-and-non-empty}.
+def check_secrets(needed: set[str] | None = None) -> dict[str, bool]:
+    """Report the API tokens in the macOS Keychain (SEC8). Returns {name: present-and-non-empty}.
+
+    UX107: a missing token is a FAIL only when a backend or sink in use needs it
+    (`reachability.required`, the table the Finish setup checklist reads too); otherwise
+    it is an info line. `needed` is that set of gap ids; None (config unreadable)
+    falls back to the defaults' needs, an Anthropic key and a Notion token.
 
     HF_TOKEN was required when diarization ran on pyannote (HF-gated TOS).
     Diarization now runs in Swift via FluidAudio, whose models live on a
     public HuggingFace mirror that doesn't require auth. HF_TOKEN remains
-    optional and is surfaced when present so existing setups don't get a
-    confusing missing-secret warning.
+    optional and is surfaced when present.
     """
     print(f"\n== secrets ==  (macOS Keychain: {KEYCHAIN_SERVICE})")
-    required = ("ANTHROPIC_API_KEY", "NOTION_TOKEN")
-    optional = ("HF_TOKEN", "OPENAI_API_KEY")
-    _optional_reason = {
-        "HF_TOKEN": "only used if you opt back into pyannote",
-        "OPENAI_API_KEY": "only used when summarization.backend = openai",
-    }
+    if needed is None:
+        needed = {reachability.ANTHROPIC_KEY, reachability.NOTION_TOKEN}
+    required = {acct for gap, acct in reachability.SECRET_ACCOUNT.items() if gap in needed}
+    keys = ("ANTHROPIC_API_KEY", "NOTION_TOKEN", "OPENAI_API_KEY", "HF_TOKEN")
     load_secrets()
     from . import config
     presence: dict[str, bool] = {}
-    for key in required + optional:
+    for key in keys:
         val = os.environ.get(key, "")
         present = bool(val) and not val.startswith(("YOUR_", "PUT_", "REPLACE_", "<"))
         presence[key] = present
@@ -94,8 +95,10 @@ def check_secrets() -> dict[str, bool]:
             (_fail if key in required else _info)(str(config._UNREADABLE_SECRETS[key]))
         elif key in required:
             _fail(f"{key} not in Keychain; set it in the daemon's Preferences or re-run scripts/install.sh")
+        elif key == "HF_TOKEN":
+            _info("HF_TOKEN not set (optional, only used if you opt back into pyannote)")
         else:
-            _info(f"{key} not set (optional — {_optional_reason.get(key, 'optional')})")
+            _info(f"{key} not set; not needed by any workflow")
     return presence
 
 
@@ -126,8 +129,6 @@ def check_config() -> Config | None:
         _info(f"summarization.local_endpoint = {cfg.summarization.local_endpoint}")
     _info(f"notion.database_id = {cfg.notion.database_id or '(empty)'}")
     _info(f"modes.regulated_mode = {cfg.modes.regulated_mode}")
-    if not cfg.notion.database_id and not cfg.modes.regulated_mode:
-        _warn("notion.database_id is empty AND regulated_mode is off — Notion publish will fail")
     if cfg.modes.regulated_mode and cfg.summarization.backend != "local":
         _info(
             f"regulated_mode=true overrides summarization.backend "
@@ -138,10 +139,14 @@ def check_config() -> Config | None:
 
 # ---------- Anthropic ------------------------------------------------------
 
-def check_anthropic(present: bool, cfg: Config | None = None) -> None:
+def check_anthropic(present: bool, cfg: Config | None = None, needed: bool = True) -> None:
     print("\n== Anthropic API ==")
+    if not needed:
+        _info("no workflow summarizes with Anthropic; skipping live check")
+        return
     if not present:
-        _fail("ANTHROPIC_API_KEY missing — skipping live check")
+        # The secrets section already failed it (UX107: one FAIL per gap).
+        _info("ANTHROPIC_API_KEY missing, see the secrets section; skipping live check")
         _info(f"get one at: {ANTHROPIC_CONSOLE_KEYS_URL}")
         return
     api_key = os.environ["ANTHROPIC_API_KEY"]
@@ -165,7 +170,9 @@ def check_anthropic(present: bool, cfg: Config | None = None) -> None:
         _fail(f"network error reaching api.anthropic.com: {e}")
         return
     if resp.status_code == 200:
-        _ok("API key valid, billable account")
+        # F180: this proves the key against the probe model only; the configured
+        # model is the next line's check.
+        _ok(f"API key valid, billable account (probed with {ANTHROPIC_DOCTOR_PROBE_MODEL})")
     elif resp.status_code in (401, 403):
         _fail(f"key rejected: HTTP {resp.status_code} — {resp.text[:200]}")
         return
@@ -182,8 +189,9 @@ def _check_configured_anthropic_model(api_key: str, cfg: Config | None) -> None:
     if cfg is None:
         return
     model = cfg.summarization.model
-    if cfg.summarization.backend not in {"anthropic", "auto"}:
-        _info(f"summarization.model = {model} is not used by backend {cfg.summarization.backend}")
+    in_use = reachability.backends_in_use(reachability.config_routes(cfg), cfg.modes.regulated_mode)
+    if not in_use & {"anthropic", "auto"}:
+        _info(f"summarization.model = {model} is not used by any workflow's backend")
         return
     verdict = check_anthropic_model(model, api_key)
     if verdict == "found":
@@ -196,19 +204,23 @@ def _check_configured_anthropic_model(api_key: str, cfg: Config | None) -> None:
 
 # ---------- claude CLI (PROV1) ---------------------------------------------
 
-def check_claude_cli(cfg: Config | None) -> None:
+def check_claude_cli(cfg: Config | None, needed: bool | None = None) -> None:
     """Preflight the `claude_cli` backend: binary presence + version, no live
     call (auth rides Claude Code and is verified on first use). A local probe, so
-    it is egress-free and runs even under regulated_mode."""
+    it is egress-free and runs even under regulated_mode. `needed` is whether any
+    workflow summarizes with claude_cli after the zero-egress clamp (UX107); None
+    reads it from the global backend alone."""
     print("\n== claude CLI (claude_cli backend) ==")
     from .provider_claude_cli import find_claude
     backend = cfg.summarization.backend if cfg else "?"
+    if needed is None:
+        needed = backend == "claude_cli" and not (cfg is not None and cfg.modes.regulated_mode)
     binary = find_claude()
     if binary is None:
-        if backend == "claude_cli":
-            _fail("`claude` not found but summarization.backend = claude_cli; install Claude Code")
+        if needed:
+            _fail("`claude` not found but a workflow summarizes with Claude CLI; install Claude Code")
         else:
-            _info("`claude` not found (only needed when summarization.backend = claude_cli)")
+            _info("`claude` not found (only needed when a workflow summarizes with Claude CLI)")
         return
     version: str | None = None
     try:
@@ -225,16 +237,21 @@ def check_claude_cli(cfg: Config | None) -> None:
 
 # ---------- OpenAI (PROV1) -------------------------------------------------
 
-def check_openai(present: bool, cfg: Config | None) -> None:
+def check_openai(present: bool, cfg: Config | None, needed: bool | None = None) -> None:
     """Live check for the `openai` backend: an unbilled `GET /models` confirms the
-    key. Skipped under regulated_mode by the caller (it egresses)."""
+    key. Skipped under regulated_mode by the caller (it egresses). `needed` is
+    whether any workflow summarizes with openai (UX107); None reads the global
+    backend alone."""
     print("\n== OpenAI API (openai backend) ==")
     backend = cfg.summarization.backend if cfg else "?"
+    if needed is None:
+        needed = backend == "openai"
     if not present:
-        if backend == "openai":
-            _fail("OPENAI_API_KEY missing but summarization.backend = openai — skipping live check")
+        if needed:
+            # The secrets section already failed it (UX107: one FAIL per gap).
+            _info("OPENAI_API_KEY missing, see the secrets section; skipping live check")
         else:
-            _info("OPENAI_API_KEY not set (only needed when summarization.backend = openai)")
+            _info("OPENAI_API_KEY not set (only needed when a workflow summarizes with OpenAI)")
         _info(f"create a key at: {OPENAI_KEYS_URL}")
         return
     api_key = os.environ["OPENAI_API_KEY"]
@@ -262,7 +279,9 @@ def _check_configured_openai_model(resp: httpx.Response, cfg: Config | None) -> 
     """PIPE28: the list the key check already fetched says whether `openai_model` is on it. An
     empty or unreadable list proves nothing (a compatible gateway may not implement it), so only
     a list that is there and lacks the id is a failure."""
-    if cfg is None or cfg.summarization.backend != "openai":
+    if cfg is None:
+        return
+    if "openai" not in reachability.backends_in_use(reachability.config_routes(cfg), cfg.modes.regulated_mode):
         return
     model = cfg.summarization.openai_model
     try:
@@ -279,10 +298,30 @@ def _check_configured_openai_model(resp: httpx.Response, cfg: Config | None) -> 
 
 # ---------- Notion ---------------------------------------------------------
 
-def check_notion(present: bool, cfg: Config | None) -> None:
+def check_notion(
+    present: bool,
+    cfg: Config | None,
+    routes: list[reachability.Route] | None = None,
+) -> None:
+    """The Notion token, then every database a workflow publishes to (UX107).
+
+    `routes` defaults to the workflows on this Mac. A route whose own id is empty
+    falls back to the global `notion.database_id`; with that empty too it is a FAIL
+    whether or not a token is set, since nothing can publish there. The live probes
+    run only with a token."""
     print("\n== Notion API ==")
+    regulated = bool(cfg and cfg.modes.regulated_mode)
+    if routes is None:
+        routes = reachability.config_routes(cfg) if cfg else []
+    if reachability.NOTION_TOKEN not in reachability.required(routes, regulated):
+        _info("no workflow publishes to Notion; skipping live check")
+        return
+    global_db = cfg.notion.database_id if cfg else ""
+    for name in reachability.notion_routes_without_database(routes, regulated, global_db):
+        _fail(f"{name} publishes to Notion but has no database id, and notion.database_id is empty")
+        _info("choose one in the workflow's editor, or in Preferences > Integrations")
     if not present:
-        _fail("NOTION_TOKEN missing — skipping live check")
+        _info("NOTION_TOKEN missing, see the secrets section; skipping live check")
         _info(f"create an integration at: {NOTION_INTEGRATIONS_URL}")
         return
     token = os.environ["NOTION_TOKEN"]
@@ -301,14 +340,23 @@ def check_notion(present: bool, cfg: Config | None) -> None:
     name = (me.json().get("bot", {}) or {}).get("workspace_name") or me.json().get("name") or "(unnamed)"
     _ok(f"token valid — integration: {name}")
 
-    if not cfg or not cfg.notion.database_id:
-        _warn("skipping database check — notion.database_id is empty in config.toml")
-        return
-    db_id = cfg.notion.database_id
+    # Each distinct database a workflow reaches, own id or the global fallback.
+    db_ids: list[str] = []
+    for route in routes:
+        if reachability.NOTION_DATABASE not in reachability.route_needs(route, regulated):
+            continue
+        db_id = route.notion_database_id or global_db
+        if db_id and db_id not in db_ids:
+            db_ids.append(db_id)
+    for db_id in db_ids:
+        _check_notion_database(db_id, headers)
+
+
+def _check_notion_database(db_id: str, headers: dict[str, str]) -> None:
     try:
         db = httpx.get(f"{NOTION_API_BASE}/databases/{db_id}", headers=headers, timeout=10.0)
     except httpx.HTTPError as e:
-        _fail(f"network error fetching database: {e}")
+        _fail(f"network error fetching database {db_id}: {e}")
         return
     if db.status_code == 200:
         title_blocks = db.json().get("title", [])
@@ -318,7 +366,57 @@ def check_notion(present: bool, cfg: Config | None) -> None:
         _fail(f"database {db_id} not found OR integration not connected to it")
         _info("open the database in Notion → '…' menu → Connections → add your integration")
     else:
-        _fail(f"database fetch failed: HTTP {db.status_code} — {db.text[:200]}")
+        _fail(f"database {db_id} fetch failed: HTTP {db.status_code}: {db.text[:200]}")
+
+
+# ---------- sink destinations (UX107) ----------------------------------------
+
+def _nearest_existing(path: Path) -> Path | None:
+    for candidate in (path, *path.parents):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def check_sink_destinations(cfg: Config | None, routes: list[reachability.Route] | None = None) -> None:
+    """Each folder sink a workflow uses (filesystem, Obsidian, LAN) exists and is
+    writable (UX107). Read-only: `os.access`, never a probe write or a mkdir."""
+    print("\n== publish destinations ==")
+    if cfg is None:
+        _warn("config did not load; skipping destination checks")
+        return
+    if routes is None:
+        routes = reachability.config_routes(cfg)
+    in_use = reachability.sinks_in_use(routes, cfg.modes.regulated_mode)
+    folder_sinks = sorted(in_use & {"filesystem", "obsidian", "lan"})
+    if not folder_sinks:
+        _info("no workflow publishes to a folder")
+        return
+    for sink in folder_sinks:
+        if sink == "obsidian" and not cfg.obsidian.vault_path:
+            _fail("a workflow publishes to Obsidian but obsidian.vault_path is empty")
+            continue
+        raw = {
+            "filesystem": cfg.filesystem.output_dir,
+            "obsidian": cfg.obsidian.vault_path,
+            "lan": cfg.lan.mount_path,
+        }[sink]
+        path = Path(raw).expanduser()
+        if path.is_dir():
+            if os.access(path, os.W_OK | os.X_OK):
+                _ok(f"{sink}: {path} exists and is writable")
+            else:
+                _fail(f"{sink}: {path} is not writable")
+            continue
+        if sink != "filesystem":
+            # The vault and the share are never created by the publisher.
+            _fail(f"{sink}: {path} does not exist" + (" (is the share mounted?)" if sink == "lan" else ""))
+            continue
+        parent = _nearest_existing(path)
+        if parent is not None and parent.is_dir() and os.access(parent, os.W_OK | os.X_OK):
+            _info(f"{sink}: {path} does not exist yet; it is created on the first publish")
+        else:
+            _fail(f"{sink}: {path} does not exist and cannot be created under {parent}")
 
 
 # ---------- ML runtimes ----------------------------------------------------
@@ -364,11 +462,13 @@ def check_local_stack(cfg: Config | None, workflows_dir: Path | None = None) -> 
         return
     backend = cfg.summarization.backend
     local_workflows = workflows.local_backend_workflow_names(workflows_dir)
-    stack_reachable = (
-        backend in {"local", "auto"} or cfg.modes.regulated_mode or bool(local_workflows)
-    )
+    # UX107: the same reachability the Finish setup checklist reads. With workflows
+    # present they decide (a nil pin inherits the global backend); with none, the
+    # global backend does; regulated mode clamps every route to local.
+    routes = reachability.config_routes(cfg, workflows_dir)
+    stack_reachable = reachability.LOCAL_MODEL in reachability.required(routes, cfg.modes.regulated_mode)
     if not stack_reachable:
-        _info(f"backend = {backend!r}, regulated_mode off, no local workflow; local stack not used (skipping)")
+        _info(f"backend = {backend!r}, no workflow summarizes on this Mac; local stack not used (skipping)")
         return
     if backend not in {"local", "auto"} and not cfg.modes.regulated_mode and local_workflows:
         _info(f"global backend = {backend!r}, but a workflow forces local: {', '.join(local_workflows)}")
@@ -405,8 +505,10 @@ def check_local_stack(cfg: Config | None, workflows_dir: Path | None = None) -> 
             )
             _info(f"fix: mp prefetch-model {model_id}")
         else:
+            # UX107: a gap the Finish setup checklist shows too ("Download the on-device model").
             est = f"~{need_gb} GB" if need_gb else "several GB"
-            _info(f"model not cached yet; run `mp prefetch-model {model_id}` ({est}, resumable, normally done by the daemon)")
+            _fail(f"on-device model not downloaded yet ({est}); a workflow summarizes on this Mac")
+            _info(f"use Finish setup > Download the on-device model, or run `mp prefetch-model {model_id}`")
     else:
         _ok(f"pinned model snapshot present (~{cached_gb} GB, revision {snapshot.name[:12]})")
 
@@ -1126,12 +1228,17 @@ def check_app_index() -> None:
 def main(argv: list[str]) -> int:
     if argv and argv[0] in {"-h", "--help"}:
         print("usage: mp doctor")
-        print("Validates secrets, config, storage, the claude_cli binary, the installed bundle's Spotlight index, and live access to Anthropic / OpenAI / Notion / HuggingFace.")
+        print("Validates the secrets and the claude_cli binary the workflows in use need, config, storage, folder destinations, the installed bundle's Spotlight index, and live access to Anthropic / OpenAI / Notion / HuggingFace.")
         return 0
 
     print("mp doctor — preflight check\n")
-    presence = check_secrets()
+    # UX107: config first, so the secrets section knows which tokens a backend or
+    # sink in use actually needs (`reachability`, the Finish setup checklist's table).
     cfg = check_config()
+    regulated = bool(cfg and cfg.modes.regulated_mode)
+    routes = reachability.config_routes(cfg) if cfg is not None else None
+    needed = reachability.required(routes, regulated) if routes is not None else None
+    presence = check_secrets(needed)
     check_workflow_files()
     check_ml_runtimes()
     check_local_stack(cfg)
@@ -1140,7 +1247,8 @@ def main(argv: list[str]) -> int:
     # claude_cli is a local binary probe (no egress), so it runs regardless of
     # regulated_mode; the live cloud probes below are the ones that must not fire
     # under zero-egress.
-    check_claude_cli(cfg)
+    check_sink_destinations(cfg, routes)
+    check_claude_cli(cfg, None if needed is None else reachability.CLAUDE_BINARY in needed)
     # SEC11: under regulated_mode the pipeline is zero-egress, so doctor must not
     # reach any cloud API either. Skip the live Anthropic / OpenAI / Notion /
     # HuggingFace probes and say why, instead of silently pinging out.
@@ -1149,9 +1257,12 @@ def main(argv: list[str]) -> int:
         _info("regulated_mode is ON; skipping the live Anthropic / OpenAI / Notion / HuggingFace probes")
         _info("doctor stays zero-egress under regulated mode: no transcript or token leaves this Mac")
     else:
-        check_anthropic(presence["ANTHROPIC_API_KEY"], cfg)
-        check_openai(presence["OPENAI_API_KEY"], cfg)
-        check_notion(presence["NOTION_TOKEN"], cfg)
+        check_anthropic(
+            presence["ANTHROPIC_API_KEY"], cfg,
+            needed=needed is None or reachability.ANTHROPIC_KEY in needed,
+        )
+        check_openai(presence["OPENAI_API_KEY"], cfg, None if needed is None else reachability.OPENAI_KEY in needed)
+        check_notion(presence["NOTION_TOKEN"], cfg, routes)
         check_huggingface(presence["HF_TOKEN"])
     check_screen_recording()
     check_app_index()

@@ -481,8 +481,8 @@ def test_doctor_main_still_exits_zero_on_a_hard_fail(monkeypatch, tmp_path) -> N
         "filesystem": {"output_dir": str(tmp_path / "published-elsewhere")},
         "modes": {"regulated_mode": True},
     })
-    monkeypatch.setattr("mp.doctor.check_secrets", lambda: dict.fromkeys(
-        ["ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN"], False
+    monkeypatch.setattr("mp.doctor.check_secrets", lambda needed=None: dict.fromkeys(
+        ["ANTHROPIC_API_KEY", "NOTION_TOKEN", "HF_TOKEN", "OPENAI_API_KEY"], False
     ))
     monkeypatch.setattr("mp.doctor.check_config", lambda: cfg)
     monkeypatch.setattr("mp.doctor.check_ml_runtimes", lambda: None)

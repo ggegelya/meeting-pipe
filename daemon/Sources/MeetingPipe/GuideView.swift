@@ -54,6 +54,8 @@ struct GuideView: View {
     /// The rail's jump target. Held here rather than in the rail so the two
     /// columns share one reader.
     @State private var jumpTarget: Int?
+    /// UX107: a heading another surface asked the window to open at (Finish setup).
+    @ObservedObject private var jumpRequest = GuideJumpRequest.shared
 
     /// Named so a heading's probe can report its offset inside the reading
     /// viewport rather than in an ancestor that scrolls with it.
@@ -66,7 +68,23 @@ struct GuideView: View {
             document
         }
         .background(Color(MPColors.bg))
-        .task { if blocks.isEmpty { apply(await GuideDocumentCache.shared.loaded()) } }
+        .task {
+            if blocks.isEmpty { apply(await GuideDocumentCache.shared.loaded()) }
+            takeJumpRequest()
+        }
+        .onChange(of: jumpRequest.heading) { _, _ in takeJumpRequest() }
+    }
+
+    /// Scroll to the requested heading once the document is parsed, then clear the request.
+    private func takeJumpRequest() {
+        guard let heading = jumpRequest.heading, !blocks.isEmpty else { return }
+        jumpRequest.heading = nil
+        if let index = blocks.firstIndex(where: {
+            if case .heading(_, let text) = $0 { return text == heading }
+            return false
+        }) {
+            jumpTarget = index
+        }
     }
 
     // MARK: - Rail

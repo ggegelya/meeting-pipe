@@ -1053,6 +1053,7 @@ final class StatusBarController {
         case .integrations:  return #selector(Coordinator.menuPreferencesIntegrations)
         case .downloadModel: return #selector(Coordinator.menuFinishSetupDownloadModel)
         case .preferences:   return #selector(Coordinator.menuPreferences)
+        case .installClaudeCode: return #selector(Coordinator.menuInstallClaudeCode)
         }
     }
 

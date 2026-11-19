@@ -15,6 +15,9 @@ hand-authored expectations and a coordinated rename passed both suites:
                                 Swift's `SpeakerLabelStore.displayLabel`.
   summary-limits-golden.json    PIPE54: the `MeetingSummary` limits (title length, summary
                                 bullets, confidence values) Swift's summary writers respect.
+  reachability-golden.json      UX107: which secret, binary or Notion database each
+                                backend and sink needs (`mp.reachability`, read by
+                                `mp doctor`), replayed by Swift's `SetupChecklist`.
   glossary-golden.json          `glossary.toml` resolution, read by
                                 `glossary.load_glossary`, mirrored by Swift's
                                 `GlossaryStore.resolvedTerms` (FEAT11). The one
@@ -676,6 +679,120 @@ def gen_summary_limits() -> str:
     )
 
 
+# --------------------------------------------------------------------------
+# UX107: setup reachability (doctor and the Finish setup checklist)
+# --------------------------------------------------------------------------
+
+_ALL_PRESENT = {
+    "anthropic_key": True, "openai_key": True, "notion_token": True,
+    "claude_binary": True, "local_model": True,
+}
+
+
+def _wf(name: str, backend: str | None, sinks: list[dict[str, str]], nda: bool = False) -> dict[str, Any]:
+    doc: dict[str, Any] = {"name": name, "sinks": sinks}
+    if backend is not None:
+        doc["backend"] = backend
+    if nda:
+        doc["flags"] = {"nda_mode": True}
+    return doc
+
+
+# (name, regulated, global backend, global sinks, global db id, workflows, missing)
+REACHABILITY_CASES: list[tuple[str, bool, str, list[str], str, list[dict[str, Any]], list[str]]] = [
+    ("global_anthropic_notion_fully_configured", False, "anthropic", ["notion"], "db-global", [], []),
+    ("global_anthropic_notion_missing_key_and_token", False, "anthropic", ["notion"], "db-global", [],
+     ["anthropic_key", "notion_token"]),
+    ("local_mlx_folder_fully_configured", False, "anthropic", ["notion"], "",
+     [_wf("Local", "local", [{"type": "filesystem"}])], ["anthropic_key", "notion_token", "openai_key"]),
+    ("local_mlx_folder_model_missing", False, "anthropic", ["notion"], "",
+     [_wf("Local", "local", [{"type": "filesystem"}])], ["local_model"]),
+    ("global_openai_no_key", False, "openai", ["filesystem"], "",
+     [_wf("General", None, [{"type": "filesystem"}])], ["openai_key"]),
+    ("per_workflow_openai_no_key", False, "anthropic", ["notion"], "db-global",
+     [_wf("General", None, [{"type": "notion", "database_id": ""}]),
+      _wf("Vendors", "openai", [{"type": "filesystem"}])], ["openai_key"]),
+    ("claude_cli_workflow_no_binary", False, "anthropic", ["notion"], "db-global",
+     [_wf("Personal", "claude_cli", [{"type": "obsidian"}])], ["claude_binary"]),
+    ("own_notion_database_empty_global", False, "anthropic", ["notion"], "",
+     [_wf("Clients", None, [{"type": "notion", "database_id": "db-clients"}])], []),
+    ("own_notion_database_empty_and_global_empty", False, "anthropic", ["notion"], "",
+     [_wf("Clients", None, [{"type": "notion", "database_id": "db-clients"}]),
+      _wf("Internal", None, [{"type": "notion", "database_id": ""}])], []),
+    ("regulated_with_notion_sink", True, "anthropic", ["notion"], "",
+     [_wf("General", None, [{"type": "notion", "database_id": ""}])],
+     ["anthropic_key", "notion_token", "openai_key", "claude_binary"]),
+    ("regulated_with_notion_sink_model_missing", True, "anthropic", ["notion"], "",
+     [_wf("General", "claude_cli", [{"type": "notion", "database_id": ""}])],
+     ["anthropic_key", "notion_token", "claude_binary", "local_model"]),
+    ("nda_workflow_needs_only_the_model", False, "anthropic", ["notion"], "",
+     [_wf("Legal", "anthropic", [{"type": "notion", "database_id": ""}], nda=True)],
+     ["anthropic_key", "notion_token", "local_model"]),
+    ("auto_without_a_key", False, "auto", ["filesystem"], "", [], ["anthropic_key"]),
+    ("apple_intelligence_folder_needs_nothing", False, "apple_intelligence", ["lan"], "", [],
+     ["anthropic_key", "openai_key", "notion_token", "claude_binary", "local_model"]),
+    ("workflow_with_no_sinks_publishes_nowhere", False, "anthropic", ["notion"], "",
+     [_wf("Scratch", None, [])], ["notion_token"]),
+]
+
+
+def gen_reachability() -> str:
+    """UX107: the table `mp doctor` reads (`mp.reachability`) and the gaps it yields over
+    the combinations the spec names, for Swift's `SetupChecklist.decide` to replay."""
+    from mp import reachability
+    from mp.config import Config
+    from mp.provider_claude_cli import CLAUDE_SEARCH_DIRS
+
+    cases: list[dict[str, Any]] = []
+    for name, regulated, backend, sinks, db_id, wfs, missing in REACHABILITY_CASES:
+        cfg = Config.model_validate({
+            "summarization": {"backend": backend},
+            "output": {"sinks": sinks},
+            "notion": {"database_id": db_id},
+            "modes": {"regulated_mode": regulated},
+        })
+        present = {k: k not in missing for k in _ALL_PRESENT}
+        routes = reachability.routes(cfg, wfs)
+        cases.append({
+            "name": name,
+            "regulated": regulated,
+            "global_backend": backend,
+            "global_sinks": sinks,
+            "global_notion_database_id": db_id,
+            "workflows": [
+                {
+                    "name": w["name"],
+                    "backend": w.get("backend"),
+                    "nda": bool(w.get("flags", {}).get("nda_mode")),
+                    "sinks": w["sinks"],
+                }
+                for w in wfs
+            ],
+            "present": present,
+            "gaps": reachability.gaps(
+                routes, regulated=regulated, global_database_id=db_id, present=present
+            ),
+        })
+    contract = {
+        "gap_order": list(reachability.GAP_ORDER),
+        "backend_needs": {k: list(v) for k, v in reachability.BACKEND_NEEDS.items()},
+        "sink_needs": {k: list(v) for k, v in reachability.SINK_NEEDS.items()},
+        "zero_egress_backend": "local",
+        "zero_egress_sinks": ["filesystem"],
+        "claude_search_dirs": list(CLAUDE_SEARCH_DIRS),
+    }
+    return _envelope(
+        "UX107 setup reachability, generated by scripts/gen_contract_fixtures.py from "
+        "mp.reachability (the table mp doctor reads); do not hand-edit. Each case's `gaps` "
+        "is what doctor fails on; SetupChecklistTests replays the same inputs through "
+        "SetupChecklist.decide and must name the same gaps. With workflows present they "
+        "decide (a null backend inherits the global one, sinks replace the global list); "
+        "regulated mode or a workflow's NDA flag clamps a route to local + filesystem.",
+        cases,
+        contract,
+    )
+
+
 def main() -> int:
     import tempfile
 
@@ -689,6 +806,7 @@ def main() -> int:
             "failure-metadata-golden.json": gen_failures(),
             "regulated-mode-golden.json": gen_regulated(tmp),
             "summary-limits-golden.json": gen_summary_limits(),
+            "reachability-golden.json": gen_reachability(),
         }
     for name, text in written.items():
         (FIXTURES / name).write_text(text, encoding="utf-8")

@@ -273,7 +273,7 @@ def test_a_claude_in_a_fixed_install_dir_beats_one_earlier_on_path(tmp_path, mon
         d.mkdir()
         (d / "claude").write_text("#!/bin/sh\n")
         (d / "claude").chmod(0o755)
-    monkeypatch.setattr(cc, "_FALLBACK_DIRS", (str(fixed),))
+    monkeypatch.setattr(cc, "CLAUDE_SEARCH_DIRS", (str(fixed),))
     monkeypatch.setenv("PATH", f"{planted}:/usr/bin:/bin")
     assert cc.find_claude() == str(fixed / "claude")
 
@@ -283,7 +283,7 @@ def test_claude_still_resolves_from_path_when_no_fixed_dir_has_it(tmp_path, monk
     planted.mkdir()
     (planted / "claude").write_text("#!/bin/sh\n")
     (planted / "claude").chmod(0o755)
-    monkeypatch.setattr(cc, "_FALLBACK_DIRS", (str(tmp_path / "nowhere"),))
+    monkeypatch.setattr(cc, "CLAUDE_SEARCH_DIRS", (str(tmp_path / "nowhere"),))
     monkeypatch.setenv("PATH", f"{planted}:/usr/bin:/bin")
     assert cc.find_claude() == str(planted / "claude")
 
@@ -295,7 +295,7 @@ def test_the_resolved_claude_path_is_logged_once(tmp_path, monkeypatch, caplog):
     fixed.mkdir()
     (fixed / "claude").write_text("#!/bin/sh\n")
     (fixed / "claude").chmod(0o755)
-    monkeypatch.setattr(cc, "_FALLBACK_DIRS", (str(fixed),))
+    monkeypatch.setattr(cc, "CLAUDE_SEARCH_DIRS", (str(fixed),))
     monkeypatch.setattr(cc, "_logged_claude", set())
     with caplog.at_level(logging.INFO, logger="mp.provider_claude_cli"):
         cc.find_claude()
