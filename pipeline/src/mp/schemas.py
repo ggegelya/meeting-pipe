@@ -269,6 +269,45 @@ def normalize_model_summary(payload: Any) -> Any:
     return out
 
 
+def to_model_facing(stored: dict[str, Any]) -> dict[str, Any]:
+    """LOCAL27: the inverse of `normalize_model_summary`, a stored `<stem>.summary.json`
+    in the shape `SUMMARY_TOOL` asks a model to emit.
+
+    `mp train-adapter` trains on what the model must write, and the schema the system
+    turn embeds requires every `summary`, `decisions` and `questions` item as
+    `{text, evidence}`; the stored file keeps plain strings with the anchors in a
+    side `evidence` map. This folds that map back in (an empty list where an item
+    has none, which is every pre-FEAT10 summary), keeps `actions` with their inline
+    anchors, and drops the keys `SUMMARY_TOOL` does not declare, at the top level
+    (`evidence` itself) and on an action (AI10's `group`, which only a digest roll-up
+    sets and the schema forbids). Round-trips: validating the result equals validating
+    the input, for any meeting summary (one with no `group`).
+    """
+    allowed = SUMMARY_TOOL["input_schema"]["properties"]
+    action_keys = allowed["actions"]["items"]["properties"]
+    evidence = stored.get("evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    out: dict[str, Any] = {}
+    for key, value in stored.items():
+        if key not in allowed:
+            continue
+        if key == "actions" and isinstance(value, list):
+            out[key] = [
+                {k: v for k, v in a.items() if k in action_keys} if isinstance(a, dict) else a
+                for a in value
+            ]
+        elif key in EVIDENCE_SECTIONS and isinstance(value, list):
+            anchors = evidence.get(key)
+            anchors = anchors if isinstance(anchors, list) else []
+            out[key] = [
+                {"text": text, "evidence": list(anchors[i]) if i < len(anchors) and isinstance(anchors[i], list) else []}
+                for i, text in enumerate(value)
+            ]
+        else:
+            out[key] = value
+    return out
+
+
 def drop_blank_entries(payload: Any) -> Any:
     """PIPE43 (F176): drop blank strings from the three string sections, and their evidence
     slots with them so the index alignment holds. A blank bullet is not content: kept, it let a

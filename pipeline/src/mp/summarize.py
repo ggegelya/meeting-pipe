@@ -32,6 +32,7 @@ import logging
 import os
 import sys
 import time
+from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
@@ -614,15 +615,9 @@ def summarize(
     # `<stem>.md` on disk is untouched, and a meeting with only markdown (a BYO
     # paste, or a `<stem>.json` we cannot parse) falls back to exactly the old
     # path and simply produces no evidence.
-    composed = transcript_corrections.overlaid_structured(transcript_md)
-    segments: list[dict] = []
-    if composed is not None:
-        structured, _ = composed
-        segments = structured.get("segments") or []
-        transcript = render_markdown(structured, timestamps=True)
-    else:
-        overlaid = transcript_corrections.overlaid_markdown(transcript_md)
-        transcript = overlaid if overlaid is not None else transcript_md.read_text(encoding="utf-8")
+    rendered = render_model_transcript(transcript_md)
+    segments = rendered.segments
+    transcript = rendered.text
     if not transcript.strip():
         raise ValueError(f"Empty transcript: {transcript_md}")
 
@@ -637,18 +632,15 @@ def summarize(
         team_context = override
         log.info("summarize: applying request-scoped MP_CONTEXT_OVERRIDE")
 
-    # FEAT8: append the user-flagged excerpts to the transcript (they stay in
-    # the untrusted zone with the rest of it) and flag them so the system prompt
-    # carries the trusted instruction to reflect them.
-    flagged = flagged_moments_block(transcript_md)
-    if flagged:
-        transcript = transcript + "\n\n" + flagged
+    # FEAT8: the flagged excerpts rode in with the render; the system prompt carries the
+    # trusted instruction to reflect them exactly when they did.
+    flagged = rendered.flagged
 
     system_prompt = _load_system_prompt(
         team_context,
         cfg.summarization.summary_language,
         prior_context=_prior_meeting_context(transcript_md, cfg),
-        flagged_note=bool(flagged),
+        flagged_note=flagged,
         extra_sections=cfg.summarization.extra_sections,
     )
 
@@ -744,6 +736,45 @@ def summarize(
         result["evidence_kept"] = verified.kept
         result["evidence_dropped"] = verified.dropped
     return result
+
+
+@dataclass(frozen=True)
+class RenderedTranscript:
+    """What the summarizer sends as the transcript (LOCAL27): the text, the segments its
+    anchors are verified against, and whether FEAT8's flagged-moments block is in it."""
+
+    text: str
+    segments: list[dict]
+    flagged: bool
+
+
+def render_model_transcript(transcript_md: Path) -> RenderedTranscript:
+    """The model's view of `<stem>.md`, one function for `summarize` and `mp train-adapter`.
+
+    FEAT3-UNDO / FEAT3-SEGMENT + PIPE9: both reversible overlays apply (speaker names and
+    reassignments, then line edits). FEAT10: when the structured transcript is readable,
+    the model reads its timestamped render, so it can anchor each point to a turn;
+    `<stem>.md` on disk is untouched, and a meeting with only markdown (a BYO paste, or a
+    `<stem>.json` we cannot parse) falls back to the overlaid markdown and produces no
+    evidence. FEAT8: the user-flagged excerpts are appended in the untrusted zone with the
+    rest of it, and `flagged` says so, so the caller adds the trusted instruction exactly
+    when they are there. LOCAL27 lifted this out of `summarize` because the adapter
+    trainer had its own copy that read `<stem>.md` raw and trained on a transcript the
+    server never sends.
+    """
+    composed = transcript_corrections.overlaid_structured(transcript_md)
+    segments: list[dict] = []
+    if composed is not None:
+        structured, _ = composed
+        segments = structured.get("segments") or []
+        text = render_markdown(structured, timestamps=True)
+    else:
+        overlaid = transcript_corrections.overlaid_markdown(transcript_md)
+        text = overlaid if overlaid is not None else transcript_md.read_text(encoding="utf-8")
+    block = flagged_moments_block(transcript_md)
+    if block:
+        text = text + "\n\n" + block
+    return RenderedTranscript(text=text, segments=segments, flagged=bool(block))
 
 
 def _verify_evidence(

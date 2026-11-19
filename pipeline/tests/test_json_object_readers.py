@@ -51,7 +51,7 @@ def test_the_training_corrections_loop_skips_a_list(tmp_path: Path) -> None:
     from mp import train_adapter
 
     (tmp_path / "bad.json").write_text("[1]")
-    assert train_adapter.build_pairs(tmp_path, read_transcript=lambda _p: "t") == []
+    assert train_adapter.build_pairs(tmp_path, render=lambda _p: None) == []
 
 
 def test_diarize_cleanup_reads_a_list_shaped_embeddings_sidecar_as_no_evidence(

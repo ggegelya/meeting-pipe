@@ -2,9 +2,9 @@
 id: LOCAL27
 title: train-adapter builds pairs in a shape the server never sends, and its default budget drops every pair
 category: Local models
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). LOCAL9's "exactly as served" pairs do not hold at HEAD: the user turn is the stored `<stem>.md` without FEAT10's `[mm:ss]` markers, the system turn lacks LOCAL7's language reinforcement, and the completion is the stored summary rather than the `{text, evidence}` objects the schema demands; the 15,857-char system turn alone exceeds the default 10,240-char budget, so a default run drops every pair and exits 2, and the JSONL of full transcripts is written at default permissions. Build pairs through summarize's transcript render and the client's message builder, emit the model-facing completion, refuse clearly when the prompt cannot fit, write the dataset 0600. [Spec](./LOCAL27.md)
+comment: Shipped 2026-11-19 (batch 10): pairs go through `summarize.render_model_transcript` (shared with summarize), `summarize_local.build_messages` (the client delegates to it) and `schemas.to_model_facing`; budget in estimated tokens, defaults 8192 x batch 1 from LOCAL9's ceiling (system turn ~4,100 tokens, so only short meetings fit, said in README and refusal), exit 2 naming the system turn when it alone fills the budget, dataset and split.json written 0600. Still owed: an owner `mp train-adapter --dry-run --source runs` on the real library to confirm pairs are kept and the files are 0600. [Spec](./LOCAL27.md)
 ---
 
 # LOCAL27: train-adapter builds pairs in a shape the server never sends, and its default budget drops every pair

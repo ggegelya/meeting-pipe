@@ -323,6 +323,24 @@ def compose_user_message(transcript: str) -> str:
     )
 
 
+def build_messages(system_prompt: str, transcript: str, target: str | None) -> list[dict[str, str]]:
+    """The schema-forcing request for ``transcript``: the system turn with the schema
+    and, when the summary language is known, its reinforcement, then the fenced user
+    turn. Module-level for LOCAL27, as `augment_with_schema` and `compose_user_message`
+    are for LOCAL9: `mp train-adapter` builds its pairs through this one function, so a
+    trained turn cannot drift from a served one again."""
+    system_content = augment_with_schema(system_prompt)
+    if target:
+        # Restate the target after the schema, where the local model's token
+        # attention is highest; the base directive already rode in via the
+        # system prompt but was being ignored (LOCAL7).
+        system_content += language_reinforcement(target)
+    return [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": compose_user_message(transcript)},
+    ]
+
+
 def repair_messages(prior_text: str, error_detail: str) -> list[dict[str, str]]:
     """A FRESH two-turn conversation asking the model to repair its own reply.
 
@@ -649,17 +667,9 @@ class LocalSummaryClient:
         self, system_prompt: str, text: str, target: str | None,
     ) -> list[dict[str, str]]:
         """The schema-forcing request for ``text``: what a single-pass call or one
-        map window sends, and what LOCAL23's budget estimates before sending it."""
-        system_content = self._augment_with_schema(system_prompt)
-        if target:
-            # Restate the target after the schema, where the local model's token
-            # attention is highest; the base directive already rode in via the
-            # system prompt but was being ignored (LOCAL7).
-            system_content += language_reinforcement(target)
-        return [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": self._compose_user_message(text)},
-        ]
+        map window sends, and what LOCAL23's budget estimates before sending it.
+        `build_messages` is the one builder (LOCAL27)."""
+        return build_messages(system_prompt, text, target)
 
     def _request_budget(
         self, system_prompt: str, transcript: str, target: str | None, max_tokens: int,

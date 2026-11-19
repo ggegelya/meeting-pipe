@@ -18,6 +18,14 @@ Two corpus sources, picked with ``--source``:
   next to it, and a small model imitating a bigger one is the standard use of that.
 * ``both``: corrections first, runs fill the rest, corrected stems never duplicated.
 
+Every pair is built the way the server builds its request (LOCAL27): the transcript through
+``summarize.render_model_transcript`` (timestamped, both overlays, FEAT8's excerpts), the
+turns through ``summarize_local.build_messages`` (schema and language reinforcement), and
+the completion through ``schemas.to_model_facing``. Pair length is estimated in tokens
+(``resource_guard.estimate_tokens``), the default budget is 8192 at batch 1 (LOCAL9's
+measured ceiling on a 32 GB Mac), and a budget the fixed system turn alone fills is
+refused with exit 2 before anything is written. The dataset files are written 0600.
+
 CLI-only by design: owner-dev tooling, like ``mp dogfood``, so it is exempt from the
 de-CLI rule. No egress and no training in the background; it is a command the owner
 runs. `mlx-lm` (already a pinned darwin/arm64 dependency) provides `mlx_lm.lora`; it
@@ -35,27 +43,31 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import corrections, entry, storage
+
+if TYPE_CHECKING:
+    from .summarize import RenderedTranscript
 
 log = logging.getLogger("mp.train_adapter")
 
 # Conservative training defaults; the owner tunes them per corpus via flags.
 DEFAULT_ITERS = 300
 DEFAULT_LORA_LAYERS = 16
-# 4096 fits a 7B-4bit LoRA on 32 GB of unified memory with gradient checkpointing.
-# Raising it is the owner's call (it is what keeps long meetings in the corpus) but
-# it is also what makes the machine swap, so the default stays where it is safe.
-DEFAULT_MAX_SEQ_LENGTH = 4096
-# mlx_lm.lora's own default. What the machine actually pays per step scales with
-# batch * max-seq-length (activations), so raising one usually means lowering the
-# other: the 2026-07-30 run at 12288 x batch 4 drove a 32 GB Mac to 4% free before
-# the watchdog killed it, while 12288 x batch 1 is fewer step-tokens than the safe
-# default 4096 x 4.
-DEFAULT_BATCH_SIZE = 4
-# Pessimistic chars-per-token for this corpus: English runs ~3.5, Cyrillic closer to
-# 2, and a mixed transcript should not be estimated as if it were pure English.
-CHARS_PER_TOKEN = 2.5
+# LOCAL27: set together from a measurement. The system turn the server sends (the
+# master prompt, the schema, the language reinforcement) is about 4,100 estimated
+# tokens on its own (`resource_guard.estimate_tokens`, 2026-11-19), so the old 4096
+# left nothing for a transcript and every pair was dropped. LOCAL9's own run on the
+# 32 GB Mac is the ceiling: a 12288 backward drove it to 4-5% free at any batch size,
+# and the run that worked used 8192 at batch 1. What a step costs scales with
+# batch * max-seq-length, so 8192 x 1 is fewer step-tokens than the old 4096 x 4.
+# Even so, 8192 leaves about 4,000 tokens for transcript plus summary, which is a
+# short meeting (roughly 10 to 15 minutes of English, less in Cyrillic); a longer
+# corpus needs a bigger Mac, and the refusal and README say so rather than this
+# default rising past what LOCAL9 measured.
+DEFAULT_MAX_SEQ_LENGTH = 8192
+DEFAULT_BATCH_SIZE = 1
 
 
 CORPUS_SOURCES = ("corrections", "runs", "both")
@@ -66,9 +78,9 @@ SPLIT_MANIFEST_NAME = "split.json"
 @dataclass(frozen=True)
 class Pair:
     """One training example, in the three turns the local server actually exchanges."""
-    prompt: str            # the user turn, from `summarize_local.compose_user_message`
-    completion: str        # the assistant turn: the summary JSON
-    system: str = ""       # the system turn, schema-augmented exactly as served
+    prompt: str            # the user turn, from `summarize_local.build_messages`
+    completion: str        # the assistant turn: the model-facing summary JSON
+    system: str = ""       # the system turn, from `summarize_local.build_messages`
     stem: str = ""
     source: str = "corrections"
     transcript_chars: int = 0
@@ -76,6 +88,13 @@ class Pair:
     def chars(self) -> int:
         """Total characters the tokenizer will see for this example."""
         return len(self.system) + len(self.prompt) + len(self.completion)
+
+    def tokens(self) -> int:
+        """Estimated tokens for this example, each turn at its own script's rate
+        (`resource_guard.estimate_tokens`, LOCAL23's measured rates)."""
+        from .resource_guard import estimate_tokens
+
+        return sum(estimate_tokens(t) for t in (self.system, self.prompt, self.completion))
 
     def messages(self) -> list[dict[str, str]]:
         """The example as chat turns, the layout `mlx_lm.lora`'s `ChatDataset` reads
@@ -87,45 +106,69 @@ class Pair:
         ]
 
 
-def _read_transcript(transcript_path: str) -> str | None:
-    if not transcript_path:
-        return None
+@dataclass(frozen=True)
+class PromptSettings:
+    """The config-level half of the system turn: team context and summary language.
+
+    Per meeting, the trainer adds only what the meeting's own files say: FEAT8's
+    flagged-moments instruction when its excerpts are in the user turn, and LOCAL7's
+    language reinforcement for the transcript's language. A workflow overlay's extra
+    sections or context and AI6's prior-meeting block are not rebuilt; nothing
+    records them as they stood when the meeting ran.
+    """
+    team_context: str = ""
+    summary_language: str = "auto"
+
+    def system_prompt(self, flagged: bool = False) -> str:
+        from .summarize import _load_system_prompt
+
+        return _load_system_prompt(self.team_context, self.summary_language, flagged_note=flagged)
+
+
+def _render(transcript_md: Path) -> RenderedTranscript | None:
+    """The model's view of a meeting (`summarize.render_model_transcript`), or None when
+    the transcript is gone or empty."""
+    from .summarize import render_model_transcript
+
     try:
-        return Path(transcript_path).read_text(encoding="utf-8")
-    except OSError:
+        rendered = render_model_transcript(transcript_md)
+    except (OSError, ValueError):
         return None
+    return rendered if rendered.text.strip() else None
+
+
+def system_turn(settings: PromptSettings, target: str | None = "en") -> str:
+    """The longest fixed system turn a pair can carry (flagged instruction and language
+    reinforcement included), which is what `--max-seq-length` must leave room beyond."""
+    from .summarize_local import build_messages
+
+    return build_messages(settings.system_prompt(flagged=True), "", target)[0]["content"]
 
 
 def base_system_prompt(team_context: str = "", summary_language: str = "auto") -> str:
-    """The exact system turn `LocalSummaryClient` sends: the master prompt with the
-    configured team context and language directive filled in, then the schema and
-    reinforcement block appended.
+    """The system turn `LocalSummaryClient` sends for a meeting with no flagged moments
+    whose language is unknown: the master prompt with the configured team context and
+    language directive filled in, then the schema block. A pair's own turn comes from
+    `summarize_local.build_messages`, which adds the language reinforcement."""
+    from .summarize_local import build_messages
 
-    Built from the shipping helpers rather than re-templated here. An earlier version
-    of this function hand-substituted two of the four placeholders with neutral text,
-    which left a literal `{extra_sections_directive}` in every training prompt, wrote
-    "(no team context configured)" where the server sends the real one, and omitted
-    the schema block entirely. A LoRA trained on that shape would have been tuned for
-    a prompt the server never sends.
-    """
-    from .summarize import _load_system_prompt
-    from .summarize_local import augment_with_schema
-
-    return augment_with_schema(_load_system_prompt(team_context, summary_language))
+    return build_messages(
+        PromptSettings(team_context, summary_language).system_prompt(), "", None
+    )[0]["content"]
 
 
 def build_pairs(
     corrections_dir: Path,
-    read_transcript: Callable[[str], str | None] = _read_transcript,
-    system_prompt: str | None = None,
+    render: Callable[[Path], RenderedTranscript | None] = _render,
+    settings: PromptSettings | None = None,
     recordings_dir: Path | None = None,
 ) -> list[Pair]:
     """Build training pairs from every ``edited`` correction whose transcript is
-    readable; the completion is the corrected summary JSON. Records without a
-    corrected summary, or whose transcript is gone, are skipped. Filename-sorted so a
-    re-run over the same corpus is stable.
+    readable; the completion is the corrected summary. Records without a corrected
+    summary, or whose transcript is gone, are skipped. Filename-sorted so a re-run
+    over the same corpus is stable.
     """
-    instr = system_prompt if system_prompt is not None else base_system_prompt()
+    prompt = settings or PromptSettings()
     pairs: list[Pair] = []
     for path in sorted(corrections_dir.glob("*.json")):
         data = storage.read_json_object(path)
@@ -139,23 +182,20 @@ def build_pairs(
         # searched by it first; the stored absolute path is only a fallback.
         stem = data.get("stem") or path.stem or Path(transcript_path).stem
         found = corrections.resolve_meeting_file(stem, ".md", recordings_dir, transcript_path)
-        transcript = read_transcript(str(found) if found is not None else transcript_path)
-        if not transcript:
+        md = found if found is not None else (Path(transcript_path) if transcript_path else None)
+        rendered = render(md) if md is not None else None
+        if rendered is None:
             continue
         pairs.append(_make_pair(
-            stem=stem,
-            system_prompt=instr,
-            transcript=transcript,
-            summary=corrected,
-            source="corrections",
+            stem=stem, rendered=rendered, summary=corrected, source="corrections", settings=prompt,
         ))
     return pairs
 
 
 def build_run_pairs(
     recordings_dir: Path,
-    read_transcript: Callable[[str], str | None] = _read_transcript,
-    system_prompt: str | None = None,
+    render: Callable[[Path], RenderedTranscript | None] = _render,
+    settings: PromptSettings | None = None,
     exclude_stems: set[str] | None = None,
 ) -> list[Pair]:
     """Build (prompt, completion) pairs from the run sidecars: transcript -> the
@@ -168,7 +208,7 @@ def build_run_pairs(
     skipped: a model cannot learn anything from its own output. Filename-sorted, so
     a re-run over the same recordings dir is stable.
     """
-    instr = system_prompt if system_prompt is not None else base_system_prompt()
+    prompt = settings or PromptSettings()
     skip = exclude_stems or set()
     pairs: list[Pair] = []
     for path in sorted(recordings_dir.glob("*.run.json")):
@@ -188,16 +228,13 @@ def build_run_pairs(
             continue
         transcript_path = corrections.resolve_meeting_file(
             stem, ".md", recordings_dir, data.get("transcript_path"))
-        transcript = read_transcript(
-            str(transcript_path) if transcript_path is not None else data.get("transcript_path") or "")
-        if not transcript:
+        stored = data.get("transcript_path")
+        md = transcript_path if transcript_path is not None else (Path(stored) if stored else None)
+        rendered = render(md) if md is not None else None
+        if rendered is None:
             continue
         pairs.append(_make_pair(
-            stem=stem,
-            system_prompt=instr,
-            transcript=transcript,
-            summary=summary,
-            source="runs",
+            stem=stem, rendered=rendered, summary=summary, source="runs", settings=prompt,
         ))
     return pairs
 
@@ -211,17 +248,28 @@ def _read_summary(summary_json_path: str) -> dict | None:
 
 
 def _make_pair(
-    *, stem: str, system_prompt: str, transcript: str, summary: dict, source: str
+    *, stem: str, rendered: RenderedTranscript, summary: dict, source: str,
+    settings: PromptSettings,
 ) -> Pair:
-    from .summarize_local import compose_user_message
+    """One pair, built the way the server builds its request (LOCAL27): the rendered
+    transcript (`[mm:ss]` markers, both overlays, FEAT8's excerpts), the system prompt
+    with the flagged instruction exactly when the excerpts are there, the language
+    reinforcement for this transcript, all through `build_messages`. The completion is
+    the summary in the `{text, evidence}` shape the schema in that system turn demands
+    (`schemas.to_model_facing`), not the stored shape."""
+    from .schemas import to_model_facing
+    from .summarize_local import build_messages
+    from .summary_language import expected_summary_language
 
+    target = expected_summary_language(settings.summary_language, rendered.text)
+    system, user = build_messages(settings.system_prompt(rendered.flagged), rendered.text, target)
     return Pair(
-        prompt=compose_user_message(transcript),
-        completion=json.dumps(summary, ensure_ascii=False, indent=2),
-        system=system_prompt,
+        prompt=user["content"],
+        completion=json.dumps(to_model_facing(summary), ensure_ascii=False, indent=2),
+        system=system["content"],
         stem=stem,
         source=source,
-        transcript_chars=len(transcript),
+        transcript_chars=len(rendered.text),
     )
 
 
@@ -230,19 +278,19 @@ def collect_pairs(
     *,
     corrections_dir: Path,
     recordings_dir: Path,
-    system_prompt: str | None = None,
+    settings: PromptSettings | None = None,
 ) -> list[Pair]:
     """Pairs for the requested corpus source. Under ``both`` the corrections come
     first and their stems are withheld from the runs fill, so a meeting the owner
     corrected trains on the corrected summary, never on the one it replaced."""
     if source == "runs":
-        return build_run_pairs(recordings_dir, system_prompt=system_prompt)
-    corrected = build_pairs(corrections_dir, system_prompt=system_prompt, recordings_dir=recordings_dir)
+        return build_run_pairs(recordings_dir, settings=settings)
+    corrected = build_pairs(corrections_dir, settings=settings, recordings_dir=recordings_dir)
     if source == "corrections":
         return corrected
     return corrected + build_run_pairs(
         recordings_dir,
-        system_prompt=system_prompt,
+        settings=settings,
         exclude_stems={p.stem for p in corrected if p.stem},
     )
 
@@ -315,7 +363,8 @@ def write_split_manifest(
         },
     }
     out = adapter_path / SPLIT_MANIFEST_NAME
-    out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    # LOCAL27: owner-only, like every other library file (it names meetings).
+    storage.atomic_write_text(out, json.dumps(payload, indent=2, sort_keys=True), mode=0o600)
     return out
 
 
@@ -363,8 +412,9 @@ def write_dataset(splits: dict[str, list[Pair]], data_dir: Path) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     for name, items in splits.items():
         lines = [json.dumps({"messages": p.messages()}, ensure_ascii=False) for p in items]
-        (data_dir / f"{name}.jsonl").write_text(
-            "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
+        # LOCAL27: full transcripts and summaries, so owner-only (0600), atomically.
+        storage.atomic_write_text(
+            data_dir / f"{name}.jsonl", "\n".join(lines) + ("\n" if lines else ""), mode=0o600
         )
 
 
@@ -379,12 +429,12 @@ def fit_to_budget(
     is dropped rather than half-learned. The caller logs the drop count; a corpus of
     long meetings should raise the budget knowingly, not lose 80% of itself quietly.
 
-    Length is estimated from characters at `CHARS_PER_TOKEN`, deliberately
-    pessimistic: Cyrillic tokenizes far worse than English and this corpus is mixed.
+    Length is `Pair.tokens()`, each turn at its own script's measured rate (LOCAL27;
+    it was characters at a flat 2.5 per token, which overstated an English system turn
+    by about 60 percent).
     """
-    budget_chars = int(max_seq_length * CHARS_PER_TOKEN)
-    kept = [p for p in pairs if p.chars() <= budget_chars]
-    dropped = [p for p in pairs if p.chars() > budget_chars]
+    kept = [p for p in pairs if p.tokens() <= max_seq_length]
+    dropped = [p for p in pairs if p.tokens() > max_seq_length]
     return kept, dropped
 
 
@@ -463,21 +513,37 @@ def main(argv: list[str]) -> int:
     model = args.model or cfg.summarization.local_model
     recordings_dir = args.recordings_dir or cfg.recording.output_dir
 
+    settings = PromptSettings(cfg.summarization.team_context, cfg.summarization.summary_language)
+    # LOCAL27: refuse before building anything when the fixed system turn alone leaves no
+    # room, rather than dropping every pair and calling the corpus "not ready".
+    from .resource_guard import estimate_tokens
+
+    system_tokens = estimate_tokens(system_turn(settings))
+    if system_tokens >= args.max_seq_length:
+        sys.stderr.write(
+            f"--max-seq-length {args.max_seq_length} leaves no room for a meeting: the system "
+            f"turn the local server sends (prompt, schema and language reinforcement) is about "
+            f"{system_tokens:,} tokens on its own. Raise --max-seq-length (and lower "
+            f"--batch-size to keep memory flat); the default {DEFAULT_MAX_SEQ_LENGTH} at batch "
+            f"{DEFAULT_BATCH_SIZE} is the most LOCAL9 measured a 32 GB Mac taking, and it fits "
+            f"only short meetings.\n"
+        )
+        return 2
+
     all_pairs = collect_pairs(
         args.source,
         corrections_dir=corrections.CORRECTIONS_DIR,
         recordings_dir=Path(recordings_dir).expanduser(),
-        system_prompt=base_system_prompt(
-            cfg.summarization.team_context, cfg.summarization.summary_language
-        ),
+        settings=settings,
     )
     pairs, too_long = fit_to_budget(all_pairs, args.max_seq_length)
     if too_long:
         log.warning(
             "dropped %d of %d meetings that exceed --max-seq-length %d "
-            "(longest ~%d tokens); raise it to keep them, at the cost of memory.",
+            "(longest ~%d tokens, of which ~%d is the system turn); raise it to keep them, "
+            "at the cost of memory.",
             len(too_long), len(all_pairs), args.max_seq_length,
-            int(max(p.chars() for p in too_long) / CHARS_PER_TOKEN),
+            max(p.tokens() for p in too_long), system_tokens,
         )
 
     ready, state = gate_ready(args.source, pairs, Path(recordings_dir).expanduser())

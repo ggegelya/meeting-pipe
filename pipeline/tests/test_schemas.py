@@ -142,3 +142,40 @@ def test_blank_entries_are_dropped_and_their_anchors_with_them():
 def test_a_stored_summary_revalidates_to_itself():
     s = MeetingSummary.model_validate(_base(decisions=["  ", "Ship"]))
     assert MeetingSummary.model_validate(json.loads(s.model_dump_json())) == s
+
+
+# ----- LOCAL27: the stored summary back in the shape the model must emit -----
+
+_WITH_ANCHORS = {
+    "title": "Export sync",
+    "summary": ["Export ships Friday.", "QA hears today."],
+    "decisions": ["Ship Friday."],
+    "actions": [{"task": "Tell QA", "owner": "Bob", "due": None, "confidence": "high",
+                 "evidence": [{"quote": "I will tell the QA team", "t": 75.0}]}],
+    "questions": ["Is QA ready?"],
+    "attendees": ["Alice", "Bob"],
+    "detected_language": "en",
+    "evidence": {"summary": [[{"quote": "ship the export on Friday", "t": 0.0}], []],
+                 "decisions": [[{"quote": "ship the export", "t": 0.0}]]},
+}
+_PRE_FEAT10 = {k: v for k, v in _WITH_ANCHORS.items() if k != "evidence"}
+
+
+@pytest.mark.parametrize("stored", [_WITH_ANCHORS, _PRE_FEAT10], ids=["anchored", "pre_feat10"])
+def test_to_model_facing_round_trips_through_validation(stored):
+    from mp.schemas import SUMMARY_TOOL, MeetingSummary, to_model_facing
+
+    facing = to_model_facing(stored)
+    assert MeetingSummary.model_validate(facing) == MeetingSummary.model_validate(stored)
+    for section in ("summary", "decisions", "questions"):
+        assert all(isinstance(i, dict) and set(i) == {"text", "evidence"} for i in facing[section])
+    assert set(facing) <= set(SUMMARY_TOOL["input_schema"]["properties"])
+    assert facing["actions"][0]["evidence"] == stored["actions"][0]["evidence"]
+
+
+def test_to_model_facing_drops_an_action_key_the_schema_forbids():
+    from mp.schemas import SUMMARY_TOOL, to_model_facing
+
+    stored = {**_PRE_FEAT10, "actions": [{**_PRE_FEAT10["actions"][0], "group": None}]}
+    action = to_model_facing(stored)["actions"][0]
+    assert set(action) <= set(SUMMARY_TOOL["input_schema"]["properties"]["actions"]["items"]["properties"])
