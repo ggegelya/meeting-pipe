@@ -5,12 +5,15 @@ Every root takes an injectable `home` so the whole tree can be pointed at a
 """
 from __future__ import annotations
 
+import errno
 import stat
 from pathlib import Path
 
 import pytest
 
 from mp import storage
+
+_EDEADLK_NAME = errno.errorcode[errno.EDEADLK]  # EDEADLOCK on Linux
 
 
 def test_atomic_write_text_writes_private_content(tmp_path: Path) -> None:
@@ -153,10 +156,10 @@ def test_read_library_json_counts_unreadable_but_not_missing(tmp_path, evicted, 
     assert read_library_json(gone, tally) is None
     assert read_library_json(gone, tally) is None  # a second reader of one file counts once
     assert tally.total == 2
-    assert tally.as_dict() == {"EDEADLK": 1, "unparseable": 1}
+    assert tally.as_dict() == {_EDEADLK_NAME: 1, "unparseable": 1}
 
     with caplog.at_level(logging.WARNING, logger="mp.storage"):
         tally.warn(tmp_path)
         UnreadableTally().warn(tmp_path)  # nothing skipped: no line
     lines = [r.getMessage() for r in caplog.records if "unreadable" in r.getMessage()]
-    assert lines == [f"skipped 2 unreadable file(s) (EDEADLK: 1, unparseable: 1) under {tmp_path}"]
+    assert lines == [f"skipped 2 unreadable file(s) ({_EDEADLK_NAME}: 1, unparseable: 1) under {tmp_path}"]

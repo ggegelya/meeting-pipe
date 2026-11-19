@@ -10,6 +10,7 @@ gives a green suite.
 from __future__ import annotations
 
 import ast
+import errno
 import importlib.util
 import json
 import socket
@@ -24,6 +25,8 @@ import pytest
 from mp import embed_index, mcp_serve, mcp_tools, visibility
 from mp.config import Config
 from mp.prompt_safety import wrap_untrusted
+
+_EDEADLK_NAME = errno.errorcode[errno.EDEADLK]  # EDEADLOCK on Linux
 
 NDA = "20260103-100000"
 NO_SIDECAR = "20260104-100000"
@@ -1053,7 +1056,7 @@ def test_get_meeting_on_an_unreadable_summary_says_so(library: Path, allow: set[
                                                       evicted) -> None:
     evicted(library / f"{NORMAL_A}.summary.json")
     assert mcp_tools.get_meeting(library, NORMAL_A, allow) == {
-        "stem": NORMAL_A, "unreadable": "EDEADLK",
+        "stem": NORMAL_A, "unreadable": _EDEADLK_NAME,
     }
 
 
@@ -1063,8 +1066,8 @@ def test_list_actions_and_meetings_report_the_skip_count(library: Path, allow: s
     assert clean["skipped_unreadable"] == {}
     evicted(library / f"{NORMAL_A}.summary.json")
     partial = mcp_tools.list_actions(library, allow)
-    assert partial["skipped_unreadable"] == {"EDEADLK": 1}
+    assert partial["skipped_unreadable"] == {_EDEADLK_NAME: 1}
     assert partial["total"] == clean["total"] - 1
     meetings = mcp_tools.list_meetings(library, allow)
-    assert meetings["skipped_unreadable"] == {"EDEADLK": 1}
+    assert meetings["skipped_unreadable"] == {_EDEADLK_NAME: 1}
     assert meetings["count"] == len(allow)

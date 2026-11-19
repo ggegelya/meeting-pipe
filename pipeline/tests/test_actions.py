@@ -1,11 +1,14 @@
 """Tests for `mp actions` cross-meeting action tracking (TECH-FEAT4 + AI1)."""
 from __future__ import annotations
 
+import errno
 import json
 from datetime import date
 from pathlib import Path
 
 from mp.actions import OpenAction, discover, filter_actions, main
+
+_EDEADLK_NAME = errno.errorcode[errno.EDEADLK]  # EDEADLOCK on Linux
 
 
 def _summary(root: Path, stem: str, title: str, acts: list[dict]) -> None:
@@ -151,11 +154,11 @@ def test_an_unreadable_summary_is_counted_and_warned_once(tmp_path: Path, evicte
     evicted(tmp_path / "20260102-1000.summary.json")
     tally = UnreadableTally()
     assert [a.task for a in discover(tmp_path, tally=tally)] == ["Send deck"]
-    assert tally.as_dict() == {"EDEADLK": 1}
+    assert tally.as_dict() == {_EDEADLK_NAME: 1}
 
     with caplog.at_level(logging.WARNING, logger="mp.storage"):
         assert main(["--dir", str(tmp_path), "--json"]) == 0
     assert isinstance(json.loads(capsys.readouterr().out), list)
     assert [r.getMessage() for r in caplog.records if "unreadable" in r.getMessage()] == [
-        f"skipped 1 unreadable file(s) (EDEADLK: 1) under {tmp_path}"
+        f"skipped 1 unreadable file(s) ({_EDEADLK_NAME}: 1) under {tmp_path}"
     ]

@@ -1,6 +1,7 @@
 """Tests for `mp prep <workflow>`, the pre-meeting prep card (CAL2)."""
 from __future__ import annotations
 
+import errno
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -16,6 +17,8 @@ from mp.prep import (
     resolve_workflow,
     workflow_names,
 )
+
+_EDEADLK_NAME = errno.errorcode[errno.EDEADLK]  # EDEADLOCK on Linux
 
 
 def _meeting(root: Path, stem: str, workflow: str | None, summary: dict | None) -> None:
@@ -241,12 +244,12 @@ def test_an_unreadable_last_meeting_is_counted_and_the_card_falls_through(
     tally = UnreadableTally()
     card = prep(tmp_path, "Client work", tally=tally)
     assert card is not None and card.stem == "20260701-090000"
-    assert tally.as_dict() == {"EDEADLK": 1}
+    assert tally.as_dict() == {_EDEADLK_NAME: 1}
 
     assert main(["Client work", "--dir", str(tmp_path), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["card"]["stem"] == "20260701-090000"
-    assert payload["skipped_unreadable"] == {"EDEADLK": 1}
+    assert payload["skipped_unreadable"] == {_EDEADLK_NAME: 1}
 
 
 def test_an_unreadable_meta_sidecar_is_counted(tmp_path: Path, evicted) -> None:

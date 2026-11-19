@@ -6,6 +6,7 @@ those are tested against real files; only the narrative goes through the engine.
 """
 from __future__ import annotations
 
+import errno
 import json
 from datetime import date, timedelta
 from pathlib import Path
@@ -15,6 +16,8 @@ import pytest
 from mp import digest
 from mp.config import Config, effective_backend
 from mp.engine import EngineError, EngineResult
+
+_EDEADLK_NAME = errno.errorcode[errno.EDEADLK]  # EDEADLOCK on Linux
 
 
 def _meeting(root: Path, stem: str, *, title: str, decisions=None, actions=None,
@@ -572,7 +575,7 @@ def test_an_unreadable_summary_is_counted_in_the_event_the_json_and_the_digest(
     assert digest.main(["--dir", str(root), "--out-dir", str(out), "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["skipped_unreadable"] == {"EDEADLK": 1}
+    assert payload["skipped_unreadable"] == {_EDEADLK_NAME: 1}
     assert payload["decisions"] == 2
     generated = [k for a, k in emitted if a == ("pipeline", "digest_generated")]
     assert generated[0]["skipped_unreadable"] == 1
