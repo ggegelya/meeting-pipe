@@ -10,6 +10,11 @@ struct FailureMetadata: Codable, Equatable, Hashable {
         case modelRejected = "model_rejected"
         /// UX94: config.toml does not parse, or the pipeline's load refused a value in it.
         case config
+        /// PIPE25: Apple Intelligence refused the meeting's language. Swift only: derived in
+        /// `legacy` from `AppleIntelligenceError.unsupportedLanguageMarker`, so a sidecar written
+        /// before the cause existed gets it with no rewrite. Never written into a sidecar's
+        /// `failure`, so `decode` refuses it and the Python vocabulary does not carry it.
+        case unsupportedLanguage = "unsupported_language"
 
         /// Causes whose fix is in Preferences > Pipeline rather than Integrations. One place, so
         /// the Ask, Digest and Library settings buttons cannot disagree about a new cause (PIPE28).
@@ -64,7 +69,8 @@ struct FailureMetadata: Codable, Equatable, Hashable {
 
     static func decode(_ data: Data) -> FailureMetadata? {
         guard data.count < 4096, var value = try? JSONDecoder().decode(Self.self, from: data),
-              value.schemaVersion == 1, !value.operation.isNotificationOnly else { return nil }
+              value.schemaVersion == 1, !value.operation.isNotificationOnly,
+              value.cause != .unsupportedLanguage else { return nil }
         if let provider = value.provider, !providers.contains(provider) { value.provider = nil }
         if let status = value.httpStatus, !(100...599).contains(status) { value.httpStatus = nil }
         value.requestID = safeRequestID(value.requestID)
@@ -173,6 +179,11 @@ struct FailurePresentation: Equatable {
             // (`config.toml does not parse at line 2, column 1.`); the sidecar carries neither.
             heading = "Settings file has a syntax error"
             explanation = Self.configFix(diagnostics)
+        case .unsupportedLanguage:
+            // PIPE25: a same-engine retry fails identically (two on 2026-10-16, 30 s apart), so the
+            // notice leads with the local re-summarize and this sentence names it.
+            heading = "Apple Intelligence can't summarize this language"
+            explanation = "Re-summarize it on this Mac with \(SummarizationEngine.local.name)."
         case .publish:
             heading = provider.map { "Couldn't publish to \($0)" } ?? heading
             // PIPE54: `mp publish` refused the summary before any sink, and its `[FAIL]` line says
@@ -271,6 +282,8 @@ struct FailurePresentation: Equatable {
         var provider: String?
         if text.contains("anthropic") && text.contains("your credit balance is too low to access the anthropic api") {
             cause = .credits; provider = "anthropic"
+        } else if text.contains(AppleIntelligenceError.unsupportedLanguageMarker) {
+            cause = .unsupportedLanguage
         } else if text.contains("you cancelled this run") || text == "cancelled" {
             cause = .cancelled
         } else if text.contains("meetingpipe restarted before this meeting finished processing") {

@@ -64,6 +64,7 @@ from .config import (
     anthropic_sampling,
     effective_backend,
     extract_backend_flag,
+    extract_fallback_flags,
     with_backend_override,
 )
 from .markdown import render_markdown, render_summary_md
@@ -101,6 +102,8 @@ class SummaryOutput(TypedDict):
     # sidecar can say so; absent on a run that did not fall back.
     fallback_from: NotRequired[str]
     fallback_cause: NotRequired[str]
+    # PIPE25: the language the refused engine could not take, when the caller knew it.
+    fallback_language: NotRequired[str]
 
 # Retry only on transient failures. BadRequestError / AuthenticationError /
 # PermissionDeniedError / NotFoundError are caller bugs, so failing fast is right.
@@ -978,6 +981,7 @@ def main(argv: list[str]) -> int:
         return 0
     try:
         argv, backend_override = extract_backend_flag(argv)
+        argv, substitution = extract_fallback_flags(argv)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -1007,6 +1011,10 @@ def main(argv: list[str]) -> int:
             raise  # The CLI boundary retains PIPE16's exit-2 contract.
         fail_command("summarize", error, operation="summary")
         return 1
+    # PIPE25: the daemon re-ran a refused Apple Intelligence meeting here. Recorded only when
+    # the run really answered on `local`, so the flag cannot relabel a run it did not describe.
+    if substitution and out["backend"] == "local":
+        out.update(substitution)  # type: ignore[typeddict-item]
     if not candidate:
         rewrite_run_sidecar(md, out)
     return 0
@@ -1048,6 +1056,7 @@ def rewrite_run_sidecar(transcript_md: Path, out: SummaryOutput) -> None:
             adapter_path=out.get("adapter_path", ""),
             fallback_from=out.get("fallback_from"),
             fallback_cause=out.get("fallback_cause"),
+            fallback_language=out.get("fallback_language"),
         )
         if isinstance(publish_state, str):
             corrections.set_publish_state(written, publish_state)

@@ -179,10 +179,13 @@ struct SummarizationEngine: Equatable {
     /// rejected the key"). The cause is `failure_details.describe`'s typed vocabulary, mapped to a
     /// short phrase; an unknown cause still says the engine failed rather than dropping the fact.
     /// Nil when the run did not fall back, or fell from an engine this build cannot name.
-    static func fallbackClause(from: String?, cause: String?) -> String? {
+    static func fallbackClause(from: String?, cause: String?, language: String? = nil) -> String? {
         guard let from = resolve(from) else { return nil }
         let phrase: String
         switch cause {
+        // PIPE25: the daemon re-ran a meeting Apple Intelligence refused on the local model.
+        case "unsupported_language":
+            phrase = "does not support \(languageName(language) ?? "this language")"
         case "rejected_key":        phrase = "rejected the key"
         case "expired_key":         phrase = "said the key expired"
         case "credits", "quota":    phrase = "had no credit left"
@@ -194,6 +197,15 @@ struct SummarizationEngine: Equatable {
         default:                    phrase = "failed"
         }
         return "because \(from.name) \(phrase)"
+    }
+
+    /// An ISO 639 code's English name ("uk" -> "Ukrainian"), or nil when it is not one. English
+    /// because the clause around it is; the language chip's tooltip uses the endonym instead.
+    static func languageName(_ code: String?) -> String? {
+        guard let base = AppleLanguageRoute.code(code),
+              let name = Locale(identifier: "en").localizedString(forLanguageCode: base),
+              !name.isEmpty, name.lowercased() != base else { return nil }
+        return name.prefix(1).uppercased() + name.dropFirst()
     }
 }
 

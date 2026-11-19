@@ -56,6 +56,9 @@ struct Meeting: Identifiable, Hashable {
     /// supply them.
     var fallbackFrom: String? = nil
     var fallbackCause: String? = nil
+    /// PIPE25: the language Apple Intelligence refused, when the daemon knew it, so the provenance
+    /// line can name it. Present only beside `fallback_cause` `unsupported_language`.
+    var fallbackLanguage: String? = nil
 
     /// A `var` only so `LiveRecordingOverlay` can mark the live stem `.recording` on a copy (UX101);
     /// the scan never assigns `.recording` itself.
@@ -67,12 +70,11 @@ struct Meeting: Identifiable, Hashable {
     var failureMetadata: FailureMetadata? = nil
     var failureTimestamp: String? = nil
 
-    /// PIPE6: true when the failure was a deterministic backend rejection (Apple Intelligence declining the transcript's language) that a same-backend retry cannot fix, so the failed-state view offers a local re-summarize instead. Matches the marker `AppleIntelligenceError` stamps into the reason, so producer and consumer cannot drift.
+    /// PIPE6: true when the failure was a deterministic backend rejection (Apple Intelligence declining the transcript's language) that a same-backend retry cannot fix. Since PIPE25 it reads the one typed cause, `.unsupportedLanguage`, which `FailurePresentation.legacy` derives from the marker `AppleIntelligenceError` stamps into the reason, so the notice and this predicate cannot disagree.
     var failureSuggestsLocalReSummarize: Bool {
         guard let reason = failureReason else { return false }
-        return reason.range(
-            of: AppleIntelligenceError.unsupportedLanguageMarker, options: .caseInsensitive
-        ) != nil
+        let facts = failureMetadata ?? FailurePresentation.legacy(reason, operation: .summary)
+        return facts.cause == .unsupportedLanguage
     }
 
     /// UX21: substring the pipeline's local-model-missing failure carries (a
@@ -1129,6 +1131,7 @@ final class MeetingStore: ObservableObject {
             modelId: (run?["model"] as? String),
             fallbackFrom: (run?["fallback_from"] as? String),
             fallbackCause: (run?["fallback_cause"] as? String),
+            fallbackLanguage: (run?["fallback_language"] as? String),
             status: status,
             failureReason: failure?.reason ?? (publishResult?.state == "partial" ? publishResult?.sinks.filter { !$0.ok }.compactMap(\.error).joined(separator: "\n\n") : nil),
             failureStage: failure?.stage.rawValue ?? (publishResult?.state == "partial" ? "publish" : nil),

@@ -566,6 +566,13 @@ final class PipelineLauncher: PipelineDriver {
     ) async throws -> Void
     private let appleSummarize: AppleSummarize
 
+    /// PIPE25: the meeting's language (pinned or ASR-detected, nil when unknown) and the
+    /// languages the system model supports (nil where it cannot say), read for a run-all's Apple
+    /// hand-off. `onDeviceLanguage` in production; a test injects both, so the CI runner, which
+    /// has no `FoundationModels`, and a test that must not read this Mac's config can drive it.
+    typealias AppleLanguage = @Sendable (_ wav: URL) -> (language: String?, supported: Set<String>?)
+    private let appleLanguage: AppleLanguage
+
     /// The Apple phase's Task, held where `cancelActiveRun` can reach it (PIPE36). It used to
     /// be unretained, and by the time it ran run-all's `.run` slot was already empty, so a
     /// Cancel logged `pipeline_cancelled` and stopped nothing. Never cleared: cancelling a
@@ -578,13 +585,25 @@ final class PipelineLauncher: PipelineDriver {
          environment: [String: String]? = nil,
          tokenSource: @escaping () -> [String: String] = { SecretsStore.liveTokens() },
          reapOrphanedServer: @escaping @Sendable () -> Void = { LocalServerReaper.reapIfOrphaned() },
-         appleSummarize: @escaping AppleSummarize = PipelineLauncher.onDeviceSummarize) {
+         appleSummarize: @escaping AppleSummarize = PipelineLauncher.onDeviceSummarize,
+         appleLanguage: @escaping AppleLanguage = PipelineLauncher.onDeviceLanguage) {
         self.maxRuntime = maxRuntime
         self.invocation = invocation
         self.environment = environment
         self.tokenSource = tokenSource
         self.reapOrphanedServer = reapOrphanedServer
         self.appleSummarize = appleSummarize
+        self.appleLanguage = appleLanguage
+    }
+
+    /// Production's `AppleLanguage`: `transcription.language` when pinned, else `<stem>.json`'s
+    /// detected language, and the system model's supported set.
+    static let onDeviceLanguage: AppleLanguage = { wav in
+        let stem = wav.deletingPathExtension().lastPathComponent
+        let transcriptJSON = wav.deletingLastPathComponent().appendingPathComponent("\(stem).json")
+        let pinned = ConfigStore(configURL: Config.defaultPath).transcriptionLanguage
+        return (AppleLanguageRoute.meetingLanguage(pinned: pinned, transcriptJSON: transcriptJSON),
+                AppleLanguageRoute.systemSupportedLanguages())
     }
 
     /// Production's `AppleSummarize`: the availability check, the meeting's context, then the
@@ -1410,26 +1429,85 @@ final class PipelineLauncher: PipelineDriver {
         let dir = wav.deletingLastPathComponent()
         let stem = wav.deletingPathExtension().lastPathComponent
         let summaryJSON = dir.appendingPathComponent("\(stem).summary.json")
+        let read = appleLanguage(wav)
+        // PIPE25 item 2: a language the system model reports unsupported never reaches it.
+        if case .skipToLocal(let language) = AppleLanguageRoute.decide(language: read.language, supported: read.supported) {
+            substituteLocal(wav: wav, language: language, trigger: "precheck",
+                            onProgress: onProgress, completion: completion)
+            return
+        }
         runAppleSummarize(anchor: wav, onProgress: onProgress) { result in
+            if case .failure(let error) = result {
+                // PIPE25 item 1: the typed refusal re-runs on the local model instead of failing
+                // the job. Any other Apple error fails as before (`unavailable` has its own fix, a
+                // parse failure is not deterministic), and a cancel arrives as `CancellationError`.
+                if case AppleIntelligenceError.unsupportedLanguage? = error as? AppleIntelligenceError {
+                    self.substituteLocal(wav: wav, language: AppleLanguageRoute.code(read.language),
+                                         trigger: "refused", onProgress: onProgress, completion: completion)
+                } else {
+                    completion(.failure(error))
+                }
+                return
+            }
+            self.publishAppleSummary(summaryJSON: summaryJSON, stem: stem, dir: dir, completion: completion)
+        }
+    }
+
+    /// The publish that follows an on-device summary, retained in the `.run` slot (PIPE36).
+    private func publishAppleSummary(
+        summaryJSON: URL, stem: String, dir: URL,
+        completion: @escaping (Result<URL?, Error>) -> Void
+    ) {
+        runMP(["publish", summaryJSON.path], timeout: 10 * 60, meeting: summaryJSON,
+              retain: .run) { result in
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success:
+                completion(.success(PublishResult.load(stem: stem, in: dir)?.pageURL))
+            }
+        }
+        // `runMP` retained the publish before returning. A Cancel that landed between the
+        // summarize's last check and that retain found the Task cancelled and the slot still
+        // empty, so it is honoured here, against the publish it missed.
+        if Task.isCancelled {
+            terminate(slots.markCancelled(.run)?.process, what: "pipeline run")
+        }
+    }
+
+    /// PIPE25: summarize on the local model instead of Apple Intelligence, then publish. The same
+    /// one-shot `--backend local` the Library's Re-summarize with the local model spawns, so
+    /// `cloudSecretPolicy` treats it as on-device and regulated or NDA cannot widen it, plus
+    /// `--fallback-from` so `<stem>.run.json` says why (the provenance line names it). A local
+    /// model that is missing or does not fit fails with the local run's own cause and remedy.
+    private func substituteLocal(
+        wav: URL, language: String?, trigger: String,
+        onProgress: ((PipelineProgress) -> Void)?,
+        completion: @escaping (Result<URL?, Error>) -> Void
+    ) {
+        let dir = wav.deletingLastPathComponent()
+        let stem = wav.deletingPathExtension().lastPathComponent
+        let transcriptMD = dir.appendingPathComponent("\(stem).md")
+        let summaryJSON = dir.appendingPathComponent("\(stem).summary.json")
+        var attributes: [String: Any] = [
+            "stem": stem, "requested": "apple_intelligence", "used": "local",
+            "reason": "unsupported_language", "trigger": trigger,
+        ]
+        if let language { attributes["language"] = language }
+        Log.event(category: "coordinator", action: "summary_backend_substituted", attributes: attributes)
+        var args = ["summarize", transcriptMD.path, "--backend", "local",
+                    "--fallback-from", "apple_intelligence:unsupported_language"]
+        if let language { args += ["--fallback-language", language] }
+        runMP(args, timeout: 20 * 60, meeting: transcriptMD, onProgress: onProgress,
+              retain: .run, backendOverride: "local") { result in
             if case .failure(let error) = result {
                 completion(.failure(error))
                 return
             }
-            self.runMP(["publish", summaryJSON.path], timeout: 10 * 60, meeting: summaryJSON,
-                       retain: .run) { result in
-                switch result {
-                case .failure(let error):
-                    completion(.failure(error))
-                case .success:
-                    completion(.success(PublishResult.load(stem: stem, in: dir)?.pageURL))
-                }
-            }
-            // `runMP` retained the publish before returning. A Cancel that landed between the
-            // summarize's last check and that retain found the Task cancelled and the slot still
-            // empty, so it is honoured here, against the publish it missed.
-            if Task.isCancelled {
-                self.terminate(self.slots.markCancelled(.run)?.process, what: "pipeline run")
-            }
+            self.publishAppleSummary(summaryJSON: summaryJSON, stem: stem, dir: dir, completion: completion)
+        }
+        if Task.isCancelled {
+            terminate(slots.markCancelled(.run)?.process, what: "pipeline run")
         }
     }
 

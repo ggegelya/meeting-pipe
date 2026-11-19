@@ -967,3 +967,52 @@ def test_an_empty_summary_from_any_engine_is_never_written(tmp_path: Path, monke
     with pytest.raises(ValueError, match="empty summary"):
         summarize(transcript, cfg=Config(), client=_EmptyClient())
     assert not (tmp_path / "20261009-121709.summary.json").exists()
+
+
+# ----- PIPE25: the daemon's Apple Intelligence -> local substitution reaches run.json -----
+
+
+def test_a_substituted_local_run_records_why_in_the_run_sidecar(tmp_path: Path, monkeypatch):
+    stem = "20260101-090002"
+    transcript = tmp_path / f"{stem}.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    _fake_summarize(tmp_path, stem, monkeypatch, backend="local", model="qwen-next")
+
+    argv = [str(transcript), "--backend", "local",
+            "--fallback-from", "apple_intelligence:unsupported_language", "--fallback-language=uk"]
+    assert summarize_mod.main(argv) == 0
+
+    payload = json.loads((tmp_path / f"{stem}.run.json").read_text(encoding="utf-8"))
+    assert payload["backend"] == "local"
+    assert payload["fallback_from"] == "apple_intelligence"
+    assert payload["fallback_cause"] == "unsupported_language"
+    assert payload["fallback_language"] == "uk"
+
+
+def test_the_substitution_flags_never_relabel_a_run_that_did_not_answer_locally(
+    tmp_path: Path, monkeypatch
+):
+    stem = "20260101-090003"
+    transcript = tmp_path / f"{stem}.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    _fake_summarize(tmp_path, stem, monkeypatch, backend="anthropic", model="claude-x")
+
+    argv = [str(transcript), "--fallback-from", "apple_intelligence:unsupported_language"]
+    assert summarize_mod.main(argv) == 0
+
+    payload = json.loads((tmp_path / f"{stem}.run.json").read_text(encoding="utf-8"))
+    assert "fallback_from" not in payload and "fallback_language" not in payload
+
+
+@pytest.mark.parametrize("argv", [
+    ["--fallback-from", "apple_intelligence:made_up"],
+    ["--fallback-from", "nowhere:unsupported_language"],
+    ["--fallback-from"],
+    ["--fallback-language", "uk"],
+    ["--fallback-from", "apple_intelligence:unsupported_language", "--fallback-language", "../x"],
+])
+def test_an_invalid_substitution_flag_is_a_usage_error(tmp_path: Path, argv, capsys):
+    transcript = tmp_path / "20260101-090004.md"
+    transcript.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
+    assert summarize_mod.main([str(transcript), *argv]) == 2
+    assert "error:" in capsys.readouterr().err

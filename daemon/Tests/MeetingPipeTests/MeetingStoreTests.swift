@@ -99,7 +99,7 @@ final class MeetingStoreTests: XCTestCase {
             try writeFile(dir.appendingPathComponent("\(stem).summary.json"), "{\"title\":\"x\"}")
         }
         try writeFile(dir.appendingPathComponent("\(fell).run.json"),
-                      "{\"stem\":\"\(fell)\",\"backend\":\"local\",\"fallback_from\":\"anthropic\",\"fallback_cause\":\"rejected_key\"}")
+                      "{\"stem\":\"\(fell)\",\"backend\":\"local\",\"fallback_from\":\"anthropic\",\"fallback_cause\":\"rejected_key\",\"fallback_language\":\"uk\"}")
         try writeFile(dir.appendingPathComponent("\(clean).run.json"),
                       "{\"stem\":\"\(clean)\",\"backend\":\"anthropic\"}")
         let store = MeetingStore(recordingsDir: dir)
@@ -115,6 +115,8 @@ final class MeetingStoreTests: XCTestCase {
         let byStem = Dictionary(uniqueKeysWithValues: captured.map { ($0.stem, $0) })
         XCTAssertEqual(byStem[fell]?.fallbackFrom, "anthropic")
         XCTAssertEqual(byStem[fell]?.fallbackCause, "rejected_key")
+        XCTAssertEqual(byStem[fell]?.fallbackLanguage, "uk", "PIPE25: the refused language is decoded")
+        XCTAssertNil(byStem[clean]?.fallbackLanguage)
         XCTAssertNil(byStem[clean]?.fallbackFrom)
         XCTAssertNil(byStem[clean]?.fallbackCause)
     }

@@ -674,6 +674,63 @@ def extract_backend_flag(argv: list[str]) -> tuple[list[str], str | None]:
     return out, override
 
 
+#: PIPE25: why a caller ran `local` in place of the engine the meeting asked for, as
+#: `--fallback-from <backend>:<cause>` tells `mp summarize`. Closed, so a typo is a
+#: usage error rather than a provenance line nobody can render.
+SUBSTITUTION_CAUSES = frozenset({"unsupported_language"})
+
+_LANGUAGE_CODE = re.compile(r"^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$")
+
+
+def extract_fallback_flags(argv: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Pull PIPE25's ``--fallback-from <backend>:<cause>`` and ``--fallback-language
+    <code>`` out of ``argv``, returning the remaining args and the validated
+    ``fallback_from`` / ``fallback_cause`` / ``fallback_language`` keys for
+    `<stem>.run.json` (empty when the flags are absent).
+
+    The daemon passes them when it re-runs an Apple Intelligence meeting on `local`
+    because the system model refused the language, so the run sidecar says why the
+    meeting was not summarized on the engine its workflow names (the OBS2 rule:
+    a substitution is never laundered into what reads as a deliberate choice).
+    Raises ``ValueError`` on a missing or invalid value, like `extract_backend_flag`.
+    """
+    out: list[str] = []
+    raw: dict[str, str] = {}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        matched = False
+        for flag in ("--fallback-from", "--fallback-language"):
+            if a == flag:
+                if i + 1 >= len(argv):
+                    raise ValueError(f"{flag} requires a value")
+                raw[flag], i, matched = argv[i + 1], i + 2, True
+                break
+            if a.startswith(flag + "="):
+                raw[flag], i, matched = a.split("=", 1)[1], i + 1, True
+                break
+        if not matched:
+            out.append(a)
+            i += 1
+    keys: dict[str, str] = {}
+    if "--fallback-from" in raw:
+        backend, _, cause = raw["--fallback-from"].partition(":")
+        if backend not in BACKENDS or cause not in SUBSTITUTION_CAUSES:
+            raise ValueError(
+                f"--fallback-from takes <backend>:<cause>, with cause one of "
+                f"{', '.join(sorted(SUBSTITUTION_CAUSES))}"
+            )
+        keys["fallback_from"], keys["fallback_cause"] = backend, cause
+    if "--fallback-language" in raw:
+        if "fallback_from" not in keys:
+            raise ValueError("--fallback-language needs --fallback-from")
+        language = raw["--fallback-language"]
+        if not _LANGUAGE_CODE.match(language):
+            raise ValueError("--fallback-language takes a language code such as uk")
+        keys["fallback_language"] = language
+    return out, keys
+
+
 def effective_sinks(cfg: Config) -> list[SinkName]:
     """The output sinks after the regulated/NDA egress clamp.
 

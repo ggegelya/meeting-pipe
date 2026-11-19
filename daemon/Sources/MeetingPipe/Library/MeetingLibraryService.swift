@@ -1308,6 +1308,17 @@ final class MeetingLibraryService {
         (outputDir(), summarizationBackend(), regulatedMode())
     }
 
+    /// PIPE25: the backend a run of `stem` resolves to now (regulated, NDA, sidecar, global), so
+    /// the language-refusal notice withholds a plain Retry while it would reach Apple again.
+    nonisolated static func resolvedBackend(
+        stem: String, in dir: URL, globalBackend: String, globalRegulated: Bool
+    ) -> String {
+        EffectiveBackend.resolve(
+            meta: MeetingMetaRead.load(stem: stem, in: dir),
+            globalRegulated: globalRegulated, globalBackend: globalBackend, override: nil
+        ).backend
+    }
+
     nonisolated static func localPreviewEngine(
         stem: String, in dir: URL, globalBackend: String, globalRegulated: Bool
     ) -> String? {

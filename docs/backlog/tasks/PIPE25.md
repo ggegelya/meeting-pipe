@@ -2,9 +2,9 @@
 id: PIPE25
 title: Apple Intelligence fails every Ukrainian meeting and the only recovery is a manual local re-summarize; fall back to local automatically on the typed unsupported-language error
 category: Pipeline
-status: new
+status: partial
 priority: P2
-comment: Filed 2026-10-24 (audit band, go-live FQ-13): 3 of 5 runs on the assessment Mac failed because Apple Intelligence rejects Ukrainian; PIPE6's typed error only enables a manual Re-summarize, and completeViaAppleIntelligence fails the job. Auto-fallback to the local chain on unsupportedLanguage, pre-check supported languages when the language is known, record the substitution in an event and run.json. [Spec](./PIPE25.md) Amended 2026-10-25 (observability band): the language-refusal notice leads with Retry summary and the unknown-cause retry line while Re-summarize with local sits below it (two futile retries on 2026-10-16); add a Swift-only unsupported_language cause derived from the marker so the notice leads with Re-summarize (or Download model) and withholds Retry, with GUIDE and README wording.
+comment: Shipped 2026-11-19 (batch 10): run-all's Apple hand-off falls back to `mp summarize --backend local --fallback-from apple_intelligence:unsupported_language` on the typed refusal, pre-checks `SystemLanguageModel.supportedLanguages` when the language is known, logs `coordinator`/`summary_backend_substituted` and records `fallback_*` in run.json (provenance names the language); the 2026-10-25 amendment ships the Swift-only `unsupported_language` cause and a notice that leads with Re-summarize (Download model first when uncached) and withholds Retry while still Apple. Owner still owes the live checks: a short Ukrainian meeting on Apple Intelligence publishes with a local summary and the reason, and meeting 20261016-095827's notice leads with Re-summarize with no Retry. [Spec](./PIPE25.md)
 ---
 
 # PIPE25: Apple Intelligence fails every Ukrainian meeting and the only recovery is a manual local re-summarize; fall back to local automatically on the typed unsupported-language error

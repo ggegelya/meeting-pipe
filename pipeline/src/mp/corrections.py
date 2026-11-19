@@ -66,6 +66,7 @@ def write_run_sidecar(
     ts: str | None = None,
     fallback_from: str | None = None,
     fallback_cause: str | None = None,
+    fallback_language: str | None = None,
 ) -> Path:
     """Snapshot the run that produced ``<stem>.summary.json``.
 
@@ -83,6 +84,9 @@ def write_run_sidecar(
     to local on a cloud failure: the backend it fell from and the typed
     ``failure_details.describe`` cause (``rejected_key``, ``credits``, ...). Both are absent on a
     run that did not fall back, so their presence alone marks a degraded summary.
+    PIPE25 adds the daemon's substitution: ``fallback_from`` ``apple_intelligence``,
+    ``fallback_cause`` ``unsupported_language``, and ``fallback_language`` (the refused
+    language's code) when it was known.
     """
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -98,6 +102,8 @@ def write_run_sidecar(
     if fallback_from and fallback_cause:
         payload["fallback_from"] = fallback_from
         payload["fallback_cause"] = fallback_cause
+        if fallback_language:
+            payload["fallback_language"] = fallback_language
     out = recordings_dir / f"{stem}.run.json"
     try:
         storage.atomic_write_text(out, json.dumps(payload, indent=2, sort_keys=True))

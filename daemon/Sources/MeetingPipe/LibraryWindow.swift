@@ -455,6 +455,16 @@ final class LibraryWindowModel: ObservableObject {
     /// The on-device engine "Re-run locally (preview)" runs for `stem`, or nil when it is not
     /// offered (TECH-A16, per meeting since PIPE52). Reads the meeting's sidecar and the config, so
     /// the Summary tab asks it from its load task, never from `body`; the sidecar read runs off main.
+    /// PIPE25: the backend a run of `stem` resolves to, read off main like `localPreviewEngine`.
+    func resolvedBackend(stem: String) async -> String? {
+        guard let gate = library?.previewGate() else { return nil }
+        return await Task.detached(priority: .userInitiated) {
+            MeetingLibraryService.resolvedBackend(
+                stem: stem, in: gate.dir, globalBackend: gate.globalBackend, globalRegulated: gate.globalRegulated
+            )
+        }.value
+    }
+
     func localPreviewEngine(stem: String) async -> String? {
         guard let gate = library?.previewGate() else { return nil }
         return await Task.detached(priority: .userInitiated) {

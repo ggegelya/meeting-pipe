@@ -47,6 +47,9 @@ struct MeetingDetailView: View {
 
     /// Corrections moved from a tab to a sheet off the "..." menu (DSN2).
     @State var showCorrectionsSheet = false
+    /// PIPE25: what the language-refusal notice needs off disk, read in its own task, never in
+    /// `body`: whether the local model is cached and whether the meeting still resolves to Apple.
+    @State private var languageFix = LanguageFixReading()
 
     /// END17 item 5: the resume-merge offer's in-flight flag and its last refusal, so the caption
     /// says what is happening and why a merge did not run.
@@ -228,19 +231,52 @@ struct MeetingDetailView: View {
                         // UX94: Preferences shows the parse-error pane, which names the line.
                         libraryModel.coordinator?.menuPreferences()
                     } else { libraryModel.coordinator?.menuPreferencesIntegrations() }
-                }, downloadModel: { libraryModel.coordinator?.downloadLocalModelNow() })
-            if case .inFlight(let label) = canRetry {
-                Text(label).font(.mpTextXS).lineLimit(1)
-            } else if meeting.failureSuggestsLocalReSummarize {
-                Button("Re-summarize with \(SummarizationEngine.local.qualified)") {
+                }, downloadModel: { libraryModel.coordinator?.downloadLocalModelNow() },
+                // PIPE25: the language refusal's fix, inside the notice and first in it.
+                reSummarizeLocal: canRetry.isOffered && meeting.failureSuggestsLocalReSummarize ? {
                     // UX108: a failed meeting can still hold an earlier summary with hand edits.
                     guard LibraryDialogs.confirmResummarize(
                         .reSummarizeWith(backend: SummarizationEngine.local.id), meeting: meeting
                     ) else { return }
                     Task { _ = await libraryModel.regenerateMeeting(stem: meeting.stem, backend: SummarizationEngine.local.id) }
-                }
+                } : nil,
+                localModelCached: languageFix.reading(for: meeting.stem).localModelCached,
+                resolvesToApple: languageFix.reading(for: meeting.stem).resolvesToApple)
+            if case .inFlight(let label) = canRetry {
+                Text(label).font(.mpTextXS).lineLimit(1)
             }
         }
+        .task(id: PublishURLsReloadKey(stem: meeting.stem, revision: store.revision)) {
+            guard meeting.failureSuggestsLocalReSummarize else { return }
+            await reloadLanguageFix()
+        }
+    }
+
+    /// PIPE25: one meeting's reading for the language-refusal notice. Until it lands the notice
+    /// assumes the model is cached and the meeting still resolves to Apple, so it never offers the
+    /// futile Retry on a guess.
+    struct LanguageFixReading {
+        var stem: String?
+        var localModelCached = true
+        var resolvesToApple = true
+
+        func reading(for stem: String) -> LanguageFixReading {
+            self.stem == stem ? self : LanguageFixReading()
+        }
+    }
+
+    @MainActor
+    private func reloadLanguageFix() async {
+        let stem = meeting.stem
+        let backend = await libraryModel.resolvedBackend(stem: stem)
+        let missing = libraryModel.coordinator?.localModelPreflight.isModelMissing() ?? false
+        // UX98: `meeting` is a captured value, so only the live-stem tracker can say the
+        // selection moved during the await.
+        guard liveness.accepts(stem, cancelled: Task.isCancelled) else { return }
+        languageFix = LanguageFixReading(
+            stem: stem, localModelCached: !missing,
+            resolvesToApple: (backend ?? SummarizationEngine.appleIntelligence.id) == SummarizationEngine.appleIntelligence.id
+        )
     }
 
     private var tabStrip: some View {

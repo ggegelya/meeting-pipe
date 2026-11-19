@@ -548,7 +548,7 @@ extension MeetingDetailView {
         guard let engine = provenanceEngine else { return nil }
         // OBS2: an `auto` run that dropped to local names what it fell from and why.
         if let fallback = SummarizationEngine.fallbackClause(
-            from: meeting.fallbackFrom, cause: meeting.fallbackCause
+            from: meeting.fallbackFrom, cause: meeting.fallbackCause, language: meeting.fallbackLanguage
         ) {
             return "\(engine.qualified), \(fallback)"
         }

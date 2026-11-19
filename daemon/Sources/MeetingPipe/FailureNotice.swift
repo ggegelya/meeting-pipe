@@ -8,6 +8,51 @@ enum FailureReport {
     }
 }
 
+/// What a `FailureNotice` offers before Details, in order (PIPE25). Pure, so the order is pinned
+/// by a test rather than by reading the view.
+enum FailureNoticeAction: Equatable {
+    case billing, downloadModel, settings, showRecording, reSummarizeLocal, retry
+
+    struct Inputs {
+        var cause: FailureMetadata.Cause
+        var isSearchModelMissing = false
+        var hasBilling = false
+        var hasSettings = false
+        var canDownloadModel = false
+        var canShowRecording = false
+        var canRetry = false
+        var canReSummarizeLocal = false
+        /// Whether the configured local model is on disk; a re-summarize before it is would fail.
+        var localModelCached = true
+        /// Whether the meeting still resolves to Apple Intelligence, where a plain retry is the
+        /// refusal again.
+        var resolvesToApple = true
+    }
+
+    static func decide(_ i: Inputs) -> [FailureNoticeAction] {
+        if i.cause == .unsupportedLanguage, i.canReSummarizeLocal {
+            // PIPE25: lead with the fix. Download first when the model is not there yet, since the
+            // re-summarize would fail on it (item 4's honest failure), and no plain Retry while
+            // the meeting would only reach Apple Intelligence again.
+            var out: [FailureNoticeAction] = []
+            if !i.localModelCached, i.canDownloadModel { out.append(.downloadModel) }
+            out.append(.reSummarizeLocal)
+            if i.canRetry, !i.resolvesToApple { out.append(.retry) }
+            return out
+        }
+        var out: [FailureNoticeAction] = []
+        if i.hasBilling { out.append(.billing) }
+        if i.cause == .modelMissing, !i.isSearchModelMissing, i.canDownloadModel {
+            out.append(.downloadModel)
+        } else if i.hasSettings {
+            out.append(.settings)
+        }
+        if i.canShowRecording { out.append(.showRecording) }
+        if i.canRetry { out.append(.retry) }
+        return out
+    }
+}
+
 struct FailureNotice: View {
     let failure: FailurePresentation
     var retryLabel = "Retry"
@@ -16,6 +61,10 @@ struct FailureNotice: View {
     var showRecording: (() -> Void)? = nil
     var settings: (() -> Void)? = nil
     var downloadModel: (() -> Void)? = nil
+    /// PIPE25: re-summarize on the local model, the fix for an Apple Intelligence language refusal.
+    var reSummarizeLocal: (() -> Void)? = nil
+    var localModelCached = true
+    var resolvesToApple = true
     @State private var showDetails = false
     @State private var downloadRequested = false
 
@@ -48,21 +97,40 @@ struct FailureNotice: View {
         .onChange(of: failure) { _, _ in downloadRequested = false }
     }
 
+    private var planned: [FailureNoticeAction] {
+        FailureNoticeAction.decide(.init(
+            cause: failure.metadata.cause, isSearchModelMissing: failure.isSearchModelMissing,
+            hasBilling: failure.billingURL != nil,
+            hasSettings: failure.settingsLabel != nil && settings != nil,
+            canDownloadModel: downloadModel != nil, canShowRecording: showRecording != nil,
+            canRetry: retry != nil, canReSummarizeLocal: reSummarizeLocal != nil,
+            localModelCached: localModelCached, resolvesToApple: resolvesToApple
+        ))
+    }
+
     @ViewBuilder
     private var actions: some View {
-        if let url = failure.billingURL {
-            Button("Open billing") { NSWorkspace.shared.open(url) }
+        ForEach(planned, id: \.self) { action in
+            switch action {
+            case .billing:
+                if let url = failure.billingURL { Button("Open billing") { NSWorkspace.shared.open(url) } }
+            case .downloadModel:
+                Button(downloadRequested ? "Downloading…" : "Download model") {
+                    downloadRequested = true
+                    downloadModel?()
+                }.disabled(downloadRequested)
+            case .settings:
+                if let label = failure.settingsLabel, let settings { Button(label, action: settings) }
+            case .showRecording:
+                if let showRecording { Button("Show recording", action: showRecording) }
+            case .reSummarizeLocal:
+                if let reSummarizeLocal {
+                    Button("Re-summarize with \(SummarizationEngine.local.qualified)", action: reSummarizeLocal)
+                }
+            case .retry:
+                if let retry { Button(retryLabel, action: retry) }
+            }
         }
-        if failure.metadata.cause == .modelMissing, !failure.isSearchModelMissing, let downloadModel {
-            Button(downloadRequested ? "Downloading…" : "Download model") {
-                downloadRequested = true
-                downloadModel()
-            }.disabled(downloadRequested)
-        } else if let label = failure.settingsLabel, let settings {
-            Button(label, action: settings)
-        }
-        if let showRecording { Button("Show recording", action: showRecording) }
-        if let retry { Button(retryLabel, action: retry) }
         Button("Details…") { showDetails = true }
             .accessibilityLabel("Failure details")
             .accessibilityIdentifier("failure-details")
