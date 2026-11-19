@@ -81,7 +81,9 @@ struct RecordingSectionView: View {
                         placeholder: "Add app\u{2026}",
                         librarySources: [:],
                         current: store.autoConsentApps,
-                        excluding: Set(store.autoConsentApps),
+                        excluding: MeetingAppChoices.allowlistExclusions(
+                            current: store.autoConsentApps, browsers: MeetingAppRegistry.shared.browserBundles
+                        ),
                         onPick: { picked in
                             guard !picked.isEmpty else { return }
                             store.addAutoConsentApp(picked)

@@ -173,7 +173,7 @@ struct WorkflowInspectorPresentation: Equatable {
 
         // SEC21 item 3: a stored title rule that does not compile scores 0 in the matcher.
         if let bad = titles.first(where: { !WorkflowMatcher.regexCompiles($0) }) {
-            let warning = "The title rule \"\(bad)\" is not a valid regular expression, so it matches nothing."
+            let warning = "The title pattern \"\(bad)\" is not valid, so it matches nothing."
             detail = detail.map { "\($0). \(warning)" } ?? warning
         }
 

@@ -36,6 +36,13 @@ enum MeetingAppChoices {
         return out.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    /// What the auto-record allowlist's picker does not offer: the apps already on it, and the
+    /// browsers, which the allowlist cannot act on (DET17 guard 1: a browser source always prompts,
+    /// whatever the list says), so offering one would be an option whose setting drops it.
+    static func allowlistExclusions(current: [String], browsers: Set<String>) -> Set<String> {
+        Set(current).union(browsers)
+    }
+
     /// The registry's half: native meeting apps and the listed browsers.
     static var registryBundles: [String] {
         let registry = MeetingAppRegistry.shared

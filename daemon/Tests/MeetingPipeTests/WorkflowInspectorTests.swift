@@ -90,7 +90,7 @@ final class WorkflowInspectorTests: XCTestCase {
 
     func test_an_invalid_title_regex_is_flagged() {
         let pane = make(workflow(rules: [WorkflowMatchingRule(bundleID: "us.zoom.xos", titleRegex: "([unclosed")]))
-        XCTAssertTrue(pane.row("Trigger")?.detail?.contains("not a valid regular expression") ?? false)
+        XCTAssertTrue(pane.row("Trigger")?.detail?.contains("is not valid, so it matches nothing") ?? false)
     }
 
     func test_an_unknown_bundle_id_falls_back_to_the_id_rather_than_inventing_a_name() {

@@ -131,6 +131,14 @@ final class WorkflowRuleTitleUX88Tests: XCTestCase {
         XCTAssertEqual(choices.map(\.name), choices.map(\.name).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending })
     }
 
+    /// A browser always prompts (DET17 guard 1), so the allowlist cannot act on one and does not offer it.
+    func test_the_allowlist_picker_does_not_offer_browsers_or_apps_already_on_it() {
+        let excluded = MeetingAppChoices.allowlistExclusions(
+            current: ["us.zoom.xos"], browsers: ["com.google.Chrome", "com.apple.Safari"]
+        )
+        XCTAssertEqual(excluded, ["us.zoom.xos", "com.google.Chrome", "com.apple.Safari"])
+    }
+
     func test_picker_offers_the_registrys_native_apps_and_browsers() {
         let ids = Set(MeetingAppChoices.registryBundles)
         XCTAssertTrue(MeetingAppRegistry.shared.nativeBundles.isSubset(of: ids))
