@@ -59,7 +59,10 @@ struct SmartFolderNameSheet: View {
     let onCancel: () -> Void
     let onConfirm: (String) -> Void
 
-    @State private var name: String = ""
+    /// No declared default (UX95): under SDK 27's `@State` macro a defaulted `@State` reassigned in
+    /// `init` keeps the declared value, so the rename sheet would open on "" instead of the name.
+    /// `init` is the only assignment.
+    @State private var name: String
     @FocusState private var fieldFocused: Bool
 
     init(
