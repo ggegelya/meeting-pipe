@@ -4,7 +4,7 @@ title: Apple Intelligence fails every Ukrainian meeting and the only recovery is
 category: Pipeline
 status: partial
 priority: P2
-comment: Shipped 2026-11-19 (batch 10): run-all's Apple hand-off falls back to `mp summarize --backend local --fallback-from apple_intelligence:unsupported_language` on the typed refusal, pre-checks `SystemLanguageModel.supportedLanguages` when the language is known, logs `coordinator`/`summary_backend_substituted` and records `fallback_*` in run.json (provenance names the language); the 2026-10-25 amendment ships the Swift-only `unsupported_language` cause and a notice that leads with Re-summarize (Download model first when uncached) and withholds Retry while still Apple. Owner still owes the live checks: a short Ukrainian meeting on Apple Intelligence publishes with a local summary and the reason, and meeting 20261016-095827's notice leads with Re-summarize with no Retry. [Spec](./PIPE25.md)
+comment: Shipped 2026-11-19 (batch 10): run-all's Apple hand-off falls back to `mp summarize --backend local --fallback-from apple_intelligence:unsupported_language` on the typed refusal, pre-checks `SystemLanguageModel.supportedLanguages` when the language is known, logs `coordinator`/`summary_backend_substituted` and records `fallback_*` in run.json (provenance names the language); the 2026-10-25 amendment ships the Swift-only `unsupported_language` cause and a notice that leads with Re-summarize (Download model first when uncached) and withholds Retry while still Apple. Owner still owes the live checks: a short Ukrainian meeting on Apple Intelligence publishes with a local summary and the reason, and meeting 20261016-095827's notice leads with Re-summarize with no Retry. [Spec](./PIPE25.md) 2026-11-21 second fix review: the language fallback covers run-all's hand-off only; a Retry or PIPE41's automatic re-run of an Apple meeting takes PIPE52's regenerate route, which has neither the pre-check nor the substitution, and is refused; see the amendment.
 ---
 
 # PIPE25: Apple Intelligence fails every Ukrainian meeting and the only recovery is a manual local re-summarize; fall back to local automatically on the typed unsupported-language error
@@ -65,3 +65,13 @@ Source: [observability audit](../../audits/2026-10-25-observability-audit.md), a
 - `FailurePresentation` tests: a diagnostics string carrying the marker yields `.unsupportedLanguage` with the new heading and explanation; one without it is unchanged.
 - A `FailureNotice` decision test (pure, over which actions are offered and in what order): the cause offers Re-summarize first and no Retry; with the local model missing it offers Download model first.
 - Owner check (confirms, not a gate): open the 2026-10-16 meeting `20261016-095827` in the Library; the notice leads with **Re-summarize with <local>** and has no Retry.
+
+## Amendment 2026-11-21 (second fix review)
+
+Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (pipeline report, M3), confirmed by reading the code at `8426758b`.
+
+The fallback exists on one of two routes. `PipelineLauncher.completeViaAppleIntelligence` carries the pre-check and substitutes the local model on `AppleIntelligenceError.unsupportedLanguage`. PIPE52's `summarizeViaAppleIntelligence(transcriptMD:completion:)` calls the shared `runAppleSummarize(anchor:onProgress:then:)` with neither. `MeetingLibraryService.regenerateMeeting` picks that route whenever the effective backend resolves to `apple_intelligence`, and `retryMeeting` sends any non-transcribe failure with a reusable transcript there.
+
+Failure: a meeting in an unsupported language on an Apple-pinned workflow. Run-all's local substitute fails transiently (remedy `retry`). PIPE41 marks it eligible and spends its one automatic re-run through `retryMeeting(stem:trigger: .auto)`, which goes back to Apple and is refused for the language. The meeting ends on the Apple refusal instead of the local error, the one automatic retry is wasted, and the owner's own Retry after any non-language failure does the same. No egress is involved; every leg is on-device.
+
+Scope: move the pre-check and the refusal substitution to where both routes share them (the caller side of `runAppleSummarize`, or the Apple branch of `regenerateMeeting`). Acceptance: a launcher test where the regenerate route meets `.unsupportedLanguage` and ends on the local model with the `refused` trigger, and a library-service test where an auto retry of such a meeting never calls the Apple summarizer. `swift test` green, 2 new tests.

@@ -4,7 +4,7 @@ title: The library move checks for in-flight work only at plan time and only fro
 category: Storage
 status: partial
 priority: P2
-comment: Shipped 2026-11-18 - LibraryMoveGuard asks the recorder's owned stems and the lane's queue depth at plan, switch and execute, claims the move in the same main-actor turn, recording starts are deferred and replayed (option b, the owner's decision of 2026-11-18; `recording_start_released` logs `waited_ms`), busy gate gains moveRunning, file fallback tests every mic.wav and counts from the newest write; 10 new tests. Owner owes closing it. [Spec](./STOR16.md)
+comment: Shipped 2026-11-18 - LibraryMoveGuard asks the recorder's owned stems and the lane's queue depth at plan, switch and execute, claims the move in the same main-actor turn, recording starts are deferred and replayed (option b, the owner's decision of 2026-11-18; `recording_start_released` logs `waited_ms`), busy gate gains moveRunning, file fallback tests every mic.wav and counts from the newest write; 10 new tests. Owner owes closing it. [Spec](./STOR16.md) 2026-11-21 second fix review: the move guard does not see the storage janitor or the orphan sweep, which start right after every settled job, the moment the guard begins to allow the move; see the amendment.
 ---
 
 # STOR16: The library move checks for in-flight work only at plan time and only from file heuristics, then executes unguarded after its confirm
@@ -62,3 +62,13 @@ Source: findings F057, F074 and F141 (data lens, all confirmed, the audit marks 
 2. [session] Implement the chosen path in item 4 and pin it in the hold test.
 
 **Progress (2026-11-18, follow-up):** the first landing missed two kinds of work. A backup or restore started from the Storage pane was invisible to the guard (its state lived on the pane, which a switch to the Recording pane destroys); both now register on the Coordinator's `LibraryMoveGuard` (`storageJobStarted` / `storageJobFinished`), and `begin()` refuses while one runs. Merge, publish-from-paste and the summary preview spawn `mp` outside the lane, so `queueDepth` missed them; `PipelineLauncher.meetingSpawnsInFlight` counts every meeting-anchored spawn in `runMP`, the one spawner, and the Coordinator asks it too. 3 new tests.
+
+## Amendment 2026-11-21 (second fix review)
+
+Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (capture report, M1), confirmed by reading the code at `8426758b`.
+
+`Coordinator.libraryBusyReason` checks the recorder's owned stems, `jobDispatcher.queueDepth` and `launcher.meetingSpawnsInFlight`. It does not check `storageJanitor` or the orphan recovery, and neither of those reads `libraryMoveInProgress` (only `MeetingSessionController` does). `reapStorage(orphanSweep:)` requests both at launch and after every settled job, against the directory captured at request time, and the janitor's body encodes audio to `<stem>.flac.writing`, renames it and deletes the WAV, while the orphan sweep merges and deletes intermediates.
+
+Failure: a re-summarize settles, the queue depth drops to zero, the janitor starts compressing a backlog, and the owner confirms a cross-volume move. `FileManager.moveItem` copies and then deletes the source. If the copy reaches a stem between the janitor deleting its WAV and renaming the `.flac.writing`, the destination gets a partial file and no WAV, and the source tree with the finished file is deleted afterwards: that meeting's audio is lost.
+
+Scope: the guard reports busy while the janitor is running or an orphan sweep is in flight, and both decline to start (and say so in a row) while a move is in progress. Acceptance: a guard test with the janitor marked running, a janitor test and an orphan-recovery test that a request during a move does no file work. `swift test` green, 3 new tests.

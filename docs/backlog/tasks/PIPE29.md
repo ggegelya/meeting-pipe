@@ -4,7 +4,7 @@ title: One meta.json that is valid JSON but not an object crashes every library-
 category: Pipeline
 status: partial
 priority: P2
-comment: Shipped 2026-11-18 - storage.read_json_object (plus the tri-state load_json_object) now backs 27 readers; every unguarded one (run sidecar, notion sidecar, doctor's marker, embeddings, roster_cmd, train_adapter, corrections corpus) treats a non-object as absent. RosterStore and VoiceprintStore are left to STOR9 on purpose. Owner still owes the close; tests only, no live run.
+comment: Shipped 2026-11-18 - storage.read_json_object (plus the tri-state load_json_object) now backs 27 readers; every unguarded one (run sidecar, notion sidecar, doctor's marker, embeddings, roster_cmd, train_adapter, corrections corpus) treats a non-object as absent. RosterStore and VoiceprintStore are left to STOR9 on purpose. Owner still owes the close; tests only, no live run. 2026-11-21 second fix review: owner decision: an unreadable sink sidecar still publishes as new, which for Notion creates a second page and overwrites the only pointer to the first (also STOR9's ground); see the amendment.
 ---
 
 # PIPE29: One meta.json that is valid JSON but not an object crashes every library-wide command, because the pipeline's hand-rolled JSON readers have three failure behaviours
@@ -63,3 +63,11 @@ Re-checked at filing: the audit counted 13 readers with 6 guarded; the full coun
 - The index manifests, the split manifest and the transcript `structured` reads, which raise by design.
 
 Red before the fix: 7 reader cases (6 readers plus the Notion upsert) and the 11 helper cases. Pins: 4.
+
+## Amendment 2026-11-21 (second fix review)
+
+Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (storage report, M3), confirmed by reading the code at `8426758b`.
+
+PIPE29 kept, and a test now pins, the sink readers' "cannot read the sidecar, so publish as new" path. `publish_notion._load_sidecar` returns `None` for a file that exists but does not parse (`log.warning("Could not parse sidecar %s; treating as new page", p)`), and `NotionPublisher.upsert` then creates a page and writes a fresh `<stem>.notion.json`. The filesystem and Obsidian readers have the same shape, where the cost is only a rewrite. For Notion the result is a duplicate page in the workspace and the loss of the one record of the first page's id, so later republishes update the copy and the original goes stale with nothing pointing at it.
+
+This is the same class STOR9 settled for the stores (a file that is present but unreadable is not the same as a missing one, and `storage.load_json_object` already tells them apart). Owner decision: for the Notion sink, fail the sink with a named reason when the sidecar is present but unreadable, and keep publish-as-new for a missing one. If taken, acceptance: the pinning test is rewritten, a test shows no page is created and the unreadable file is left in place, and the publish result names the file. Pipeline suite green, 2 tests changed or added.

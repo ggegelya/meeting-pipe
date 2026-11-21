@@ -4,7 +4,7 @@ title: Any app or clicked link can start or stop a recording, run a digest, or a
 category: Automation
 status: partial
 priority: P2
-comment: Shipped 2026-11-18 - a URL's toggle, record, record_byo, stop and digest raise a one-click confirm (AutomationGate / AutomationRouter, one panel at a time, decline logs command_declined), a URL ask prefills without running, askArgs puts -- before the question; README, GUIDE, the Automation reference and CONVENTIONS updated. Owner still owes the check that `open meetingpipe://stop` during a recording shows the confirm and the recording continues until it is accepted.
+comment: Shipped 2026-11-18 - a URL's toggle, record, record_byo, stop and digest raise a one-click confirm (AutomationGate / AutomationRouter, one panel at a time, decline logs command_declined), a URL ask prefills without running, askArgs puts -- before the question; README, GUIDE, the Automation reference and CONVENTIONS updated. Owner still owes the check that `open meetingpipe://stop` during a recording shows the confirm and the recording continues until it is accepted. 2026-11-21 second fix review: the toggle confirm states what the link would do at arrival and performs whatever the state says at accept, so it can stop a recording under a Start Recording button; see the amendment.
 ---
 
 # AUTO7: any app or clicked link can start or stop a recording, run a digest, or auto-run an Ask through the unauthenticated `meetingpipe://` scheme
@@ -51,3 +51,11 @@ A "trust automation without confirm" preference was considered and is not in sco
 - `MeetingPipeAppIntentsTests` and `AutomationReferenceTests` stay green (updated rows only).
 - `cd daemon && swift build` and `swift test` green, new test count in the commit body; `python3 scripts/truth_fences.py` clean for the new action.
 - Owner check (confirms): `open meetingpipe://stop` during a recording shows the confirm and the recording continues until it is accepted.
+
+## Amendment 2026-11-21 (second fix review)
+
+Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (privacy report, M2), confirmed by reading the code at `8426758b`.
+
+`Coordinator.handleAutomation` fixes `isRecording` when the link arrives and passes it to `automationRouter.route`, whose modal has no timeout; on accept `performAutomation` runs `session.toggleManual(surface: .automation)`, which branches on the live state. Failure: a link opens the toggle URL while idle, the alert waits, a meeting starts and is recorded, and the owner accepts "start recording": the live recording stops. Reversed, a stale stop confirm starts a new recording after the meeting ended. `record` and `stop` are not affected.
+
+Scope: resolve a toggle to start or stop at arrival, and perform nothing (with a logged row) when the state no longer matches at accept. Acceptance: a router test that changes state between present and accept in both directions. `swift test` green, 2 new tests.

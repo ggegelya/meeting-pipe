@@ -4,7 +4,7 @@ title: The Library and the pipeline resolve a meeting's title with opposite prec
 category: Pipeline
 status: partial
 priority: P2
-comment: Shipped 2026-11-18 under the owner's decision (a): user_title, then captured meeting_title, then summary.title in both trees, pinned by title-precedence-golden.json. Library labels change for meetings with a captured window topic (they now show it instead of the summary title). Owner owes one real rename + Republish to a sink; Obsidian reuse relies on PIPE31 (landed)
+comment: Shipped 2026-11-18 under the owner's decision (a): user_title, then captured meeting_title, then summary.title in both trees, pinned by title-precedence-golden.json. Library labels change for meetings with a captured window topic (they now show it instead of the summary title). Owner owes one real rename + Republish to a sink; Obsidian reuse relies on PIPE31 (landed) 2026-11-21 second fix review: a rename no longer reaches the digest, actions, Ask's index, the MCP tools or prep (they read summary.title only), and renames made before PIPE55 are outranked by the captured title with no migration; see the amendment.
 ---
 
 # PIPE55: The Library and the pipeline resolve a meeting's title with opposite precedence, so an in-app rename never reaches a sink
@@ -55,3 +55,15 @@ Related: [SEC28](./SEC28.md) adds a scrub inside `apply_meeting_title`, which th
 - With PIPE31 landed (or its `note_path` reuse carried here if this lands first), a rename plus republish leaves exactly one Obsidian note for the stem, the one `<stem>.obsidian.json` names, carrying the new title.
 - `docs/GUIDE.md` says a renamed title is what Republish sends and that a re-summarize keeps it, in the same commit.
 - `cd daemon && swift test`, `cd pipeline && uv run --extra dev pytest -q`, ruff and pyright green, with the number of new tests in the commit body; `python3 scripts/truth_fences.py` and `bash scripts/ci-local.sh` green.
+
+## Amendment 2026-11-21 (second fix review)
+
+Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (pipeline report, M2), confirmed by reading the code at `8426758b`.
+
+The rename moved out of `summary.json` and five Python readers did not follow. `UserTitleStore.write` (the only writer, used by `MeetingDetailView.writeTitle` and the inline editor) writes `<stem>.meta.json["user_title"]`. In the pipeline only `publish_notion.apply_meeting_title` resolves it (`_TITLE_KEYS = ("user_title", "meeting_title")`), which is what the sinks use. `digest`, `actions`, `embed_index._read_title`, `prep` and `mcp_tools` still read `summary.get("title")`.
+
+Failure 1, a regression on those surfaces: a meeting renamed in the Library after PIPE55 landed shows the rename on its row and in every sink, while the weekly digest, `mp actions`, Ask citations, the MCP tools and the prep card show the generated title. Before PIPE55 they showed the rename, because it lived in `summary.title`.
+
+Failure 2, no migration: a meeting renamed before PIPE55 keeps its rename in `summary.title`, which now ranks below the captured `meeting_title`, so its Library label reverts to the window topic.
+
+Scope: one Python title resolver with the `apply_meeting_title` precedence, moved out of `publish_notion` and used by the five readers; then an owner decision on migrating a `summary.title` that differs from the generated one into `user_title` (the correction record can tell an edited title from a generated one). Acceptance: one table-driven test per reader with a `user_title` in the sidecar, and a migration test if the owner takes it. Pipeline suite green, 5 new tests or more.

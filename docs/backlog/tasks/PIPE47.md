@@ -4,7 +4,7 @@ title: Merging meetings concatenates per-fragment speaker labels verbatim and dr
 category: Pipeline
 status: partial
 priority: P2
-comment: Shipped 2026-11-18 (floor items 1, 3, 4): per-recording labels renumbered, fragment names and corrections baked in, flags and voiceprints carried; item 2 (match by voice) deliberately deferred; owner owes one real merge of a split call
+comment: Shipped 2026-11-18 (floor items 1, 3, 4): per-recording labels renumbered, fragment names and corrections baked in, flags and voiceprints carried; item 2 (match by voice) deliberately deferred; owner owes one real merge of a split call 2026-11-21 second fix review: the renumbering seed reads the primary's segments only, so a fragment's speaker can be given a label the primary still holds in its embeddings or names sidecar and inherit that voiceprint or name; see the amendment.
 ---
 
 # PIPE47: Merging meetings concatenates per-fragment speaker labels verbatim and drops each fragment's speaker names, text corrections and markers
@@ -88,3 +88,13 @@ Recorded so the pickup does not re-litigate it: the alternative to item 3 was re
 1. [session] Confirm the installed build is newer than the landing commit (`./scripts/rebuild.sh` if not).
 2. [owner] Pick one of the adjacent pairs above, or any dropped call where a different person spoke first after the rejoin. Name one remote speaker in each half, then merge them from the Library's batch pane. Pass: the merged transcript keeps both names on the right turns, and no two different voices share a THEM label. Cost: one merge, and the fragments go to the Trash.
 3. [session] Read the merged stem's `.json` and `.embeddings.json` and report the label set and the voiceprint keys.
+
+## Amendment 2026-11-21 (second fix review)
+
+Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (pipeline report, M4), confirmed by reading the code at `8426758b`.
+
+`merge_meetings.fragment_label_maps` seeds the next free THEM index from the primary's segment speakers alone (the `if i == 0:` branch over `speakers`), and `_carry_sidecars` never overwrites a key that is already present (`if label in present and label not in embeddings:`). A primary can hold a THEM key with no segment: `diarize_cleanup` rewrites `<stem>.json` on a merge edit and leaves the merged-away label's vector in `<stem>.embeddings.json`, and `mp cleanup-diarization --force` after a naming leaves `<stem>.speaker_labels.json` naming a label no segment carries.
+
+Failure: the primary's segments use THEM-A and THEM-B, with a stale THEM-C vector. The fragment's first unnamed speaker is renumbered to THEM-C and its own vector is dropped because the key exists. Naming that speaker in the merged meeting enrols the stale vector, a different voice, into the roster under the new name, and later meetings match on it. With a stale overlay name the fragment's speaker also displays and publishes under the old name. Reachability is low: cleanup defaults off and is off in the owner's config.
+
+Scope: seed the next index from the union of segment labels, the overlay's `labels` keys and the embedding keys. Acceptance: a merge test with a stale primary THEM-C vector and name asserting the fragment's speaker gets THEM-D with its own vector and no name. Pipeline suite green, 1 new test.

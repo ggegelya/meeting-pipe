@@ -4,7 +4,7 @@ title: Republishing an Obsidian note with a changed body on a later day writes a
 category: Pipeline
 status: partial
 priority: P2
-comment: Shipped 2026-11-18 (reuse recorded note_path, stem-led Unicode slug, date from the stem, one as_uri helper, target-and-exists skip on all three local sinks); owner removes the orphan notes the old naming already left in the vault; PIPE23 can reuse date_from_stem
+comment: Shipped 2026-11-18 (reuse recorded note_path, stem-led Unicode slug, date from the stem, one as_uri helper, target-and-exists skip on all three local sinks); owner removes the orphan notes the old naming already left in the vault; PIPE23 can reuse date_from_stem 2026-11-21 second fix review: a changed Obsidian folder is not part of the same-target check, and a reused note path is trusted without checking the note is still this stem's; see the amendment.
 ---
 
 # PIPE31: Republishing an Obsidian note with a changed body on a later day writes a second note and orphans the first, and file_url mis-encodes #, % and ?
@@ -72,3 +72,13 @@ Sources: [independent audit](../../audits/2026-11-12-independent-audit.md) F015 
 - `test_publish_obsidian.py`: an unchanged body whose sidecar records a different `vault` writes a fresh note in the current vault and reports `idempotent: False`.
 - `test_publish_fs.py` and `test_publish_lan.py`: an unchanged signature with a changed output directory writes the three files there and reports `idempotent: False`; an unchanged signature whose recorded `summary_path` was deleted rewrites it; a true unchanged skip creates no directory.
 - `bash scripts/ci-local.sh pipeline` green, with the number of new tests in the commit body.
+
+## Amendment 2026-11-21 (second fix review)
+
+Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (pipeline-minor report, M3 and M4), confirmed by reading the code at `8426758b`.
+
+1. `ObsidianPublisher.upsert` reuses the recorded path (`note_path = recorded or self._compute_note_path(...)`), and `_recorded_note` accepts any recorded path that `is_relative_to(self._vault)`. The sidecar does not record the folder. After the owner changes the Obsidian folder setting, an unchanged republish reports idempotent with the old folder's URL and a changed one rewrites the old note; nothing lands in the new folder. This is the audit's F090 shape left open on the one leg that is not an output directory, mount path or vault comparison. Scope: require the recorded note's parent to be the configured folder, or record and compare the folder.
+
+2. The reused path is not checked against the stem. Under the old naming two same-titled meetings on one day share a path and both sidecars record it, so republishing either now rewrites the other's note. `is_relative_to` is also lexical, so a recorded path with `..` segments passes (hardening only: the sidecar is pipeline-written). Scope: write a stem marker into every note and check it before overwriting a reused path, falling back to the computed path when it names another stem.
+
+Acceptance: one test per case (folder changed, legacy collision, a `..` path). Pipeline suite green, 3 new tests.

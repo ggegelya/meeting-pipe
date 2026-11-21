@@ -4,7 +4,7 @@ title: The MCP server's `list_actions` returns model-written task text unfenced 
 category: Automation
 status: partial
 priority: P2
-comment: Shipped 2026-11-17 (awaiting owner close): every model-written title, task and owner fenced field by field in every MCP tool, task capped at 300 chars, UNTRUSTED_NOTE on list_meetings and true for every tool, actions.discover runs clean_person on owner, list_actions ranks before the cut (dated soonest, then undated newest first) and returns total/truncated; table-driven fence test over the registered tools. Remainder: owner close. [Spec](./AUTO8.md)
+comment: Shipped 2026-11-17 (awaiting owner close): every model-written title, task and owner fenced field by field in every MCP tool, task capped at 300 chars, UNTRUSTED_NOTE on list_meetings and true for every tool, actions.discover runs clean_person on owner, list_actions ranks before the cut (dated soonest, then undated newest first) and returns total/truncated; table-driven fence test over the registered tools. Remainder: owner close. [Spec](./AUTO8.md) 2026-11-21 second fix review: a due that begins with an ISO date is returned outside the untrusted-text markers with up to 70 more characters of model text; see the amendment.
 ---
 
 # AUTO8: the MCP server's `list_actions` returns model-written task text unfenced and uncapped while its own description tells the client returned text is fenced, and meeting titles are unfenced in every tool
@@ -71,3 +71,11 @@ Correction at filing: the audit's direction, "rank before applying the limit", i
 - `test_list_actions_covers_exactly_the_visible_two` and `test_list_actions_open_only_is_the_default` stay green; `cd pipeline && uv run --extra dev --extra mcp pytest -q`, ruff and pyright green.
 
 **Progress (2026-11-17):** All four scope items and both amendment items shipped with every acceptance test. Fencing is per field (each `title`, `task`, `owner` wrapped on its own) rather than one block per tool, so row shapes stay plain JSON; `test_list_actions_covers_exactly_the_visible_two` and `test_list_actions_open_only_is_the_default` therefore compare the unwrapped text, with the same visibility and default-open assertions. Beyond the spec: `get_meeting`'s fenced block also caps `task` and scrubs `owner`, since it returns the same strings, and the owner scrub in `actions.discover` reaches `mp digest` and `mp actions` as well. `TASK_MAX_CHARS` is 300, with `...` marking a cut. Found in review and fixed: `due` is model text on the Apple path too, so `actions.discover` and `get_meeting` run `clean_due` on read, an ISO `due` stays a bare value while any other `due` is fenced, and a non-ISO `due` ranks with the undated rows instead of above them (it used to sort as dated).
+
+## Amendment 2026-11-21 (second fix review)
+
+Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (privacy report, M3), confirmed by reading the code at `8426758b`.
+
+`mcp_tools.list_actions` returns `"due": a.due if dated else _fenced(a.due)`, and `dated` comes from `actions._parse_iso_date`, which parses only the first ten characters (`date.fromisoformat(value[:10])`). `clean_due` keeps up to 80 characters of one-line text. So a due that reads as a date followed by a sentence the summarizer copied from the meeting is served to an MCP client unfenced, against the tool description ("any due that is not an ISO date is fenced").
+
+Scope: treat a due as a bare value only when the whole string is a date or a full ISO datetime; fence everything else. Acceptance: the table-driven fence test gains a date-plus-trailing-text due and a datetime due. Pipeline suite green, 2 new cases.

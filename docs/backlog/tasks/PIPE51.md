@@ -4,7 +4,7 @@ title: All four publishers send the raw transcript, so speaker names and text co
 category: Pipeline
 status: partial
 priority: P2
-comment: Shipped 2026-11-18 (tested, all four sinks plus fanout and publish_notion.publish); owner owes one real rename + Republish to Notion/Obsidian to see the names land
+comment: Shipped 2026-11-18 (tested, all four sinks plus fanout and publish_notion.publish); owner owes one real rename + Republish to Notion/Obsidian to see the names land 2026-11-21 second fix review: publishing still falls back to the raw transcript on an unreadable overlay while summarize has refused since STOR9, so a publish-only run can send lines the owner corrected in their uncorrected form; see the amendment.
 ---
 
 # PIPE51: All four publishers send the raw transcript, so speaker names and text corrections made in the Library never reach Notion, Obsidian, the filesystem or LAN
@@ -51,3 +51,13 @@ Related: [STOR9](./STOR9.md) (summarize silently drops an overlay it cannot read
 - The overlay golden fixtures stay the single resolution contract: the new tests build their overlays from `Fixtures/speaker-overlay-golden.json` and `Fixtures/transcript-corrections-golden.json` cases rather than restating the resolution, and CONVENTIONS' cross-tree fixture table names the publishers as readers.
 - `cd pipeline && uv run --extra dev pytest -q` green with the new tests counted by the session that writes them; ruff and pyright green; `python3 scripts/truth_fences.py both` green.
 - README's Transcript-tab note and [docs/GUIDE.md](../../GUIDE.md)'s naming and correction recipes say, in the same commit, that a Republish carries names and corrections into every destination.
+
+## Amendment 2026-11-21 (second fix review)
+
+Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (pipeline report, M1), confirmed by reading the code at `8426758b`.
+
+Scope item 3 says publishing follows the same rule as summarize. That rule changed under it: since STOR9, `summarize.refuse_unreadable_overlays` raises `OverlayUnreadable` ("Nothing was summarized; fix or remove ..."), and `merge_meetings` calls it too. `transcript_corrections.publish_text` still documents "Fail-open exactly as `summarize` is" and returns the raw text (`return overlaid if overlaid is not None else transcript_md.read_text(...)`), pinned by `test_publish_text_falls_back_to_raw_when_an_overlay_cannot_be_read`.
+
+Failure: the owner corrects a line to take a remark out, then `<stem>.transcript_corrections.json` becomes unreadable (a partial write, a hand edit, a sync conflict). A publish-only path (Republish, a Retry of a publish-stage failure, `mp publish`) does not run summarize, so nothing refuses, and every sink receives the raw transcript with the remark in it. The filesystem and LAN signatures change, so the notes are really rewritten.
+
+Scope: `publish_text` (or `publish_router.fanout` before any sink) calls `refuse_unreadable_overlays` and the publish fails with the same named reason. Acceptance: the pinning test is rewritten to expect the refusal, a new test shows no sink is called and `<stem>.publish.json` records the reason, and the summarize and publish messages name the same file. Pipeline suite green, 2 tests changed or added.

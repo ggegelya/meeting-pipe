@@ -4,7 +4,7 @@ title: README, SETUP and CONVENTIONS state guarantees the code does not keep: mu
 category: Docs
 status: partial
 priority: P2
-comment: Shipped 2026-11-18, docs only - README's capture-first bullet says redaction is opt-in per workflow, GUIDE's Off the record says muting in the meeting app is not off the record, SETUP names Notion's Include the full transcript and drops "nothing else leaves your Mac", CONVENTIONS claims only its fixture table, names the three unpinned surfaces, and describes the restore plan's fail-closed decode. Owner owes a read-through and closing it. [Spec](./DOC20.md)
+comment: Shipped 2026-11-18, docs only - README's capture-first bullet says redaction is opt-in per workflow, GUIDE's Off the record says muting in the meeting app is not off the record, SETUP names Notion's Include the full transcript and drops "nothing else leaves your Mac", CONVENTIONS claims only its fixture table, names the three unpinned surfaces, and describes the restore plan's fail-closed decode. Owner owes a read-through and closing it. [Spec](./DOC20.md) 2026-11-21 second fix review: CONVENTIONS contradicts itself on the restore plan: the fixture table lists restore-plan-golden.json while the not-fixture-pinned paragraph says the restore plan is in no shared fixture; see the amendment.
 ---
 
 # DOC20: README, SETUP and CONVENTIONS state guarantees the code does not keep: muted spans redacted by default, only the summarizer sees the transcript, every cross-tree surface pinned by a shared fixture
@@ -65,3 +65,9 @@ One doc-truth commit (the DOC12 and HYG6 precedent), no code or copy-string chan
 No string in `daemon/Sources` changed. Whichever of this and PIPE39 lands second aligns SETUP with the Notion transcript behaviour then true.
 
 **Owner owes:** a read of the four changed passages (README "The mic is captured losslessly", GUIDE "Off the record", SETUP steps 6 and 7, CONVENTIONS "Cross-tree golden fixtures"), then closing it.
+
+## Amendment 2026-11-21 (second fix review)
+
+Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (UI report, M3), confirmed by reading the code at `8426758b`.
+
+In `CONVENTIONS.md`, the cross-tree golden fixtures table carries a `restore-plan-golden.json` (T18) row, and the "Not fixture-pinned (DOC20)" paragraph below it still lists the restore plan among the surfaces pinned only by a JSON copy inside a Swift test. One of the two is stale since T18 landed. Scope: correct the paragraph to match the table (and check the MCP status claim in the same sentence while there). Acceptance: the two statements agree and `python3 scripts/truth_fences.py both` stays green.

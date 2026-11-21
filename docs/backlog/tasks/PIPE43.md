@@ -4,7 +4,7 @@ title: Nothing stops a summary of a transcript too thin to mean anything, so 10 
 category: Pipeline
 status: partial
 priority: P2
-comment: Shipped 2026-11-19: transcript_quality.below_content_floor (150 words, 120 s speech span, owner-approved starting values) gates run_all after the suspect check with run_skipped below_content_floor and an empty marker, Swift EmptyReason.belowContentFloor (Too short); the MeetingSummary content floor binds model output only (validate_generated, and summarize refuses to write one below it) while stored files still load with a warning; the editor refuses the same; Re-summarize still overrides and clears the stale marker. Owed by the owner: a read-only check of the existing summaries (command in the body), and the live check that the next very short recording shows Too short and Re-summarize fills it.
+comment: Shipped 2026-11-19: transcript_quality.below_content_floor (150 words, 120 s speech span, owner-approved starting values) gates run_all after the suspect check with run_skipped below_content_floor and an empty marker, Swift EmptyReason.belowContentFloor (Too short); the MeetingSummary content floor binds model output only (validate_generated, and summarize refuses to write one below it) while stored files still load with a warning; the editor refuses the same; Re-summarize still overrides and clears the stale marker. Owed by the owner: a read-only check of the existing summaries (command in the body), and the live check that the next very short recording shows Too short and Re-summarize fills it. 2026-11-21 second fix review: the generated-output floor is Python-only: the Apple Intelligence writer still stores and publishes a summary with no bullets or no title; see the amendment.
 ---
 
 # PIPE43: Nothing stops a summary of a transcript too thin to mean anything, so 10 meetings of 20 s to 32 words got summaries with action items
@@ -64,3 +64,9 @@ Owner check, read-only (it opens nothing for writing and calls no engine), from 
 ```bash
 cd pipeline && uv run python -c "from pathlib import Path; from mp.config import Config; from mp.schemas import MeetingSummary; root = Path(Config.load().recording.output_dir).expanduser(); hits = [(p.name, MeetingSummary.model_validate_json(p.read_text(encoding='utf-8')).content_shortfall()) for p in sorted(root.glob('*.summary.json'))]; bad = [h for h in hits if h[1]]; print(len(hits), 'summaries,', len(bad), 'below the floor'); [print(n, s) for n, s in bad]"
 ```
+
+## Amendment 2026-11-21 (second fix review)
+
+Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (pipeline report, M5), confirmed by reading the code at `8426758b`.
+
+`AppleIntelligenceSummarizer.parse` rejects a reply only when both are empty (`!(s.title.isEmpty && s.summary.isEmpty)`), and nothing on the write path applies `MeetingSummary.titleMinLength` or `summaryMinItems`, which only the editor (`CorrectionWindow`) reads. Python's generated-output validation raises for either shortfall, but a stored file only logs a warning on read, so `mp publish` accepts what Swift wrote. Failure: an Apple map-reduce whose final reduce returns a title and an empty summary list is written as done and published. Scope: reject in `parse` (or before the write) when either floor fails, so it takes the existing parse-failure route. Acceptance: two parser tests (no bullets, no title). `swift test` green, 2 new tests.

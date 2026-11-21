@@ -4,7 +4,7 @@ title: A backup of a missing or unreadable library succeeds, stamps the last-bac
 category: Storage
 status: partial
 priority: P2
-comment: Shipped 2026-11-17 - the library root and every folder under it are checked before anything is written, the marker records library_files, a collapse to 0 is refused and a shrink below half skips retention (backup_prune_skipped). Owner still owes the close; nothing needs a live run, since the 9 new tests reproduce each loss against a temp home.
+comment: Shipped 2026-11-17 - the library root and every folder under it are checked before anything is written, the marker records library_files, a collapse to 0 is refused and a shrink below half skips retention (backup_prune_skipped). Owner still owes the close; nothing needs a live run, since the 9 new tests reproduce each loss against a temp home. 2026-11-21 second fix review: the shrink guard lasts one run: the marker is stamped with the shrunk count before the prune decision, so the next backup compares against it and retention prunes the pre-shrink archives; see the amendment.
 ---
 
 # STOR13: A backup of a missing or unreadable library succeeds, stamps the last-backup marker, and lets retention prune the archives that held recordings
@@ -56,3 +56,11 @@ All in `pipeline/src/mp/backup.py`, `run_backup` and its helpers.
 - `cd pipeline && uv run --extra dev ruff check src tests`, `uv run --extra dev --extra mcp pyright` and `uv run --extra dev pytest -q` green, with the number of new tests in the commit body; `bash scripts/ci-local.sh` green.
 
 **Progress (2026-11-17):** shipped in full against the scope above. `check_library` refuses a missing root; `_root_files` walks with `os.walk(onerror=...)` and refuses an unlistable library folder (other roots keep the silent skip, a deliberate narrowing to the spec's library); the marker gains `library_files`; a zero collapse is refused before the rename; `PRUNE_SHRINK_RATIO = 0.5` skips retention and emits `pipeline` / `backup_prune_skipped`. Both comparisons need an int `library_files` and an equal `audio_included`. Docs: CONVENTIONS backup section and marker shape, GUIDE backing-up recipe, README backup runbook.
+
+## Amendment 2026-11-21 (second fix review)
+
+Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (storage report, M1), confirmed by reading the code at `8426758b`.
+
+`backup.run_backup` writes the marker (`"library_files": library_files`) and only then computes `prune_skipped = previous is not None and library_files < previous * PRUNE_SHRINK_RATIO`. `previous` is read from that same marker by `_previous_library_files`, so on the following run it is the shrunk count, the ratio test passes, and `prune_old_backups` runs on the normal schedule. A library that lost most of its files therefore keeps its good archives for exactly one extra night; normal retention then removes them on schedule, with every run reporting success.
+
+Scope: carry the comparison baseline forward while the guard holds, for example keep the previous `library_files` in the marker as the baseline until a run at or above the ratio clears it, or until the owner acknowledges the shrink; a skipped prune must not move the baseline. Acceptance: a three-night test against a temp home (a full library, a shrink, the same shrunk library again) asserting night three still skips retention and says why, and a recovery test where the count returns and pruning resumes. Pipeline suite green, 2 new tests.
