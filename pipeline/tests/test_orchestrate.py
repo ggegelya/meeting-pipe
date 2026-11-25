@@ -901,7 +901,7 @@ def test_diarize_cleanup_failure_emits_stage_failed_and_still_summarizes(
     cleanup = [r for r in rows if r.get("stage") == "diarize_cleanup"]
     assert [r["action"] for r in cleanup] == ["stage_started", "stage_failed"]
     assert cleanup[1]["error"] == "RuntimeError"
-    assert cleanup[1]["message"] == "boom"
+    assert "message" not in cleanup[1]  # OBS3: never the exception text
 
 
 # ----- PERF25: one local client for speaker cleanup and summarize -----
@@ -1266,7 +1266,10 @@ def test_run_all_emits_run_failed_not_run_completed_on_publish_failure(
     assert "run_failed" in actions
     failed = next(r for r in rows if r["action"] == "run_failed")
     assert failed["stage"] == "publish"
-    assert "503" in failed["error"]
+    assert (failed["error_type"], failed["cause"]) == ("PublishFailed", "publish")
+    assert "error" not in failed  # OBS3: the sink's text stays in the log line
+    [publish] = [r for r in rows if r["action"] == "stage_completed" and r.get("stage") == "publish"]
+    assert publish["failures"] == ["notion"]
 
 
 # --- T6: run_all end to end through its two collaborators ---------------------
@@ -1333,10 +1336,82 @@ def test_a_summarizer_that_raises_fails_the_run_at_the_summarize_stage(
                    for r in rows)
     [failed] = [r for r in rows if r["action"] == "run_failed"]
     assert failed["error_type"] == "RuntimeError"
-    assert "model fell over" in failed["error"]
+    assert failed["cause"] == "unknown"
+    assert "error" not in failed  # OBS3: never the exception text
     assert "run_completed" not in [r["action"] for r in rows]
     # What the daemon reads to say which stage failed.
     assert json.loads(failure_path.read_text(encoding="utf-8"))["operation"] == "summary"
+
+
+def test_no_failure_row_copies_the_error_text_into_the_event_log(
+    tmp_path: Path, monkeypatch, _isolated_logs_dir: Path
+):
+    """OBS3 second fix review: a pydantic `ValidationError` quotes its `input_value`, which for
+    a summary or cleanup reply is model output or transcript text, and every Python failure row
+    used to copy `str(error)` into `pipeline_events.jsonl`, which `mp logs`, Diagnostics and
+    field packs all carry. The rows name the class and the typed cause, never the text."""
+    from pydantic import BaseModel, ValidationError
+
+    from mp import failure_details
+
+    marker = "MARKER-7f3a transcript says hello"
+
+    class _Reply(BaseModel):
+        count: int
+
+    def validation_error() -> ValidationError:
+        try:
+            _Reply.model_validate({"count": marker})
+        except ValidationError as e:
+            return e
+        raise AssertionError("expected a ValidationError")
+
+    # The premise: without the fix, the text is what would be written.
+    assert "MARKER-7f3a" in str(validation_error())
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+
+    # command_failed, from any subcommand's failure.
+    failure_details.fail_command("summarize", validation_error(), operation="summary")
+
+    # stage_failed (a cleanup reply that does not validate) and run-all's run_failed (a summary
+    # that does not).
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    wav = run_dir / "20260516-0900.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(run_dir, stem=wav.stem)
+    cfg = Config()
+    cfg.summarization.diarize_cleanup = True
+    with patch("mp.diarize_cleanup.cleanup_transcript", side_effect=validation_error()), \
+            pytest.raises(ValidationError):
+        run_all(wav, cfg=cfg, provider=FakeSummaryClient(raises=validation_error()).provider(),
+                publishers=[])
+
+    # The publish-stage run_failed, whose reason was the sinks' own error text.
+    pub_dir = tmp_path / "pub"
+    pub_dir.mkdir()
+    pub_wav = pub_dir / "20260516-1000.wav"
+    pub_wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(pub_dir, stem=pub_wav.stem)
+    run_all(pub_wav, cfg=Config(), provider=FakeSummaryClient().provider(),
+            publishers=[RecordingPublisher("notion", error=RuntimeError(marker))])
+
+    rows = read_events(_isolated_logs_dir)  # every category: the sink's own row is `publisher`
+    failures = [r for r in rows if r["action"] in {"command_failed", "run_failed", "stage_failed"}]
+    assert sorted(r["action"] for r in failures) == [
+        "command_failed", "run_failed", "run_failed", "stage_failed"]
+    [sink] = [r for r in rows if (r["category"], r["action"]) == ("publisher", "sink_failed")]
+    assert (sink["sink"], sink["error_type"], sink["cause"]) == ("notion", "RuntimeError", "publish")
+    assert "error" not in sink
+    assert "MARKER-7f3a" not in json.dumps(rows)
+    for row in failures:
+        assert "message" not in row
+        if row["action"] == "stage_failed":
+            assert row["error"] == "ValidationError"  # PIPE19's key for the class
+        else:
+            assert "error" not in row
+            assert row["error_type"] in {"ValidationError", "PublishFailed"}
+            assert row["cause"] in {"unknown", "publish"}
 
 
 # --- PIPE16: a publish-stage missing secret is a publish failure -------------
@@ -1383,7 +1458,9 @@ def test_run_all_reports_a_missing_publish_secret_as_a_failed_publish(
     assert "run_completed" not in actions
     failed = next(r for r in rows if r["action"] == "run_failed")
     assert failed["stage"] == "publish"
-    assert "NOTION_TOKEN" in failed["error"]
+    assert failed["error_type"] == "PublishFailed"
+    [publish] = [r for r in rows if r["action"] == "stage_completed" and r.get("stage") == "publish"]
+    assert publish["failures"] == ["notion"]
 
     sidecar = json.loads((tmp_path / f"{stem}.publish.json").read_text(encoding="utf-8"))
     assert sidecar["state"] == "none"

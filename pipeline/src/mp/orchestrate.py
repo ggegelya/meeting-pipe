@@ -353,9 +353,10 @@ def run_all(
     except Exception as e:
         from .failure_details import emit_failure
         operation = {"summarize": "summary", "publish": "publish", "finalize": "transcribe"}.get(heartbeat._stage, "processing")
-        emit_failure(e, operation=operation)
+        failure = emit_failure(e, operation=operation)
+        # OBS3: the class and the typed cause, never `str(e)`, which can quote transcript text.
         events.emit("pipeline", "run_failed", wav=str(wav),
-                    error=str(e), error_type=type(e).__name__)
+                    error_type=type(e).__name__, cause=failure["cause"])
         raise
     finally:
         heartbeat.stop()
@@ -668,8 +669,9 @@ def _run_all_inner(
                 # alone, so a cleanup that raised on every meeting left a
                 # `stage_started` with nothing after it and nothing on screen.
                 log.warning("diarize cleanup failed (non-fatal): %s", e)
+                # OBS3: the class only; the text can quote the model's reply.
                 events.emit("pipeline", "stage_failed", stage="diarize_cleanup",
-                            error=type(e).__name__, message=str(e)[:300])
+                            error=type(e).__name__)
                 # PERF25: a failed pass may leave the shared server spawned but
                 # unhealthy (a startup timeout, a request it was too busy to
                 # finish), and `_ensure_running` would then spawn a second one on
@@ -764,8 +766,10 @@ def _run_all_inner(
     if publish_failed(pub):
         reason = publish_failure_reason(pub)
         log.error("publish failed: %s", reason)
+        # OBS3: the sinks' own error text stays in the log line; the failed sink names are on
+        # the `stage_completed` row above.
         events.emit("pipeline", "run_failed", wav=str(wav), stage="publish",
-                    error=reason, error_type="PublishFailed")
+                    error_type="PublishFailed", cause="publish")
         return {**result, "publish_failed": True}
 
     landed = published_sinks(pub)

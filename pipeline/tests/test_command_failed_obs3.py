@@ -36,14 +36,14 @@ def _actions(rows, action):
 # --- one command_failed per failing command ---------------------------------------------------
 
 
-def test_fail_command_emits_once_with_a_typed_cause_and_a_capped_message(emitted):
+def test_fail_command_emits_once_with_a_typed_cause_and_no_message(emitted):
     payload = failure_details.fail_command("finalize", RuntimeError("x" * 500), operation="transcribe")
     rows = _actions(emitted, "command_failed")
     assert len(rows) == 1
     assert rows[0]["command"] == "finalize"
     assert rows[0]["error_type"] == "RuntimeError"
     assert rows[0]["cause"] == payload["cause"] == "unknown"
-    assert len(rows[0]["message"]) == failure_details.COMMAND_MESSAGE_CAP
+    assert "message" not in rows[0]  # the second fix review: never the exception text
 
 
 def test_a_failing_merge_emits_command_failed(tmp_path: Path, emitted):

@@ -304,8 +304,10 @@ def fanout(
             if isinstance(e, SyncedTargetError):
                 per_sink[p.name]["reason"] = e.reason
             failures.append((p.name, str(e)))
+            # OBS3: the class and the typed cause; the text (a note path, an API's echo of
+            # the page) stays in `<stem>.publish.json` and the log line above.
             events.emit("publisher", "sink_failed", sink=p.name, file=stem,
-                        error=str(e), error_type=type(e).__name__)
+                        error_type=type(e).__name__, cause=failure["cause"])
 
     landed = _landed_page(per_sink)
     out = {

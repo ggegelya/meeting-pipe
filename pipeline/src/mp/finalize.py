@@ -52,7 +52,7 @@ def finalize(
         streamed = existing_daemon_transcript(wav)
     except DaemonTranscriptError as e:
         # OBS3: the typed reason (missing, unreadable, or not the daemon's) as `error_type`.
-        events.emit("pipeline", "finalize_failed", wav=str(wav), error=str(e), error_type=type(e).__name__)
+        events.emit("pipeline", "finalize_failed", wav=str(wav), error_type=type(e).__name__)
         raise
     source = streamed.get("backend") or ("streamed" if streamed.get("streaming") else "daemon")
     events.emit("pipeline", "stage_started", stage="finalize", source=source, standalone=True)

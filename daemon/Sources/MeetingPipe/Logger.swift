@@ -100,7 +100,7 @@ enum Log {
 
     // MARK: - Failures (OBS1)
 
-    /// The cap on a failure row's `error` text, matching PIPE19's `stage_failed` `message`.
+    /// The cap on a failure row's `error` text.
     static let failureDescriptionCap = 300
 
     /// A failure is never os.Logger alone (OBS1): the unified log stores the reason as
