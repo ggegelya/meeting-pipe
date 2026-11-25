@@ -57,6 +57,7 @@ from . import (
     storage,
     transcript_corrections,
     usage,
+    visibility,
 )
 from .backend_fallback import run_with_local_fallback
 from .config import (
@@ -68,6 +69,7 @@ from .config import (
     extract_backend_flag,
     extract_fallback_flags,
     with_backend_override,
+    zero_egress,
 )
 from .markdown import render_markdown, render_summary_md
 from .markers import FLAGGED_INSTRUCTION, flagged_moments_block, markers_path
@@ -322,11 +324,19 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
 
     The workflow is the explicit series key (resolved per meeting in the meta
     sidecar); no fuzzy series inference. Assembled from local disk, so cloud and
-    local backends receive it identically and the egress profile is unchanged
-    (it routes to whichever backend already summarizes this transcript). The
-    first meeting in a workflow, one with no prior decisions/open actions, or one
-    whose language differs from this meeting's (LANG1: a foreign-language block
-    would pull the summary into the wrong language) is a clean no-op.
+    local backends receive it identically (it routes to whichever backend
+    already summarizes this transcript). The first meeting in a workflow, one
+    with no prior decisions/open actions, or one whose language differs from
+    this meeting's (LANG1: a foreign-language block would pull the summary into
+    the wrong language) is a clean no-op.
+
+    SEC34: the prompt goes to this run's backend and the summary to this run's
+    sinks, so a prior that `visibility.withheld_reason` withholds (recorded under
+    NDA or regulated mode) is skipped unless this run is itself zero-egress, and
+    the scan moves on to the next earlier meeting in the workflow. Gated on
+    `zero_egress(cfg)`, never on the backend: a local summary still publishes to
+    cloud sinks when the run is not clamped. Both outcomes leave an event (stems
+    and counts only).
     """
     meta = read_meta(transcript_md)
     workflow_id = meta.get("workflow_id")
@@ -352,14 +362,20 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
         key=lambda pair: pair[0],
         reverse=True,
     )
-    prior_stem, prior_path = next(
-        (
-            (stem, summary_json)
-            for stem, summary_json in earlier
-            if read_meta(summary_json).get("workflow_id") == workflow_id
-        ),
-        (None, None),
-    )
+    may_use_withheld = zero_egress(cfg)
+    prior_stem: str | None = None
+    prior_path: Path | None = None
+    for stem, summary_json in earlier:
+        if read_meta(summary_json).get("workflow_id") != workflow_id:
+            continue
+        reason = None if may_use_withheld else visibility.withheld_reason(out_dir, stem)
+        if reason is not None:
+            log.info("SEC34: skipping withheld prior %s (%s) for continuity", stem, reason)
+            events.emit("pipeline", "continuity_prior_withheld",
+                        stem=current_stem, prior_stem=stem, reason=reason)
+            continue
+        prior_stem, prior_path = stem, summary_json
+        break
     if prior_path is None:
         return None
 
@@ -413,6 +429,8 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
             owner = (a.owner or "unassigned").strip() or "unassigned"
             due = f" (due {a.due})" if a.due else ""
             lines.append(f"- {owner}: {_ai6_trim(a.task)}{due}")
+    events.emit("pipeline", "continuity_injected", stem=current_stem, prior_stem=prior_stem,
+                decisions=len(decisions), actions=len(open_actions))
     return "\n".join(lines)
 
 

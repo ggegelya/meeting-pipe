@@ -21,6 +21,8 @@ from mp.summarize import (
     summarize,
 )
 
+from .conftest import read_events
+
 
 def _make_summary() -> MeetingSummary:
     return MeetingSummary(
@@ -414,18 +416,26 @@ def test_no_context_override_uses_configured_context(tmp_path: Path, monkeypatch
 
 # --- AI6: recurring-series continuity ---------------------------------------
 
-def _write_prior_meeting(root: Path, stem: str, *, workflow_id: str, summary: MeetingSummary) -> None:
+def _write_prior_meeting(
+    root: Path, stem: str, *, workflow_id: str, summary: MeetingSummary,
+    extra_meta: dict | None = None,
+) -> None:
     (root / f"{stem}.summary.json").write_text(summary.model_dump_json(), encoding="utf-8")
     (root / f"{stem}.meta.json").write_text(
-        json.dumps({"workflow_id": workflow_id, "workflow_name": "Weekly"}), encoding="utf-8"
+        json.dumps({"workflow_id": workflow_id, "workflow_name": "Weekly", **(extra_meta or {})}),
+        encoding="utf-8",
     )
 
 
-def _current_meeting(root: Path, stem: str, *, workflow_id: str, workflow_name: str = "Weekly") -> Path:
+def _current_meeting(
+    root: Path, stem: str, *, workflow_id: str, workflow_name: str = "Weekly",
+    extra_meta: dict | None = None,
+) -> Path:
     md = root / f"{stem}.md"
     md.write_text("# Transcript\n\n**A**: Hi.\n", encoding="utf-8")
     (root / f"{stem}.meta.json").write_text(
-        json.dumps({"workflow_id": workflow_id, "workflow_name": workflow_name}), encoding="utf-8"
+        json.dumps({"workflow_id": workflow_id, "workflow_name": workflow_name, **(extra_meta or {})}),
+        encoding="utf-8",
     )
     return md
 
@@ -566,6 +576,133 @@ def test_ai6_prior_scan_ignores_later_meetings_in_the_workflow(tmp_path: Path):
     assert ctx is not None
     assert "Earlier decision." in ctx
     assert "Later decision." not in ctx
+
+
+# --- SEC34: a withheld prior never rides into an egressing run ---------------
+
+def _withheld_prior() -> MeetingSummary:
+    return MeetingSummary(
+        title="Acquisition terms review",
+        summary=["s"],
+        decisions=["Offer stays at the confidential number."],
+        actions=[ActionItem(task="Send the term sheet to counsel", owner="Carol",
+                            confidence="high", resolved=False)],
+        detected_language="en",
+    )
+
+
+def _assert_withheld_prior_absent(prompt: str | None) -> None:
+    assert prompt is not None
+    assert "Acquisition terms review" not in prompt
+    assert "Offer stays at the confidential number." not in prompt
+    assert "Send the term sheet to counsel" not in prompt
+    assert "Carol" not in prompt
+
+
+@pytest.mark.parametrize("flag", ["regulated_mode", "workflow_nda_mode"])
+def test_sec34_withheld_only_prior_yields_no_block(tmp_path: Path, flag: str, _isolated_logs_dir: Path):
+    """F014: a prior recorded under regulated or NDA mode, followed by an
+    unflagged meeting in the same workflow, used to put its title, decisions and
+    open actions into the cloud summarize prompt. It is the only prior, so no
+    block at all."""
+    _write_prior_meeting(tmp_path, "20260701-1000", workflow_id="wf-1",
+                         summary=_withheld_prior(), extra_meta={flag: True})
+    md = _current_meeting(tmp_path, "20260708-1000", workflow_id="wf-1")
+
+    client = _CapturingClient()
+    summarize(md, cfg=Config(recording=Recording(output_dir=tmp_path)), client=client)
+
+    _assert_withheld_prior_absent(client.system_prompt)
+    assert "Previous meeting in this series" not in (client.system_prompt or "")
+    rows = [r for r in read_events(_isolated_logs_dir) if r["action"].startswith("continuity_")]
+    reason = "regulated" if flag == "regulated_mode" else "nda"
+    assert rows == [
+        {**rows[0], "category": "pipeline", "action": "continuity_prior_withheld",
+         "stem": "20260708-1000", "prior_stem": "20260701-1000", "reason": reason},
+    ]
+
+
+def test_sec34_withheld_newest_prior_falls_back_to_the_older_visible_one(
+    tmp_path: Path, _isolated_logs_dir: Path
+):
+    visible = MeetingSummary(
+        title="Weekly sync #1", summary=["s"], decisions=["Adopt the new deploy process."],
+        actions=[ActionItem(task="Draft the migration doc", owner="Alice",
+                            confidence="high", resolved=False)],
+        detected_language="en",
+    )
+    _write_prior_meeting(tmp_path, "20260601-1000", workflow_id="wf-1", summary=visible)
+    _write_prior_meeting(tmp_path, "20260701-1000", workflow_id="wf-1",
+                         summary=_withheld_prior(), extra_meta={"workflow_nda_mode": True})
+    md = _current_meeting(tmp_path, "20260708-1000", workflow_id="wf-1")
+
+    client = _CapturingClient()
+    summarize(md, cfg=Config(recording=Recording(output_dir=tmp_path)), client=client)
+
+    sp = client.system_prompt
+    _assert_withheld_prior_absent(sp)
+    assert sp is not None
+    assert "Weekly sync #1" in sp
+    assert "Adopt the new deploy process." in sp
+    assert "Alice: Draft the migration doc" in sp
+    rows = [(r["action"], r["prior_stem"]) for r in read_events(_isolated_logs_dir)
+            if r["action"].startswith("continuity_")]
+    assert rows == [
+        ("continuity_prior_withheld", "20260701-1000"),
+        ("continuity_injected", "20260601-1000"),
+    ]
+
+
+def test_sec34_zero_egress_run_keeps_the_withheld_prior(tmp_path: Path, _isolated_logs_dir: Path):
+    """The current meeting is NDA itself, so the run is zero-egress and the block
+    never leaves the Mac: a withheld prior stays eligible."""
+    _write_prior_meeting(tmp_path, "20260701-1000", workflow_id="wf-1",
+                         summary=_withheld_prior(), extra_meta={"regulated_mode": True})
+    md = _current_meeting(tmp_path, "20260708-1000", workflow_id="wf-1",
+                          extra_meta={"workflow_nda_mode": True})
+
+    client = _CapturingClient()
+    summarize(md, cfg=Config(recording=Recording(output_dir=tmp_path)), client=client)
+
+    sp = client.system_prompt
+    assert sp is not None
+    assert "Acquisition terms review" in sp
+    assert "Carol: Send the term sheet to counsel" in sp
+    rows = [r for r in read_events(_isolated_logs_dir) if r["action"].startswith("continuity_")]
+    assert [r["action"] for r in rows] == ["continuity_injected"]
+
+
+def test_sec34_continuity_injected_carries_the_prior_stem_and_counts(
+    tmp_path: Path, _isolated_logs_dir: Path
+):
+    prior = MeetingSummary(
+        title="Weekly sync #1", summary=["s"], decisions=["D one.", "D two."],
+        actions=[
+            ActionItem(task="Open task", owner="Alice", confidence="high", resolved=False),
+            ActionItem(task="Done task", owner="Bob", confidence="high", resolved=True),
+        ],
+        detected_language="en",
+    )
+    _write_prior_meeting(tmp_path, "20260701-1000", workflow_id="wf-1", summary=prior)
+    md = _current_meeting(tmp_path, "20260708-1000", workflow_id="wf-1")
+
+    assert _prior_meeting_context(md, Config(recording=Recording(output_dir=tmp_path))) is not None
+
+    rows = [r for r in read_events(_isolated_logs_dir) if r["action"].startswith("continuity_")]
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row["category"], row["action"]) == ("pipeline", "continuity_injected")
+    assert (row["stem"], row["prior_stem"], row["decisions"], row["actions"]) == (
+        "20260708-1000", "20260701-1000", 2, 1,
+    )
+    # Counts and stems only: no title or item text in the row.
+    assert "Weekly sync" not in json.dumps(row)
+
+
+def test_sec34_no_continuity_event_when_no_block_is_built(tmp_path: Path, _isolated_logs_dir: Path):
+    md = _current_meeting(tmp_path, "20260708-0900", workflow_id="wf-lonely")
+    assert _prior_meeting_context(md, Config(recording=Recording(output_dir=tmp_path))) is None
+    assert not [r for r in read_events(_isolated_logs_dir) if r["action"].startswith("continuity_")]
 
 
 def test_ai6_skips_prior_in_a_different_language(tmp_path: Path):

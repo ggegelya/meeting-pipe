@@ -2,9 +2,10 @@
 id: SEC34
 title: The series-continuity block injects a withheld (regulated or NDA) prior meeting into the next meeting's cloud summarize prompt
 category: Security
-status: new
+status: done
 priority: P2
-comment: Filed 2026-11-13 (audit band 2026-11-13). F014: AI6's `_prior_meeting_context` picks the newest earlier meeting by `workflow_id` alone and puts its title, up to 12 decisions and 12 open actions with owners into the system prompt of whatever backend summarizes the current meeting, never consulting `visibility.withheld_reason`; the block went into 89 of 110 field summaries, none from a withheld prior (no NDA or regulated sidecar among the 113), and no event records an injection. Skip withheld priors unless the current run is zero-egress, emit an event naming the prior stem; FEAT22 step 1 may delete the block first. Promote before enabling regulated or NDA. [Spec](./SEC34.md)
+closed: 2026-11-26
+comment: Shipped 2026-11-26. `_prior_meeting_context` asks `visibility.withheld_reason` per same-workflow candidate and, unless the current run is `zero_egress`, skips an NDA or regulated prior (logged, `continuity_prior_withheld` with `reason`) and continues to the next earlier one; a built block emits `continuity_injected` (stems and counts). Owner kept series continuity (2026-11-25), so FEAT22 step 1 no longer removes F014. 6 new tests in `test_summarize.py` (the leak measured red first; AI6 read-count test unchanged), pytest 2600 to 2606. `ci-local.sh` all green (fences, shellcheck, ruff, pyright, pytest, swift build, swift test 4377 + Core 685, DIST4/5/8/9, SEC17/23). [Spec](./SEC34.md)
 ---
 
 # SEC34: The series-continuity block injects a withheld (regulated or NDA) prior meeting into the next meeting's cloud summarize prompt
@@ -24,6 +25,8 @@ Source: [independent audit](../../audits/2026-11-12-independent-audit.md) findin
 **Correction at filing:** the gate belongs on the current run's `zero_egress(cfg)`, not on its backend. A local-backend run that is not zero-egress still publishes its summary, carried-over items included, to Notion or another cloud sink, so "the backend is local" is not permission to include a withheld prior.
 
 **Decide first.** [FEAT22](./FEAT22.md) step 1 lists series continuity among the immediate cuts ("series continuity (removes F014 with it)"), and [CAL3](./CAL3.md) (deferred) holds the series-key redesign. If FEAT22 step 1 deletes `_prior_meeting_context`, this task closes as moot with that commit named. If the block stays, this is the fix.
+
+**Decided (owner, 2026-11-25):** keep series continuity and fix it now. FEAT22 step 1 does not delete `_prior_meeting_context`, so this task is the fix and does not close as moot.
 
 ## Scope
 
