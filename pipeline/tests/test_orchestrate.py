@@ -41,6 +41,7 @@ from mp.roster import EMBEDDING_DIM, RosterStore
 from mp.schemas import MeetingSummary
 from mp.voiceprint import VoiceprintStore
 
+from .conftest import FakeSummaryClient, RecordingPublisher, read_events
 from .fake_health import answer_health
 
 
@@ -87,16 +88,13 @@ def test_force_byo_skips_summarize_and_publish(tmp_path: Path, monkeypatch):
     wav.write_bytes(b"")
     _write_fluidaudio_sidecar(tmp_path, stem=stem)
     cfg = Config()
+    client, publisher = FakeSummaryClient(), RecordingPublisher()
 
-    summarize_called = []
-    publish_called = []
+    result = run_all(wav, cfg=cfg, force_byo=True,
+                     provider=client.provider(), publishers=[publisher])
 
-    with patch("mp.orchestrate.summarize", side_effect=lambda *a, **k: summarize_called.append(1) or {}), \
-         patch("mp.orchestrate.publish_fanout", side_effect=lambda *a, **k: publish_called.append(1) or {}):
-        result = run_all(wav, cfg=cfg, force_byo=True)
-
-    assert summarize_called == []
-    assert publish_called == []
+    assert client.calls == []
+    assert publisher.upserts == []
     assert result["skipped"] == "byo"
     assert result["page_id"] is None
     assert "manual_bundle" in result
@@ -114,33 +112,37 @@ def test_env_var_triggers_byo(tmp_path: Path, monkeypatch):
     wav.write_bytes(b"")
     _write_fluidaudio_sidecar(tmp_path, stem=stem)
     cfg = Config()
+    client, publisher = FakeSummaryClient(), RecordingPublisher()
 
-    with patch("mp.orchestrate.summarize") as s, \
-         patch("mp.orchestrate.publish_fanout") as p:
-        result = run_all(wav, cfg=cfg)
+    result = run_all(wav, cfg=cfg, provider=client.provider(), publishers=[publisher])
 
-    s.assert_not_called()
-    p.assert_not_called()
+    assert client.calls == []
+    assert publisher.upserts == []
     assert result["skipped"] == "byo"
 
 
 def test_run_all_threads_backend_override_to_summarize(tmp_path: Path, monkeypatch):
     """PIPE6: a one-shot backend override reaches the summarize call, so a re-run
     over the existing transcript uses the chosen backend without rewriting the
-    workflow."""
+    workflow. T6: pinned by which provider row answered and what the run sidecar
+    recorded, not by the keyword a mock was called with."""
     monkeypatch.delenv("MP_FORCE_BYO", raising=False)
     stem = "20260707-1500"
     wav = tmp_path / f"{stem}.wav"
     wav.write_bytes(b"")
     _write_fluidaudio_sidecar(tmp_path, stem=stem)
-    summary_json = tmp_path / f"{stem}.summary.json"
-    summary_json.write_text("{}", encoding="utf-8")
+    local, cloud = FakeSummaryClient(backend_id="local"), FakeSummaryClient(backend_id="anthropic")
+    monkeypatch.setitem(providers.PROVIDERS, "local", local.provider())
+    monkeypatch.setitem(providers.PROVIDERS, "anthropic", cloud.provider())
 
-    with patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}) as s, \
-         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
-        run_all(wav, cfg=Config(), backend="local")
+    cfg = Config()
+    assert cfg.summarization.backend == "anthropic"
+    run_all(wav, cfg=cfg, backend="local", publishers=[])
 
-    assert s.call_args.kwargs["backend"] == "local"
+    assert len(local.calls) == 1
+    assert cloud.calls == []
+    run = json.loads((tmp_path / f"{stem}.run.json").read_text(encoding="utf-8"))
+    assert run["backend"] == "local"
 
 
 def test_fluidaudio_sidecar_skips_finalize_diarization(tmp_path: Path, monkeypatch):
@@ -154,12 +156,9 @@ def test_fluidaudio_sidecar_skips_finalize_diarization(tmp_path: Path, monkeypat
     json_path = _write_fluidaudio_sidecar(tmp_path, stem=stem)
 
     cfg = Config()
-    summary_json = tmp_path / f"{stem}.summary.json"
-    summary_json.write_text("{}", encoding="utf-8")
 
-    with patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
-         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
-        result = run_all(wav, cfg=cfg)
+    result = run_all(wav, cfg=cfg, provider=FakeSummaryClient().provider(),
+                     publishers=[RecordingPublisher()])
 
     assert result["page_id"] == "p"
 
@@ -188,17 +187,13 @@ def test_finalize_falls_back_to_channel_aware_when_labels_missing(tmp_path: Path
     )
 
     cfg = Config()
-    summary_json = tmp_path / f"{stem}.summary.json"
-    summary_json.write_text("{}", encoding="utf-8")
 
     def fake_label_by_channel(segs, _wav):
         return [{**s, "speaker": "speaker_user"} for s in segs]
 
     with patch("mp.orchestrate.is_stereo_recording", return_value=True), \
-         patch("mp.orchestrate.assign_speakers_by_channel", side_effect=fake_label_by_channel), \
-         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
-         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
-        run_all(wav, cfg=cfg)
+         patch("mp.orchestrate.assign_speakers_by_channel", side_effect=fake_label_by_channel):
+        run_all(wav, cfg=cfg, provider=FakeSummaryClient().provider(), publishers=[])
 
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["finalized"] is True
@@ -224,13 +219,9 @@ def test_finalize_marks_failed_when_mono_and_unlabelled(tmp_path: Path, monkeypa
     )
 
     cfg = Config()
-    summary_json = tmp_path / f"{stem}.summary.json"
-    summary_json.write_text("{}", encoding="utf-8")
 
-    with patch("mp.orchestrate.is_stereo_recording", return_value=False), \
-         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
-         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
-        run_all(wav, cfg=cfg)
+    with patch("mp.orchestrate.is_stereo_recording", return_value=False):
+        run_all(wav, cfg=cfg, provider=FakeSummaryClient().provider(), publishers=[])
 
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["diarization_failed"] is True
@@ -750,12 +741,11 @@ def test_no_speech_short_circuits_before_byo(tmp_path: Path, monkeypatch):
     wav.write_bytes(b"")
     _write_fluidaudio_sidecar(tmp_path, stem=stem, segments=[])
     cfg = Config()
+    client, publisher = FakeSummaryClient(), RecordingPublisher()
 
-    with patch("mp.orchestrate.summarize") as s, \
-         patch("mp.orchestrate.publish_fanout") as p:
-        result = run_all(wav, cfg=cfg)
-    s.assert_not_called()
-    p.assert_not_called()
+    result = run_all(wav, cfg=cfg, provider=client.provider(), publishers=[publisher])
+    assert client.calls == []
+    assert publisher.upserts == []
     assert result["skipped"] == "no_speech"
     assert "manual_bundle" not in result
 
@@ -784,12 +774,11 @@ def test_suspect_transcript_short_circuits(tmp_path: Path, monkeypatch):
     ]
     _write_fluidaudio_sidecar(tmp_path, stem=stem, segments=looping)
     cfg = Config()
+    client, publisher = FakeSummaryClient(), RecordingPublisher()
 
-    with patch("mp.orchestrate.summarize") as s, \
-         patch("mp.orchestrate.publish_fanout") as p:
-        result = run_all(wav, cfg=cfg)
-    s.assert_not_called()
-    p.assert_not_called()
+    result = run_all(wav, cfg=cfg, provider=client.provider(), publishers=[publisher])
+    assert client.calls == []
+    assert publisher.upserts == []
     assert result["skipped"] == "suspect_transcript"
 
     marker = tmp_path / f"{stem}.empty.json"
@@ -800,7 +789,7 @@ def test_suspect_transcript_short_circuits(tmp_path: Path, monkeypatch):
 
 @pytest.mark.content_floor
 def test_a_transcript_below_the_content_floor_is_kept_but_not_summarized(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, _isolated_logs_dir: Path
 ):
     """PIPE43: a 20 s, 32-word fragment gets an empty marker with its own reason and a
     `run_skipped` event with the counts, and no summarize call."""
@@ -811,18 +800,17 @@ def test_a_transcript_below_the_content_floor_is_kept_but_not_summarized(
     _write_fluidaudio_sidecar(tmp_path, stem=stem, segments=[
         {"start": 0.0, "end": 20.0, "text": " ".join(["word"] * 32), "speaker": "speaker_0"},
     ])
-    emitted: list[tuple[tuple, dict]] = []
-    monkeypatch.setattr("mp.orchestrate.events.emit", lambda *a, **k: emitted.append((a, k)))
+    client, publisher = FakeSummaryClient(), RecordingPublisher()
 
-    with patch("mp.orchestrate.summarize") as s, \
-         patch("mp.orchestrate.publish_fanout") as p:
-        result = run_all(wav, cfg=Config())
-    s.assert_not_called()
-    p.assert_not_called()
+    result = run_all(wav, cfg=Config(), provider=client.provider(), publishers=[publisher])
+    assert client.calls == []
+    assert publisher.upserts == []
     assert result["skipped"] == "below_content_floor"
     payload = json.loads((tmp_path / f"{stem}.empty.json").read_text(encoding="utf-8"))
     assert payload["reason"] == "below_content_floor"
-    skipped = [k for a, k in emitted if a == ("pipeline", "run_skipped")]
+    skipped = [{k: r[k] for k in ("wav", "reason", "words", "span_s")}
+               for r in read_events(_isolated_logs_dir)
+               if (r["category"], r["action"]) == ("pipeline", "run_skipped")]
     assert skipped == [{"wav": str(wav), "reason": "below_content_floor",
                         "words": 32, "span_s": 20.0}]
 
@@ -839,11 +827,10 @@ def test_a_transcript_above_the_content_floor_reaches_summarize(tmp_path: Path, 
          "speaker": f"speaker_{i % 2}"}
         for i in range(30)
     ])
-    with patch("mp.orchestrate.summarize", side_effect=RuntimeError("reached summarize")) as s, \
-         patch("mp.orchestrate.publish_fanout"):
-        with pytest.raises(RuntimeError, match="reached summarize"):
-            run_all(wav, cfg=Config())
-    s.assert_called_once()
+    client = FakeSummaryClient(raises=RuntimeError("reached summarize"))
+    with pytest.raises(RuntimeError, match="reached summarize"):
+        run_all(wav, cfg=Config(), provider=client.provider(), publishers=[])
+    assert len(client.calls) == 1
     assert not (tmp_path / f"{stem}.empty.json").exists()
 
 
@@ -857,8 +844,7 @@ def test_diarize_cleanup_runs_when_enabled(tmp_path: Path, monkeypatch):
     _write_fluidaudio_sidecar(tmp_path, stem=stem)  # two speakers
     cfg = Config()
     cfg.summarization.diarize_cleanup = True
-    summary_json = tmp_path / f"{stem}.summary.json"
-    summary_json.write_text("{}", encoding="utf-8")
+    client = FakeSummaryClient()
 
     cleanup_calls = []
 
@@ -867,12 +853,11 @@ def test_diarize_cleanup_runs_when_enabled(tmp_path: Path, monkeypatch):
         return {"json": path, "md": tmp_path / f"{stem}.md",
                 "merges_count": 1, "reattributions_count": 0, "latency_ms": 3}
 
-    with patch("mp.diarize_cleanup.cleanup_transcript", side_effect=fake_cleanup), \
-         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
-         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
-        run_all(wav, cfg=cfg)
+    with patch("mp.diarize_cleanup.cleanup_transcript", side_effect=fake_cleanup):
+        run_all(wav, cfg=cfg, provider=client.provider(), publishers=[])
 
     assert len(cleanup_calls) == 1
+    assert len(client.calls) == 1
 
 
 def test_diarize_cleanup_skipped_when_disabled(tmp_path: Path, monkeypatch):
@@ -882,49 +867,37 @@ def test_diarize_cleanup_skipped_when_disabled(tmp_path: Path, monkeypatch):
     wav = tmp_path / f"{stem}.wav"
     wav.write_bytes(b"")
     _write_fluidaudio_sidecar(tmp_path, stem=stem)
-    summary_json = tmp_path / f"{stem}.summary.json"
-    summary_json.write_text("{}", encoding="utf-8")
 
     cleanup_calls = []
 
     with patch("mp.diarize_cleanup.cleanup_transcript",
-               side_effect=lambda *a, **k: cleanup_calls.append(1) or {}), \
-         patch("mp.orchestrate.summarize", return_value={"json": summary_json, "md": tmp_path / "x.md"}), \
-         patch("mp.orchestrate.publish_fanout", return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
-        run_all(wav, cfg=Config())
+               side_effect=lambda *a, **k: cleanup_calls.append(1) or {}):
+        run_all(wav, cfg=Config(), provider=FakeSummaryClient().provider(), publishers=[])
 
     assert cleanup_calls == []
 
 
 def test_diarize_cleanup_failure_emits_stage_failed_and_still_summarizes(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, _isolated_logs_dir: Path
 ):
     """PIPE19: a cleanup exception stays non-fatal but is no longer silent. It
     used to be one `pipeline.log` warning after a `stage_started` with nothing
     following it, which is how cleanup never running on openai and claude_cli
     went unnoticed."""
     monkeypatch.delenv("MP_FORCE_BYO", raising=False)
-    logs = tmp_path / "logs"
-    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(logs))
     stem = "20260516-0900"
     wav = tmp_path / f"{stem}.wav"
     wav.write_bytes(b"")
     _write_fluidaudio_sidecar(tmp_path, stem=stem)
     cfg = Config()
     cfg.summarization.diarize_cleanup = True
-    summary_json = tmp_path / f"{stem}.summary.json"
-    summary_json.write_text("{}", encoding="utf-8")
+    client = FakeSummaryClient()
 
-    with patch("mp.diarize_cleanup.cleanup_transcript", side_effect=RuntimeError("boom")), \
-         patch("mp.orchestrate.summarize",
-               return_value={"json": summary_json, "md": tmp_path / "x.md"}) as s, \
-         patch("mp.orchestrate.publish_fanout",
-               return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
-        run_all(wav, cfg=cfg)
+    with patch("mp.diarize_cleanup.cleanup_transcript", side_effect=RuntimeError("boom")):
+        run_all(wav, cfg=cfg, provider=client.provider(), publishers=[])
 
-    s.assert_called_once()
-    rows = [json.loads(line) for line in
-            (logs / "pipeline_events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(client.calls) == 1
+    rows = read_events(_isolated_logs_dir)
     cleanup = [r for r in rows if r.get("stage") == "diarize_cleanup"]
     assert [r["action"] for r in cleanup] == ["stage_started", "stage_failed"]
     assert cleanup[1]["error"] == "RuntimeError"
@@ -1033,9 +1006,7 @@ def test_local_cleanup_and_summarize_share_one_server(tmp_path: Path, monkeypatc
     cfg.summarization.diarize_cleanup = True
     cfg.summarization.local_endpoint = f"http://127.0.0.1:{server.server_address[1]}"
 
-    with patch("mp.orchestrate.publish_fanout",
-               return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
-        result = run_all(wav, cfg=cfg)
+    result = run_all(wav, cfg=cfg, publishers=[RecordingPublisher()])
 
     assert server.requests[0] == "speaker_edits"        # cleanup ran on the model
     assert server.requests[-1] == "meeting_summary"     # and summarize after it
@@ -1074,9 +1045,7 @@ def test_failed_local_cleanup_closes_the_shared_server_before_summarize(
     cfg.summarization.diarize_cleanup = True
     cfg.summarization.local_endpoint = f"http://127.0.0.1:{server.server_address[1]}"
 
-    with patch("mp.orchestrate.publish_fanout",
-               return_value={"page_id": "p", "page_url": "u", "idempotent": False}):
-        result = run_all(wav, cfg=cfg)
+    result = run_all(wav, cfg=cfg, publishers=[RecordingPublisher()])
 
     assert counts["spawn_over_live"] == 0
     assert counts == {"spawn": 2, "close": 2, "spawn_over_live": 0}
@@ -1086,7 +1055,9 @@ def test_failed_local_cleanup_closes_the_shared_server_before_summarize(
 
 def test_cloud_backend_builds_cleanup_and_summarize_clients_as_before(tmp_path: Path, monkeypatch):
     """Only `local` shares. On `anthropic` neither callee is handed a client, so
-    each builds its own exactly as it did before PERF25."""
+    each builds its own exactly as it did before PERF25. T6: the summary client is
+    observed being built from the `anthropic` row, by `summarize` itself, and the
+    `local` row is never built."""
     monkeypatch.delenv("MP_FORCE_BYO", raising=False)
     stem = "20260516-0900"
     wav = tmp_path / f"{stem}.wav"
@@ -1095,21 +1066,17 @@ def test_cloud_backend_builds_cleanup_and_summarize_clients_as_before(tmp_path: 
     cfg = Config()
     cfg.summarization.backend = "anthropic"
     cfg.summarization.diarize_cleanup = True
-    summary_json = tmp_path / f"{stem}.summary.json"
-    summary_json.write_text("{}", encoding="utf-8")
+    local, cloud = FakeSummaryClient(backend_id="local"), FakeSummaryClient(backend_id="anthropic")
+    monkeypatch.setitem(providers.PROVIDERS, "local", local.provider())
+    monkeypatch.setitem(providers.PROVIDERS, "anthropic", cloud.provider())
 
     with patch("mp.diarize_cleanup.cleanup_transcript",
-               return_value={"merges_count": 0, "reattributions_count": 0}) as c, \
-         patch("mp.orchestrate.summarize",
-               return_value={"json": summary_json, "md": tmp_path / "x.md"}) as s, \
-         patch("mp.orchestrate.publish_fanout",
-               return_value={"page_id": "p", "page_url": "u", "idempotent": False}), \
-         patch("mp.providers.lookup", wraps=providers.lookup) as row:
-        run_all(wav, cfg=cfg)
+               return_value={"merges_count": 0, "reattributions_count": 0}) as c:
+        run_all(wav, cfg=cfg, publishers=[])
 
     assert "client" not in c.call_args.kwargs
-    assert "client" not in s.call_args.kwargs
-    assert all(call.args[0] != "local" for call in row.call_args_list)
+    assert (cloud.builds, len(cloud.calls)) == (1, 1)
+    assert local.builds == 0
 
 
 def test_apple_intelligence_hands_off_and_writes_sentinel(tmp_path: Path, monkeypatch):
@@ -1122,13 +1089,12 @@ def test_apple_intelligence_hands_off_and_writes_sentinel(tmp_path: Path, monkey
     _write_fluidaudio_sidecar(tmp_path, stem=stem)
     cfg = Config()
     cfg.summarization.backend = "apple_intelligence"
+    client, publisher = FakeSummaryClient(), RecordingPublisher()
 
-    with patch("mp.orchestrate.summarize") as s, \
-         patch("mp.orchestrate.publish_fanout") as p:
-        result = run_all(wav, cfg=cfg)
+    result = run_all(wav, cfg=cfg, provider=client.provider(), publishers=[publisher])
 
-    s.assert_not_called()
-    p.assert_not_called()
+    assert client.calls == []
+    assert publisher.upserts == []
     assert result["skipped"] == "apple_pending"
     sentinel = tmp_path / f"{stem}.apple_pending.json"
     assert sentinel.exists()
@@ -1221,10 +1187,10 @@ def test_local_backend_over_threshold_reaches_summarize_without_bundle(tmp_path:
     cfg.summarization.backend = "local"
     cfg.summarization.skip_above_chars = 1  # any non-empty transcript exceeds this
 
-    with patch("mp.orchestrate.summarize", side_effect=RuntimeError("reached summarize")) as s:
-        with pytest.raises(RuntimeError, match="reached summarize"):
-            run_all(wav, cfg=cfg)
-    s.assert_called_once()
+    client = FakeSummaryClient(raises=RuntimeError("reached summarize"))
+    with pytest.raises(RuntimeError, match="reached summarize"):
+        run_all(wav, cfg=cfg, provider=client.provider(), publishers=[])
+    assert len(client.calls) == 1
     assert not (tmp_path / f"{stem}.READY_FOR_MANUAL.md").exists()
 
 
@@ -1262,32 +1228,25 @@ def test_manual_bundle_without_markers_has_no_flagged_section(tmp_path: Path):
 # --- PIPE1 / AUD-14: an all-sinks-failed run is not a completed run ----------
 
 
-def _all_sinks_failed_result() -> dict:
-    return {
-        "page_id": None,
-        "page_url": None,
-        "sinks": {"notion": {"error": "503 from api.notion.com"}},
-        "failures": [("notion", "503 from api.notion.com")],
-    }
+def _all_sinks_failed() -> list[RecordingPublisher]:
+    return [RecordingPublisher("notion", error=RuntimeError("503 from api.notion.com"))]
 
 
-def _run_with_publish_result(tmp_path: Path, pub: dict, monkeypatch) -> dict:
+def _run_with_publishers(tmp_path: Path, publishers: list, monkeypatch) -> dict:
     monkeypatch.delenv("MP_FORCE_BYO", raising=False)
     stem = "20260516-0900"
     wav = tmp_path / f"{stem}.wav"
     wav.write_bytes(b"")
     _write_fluidaudio_sidecar(tmp_path, stem=stem)
-    summary_json = tmp_path / f"{stem}.summary.json"
-    summary_json.write_text("{}", encoding="utf-8")
-    with patch("mp.orchestrate.summarize",
-               return_value={"json": summary_json, "md": tmp_path / f"{stem}.summary.md"}), \
-         patch("mp.orchestrate.publish_fanout", return_value=pub):
-        return run_all(wav, cfg=Config())
+    return run_all(wav, cfg=Config(), provider=FakeSummaryClient().provider(),
+                   publishers=publishers)
 
 
 def test_run_all_flags_publish_failed_when_every_sink_failed(tmp_path: Path, monkeypatch):
-    result = _run_with_publish_result(tmp_path, _all_sinks_failed_result(), monkeypatch)
+    publishers = _all_sinks_failed()
+    result = _run_with_publishers(tmp_path, publishers, monkeypatch)
     assert result["publish_failed"] is True
+    assert len(publishers[0].upserts) == 1
     # The transcript and summary are real work and stay addressable, which is what
     # lets the daemon offer a publish-only retry instead of re-summarizing.
     assert result["summary_json"]
@@ -1295,28 +1254,96 @@ def test_run_all_flags_publish_failed_when_every_sink_failed(tmp_path: Path, mon
 
 
 def test_run_all_emits_run_failed_not_run_completed_on_publish_failure(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, _isolated_logs_dir: Path
 ):
     """The daemon keyed "clear the error sidecar, notify published" off a zero exit
     while the event log said `run_completed`. Both had to stop lying."""
-    emitted: list[tuple] = []
-    monkeypatch.setattr("mp.orchestrate.events.emit",
-                        lambda cat, action, **attrs: emitted.append((cat, action, attrs)))
-    _run_with_publish_result(tmp_path, _all_sinks_failed_result(), monkeypatch)
+    _run_with_publishers(tmp_path, _all_sinks_failed(), monkeypatch)
 
-    actions = [a for _, a, _ in emitted]
+    rows = [r for r in read_events(_isolated_logs_dir) if r["category"] == "pipeline"]
+    actions = [r["action"] for r in rows]
     assert "run_completed" not in actions
     assert "run_failed" in actions
-    failed = next(attrs for _, a, attrs in emitted if a == "run_failed")
+    failed = next(r for r in rows if r["action"] == "run_failed")
     assert failed["stage"] == "publish"
     assert "503" in failed["error"]
+
+
+# --- T6: run_all end to end through its two collaborators ---------------------
+
+
+def test_a_normal_run_writes_the_summary_the_publisher_then_receives(
+    tmp_path: Path, monkeypatch, _isolated_logs_dir: Path
+):
+    """The real `summarize` and the real `fanout`, with only the model and the sink
+    faked: what the client answered is what lands in `<stem>.summary.json`, and that
+    file's content is what the publisher is handed, beside its own sidecar."""
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
+    client, publisher = FakeSummaryClient(), RecordingPublisher()
+
+    result = run_all(wav, cfg=Config(), provider=client.provider(), publishers=[publisher])
+
+    summary_json = tmp_path / f"{stem}.summary.json"
+    assert result["summary_json"] == str(summary_json)
+    written = MeetingSummary.model_validate_json(summary_json.read_text(encoding="utf-8"))
+    assert written.summary == client.summary.summary
+    assert client.builds == 1
+    [call] = client.calls
+    assert "Hi." in call["transcript"] and "World." in call["transcript"]
+    assert call["system_prompt"]
+    [upsert] = publisher.upserts
+    assert upsert["summary"].summary == written.summary
+    assert upsert["sidecar_path"] == tmp_path / f"{stem}.recording.json"
+    assert upsert["transcript_md"] == tmp_path / f"{stem}.md"
+    outcome = json.loads((tmp_path / f"{stem}.publish.json").read_text(encoding="utf-8"))
+    assert outcome["state"] == "full"
+    run = json.loads((tmp_path / f"{stem}.run.json").read_text(encoding="utf-8"))
+    assert run["backend"] == "fake"
+    actions = [r["action"] for r in read_events(_isolated_logs_dir) if r["category"] == "pipeline"]
+    assert actions[-1] == "run_completed"
+    assert "run_failed" not in actions
+
+
+def test_a_summarizer_that_raises_fails_the_run_at_the_summarize_stage(
+    tmp_path: Path, monkeypatch, _isolated_logs_dir: Path
+):
+    monkeypatch.delenv("MP_FORCE_BYO", raising=False)
+    failure_path = tmp_path / "failure.json"
+    monkeypatch.setenv("MP_FAILURE_PATH", str(failure_path))
+    stem = "20260516-0900"
+    wav = tmp_path / f"{stem}.wav"
+    wav.write_bytes(b"")
+    _write_fluidaudio_sidecar(tmp_path, stem=stem)
+    client = FakeSummaryClient(raises=RuntimeError("model fell over"))
+    publisher = RecordingPublisher()
+
+    with pytest.raises(RuntimeError, match="model fell over"):
+        run_all(wav, cfg=Config(), provider=client.provider(), publishers=[publisher])
+
+    assert len(client.calls) == 1
+    assert publisher.upserts == []
+    assert not (tmp_path / f"{stem}.summary.json").exists()
+    rows = [r for r in read_events(_isolated_logs_dir) if r["category"] == "pipeline"]
+    assert [r["stage"] for r in rows if r["action"] == "stage_started"][-1] == "summarize"
+    assert not any(r["action"] == "stage_completed" and r.get("stage") == "summarize"
+                   for r in rows)
+    [failed] = [r for r in rows if r["action"] == "run_failed"]
+    assert failed["error_type"] == "RuntimeError"
+    assert "model fell over" in failed["error"]
+    assert "run_completed" not in [r["action"] for r in rows]
+    # What the daemon reads to say which stage failed.
+    assert json.loads(failure_path.read_text(encoding="utf-8"))["operation"] == "summary"
 
 
 # --- PIPE16: a publish-stage missing secret is a publish failure -------------
 
 
 def test_run_all_reports_a_missing_publish_secret_as_a_failed_publish(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, _isolated_logs_dir: Path
 ):
     """`require_env`'s `sys.exit(2)` escaped both of this module's handlers.
 
@@ -1334,27 +1361,14 @@ def test_run_all_reports_a_missing_publish_secret_as_a_failed_publish(
     monkeypatch.delenv("NOTION_TOKEN", raising=False)
     # `entry.prepare` refills the managed tokens from the login Keychain (SEC8);
     # conftest's `_keychain_unreachable` (T12) is what keeps `delenv` meaningful here.
-    emitted: list[tuple] = []
-    monkeypatch.setattr("mp.orchestrate.events.emit",
-                        lambda cat, action, **attrs: emitted.append((cat, action, attrs)))
-
     stem = "20260516-0900"
     wav = tmp_path / f"{stem}.wav"
     wav.write_bytes(b"")
     _write_fluidaudio_sidecar(tmp_path, stem=stem)
-    summary_json = tmp_path / f"{stem}.summary.json"
-    summary_json.write_text(
-        MeetingSummary(
-            title="Standup", summary=["a"], decisions=[], actions=[],
-            questions=[], attendees=[], detected_language="en",
-        ).model_dump_json(),
-        encoding="utf-8",
-    )
     cfg = Config.model_validate({"output": {"sinks": ["notion"]}})
 
-    with patch("mp.orchestrate.summarize",
-               return_value={"json": summary_json, "md": tmp_path / f"{stem}.summary.md"}):
-        result = run_all(wav, cfg=cfg)
+    # No `publishers`: the configured ones are built, which is where the escape was.
+    result = run_all(wav, cfg=cfg, provider=FakeSummaryClient().provider())
 
     # Exit 3, not 2: `main` returns EXIT_PUBLISH_FAILED off this flag, which is
     # the one code `SinkDispatcher` branches on, so the row gets a publish-only
@@ -1363,10 +1377,11 @@ def test_run_all_reports_a_missing_publish_secret_as_a_failed_publish(
     assert result["publish_failed"] is True
     assert EXIT_PUBLISH_FAILED == 3
 
-    actions = [a for _, a, _ in emitted]
+    rows = [r for r in read_events(_isolated_logs_dir) if r["category"] == "pipeline"]
+    actions = [r["action"] for r in rows]
     assert "run_failed" in actions
     assert "run_completed" not in actions
-    failed = next(attrs for _, a, attrs in emitted if a == "run_failed")
+    failed = next(r for r in rows if r["action"] == "run_failed")
     assert failed["stage"] == "publish"
     assert "NOTION_TOKEN" in failed["error"]
 
@@ -1376,18 +1391,15 @@ def test_run_all_reports_a_missing_publish_secret_as_a_failed_publish(
 
 
 def test_run_all_completes_normally_on_a_partial_publish(tmp_path: Path, monkeypatch):
-    pub = {
-        "page_id": "p", "page_url": "u",
-        "sinks": {"notion": {"error": "boom"}, "obsidian": {"idempotent": False}},
-        "failures": [("notion", "boom")],
-    }
-    result = _run_with_publish_result(tmp_path, pub, monkeypatch)
+    publishers = [RecordingPublisher("notion", error=RuntimeError("boom")),
+                  RecordingPublisher("obsidian", result={"idempotent": False})]
+    result = _run_with_publishers(tmp_path, publishers, monkeypatch)
     assert "publish_failed" not in result
+    assert [len(p.upserts) for p in publishers] == [1, 1]
 
 
 def test_run_all_completes_when_no_sink_was_configured(tmp_path: Path, monkeypatch):
-    pub = {"page_id": None, "page_url": None, "sinks": {}, "failures": [], "regulated": True}
-    result = _run_with_publish_result(tmp_path, pub, monkeypatch)
+    result = _run_with_publishers(tmp_path, [], monkeypatch)
     assert "publish_failed" not in result
 
 
@@ -1402,6 +1414,8 @@ def test_run_all_with_a_no_sinks_workflow_exits_0_and_records_local(
     monkeypatch.delenv("MP_FORCE_BYO", raising=False)
     monkeypatch.delenv("NOTION_TOKEN", raising=False)
     monkeypatch.setattr(Config, "load", classmethod(lambda cls, *a, **k: Config()))
+    # `main` passes no collaborators, so the configured backend's row is swapped (T6).
+    monkeypatch.setitem(providers.PROVIDERS, "anthropic", FakeSummaryClient().provider())
 
     stem = "20260516-0900"
     wav = tmp_path / f"{stem}.wav"
@@ -1412,18 +1426,8 @@ def test_run_all_with_a_no_sinks_workflow_exits_0_and_records_local(
                     "workflow_nda_mode": False}),
         encoding="utf-8",
     )
-    summary_json = tmp_path / f"{stem}.summary.json"
-    summary_json.write_text(
-        MeetingSummary(
-            title="Standup", summary=["a"], decisions=[], actions=[],
-            questions=[], attendees=[], detected_language="en",
-        ).model_dump_json(),
-        encoding="utf-8",
-    )
 
-    with patch("mp.orchestrate.summarize",
-               return_value={"json": summary_json, "md": tmp_path / f"{stem}.summary.md"}):
-        assert orchestrate_main([str(wav)]) == 0
+    assert orchestrate_main([str(wav)]) == 0
 
     sidecar = json.loads((tmp_path / f"{stem}.publish.json").read_text(encoding="utf-8"))
     assert sidecar["state"] == "local"
@@ -1606,23 +1610,21 @@ def test_a_print_that_matches_the_split_leader_names_it_alone_and_enrolls_it_onc
 # --- SEC38: the success rows carry sink names, never the page address ---------
 
 
-def test_run_all_success_events_carry_sink_names_and_no_page_url(tmp_path: Path, monkeypatch):
+def test_run_all_success_events_carry_sink_names_and_no_page_url(
+    tmp_path: Path, monkeypatch, _isolated_logs_dir: Path
+):
     """The page address embeds the meeting title's slug, and the event log is handed to
     analysis sessions; `<stem>.publish.json` keeps the link, the log names the sinks."""
-    emitted: list[tuple] = []
-    monkeypatch.setattr("mp.orchestrate.events.emit",
-                        lambda cat, action, **attrs: emitted.append((cat, action, attrs)))
-    pub = {
-        "page_id": "p", "page_url": "https://example.invalid/placeholder-topic-slug",
-        "sinks": {"notion": {"page_url": "https://example.invalid/placeholder-topic-slug"},
-                  "obsidian": {"error": "boom"}},
-        "failures": [("obsidian", "boom")],
-    }
-    _run_with_publish_result(tmp_path, pub, monkeypatch)
+    url = "https://example.invalid/placeholder-topic-slug"
+    _run_with_publishers(tmp_path, [
+        RecordingPublisher("notion", result={"page_id": "p", "page_url": url, "idempotent": False}),
+        RecordingPublisher("obsidian", error=RuntimeError("boom")),
+    ], monkeypatch)
 
-    completed = next(attrs for _, a, attrs in emitted if a == "run_completed")
-    stage = next(attrs for _, a, attrs in emitted
-                 if a == "stage_completed" and attrs.get("stage") == "publish")
+    rows = [r for r in read_events(_isolated_logs_dir) if r["category"] == "pipeline"]
+    completed = next(r for r in rows if r["action"] == "run_completed")
+    stage = next(r for r in rows
+                 if r["action"] == "stage_completed" and r.get("stage") == "publish")
     for row in (completed, stage):
         assert "page_url" not in row
         assert "placeholder-topic-slug" not in json.dumps(row)

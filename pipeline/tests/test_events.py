@@ -8,6 +8,8 @@ reading the base log plus its generations.
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from pathlib import Path
 
 from mp import events
@@ -182,21 +184,46 @@ def test_logs_dir_honors_explicit_env_override(tmp_path, monkeypatch):
     assert events.logs_dir() == tmp_path
 
 
-def test_logs_dir_under_pytest_never_touches_production(monkeypatch):
-    """`pytest` must not append fixture rows to the user's real pipeline_events.jsonl.
-
-    Before this guard the suite owned 21% of that file (1491 of 7020 rows), and every
-    consumer read them back as meetings that never happened. Twin of Swift's
-    LoggerTests.test_logsDir_under_test_never_touches_production.
-    """
-    monkeypatch.delenv("MEETINGPIPE_LOGS_DIR", raising=False)
+def test_conftest_points_every_test_at_its_own_logs_dir(_isolated_logs_dir):
+    """T6: the suite's log isolation is the conftest variable, not a guess in production
+    code about whether pytest is imported. Before any isolation the suite owned 21% of
+    the real pipeline_events.jsonl (1491 of 7020 rows), and every consumer read them back
+    as meetings that never happened. Twin of Swift's
+    LoggerTests.test_logsDir_under_test_never_touches_production."""
+    assert os.environ["MEETINGPIPE_LOGS_DIR"] == str(_isolated_logs_dir)
+    assert events.logs_dir() == _isolated_logs_dir
     assert events.logs_dir() != PRODUCTION_LOGS
 
 
-def test_emit_under_pytest_writes_outside_production(monkeypatch):
+def test_logs_dir_without_the_variable_is_the_production_path(monkeypatch):
+    """With nothing set, the resolver answers the real path whatever is imported: the
+    pytest sniff is gone (T6). Only `logs_dir()` is asked, which creates nothing; never
+    emit after clearing the variable, since that write would land in the real log."""
     monkeypatch.delenv("MEETINGPIPE_LOGS_DIR", raising=False)
-    events.emit("test", "tick", stem="x")
-    assert events._events_path().parent != PRODUCTION_LOGS
+    assert events.logs_dir() == PRODUCTION_LOGS
+
+
+def _stat_or_none(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None
+    return (st.st_size, st.st_mtime_ns)
+
+
+def test_emit_writes_into_the_isolated_dir_and_leaves_production_alone(_isolated_logs_dir):
+    """F198: observe the file `emit` wrote, rather than re-asking the path helper, so a
+    writer that opened a hard-coded directory of its own fails here. The production file
+    is only stat'ed, never opened."""
+    production = PRODUCTION_LOGS / "pipeline_events.jsonl"
+    before = _stat_or_none(production)
+    marker = f"t6-{uuid.uuid4().hex}"
+    events.emit("test", "tick", stem="x", marker=marker)
+
+    written = (_isolated_logs_dir / "pipeline_events.jsonl").read_text(encoding="utf-8")
+    rows = [json.loads(line) for line in written.splitlines()]
+    assert [r["marker"] for r in rows if r.get("marker") == marker] == [marker]
+    assert _stat_or_none(production) == before
 
 
 # ------------------------------------------------- test residue (the reader guard)

@@ -19,7 +19,6 @@ import logging
 import os
 import re
 import sys
-import tempfile
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -176,28 +175,19 @@ def drop_test_residue(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return [row for row in rows if not is_test_residue(row)]
 
 
-def _running_under_tests() -> bool:
-    """True when this process is hosting a pytest run. The env var is only set once
-    a test is executing, so fall back to the imported module and the guard also holds
-    at collection/import time. The installed CLI never imports pytest."""
-    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
-
-
 def logs_dir() -> Path:
-    """Resolve the logs directory. An explicit ``MEETINGPIPE_LOGS_DIR`` wins (sandboxed
-    runs, targeted tests); otherwise, under pytest we redirect to a temp dir so the suite
-    never appends fixture rows (stems ``x``, ``m``, ``20260506-1500``) into the user's
-    production ``pipeline_events.jsonl``.
+    """Resolve the logs directory: an explicit ``MEETINGPIPE_LOGS_DIR`` (sandboxed runs,
+    every test), otherwise the production ``~/Library/Logs/MeetingPipe``. Mirrors
+    Swift's ``Log.resolveLogsDir`` (TECH-END4), env var and all.
 
-    Without this the suite corrupts the very log every analysis reads: on the dogfood Mac
-    21% of that file (1491 of 7020 rows) was pytest output. Mirrors Swift's
-    ``Log.resolveLogsDir`` (TECH-END4), env var and all, so both writers isolate the
-    same way."""
+    Production behaviour never depends on which modules happen to be imported (T6): the
+    pytest suite sets the variable for itself in ``tests/conftest.py``, and the Swift
+    suite passes it to the Python children it spawns. Without that isolation the suite
+    corrupts the very log every analysis reads: on the dogfood Mac 21% of that file
+    (1491 of 7020 rows) was pytest output."""
     override = os.environ.get("MEETINGPIPE_LOGS_DIR")
     if override:
         return Path(override)
-    if _running_under_tests():
-        return Path(tempfile.gettempdir()) / "MeetingPipe-test-logs"
     return Path(os.path.expanduser("~/Library/Logs/MeetingPipe"))
 
 

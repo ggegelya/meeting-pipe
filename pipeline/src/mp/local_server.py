@@ -104,7 +104,7 @@ def marker_path(home: Path | None = None) -> Path:
     """`~/Library/Logs/MeetingPipe/mlx-server.json`, beside the logs.
 
     With no `home` it routes through `events.logs_dir` (T9), so
-    `MEETINGPIPE_LOGS_DIR` and the pytest redirect apply; an explicit `home`
+    `MEETINGPIPE_LOGS_DIR` applies; an explicit `home`
     keeps the old `<home>/Library/Logs/MeetingPipe` shape its tests pin."""
     if home is None:
         return events.logs_dir() / MARKER_NAME
@@ -113,8 +113,8 @@ def marker_path(home: Path | None = None) -> Path:
 
 def server_log_path() -> Path:
     """`~/Library/Logs/MeetingPipe/mlx-server.log`. Routed through
-    `events.logs_dir`, so `MEETINGPIPE_LOGS_DIR` and the pytest redirect apply
-    here exactly as they do to the event log."""
+    `events.logs_dir`, so `MEETINGPIPE_LOGS_DIR` applies here exactly as it
+    does to the event log."""
     return events.logs_dir() / SERVER_LOG_NAME
 
 

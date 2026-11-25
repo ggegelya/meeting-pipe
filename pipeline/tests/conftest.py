@@ -2,14 +2,26 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import signal
 import socket
+import tempfile
+from pathlib import Path
+from typing import Any
 
 import pytest
 
 from mp import egress_guard, resource_guard
-from mp.config import MANAGED_SECRET_KEYS
+from mp.config import MANAGED_SECRET_KEYS, Config
+from mp.providers import Provider
+from mp.schemas import MeetingSummary
+
+# T6: the suite owns its log isolation; production `events.logs_dir` no longer asks
+# whether pytest is imported. This session-wide default covers anything that writes
+# outside a test body (collection, session fixtures, a child process they spawn);
+# `_isolated_logs_dir` below gives each test its own directory over it.
+os.environ["MEETINGPIPE_LOGS_DIR"] = str(Path(tempfile.gettempdir()) / "MeetingPipe-test-logs")
 
 
 def pytest_configure(config):
@@ -122,6 +134,22 @@ def _no_network(request):
     call = getattr(request.node, "_t12_call_report", None)
     if blocked and not (call is not None and call.failed):
         pytest.fail(f"{node}: blocked network access was swallowed: {blocked}", pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_logs_dir(monkeypatch, tmp_path_factory) -> Path:
+    """T6: every test writes its events, `pipeline.log` and model-server marker into a
+    logs directory of its own, which is the whole of the suite's log isolation now that
+    `events.logs_dir` has no pytest sniff. Before any isolation the suite owned 21% of
+    the real `pipeline_events.jsonl`. A fresh directory rather than `tmp_path` itself,
+    because many tests treat `tmp_path` as a library folder and compare its listing.
+
+    A test that sets the variable itself wins; one that clears it and then writes reaches
+    the real logs folder, so don't (see `pipeline/docs/gotchas.md`). Request this fixture
+    by name to read back the events a test emitted."""
+    logs = tmp_path_factory.mktemp("logs")
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(logs))
+    return logs
 
 
 def _no_keychain(_key: str) -> None:
@@ -252,8 +280,8 @@ def _private_server_marker(monkeypatch, tmp_path_factory):
     `home`, so any test that spawns, closes, or reuses a server through the
     client wrote, rewrote or deleted the developer's live marker, the one the
     daemon's reaper acts on (PIPE22). Since T9 the default follows
-    `events.logs_dir`, whose pytest redirect is one dir shared by the session;
-    this keeps each test's marker private. A test that passes `home` explicitly
+    `events.logs_dir`, which conftest points at each test's own logs dir (T6);
+    this also keeps the marker out of it. A test that passes `home` explicitly
     still gets exactly the path it asked for."""
     from mp import local_server
 
@@ -327,3 +355,71 @@ def evicted(monkeypatch):
 
     monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
     return lambda path: marked.add(_Path(path))
+
+
+# ----- T6: in-memory collaborators for `run_all` (the `services.py` protocols) -----
+
+
+def standup_summary() -> MeetingSummary:
+    """A summary with enough content to clear PIPE43's floor and nothing for LANG1 to repair."""
+    return MeetingSummary(
+        title="Standup", summary=["Agreed the release plan."], decisions=[], actions=[],
+        questions=[], attendees=[], detected_language="en",
+    )
+
+
+class FakeSummaryClient:
+    """A `services.SummaryClient` that answers a fixed `MeetingSummary`, or raises
+    `raises`, and records the `system_prompt` and `transcript` of every call.
+    `provider()` wraps it as a `providers.Provider` row, the shape `run_all` takes."""
+
+    def __init__(self, summary: MeetingSummary | None = None, *,
+                 raises: BaseException | None = None, backend_id: str = "fake") -> None:
+        self.summary = summary if summary is not None else standup_summary()
+        self.raises = raises
+        self.backend_id = backend_id
+        self.calls: list[dict[str, str]] = []
+        self.builds = 0  # how many times a provider row built this client
+
+    def summarize(self, *, system_prompt: str, transcript: str, model: str,
+                  max_tokens: int) -> MeetingSummary:
+        self.calls.append({"system_prompt": system_prompt, "transcript": transcript})
+        if self.raises is not None:
+            raise self.raises
+        return self.summary
+
+    def provider(self) -> Provider:
+        def build(_cfg: Config) -> FakeSummaryClient:
+            self.builds += 1
+            return self
+
+        return Provider(self.backend_id, "on_device", build, None, None)
+
+
+class RecordingPublisher:
+    """A `services.MeetingPublisher` that records each `upsert` and returns `result`,
+    or raises `error` (an all-sinks-failed run when it is the only sink)."""
+
+    def __init__(self, name: str = "recording", *, result: dict[str, Any] | None = None,
+                 error: Exception | None = None) -> None:
+        self.name = name
+        self.result = result if result is not None else {
+            "page_id": "p", "page_url": "u", "idempotent": False}
+        self.error = error
+        self.upserts: list[dict[str, Any]] = []
+
+    def upsert(self, *, summary: MeetingSummary, transcript_md: Path | None,
+               sidecar_path: Path, transcript_text: str | None = None) -> dict[str, Any]:
+        self.upserts.append({"summary": summary, "transcript_md": transcript_md,
+                             "sidecar_path": sidecar_path, "transcript_text": transcript_text})
+        if self.error is not None:
+            raise self.error
+        return dict(self.result)
+
+
+def read_events(logs: Path) -> list[dict[str, Any]]:
+    """The rows `events.emit` wrote into a test's `_isolated_logs_dir`."""
+    path = logs / "pipeline_events.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]

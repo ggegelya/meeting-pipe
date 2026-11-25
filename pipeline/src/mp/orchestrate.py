@@ -62,7 +62,8 @@ from .publish_router import (
     fanout as publish_fanout,
 )
 from .roster import RosterStore
-from .summarize import summarize
+from .services import MeetingPublisher
+from .summarize import SummaryOutput, summarize
 from .transcript_quality import below_content_floor, speech_span_sec, transcript_issues, word_count
 from .voiceprint import VoiceprintStore
 
@@ -177,8 +178,8 @@ def _configure_logging() -> None:
     if os.environ.get(PIPELINE_LOG_OWNER_ENV) == "daemon":
         return
 
-    # T9: through `events.logs_dir`, so `MEETINGPIPE_LOGS_DIR` and the pytest
-    # redirect hold for the text log exactly as for the event log.
+    # T9: through `events.logs_dir`, so `MEETINGPIPE_LOGS_DIR` holds for the text
+    # log exactly as for the event log.
     logs_dir = events.logs_dir()
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_file = logs_dir / "pipeline.log"
@@ -299,6 +300,8 @@ def run_all(
     *,
     force_byo: bool | None = None,
     backend: str | None = None,
+    provider: providers.Provider | None = None,
+    publishers: list[MeetingPublisher] | None = None,
 ) -> dict:
     """Run finalize -> summarize -> publish. Raises on first failure.
     ASR + diarization happen in Swift (FluidAudio) before this is
@@ -313,6 +316,13 @@ def run_all(
     existing recording (PIPE6). Applied here so the pre-summarize apple-handoff
     decision reflects it, and threaded into `summarize` (which re-applies it after
     its own overlay). It never rewrites the workflow's persisted backend.
+
+    `provider` and `publishers` are the run's two collaborators (T6), `None` for
+    today's resolution, which is all `main` ever passes. A `provider` row's summary
+    client replaces the one `summarize` would build (and the PERF25 shared local
+    client); every decision before it (the zero-egress clamp, the Apple hand-off,
+    the long-meeting gate) still reads `cfg`. `publishers` goes to `fanout` as is,
+    so `[]` means "no sinks", not "the configured ones".
     """
     # The entry contract (SEC13): per-meeting workflow overrides from the
     # daemon-written meta sidecar (TECH-B4), then the structural egress backstop
@@ -337,7 +347,8 @@ def run_all(
     heartbeat = _ProgressHeartbeat().start()
     try:
         return _run_all_inner(
-            wav, cfg, force_byo=force_byo, heartbeat=heartbeat, backend=backend
+            wav, cfg, force_byo=force_byo, heartbeat=heartbeat, backend=backend,
+            provider=provider, publishers=publishers,
         )
     except Exception as e:
         from .failure_details import emit_failure
@@ -554,9 +565,25 @@ def _close_shared(shared: Any) -> None:
         close()
 
 
+def _summarize_on(
+    provider: providers.Provider, transcript_md: Path, cfg: Config, backend: str | None
+) -> SummaryOutput:
+    """Summarize on a caller-supplied provider row (T6). `summarize` closes only a client
+    it built itself, and `run_all` built this one, so it is closed here."""
+    if provider.build_summary is None:
+        raise ValueError(f"provider {provider.backend_id!r} has no Python summarizer")
+    client = provider.build_summary(cfg)
+    try:
+        return summarize(transcript_md, cfg=cfg, backend=backend, client=client)
+    finally:
+        _close_shared(client)
+
+
 def _run_all_inner(
     wav: Path, cfg: Config, *, force_byo: bool,
     heartbeat: _ProgressHeartbeat | None = None, backend: str | None = None,
+    provider: providers.Provider | None = None,
+    publishers: list[MeetingPublisher] | None = None,
 ) -> dict:
     def _stage(name: str) -> None:
         if heartbeat is not None:
@@ -604,7 +631,7 @@ def _run_all_inner(
     # after summarize, so the model's memory is back before publish exactly as
     # when summarize closed its own; a cleanup failure, an Apple hand-off, or a
     # summarize that raises all still close it.
-    shared = _shared_local_client(cfg)
+    shared = _shared_local_client(cfg) if provider is None else None
     # OBS8: (segments changed, segments) when this run's cleanup pass ran, for run.json.
     cleanup_counts: tuple[int, int] | None = None
     try:
@@ -659,10 +686,12 @@ def _run_all_inner(
         log.info("[2/3] summarize")
         _stage("summarize")
         events.emit("pipeline", "stage_started", stage="summarize")
-        if shared is None:
-            s = summarize(t["md"], cfg=cfg, backend=backend)
-        else:
+        if shared is not None:
             s = summarize(t["md"], cfg=cfg, backend=backend, client=shared)
+        elif provider is not None:
+            s = _summarize_on(provider, t["md"], cfg, backend)
+        else:
+            s = summarize(t["md"], cfg=cfg, backend=backend)
         events.emit("pipeline", "stage_completed", stage="summarize", md=str(s["md"]))
     finally:
         _close_shared(shared)
@@ -704,6 +733,7 @@ def _run_all_inner(
         summary_json=s["json"],
         cfg=cfg,
         transcript_md=t["md"],
+        publishers=publishers,
     )
     # SEC38: sink names, never the page address (it embeds the meeting title's slug).
     events.emit("pipeline", "stage_completed", stage="publish",

@@ -64,7 +64,7 @@ CI also runs pyright (TYPE1), configured in `pyproject.toml`'s `[tool.pyright]`.
 
 `mp.events.emit(category, action, **attrs)` from `events.py` appends to `~/Library/Logs/MeetingPipe/pipeline_events.jsonl`. Categories the pipeline writes: `pipeline`, `prefetch`, and `publisher` (fenced against the emitters by `scripts/truth_fences.py events`, so a new one needs a row in the CONVENTIONS table in the same commit). Schema details in [`../CONVENTIONS.md#event-log-schema`](../CONVENTIONS.md#event-log-schema).
 
-Under pytest it appends somewhere else, and that is load-bearing. `mp.events.logs_dir` honours `MEETINGPIPE_LOGS_DIR` and otherwise redirects to a temp dir when it sees a test runner, so the suite cannot write fixture rows into the log every analysis reads back. Without it pytest owned 21% of that file. Don't remove the guard, and don't reintroduce a hard-coded path in a new writer. Reading the log has its own trap (historical residue that no filter can fully remove); `is_test_residue` and the "Event log schema" section of `../CONVENTIONS.md` cover it.
+Under pytest it appends somewhere else, and that is load-bearing: `mp.events.logs_dir` honours `MEETINGPIPE_LOGS_DIR`, and `tests/conftest.py` sets it for the session and per test (T6; production has no pytest sniff). Never `delenv` it and then write, and don't reintroduce a hard-coded path in a new writer. → [gotchas](docs/gotchas.md#the-suites-log-isolation-is-one-environment-variable-t6) Reading the log has its own trap (historical residue no filter fully removes); `is_test_residue` and `../CONVENTIONS.md` "Event log schema" cover it.
 
 ## Sidecar — the Swift↔Python contract
 

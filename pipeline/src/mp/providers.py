@@ -18,7 +18,10 @@ text and speaker cleanup run on the local MLX model.
 resolves the id through it before looking a row up here, so nothing in this table
 decides whether cloud is allowed.
 
-This is also the seam T6's fake provider plugs into: swap a row, not a call site.
+It is also the test seam (T6): `orchestrate.run_all(provider=...)` takes a row, and
+`tests/conftest.py`'s `FakeSummaryClient.provider()` builds one, so a test hands the
+run a fake row rather than patching a call site. A test that goes through `main`,
+which passes no collaborators, swaps the configured backend's row instead.
 
 Builders import their clients lazily, so importing this module costs nothing a
 non-local install does not already pay (the pipeline's lazy-import contract), and
