@@ -388,6 +388,46 @@ def test_auto_falls_back_to_local_on_429_and_5xx(
     assert client.last_used_backend == "local"
 
 
+def test_auto_passes_the_prior_block_to_both_rungs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SEC29: `prior_context` is a separate argument now, so the ladder must hand it
+    to the cloud attempt and to the local fallback alike, or a fallen-back run
+    silently loses series continuity."""
+    from mp.schemas import MeetingSummary
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    seen: list[tuple[str, Any]] = []
+
+    class _RaisingAnthropic:
+        def __init__(self, **_: Any) -> None: ...
+
+        def summarize(self, **kw: Any) -> MeetingSummary:
+            seen.append(("anthropic", kw.get("prior_context")))
+            raise _anthropic_status_error(anthropic.InternalServerError, 500)
+
+    class _FakeLocal:
+        @classmethod
+        def from_config(cls, _cfg: Any, **_: Any) -> _FakeLocal:
+            return cls()
+
+        def __enter__(self) -> _FakeLocal:
+            return self
+
+        def __exit__(self, *_: Any) -> None: ...
+
+        def summarize(self, **kw: Any) -> MeetingSummary:
+            seen.append(("local", kw.get("prior_context")))
+            return MeetingSummary(title="Local", summary=["b"], detected_language="en")
+
+    monkeypatch.setattr("mp.summarize.AnthropicSummaryClient", _RaisingAnthropic)
+    monkeypatch.setattr("mp.summarize_local.LocalSummaryClient", _FakeLocal)
+
+    AutoFallbackClient(_local_cfg(backend="auto")).summarize(
+        system_prompt="sys", transcript="A: hi.", model="claude-x", max_tokens=100,
+        prior_context="PRIOR",
+    )
+    assert seen == [("anthropic", "PRIOR"), ("local", "PRIOR")]
+
+
 def test_auto_fallback_local_client_carries_the_configured_floor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

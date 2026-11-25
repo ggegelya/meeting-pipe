@@ -42,7 +42,7 @@ from pydantic import ValidationError
 
 from . import egress_guard, events
 from .json_extract import parse_summary
-from .prompt_safety import wrap_untrusted
+from .prompt_safety import prior_meeting_preamble, wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
 
 log = logging.getLogger("mp.provider_claude_cli")
@@ -117,13 +117,17 @@ class ClaudeCLIClient:
         transcript: str,
         model: str,  # ignored; claude_cli uses the user's configured Claude model
         max_tokens: int,  # ignored; claude -p manages its own output length
+        prior_context: str | None = None,
     ) -> MeetingSummary:
         schema = json.dumps(SUMMARY_TOOL["input_schema"], ensure_ascii=False)
         prompt = (
             system_prompt
             + "\n\nReply with ONLY a single JSON object that validates against "
             "this JSON Schema. No prose, no Markdown fences, just the JSON.\n\n"
-            f"```json-schema\n{schema}\n```\n\nMeeting transcript:\n\n"
+            f"```json-schema\n{schema}\n```\n\n"
+            # SEC29: no system role here, so the fence is the only boundary.
+            + prior_meeting_preamble(prior_context)
+            + "Meeting transcript:\n\n"
             + wrap_untrusted(transcript)
         )
         last_err: Exception | None = None

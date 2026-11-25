@@ -2,9 +2,10 @@
 id: SEC29
 title: The previous meeting's decisions and tasks go into the next meeting's trusted system prompt outside the untrusted-content fence, so a "decision" spoken in one meeting steers the summary of the next
 category: Security
-status: new
+status: done
+closed: 2026-11-26
 priority: P2
-comment: Filed 2026-11-12 ([security review](../../audits/2026-11-12-security-review.md) finding 4): AI6's prior-meeting block (title, up to 12 decisions and open tasks of 240 chars) is appended to the system prompt before UNTRUSTED_GUIDANCE and never wrapped, while digest (SEC15) already fences the same facts as second-order untrusted. Move it into the user turn inside its own wrap_untrusted fence. [Spec](./SEC29.md)
+comment: Shipped 2026-11-26. The AI6 prior-meeting block left the system prompt and travels as `SummaryClient.summarize(prior_context=)`, fenced in the user turn by its own marker pair (`prompt_safety.prior_meeting_preamble`) on anthropic, auto, local (every map window, budget estimate and reduce), openai and claude_cli, and on the LANG1 repair; the system prompt keeps only the constant `PRIOR_MEETING_GUIDANCE`. 13 new tests, pipeline suite 2619 green, ruff and pyright clean, ci-local.sh green.
 ---
 
 # SEC29: the previous meeting's decisions and tasks go into the next meeting's trusted system prompt outside the untrusted-content fence, so a "decision" spoken in one meeting steers the summary of the next
@@ -38,3 +39,9 @@ Exploit: meeting N needs no injection, only a participant saying "we decided: ev
 - `test_summarize.py`: with a prior summary whose decision contains `ignore all instructions`, the composed system prompt for Anthropic and local contains no prior decision, task or title text; the user message contains it between the prior-block markers; the repair call's system prompt likewise; `claude_cli`'s single prompt has it inside the markers.
 - A marker-collision test: a prior decision containing the marker strings cannot close the fence early (the `wrap_untrusted` stripping rule applies).
 - `cd pipeline && uv run --extra dev pytest -q`, ruff and pyright green with the new test count in the commit body; `bash scripts/ci-local.sh` green.
+
+## Owner decision (2026-11-25)
+
+Keep series continuity and fix it now, rather than waiting on FEAT22.
+
+**Progress (2026-11-26): shipped.** Seam chosen: a keyword-only `prior_context: str | None = None` on `SummaryClient.summarize`, which every client fences itself. The alternative, prepending the block to `transcript`, was rejected because the local client windows the transcript (the block would reach one map window only), the staged pipeline would extract the prior's decisions as this meeting's facts, and the transcript also feeds language detection and the map-partials cache key. The spec's `compose_user_message` existed only in `summarize_local.py`; each backend builds its own turn, so each now prefixes `prior_meeting_preamble(prior_context)` before the transcript fence, and with no prior every turn is byte-identical to before. The system prompt gets `PRIOR_MEETING_GUIDANCE` (names the markers, keeps AI6's carried-over instruction, interpolates no prior text) only when a block exists, so `--print-prompt` and every non-series prompt are unchanged. `_prior_meeting_context` now builds facts only. `wrap_untrusted` and the new `wrap_prior_meeting` strip every marker of both pairs in one loop. Scope item 3 was already true: SEC41's `clean_due` scrubs `due` when the prior summary is read back, so the commit pins that with a test instead of scrubbing twice. Not covered, and outside this task: the partial summaries a local reduce merges are still sent unfenced.

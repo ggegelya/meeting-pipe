@@ -25,7 +25,7 @@ from . import events, usage
 from .config import SAMPLING_TEMPERATURE
 from .endpoints import OPENAI_API_BASE, OPENAI_CHAT_PATH
 from .json_extract import parse_summary
-from .prompt_safety import wrap_untrusted
+from .prompt_safety import prior_meeting_preamble, wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
 
 log = logging.getLogger("mp.provider_openai")
@@ -58,6 +58,7 @@ class OpenAIClient:
         transcript: str,
         model: str,  # ignored; the provider is pinned to its configured model
         max_tokens: int,
+        prior_context: str | None = None,
     ) -> MeetingSummary:
         schema = json.dumps(SUMMARY_TOOL["input_schema"], ensure_ascii=False)
         system_content = (
@@ -69,7 +70,9 @@ class OpenAIClient:
         )
         user_content = (
             "Summarize this meeting. Reply with ONLY the JSON object described "
-            "in the system message.\n\n" + wrap_untrusted(transcript)
+            "in the system message.\n\n"
+            + prior_meeting_preamble(prior_context)  # SEC29
+            + wrap_untrusted(transcript)
         )
         messages = [
             {"role": "system", "content": system_content},

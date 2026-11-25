@@ -370,7 +370,7 @@ def standup_summary() -> MeetingSummary:
 
 class FakeSummaryClient:
     """A `services.SummaryClient` that answers a fixed `MeetingSummary`, or raises
-    `raises`, and records the `system_prompt` and `transcript` of every call.
+    `raises`, and records the `system_prompt`, `transcript` and `prior_context` ("" for none) of every call.
     `provider()` wraps it as a `providers.Provider` row, the shape `run_all` takes."""
 
     def __init__(self, summary: MeetingSummary | None = None, *,
@@ -382,8 +382,9 @@ class FakeSummaryClient:
         self.builds = 0  # how many times a provider row built this client
 
     def summarize(self, *, system_prompt: str, transcript: str, model: str,
-                  max_tokens: int) -> MeetingSummary:
-        self.calls.append({"system_prompt": system_prompt, "transcript": transcript})
+                  max_tokens: int, prior_context: str | None = None) -> MeetingSummary:
+        self.calls.append({"system_prompt": system_prompt, "transcript": transcript,
+                           "prior_context": prior_context or ""})
         if self.raises is not None:
             raise self.raises
         return self.summary

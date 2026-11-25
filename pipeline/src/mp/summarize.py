@@ -73,7 +73,12 @@ from .config import (
 )
 from .markdown import render_markdown, render_summary_md
 from .markers import FLAGGED_INSTRUCTION, flagged_moments_block, markers_path
-from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
+from .prompt_safety import (
+    PRIOR_MEETING_GUIDANCE,
+    UNTRUSTED_GUIDANCE,
+    prior_meeting_preamble,
+    wrap_untrusted,
+)
 from .schemas import SUMMARY_TOOL, MeetingSummary
 from .services import SummaryClient
 from .summary_language import (
@@ -258,7 +263,7 @@ def _extra_sections_directive(specs: list[ExtraSectionSpec] | None) -> str:
 def _load_system_prompt(
     team_context: str,
     summary_language: str = "auto",
-    prior_context: str | None = None,
+    has_prior: bool = False,
     flagged_note: bool = False,
     extra_sections: list[ExtraSectionSpec] | None = None,
 ) -> str:
@@ -270,10 +275,12 @@ def _load_system_prompt(
         _summary_language_directive(summary_language),
     )
     text = text.replace("{extra_sections_directive}", _extra_sections_directive(extra_sections))
-    # AI6: recurring-series continuity. Trusted block (our own prior summary),
-    # so it sits before the untrusted-transcript boundary below.
-    if prior_context:
-        text = text + "\n\n" + prior_context
+    # AI6 + SEC29: recurring-series continuity. The prior meeting's items are model
+    # output over an earlier transcript, so they ride in the user turn inside their
+    # own untrusted fence; only this constant framing, which names no prior text, is
+    # trusted. Added only when a block exists, so every other prompt is unchanged.
+    if has_prior:
+        text = text + "\n\n" + PRIOR_MEETING_GUIDANCE
     # FEAT8: the flag-a-moment instruction is trusted; the excerpts it points at
     # ride in the (untrusted) transcript.
     if flagged_note:
@@ -321,6 +328,12 @@ def _ai6_trim(s: str) -> str:
 def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
     """AI6: a bounded continuity block from the same workflow's latest prior
     meeting (its decisions + still-open actions), or None.
+
+    SEC29: the block is data, not instructions. Every line of it but the heading is
+    model output over an earlier transcript (a "decision" is whatever someone in
+    that room said), so it goes to the client as `prior_context`, which every
+    backend fences in the user turn (`prompt_safety.prior_meeting_preamble`); the
+    instruction for using it is `PRIOR_MEETING_GUIDANCE` in the system prompt.
 
     The workflow is the explicit series key (resolved per meeting in the meta
     sidecar); no fuzzy series inference. Assembled from local disk, so cloud and
@@ -390,8 +403,8 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
     if not decisions and not open_actions:
         return None
 
-    # LANG1/AI6: this continuity block is trusted context placed before the
-    # (untrusted) transcript, so the model mirrors ITS language. When the prior
+    # LANG1/AI6: this continuity block sits before the transcript in the user
+    # turn, so the model mirrors ITS language. When the prior
     # meeting is in a different language than this one, that pulls the whole
     # summary into the prior's language and even defeats the post-hoc language
     # repair, which re-uses this same block (an all-English meeting following a
@@ -411,14 +424,12 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
         return None
 
     workflow_name = meta.get("workflow_name") or "this"
+    # SEC29: facts only. The instruction for using them is PRIOR_MEETING_GUIDANCE
+    # in the system prompt; nothing in here is phrased as one.
     lines = [
         "## Previous meeting in this series",
         "",
-        f'This meeting continues the "{workflow_name}" series. The items below are '
-        f'carried over from the previous meeting ("{prior.title}"). If any of them '
-        "recur, treat them as carried over (a continuing decision, an action still "
-        "in progress) and say so, rather than re-listing them as brand-new "
-        "discoveries.",
+        f'Series: "{workflow_name}". Previous meeting: "{prior.title}".',
     ]
     if decisions:
         lines += ["", "Decisions already made:"]
@@ -427,6 +438,8 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
         lines += ["", "Open action items still outstanding:"]
         for a in open_actions:
             owner = (a.owner or "unassigned").strip() or "unassigned"
+            # `owner` and `due` were scrubbed when the prior was read back
+            # (`clean_person`, SEC41's `clean_due`, which also caps it at 80 chars).
             due = f" (due {a.due})" if a.due else ""
             lines.append(f"- {owner}: {_ai6_trim(a.task)}{due}")
     events.emit("pipeline", "continuity_injected", stem=current_stem, prior_stem=prior_stem,
@@ -434,7 +447,12 @@ def _prior_meeting_context(transcript_md: Path, cfg: Config) -> str | None:
     return "\n".join(lines)
 
 
-def summary_request(transcript: str, *, retry_error: Exception | None = None) -> str:
+def summary_request(
+    transcript: str,
+    *,
+    retry_error: Exception | None = None,
+    prior_context: str | None = None,
+) -> str:
     """The user turn the Anthropic tool call sends (PIPE15).
 
     On attempt 1 `retry_error` is None and this is the plain ask. On attempt 2 it
@@ -460,9 +478,12 @@ def summary_request(transcript: str, *, retry_error: Exception | None = None) ->
     The error text is model-authored only in the sense that pydantic quotes the
     offending value back, so it stays outside the untrusted fence around the
     transcript and is introduced as a report rather than as instructions.
+
+    `prior_context` (AI6) goes in its own fence before the transcript's (SEC29).
     """
     ask = (
         "Summarize this meeting. Call `emit_meeting_summary` exactly once.\n\n"
+        + prior_meeting_preamble(prior_context)
         + wrap_untrusted(transcript)
     )
     if retry_error is None:
@@ -500,6 +521,7 @@ class AnthropicSummaryClient:
         transcript: str,
         model: str,
         max_tokens: int,
+        prior_context: str | None = None,
     ) -> MeetingSummary:
         last_err: Exception | None = None
         for attempt in (1, 2):
@@ -532,7 +554,9 @@ class AnthropicSummaryClient:
                 messages=[
                     {
                         "role": "user",
-                        "content": summary_request(transcript, retry_error=last_err),
+                        "content": summary_request(
+                            transcript, retry_error=last_err, prior_context=prior_context,
+                        ),
                     }
                 ],
             )
@@ -654,10 +678,11 @@ def summarize(
     # trusted instruction to reflect them exactly when they did.
     flagged = rendered.flagged
 
+    prior_context = _prior_meeting_context(transcript_md, cfg)
     system_prompt = _load_system_prompt(
         team_context,
         cfg.summarization.summary_language,
-        prior_context=_prior_meeting_context(transcript_md, cfg),
+        has_prior=prior_context is not None,
         flagged_note=flagged,
         extra_sections=cfg.summarization.extra_sections,
     )
@@ -672,12 +697,13 @@ def summarize(
             transcript=transcript,
             model=cfg.summarization.model,
             max_tokens=cfg.summarization.max_tokens,
+            prior_context=prior_context,
         )
         # LANG1: verify the produced summary's language and repair it once if a
         # section drifted, for every backend. Runs while the (possibly
         # subprocess-backed) client is still open below, so a repair reuses it.
         summary = _verify_and_repair_language(
-            client, summary, system_prompt, transcript, cfg
+            client, summary, system_prompt, transcript, cfg, prior_context
         )
         # FEAT10: and only then check the anchors, so the pass runs on whichever
         # summary actually won the language repair. Every backend goes through
@@ -836,6 +862,7 @@ def _verify_and_repair_language(
     system_prompt: str,
     transcript: str,
     cfg: Config,
+    prior_context: str | None = None,
 ) -> MeetingSummary:
     """LANG1: verify the produced summary's language and repair it once, for any
     backend.
@@ -873,6 +900,9 @@ def _verify_and_repair_language(
             transcript=transcript,
             model=cfg.summarization.model,
             max_tokens=cfg.summarization.max_tokens,
+            # SEC29: the repair is a second summarize of the same meeting, so the
+            # prior block rides in its user turn, fenced, exactly as the first did.
+            prior_context=prior_context,
         )
     except Exception as e:  # a failed *repair* must never sink an already-valid summary
         log.warning("language repair call failed (%s); keeping the original summary", e)
@@ -996,12 +1026,13 @@ class AutoFallbackClient:
         transcript: str,
         model: str,
         max_tokens: int,
+        prior_context: str | None = None,
     ) -> MeetingSummary:
         def _cloud() -> MeetingSummary:
             primary = AnthropicSummaryClient(api_key=os.environ["ANTHROPIC_API_KEY"])
             return primary.summarize(
                 system_prompt=system_prompt, transcript=transcript,
-                model=model, max_tokens=max_tokens,
+                model=model, max_tokens=max_tokens, prior_context=prior_context,
             )
 
         def _local() -> MeetingSummary:
@@ -1012,7 +1043,7 @@ class AutoFallbackClient:
                 fallback.map_partials = self._local_map_partials
                 out = fallback.summarize(
                     system_prompt=system_prompt, transcript=transcript,
-                    model=model, max_tokens=max_tokens,
+                    model=model, max_tokens=max_tokens, prior_context=prior_context,
                 )
                 self._local_map_partials = fallback.map_partials
                 # LOCAL11: read the served identity while the client is still

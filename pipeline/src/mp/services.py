@@ -29,6 +29,11 @@ class SummaryClient(Protocol):
     Implementations decide how (LLM, hand-written, file paste). The
     orchestrator only knows that calling this returns a validated summary
     or raises.
+
+    `prior_context` is AI6's previous-meeting block, or None. It is model output
+    over an earlier transcript, so an implementation never puts it in a system
+    turn: it goes in the user turn, fenced by `prompt_safety.prior_meeting_preamble`
+    before the transcript's own fence (SEC29).
     """
 
     def summarize(
@@ -38,6 +43,7 @@ class SummaryClient(Protocol):
         transcript: str,
         model: str,
         max_tokens: int,
+        prior_context: str | None = None,
     ) -> MeetingSummary: ...
 
 

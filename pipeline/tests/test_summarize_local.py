@@ -1949,6 +1949,35 @@ def test_every_reduce_carries_the_callers_directives(
         assert '"extra_sections"' in system  # and so does the schema
 
 
+def test_sec29_every_map_window_and_reduce_fences_the_prior_meeting_block(
+    fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC29: the prior-meeting block left the system prompt, which is how LOCAL25's
+    reduce and every map window used to receive it. Each request now carries it in
+    its user turn, inside its own fence, and no system turn carries it."""
+    from mp.summarize import _load_system_prompt
+
+    prior = "## Previous meeting in this series\n\nDecisions already made:\n- PRIOR-DECISION-MARK"
+    requests = _recording(fake_server[2], lambda _p: _valid_summary_obj())
+    with _local23_client(
+        fake_server, monkeypatch, model=_7B, ram_gb=None, map_reduce_above_chars=2_000,
+    ) as c:
+        c.summarize(
+            system_prompt=_load_system_prompt("ctx", "auto", has_prior=True),
+            transcript=_english(12_000), model="ignored", max_tokens=512, prior_context=prior,
+        )
+    maps = [r for r in requests if _is_map(r)]
+    reduces = [r for r in requests if _is_reduce(r)]
+    assert len(maps) > 1 and reduces
+    for r in maps + reduces:
+        system, user = r["messages"][0]["content"], r["messages"][-1]["content"]
+        assert "PRIOR-DECISION-MARK" not in system
+        begin = user.index("<<<UNTRUSTED_PRIOR_MEETING_BEGIN>>>")
+        assert begin < user.index("PRIOR-DECISION-MARK") < user.index(
+            "<<<UNTRUSTED_PRIOR_MEETING_END>>>"
+        )
+
+
 def test_a_reduce_only_repair_carries_the_callers_prompt_and_differs_from_the_merge(
     fake_server: tuple[str, int, ThreadingHTTPServer], monkeypatch: pytest.MonkeyPatch
 ) -> None:

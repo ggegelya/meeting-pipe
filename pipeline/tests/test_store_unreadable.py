@@ -254,7 +254,7 @@ def test_finalize_completes_over_an_unusable_roster_and_voiceprint(
 
 
 class _Client:
-    def summarize(self, *, system_prompt, transcript, model, max_tokens):
+    def summarize(self, *, system_prompt, transcript, model, max_tokens, prior_context=None):
         raise AssertionError("summarize must not reach the model")
 
 

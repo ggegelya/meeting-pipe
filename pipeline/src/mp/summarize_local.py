@@ -71,7 +71,7 @@ from . import events, local_server, local_snapshot, resource_guard, summarize_st
 from .chunking import chunked_windows
 from .config import SAMPLING_TEMPERATURE, Config, local_chunk_above_chars, parse_local_endpoint
 from .json_extract import largest_balanced_json_object, repair_missing_commas
-from .prompt_safety import wrap_untrusted
+from .prompt_safety import prior_meeting_preamble, wrap_untrusted
 from .schemas import SUMMARY_TOOL, MeetingSummary
 from .summary_language import (
     divergent_sections,
@@ -217,6 +217,7 @@ class MapPartials:
     target: str | None
     system_prompt: str
     partials: tuple[MeetingSummary, ...]
+    prior_context: str | None = None  # SEC29: part of the key, as the system prompt is
 
 
 def _batched(items: list[MeetingSummary], size: int) -> list[list[MeetingSummary]]:
@@ -312,18 +313,23 @@ def augment_with_schema(system_prompt: str) -> str:
     return system_prompt + reinforcement + directive
 
 
-def compose_user_message(transcript: str) -> str:
+def compose_user_message(transcript: str, prior_context: str | None = None) -> str:
     """The user turn the local client sends. Shared with `mp train-adapter` for the
     same reason `augment_with_schema` is."""
-    # Fence the transcript as untrusted content (TECH-SEC6); the system
-    # prompt (via _load_system_prompt) explains the markers.
+    # Fence the transcript as untrusted content (TECH-SEC6), and AI6's prior-meeting
+    # block in its own fence before it (SEC29); the system prompt (via
+    # _load_system_prompt) explains both marker pairs.
     return (
         "Summarize this meeting. Reply with ONLY the JSON object described "
-        "in the system message.\n\n" + wrap_untrusted(transcript)
+        "in the system message.\n\n"
+        + prior_meeting_preamble(prior_context)
+        + wrap_untrusted(transcript)
     )
 
 
-def build_messages(system_prompt: str, transcript: str, target: str | None) -> list[dict[str, str]]:
+def build_messages(
+    system_prompt: str, transcript: str, target: str | None, prior_context: str | None = None,
+) -> list[dict[str, str]]:
     """The schema-forcing request for ``transcript``: the system turn with the schema
     and, when the summary language is known, its reinforcement, then the fenced user
     turn. Module-level for LOCAL27, as `augment_with_schema` and `compose_user_message`
@@ -337,7 +343,7 @@ def build_messages(system_prompt: str, transcript: str, target: str | None) -> l
         system_content += language_reinforcement(target)
     return [
         {"role": "system", "content": system_content},
-        {"role": "user", "content": compose_user_message(transcript)},
+        {"role": "user", "content": compose_user_message(transcript, prior_context)},
     ]
 
 
@@ -524,6 +530,12 @@ class LocalSummaryClient:
         # so a language repair re-runs only the reduce. Public because the `auto`
         # ladder builds a fresh client per call and carries this across them.
         self.map_partials: MapPartials | None = None
+        # SEC29: the current call's AI6 prior-meeting block, set at the top of every
+        # `summarize` (under the lock) and read by the two request builders,
+        # `_messages_for` and `_reduce_messages`, so every map window, every budget
+        # estimate and every reduce carries it in the user turn, fenced, as each
+        # used to carry it in the system prompt.
+        self._prior_context: str | None = None
         # LOCAL23: the tier-ceiling gap is logged once per client, not per call.
         self._ceiling_gap_logged = False
 
@@ -596,6 +608,7 @@ class LocalSummaryClient:
         transcript: str,
         model: str,  # ignored; the local server pins one model per process
         max_tokens: int,
+        prior_context: str | None = None,
     ) -> MeetingSummary:
         """Schema-forcing summarize with two follow-on repair loops.
 
@@ -616,6 +629,7 @@ class LocalSummaryClient:
         routing below runs exactly as it always has.
         """
         with self._lock:
+            self._prior_context = prior_context
             self._ensure_running()
             self._reset_idle_timer()
 
@@ -669,7 +683,7 @@ class LocalSummaryClient:
         """The schema-forcing request for ``text``: what a single-pass call or one
         map window sends, and what LOCAL23's budget estimates before sending it.
         `build_messages` is the one builder (LOCAL27)."""
-        return build_messages(system_prompt, text, target)
+        return build_messages(system_prompt, text, target, self._prior_context)
 
     def _request_budget(
         self, system_prompt: str, transcript: str, target: str | None, max_tokens: int,
@@ -748,6 +762,7 @@ class LocalSummaryClient:
             cached is not None
             and cached.transcript == transcript
             and cached.target == target
+            and cached.prior_context == self._prior_context
             and system_prompt.startswith(cached.system_prompt)
         ):
             log.info(
@@ -771,7 +786,9 @@ class LocalSummaryClient:
                 )
             return summary
         partials = [self._map_window(system_prompt, w, target, max_tokens) for w in windows]
-        self.map_partials = MapPartials(transcript, target, system_prompt, tuple(partials))
+        self.map_partials = MapPartials(
+            transcript, target, system_prompt, tuple(partials), self._prior_context,
+        )
         return self._reduce_partials(partials, target, max_tokens, budget, system_prompt)
 
     def _map_window(
@@ -839,10 +856,11 @@ class LocalSummaryClient:
     ) -> list[dict[str, str]]:
         """One reduce request. Its system turn is the merge brief, then the caller's own
         prompt (LOCAL25): team context, a workflow's extra-section directive, the
-        flagged-moment instruction, the prior-meeting block and the untrusted-input
+        flagged-moment instruction, the prior-meeting framing and the untrusted-input
         guidance all reach the merge, as they reach every map call. Without them the
         schema's own wording ("leave `extra_sections` empty unless the system prompt
-        asks") told the merge to drop the sections the partials had filled."""
+        asks") told the merge to drop the sections the partials had filled. The
+        prior-meeting block itself rides in the user turn, fenced (SEC29)."""
         combined = "\n\n---\n\n".join(_render_for_reduce(p) for p in group)
         system_content = self._augment_with_schema(
             _reduce_instructions() + _REDUCE_CALLER_FRAMING + system_prompt
@@ -854,7 +872,7 @@ class LocalSummaryClient:
             {"role": "user", "content": (
                 "Merge these partial meeting summaries into one summary of the whole "
                 "meeting. Reply with ONLY the JSON object described in the system "
-                "message.\n\n" + combined
+                "message.\n\n" + prior_meeting_preamble(self._prior_context) + combined
             )},
         ]
 

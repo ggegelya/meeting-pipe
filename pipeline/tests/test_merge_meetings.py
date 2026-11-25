@@ -139,7 +139,7 @@ class _FakeClient:
     def __init__(self) -> None:
         self.calls = 0
 
-    def summarize(self, *, system_prompt, transcript, model, max_tokens):
+    def summarize(self, *, system_prompt, transcript, model, max_tokens, prior_context=None):
         self.calls += 1
         return _make_summary()
 
