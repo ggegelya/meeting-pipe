@@ -34,7 +34,7 @@ enum AudioRetentionSweep {
         guard policies.values.contains(where: { $0.policy != .keep }) else {
             return Outcome()
         }
-        let candidates = self.candidates(in: directory)
+        let candidates = self.candidates(in: directory, now: now)
         let actions = AudioRetention.decide(
             candidates: candidates, policies: policies, defaultWorkflowID: defaultWorkflowID,
             now: now, liveStems: liveStems
@@ -95,11 +95,17 @@ enum AudioRetentionSweep {
     }
 
     /// Build the candidate set from disk. Only a stem carrying `<stem>.summary.json`
-    /// is considered: that sidecar is what makes `buildMeeting` call a meeting
-    /// `.done`, and `AudioRetention.isSettled` requires `.done`. Filtering on the
-    /// filename first means the two small JSON reads below happen for settled
-    /// meetings only, not for the whole library on every sweep.
-    static func candidates(in directory: URL) -> [AudioRetention.Candidate] {
+    /// is considered: without one `MeetingStatus.decide` never answers `.done`, and
+    /// `AudioRetention.isSettled` requires `.done`. Filtering on the filename first
+    /// means the small JSON reads below happen for summarized meetings only, not for
+    /// the whole library on every sweep.
+    ///
+    /// The status is `MeetingStatus.decide` over the facts `buildMeeting` reads (ARCH20,
+    /// F060). It used to be a hard-coded `.done`, so a fully published meeting whose
+    /// re-summarize failed (a structured `error.json` newer than the summary) was a
+    /// Needs you row in the Library and settled for the sweep, and a drop policy took
+    /// its audio. `<stem>.error.json` is opened only when it sits beside a summary.
+    static func candidates(in directory: URL, now: Date = Date()) -> [AudioRetention.Candidate] {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
@@ -107,8 +113,10 @@ enum AudioRetentionSweep {
 
         var audioByStem: [String: URL] = [:]
         var summarizedStems: Set<String> = []
+        var names: Set<String> = []
         for url in entries {
             let stem = MeetingStore.stem(of: url)
+            names.insert(url.lastPathComponent)
             if MeetingStore.isFinalRecording(url) {
                 audioByStem[stem] = url
             } else if url.lastPathComponent == "\(stem).summary.json" {
@@ -126,12 +134,27 @@ enum AudioRetentionSweep {
             if metaRead.isUnreadable { continue }
             let meta = metaRead.dictionary
             let run = readJSON(at: directory.appendingPathComponent("\(stem).run.json"))
+            let errorURL = PipelineFailureSidecar.url(forStem: stem, in: directory)
+            let summaryURL = directory.appendingPathComponent("\(stem).summary.json")
+            guard let verdict = MeetingStatus.decide(MeetingStatus.Facts(
+                audio: .finalRecording,
+                hasSummary: true,
+                summaryModified: modified(summaryURL),
+                hasPasteReady: names.contains("\(stem).READY_FOR_MANUAL.md"),
+                hasEmptyMarker: names.contains("\(stem)\(EmptyMarker.suffix)"),
+                error: names.contains(errorURL.lastPathComponent)
+                    ? MeetingStatus.ErrorSidecar(PipelineFailureSidecar.read(at: errorURL), modified: modified(errorURL) ?? .distantFuture)
+                    : nil,
+                startedAt: startedAt
+            ), now: now) else { continue }
+            // An unstatable error sidecar reads as newer than the summary: a fact the sweep cannot
+            // read must land on "not settled", since what it may do next is delete.
             out.append(AudioRetention.Candidate(
                 stem: stem,
                 audioURL: audioURL,
                 startedAt: startedAt,
                 workflowID: (meta?["workflow_id"] as? String).flatMap(UUID.init(uuidString:)),
-                status: .done,
+                status: verdict.status,
                 // PIPE14: the publish sidecar is the source of truth, since it is
                 // the only file a standalone `mp publish` rewrites. Sourcing this
                 // from the run sidecar kept `isSettled` false after a successful
@@ -148,6 +171,10 @@ enum AudioRetentionSweep {
     private static func readJSON(at url: URL) -> [String: Any]? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    private static func modified(_ url: URL) -> Date? {
+        try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
     private static func fileSize(of url: URL) -> Int {

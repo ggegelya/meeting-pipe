@@ -2,9 +2,10 @@
 id: ARCH20
 title: MeetingStore.buildMeeting is a 189-line status ladder that mixes the failure rule, the duration source and cacheability
 category: Architecture
-status: new
+status: done
+closed: 2026-11-25
 priority: P2
-comment: Filed 2026-10-25 (code-quality audit SW12): 189 lines (127 code) of failure precedence, status, cacheable and no-row rules, with two more copies outside it; the menu-bar badge's copy already disagrees on publish-stage failures, which UX90 owns. A pure MeetingStatus.decide with an injected now, called by LibraryMover and (after UX90) unrecoveredFailureStems. [Spec](./ARCH20.md) Amended 2026-11-13 by the audit band: AudioRetentionSweep.candidates hardcodes .done, so a meeting failed after a full publish is settled for the sweep and loses its audio under a drop policy (F060).
+comment: Shipped 2026-11-25 - pure MeetingStatus.decide (Library/MeetingStatus.swift) now read by buildMeeting, the menu failed-row count, LibraryMover.inFlightReason and AudioRetentionSweep.candidates, so the sweep keeps the audio of a summarized meeting with a current failure (F060, red on main first); partial-publish fallback left in buildMeeting. 20 new tests, swift test and scripts/ci-local.sh green. [Spec](./ARCH20.md)
 ---
 
 # ARCH20: MeetingStore.buildMeeting is a 189-line status ladder that mixes the failure rule, the duration source and cacheability

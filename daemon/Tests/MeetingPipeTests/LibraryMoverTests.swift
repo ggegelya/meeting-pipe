@@ -105,6 +105,27 @@ final class LibraryMoverTests: XCTestCase {
         XCTAssertNil(LibraryMover.inFlightReason(in: library))
     }
 
+    /// ARCH20 pins: every terminal sidecar ends "still being processed", whatever its age.
+    func test_a_fresh_meeting_with_any_terminal_sidecar_is_not_in_flight() throws {
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        for terminal in [".error.json", ".READY_FOR_MANUAL.md", ".empty.json", ".summary.json"] {
+            try? FileManager.default.removeItem(at: library)
+            try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+            try write("\(stem).wav")
+            try write("\(stem)\(terminal)")
+            XCTAssertNil(LibraryMover.inFlightReason(in: library), terminal)
+        }
+    }
+
+    /// A summary beside an error sidecar is settled for the mover too, whatever the error says.
+    func test_a_summary_beside_an_error_sidecar_is_not_in_flight() throws {
+        let stem = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        try write("\(stem).wav")
+        try write("\(stem).summary.json")
+        try write("\(stem).error.json")
+        XCTAssertNil(LibraryMover.inFlightReason(in: library))
+    }
+
     func test_a_stale_mic_intermediate_does_not_block_the_move() throws {
         let url = library.appendingPathComponent("20260101-120000.mic.wav")
         try Data([0]).write(to: url)

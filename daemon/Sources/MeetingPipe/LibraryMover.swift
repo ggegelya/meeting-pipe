@@ -71,8 +71,9 @@ enum LibraryMover {
             return "a recording is in progress"
         }
 
-        var recordings: Set<String> = []
-        var terminal: Set<String> = []
+        // ARCH20: "still being processed" is `MeetingStatus.decide`'s `.processing`, read from
+        // filenames alone (no sidecar is opened: any error sidecar ends processing).
+        var facts: [String: MeetingStatus.Facts] = [:]
         // STOR16: the processing window runs from the stem's newest write, not from its start. A
         // 2.5 h meeting that has just stopped is mid-pipeline, and its start is outside 2 h.
         var newestWrite: [String: Date] = [:]
@@ -81,20 +82,19 @@ enum LibraryMover {
             if let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate {
                 newestWrite[stem] = max(newestWrite[stem] ?? .distantPast, mtime)
             }
-            if MeetingStore.isFinalRecording(url) {
-                recordings.insert(stem)
-            }
+            var f = facts[stem] ?? MeetingStatus.Facts()
+            if MeetingStore.isFinalRecording(url) { f.audio = .finalRecording }
             let name = url.lastPathComponent
-            if name.hasSuffix(".summary.json")
-                || name.hasSuffix(PipelineFailureSidecar.suffix)
-                || name.hasSuffix(".READY_FOR_MANUAL.md")
-                || name.hasSuffix(EmptyMarker.suffix) {
-                terminal.insert(stem)
-            }
+            if name.hasSuffix(".summary.json") { f.hasSummary = true }
+            if name.hasSuffix(PipelineFailureSidecar.suffix) { f.error = .unopened }
+            if name.hasSuffix(".READY_FOR_MANUAL.md") { f.hasPasteReady = true }
+            if name.hasSuffix(EmptyMarker.suffix) { f.hasEmptyMarker = true }
+            facts[stem] = f
         }
-        for stem in recordings.subtracting(terminal) {
+        for (stem, var f) in facts where f.audio == .finalRecording {
             guard MeetingStore.parseStem(stem) != nil, let newest = newestWrite[stem] else { continue }
-            if now.timeIntervalSince(newest) < Meeting.staleProcessingThresholdSec {
+            f.startedAt = newest
+            if MeetingStatus.decide(f, now: now)?.status == .processing {
                 return "a meeting is still being processed"
             }
         }

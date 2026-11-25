@@ -1019,19 +1019,8 @@ final class MeetingStore: ObservableObject {
         }()
         let run = runURL.flatMap { readJSON(at: $0) }
         let summary: MeetingSummary? = summaryURL.flatMap { MeetingSummary.load(from: $0) }
-        // A saved summary supersedes a legacy processing marker. Publish failures
-        // and newer, structured regeneration failures still need their notice.
-        let failure: PipelineFailureSidecar.Failure?
-        // UX90: the rule is `errorIsCurrent`, shared with the menu's failed-row count.
-        if let errorURL, let recorded = PipelineFailureSidecar.read(at: errorURL),
-           MeetingStore.errorIsCurrent(
-               ErrorEvidence(stage: recorded.stage, structured: recorded.metadata != nil, modified: mtime(of: errorURL)),
-               summaryModified: summaryURL.map { mtime(of: $0) }
-           ) {
-            failure = recorded
-        } else {
-            failure = nil
-        }
+        // The recorded failure, decoded once: `decide` reads its evidence, the row its reason.
+        let recorded = errorURL.flatMap { PipelineFailureSidecar.read(at: $0) }
 
         // Duration is a measurement of the audio, taken from the best source that
         // can answer (UX74). It used to be the recording's last-write minus the
@@ -1045,58 +1034,25 @@ final class MeetingStore: ObservableObject {
         // source was being skipped precisely when a file existed to be misread.
         let duration = duration(audio, transcriptJSON, startedAt)
 
-        let status: Meeting.Status
-        let cacheable: Bool
-        if failure != nil {
-            status = .failed
-            cacheable = true
-        } else if summaryURL != nil {
-            status = .done
-            cacheable = true
-        } else if pasteReadyURL != nil {
-            status = .manualPasteReady
-            cacheable = true
-        } else if emptyURL != nil {
-            // Pipeline finished but found no speech to summarize: a terminal,
-            // cacheable state, not an in-flight `.processing` that would age into
-            // a misleading `.failed`.
-            status = .empty
-            cacheable = true
-        } else {
-            // No summary, no failure sidecar: in-flight, never started, or stalled. Use age as a proxy; anything older than the staleness window is `.failed`. The Library's `LiveRecordingOverlay` then shows the live stem as `.recording` to every reader.
-            let age = now.timeIntervalSince(startedAt)
-            if owned {
-                // UX101: the recorder still owns this stem, so its age says nothing about a stall:
-                // two hours into a long meeting it was reading as failed. Not cacheable, so the
-                // first scan after the release decides it on age like any other.
-                status = .processing
-                cacheable = false
-            } else if age > Meeting.staleProcessingThresholdSec {
-                status = .failed
-                // PERF22: past the window, age can no longer move the status, so only a file
-                // change (which changes the signature) can, and the row is cacheable. Not when its
-                // audio is a capture intermediate: that row exists only while the file is fresh
-                // (`freshCaptureIntermediate`, a second wall clock), so caching it would pin a
-                // phantom row once the capture went stale with no file change (TECH-A17).
-                // ARCH20's `MeetingStatus.decide` inherits this as one row of its table.
-                cacheable = audio.map { MeetingStore.isFinalRecording($0) } ?? false
-            } else {
-                // Age-derived: must re-evaluate each scan to catch the staleness transition.
-                status = .processing
-                cacheable = false
-            }
-        }
-
-        // A stem with neither audio nor a terminal sidecar is a dead orphan, not a
-        // meeting: no row (TECH-A17). A terminal row whose audio a `drop` policy
-        // reclaimed still has a transcript and a summary worth showing, so it
-        // survives the guard the old "no wav at all = no row" rule would have
-        // failed it on.
-        let hasTerminalSidecar = summaryURL != nil
-            || errorURL != nil
-            || pasteReadyURL != nil
-            || emptyURL != nil
-        guard audio != nil || hasTerminalSidecar else { return nil }
+        // ARCH20: the status ladder, the cacheability rule and the no-row rule are
+        // `MeetingStatus.decide`, shared with the menu count, the library mover and the
+        // retention sweep. A stem with neither audio nor a terminal sidecar is a dead orphan,
+        // not a meeting (TECH-A17), and gets no row.
+        guard let verdict = MeetingStatus.decide(MeetingStatus.Facts(
+            audio: audio.map { MeetingStore.isFinalRecording($0) ? .finalRecording : .captureIntermediate } ?? .none,
+            hasSummary: summaryURL != nil,
+            summaryModified: summaryURL.map { mtime(of: $0) },
+            hasPasteReady: pasteReadyURL != nil,
+            hasEmptyMarker: emptyURL != nil,
+            error: errorURL.map { MeetingStatus.ErrorSidecar(recorded, modified: mtime(of: $0)) },
+            startedAt: startedAt,
+            owned: owned
+        ), now: now) else { return nil }
+        let status = verdict.status
+        let cacheable = verdict.cacheable
+        // Publish failures and newer, structured regeneration failures beside a summary still
+        // need their notice; a stale legacy marker the summary superseded does not.
+        let failure = verdict.keepsFailure ? recorded : nil
 
         // The marker's reason distinguishes "No speech" from a degenerate
         // transcript so the row reads honestly (PIPE3). Read only for `.empty`
@@ -1309,19 +1265,21 @@ final class MeetingStore: ObservableObject {
         return MeetingFormatters.stem.date(from: stem)
     }
 
-    /// Stems the menu-bar failed badge should count, by the same rule `buildMeeting` and
-    /// `LibraryScope.needsYou` apply (UX90), so the badge and the Library's Needs you rail agree on
-    /// every failure class:
+    /// Stems the menu-bar failed badge should count: the Library's `.failed` rows, through the same
+    /// `MeetingStatus.decide` `buildMeeting` calls (ARCH20), plus a `.done` row whose publish outcome
+    /// `publishNeedsAttention` flags (`none`, `partial`, `unknown`), which is the Needs you rail's
+    /// failure set (UX90). So the badge and the rail agree on every failure class:
     ///   1. an explicit `<stem>.error.json` with no summary,
     ///   2. beside a summary, an error sidecar `errorIsCurrent` keeps (a publish failure, or a
     ///      structured failure newer than the summary),
-    ///   3. beside a summary, a publish outcome `publishNeedsAttention` flags (`none`, `partial`,
-    ///      `unknown`), and
+    ///   3. beside a summary, a publish outcome that did not fully land, and
     ///   4. an age-inferred stall: a final recording with no terminal sidecar whose stem start time
     ///      is older than `Meeting.staleProcessingThresholdSec`.
-    /// The filename pass decides 1 and 4 alone; 2 and 3 ask `readers`, and only for stems carrying
-    /// a summary and the file in question. `.filenameOnly` keeps the pre-UX90 behaviour (a summary
-    /// supersedes everything), which the launch auto-retry pass relies on. `now` is injected for tests.
+    /// Filename-first: 1 and 4 need no file opened; 2 and 3 ask `readers`, and only for stems
+    /// carrying a summary and the file in question. `.filenameOnly` keeps the pre-UX90 behaviour (a
+    /// summary supersedes everything), which the launch auto-retry pass relies on. Deliberately a
+    /// superset in one corner: an `error.json` with no summary is counted without being opened, where
+    /// the Library, which opens it, ignores one that does not decode. `now` is injected for tests.
     static func unrecoveredFailureStems(
         fileNames: [String],
         now: Date = Date(),
@@ -1360,27 +1318,28 @@ final class MeetingStore: ObservableObject {
         }
         var failed: [String] = []
         for (stem, f) in byStem {
-            if f.summary {
-                // Produced. Still failed when the error sidecar is current or the publish did not
-                // fully land; otherwise the summary supersedes a stale error.
-                let errorCurrent = f.error && readers.errorEvidence(stem).map {
-                    errorIsCurrent($0, summaryModified: readers.summaryModified(stem))
-                } == true
-                if errorCurrent || (f.publishRecord && publishNeedsAttention(readers.publishState(stem))) {
-                    failed.append(stem)
-                }
-                continue
+            // ARCH20: the Library's own ladder. The error sidecar is opened only beside a summary,
+            // the one case where its stage and age decide the answer; without one it is current
+            // whatever it says, so the filename is enough.
+            let error: MeetingStatus.ErrorSidecar? = !f.error ? nil
+                : !f.summary ? .unopened
+                : readers.errorEvidence(stem).map { .evidence($0) } ?? .unopened
+            guard let verdict = MeetingStatus.decide(MeetingStatus.Facts(
+                audio: f.finalRecording ? .finalRecording : .none,
+                hasSummary: f.summary,
+                summaryModified: f.summary && f.error ? readers.summaryModified(stem) : nil,
+                hasPasteReady: f.paste,
+                hasEmptyMarker: f.empty,
+                error: error,
+                // Parsed only when the age can decide: a `DateFormatter` parse per stem doubled
+                // the 500-stem count's cost, and every terminal stem ignores it.
+                startedAt: f.finalRecording && !(f.summary || f.error || f.paste || f.empty) ? parseStem(stem) : nil
+            ), now: now) else { continue }
+            // A finished meeting whose publish did not fully land is Needs you too (UX90).
+            if verdict.status == .failed
+                || (verdict.status == .done && f.publishRecord && publishNeedsAttention(readers.publishState(stem))) {
+                failed.append(stem)
             }
-            if f.error { failed.append(stem); continue }  // explicit failure sidecar
-            if f.paste || f.empty { continue }            // terminal benign skip
-            // Age-inferred stall: a merged recording whose pipeline wrote no
-            // terminal sidecar and is past the staleness window. Mirrors
-            // `buildMeeting`'s age-inferred `.failed` via the same constant.
-            guard f.finalRecording, let started = parseStem(stem),
-                  now.timeIntervalSince(started) > Meeting.staleProcessingThresholdSec else {
-                continue
-            }
-            failed.append(stem)
         }
         return failed.sorted()
     }

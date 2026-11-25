@@ -37,8 +37,9 @@ enum AudioRetention {
         /// Nil for a manual, workflow-less recording, which follows the default
         /// workflow's retention (REC20).
         let workflowID: UUID?
-        /// Derived exactly as the Library derives it, so the sweep and the list
-        /// agree on what "settled" means.
+        /// `MeetingStatus.decide` over the same facts `buildMeeting` reads (ARCH20),
+        /// so the sweep and the list agree on what "settled" means: a summarized
+        /// meeting with a current failure is `.failed` here too.
         let status: Meeting.Status
         /// `PublishResult.resolveState`: "full" / "partial" / "none" / "local"
         /// (WF10, a workflow with no destinations), nil when the meeting never

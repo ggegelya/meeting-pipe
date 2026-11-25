@@ -149,6 +149,76 @@ final class AudioRetentionSweepTests: XCTestCase {
         ))
     }
 
+    // MARK: ARCH20: the sweep reads status through MeetingStatus.decide
+
+    private let past = Date(timeIntervalSince1970: 2_000_000_000)
+
+    private func setMtime(_ name: String, _ date: Date) throws {
+        try FileManager.default.setAttributes(
+            [.modificationDate: date], ofItemAtPath: dir.appendingPathComponent(name).path
+        )
+    }
+
+    private func dropSweep() -> AudioRetentionSweep.Outcome {
+        AudioRetentionSweep.sweep(
+            in: dir,
+            policies: [workflow: WorkflowRetention(policy: .drop, afterDays: 1)],
+            defaultWorkflowID: nil,
+            now: past
+        )
+    }
+
+    private func audioSurvives(_ stem: String) -> Bool {
+        FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(stem).wav").path)
+    }
+
+    /// F060: a failed re-summarize of a fully published meeting leaves a structured error newer
+    /// than the summary, so the Library shows it as failed in Needs you. `publish.json` still says
+    /// `full`, and the sweep used to call it `.done` and drop its audio.
+    func test_sweep_keeps_audio_behind_a_newer_structured_failure_ARCH20() throws {
+        let stem = "20260101-120000"
+        try writeSettledMeeting(stem: stem)
+        try write("\(stem).publish.json", #"{"schema_version": 1, "state": "full", "page_url": null, "sinks": {}}"#)
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        try setMtime("\(stem).summary.json", t0)
+        PipelineFailureSidecar.write(stem: stem, in: dir, stage: .pipeline, reason: "regenerate failed",
+                                     metadata: FailureMetadata(cause: .unknown, operation: .summary))
+        try setMtime("\(stem).error.json", t0.addingTimeInterval(60))
+        XCTAssertEqual(AudioRetentionSweep.candidates(in: dir).first?.status, .failed)
+        XCTAssertEqual(dropSweep().dropped, 0)
+        XCTAssertTrue(audioSurvives(stem))
+    }
+
+    /// The fix must not freeze every stem that ever failed: an older metadata-less transcribe
+    /// error beside a summary is the stale case the summary superseded, and it is still swept.
+    func test_sweep_still_drops_audio_behind_a_stale_legacy_error_ARCH20() throws {
+        let stem = "20260101-120000"
+        try writeSettledMeeting(stem: stem)
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        try setMtime("\(stem).summary.json", t0)
+        PipelineFailureSidecar.write(stem: stem, in: dir, stage: .transcribe, reason: "old")
+        try setMtime("\(stem).error.json", t0.addingTimeInterval(-60))
+        XCTAssertEqual(AudioRetentionSweep.candidates(in: dir).first?.status, .done)
+        XCTAssertEqual(dropSweep().dropped, 1)
+        XCTAssertFalse(audioSurvives(stem))
+    }
+
+    /// PIPE34's case: a publish-stage error beside a stale `full` publish sidecar is still a
+    /// Needs you row, so its audio stays.
+    func test_sweep_keeps_audio_behind_a_publish_failure_with_a_stale_full_sidecar_ARCH20() throws {
+        let stem = "20260101-120000"
+        try writeSettledMeeting(stem: stem)
+        try write("\(stem).publish.json", #"{"schema_version": 1, "state": "full", "page_url": null, "sinks": {}}"#)
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        try setMtime("\(stem).publish.json", t0)
+        try setMtime("\(stem).summary.json", t0)
+        PipelineFailureSidecar.write(stem: stem, in: dir, stage: .publish, reason: "every sink failed")
+        try setMtime("\(stem).error.json", t0.addingTimeInterval(60))
+        XCTAssertEqual(AudioRetentionSweep.candidates(in: dir).first?.status, .failed)
+        XCTAssertEqual(dropSweep().dropped, 0)
+        XCTAssertTrue(audioSurvives(stem))
+    }
+
     /// REC20 + SEC25: a sidecar that exists but cannot be parsed may name a workflow that keeps,
     /// so it must not read as "no workflow" and fall through to the default's drop.
     func test_sweep_keeps_a_meeting_whose_sidecar_cannot_be_read() throws {

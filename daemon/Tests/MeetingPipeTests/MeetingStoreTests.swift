@@ -662,6 +662,42 @@ final class MeetingStoreTests: XCTestCase {
         XCTAssertNil(row.failureReason)
     }
 
+    // MARK: ARCH20 pins: buildMeeting's edges that MeetingStatus.decide must keep
+
+    private func scanOnce(_ dir: URL) -> [Meeting] {
+        let store = MeetingStore(recordingsDir: dir)
+        let exp = expectation(description: "scan")
+        var captured: [Meeting] = []
+        let cancel = store.$meetings.dropFirst().sink { captured = $0; exp.fulfill() }
+        store.start()
+        wait(for: [exp], timeout: 2.0)
+        cancel.cancel()
+        return captured
+    }
+
+    /// An `error.json` that does not decode is no failure, but it is still a terminal file, so a
+    /// stem with no audio keeps its row and ages like any other.
+    func test_an_undecodable_error_sidecar_keeps_a_row_and_ages_ARCH20() throws {
+        let dir = try tempDir()
+        let old = "20260101-120000"
+        try writeFile(dir.appendingPathComponent("\(old).error.json"), "{not json")
+        let recent = MeetingFormatters.stem.string(from: Date().addingTimeInterval(-60))
+        try writeFile(dir.appendingPathComponent("\(recent).wav"))
+        try writeFile(dir.appendingPathComponent("\(recent).error.json"), "{not json")
+        let rows = Dictionary(uniqueKeysWithValues: scanOnce(dir).map { ($0.stem, $0) })
+        XCTAssertEqual(rows[old]?.status, .failed)
+        XCTAssertNil(rows[old]?.failureReason)
+        XCTAssertEqual(rows[recent]?.status, .processing)
+    }
+
+    /// A stem with neither audio nor a terminal sidecar is a dead orphan, not a row (TECH-A17).
+    func test_a_stem_with_no_audio_and_no_terminal_sidecar_has_no_row_ARCH20() throws {
+        let dir = try tempDir()
+        try writeFile(dir.appendingPathComponent("20260101-120000.meta.json"), "{}")
+        try writeFile(dir.appendingPathComponent("20260101-130000.summary.json"), "{}")
+        XCTAssertEqual(scanOnce(dir).map(\.stem), ["20260101-130000"])
+    }
+
     func test_unrecoveredFailureStems_finds_error_without_summary() {
         let stems = MeetingStore.unrecoveredFailureStems(fileNames: [
             "a.wav", "a.error.json",
