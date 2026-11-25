@@ -12,6 +12,25 @@ final class FluidAudioRunner: TranscriptionRunner {
 
     let backendName = "fluidaudio"
 
+    /// Why an audio buffer could not be set up (HYG15). Travels as the `underlying:` of
+    /// `TranscriptionError.audioReadFailed`, so callers branch on that; these name the detail.
+    /// Descriptions are the messages of the `NSError`s they replaced, unchanged.
+    enum BufferFailure: Error, LocalizedError, Equatable {
+        case inputBufferAllocation
+        case resamplerUnavailable
+        case resamplerInputAllocation
+        case resamplerOutputAllocation
+
+        var errorDescription: String? {
+            switch self {
+            case .inputBufferAllocation: return "could not allocate input buffer"
+            case .resamplerUnavailable: return "resampler unavailable"
+            case .resamplerInputAllocation: return "resampler input alloc failed"
+            case .resamplerOutputAllocation: return "resampler output alloc failed"
+            }
+        }
+    }
+
     /// Diarization clustering threshold (FluidAudio `DiarizerConfig`, valid range
     /// 0.5-0.9; lower groups fewer embeddings, so it yields MORE speakers). The
     /// default sits below FluidAudio's own 0.7 because this product reads the
@@ -365,11 +384,7 @@ final class FluidAudioRunner: TranscriptionRunner {
         guard let block = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: max(1, blockFrames)) else {
             throw TranscriptionError.audioReadFailed(
                 url,
-                underlying: NSError(
-                    domain: "FluidAudioRunner",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "could not allocate input buffer"]
-                )
+                underlying: BufferFailure.inputBufferAllocation
             )
         }
         var mono = [Float](repeating: 0, count: totalFrames)
@@ -459,10 +474,7 @@ final class FluidAudioRunner: TranscriptionRunner {
         else {
             throw TranscriptionError.audioReadFailed(
                 url,
-                underlying: NSError(
-                    domain: "FluidAudioRunner", code: 2,
-                    userInfo: [NSLocalizedDescriptionKey: "resampler unavailable"]
-                )
+                underlying: BufferFailure.resamplerUnavailable
             )
         }
         guard
@@ -473,10 +485,7 @@ final class FluidAudioRunner: TranscriptionRunner {
         else {
             throw TranscriptionError.audioReadFailed(
                 url,
-                underlying: NSError(
-                    domain: "FluidAudioRunner", code: 3,
-                    userInfo: [NSLocalizedDescriptionKey: "resampler input alloc failed"]
-                )
+                underlying: BufferFailure.resamplerInputAllocation
             )
         }
         inputBuffer.frameLength = AVAudioFrameCount(samples.count)
@@ -491,10 +500,7 @@ final class FluidAudioRunner: TranscriptionRunner {
         guard let outBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: outCapacity) else {
             throw TranscriptionError.audioReadFailed(
                 url,
-                underlying: NSError(
-                    domain: "FluidAudioRunner", code: 4,
-                    userInfo: [NSLocalizedDescriptionKey: "resampler output alloc failed"]
-                )
+                underlying: BufferFailure.resamplerOutputAllocation
             )
         }
 

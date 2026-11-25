@@ -57,6 +57,7 @@ script is the mechanical reader.
     python3 scripts/truth_fences.py backlog    # task headers + INDEX.md freshness only
     python3 scripts/truth_fences.py blockers   # OBS7: main-thread blockers in view/controller files only
     python3 scripts/truth_fences.py env        # OBS6: every MP_* the daemon exports is read by the pipeline
+    python3 scripts/truth_fences.py sources    # HYG15: no hand-rolled NSError(domain:) under daemon/Sources
     python3 scripts/truth_fences.py personal   # HYG21: roster names / library stems in tests and scripts (owner machine)
 
 Stdlib only (tomllib, ast, re), so CI can run it without installing anything.
@@ -998,6 +999,27 @@ def _code_only(line: str) -> str:
     return line
 
 
+def _swift_code_lines(text: str) -> list[str]:
+    """`text`'s lines with `//` and `/* */` comments blanked, one entry per source line, so a
+    line number survives and a doc comment quoting a forbidden form does not count."""
+    out: list[str] = []
+    in_block_comment = False
+    for raw in text.splitlines():
+        line = raw
+        if in_block_comment:
+            if "*/" not in line:
+                out.append("")
+                continue
+            line = line.split("*/", 1)[1]
+            in_block_comment = False
+        line = re.sub(r"/\*.*?\*/", "", line)
+        if "/*" in line:
+            in_block_comment = True
+            line = line.split("/*", 1)[0]
+        out.append(_code_only(line))
+    return out
+
+
 def blocker_hits(root: Path) -> dict[tuple[str, str], list[int]]:
     """{(relative path, pattern name): [line numbers]} for every view/controller file under `root`."""
     files: set[Path] = set()
@@ -1006,19 +1028,7 @@ def blocker_hits(root: Path) -> dict[tuple[str, str], list[int]]:
     hits: dict[tuple[str, str], list[int]] = {}
     for path in sorted(files):
         rel = path.relative_to(root).as_posix()
-        in_block_comment = False
-        for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            line = raw
-            if in_block_comment:
-                if "*/" not in line:
-                    continue
-                line = line.split("*/", 1)[1]
-                in_block_comment = False
-            line = re.sub(r"/\*.*?\*/", "", line)
-            if "/*" in line:
-                in_block_comment = True
-                line = line.split("/*", 1)[0]
-            code = _code_only(line)
+        for number, code in enumerate(_swift_code_lines(path.read_text(encoding="utf-8")), start=1):
             for name, pattern in BLOCKER_PATTERNS.items():
                 if pattern.search(code):
                     hits.setdefault((rel, name), []).append(number)
@@ -1052,6 +1062,74 @@ def check_blockers(
         fence.fail(
             f"`{name}` in a view or controller file ({where}). It blocks the main thread unless "
             "something moved it off: move it, or allowlist it in BLOCKER_ALLOWLIST with the reason."
+        )
+    return fence.report()
+
+
+# --------------------------------------------------------------------------
+# Fence (HYG15): source rules under daemon/Sources that a grep can hold
+# --------------------------------------------------------------------------
+
+# CONVENTIONS.md "Error propagation": never `NSError(domain:code:userInfo:)`, since a hand-rolled
+# domain and `code: 1` carry nothing a caller can branch on; each subsystem names its failures in a
+# nested `LocalizedError`. Matched across line breaks, comments stripped, so a doc comment quoting
+# the old form does not count.
+NSERROR_CONSTRUCTION = re.compile(r'\bNSError\(\s*domain:\s*(?:"([^"\\]*)"|([A-Za-z_][\w.]*))')
+
+# (path relative to the repo, domain: the string literal, or the identifier for an Apple constant)
+# -> (exact count, reason). Exact for the same reason as BLOCKER_ALLOWLIST: a new site fails rather
+# than riding on a listed one's reason, and a listed site that is gone fails as stale.
+NSERROR_ALLOWLIST: dict[tuple[str, str], tuple[int, str]] = {
+    ("daemon/Sources/MeetingPipe/PipelineLauncher.swift", "PipelineDriver"): (
+        18, "the PipelineDriver protocol's default stubs; A7 in ARCH5 removes the defaults, and this "
+            "entry with them"),
+    ("daemon/Sources/MeetingPipe/HotkeyManager.swift", "NSOSStatusErrorDomain"): (
+        1, "a Carbon OSStatus carried in Apple's own domain, so Log.failure's error_domain and "
+           "error_code name the real status; not an invented domain"),
+}
+
+
+def nserror_hits(repo: Path) -> dict[tuple[str, str], list[int]]:
+    """{(path relative to `repo`, domain): [line numbers]} for every `NSError(domain:` construction
+    under `repo/daemon/Sources`. Pure apart from reading the files."""
+    hits: dict[tuple[str, str], list[int]] = {}
+    for path in sorted((repo / "daemon" / "Sources").rglob("*.swift")):
+        rel = path.relative_to(repo).as_posix()
+        code = "\n".join(_swift_code_lines(path.read_text(encoding="utf-8")))
+        for match in NSERROR_CONSTRUCTION.finditer(code):
+            domain = match.group(1) if match.group(1) is not None else match.group(2)
+            hits.setdefault((rel, domain), []).append(code.count("\n", 0, match.start()) + 1)
+    return hits
+
+
+def check_sources(
+    repo: Path | None = None,
+    allowlist: dict[tuple[str, str], tuple[int, str]] | None = None,
+) -> bool:
+    fence = Fence("daemon source rules")
+    repo = repo if repo is not None else REPO
+    allowlist = NSERROR_ALLOWLIST if allowlist is None else allowlist
+    hits = nserror_hits(repo)
+
+    for key, (count, reason) in sorted(allowlist.items()):
+        if not reason.strip():
+            fence.fail(f"NSERROR_ALLOWLIST entry {key[0]} / {key[1]} has no reason")
+        found = len(hits.get(key, []))
+        if found == 0:
+            fence.fail(f"NSERROR_ALLOWLIST entry {key[0]} / {key[1]} is stale: no such construction is left. "
+                       "Delete the entry.")
+        elif found != count:
+            fence.fail(
+                f"{key[0]}: {found} `NSError(domain: {key[1]}` construction(s) where NSERROR_ALLOWLIST expects "
+                f"{count}. Name the new failure in a LocalizedError, or update the entry if one was removed."
+            )
+    for (rel, domain), lines in sorted(hits.items()):
+        if (rel, domain) in allowlist:
+            continue
+        where = ", ".join(f"{rel}:{n}" for n in lines)
+        fence.fail(
+            f"`NSError(domain: {domain}` ({where}). CONVENTIONS.md: name the failure in the subsystem's "
+            "nested `enum X: Error, LocalizedError` instead (MeetingLibraryService.LibraryError is the shape)."
         )
     return fence.report()
 
@@ -1234,14 +1312,17 @@ def main(argv: list[str]) -> int:
         ok &= check_blockers()
     if which in ("both", "env"):
         ok &= check_env()
+    if which in ("both", "sources"):
+        ok &= check_sources()
     if which in ("both", "personal"):
         ok &= check_personal(
             roster=Path(flags.get("--roster", DEFAULT_ROSTER)).expanduser(),
             config=Path(flags.get("--config", DEFAULT_CONFIG)).expanduser(),
             library=Path(flags["--library"]).expanduser() if "--library" in flags else None,
         )
-    if which not in ("both", "config", "events", "claude", "links", "backlog", "blockers", "env", "personal"):
-        print("usage: truth_fences.py [both|config|events|claude|links|backlog|blockers|env|personal]"
+    if which not in ("both", "config", "events", "claude", "links", "backlog", "blockers", "env", "sources",
+                     "personal"):
+        print("usage: truth_fences.py [both|config|events|claude|links|backlog|blockers|env|sources|personal]"
               " [--roster F] [--config F] [--library D]", file=sys.stderr)
         return 2
     return 0 if ok else 1

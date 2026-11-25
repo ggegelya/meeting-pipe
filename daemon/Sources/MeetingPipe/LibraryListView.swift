@@ -507,7 +507,7 @@ struct LibraryListView: View {
             },
             onRetry: { [weak libraryModel] in
                 libraryModel?.retryMeeting(stem: meeting.stem)
-                    ?? .failure(NSError(domain: "LibraryListView", code: 1))
+                    ?? .failure(MeetingLibraryService.LibraryError.libraryClosed)
             },
             onSoftDelete: { [weak libraryModel] in
                 guard let libraryModel else { return }
@@ -515,7 +515,7 @@ struct LibraryListView: View {
             },
             onExport: { [weak libraryModel] dest in
                 libraryModel?.exportMeeting(stem: meeting.stem, to: dest)
-                    ?? .failure(NSError(domain: "LibraryListView", code: 1))
+                    ?? .failure(MeetingLibraryService.LibraryError.libraryClosed)
             },
             onCancelProcessing: { [weak libraryModel] in
                 libraryModel?.cancelProcessing()

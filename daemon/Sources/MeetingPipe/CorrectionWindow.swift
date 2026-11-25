@@ -90,8 +90,7 @@ final class CorrectionWindow {
             // PIPE54: an edit over the schema's limits is refused with what to change, here as in
             // the Library's inline editor, rather than recorded as a shape `mp publish` rejects.
             if !outcome.isBad, let refusal = model.schemaRefusal {
-                Self.presentSaveError(stem: model.stem, error: NSError(
-                    domain: "MeetingPipe.Correction", code: 1, userInfo: [NSLocalizedDescriptionKey: refusal]))
+                Self.presentSaveError(stem: model.stem, error: SaveError.schemaRefused(refusal))
                 return
             }
             let corrected: [String: Any]? = outcome.isBad ? nil : model.makeCorrectedSummary().jsonObject()
@@ -129,6 +128,19 @@ final class CorrectionWindow {
 
     /// What the owner chose when the summary moved under the window (UX65).
     enum StaleSaveChoice { case keep, reopen }
+
+    /// Why a save was refused before anything was written (HYG15).
+    enum SaveError: Error, LocalizedError, Equatable {
+        /// The edit is over `MeetingSummary`'s schema limits; the payload is
+        /// `CorrectionViewModel.schemaRefusal`, which says what to change (PIPE54).
+        case schemaRefused(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .schemaRefused(let refusal): return refusal
+            }
+        }
+    }
 
     enum SaveOutcome: Equatable {
         case written(URL)

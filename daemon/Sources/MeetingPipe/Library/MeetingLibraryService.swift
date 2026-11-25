@@ -55,6 +55,9 @@ final class MeetingLibraryService {
         /// transcription queue. Only reachable headless; the Library is not on
         /// screen until it is wired.
         case transcriptionUnavailable
+        /// A Library row's action outlived the Library's model (HYG15): the row's closure holds it
+        /// weakly, and the window closed between the click and the call. Nothing was run.
+        case libraryClosed
 
         var errorDescription: String? {
             switch self {
@@ -90,6 +93,8 @@ final class MeetingLibraryService {
                 return "Part of \(stem) has to be cut before it is transcribed, and MeetingPipe could not save that note, so nothing was run. Check there is free disk space and try again."
             case .transcriptionUnavailable:
                 return "Transcription is not available yet."
+            case .libraryClosed:
+                return "The Library closed before this could run. Open the Library and try again."
             }
         }
     }

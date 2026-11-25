@@ -661,6 +661,25 @@ final class PipelineLauncher: PipelineDriver {
         }
     }
 
+    /// Why a subcommand that answers through a result file did not hand back a result (HYG15).
+    /// The process side is `LaunchError`; this is the file the process left behind, so it is a
+    /// separate type rather than more `LaunchError` cases. Descriptions are the messages the
+    /// `NSError`s it replaced carried, unchanged.
+    enum ResultError: Error, LocalizedError, Equatable {
+        /// `mp ask` ran and its answer file carries its own `error` text.
+        case answerReported(String)
+        /// The run succeeded but its result file is missing or does not parse; the payload is the
+        /// whole sentence, naming the subcommand.
+        case unreadableResult(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .answerReported(let message), .unreadableResult(let message):
+                return message
+            }
+        }
+    }
+
     /// UX93: the timeout caption names the job and its limit (seconds under a minute, minutes above).
     /// The re-run sentence is run-all's alone: it is the only job with a wav, and the 2026-10-15
     /// action-clusters timeout told the owner to re-run run-all on one.
@@ -1105,8 +1124,7 @@ final class PipelineLauncher: PipelineDriver {
             // failure without erasing native cause metadata or cancellation.
             let parsed = AskAnswer.load(from: outURL)
             if case .success = result, let parsed = parsed, let err = parsed.error, !err.isEmpty {
-                completion(.failure(NSError(domain: "mp ask", code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: err])))
+                completion(.failure(ResultError.answerReported(err)))
                 return
             }
             switch result {
@@ -1114,8 +1132,7 @@ final class PipelineLauncher: PipelineDriver {
                 completion(.failure(Self.askFailure(error, answerError: parsed?.error)))
             case .success:
                 guard let parsed = parsed else {
-                    completion(.failure(NSError(domain: "mp ask", code: 2,
-                        userInfo: [NSLocalizedDescriptionKey: "ask produced no readable result"])))
+                    completion(.failure(ResultError.unreadableResult("ask produced no readable result")))
                     return
                 }
                 completion(.success(parsed))
@@ -1243,8 +1260,7 @@ final class PipelineLauncher: PipelineDriver {
                 completion(.failure(error))
             case .success:
                 guard let plan = RestorePlan.load(from: outURL) else {
-                    completion(.failure(NSError(domain: "mp restore", code: 2,
-                        userInfo: [NSLocalizedDescriptionKey: "restore --dry-run produced no readable plan"])))
+                    completion(.failure(ResultError.unreadableResult("restore --dry-run produced no readable plan")))
                     return
                 }
                 completion(.success(plan))
@@ -1288,8 +1304,7 @@ final class PipelineLauncher: PipelineDriver {
                 completion(.failure(error))
             case .success:
                 guard let rows = ActionClusterAssignment.load(from: outURL) else {
-                    completion(.failure(NSError(domain: "mp actions", code: 2,
-                        userInfo: [NSLocalizedDescriptionKey: "actions --cluster produced no readable result"])))
+                    completion(.failure(ResultError.unreadableResult("actions --cluster produced no readable result")))
                     return
                 }
                 completion(.success(rows))

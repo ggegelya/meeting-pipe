@@ -98,4 +98,30 @@ final class NotionDatabaseListTests: XCTestCase {
         list.refresh()
         XCTAssertEqual(list.state, .failed("Set NOTION_TOKEN in Preferences -> Integrations first."))
     }
+
+    /// HYG15: a 404 from `/v1/databases/{id}` is the named "not found or not shared" case, not an
+    /// `NSError` whose code a caller would have to know was the status.
+    func test_verify_database_404_throws_database_not_found() async {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [NotFoundProtocol.self]
+        let session = URLSession(configuration: config)
+        do {
+            try await NotionDatabaseList.verifyDatabase(token: "t", databaseId: "abc", session: session)
+            XCTFail("a 404 must throw")
+        } catch {
+            XCTAssertEqual(error as? NotionDatabaseList.NotionError, .databaseNotFound)
+        }
+    }
+
+    private final class NotFoundProtocol: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+        override func startLoading() {
+            let response = HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data("{}".utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        override func stopLoading() {}
+    }
 }

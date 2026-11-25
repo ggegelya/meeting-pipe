@@ -44,6 +44,8 @@ The check is per *entry* (a `- ` bullet or a `| ` table row), not per file, beca
 
 The script's three allowlists exist for known drift a named backlog task will clear, and **all three are empty** as of HYG2 (three dead knobs), DOC9 (eleven keys `config.example.toml` never showed) and DOC14 (the two subtree `CLAUDE.md` files, split onto their `docs/gotchas.md` siblings). That is the intended steady state. **A stale allowlist entry fails too**, so a list can neither outlive the drift it describes nor quietly absorb new drift; anything not listed fails from the day it appears.
 
+**Daemon source rules (HYG15).** `sources` holds a rule about the Swift code itself rather than prose: no hand-rolled `NSError(domain:` under `daemon/Sources` (see Error propagation below). The match spans line breaks and skips comments, and `NSERROR_ALLOWLIST` is exact-count with a reason per entry, so a new site fails, and so does a listed one that is gone.
+
 Not mirrored into `scripts/pre-commit`: the whole-state scan takes ~2.7 s, which is too slow for every commit. Same call as the DSN3 token guards, which are also CI-only.
 
 ### Commits
@@ -79,7 +81,7 @@ Most start/stop/error sites pair an event line (structured) with a writeLine (re
 
 Throwing functions for in-module calls, `Result<T, Error>` at protocol/API boundaries. Each subsystem declares its own nested `enum X: Error, LocalizedError` (see `MeetingRecorder.RecorderError`, `PipelineLauncher.LaunchError`, `MeetingLibraryService.LibraryError`). There is no unified `MeetingPipeError`. Keep localized descriptions concise. UI failures use `FailurePresentation` and `FailureNotice`/`FailureDialog`; retain `PipelineLauncher.diagnostics(for:)` and optional `FailureMetadata` instead of flattening a process failure to its caption (UX80). Raw text belongs in Details and local logs.
 
-Never `NSError(domain:code:userInfo:)`. A hand-rolled domain string plus `code: 1` carries no meaning a caller can branch on: `MeetingLibraryService` had eleven of them where "the file is missing" and "you typed nothing" were both code 1 in one method and both code 2 in another (ARCH4 replaced them with named cases).
+Never `NSError(domain:code:userInfo:)`. A hand-rolled domain string plus `code: 1` carries no meaning a caller can branch on: `MeetingLibraryService` had eleven of them where "the file is missing" and "you typed nothing" were both code 1 in one method and both code 2 in another (ARCH4 replaced them with named cases). `scripts/truth_fences.py sources` fails on any `NSError(domain:` under `daemon/Sources` outside its `NSERROR_ALLOWLIST` (HYG15), which holds exact counts for A7's `PipelineDriver` stubs and the one OSStatus `HotkeyManager` carries in Apple's `NSOSStatusErrorDomain`; reading a system error `as NSError` is not a construction and is not counted.
 
 ### Test file naming
 

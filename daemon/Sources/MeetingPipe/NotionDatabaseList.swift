@@ -20,6 +20,41 @@ final class NotionDatabaseList: ObservableObject {
         case failed(String)
     }
 
+    /// Why a Notion call from the picker failed (HYG15). Each description is the message the
+    /// `NSError` it replaced carried, unchanged, since the picker and the verify button show it.
+    enum NotionError: Error, LocalizedError, Equatable {
+        /// `verifyDatabase`: the id does not make a URL.
+        case invalidDatabaseID
+        /// `verifyDatabase`: the response was not HTTP.
+        case noResponse
+        /// `verifyDatabase`: 404, which is also how Notion answers a database not shared with the integration.
+        case databaseNotFound
+        /// `verifyDatabase`: 401 or 403.
+        case tokenRejected(status: Int)
+        /// `verifyDatabase`: any other non-200 status, with the first 160 characters of the body.
+        case http(status: Int, body: String)
+        /// `fetch` (the database list's `/v1/search`): a non-2xx status, with the first 200
+        /// characters of the body. Its own case because its sentence has always differed from verify's.
+        case searchFailed(status: Int, body: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidDatabaseID:
+                return "Database id is not a valid value."
+            case .noResponse:
+                return "No HTTP response from Notion."
+            case .databaseNotFound:
+                return "Database not found, or the integration is not connected to it. In Notion, open the database, then the '…' menu -> Connections -> add your integration."
+            case .tokenRejected(let status):
+                return "Notion rejected the token (HTTP \(status)). Check the integration token."
+            case .http(let status, let body):
+                return "Notion returned HTTP \(status): \(body)"
+            case .searchFailed(let status, let body):
+                return "Notion API returned \(status): \(body)"
+            }
+        }
+    }
+
     @Published private(set) var entries: [NotionDatabaseEntry] = []
     @Published private(set) var state: FetchState = .idle
 
@@ -133,10 +168,7 @@ final class NotionDatabaseList: ObservableObject {
         let (data, response) = try await session.data(for: req)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             let body = String(data: data, encoding: .utf8) ?? ""
-            throw NSError(
-                domain: "NotionDatabaseList", code: http.statusCode,
-                userInfo: [NSLocalizedDescriptionKey: "Notion API returned \(http.statusCode): \(body.prefix(200))"]
-            )
+            throw NotionError.searchFailed(status: http.statusCode, body: String(body.prefix(200)))
         }
         return parse(jsonData: data)
     }
@@ -157,15 +189,14 @@ final class NotionDatabaseList: ObservableObject {
         // Every daemon-originated Notion call emits an audit line, like `refresh()`.
         Log.event(category: "daemon", action: "notion_verify_started",
                   attributes: ["host": "api.notion.com"])
-        func fail(_ code: Int, _ message: String) -> NSError {
+        func fail(_ error: NotionError) -> NotionError {
             Log.event(category: "daemon", action: "notion_verify_failed",
-                      attributes: ["host": "api.notion.com", "error": message])
-            return NSError(domain: "NotionDatabaseList", code: code,
-                           userInfo: [NSLocalizedDescriptionKey: message])
+                      attributes: ["host": "api.notion.com", "error": error.localizedDescription])
+            return error
         }
         let id = databaseId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: "https://api.notion.com/v1/databases/\(id)") else {
-            throw fail(-1, "Database id is not a valid value.")
+            throw fail(.invalidDatabaseID)
         }
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
@@ -173,7 +204,7 @@ final class NotionDatabaseList: ObservableObject {
         req.setValue("2022-06-28", forHTTPHeaderField: "Notion-Version")
         let (data, response) = try await session.data(for: req)
         guard let http = response as? HTTPURLResponse else {
-            throw fail(-1, "No HTTP response from Notion.")
+            throw fail(.noResponse)
         }
         switch http.statusCode {
         case 200:
@@ -181,12 +212,12 @@ final class NotionDatabaseList: ObservableObject {
                       attributes: ["host": "api.notion.com"])
             return databaseTitle(jsonData: data)
         case 404:
-            throw fail(404, "Database not found, or the integration is not connected to it. In Notion, open the database, then the '…' menu -> Connections -> add your integration.")
+            throw fail(.databaseNotFound)
         case 401, 403:
-            throw fail(http.statusCode, "Notion rejected the token (HTTP \(http.statusCode)). Check the integration token.")
+            throw fail(.tokenRejected(status: http.statusCode))
         default:
             let body = String(data: data, encoding: .utf8) ?? ""
-            throw fail(http.statusCode, "Notion returned HTTP \(http.statusCode): \(body.prefix(160))")
+            throw fail(.http(status: http.statusCode, body: String(body.prefix(160))))
         }
     }
 
