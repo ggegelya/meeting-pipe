@@ -26,6 +26,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# shellcheck source=scripts/lib/logs-guard.sh
+source "$REPO_ROOT/scripts/lib/logs-guard.sh"
 
 # GitHub folds ::group:: blocks in the log; a terminal gets a plain header.
 begin() {
@@ -179,6 +181,13 @@ truth_fences() {
     bash scripts/test-uninstall.sh
     end
 
+    begin "Logs guard: a test's writes, not the app's (T9)"
+    # scripts/lib/logs-guard.sh, which the pipeline and daemon test steps run under: an app
+    # appending to the real logs folder during a run stays green, one row a test writes
+    # through its home turns it red. Scratch dirs only; the real ~/Library/Logs is not read.
+    bash scripts/test-logs-guard.sh
+    end
+
     begin "Relaunch helper and Swift floor (DIST5)"
     # lib/relaunch.sh, the stop, start and verify install.sh and rebuild.sh share,
     # with launchctl, pkill, pgrep, open and sleep stubbed; the launch-at-login-off
@@ -240,7 +249,12 @@ pipeline() {
         $run pyright
         end
         begin "Pipeline: pytest"
-        $run pytest -q
+        # T9: under a throwaway home, so a test that writes the logs folder of its home is caught
+        # without blaming the installed app's own writes to the real one (scripts/lib/logs-guard.sh).
+        local home
+        home=$(logs_sentinel_home)
+        $run env HOME="$home" CFFIXED_USER_HOME="$home" pytest -q
+        logs_sentinel_check pytest "$home"
         end
     )
 }
@@ -295,9 +309,13 @@ daemon() {
         # The MuteRedactor data-safety tests shell out to ffmpeg; without it on PATH
         # they skip and the most destructive path goes unverified.
         command -v ffmpeg >/dev/null 2>&1 || echo "WARNING: ffmpeg not on PATH; the MuteRedactor tests will skip."
-        local log
+        # T9: under a throwaway home, as pytest is (scripts/lib/logs-guard.sh). CFFIXED_USER_HOME
+        # is the one Foundation reads; HOME reaches the Python and shell children.
+        local log home
         log=$(mktemp "${TMPDIR:-/tmp}/ci-local-swift-test.XXXXXX")
-        swift test 2>&1 | tee "$log"
+        home=$(logs_sentinel_home)
+        env HOME="$home" CFFIXED_USER_HOME="$home" swift test 2>&1 | tee "$log"
+        logs_sentinel_check "swift test" "$home"
         end
         begin "Daemon: no unlisted test skips (T7)"
         check_skips "$log"
@@ -317,9 +335,11 @@ daemon() {
         bin="$(swift build --show-bin-path)"
         bundle="$bin/MeetingPipeTests.xctest"
         [ -d "$bundle" ] || bundle="$bin/MeetingPipePackageTests.xctest"
-        LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 perl -e 'alarm shift; exec @ARGV' 600 \
+        home=$(logs_sentinel_home)
+        env HOME="$home" CFFIXED_USER_HOME="$home" LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 perl -e 'alarm shift; exec @ARGV' 600 \
             xcrun xctest -XCTest MeetingPipeTests.EngineTeardownTests,MeetingPipeTests.BoundedEngineStartTests,MeetingPipeTests.RunWithTimeoutTests \
             "$bundle"
+        logs_sentinel_check "the one-thread engine tests" "$home"
         end
         begin "Signing key ACL and hardened runtime (SEC17)"
         # macOS only, so here and not in the Linux fences job. A scratch keychain and a tiny ad-hoc
@@ -346,41 +366,14 @@ daemon() {
     )
 }
 
-# T9: a suite must leave the owner's real logs folder exactly as it found it. Both suites
-# wrote there for months (85 percent of one laptop's pipeline.log was `synthetic frame`
-# fixture output), and the only detector was the owner reading the log. Records size and
-# mtime of every file under it before a suite and fails if any changed after. Read-only;
-# a no-op where the folder does not exist, which is every CI runner. MP_REAL_LOGS_DIR
-# exists for the fence's own red check, never to point it somewhere else in normal use.
-# A false red is possible if the installed app records or runs a meeting while the suite
-# runs: the listing names the file, so re-run when the app was busy.
-REAL_LOGS_DIR="${MP_REAL_LOGS_DIR:-$HOME/Library/Logs/MeetingPipe}"
-logs_snapshot() {
-    [ -d "$REAL_LOGS_DIR" ] || return 0
-    find "$REAL_LOGS_DIR" -type f -exec stat -f '%z %m %N' {} + | sort
-}
-guard_real_logs() {
-    local before after
-    before="$(logs_snapshot)"
-    "$@"
-    after="$(logs_snapshot)"
-    begin "Real logs folder untouched by $1 (T9)"
-    if [ "$before" != "$after" ]; then
-        echo "FAIL: the $1 suite changed files under $REAL_LOGS_DIR (size mtime path):" >&2
-        diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") >&2 || true
-        exit 1
-    fi
-    end
-}
-
 run_job() {
     case "$1" in
         design-tokens) design_tokens ;;
         truth-fences) truth_fences ;;
-        pipeline) guard_real_logs pipeline ;;
-        daemon) guard_real_logs daemon ;;
+        pipeline) pipeline ;;
+        daemon) daemon ;;
         fences) design_tokens; truth_fences ;;
-        all) design_tokens; truth_fences; guard_real_logs pipeline; guard_real_logs daemon ;;
+        all) design_tokens; truth_fences; pipeline; daemon ;;
         *)
             echo "unknown job: $1 (expected all, fences, design-tokens, truth-fences, pipeline, daemon)" >&2
             exit 2
