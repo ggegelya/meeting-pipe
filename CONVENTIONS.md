@@ -44,7 +44,9 @@ The check is per *entry* (a `- ` bullet or a `| ` table row), not per file, beca
 
 The script's three allowlists exist for known drift a named backlog task will clear, and **all three are empty** as of HYG2 (three dead knobs), DOC9 (eleven keys `config.example.toml` never showed) and DOC14 (the two subtree `CLAUDE.md` files, split onto their `docs/gotchas.md` siblings). That is the intended steady state. **A stale allowlist entry fails too**, so a list can neither outlive the drift it describes nor quietly absorb new drift; anything not listed fails from the day it appears.
 
-**Daemon source rules (HYG15).** `sources` holds a rule about the Swift code itself rather than prose: no hand-rolled `NSError(domain:` under `daemon/Sources` (see Error propagation below). The match spans line breaks and skips comments, and `NSERROR_ALLOWLIST` is exact-count with a reason per entry, so a new site fails, and so does a listed one that is gone.
+**Daemon source rules (HYG15, HYG18).** `sources` holds rules about the Swift code itself rather than prose: no hand-rolled `NSError(domain:` under `daemon/Sources` (see Error propagation below), and the `MeetingPipeCore` island rules (every Core `import` in `CORE_IMPORT_ALLOWLIST`, `AppKit` only in `WorkspaceSignal.swift`, no SwiftUI, TOMLKit the target's only dependency, `-strict-concurrency=targeted` or stricter). The match spans line breaks and skips comments, and `NSERROR_ALLOWLIST` is exact-count with a reason per entry, so a new site fails, and so does a listed one that is gone. A missing Core target or an import extractor that finds nothing fails too, rather than passing vacuously.
+
+**`CONFIG_NOT_FROM_TOML` is not a blanket exemption (HYG18).** A key resolved per meeting from the overlay skips the three documentation diffs only. It still needs a consumer (the dead-knob check), its entry fails as stale once nothing parses the key, and it fails if the key turns up in `config.example.toml` or the README, since then it is a TOML key and the exemption is hiding its documentation checks.
 
 Not mirrored into `scripts/pre-commit`: the whole-state scan takes ~2.7 s, which is too slow for every commit. Same call as the DSN3 token guards, which are also CI-only.
 
@@ -85,7 +87,7 @@ Never `NSError(domain:code:userInfo:)`. A hand-rolled domain string plus `code: 
 
 ### Test file naming
 
-`<TypeUnderTest>Tests.swift` in `daemon/Tests/MeetingPipeTests/`. One test file per production type that has logic worth unit-testing. Suite class is `final class <TypeUnderTest>Tests: XCTestCase`. Pure-logic tests don't import AVFoundation / NSWorkspace — see the "Testability via clock and decision injection" pattern in Swift section.
+A unit-test file is `<TypeUnderTest>Tests.swift` in `daemon/Tests/MeetingPipeTests/`, with suite class `final class <TypeUnderTest>Tests: XCTestCase`. A suite that pins something other than one type is named for what it pins: a fence (`TutorialFenceTests`), a contract fixture (`CI4ContractFixtureTests`), a cross-type integration (`CoordinatorMicGateIntegrationTests`), or a task's pins (`MeetingRecorderPinsARCH8Tests`). Pure-logic tests don't import AVFoundation / NSWorkspace; see the "Testability via clock and decision injection" pattern in Swift section.
 
 Pipeline-side: `test_<module>.py` next to the module under `pipeline/tests/`.
 
@@ -246,7 +248,7 @@ allow = visibility.visible_stems(root)             # AUTO3: which meetings may l
 
 ### Test discipline
 
-- pytest + monkeypatch. No live HTTP, no network sockets, except `live`-marked contract tests that skip unless the owner opts in (T10, `tests/test_anthropic_live.py`; never in CI).
+- pytest + monkeypatch. No live HTTP and no socket beyond loopback, except `live`-marked contract tests that skip unless the owner opts in (T10, `tests/test_anthropic_live.py`; never in CI). A fake server bound to `127.0.0.1:0` is the sanctioned way to test an HTTP client end to end (`test_engine`, `test_summarize_local`, `test_summarize_staged`); `httpx.MockTransport` is the lighter one when the transport is all you need.
 - Outbound HTTP (Notion / Anthropic / OpenAI) is faked with `httpx.MockTransport`: monkeypatch `httpx.Client` to inject `transport=httpx.MockTransport(handler)` and answer from a handler function. See `tests/test_publish_notion.py`. No cassettes, so nothing to re-record.
 - Services depend on `Protocol`s from `services.py`. Tests inject in-memory fakes, not vendor SDK mocks.
 - Fixtures and examples use synthetic names and stems (`Avery`, `Blake`, `Casey`, `20260101-120000`), never a roster name, the owner's label or a library stem; describe a field failure by its shape, not as "the real" meeting. `truth_fences.py personal` checks this on the owner's Mac against the roster, config and library (HYG21).

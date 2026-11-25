@@ -2,9 +2,10 @@
 id: HYG18
 title: Fences and written rules are weaker than they read: the design-token fence's word-boundary alternatives never match under Apple Git, 32 user-visible lines carry em-dashes, and three rules are stronger as written than anything checks
 category: Hygiene
-status: new
+status: done
+closed: 2026-11-25
 priority: P2
-comment: Filed 2026-10-25 (code-quality audit CV2, CV6, CV9): the design-token fence's three \b alternatives match nothing under Apple Git 2.50.1, so local fences are weaker than CI; 32 user-visible lines carry em-dashes; three written rules overstate (53 test files, loopback servers, 8 spawns). A portable regex plus a self-test, sweep the 32 strings, reword the rules, a Core island fence. [Spec](./HYG18.md) Amended 2026-11-13 by the audit band: CONFIG_NOT_FROM_TOML keys skip the dead-knob check and have no staleness ratchet (G047).
+comment: Shipped 2026-11-25. ci-local's color fences spell `\b` as `([^A-Za-z0-9_]|$)` and a probe self-test asserts each pattern's exact matched lines on the runner's git grep; 22 user-visible em-dash lines rewritten (doctor.py wholly clean); the test-naming, loopback and spawn rules reworded, the trainer spawns with child_env(); `truth_fences.py sources` holds the Core island (imports, AppKit file, TOMLKit-only, strict-concurrency); CONFIG_NOT_FROM_TOML exempts the doc diffs only, with a stale and a now-documented ratchet. Every plant tried and reverted; 9 new pytest; full ci-local green. [Spec](./HYG18.md)
 ---
 
 # HYG18: Fences and written rules are weaker than they read: the design-token fence's word-boundary alternatives never match under Apple Git, 32 user-visible lines carry em-dashes, and three rules are stronger as written than anything checks

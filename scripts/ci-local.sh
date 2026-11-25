@@ -35,6 +35,36 @@ end() {
     if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::endgroup::"; fi
 }
 
+# The two color patterns, as variables so the self-test below runs the exact text the checks do.
+# HYG18: never `\b`. macOS's ERE has no word boundary, so under Apple Git each `\b` alternative
+# matched nothing and the local job was weaker than CI's glibc one; `([^A-Za-z0-9_]|$)` is the
+# portable spelling.
+END_OF_NAME='([^A-Za-z0-9_]|$)'
+DSN3_PATTERN="Color\.(red|orange|green|accentColor)|\.foregroundStyle\(\.(red|orange|green)\)|\.foregroundColor\(\.(red|orange|green)\)|\.accentColor|tint: \.(red|orange|green)$END_OF_NAME|return \.(red|orange|green)$END_OF_NAME"
+DSN18_PATTERN="\.foregroundStyle\(\.(secondary|tertiary|quaternary)\)|\.foregroundColor\(\.(secondary|tertiary|quaternary)\)|return \.(secondary|tertiary|quaternary)$END_OF_NAME"
+
+# HYG18: prove each pattern's end-of-name alternatives match on this machine's git grep before
+# trusting a clean result. Exact line numbers, so one dead alternative cannot hide behind a live
+# one. Run from inside the temp dir: inside the repo, --no-index refuses a path outside it.
+pattern_self_test() {
+    local probe got rc=0
+    probe=$(mktemp -d)
+    printf '%s\n' 'tint: .red)' 'return .orange' 'return .secondary' 'return .redder' 'return .secondaryLabel' \
+        > "$probe/probe.swift"
+    got=$(cd "$probe" && git grep --no-index -nE "$DSN3_PATTERN" -- probe.swift | cut -d: -f2 | tr '\n' ' ' || true)
+    if [ "$got" != "1 2 " ]; then
+        echo "::error::HYG18: the DSN3 pattern matched probe lines [${got}], expected [1 2 ]. An alternative is dead under this git grep."
+        rc=1
+    fi
+    got=$(cd "$probe" && git grep --no-index -nE "$DSN18_PATTERN" -- probe.swift | cut -d: -f2 | tr '\n' ' ' || true)
+    if [ "$got" != "3 " ]; then
+        echo "::error::HYG18: the DSN18 pattern matched probe lines [${got}], expected [3 ]. An alternative is dead under this git grep."
+        rc=1
+    fi
+    rm -rf "$probe"
+    return "$rc"
+}
+
 design_tokens() {
     # TECH-DSN3 / DSN18: enforce the MPColors / MPType design tokens. Colors are a
     # whole-file guard (they were all migrated); fonts are diff-based, since the
@@ -42,11 +72,16 @@ design_tokens() {
     # would risk sub-pixel shifts and lose Dynamic Type, so only new ones are blocked.
     local matches added base
 
+    begin "Color fence patterns match on this git grep (HYG18)"
+    pattern_self_test || return 1
+    echo "Every end-of-name alternative matches its probe line, and the near misses do not."
+    end
+
     begin "No raw semantic color literals in daemon UI sources (TECH-DSN3)"
     # The semantic state colors must come from the tokens (.mpDanger / .mpWarning /
     # .mpSuccess / .mpSignal), not the generic system .red/.orange/.green/.accentColor.
     # Tokens.swift is the single allowed source (it defines them plus the speaker palette).
-    matches=$(git grep -nE 'Color\.(red|orange|green|accentColor)|\.foregroundStyle\(\.(red|orange|green)\)|\.foregroundColor\(\.(red|orange|green)\)|\.accentColor|tint: \.(red|orange|green)\b|return \.(red|orange|green)\b' -- 'daemon/Sources/*.swift' ':!daemon/Sources/MeetingPipe/Design/Tokens.swift' || true)
+    matches=$(git grep -nE "$DSN3_PATTERN" -- 'daemon/Sources/*.swift' ':!daemon/Sources/MeetingPipe/Design/Tokens.swift' || true)
     if [ -n "$matches" ]; then
         echo "::error::TECH-DSN3: raw semantic color literal under daemon/Sources. Use the token (.mpDanger / .mpWarning / .mpSuccess / .mpSignal)."
         echo "$matches"
@@ -61,7 +96,7 @@ design_tokens() {
     # legibility-checked tokens (fgMuted / fgSubtle), whose floor ContrastFloorTests
     # pins. Recursive scope on purpose; Design/ is the allowed definition site.
     # Color.secondary.opacity(...) fills and borders are out of scope (not text).
-    matches=$(git grep -nE '\.foregroundStyle\(\.(secondary|tertiary|quaternary)\)|\.foregroundColor\(\.(secondary|tertiary|quaternary)\)|return \.(secondary|tertiary|quaternary)\b' -- daemon/Sources ':!daemon/Sources/MeetingPipe/Design' || true)
+    matches=$(git grep -nE "$DSN18_PATTERN" -- daemon/Sources ':!daemon/Sources/MeetingPipe/Design' || true)
     if [ -n "$matches" ]; then
         echo "::error::TECH-DSN18: bare native-semantic text color under daemon/Sources. Use a token (Color(MPColors.fgMuted) for secondary, Color(MPColors.fgSubtle) for tertiary)."
         echo "$matches"

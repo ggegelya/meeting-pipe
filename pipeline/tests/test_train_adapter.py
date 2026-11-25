@@ -353,3 +353,30 @@ def test_gate_ready_counts_a_moved_librarys_corrections(tmp_path: Path, monkeypa
     monkeypatch.setattr(corr_mod, "CORRECTIONS_DIR", corr)
     _ready, state = gate_ready("corrections", [], library)
     assert "5,000/" in state
+
+
+def test_the_trainer_child_gets_the_egress_guards_env(tmp_path: Path, monkeypatch):
+    """HYG18: `mlx_lm.lora` is the one child here that can fetch weights, so it is spawned with
+    `egress_guard.child_env()` rather than an inherited env."""
+    import subprocess
+
+    from mp import train_adapter
+
+    pairs = [_make_pair(stem=s, rendered=render_model_transcript(_scratch_meeting(tmp_path)),
+                        summary=_STORED, source="runs", settings=PromptSettings()) for s in ("a", "b")]
+    monkeypatch.setattr(train_adapter.entry, "prepare", lambda **_: train_adapter.entry.Config())
+    monkeypatch.setattr(train_adapter, "collect_pairs", lambda *a, **k: pairs)
+    monkeypatch.setattr(train_adapter, "gate_ready", lambda *a, **k: (True, "ready"))
+    sentinel = {"MP_HYG18_SENTINEL": "1"}
+    monkeypatch.setattr(train_adapter.egress_guard, "child_env", lambda: sentinel)
+    seen: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(train_adapter.subprocess, "run", fake_run)
+    rc = train_adapter.main(["--adapter-path", str(tmp_path / "a"), "--source", "runs",
+                             "--max-seq-length", str(DEFAULT_MAX_SEQ_LENGTH)])
+    assert rc == 0
+    assert seen.get("env") is sentinel

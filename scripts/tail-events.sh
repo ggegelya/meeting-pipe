@@ -20,7 +20,7 @@ set -e
 
 EVENTS="${HOME}/Library/Logs/MeetingPipe/events.jsonl"
 if [ ! -f "$EVENTS" ]; then
-    echo "No events file at $EVENTS — has meeting-pipe ever run?" >&2
+    echo "No events file at $EVENTS: has meeting-pipe ever run?" >&2
     exit 1
 fi
 
@@ -52,7 +52,7 @@ done
 # its own toolchain on most installs; fall back to a plain JSON pretty
 # print if jq isn't on PATH.
 if ! command -v jq >/dev/null 2>&1; then
-    echo "jq not found — install via 'brew install jq' for the coloured renderer" >&2
+    echo "jq not found: install via 'brew install jq' for the coloured renderer" >&2
     echo "raw stream follows:" >&2
     case "$mode" in
         all)    tail -n +1 -f "$EVENTS" ;;

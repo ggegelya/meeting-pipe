@@ -1,11 +1,11 @@
-"""`mp doctor` — preflight check for secrets, config, and external services.
+"""`mp doctor`: preflight check for secrets, config, and external services.
 
 Each check is independent: a failure in one does not abort the rest, so the
 user gets the full picture in a single run. Output is plain text with simple
 [ OK ] / [FAIL] / [WARN] markers; greppable, readable, no color codes.
 
 Network checks are all bounded: HEAD/GET with a 10s timeout, never any data
-write. We do not bill the Anthropic API for tokens — the credential check
+write. We do not bill the Anthropic API for tokens; the credential check
 uses the messages endpoint with `max_tokens=1` (cheapest possible request,
 ~$0.000003).
 """
@@ -107,7 +107,7 @@ def check_secrets(needed: set[str] | None = None) -> dict[str, bool]:
 def check_config() -> Config | None:
     print(f"\n== config ==  ({CONFIG_PATH})")
     if not CONFIG_PATH.exists():
-        _warn("config.toml missing — using all defaults")
+        _warn("config.toml missing, using all defaults")
         return Config()
     try:
         cfg = Config.load(CONFIG_PATH)
@@ -174,7 +174,7 @@ def check_anthropic(present: bool, cfg: Config | None = None, needed: bool = Tru
         # model is the next line's check.
         _ok(f"API key valid, billable account (probed with {ANTHROPIC_DOCTOR_PROBE_MODEL})")
     elif resp.status_code in (401, 403):
-        _fail(f"key rejected: HTTP {resp.status_code} — {resp.text[:200]}")
+        _fail(f"key rejected: HTTP {resp.status_code}: {resp.text[:200]}")
         return
     elif resp.status_code == 429:
         _warn("key valid but rate-limited right now (HTTP 429)")
@@ -265,10 +265,10 @@ def check_openai(present: bool, cfg: Config | None, needed: bool | None = None) 
         _fail(f"network error reaching api.openai.com: {e}")
         return
     if resp.status_code == 200:
-        _ok("API key valid — model list reachable")
+        _ok("API key valid, model list reachable")
         _check_configured_openai_model(resp, cfg)
     elif resp.status_code in (401, 403):
-        _fail(f"key rejected: HTTP {resp.status_code} — {resp.text[:200]}")
+        _fail(f"key rejected: HTTP {resp.status_code}: {resp.text[:200]}")
     elif resp.status_code == 429:
         _warn("key valid but rate-limited right now (HTTP 429)")
     else:
@@ -335,10 +335,10 @@ def check_notion(
         _fail(f"network error reaching api.notion.com: {e}")
         return
     if me.status_code != 200:
-        _fail(f"token rejected: HTTP {me.status_code} — {me.text[:200]}")
+        _fail(f"token rejected: HTTP {me.status_code}: {me.text[:200]}")
         return
     name = (me.json().get("bot", {}) or {}).get("workspace_name") or me.json().get("name") or "(unnamed)"
-    _ok(f"token valid — integration: {name}")
+    _ok(f"token valid, integration: {name}")
 
     # Each distinct database a workflow reaches, own id or the global fallback.
     db_ids: list[str] = []
@@ -361,7 +361,7 @@ def _check_notion_database(db_id: str, headers: dict[str, str]) -> None:
     if db.status_code == 200:
         title_blocks = db.json().get("title", [])
         title = "".join(b.get("plain_text", "") for b in title_blocks) or "(untitled)"
-        _ok(f"database reachable — title: {title!r}")
+        _ok(f"database reachable, title: {title!r}")
     elif db.status_code == 404:
         _fail(f"database {db_id} not found OR integration not connected to it")
         _info("open the database in Notion → '…' menu → Connections → add your integration")
@@ -1064,7 +1064,7 @@ def check_huggingface(present: bool) -> None:
     into a pyannote-based diarization workflow. The default pipeline no
     longer touches Hugging Face.
     """
-    print("\n== HuggingFace (optional — only used if you opt back into pyannote) ==")
+    print("\n== HuggingFace (optional, only used if you opt back into pyannote) ==")
     if not present:
         _info("HF_TOKEN not set; the default FluidAudio pipeline does not need it")
         _info(f"create a Read token at {HF_TOKENS_URL} only if you re-enable pyannote")
@@ -1080,9 +1080,9 @@ def check_huggingface(present: bool) -> None:
         _fail(f"network error reaching huggingface.co: {e}")
         return
     if whoami.status_code != 200:
-        _fail(f"token rejected: HTTP {whoami.status_code} — {whoami.text[:200]}")
+        _fail(f"token rejected: HTTP {whoami.status_code}: {whoami.text[:200]}")
         return
-    _ok(f"token valid — user: {whoami.json().get('name', '(unknown)')}")
+    _ok(f"token valid, user: {whoami.json().get('name', '(unknown)')}")
 
 
 # ---------- Screen Recording TCC -------------------------------------------
@@ -1099,7 +1099,7 @@ _TCC_DENIAL_RE = re.compile(
 )
 
 # Regex matching a successful SCStream start. Used to confirm that any prior
-# denial was resolved on a more recent run — newest-line-wins.
+# denial was resolved on a more recent run: newest-line-wins.
 _TCC_OK_RE = re.compile(r"SCStream start", re.IGNORECASE)
 
 _RECORDER_LOG = Path(os.path.expanduser("~/Library/Logs/MeetingPipe/recorder.log"))
@@ -1129,7 +1129,7 @@ def check_screen_recording() -> None:
     recent SCStream outcome.
 
     We don't call into ScreenCaptureKit directly because doctor.py is pure
-    Python — adding a Swift helper just for this is more code than the
+    Python; adding a Swift helper just for this is more code than the
     failure mode warrants. Reading the daemon's own log is reliable
     (recorder.log writes a one-liner on every recording start) and points
     the user at the exact remediation when permission is missing.
@@ -1137,13 +1137,13 @@ def check_screen_recording() -> None:
     print("\n== Screen Recording (system audio capture) ==")
     line = _scan_recorder_log_for_tcc()
     if line is None:
-        _warn("recorder.log absent or has no SCStream events yet — cannot verify")
+        _warn("recorder.log absent or has no SCStream events yet, cannot verify")
         _info(f"expected at {_RECORDER_LOG}")
         _info("run a quick test recording (⌃⌥M) and re-run mp doctor")
         return
     if _TCC_DENIAL_RE.search(line):
         _fail("Screen Recording permission was DECLINED for MeetingPipe")
-        _info("recordings will be MIC-ONLY — other participants' voices won't be captured,")
+        _info("recordings will be MIC-ONLY: other participants' voices won't be captured,")
         _info("which means diarization will only ever see one speaker.")
         _info("Fix: System Settings ▸ Privacy & Security ▸ Screen Recording → enable MeetingPipe,")
         _info("     then: launchctl kickstart -k gui/$(id -u)/com.meetingpipe.daemon")
@@ -1231,7 +1231,7 @@ def main(argv: list[str]) -> int:
         print("Validates the secrets and the claude_cli binary the workflows in use need, config, storage, folder destinations, the installed bundle's Spotlight index, and live access to Anthropic / OpenAI / Notion / HuggingFace.")
         return 0
 
-    print("mp doctor — preflight check\n")
+    print("mp doctor: preflight check\n")
     # UX107: config first, so the secrets section knows which tokens a backend or
     # sink in use actually needs (`reachability`, the Finish setup checklist's table).
     cfg = check_config()
@@ -1268,7 +1268,7 @@ def main(argv: list[str]) -> int:
     check_app_index()
 
     print("\nDone. Re-run after fixing each [FAIL] above.")
-    # Exit 0 even on partial failures — this is a diagnostic tool, not a gate.
+    # Exit 0 even on partial failures: this is a diagnostic tool, not a gate.
     # Caller can grep for "[FAIL]" if they want to fail a CI step on it.
     return 0
 

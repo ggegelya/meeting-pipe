@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import corrections, entry, storage
+from . import corrections, egress_guard, entry, storage
 
 if TYPE_CHECKING:
     from .summarize import RenderedTranscript
@@ -584,7 +584,9 @@ def main(argv: list[str]) -> int:
 
     args.adapter_path.mkdir(parents=True, exist_ok=True)
     log.info("training adapter: %s", " ".join(cmd))
-    result = subprocess.run(cmd, check=False)
+    # The one spawned child here that can reach the network (it may fetch weights), so it gets
+    # the scrubbed env; identical to os.environ while the guard is not armed (HYG18).
+    result = subprocess.run(cmd, check=False, env=egress_guard.child_env())
     if result.returncode == 0:
         held_out = [p.stem for p in splits["test"] if p.stem]
         log.info(

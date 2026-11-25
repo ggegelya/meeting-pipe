@@ -77,7 +77,7 @@ def parse_summary_md(text: str, *, fallback_title: str = "(untitled meeting)") -
 
     summary_bullets = _extract_bullets(sections.get("summary", ""))
     if not summary_bullets:
-        summary_bullets = ["(no summary section detected — see transcript)"]
+        summary_bullets = ["(no summary section detected, see transcript)"]
     summary_bullets = summary_bullets[:SUMMARY_LIMIT]  # schema cap
 
     decisions = _extract_bullets_or_numbered(sections.get("decisions", ""))

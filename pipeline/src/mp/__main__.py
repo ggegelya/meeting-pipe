@@ -13,7 +13,7 @@ from types import FrameType
 from typing import NoReturn
 
 USAGE = """\
-mp — meeting-pipe pipeline
+mp: meeting-pipe pipeline
 
 usage: mp <subcommand> [args...]
 

@@ -57,7 +57,7 @@ script is the mechanical reader.
     python3 scripts/truth_fences.py backlog    # task headers + INDEX.md freshness only
     python3 scripts/truth_fences.py blockers   # OBS7: main-thread blockers in view/controller files only
     python3 scripts/truth_fences.py env        # OBS6: every MP_* the daemon exports is read by the pipeline
-    python3 scripts/truth_fences.py sources    # HYG15: no hand-rolled NSError(domain:) under daemon/Sources
+    python3 scripts/truth_fences.py sources    # HYG15: no hand-rolled NSError(domain:); HYG18: the Core island's imports
     python3 scripts/truth_fences.py personal   # HYG21: roster names / library stems in tests and scripts (owner machine)
 
 Stdlib only (tomllib, ast, re), so CI can run it without installing anything.
@@ -93,8 +93,11 @@ REPO = Path(__file__).resolve().parents[1]
 # here should be rare and short-lived.
 CONFIG_ALLOWLIST: dict[str, str] = {}
 
-# Parsed at runtime but deliberately never sourced from TOML, so neither the
-# documented-vs-parsed diff nor the completeness check applies.
+# Parsed at runtime but deliberately never sourced from TOML, so the three
+# documentation diffs skip them. Nothing else does (HYG18): each must still have a
+# consumer (the dead-knob check), must still be parsed (else the entry is stale),
+# and must not turn up in config.example.toml or the README (then it has become a
+# TOML key and the exemption would be hiding its documentation checks).
 CONFIG_NOT_FROM_TOML = {
     "modes.workflow_nda_mode": "resolved per-meeting from the workflow overlay, never a TOML key",
     "summarization.extra_sections": (
@@ -444,9 +447,11 @@ def check_config() -> bool:
             "there too (commented out is fine for an opt-in)."
         )
 
+    # Only CONFIG_ALLOWLIST exempts a dead knob. A key resolved from the overlay
+    # rather than TOML still needs a consumer (HYG18).
     for key in unconsumed_keys(read):
         drift.add(key)
-        if key in known:
+        if key in CONFIG_ALLOWLIST:
             continue
         fence.fail(
             f"`{key}` is a DEAD KNOB: parsed and persisted, and nothing ever reads "
@@ -461,6 +466,20 @@ def check_config() -> bool:
             fence.fail(
                 f"CONFIG_ALLOWLIST entry `{key}` ({reason}) no longer describes real "
                 "drift. The task that owned it has landed; delete the line."
+            )
+
+    # HYG18: the same ratchet for the not-from-TOML exemption, which had none.
+    for key, reason in sorted(CONFIG_NOT_FROM_TOML.items()):
+        if key not in read:
+            fence.fail(
+                f"CONFIG_NOT_FROM_TOML entry `{key}` ({reason}) is no longer parsed by "
+                "either reader. Delete the entry."
+            )
+        if key in documented:
+            fence.fail(
+                f"CONFIG_NOT_FROM_TOML entry `{key}` is documented in config.example.toml "
+                "or the README, so it is a TOML key now. Delete the entry and let the "
+                "documentation checks see it."
             )
 
     return fence.report()
@@ -1067,7 +1086,7 @@ def check_blockers(
 
 
 # --------------------------------------------------------------------------
-# Fence (HYG15): source rules under daemon/Sources that a grep can hold
+# Fence (HYG15, HYG18): source rules under daemon/Sources that a grep can hold
 # --------------------------------------------------------------------------
 
 # CONVENTIONS.md "Error propagation": never `NSError(domain:code:userInfo:)`, since a hand-rolled
@@ -1102,6 +1121,69 @@ def nserror_hits(repo: Path) -> dict[tuple[str, str], list[int]]:
     return hits
 
 
+# HYG18: the MeetingPipeCore island rules (`daemon/Sources/MeetingPipeCore/CLAUDE.md`), which held
+# with nothing failing if they stopped. Every module Core may import; SwiftUI is deliberately absent.
+CORE_IMPORT_ALLOWLIST = frozenset({
+    "Foundation", "ApplicationServices", "CoreAudio", "os", "TOMLKit", "ScreenCaptureKit", "CoreGraphics",
+    "AppKit",
+})
+# The one file allowed `import AppKit`: NSWorkspace's termination notification and NSRunningApplication
+# KVO have no Foundation equivalent.
+CORE_APPKIT_FILE = "daemon/Sources/MeetingPipeCore/Lifecycle/Signals/WorkspaceSignal.swift"
+# `import X`, `@preconcurrency import X`, `import struct X.Y`, `import os.log`: the top-level module.
+SWIFT_IMPORT = re.compile(
+    r"^\s*(?:@\w+\s+)*import\s+(?:(?:typealias|struct|class|enum|protocol|let|var|func)\s+)?([A-Za-z_]\w*)",
+    re.M,
+)
+CORE_TARGET = re.compile(r'\.target(\()\s*name:\s*"MeetingPipeCore"')
+# `targeted` or stricter, so CONC6 raising it to `complete` does not trip the fence.
+CORE_STRICT_CONCURRENCY = re.compile(r'"-strict-concurrency=(?:targeted|complete)"')
+CORE_ONLY_DEPENDENCY = '.product(name:"TOMLKit",package:"TOMLKit")'
+
+
+def island_failures(repo: Path) -> list[str]:
+    """Every way `repo`'s MeetingPipeCore breaks its island rules: an import outside the allowlist,
+    AppKit outside its one file, or a `Package.swift` target that gained a dependency or lost its
+    strict-concurrency flag. A missing target or an extractor that finds no import fails too, so the
+    fence cannot go vacuously green. Pure apart from reading the files."""
+    out: list[str] = []
+    core = repo / "daemon" / "Sources" / "MeetingPipeCore"
+    found = 0
+    for path in sorted(core.rglob("*.swift")):
+        rel = path.relative_to(repo).as_posix()
+        code = "\n".join(_swift_code_lines(path.read_text(encoding="utf-8")))
+        for match in SWIFT_IMPORT.finditer(code):
+            found += 1
+            module = match.group(1)
+            where = f"{rel}:{code.count(chr(10), 0, match.start()) + 1}"
+            if module == "AppKit" and rel != CORE_APPKIT_FILE:
+                out.append(f"`import AppKit` at {where}. Core has exactly one, in {CORE_APPKIT_FILE}, for an "
+                           "API with no Foundation equivalent; reach the rest through a protocol the app implements.")
+            elif module not in CORE_IMPORT_ALLOWLIST:
+                out.append(f"`import {module}` at {where} is outside the Core island's allowlist "
+                           f"({', '.join(sorted(CORE_IMPORT_ALLOWLIST))}). No UI in Core; a new module is an "
+                           "island-rule change, so ask first and extend CORE_IMPORT_ALLOWLIST with it.")
+    if found == 0:
+        out.append("found no `import` under daemon/Sources/MeetingPipeCore; the island extractor is stale")
+
+    package = repo / "daemon" / "Package.swift"
+    src = "\n".join(_swift_code_lines(package.read_text(encoding="utf-8"))) if package.exists() else ""
+    target = CORE_TARGET.search(src)
+    if target is None:
+        out.append("no `.target(name: \"MeetingPipeCore\"` in daemon/Package.swift; the island extractor is stale")
+        return out
+    span = _call_span(src, target.start(1))
+    deps = re.search(r"\bdependencies:\s*\[", span)
+    deps_text = re.sub(r"\s+", "", _call_span(span, deps.end() - 1, "[]")[1:-1]) if deps else ""
+    if deps_text.rstrip(",") != CORE_ONLY_DEPENDENCY:
+        out.append(f"the MeetingPipeCore target's dependencies are `{deps_text or '(none)'}`; TOMLKit is its only "
+                   "dependency, and adding one means every test that links Core links it too. Ask first.")
+    if not CORE_STRICT_CONCURRENCY.search(span):
+        out.append("the MeetingPipeCore target no longer passes `-strict-concurrency=targeted` (or `complete`). "
+                   "A Sendable warning there is a real cross-thread finding; keep the flag on.")
+    return out
+
+
 def check_sources(
     repo: Path | None = None,
     allowlist: dict[tuple[str, str], tuple[int, str]] | None = None,
@@ -1109,6 +1191,8 @@ def check_sources(
     fence = Fence("daemon source rules")
     repo = repo if repo is not None else REPO
     allowlist = NSERROR_ALLOWLIST if allowlist is None else allowlist
+    for msg in island_failures(repo):
+        fence.fail(msg)
     hits = nserror_hits(repo)
 
     for key, (count, reason) in sorted(allowlist.items()):

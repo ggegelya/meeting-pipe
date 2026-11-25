@@ -20,8 +20,18 @@ _STUB = 'completion(.failure(NSError(\n    domain: "PipelineDriver", code: 1,\n 
 _SEEDED = {(_LAUNCHER, "PipelineDriver"): (16, "A7 in ARCH5 removes the PipelineDriver default stubs")}
 
 
+# HYG18: `check_sources` also holds the Core island, which fails on a missing `Package.swift` rather
+# than passing vacuously, so every scratch tree carries a minimal island that keeps its rules.
+_ISLAND = {
+    "daemon/Package.swift": ('.target(\n    name: "MeetingPipeCore",\n'
+                             '    dependencies: [.product(name: "TOMLKit", package: "TOMLKit")],\n'
+                             '    swiftSettings: [.unsafeFlags(["-strict-concurrency=targeted"])]\n)\n'),
+    "daemon/Sources/MeetingPipeCore/Island.swift": "import Foundation\n",
+}
+
+
 def _tree(tmp_path: Path, files: dict[str, str]) -> Path:
-    for rel, text in files.items():
+    for rel, text in {**_ISLAND, **files}.items():
         path = tmp_path / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")

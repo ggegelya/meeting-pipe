@@ -197,7 +197,7 @@ def _read_meeting_summary_prompt() -> str:
     try:
         return resources.files("mp.prompts").joinpath("meeting_summary.md").read_text(encoding="utf-8")
     except Exception:  # pragma: no cover
-        return "(prompt file not found in package — see pipeline/src/mp/prompts/meeting_summary.md)"
+        return "(prompt file not found in package, see pipeline/src/mp/prompts/meeting_summary.md)"
 
 
 def _write_manual_bundle(transcript_md: Path, char_count: int, threshold: int) -> Path:
@@ -222,7 +222,7 @@ engine is billed per token and a meeting this size costs noticeable money.
 
    `{transcript_md}`
 
-4. Ask for the summary. Save the result wherever you want — the pipeline
+4. Ask for the summary. Save the result wherever you want: the pipeline
    won't touch it.
 
 If you decide later that you DO want this meeting auto-summarized, run:
@@ -383,7 +383,7 @@ def _check_no_speech(wav: Path, t: dict[str, Path], structured: dict) -> dict | 
     broke the moment any header line contained bold styling."""
     if structured.get("segments"):
         return None
-    log.warning("Transcript has no speaker turns — skipping summarize + publish.")
+    log.warning("Transcript has no speaker turns, skipping summarize + publish.")
     log.warning("  WAV: %s", wav)
     log.warning("  MD : %s", t["md"])
     events.emit("pipeline", "run_skipped", wav=str(wav), reason="no_speech")
@@ -445,7 +445,7 @@ def _check_byo(
                     transcript_chars=len(md_text))
         return None
     bundle = _write_manual_bundle(t["md"], len(md_text), threshold=0)
-    log.info("BYO summary requested — skipping Anthropic call.")
+    log.info("BYO summary requested, skipping Anthropic call.")
     log.info("Manual-processing bundle written: %s", bundle)
     log.info("Run `mp publish-from-paste %s` after saving your summary.", t["md"])
     events.emit("pipeline", "run_skipped", wav=str(wav), reason="byo",
@@ -484,7 +484,7 @@ def _check_too_long(wav: Path, t: dict[str, Path], md_text: str, cfg: Config) ->
         return None
     bundle = _write_manual_bundle(t["md"], len(md_text), threshold)
     log.warning(
-        "Transcript is %d chars (threshold %d) — skipping summarize + publish.",
+        "Transcript is %d chars (threshold %d), skipping summarize + publish.",
         len(md_text), threshold,
     )
     log.warning("Manual-processing bundle written: %s", bundle)
