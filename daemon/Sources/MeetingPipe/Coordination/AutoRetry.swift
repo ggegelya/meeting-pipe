@@ -56,9 +56,7 @@ final class AutoRetryStore {
         if let url {
             resolved = url
         } else {
-            let dir = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support/MeetingPipe", isDirectory: true)
-            resolved = dir.appendingPathComponent("auto_retry.json")
+            resolved = Endpoints.Paths.appSupportDir.appendingPathComponent("auto_retry.json")
         }
         self.url = resolved
         try? FileManager.default.createDirectory(

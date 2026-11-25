@@ -112,10 +112,12 @@ enum LaunchAgentScheduler {
         ]
     }
 
-    /// Where a scheduled agent's stdout/stderr land, beside the daemon's own logs.
+    /// Where a scheduled agent's stdout/stderr land, beside the daemon's own logs. From home, not
+    /// `Log.logsDir`: the plist outlives this process, so a `MEETINGPIPE_LOGS_DIR` override or the
+    /// XCTest temp redirect baked into it would outlive the run that set it (ARCH18).
     static var logDir: String {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Logs/MeetingPipe").path
+            .appendingPathComponent(Endpoints.Paths.logsRelative).path
     }
 
     /// Write and bootstrap the agent, then confirm launchd holds it. `arguments` are appended to the

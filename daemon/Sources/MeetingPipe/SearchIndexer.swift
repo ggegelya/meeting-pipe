@@ -53,9 +53,7 @@ final class SearchIndexer: ObservableObject {
 
     /// Default cache location, alongside the waveform cache (ADR 0003: a rebuildable index over files).
     static func defaultIndexURL() -> URL {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("MeetingPipe/search/index.sqlite")
+        Endpoints.Paths.cachesDir.appendingPathComponent("search/index.sqlite")
     }
 
     /// How many index writes share one transaction during a reconcile (PERF20). Not one per stem:

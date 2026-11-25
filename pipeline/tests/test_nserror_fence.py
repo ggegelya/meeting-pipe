@@ -39,7 +39,8 @@ def _tree(tmp_path: Path, files: dict[str, str]) -> Path:
 
 
 def _passes(repo: Path, allowlist: dict, capsys) -> tuple[bool, str]:
-    ok = fences.check_sources(repo, allowlist)
+    # ARCH18: an empty paths allowlist, since the real one names files a scratch tree does not have.
+    ok = fences.check_sources(repo, allowlist, {})
     return ok, capsys.readouterr().out
 
 

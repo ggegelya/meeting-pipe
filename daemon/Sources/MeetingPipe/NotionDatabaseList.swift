@@ -80,8 +80,7 @@ final class NotionDatabaseList: ObservableObject {
     }
 
     nonisolated static let defaultCacheURL: URL = {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Caches/MeetingPipe/notion-databases.json")
+        Endpoints.Paths.cachesDir.appendingPathComponent("notion-databases.json")
     }()
 
     /// Re-fetch from Notion using the token `SecretsStore` last persisted (the process environment carries none since SEC23).

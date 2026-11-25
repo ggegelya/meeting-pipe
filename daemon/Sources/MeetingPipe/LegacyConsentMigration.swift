@@ -30,8 +30,7 @@ enum LegacyConsentMigration {
     }
 
     static var defaultURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/MeetingPipe/auto_consent.json")
+        Endpoints.Paths.appSupportDir.appendingPathComponent("auto_consent.json")
     }
 
     @discardableResult

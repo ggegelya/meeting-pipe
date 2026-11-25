@@ -33,8 +33,7 @@ struct MeetingAppRegistry {
 
     /// `~/.config/meeting-pipe/meeting_apps.toml`, the same config root as `config.toml`.
     static var defaultOverlayURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/meeting-pipe/meeting_apps.toml")
+        Endpoints.Paths.configDir.appendingPathComponent("meeting_apps.toml")
     }
 
     // MARK: - Loading

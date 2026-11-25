@@ -90,8 +90,7 @@ final class WorkflowStore: ObservableObject {
 
     /// Default workflows directory, sibling to `config.toml`.
     static let defaultDirectory: URL = {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/meeting-pipe/workflows")
+        Endpoints.Paths.configDir.appendingPathComponent("workflows")
     }()
 
     /// Does not load on init; callers invoke `load` explicitly so tests can drive migration with a fresh directory.

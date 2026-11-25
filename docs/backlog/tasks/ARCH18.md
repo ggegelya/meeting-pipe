@@ -2,9 +2,10 @@
 id: ARCH18
 title: The app's on-disk folders are spelled by hand at ten sites that bypass Endpoints.Paths, four of them the config folder
 category: Architecture
-status: new
+status: done
+closed: 2026-11-25
 priority: P2
-comment: Filed 2026-10-25 (code-quality audit SW5): 10 sites spell the app's folders by hand instead of Endpoints.Paths (4 config, 2 Application Support, 3 Caches, 1 Logs), and nothing fences it. Folder constants and URL accessors in Endpoints.Paths, migrate the 10, a source fence; ARCH9 keeps config.toml, ARCH10 the sidecars. [Spec](./ARCH18.md)
+comment: Shipped 2026-11-25: folder constants and configDir/appSupportDir/cachesDir in Endpoints.Paths, the 12 bypass sites at HEAD migrated (ConsentStore was now LegacyConsentMigration, plus MeetingDurationCache and AutoRetry), and the fence in truth_fences.py sources rather than a Swift PathsFenceTests; EndpointsPathsTests pins every literal; full ci-local.sh green. [Spec](./ARCH18.md)
 ---
 
 # ARCH18: The app's on-disk folders are spelled by hand at ten sites that bypass Endpoints.Paths, four of them the config folder

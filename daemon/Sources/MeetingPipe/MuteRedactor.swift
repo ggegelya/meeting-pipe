@@ -62,9 +62,7 @@ enum MuteRedactor {
     /// iCloud-synced Documents folder. So the sensitive full audio is local-only
     /// while the redacted artifact is what is scanned, played, and published.
     static func originalsDirectory() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("MeetingPipe/originals", isDirectory: true)
+        Endpoints.Paths.appSupportDir.appendingPathComponent("originals", isDirectory: true)
     }
 
     /// Kept-recording path for a final recording URL within `dir` (defaults to

@@ -81,11 +81,7 @@ enum WaveformPeaksLoader {
     }
 
     static func cacheDirectory() -> URL {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        let dir = base
-            .appendingPathComponent("MeetingPipe", isDirectory: true)
-            .appendingPathComponent("waveforms", isDirectory: true)
+        let dir = Endpoints.Paths.cachesDir.appendingPathComponent("waveforms", isDirectory: true)
         try? FileManager.default.createDirectory(
             at: dir, withIntermediateDirectories: true
         )

@@ -25,8 +25,7 @@ final class SavedSearchStore: ObservableObject {
 
     /// Default location, sibling to `config.toml` and the `workflows/` directory.
     static let defaultURL: URL = {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/meeting-pipe/saved_searches.json")
+        Endpoints.Paths.configDir.appendingPathComponent("saved_searches.json")
     }()
 
     init(url: URL = SavedSearchStore.defaultURL) {

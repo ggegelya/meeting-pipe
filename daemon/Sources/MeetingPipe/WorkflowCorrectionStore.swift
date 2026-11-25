@@ -36,8 +36,7 @@ final class WorkflowCorrectionStore {
 
     /// Default location, sibling to `config.toml` and the `workflows/` directory.
     static let defaultURL: URL = {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/meeting-pipe/workflow_corrections.json")
+        Endpoints.Paths.configDir.appendingPathComponent("workflow_corrections.json")
     }()
 
     init(url: URL = WorkflowCorrectionStore.defaultURL) {

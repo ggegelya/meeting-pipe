@@ -64,9 +64,7 @@ struct MeetingDurationCache: Equatable {
     }
 
     static func defaultURL() -> URL {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("MeetingPipe/durations.json")
+        Endpoints.Paths.cachesDir.appendingPathComponent("durations.json")
     }
 
     /// The stored seconds for `stem`, only when both files are the ones it was computed from.

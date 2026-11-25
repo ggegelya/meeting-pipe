@@ -593,6 +593,8 @@ lifecycle verdict .ended (or hotkey, or silence backstop)
 
 ## Where files live on disk (user side)
 
+The daemon spells each of its folders once, in `Endpoints.Paths` (`configDir`, `appSupportDir`, `cachesDir`, `logsRelative`), and builds every path below from them; `truth_fences.py sources` fails a folder spelled by hand anywhere else under `daemon/Sources` (ARCH18).
+
 | Path | Owner | Purpose |
 |---|---|---|
 | `~/.config/meeting-pipe/config.toml` | both | shared config |

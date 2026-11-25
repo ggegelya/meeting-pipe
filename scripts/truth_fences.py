@@ -57,7 +57,7 @@ script is the mechanical reader.
     python3 scripts/truth_fences.py backlog    # task headers + INDEX.md freshness only
     python3 scripts/truth_fences.py blockers   # OBS7: main-thread blockers in view/controller files only
     python3 scripts/truth_fences.py env        # OBS6: every MP_* the daemon exports is read by the pipeline
-    python3 scripts/truth_fences.py sources    # HYG15: no hand-rolled NSError(domain:); HYG18: the Core island's imports
+    python3 scripts/truth_fences.py sources    # HYG15: no hand-rolled NSError(domain:); HYG18: the Core island's imports; ARCH18: app folders only in Endpoints.Paths
     python3 scripts/truth_fences.py personal   # HYG21: roster names / library stems in tests and scripts (owner machine)
 
 Stdlib only (tomllib, ast, re), so CI can run it without installing anything.
@@ -1184,14 +1184,81 @@ def island_failures(repo: Path) -> list[str]:
     return out
 
 
+# ARCH18: the app's folders are spelled once, in `Endpoints.Paths`. Each was spelled by hand at up to
+# four call sites, so a rename was a twelve-file hunt in which every miss wrote to the old place
+# silently. Checked per comment-stripped line; a doc comment naming a folder for a reader is fine.
+PATHS_HOME = "daemon/Sources/MeetingPipe/Endpoints.swift"
+APP_FOLDER_SPELLINGS: dict[str, re.Pattern[str]] = {
+    "config folder": re.compile(re.escape(".config/meeting-pipe")),
+    "Application Support folder": re.compile(re.escape("Application Support/MeetingPipe")),
+    "Caches folder": re.compile(re.escape("Caches/MeetingPipe")),
+    "Logs folder": re.compile(re.escape("Logs/MeetingPipe")),
+    # `urls(for: .cachesDirectory)` + "MeetingPipe/x": the folder by its last component. The closing
+    # quote or slash keeps the XCTest log redirect's `MeetingPipe-test-logs` temp name out.
+    "MeetingPipe path component": re.compile(
+        r'\bappending(?:PathComponent)?\(\s*(?:path:\s*|component:\s*)?"MeetingPipe[/"]'),
+}
+# (path relative to the repo, spelling name) -> (exact count of lines, reason). Exact, as above.
+PATHS_ALLOWLIST: dict[tuple[str, str], tuple[int, str]] = {
+    ("daemon/Sources/MeetingPipe/Preferences/PreferencesView+Advanced.swift", "config folder"): (
+        1, "user-visible copy telling the owner where to edit config and workflows by hand; it names "
+           "the folder for a person and constructs no path"),
+    ("daemon/Sources/MeetingPipe/Notifier.swift", "Logs folder"): (
+        4, "user-visible notification copy pointing the owner at recorder.log; it names the folder "
+           "for a person and constructs no path"),
+}
+
+
+def path_hits(repo: Path) -> dict[tuple[str, str], list[int]]:
+    """{(path relative to `repo`, spelling name): [line numbers]} for every hand-spelled app folder
+    under `repo/daemon/Sources` outside `Endpoints.swift`. Pure apart from reading the files."""
+    hits: dict[tuple[str, str], list[int]] = {}
+    for path in sorted((repo / "daemon" / "Sources").rglob("*.swift")):
+        rel = path.relative_to(repo).as_posix()
+        if rel == PATHS_HOME:
+            continue
+        for number, code in enumerate(_swift_code_lines(path.read_text(encoding="utf-8")), start=1):
+            for name, pattern in APP_FOLDER_SPELLINGS.items():
+                if pattern.search(code):
+                    hits.setdefault((rel, name), []).append(number)
+    return hits
+
+
+def path_failures(repo: Path, allowlist: dict[tuple[str, str], tuple[int, str]]) -> list[str]:
+    """Every hand-spelled app folder in `repo` that `allowlist` does not hold at its exact count,
+    plus every allowlist entry that is stale or has no reason."""
+    out: list[str] = []
+    hits = path_hits(repo)
+    for key, (count, reason) in sorted(allowlist.items()):
+        if not reason.strip():
+            out.append(f"PATHS_ALLOWLIST entry {key[0]} / {key[1]} has no reason")
+        found = len(hits.get(key, []))
+        if found == 0:
+            out.append(f"PATHS_ALLOWLIST entry {key[0]} / {key[1]} is stale: no such line is left. Delete the entry.")
+        elif found != count:
+            out.append(f"{key[0]}: {found} line(s) spelling the {key[1]} where PATHS_ALLOWLIST expects {count}. "
+                       "Build the path from Endpoints.Paths, or update the entry if one was removed.")
+    for (rel, name), lines in sorted(hits.items()):
+        if (rel, name) in allowlist:
+            continue
+        where = ", ".join(f"{rel}:{n}" for n in lines)
+        out.append(f"the {name} spelled by hand ({where}). Build it from Endpoints.Paths (configDir, "
+                   "appSupportDir, cachesDir, logsRelative), so a rename is one line (ARCH18).")
+    return out
+
+
 def check_sources(
     repo: Path | None = None,
     allowlist: dict[tuple[str, str], tuple[int, str]] | None = None,
+    paths_allowlist: dict[tuple[str, str], tuple[int, str]] | None = None,
 ) -> bool:
     fence = Fence("daemon source rules")
     repo = repo if repo is not None else REPO
     allowlist = NSERROR_ALLOWLIST if allowlist is None else allowlist
+    paths_allowlist = PATHS_ALLOWLIST if paths_allowlist is None else paths_allowlist
     for msg in island_failures(repo):
+        fence.fail(msg)
+    for msg in path_failures(repo, paths_allowlist):
         fence.fail(msg)
     hits = nserror_hits(repo)
 
