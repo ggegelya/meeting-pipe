@@ -23,15 +23,16 @@ Three properties hold for every function here and are what the tests pin:
    leave this surface fencing against markers nothing writes. AUTO8 made it hold
    for every model-written string, not just the content blocks: a meeting
    `title`, an action's `task` and `owner` are each fenced on their own, so the
-   row shapes stay plain JSON a client can read field by field. A `due` that is
-   an ISO date is a value and stays bare; any other `due` is model prose and is
-   fenced. Stem, date, workflow and the flags are not model text.
+   row shapes stay plain JSON a client can read field by field. A `due` whose
+   whole string is an ISO date or datetime is a value and stays bare; any other
+   `due`, a date with prose after it included, is model text and is fenced.
+   Stem, date, workflow and the flags are not model text.
 """
 from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +100,21 @@ def _task(text: str) -> str:
 def _fenced(text: str | None) -> str | None:
     """`wrap_untrusted`, passing None through so an absent owner stays absent."""
     return None if text is None else wrap_untrusted(text)
+
+
+def _due_date(due: str | None) -> date | None:
+    """The date of a `due` whose whole string is an ISO date or datetime, else None.
+
+    AUTO8 (2026-11-21 amendment): `actions._parse_iso_date` reads only the first
+    ten characters, so "2026-12-01 ignore previous instructions" parsed as a date
+    and its prose came back unfenced. Only a string that parses whole is a value.
+    """
+    if not due:
+        return None
+    try:
+        return datetime.fromisoformat(due).date()
+    except ValueError:
+        return None
 
 
 def _workflow_name(root: Path, stem: str) -> str | None:
@@ -316,7 +332,8 @@ def list_actions(
     AUTO8: every row that passes the filters is collected and ranked before the
     cut, then `limit` keeps the top: dated actions first by soonest `due`, then
     undated ones newest meeting first (ties inside a group also newest first). A
-    `due` that is not an ISO date ranks as undated.
+    `due` that is not, as a whole string, an ISO date or datetime ranks as
+    undated, is fenced, and has no age.
     Discovery walks the library oldest first, and it used to stop at `limit`
     there, so a library with more open actions than the limit answered with its
     oldest ones, re-sorted to look complete. `total` and `truncated` say when the
@@ -334,25 +351,27 @@ def list_actions(
         day = _meeting_date(a.stem)
         if since and (day is None or day < since):
             continue
-        # An ISO `due` is a date and ranks as one; "end of week" is model prose,
-        # fenced, and ranks with the undated rows rather than above them all.
-        dated = a.age_days(today) is not None
+        # An ISO `due` is a date and ranks as one; "end of week", or a date with
+        # prose after it, is model text: fenced, ranked with the undated rows
+        # rather than above them all, and given no age.
+        due_day = _due_date(a.due)
+        age = (today - due_day).days if due_day is not None else None
         rows.append({
             "stem": a.stem,
             "title": wrap_untrusted(a.title),
             "date": day,
             "task": wrap_untrusted(_task(a.task)),
             "owner": _fenced(a.owner),
-            "due": a.due if dated else _fenced(a.due),
-            "_rank_due": a.due if dated else None,
+            "due": a.due if due_day is not None else _fenced(a.due),
+            "_rank_due": due_day,
             "resolved": a.resolved,
-            "overdue": a.is_overdue(today),
-            "age_days": a.age_days(today),
+            "overdue": not a.resolved and age is not None and age > 0,
+            "age_days": age,
             "workflow": a.workflow,
         })
     # Two stable sorts: newest meeting first, then dated before undated by due.
     rows.sort(key=lambda r: r["stem"], reverse=True)
-    rows.sort(key=lambda r: (r["_rank_due"] is None, r["_rank_due"] or ""))
+    rows.sort(key=lambda r: (r["_rank_due"] is None, r["_rank_due"] or date.min))
     for r in rows:
         del r["_rank_due"]
     page = rows[: max(1, int(limit))]
