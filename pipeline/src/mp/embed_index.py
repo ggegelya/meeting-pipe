@@ -66,10 +66,11 @@ from typing import IO, Any, Literal, Protocol
 
 import numpy as np
 
-from . import egress_guard, events, resource_guard, storage, transcript_corrections
+from . import egress_guard, events, resource_guard, storage, titles, transcript_corrections
 from .chunking import chunked_windows
 from .prefetch_model import model_is_cached
 from .visibility import library_stems
+from .workflow import read_meta
 
 log = logging.getLogger("mp.embed_index")
 
@@ -327,12 +328,12 @@ def default_embedder(model_id: str = DEFAULT_EMBED_MODEL) -> Embedder:
 
 
 def _read_title(root: Path, stem: str, tally: storage.UnreadableTally | None = None) -> str:
-    """The summary's title, or the stem. PIPE35: an unreadable summary is counted in `tally`, so
-    a refresh that cited stems instead of titles says how many it could not read."""
+    """The meeting's title (PIPE55: the rename, else the captured title, else the summary's),
+    or the stem. PIPE35: an unreadable summary is counted in `tally`, so a refresh that cited
+    stems instead of titles says how many it could not read."""
     obj = storage.read_library_json(root / f"{stem}.summary.json", tally)
-    if obj is not None and obj.get("title"):
-        return str(obj["title"])
-    return stem
+    summary_title = obj.get("title") if obj is not None else None
+    return titles.resolve(read_meta(root / f"{stem}.meta.json"), summary_title) or stem
 
 
 def chunk_stem(
@@ -620,6 +621,7 @@ STEM_SOURCE_SUFFIXES = (
     ".summary.json",
     ".transcript_corrections.json",
     ".speaker_labels.json",
+    ".meta.json",
 )
 
 
@@ -683,7 +685,8 @@ def library_fingerprint(root: Path) -> str:
     # PIPE9 / FEAT3: the overlay sidecars feed the chunk text too, so a correction
     # or speaker rename (which rewrites only the sidecar, not `<stem>.md`) must
     # invalidate the cached index, else `mp ask` keeps quoting stale text.
-    for pattern in ("*.md", "*.summary.json", "*.transcript_corrections.json", "*.speaker_labels.json"):
+    for pattern in ("*.md", "*.summary.json", "*.transcript_corrections.json", "*.speaker_labels.json",
+                    "*.meta.json"):
         for p in root.glob(pattern):
             line = _stat_line(p)
             if line:

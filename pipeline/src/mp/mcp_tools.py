@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from . import actions as actions_mod
-from . import embed_index, storage, visibility
+from . import embed_index, storage, titles, visibility
 from .prompt_safety import clean_due, clean_person, wrap_untrusted
 from .workflow import read_meta
 
@@ -117,10 +117,6 @@ def _due_date(due: str | None) -> date | None:
         return None
 
 
-def _workflow_name(root: Path, stem: str) -> str | None:
-    return str(read_meta(root / f"{stem}.meta.json").get("workflow_name") or "") or None
-
-
 def _row(
     root: Path, stem: str, tally: storage.UnreadableTally | None = None
 ) -> dict[str, Any]:
@@ -128,11 +124,13 @@ def _row(
     everything `list_meetings` may say about a meeting, and keeping it a separate
     function is what stops that list from growing content by accident."""
     summary = _summary(root, stem, tally)
+    meta = read_meta(root / f"{stem}.meta.json")
     return {
         "stem": stem,
-        "title": wrap_untrusted(str(summary.get("title") or stem)),
+        # PIPE55: the rename, else the captured title, else the generated one; fenced either way.
+        "title": wrap_untrusted(titles.resolve(meta, summary.get("title")) or stem),
         "date": _meeting_date(stem),
-        "workflow": _workflow_name(root, stem),
+        "workflow": str(meta.get("workflow_name") or "") or None,
         "has_transcript": (root / f"{stem}.md").exists(),
     }
 

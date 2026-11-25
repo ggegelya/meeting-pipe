@@ -286,7 +286,7 @@ The report also tells you when an edit and a vocabulary term have started disagr
 
 ### Renaming a meeting
 
-Click the title in the meeting's header, type, and press Return. The new title is what **Republish** sends to Notion, Obsidian, the folder on disk and a shared folder alike, and a re-summarize or reprocess keeps it. Emptying the field takes the rename back. Editing the title inside the summary editor does the same thing.
+Click the title in the meeting's header, type, and press Return. The new title is what **Republish** sends to Notion, Obsidian, the folder on disk and a shared folder alike, and a re-summarize or reprocess keeps it. Emptying the field takes the rename back. Editing the title inside the summary editor does the same thing. The weekly review, the open-actions list, Ask's answers, the "Last time" card and any AI tool you connected name the meeting by the same title.
 
 The title a meeting shows is your rename if you gave it one, otherwise the title the app captured from the meeting window or calendar when recording started, otherwise the one the summary wrote. That order changed: until it did, the summary's own title won over the captured one, so a meeting with a captured window topic may now show that topic where it used to show the summary's title. Your destinations already worked this way, so the list and the published notes now agree.
 

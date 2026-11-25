@@ -47,11 +47,12 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from . import actions as actions_mod
-from . import engine, entry, events, run_attempt, storage, visibility
+from . import engine, entry, events, run_attempt, storage, titles, visibility
 from .config import Config
 from .markdown import render_summary_md
 from .prompt_safety import UNTRUSTED_GUIDANCE, wrap_untrusted
 from .schemas import ActionItem, Confidence, ExtraSection, MeetingSummary
+from .workflow import read_meta
 
 log = logging.getLogger("mp.digest")
 
@@ -158,7 +159,7 @@ def collect_recent_decisions(
         obj = storage.read_library_json(summary_json, tally)
         if obj is None:
             continue
-        title = str(obj.get("title") or stem)
+        title = titles.resolve(read_meta(summary_json), obj.get("title")) or stem  # PIPE55
         for d in obj.get("decisions") or []:
             if isinstance(d, str) and d.strip():
                 out.append(RecentDecision(stem=stem, title=title, day=day, text=d.strip()))

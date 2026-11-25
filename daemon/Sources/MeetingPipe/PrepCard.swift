@@ -46,11 +46,14 @@ struct PrepCard: Equatable, Sendable {
     /// Points come from `summary`, falling back to `decisions` when a run put its
     /// content there and left the recap empty (a local model does this often
     /// enough to matter).
+    ///
+    /// `sidecarTitle` is the meeting's rename or captured title (`sidecarTitle(from:)`), which wins over the generated `summary.title` as it does in `Meeting.displayTitle` and `mp prep` (PIPE55).
     static func make(
         workflowName: String,
         stem: String,
         startedAt: Date,
         summary: MeetingSummary,
+        sidecarTitle: String? = nil,
         maxPoints: Int = PrepCard.maxPoints,
         maxActions: Int = PrepCard.maxActions
     ) -> PrepCard? {
@@ -72,7 +75,9 @@ struct PrepCard: Equatable, Sendable {
 
         guard !points.isEmpty || !open.isEmpty else { return nil }
 
-        let title = summary.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = [sidecarTitle ?? "", summary.title]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? ""
         let shown = Array(open.prefix(maxActions))
         return PrepCard(
             workflowName: workflowName,
@@ -83,6 +88,14 @@ struct PrepCard: Equatable, Sendable {
             actions: shown,
             moreActions: open.count - shown.count
         )
+    }
+
+    /// PIPE55: the title `<stem>.meta.json` names the meeting by, the owner's rename (`user_title`) and else the captured `meeting_title`, in `Meeting.displayTitle`'s order; nil when it names none.
+    static func sidecarTitle(from meta: [String: Any]) -> String? {
+        for key in [MeetingMetaSidecar.userTitleKey, "meeting_title"] {
+            if let t = (meta[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty { return t }
+        }
+        return nil
     }
 
     /// "today" / "yesterday" / "3 days ago" / "5 weeks ago". Day-granular: the
@@ -184,7 +197,8 @@ final class PrepCardStore {
                 from: recordingsDir.appendingPathComponent("\(stem).summary.json")
             ) else { continue }
             if let card = PrepCard.make(
-                workflowName: workflowName, stem: stem, startedAt: startedAt, summary: summary
+                workflowName: workflowName, stem: stem, startedAt: startedAt, summary: summary,
+                sidecarTitle: PrepCard.sidecarTitle(from: meta)
             ) {
                 return card
             }

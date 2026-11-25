@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from . import entry, storage
+from . import entry, storage, titles
 from .prompt_safety import clean_due, clean_person
 from .workflow import read_meta
 
@@ -97,10 +97,12 @@ def discover(
         obj = storage.read_library_json(summary_json, tally)
         if obj is None:
             continue
-        title = str(obj.get("title") or stem)
         # AI7: the meeting's workflow is the series key. Read once per meeting,
         # not once per action; an absent / malformed sidecar reads as untagged.
-        workflow = str(read_meta(summary_json).get("workflow_name") or "") or None
+        meta = read_meta(summary_json)
+        workflow = str(meta.get("workflow_name") or "") or None
+        # PIPE55: the rename, else the captured title, else the generated one.
+        title = titles.resolve(meta, obj.get("title")) or stem
         for item in obj.get("actions") or []:
             if not isinstance(item, dict) or not item.get("task"):
                 continue

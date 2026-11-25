@@ -24,8 +24,9 @@ final class PrepCardTests: XCTestCase {
     // MARK: - Fixtures
 
     private func write(stem: String, workflowID: String?, workflowName: String?,
-                       summary: [String: Any]?) throws {
+                       summary: [String: Any]?, titles: [String: String] = [:]) throws {
         var meta: [String: Any] = ["source_bundle_id": "com.microsoft.teams2"]
+        meta.merge(titles) { _, new in new }
         if let workflowID { meta["workflow_id"] = workflowID }
         if let workflowName { meta["workflow_name"] = workflowName }
         try JSONSerialization.data(withJSONObject: meta)
@@ -101,6 +102,25 @@ final class PrepCardTests: XCTestCase {
         ))
         XCTAssertEqual(card.title, "20260720-143000")
         XCTAssertTrue(card.actions.isEmpty)
+    }
+
+    /// PIPE55: the card names the meeting the way its Library row does, and the way `mp prep` does
+    /// (`test_title_readers.py`): the rename, else the captured title, else the generated one.
+    func test_scan_titles_the_card_with_the_rename_then_the_captured_title() throws {
+        let id = UUID().uuidString
+        let cases: [([String: String], String)] = [
+            (["user_title": "My rename", "meeting_title": "Captured"], "My rename"),
+            (["user_title": "  ", "meeting_title": "Captured"], "Captured"),
+            ([:], "Generated"),
+        ]
+        for (titles, expected) in cases {
+            try write(stem: "20260715-090000", workflowID: id, workflowName: "Client work",
+                      summary: summary(title: "Generated", points: ["p"]), titles: titles)
+            let card = try XCTUnwrap(PrepCardStore.scan(
+                recordingsDir: dir, workflowID: id, workflowName: "Client work"
+            ))
+            XCTAssertEqual(card.title, expected, "\(titles)")
+        }
     }
 
     // MARK: - Scan

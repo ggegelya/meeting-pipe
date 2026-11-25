@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
-from . import storage
+from . import storage, titles
 from .config import Config
 
 #: How much of the last summary the card carries. Small on purpose: this is a
@@ -79,6 +79,8 @@ class _Candidate:
     started_at: datetime
     workflow: str
     summary_path: Path
+    #: PIPE55: the sidecar's title (the rename, else the captured one), "" when it names none.
+    sidecar_title: str = ""
 
 
 def candidates(root: Path, tally: storage.UnreadableTally | None = None) -> list[_Candidate]:
@@ -106,7 +108,7 @@ def candidates(root: Path, tally: storage.UnreadableTally | None = None) -> list
         workflow = str(meta.get("workflow_name") or "").strip()
         if not workflow:
             continue
-        found.append(_Candidate(stem, started_at, workflow, summary_path))
+        found.append(_Candidate(stem, started_at, workflow, summary_path, titles.sidecar_title(meta)))
     found.sort(key=lambda c: c.started_at, reverse=True)
     return found
 
@@ -148,8 +150,13 @@ def build_card(
     summary: dict,
     max_points: int = MAX_POINTS,
     max_actions: int = MAX_ACTIONS,
+    *,
+    sidecar_title: str = "",
 ) -> PrepCard | None:
     """Project one summary into the card. Pure.
+
+    `sidecar_title` is the meeting's rename or captured title (`titles.sidecar_title`),
+    which wins over the generated `summary.title` exactly as it does in the Library (PIPE55).
 
     Returns None when there is nothing to say (no points and no open actions), so
     an empty card is never rendered: the affordance stays quiet instead of
@@ -182,7 +189,7 @@ def build_card(
     if not points and not open_actions:
         return None
 
-    title = str(summary.get("title") or "").strip() or stem
+    title = (sidecar_title or str(summary.get("title") or "")).strip() or stem
     shown = open_actions[:max_actions]
     return PrepCard(
         workflow=workflow,
@@ -212,7 +219,7 @@ def prep(root: Path, workflow: str, max_points: int = MAX_POINTS,
         if summary is None:
             continue
         card = build_card(workflow, cand.stem, cand.started_at, summary,
-                          max_points, max_actions)
+                          max_points, max_actions, sidecar_title=cand.sidecar_title)
         if card is not None:
             return card
     return None

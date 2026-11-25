@@ -2,7 +2,8 @@
 
 `Fixtures/title-precedence-golden.json` is read by Swift's `TitlePrecedenceTests`
 (against `Meeting.displayTitle`) and here (against `apply_meeting_title` and the
-router's fanout), so the Library and the sinks cannot disagree again.
+router's fanout, and `titles.resolve`, which the digest, actions, Ask, prep and the MCP tools
+read), so the Library and the pipeline cannot disagree again.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from mp import titles
 from mp.config import Config
 from mp.publish_notion import apply_meeting_title
 from mp.publish_router import fanout
@@ -48,6 +50,11 @@ def test_apply_meeting_title_matches_the_golden(case: dict, tmp_path: Path) -> N
         (tmp_path / "20261118-1000.meta.json").write_text(json.dumps(meta), encoding="utf-8")
     summary = _summary(case["summary_title"] or "")
     assert apply_meeting_title(summary, summary_json).title == (case["expected"] or "")
+
+
+@pytest.mark.parametrize("case", _cases(), ids=lambda c: c["name"])
+def test_the_shared_resolver_matches_the_golden(case: dict) -> None:
+    assert titles.resolve(_meta(case), case["summary_title"]) == (case["expected"] or "")
 
 
 class _TitleSpy:
