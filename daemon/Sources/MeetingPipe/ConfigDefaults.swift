@@ -60,7 +60,7 @@ enum ConfigDefaults {
     // MARK: - [transcription]
 
     /// `"auto"`, not `"en"`: before HYG2 wired this key the transcribe call passed
-    /// `languageHint: nil`, i.e. auto-detect. Defaulting to `"en"` would turn that
+    /// `languageHint: nil`, i.e. no script filter. Defaulting to `"en"` would turn that
     /// wiring into a silent behaviour change pinning every meeting to English on any
     /// config that never set the key.
     static let transcriptionLanguage = "auto"

@@ -67,7 +67,8 @@ protocol TranscriptionRunner: AnyObject {
     var backendName: String { get }
 
     /// Run ASR + diarization and return the sidecar. languageHint is the workflow's
-    /// language code (en/uk/es/ru/auto); runners may ignore it for auto-detection.
+    /// language code (en/uk/es/ru/auto); "auto" means no script preference, and runners
+    /// may ignore it (FluidAudio treats a code as a script filter, not detection; UX85).
     ///
     /// **Cancellable, and that is part of the contract (UX69).** The pass takes
     /// tens of seconds on a long meeting and scales with its length, so the

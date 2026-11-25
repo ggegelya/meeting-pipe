@@ -320,7 +320,7 @@ const PWPipelinePane = () => (
       <PWRow first label="System prompt"><PWSmallButton>View prompt</PWSmallButton></PWRow>
     </PWGroup>
     <PWGroup label="Languages">
-      <PWRow first label="Transcription" sublabel="On-device ASR (FluidAudio Parakeet TDT). Auto-detect chooses per meeting; a fixed code skips detection. Applies on the next daemon launch."><PWMenuPicker value="Auto-detect"/></PWRow>
+      <PWRow first label="Transcription" sublabel="Which alphabet on-device transcription should prefer. Any lets it write Latin or Cyrillic as it hears them. Picking a language makes it prefer that language's alphabet: every Latin-alphabet language here does the same thing, and with Ukrainian or Russian, English words in the same meeting can come out in Cyrillic. Applies on the next daemon launch."><PWMenuPicker value="Any (no preference)"/></PWRow>
       <PWRow label="Summary" sublabel="Output language for the Notion summary."><PWMenuPicker value="Match transcript"/></PWRow>
     </PWGroup>
     <PWGroup label="Speaker labels" footer="These change how voices are told apart, not what they are called. If a speaker is simply named wrong, fix that meeting in its Transcript tab (right-click a speaker); reach for these when two different people keep sharing one label, or one person is split across several.">

@@ -38,7 +38,7 @@ final class SinkDispatcher: @unchecked Sendable {
     private let originalsDir: URL?
 
     /// ASR language hint handed to the runner for every job (HYG2). `"auto"` or an
-    /// unknown code means auto-detect (`FluidAudioRunner.resolveLanguage`). Read once
+    /// unknown code means no script filter (`FluidAudioRunner.resolveLanguage`). Read once
     /// at Coordinator init from `transcription.language`, like the end-debounce and
     /// idle-backstop horizons, so it is immutable here and safe to read off-main.
     private let languageHint: String

@@ -94,11 +94,14 @@ reprompt_cooldown_sec = 60
 mic_only_silence_seconds = 900
 
 [transcription]
-# ASR language for the on-device FluidAudio (Parakeet TDT) runner. "auto" (the
-# default) lets the SDK detect the language per meeting; an ISO 639-1 code pins
-# it and skips detection, which is the safer setting if your meetings are always
-# in one language. Recognised codes: en, uk, ru, de, es, fr, it, pt, pl. An
-# unknown code falls back to auto-detect rather than failing. Also editable as
+# Which alphabet the on-device FluidAudio (Parakeet TDT) transcriber prefers. A
+# script preference, not language detection (the model has none): "auto" (the
+# default) sets no preference, so Latin and Cyrillic come out as heard; an ISO
+# 639-1 code makes the model prefer that language's alphabet. Every Latin code
+# behaves the same, and a Cyrillic code (uk, ru) can spell English words said in
+# the same meeting in Cyrillic, so leave "auto" for mixed meetings. Recognised
+# codes: en, uk, ru, de, es, fr, it, pt, pl. An unknown code falls back to no
+# preference rather than failing. Also editable as
 # Preferences -> Pipeline -> Languages -> Transcription; a change applies on the
 # next daemon launch (the value is read once at startup).
 #

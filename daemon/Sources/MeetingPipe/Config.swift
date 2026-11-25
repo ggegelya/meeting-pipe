@@ -35,9 +35,10 @@ struct Config {
         /// for the why). Clamped to FluidAudio's valid 0.5-0.9 range on load, so a
         /// stray hand-edit degrades gracefully instead of producing nonsense clusters.
         var diarizationClusteringThreshold: Double
-        /// ASR language hint passed to FluidAudio: `"auto"` (the default) lets the SDK
-        /// detect per meeting, an ISO 639-1 code pins it. `FluidAudioRunner.resolveLanguage`
-        /// maps an unknown code back to auto-detect, so a typo degrades rather than fails.
+        /// ASR language hint passed to FluidAudio: `"auto"` (the default) sets no script
+        /// preference, an ISO 639-1 code makes the decoder prefer that language's alphabet
+        /// (UX85: a script filter, not detection). `FluidAudioRunner.resolveLanguage` maps
+        /// an unknown code back to no preference, so a typo degrades rather than fails.
         var language: String
     }
 

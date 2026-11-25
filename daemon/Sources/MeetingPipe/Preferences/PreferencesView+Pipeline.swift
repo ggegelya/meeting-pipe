@@ -237,13 +237,13 @@ struct PipelineSectionView: View {
 
             SettingsGroup("Languages") {
                 SettingsRow("Transcription",
-                    sublabel: "On-device ASR (FluidAudio Parakeet TDT). Auto-detect chooses per meeting; a fixed code skips detection. Applies on the next daemon launch.",
+                    sublabel: TranscriptionLanguageCopy.sublabel,
                     showsDivider: false) {
-                    languagePicker(selection: $store.transcriptionLanguage, includeMatch: false)
+                    transcriptionLanguagePicker
                 }
                 SettingsRow("Summary",
                     sublabel: "Output language for the Notion summary.") {
-                    languagePicker(selection: $store.summaryLanguage, includeMatch: true)
+                    summaryLanguagePicker
                 }
             }
 
@@ -608,14 +608,22 @@ struct PipelineSectionView: View {
         ) + base
     }
 
-    @ViewBuilder
-    private func languagePicker(selection: Binding<String>, includeMatch: Bool) -> some View {
-        Picker("", selection: selection) {
-            if includeMatch {
-                Text("Match transcript").tag("auto")
-            } else {
-                Text("Auto-detect").tag("auto")
+    /// UX85: the transcription code is a script preference, not a detection switch,
+    /// so its rows name the alphabet they set; `TranscriptionLanguageCopy` owns them.
+    private var transcriptionLanguagePicker: some View {
+        Picker("", selection: $store.transcriptionLanguage) {
+            ForEach(TranscriptionLanguageCopy.options, id: \.tag) { option in
+                Text(option.title).tag(option.tag)
             }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .fixedSize()
+    }
+
+    private var summaryLanguagePicker: some View {
+        Picker("", selection: $store.summaryLanguage) {
+            Text("Match transcript").tag("auto")
             Text("English (en)").tag("en")
             Text("Українська (uk)").tag("uk")
             Text("Русский (ru)").tag("ru")

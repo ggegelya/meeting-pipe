@@ -315,7 +315,9 @@ final class FluidAudioRunner: TranscriptionRunner {
     // MARK: - Adapters
 
     /// Map workflow language code (en/uk/es/ru/auto/nil) to FluidAudio Language.
-    /// Returns nil for "auto" or unknown codes so the SDK detects language itself.
+    /// The SDK uses it only as a script filter on the decoder's top-K tokens (Latin
+    /// or Cyrillic for every code here); there is no language detection. Returns nil
+    /// for "auto" or unknown codes, which turns the filter off (UX85).
     static func resolveLanguage(hint: String?) -> Language? {
         guard let code = hint?.lowercased(), !code.isEmpty, code != "auto" else { return nil }
         return Language(rawValue: code)
