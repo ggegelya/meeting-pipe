@@ -85,7 +85,7 @@ struct AskView: View {
     /// `mp.ask` stays the last line of defence for the window in between.
     private var widthOffer: AskContextWidth.Offer {
         AskContextWidth.offer(
-            backendID: model.summarizationBackend,
+            backendID: model.summarizationBackend.rawValue,
             regulatedMode: model.regulatedMode,
             ramGB: LocalModelTier.physicalRamGB(),
             selectedID: askModel.contextWidthID

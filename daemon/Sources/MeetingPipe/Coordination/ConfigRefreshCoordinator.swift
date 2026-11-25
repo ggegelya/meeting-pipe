@@ -46,9 +46,9 @@ final class ConfigRefreshCoordinator {
         case noop
     }
 
-    static func prefetchDecision(backend: String, modelId: String) -> PrefetchAction {
-        // Non-local/auto backends (e.g. anthropic) cancel any in-flight prefetch.
-        guard backend == "local" || backend == "auto" else { return .cancelAndIdle }
+    static func prefetchDecision(backend: SummarizationBackend, modelId: String) -> PrefetchAction {
+        // A backend that never runs the MLX model (e.g. anthropic) cancels any in-flight prefetch.
+        guard backend.usesLocalModel else { return .cancelAndIdle }
         guard !modelId.isEmpty else { return .noop }
         return .ensure(modelId: modelId)
     }

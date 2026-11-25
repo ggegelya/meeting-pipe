@@ -130,7 +130,7 @@ final class MeetingLibraryService {
     /// The global `summarization.backend` and `modes.regulated_mode`, read live, which with the
     /// meeting's sidecar decide the engine a re-run dispatches to (PIPE52, `EffectiveBackend`).
     /// Defaulted for tests, so no test resolves from the owner's real config.
-    private let summarizationBackend: () -> String
+    private let summarizationBackend: () -> SummarizationBackend
     private let regulatedMode: () -> Bool
     /// AI9: records a WF8 reassignment as a labelled correction pair. Injected as a
     /// closure like the other collaborators, so a test drives `reassignWorkflow`
@@ -190,7 +190,7 @@ final class MeetingLibraryService {
         launcher: PipelineDriver,
         notifyError: @escaping (_ message: String, _ operation: FailureMetadata.Operation, _ title: String?) -> Void,
         enqueue: @escaping (URL, SummaryMode, Bool) -> Void,
-        summarizationBackend: @escaping () -> String = { "local" },
+        summarizationBackend: @escaping () -> SummarizationBackend = { ConfigDefaults.summarizationBackend },
         regulatedMode: @escaping () -> Bool = { false },
         originalsDir: @escaping () -> URL = { MuteRedactor.originalsDirectory() },
         recordCorrection: @escaping (String, String?, Workflow) -> Bool = { _, _, _ in false },
@@ -431,7 +431,7 @@ final class MeetingLibraryService {
                 "expected_backend": resolved.backend,
                 "backend_source": resolved.source,
             ])
-            let summarize: (@escaping (Result<Void, Error>) -> Void) -> Void = resolved.backend == "apple_intelligence"
+            let summarize: (@escaping (Result<Void, Error>) -> Void) -> Void = resolved.backendID.engine == SummarizationEngine.appleIntelligence
                 ? { self.launcher.summarizeViaAppleIntelligence(transcriptMD: transcriptURL, completion: $0) }
                 : { self.launcher.summarize(transcriptMD: transcriptURL, backend: backend, completion: $0) }
             summarize { result in
@@ -1296,7 +1296,7 @@ final class MeetingLibraryService {
     func effectiveBackend(stem: String, in dir: URL? = nil, override: String? = nil) -> EffectiveBackend.Resolution {
         EffectiveBackend.resolve(
             meta: MeetingMetaRead.load(stem: stem, in: dir ?? outputDir()),
-            globalRegulated: regulatedMode(), globalBackend: summarizationBackend(), override: override
+            globalRegulated: regulatedMode(), globalBackend: summarizationBackend().rawValue, override: override
         )
     }
 
@@ -1310,7 +1310,7 @@ final class MeetingLibraryService {
     /// The live values the preview gate reads, taken where the caller is (the Library reads them on
     /// main), so the sidecar read in `localPreviewEngine(stem:in:...)` can run off main.
     func previewGate() -> (dir: URL, globalBackend: String, globalRegulated: Bool) {
-        (outputDir(), summarizationBackend(), regulatedMode())
+        (outputDir(), summarizationBackend().rawValue, regulatedMode())
     }
 
     /// PIPE25: the backend a run of `stem` resolves to now (regulated, NDA, sidecar, global), so
@@ -1368,7 +1368,7 @@ final class MeetingLibraryService {
             engine = resolved.backend
         case .onDevice:
             guard let onDevice = EffectiveBackend.localPreviewEngine(
-                resolved: resolved.backend, global: summarizationBackend()
+                resolved: resolved.backend, global: summarizationBackend().rawValue
             ) else {
                 completion(.failure(LibraryError.noLocalPreview))
                 return
@@ -1388,12 +1388,12 @@ final class MeetingLibraryService {
                 completion(result)
             }
         }
-        if engine == "apple_intelligence" {
+        if SummarizationBackend(rawValue: engine).engine == SummarizationEngine.appleIntelligence {
             launcher.summarizePreviewViaApple(transcriptMD: transcriptURL, contextOverride: contextOverride, completion: handler)
         } else {
             launcher.summarizePreview(
                 transcriptMD: transcriptURL, contextOverride: contextOverride,
-                backend: mode == .onDevice ? "local" : nil, completion: handler
+                backend: mode == .onDevice ? SummarizationEngine.local.id : nil, completion: handler
             )
         }
     }

@@ -1907,7 +1907,7 @@ final class PipelineLauncher: PipelineDriver {
         configURL: URL = Config.defaultPath
     ) -> CloudSecretPolicy {
         let run = resolveRun(for: meeting, backendOverride: backendOverride, configURL: configURL)
-        let onDeviceSummary = run.regulated || run.nda || run.backend == "local" || run.backend == "apple_intelligence"
+        let onDeviceSummary = run.regulated || run.nda || run.backendID.isOnDevice
         return CloudSecretPolicy(
             stripAnthropic: onDeviceSummary, stripNotion: run.regulated || run.nda,
             stripOpenAI: onDeviceSummary, zeroEgress: run.regulated || run.nda
@@ -1949,7 +1949,7 @@ final class PipelineLauncher: PipelineDriver {
         } ?? .absent
         return EffectiveBackend.resolve(
             meta: meta, globalRegulated: config.regulatedMode,
-            globalBackend: config.summarizationBackend, override: backendOverride
+            globalBackend: config.summarizationBackend.rawValue, override: backendOverride
         )
     }
 

@@ -1000,7 +1000,7 @@ final class Coordinator: NSObject {
             self?.jobDispatcher.enqueue(file: file, summaryMode: mode, redactionOwed: owed)
         },
         summarizationBackend: { [weak self] in
-            self?.configStore?.summarizationBackend ?? "anthropic"
+            self?.configStore?.summarizationBackend ?? ConfigDefaults.summarizationBackend
         },
         // PIPE52: a nil store reads as regulated, the fail-closed direction ARCH9 gives an
         // unreadable config: an on-device dispatch, never a cloud one.

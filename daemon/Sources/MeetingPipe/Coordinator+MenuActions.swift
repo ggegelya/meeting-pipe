@@ -185,9 +185,9 @@ extension Coordinator {
     }
 
     /// Configured summarization backend, so the UI can gate the local re-run
-    /// preview (TECH-A16) to `local` / `apple_intelligence`.
-    var summarizationBackend: String {
-        configStore?.summarizationBackend ?? "anthropic"
+    /// preview (TECH-A16) to an on-device engine.
+    var summarizationBackend: SummarizationBackend {
+        configStore?.summarizationBackend ?? ConfigDefaults.summarizationBackend
     }
 
     /// Global regulated mode (UX29): the Library disables the cloud re-summarize
@@ -318,14 +318,14 @@ extension Coordinator {
             let center = PermissionsCenter.shared
             return (center.microphone, center.screenRecording, center.accessibility, center.notificationsOff)
         }
-        let globalBackend = configStore?.summarizationBackend ?? "anthropic"
+        let globalBackend = summarizationBackend.rawValue
         let globalNotionDatabaseId = configStore?.notionDatabaseId ?? ""
         let workflows = workflowStore.workflows
         let routes = SetupChecklist.workflowRoutes(
             workflows, globalBackend: globalBackend, globalNotionDatabaseId: globalNotionDatabaseId
         )
         // A handful of stats, and only when some route summarizes with Claude CLI.
-        let usesClaudeCLI = (workflows.isEmpty ? [globalBackend] : routes.backends).contains("claude_cli")
+        let usesClaudeCLI = (workflows.isEmpty ? [globalBackend] : routes.backends).contains(SummarizationEngine.claudeCLI.id)
         return SetupChecklist.Inputs(
             regulatedMode: configStore?.regulatedMode ?? false,
             globalBackend: globalBackend,

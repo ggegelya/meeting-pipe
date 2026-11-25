@@ -450,8 +450,8 @@ final class LibraryWindowModel: ObservableObject {
     /// Preferences is picked up the next time a surface asks. The Ask width
     /// control needs the raw id, since which widths it may offer depends on
     /// where the answer will actually run.
-    var summarizationBackend: String {
-        coordinator?.summarizationBackend ?? "anthropic"
+    var summarizationBackend: SummarizationBackend {
+        coordinator?.summarizationBackend ?? ConfigDefaults.summarizationBackend
     }
 
     /// The on-device engine "Re-run locally (preview)" runs for `stem`, or nil when it is not

@@ -46,18 +46,23 @@ enum SetupChecklist {
         case notionToken = "notion_token"
         case notionDatabase = "notion_database"
         case localModel = "local_model"
+
+        /// The Keychain account (`KeychainSecrets.managedKeys`) that fills this gap, for the two
+        /// API keys; nil for a gap no secret fills.
+        var keychainAccount: String? {
+            switch self {
+            case .anthropicKey: return "ANTHROPIC_API_KEY"
+            case .openaiKey: return "OPENAI_API_KEY"
+            case .claudeBinary, .notionToken, .notionDatabase, .localModel: return nil
+            }
+        }
     }
 
-    /// What each summarization backend needs (`mp.reachability.BACKEND_NEEDS`). `auto`
-    /// tries Anthropic and falls back to the on-device model, so it needs both.
-    static let backendNeeds: [String: Set<Gap>] = [
-        "anthropic": [.anthropicKey],
-        "auto": [.anthropicKey, .localModel],
-        "openai": [.openaiKey],
-        "claude_cli": [.claudeBinary],
-        "local": [.localModel],
-        "apple_intelligence": [],
-    ]
+    /// What each summarization backend needs (`mp.reachability.BACKEND_NEEDS`), read off
+    /// `SummarizationEngine.needs` so the table has one home (ARCH14). An id missing here
+    /// needs nothing.
+    static let backendNeeds: [String: Set<Gap>] =
+        Dictionary(uniqueKeysWithValues: SummarizationEngine.all.map { ($0.id, $0.needs) })
 
     /// What each publish sink needs (`mp.reachability.SINK_NEEDS`).
     static let sinkNeeds: [String: Set<Gap>] = [
@@ -158,7 +163,7 @@ enum SetupChecklist {
 
         init(
             regulatedMode: Bool = false,
-            globalBackend: String = "anthropic",
+            globalBackend: String = ConfigDefaults.summarizationBackend.rawValue,
             globalSinks: [String] = ["notion"],
             workflowBackends: [String] = [],
             workflowSinks: [[String]] = [],
@@ -277,7 +282,7 @@ enum SetupChecklist {
     /// backend and the filesystem sink (SEC18), as `mp.config.effective_backend` /
     /// `effective_sinks` do.
     private static func needs(_ r: Route, regulated: Bool) -> Set<Gap> {
-        let backend = regulated ? "local" : r.backend
+        let backend = regulated ? SummarizationEngine.local.id : r.backend
         let sinks = regulated ? ["filesystem"] : r.sinks
         var out = backendNeeds[backend] ?? []
         for sink in sinks { out.formUnion(sinkNeeds[sink] ?? []) }

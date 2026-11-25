@@ -33,14 +33,17 @@ enum RegulatedMode {
     /// contract is written in on both sides (`summarization.backend` in
     /// `config.toml`, `workflow_backend` in the sidecar, `backend` in
     /// `run.json`), and because a backend this build has never heard of still has
-    /// to clamp rather than fall through unnamed.
+    /// to clamp rather than fall through unnamed. The test itself reads the id as a
+    /// `SummarizationBackend` (ARCH14), which keeps an unknown id verbatim, so that
+    /// one clamps too.
     ///
     /// Every non-local backend is a cloud backend here, exactly as in Python: the
     /// CLI providers egress through a child process outside the in-process
     /// transport guard, so the fail-closed decision belongs at the policy layer.
     static func effectiveBackend(configured: String, regulated: Bool, workflowNDA: Bool) -> String {
         let zeroEgress = regulated || workflowNDA
-        return zeroEgress && configured != "local" ? "local" : configured
+        let local = SummarizationEngine.local
+        return zeroEgress && SummarizationBackend(rawValue: configured).engine != local ? local.id : configured
     }
 
     /// Mirror of `mp.config.effective_sinks` (SEC18), and the one Swift owner of the rule:

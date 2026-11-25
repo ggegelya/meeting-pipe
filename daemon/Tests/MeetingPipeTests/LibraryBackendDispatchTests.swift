@@ -29,7 +29,7 @@ final class LibraryBackendDispatchTests: XCTestCase {
             launcher: driver,
             notifyError: { [unowned self] message, _, _ in self.errors.append(message) },
             enqueue: { _, _, _ in XCTFail("no transcription expected") },
-            summarizationBackend: { global },
+            summarizationBackend: { SummarizationBackend(rawValue: global) },
             regulatedMode: { regulated }
         )
     }

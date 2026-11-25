@@ -188,9 +188,10 @@ final class ConfigStore: ObservableObject {
     @Published var summarizationLocalChunkAboveChars: Int = 0 { didSet { scheduleSave() } }
     static let cloudGateKey = "summarization.skip_above_chars"
     static let localChunkKey = "summarization.local_chunk_above_chars"
-    /// Summarize backend: "anthropic" | "local" | "auto". Mirrors
-    /// `summarization.backend`.
-    @Published var summarizationBackend: String = "" { didSet { scheduleSave() } }
+    /// `summarization.backend`: one of `SummarizationEngine.all`'s ids, or one this build does not
+    /// know, kept verbatim so a save writes it back unchanged (ARCH14). A missing key loads as
+    /// `ConfigDefaults.summarizationBackend`.
+    @Published var summarizationBackend: SummarizationBackend = "" { didSet { scheduleSave() } }
     /// Model id every Anthropic path calls (`summarization.model`): the anthropic and
     /// auto backends, a workflow pinning Anthropic, Re-summarize with…, Ask and the
     /// digest. TOML-only until the Pipeline pane's Anthropic model row, so changing it
@@ -627,7 +628,8 @@ final class ConfigStore: ObservableObject {
         self.summarizationSkipAboveChars = summ?["skip_above_chars"]?.int ?? 80000
         self.summarizationLocalChunkAboveChars = summ?["local_chunk_above_chars"]?.int
             ?? (summarizationSkipAboveChars != 0 ? summarizationSkipAboveChars : 80000)
-        self.summarizationBackend = summ?["backend"]?.string ?? "anthropic"
+        self.summarizationBackend = summ?["backend"]?.string.map(SummarizationBackend.init(rawValue:))
+            ?? ConfigDefaults.summarizationBackend
         // Mirrors `Summarization.model` in config.py; ConfigStoreTests reads that source.
         self.summarizationModel = summ?["model"]?.string ?? "claude-sonnet-5-5"
         self.summarizationLocalModel = summ?["local_model"]?.string
@@ -854,7 +856,7 @@ final class ConfigStore: ObservableObject {
             ("summarization", "digest_local_only", summarizationDigestLocalOnly),
             ("summarization", "skip_above_chars", summarizationSkipAboveChars),
             ("summarization", "local_chunk_above_chars", summarizationLocalChunkAboveChars),
-            ("summarization", "backend", summarizationBackend),
+            ("summarization", "backend", summarizationBackend.rawValue),
             ("summarization", "model", summarizationModel),
             ("summarization", "local_model", summarizationLocalModel),
             ("summarization", "local_endpoint", summarizationLocalEndpoint),

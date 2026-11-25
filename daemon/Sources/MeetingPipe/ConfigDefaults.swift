@@ -11,8 +11,9 @@ import Foundation
 /// `config.example.toml` documents these same values for the user; CI5's dead-knob fence keeps
 /// that file and the readers honest about each other, so a new knob belongs in both.
 ///
-/// Knobs only one site reads (the store's Notion and summarization keys) stay at their call
+/// Knobs only one site reads (the store's Notion and most summarization keys) stay at their call
 /// site: there is nothing to keep in sync, and moving them here would only add a lookup.
+/// `summarization.backend` is the exception, since its forwarders fall back too (ARCH14).
 enum ConfigDefaults {
 
     // MARK: - [recording]
@@ -49,6 +50,13 @@ enum ConfigDefaults {
     // MARK: - [modes]
 
     static let regulatedMode = false
+
+    // MARK: - [summarization]
+
+    /// ARCH14: the store's load fallback for a missing `summarization.backend`, and what each
+    /// forwarder (`Coordinator`, `LibraryWindowModel`, `MeetingLibraryService`) answers with no
+    /// store. They used to spell it four times and disagree (`anthropic` against `local`).
+    static let summarizationBackend = SummarizationBackend(SummarizationEngine.anthropic)
 
     // MARK: - [mcp]
 

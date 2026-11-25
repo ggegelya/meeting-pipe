@@ -44,6 +44,9 @@ final class MeetingLibraryServiceTests: XCTestCase {
             launcher: driver,
             notifyError: { [unowned self] message, _, _ in self.errors.append(message) },
             enqueue: { [unowned self] file, mode, _ in self.enqueued.append((file, mode)) },
+            // ARCH14: the init's default is now `ConfigDefaults.summarizationBackend`; this class
+            // was written against the old `{ "local" }` default, so it says so.
+            summarizationBackend: { "local" },
             originalsDir: { [unowned self] in self.originalsDir },
             recordCorrection: { [unowned self] bundleID, title, workflow in
                 self.corrections.append((bundleID, title, workflow))
@@ -1102,7 +1105,7 @@ final class MeetingLibraryServiceTests: XCTestCase {
 
     func test_previewSummary_local_backend_uses_mp_summarize_candidate() throws {
         try touch("m.md")
-        service.previewSummary(stem: "m") { _ in }   // default backend "local"
+        service.previewSummary(stem: "m") { _ in }   // setUp passes "local"
         XCTAssertEqual(driver.previewInputs.map { $0.lastPathComponent }, ["m.md"])
         XCTAssertTrue(driver.applePreviewInputs.isEmpty)
         // TECH-FEAT7: no override by default (the plain A16 local re-run).

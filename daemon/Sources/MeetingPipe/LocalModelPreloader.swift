@@ -66,9 +66,9 @@ final class LocalModelPreloader {
     ///   over-tier model spends the machine's headroom before a meeting even
     ///   starts, and `mp serve-local` would refuse the spawn anyway.
     static func shouldPreload(
-        enabled: Bool, backend: String, modelCached: Bool, fitsMemory: Bool
+        enabled: Bool, backend: SummarizationBackend, modelCached: Bool, fitsMemory: Bool
     ) -> Bool {
-        enabled && backend == "local" && modelCached && fitsMemory
+        enabled && backend.engine == SummarizationEngine.local && modelCached && fitsMemory
     }
 
     /// Pure: what to do when the desired identity meets the running one (LOCAL11).
@@ -85,7 +85,7 @@ final class LocalModelPreloader {
 
     /// Spawn `mp serve-local` when gating passes. Idempotent: a running
     /// preloader is left in place.
-    func start(enabled: Bool, backend: String, localModel: String, adapterPath: String = "") {
+    func start(enabled: Bool, backend: SummarizationBackend, localModel: String, adapterPath: String = "") {
         if process?.isRunning == true { return }
         guard Self.shouldPreload(
             enabled: enabled,
@@ -121,7 +121,7 @@ final class LocalModelPreloader {
             process = p
             // `mp serve-local` reads the same config we just read, so this is what
             // it will exec into; Python re-reads the truth from the server's argv.
-            runningIdentity = Identity(backend: backend, model: localModel, adapterPath: adapterPath)
+            runningIdentity = Identity(backend: backend.rawValue, model: localModel, adapterPath: adapterPath)
             Log.main.info("local model preload: started mlx_lm.server for \(localModel)")
             Log.event(category: "main", action: "local_model_preload_started", attributes: [
                 "model": localModel,
@@ -136,7 +136,7 @@ final class LocalModelPreloader {
     /// Wired to `ConfigStore.didPersist`, which already debounces 500 ms, so a
     /// slider drag in Preferences cannot thrash a multi-GB model load. A save that
     /// leaves the local identity alone is a no-op.
-    func refresh(enabled: Bool, backend: String, localModel: String, adapterPath: String) {
+    func refresh(enabled: Bool, backend: SummarizationBackend, localModel: String, adapterPath: String) {
         let desired: Identity? = Self.shouldPreload(
             enabled: enabled,
             backend: backend,
@@ -144,7 +144,7 @@ final class LocalModelPreloader {
             fitsMemory: LocalModelTier.isRunnable(
                 modelId: localModel, ramGB: LocalModelTier.physicalRamGB()
             )
-        ) ? Identity(backend: backend, model: localModel, adapterPath: adapterPath) : nil
+        ) ? Identity(backend: backend.rawValue, model: localModel, adapterPath: adapterPath) : nil
 
         switch Self.decide(running: runningIdentity, desired: desired) {
         case .noop:

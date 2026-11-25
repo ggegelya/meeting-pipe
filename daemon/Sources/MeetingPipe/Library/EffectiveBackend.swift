@@ -19,6 +19,10 @@ enum EffectiveBackend {
         var source: String
         var regulated: Bool
         var nda: Bool
+
+        /// `backend` typed, for the predicates (ARCH14). `backend` itself stays the raw id, since
+        /// it can come off a sidecar and goes into event attributes and `--backend` verbatim.
+        var backendID: SummarizationBackend { SummarizationBackend(rawValue: backend) }
     }
 
     static func resolve(
@@ -42,14 +46,17 @@ enum EffectiveBackend {
         }
         // PIPE6: the override wins over the meeting's persisted backend but never over regulated
         // or NDA, which still force local, so it cannot widen egress.
-        if regulated { return Resolution(backend: "local", source: "regulated", regulated: true, nda: nda) }
-        if nda { return Resolution(backend: "local", source: "nda", regulated: false, nda: true) }
+        let local = SummarizationEngine.local.id
+        if regulated { return Resolution(backend: local, source: "regulated", regulated: true, nda: nda) }
+        if nda { return Resolution(backend: local, source: "nda", regulated: false, nda: true) }
         if let override { return Resolution(backend: override, source: "override", regulated: false, nda: false) }
         if let sidecarBackend { return Resolution(backend: sidecarBackend, source: "sidecar", regulated: false, nda: false) }
         return Resolution(backend: globalBackend, source: "global", regulated: false, nda: false)
     }
 
-    static let onDevice: Set<String> = ["local", "apple_intelligence"]
+    /// The ids of the engines that run on this Mac (`local`, `apple_intelligence`), read off
+    /// `SummarizationEngine.locality` rather than listed (ARCH14).
+    static let onDevice: Set<String> = Set(SummarizationEngine.all.filter { $0.locality == .onDevice }.map(\.id))
 
     /// Which on-device engine the Summary tab's "Re-run locally (preview)" runs for a meeting, or
     /// nil when it is not offered (PIPE52). The meeting's own engine when that is on-device;

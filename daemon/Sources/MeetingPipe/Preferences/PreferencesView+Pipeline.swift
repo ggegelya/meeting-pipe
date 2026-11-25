@@ -86,7 +86,7 @@ struct PipelineSectionView: View {
                         }
                     }
                 }
-                if store.summarizationBackend == "openai" {
+                if store.summarizationBackend.engine == SummarizationEngine.openai {
                     // UX45: this row replaces an instruction to hand-edit
                     // config.toml, which is the literal anti-pattern the de-CLI
                     // rule names. Global, like every other backend's model id: a
@@ -98,7 +98,7 @@ struct PipelineSectionView: View {
                             .font(.system(.body, design: .monospaced))
                     }
                 }
-                if store.summarizationBackend == "local" || store.summarizationBackend == "auto" {
+                if store.summarizationBackend.usesLocalModel {
                     // The local-MLX cluster (preset, model id, endpoint, active
                     // model, preload) is collapsed behind a disclosure so the
                     // common case (just pick a backend) stays uncluttered. (DSN1)
@@ -263,7 +263,7 @@ struct PipelineSectionView: View {
                     )
                 }
                 SettingsToggleRow("Clean up speaker labels after transcription",
-                    sublabel: DiarizeCleanup.sublabel(backendID: store.summarizationBackend),
+                    sublabel: DiarizeCleanup.sublabel(backendID: store.summarizationBackend.rawValue),
                     isOn: $store.summarizationDiarizeCleanup,
                     showsDivider: false)
             } footer: {
@@ -321,7 +321,7 @@ struct PipelineSectionView: View {
                 // have to arm a schedule to say so.
                 SettingsToggleRow(DigestNarration.toggleTitle,
                     sublabel: DigestNarration.toggleSublabel(
-                        configuredBackend: store.summarizationBackend,
+                        configuredBackend: store.summarizationBackend.rawValue,
                         regulatedMode: store.regulatedMode,
                         localOnly: store.summarizationDigestLocalOnly
                     ),
@@ -334,7 +334,7 @@ struct PipelineSectionView: View {
                     Text(line).foregroundStyle(.mpDanger)
                 } else {
                     Text(DigestNarration.footer(
-                        configuredBackend: store.summarizationBackend,
+                        configuredBackend: store.summarizationBackend.rawValue,
                         regulatedMode: store.regulatedMode,
                         localOnly: store.summarizationDigestLocalOnly
                     ))
@@ -405,8 +405,8 @@ struct PipelineSectionView: View {
     /// rather than restated, so a backend cannot be offered here under a name no
     /// other surface uses. Internal so `SummarizationEngineTests` can fence that
     /// every id it offers is named in every register.
-    static let backendOptions: [(value: String, label: String)] =
-        SummarizationEngine.all.map { (value: $0.id, label: $0.pickerLabel) }
+    static let backendOptions: [(value: SummarizationBackend, label: String)] =
+        SummarizationEngine.all.map { (value: SummarizationBackend($0), label: $0.pickerLabel) }
 
     // MARK: - Digest schedule (AI4)
 
@@ -494,20 +494,21 @@ struct PipelineSectionView: View {
 
     @ViewBuilder
     private var pipelineBackendFooter: some View {
-        switch store.summarizationBackend {
-        case "local":
+        // `default` is Anthropic's copy, and an id this build does not know lands there too.
+        switch store.summarizationBackend.engine {
+        case SummarizationEngine.local:
             Text("Audio, transcript, and summary stay on this Mac. No outbound API calls.")
-        case "auto":
+        case SummarizationEngine.auto:
             Text("Tries Anthropic first; falls back to local if the API fails or the key is missing.")
-        case "apple_intelligence":
+        case SummarizationEngine.appleIntelligence:
             if let reason = AppleIntelligenceSummarizer.availabilityReason {
                 Text("Experimental, not recommended for daily use. On-device Apple Intelligence (macOS 26+), currently unavailable: \(reason).")
             } else {
                 Text("Experimental, not recommended for daily use. On-device Apple Intelligence (macOS 26+) is native and zero-egress, but its small context forces heavy chunking on long meetings, it can mislabel Ukrainian, and it may echo dialogue on short meetings. Prefer Local MLX for a zero-egress backend.")
             }
-        case "claude_cli":
+        case SummarizationEngine.claudeCLI:
             Text("Runs the headless `claude` CLI (Claude Code). No API key needed: it uses your existing Claude Code login, so it summarizes at no extra API cost. A cloud backend, so a regulated or NDA workflow forces on-device instead.")
-        case "openai":
+        case SummarizationEngine.openai:
             Text("Calls an OpenAI-compatible API. Requires an OpenAI API key (set it under Integrations). A cloud backend, so a regulated or NDA workflow forces on-device instead.")
         default:
             Text("Calls api.anthropic.com. Requires an Anthropic API key (set it under Integrations).")

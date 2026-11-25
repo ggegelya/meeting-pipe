@@ -89,7 +89,7 @@ struct OnboardingStepWelcome: View {
         let path = store.outputDirPath
         let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
         return WelcomeCopy.body(
-            configuredBackend: store.summarizationBackend,
+            configuredBackend: store.summarizationBackend.rawValue,
             regulatedMode: store.regulatedMode,
             sinks: workflows.workflows.flatMap { $0.effectiveSinks },
             libraryPath: path,

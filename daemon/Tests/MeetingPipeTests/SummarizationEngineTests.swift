@@ -118,6 +118,72 @@ final class SummarizationEngineTests: XCTestCase {
         XCTAssertEqual("Answered \(SummarizationEngine.openai.runPhrase)", "Answered with OpenAI")
     }
 
+    // MARK: - What each engine needs (ARCH14)
+
+    /// `usesLocalModel` is not `locality == .onDevice`: Apple Intelligence is on device and never
+    /// touches the MLX model, and `auto` is not on device and can fall back to it.
+    func test_uses_local_model_for_every_engine() {
+        let expected: [String: Bool] = [
+            "anthropic": false, "local": true, "auto": true,
+            "apple_intelligence": false, "claude_cli": false, "openai": false,
+        ]
+        XCTAssertEqual(Set(expected.keys), Set(SummarizationEngine.all.map(\.id)), "a new engine needs a row here")
+        for engine in SummarizationEngine.all {
+            XCTAssertEqual(engine.usesLocalModel, expected[engine.id], engine.id)
+        }
+    }
+
+    func test_required_secret_for_every_engine() {
+        let expected: [String: String?] = [
+            "anthropic": "ANTHROPIC_API_KEY", "local": nil, "auto": "ANTHROPIC_API_KEY",
+            "apple_intelligence": nil, "claude_cli": nil, "openai": "OPENAI_API_KEY",
+        ]
+        XCTAssertEqual(Set(expected.keys), Set(SummarizationEngine.all.map(\.id)), "a new engine needs a row here")
+        for engine in SummarizationEngine.all {
+            XCTAssertEqual(engine.requiredSecret, expected[engine.id] ?? nil, engine.id)
+            if let secret = engine.requiredSecret {
+                XCTAssertTrue(KeychainSecrets.managedKeys.contains(secret), "\(engine.id) needs \(secret), which the Keychain does not manage")
+            }
+        }
+    }
+
+    /// The needs table has one home: the checklist's reachability table is built from the
+    /// engines, so the two cannot disagree (and `SetupReachabilityTests` pins it to Python).
+    func test_the_checklist_needs_table_is_the_engines_own() {
+        XCTAssertEqual(SetupChecklist.backendNeeds.count, SummarizationEngine.all.count)
+        for engine in SummarizationEngine.all {
+            XCTAssertEqual(SetupChecklist.backendNeeds[engine.id], engine.needs, engine.id)
+        }
+    }
+
+    func test_a_configured_backend_reads_its_engines_predicates() {
+        for engine in SummarizationEngine.all {
+            let backend = SummarizationBackend(engine)
+            XCTAssertEqual(backend.rawValue, engine.id)
+            XCTAssertEqual(backend.engine, engine)
+            XCTAssertEqual(backend.isOnDevice, engine.locality == .onDevice, engine.id)
+            XCTAssertEqual(backend.usesLocalModel, engine.usesLocalModel, engine.id)
+            XCTAssertEqual(backend.requiredSecret, engine.requiredSecret, engine.id)
+        }
+    }
+
+    /// An id this build does not know keeps its spelling and reads as a cloud engine that needs
+    /// nothing, which is what every consumer did with the raw string before the field was typed.
+    func test_an_unknown_configured_backend_keeps_its_id_and_needs_nothing() {
+        for raw in ["", "some_future_vendor", "Anthropic"] {
+            let backend = SummarizationBackend(rawValue: raw)
+            XCTAssertEqual(backend.rawValue, raw)
+            XCTAssertNil(backend.engine, raw)
+            XCTAssertFalse(backend.isOnDevice, raw)
+            XCTAssertFalse(backend.usesLocalModel, raw)
+            XCTAssertNil(backend.requiredSecret, raw)
+        }
+    }
+
+    func test_the_one_fallback_is_anthropic() {
+        XCTAssertEqual(ConfigDefaults.summarizationBackend.engine, SummarizationEngine.anthropic)
+    }
+
     // MARK: - The pickers read the vocabulary, they do not restate it
 
     /// The acceptance fence: every id the global backend picker offers resolves,
@@ -127,7 +193,7 @@ final class SummarizationEngineTests: XCTestCase {
     func test_every_id_the_preferences_picker_offers_is_fully_named() {
         XCTAssertFalse(PipelineSectionView.backendOptions.isEmpty)
         for option in PipelineSectionView.backendOptions {
-            guard let engine = SummarizationEngine.resolve(option.value) else {
+            guard let engine = option.value.engine else {
                 return XCTFail("Preferences offers backend '\(option.value)' with no entry in SummarizationEngine.all")
             }
             XCTAssertEqual(option.label, engine.pickerLabel)

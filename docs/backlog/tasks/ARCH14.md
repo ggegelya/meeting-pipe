@@ -2,9 +2,10 @@
 id: ARCH14
 title: The summarization backend is a String in ConfigStore and three forwarders, so locality and needs-the-local-model are re-derived by string comparison at each site
 category: Architecture
-status: new
+status: done
 priority: P2
-comment: Filed 2026-10-24 (audit band, arch B5): ConfigStore.summarizationBackend is a String passed through three forwarders, nine sites re-derive on-device, needs-MLX or needs-key by string comparison, and fallbacks disagree (anthropic vs local). Type the field as SummarizationEngine with an unknown-id case, add usesLocalModel and requiredSecret, replace the predicates, fix the four-value docstring. [Spec](./ARCH14.md)
+closed: 2026-11-26
+comment: Shipped 2026-11-26. `ConfigStore.summarizationBackend` and its forwarders (`Coordinator`, `LibraryWindowModel`, `MeetingLibraryService`'s closure) carry `SummarizationBackend`, a typed id that keeps an unknown value verbatim so it round-trips through `config.toml`; one fallback, `ConfigDefaults.summarizationBackend` (anthropic), replaces the four literals including the `{ "local" }` default. `SummarizationEngine` gains `needs` (now the source of `SetupChecklist.backendNeeds`, so one table), `usesLocalModel` and `requiredSecret`; every string predicate (secret policy, prefetch, preloader, regulated clamp, Library Apple dispatch, Preferences rows and footer, on-device set) reads them. `WorkflowBackend` kept its `engine` and the lockstep test. 23 new tests: 15 pins written and run green on `main` first, 6 engine cases, a 2-test source fence (line-pinned allowlist for publish state `local` and language `auto`). `ci-local.sh` all green (daemon 4400, pytest 2619). [Spec](./ARCH14.md)
 ---
 
 # ARCH14: the summarization backend is a String in ConfigStore and three forwarders, so locality and "needs the local model" are re-derived by string comparison at each site

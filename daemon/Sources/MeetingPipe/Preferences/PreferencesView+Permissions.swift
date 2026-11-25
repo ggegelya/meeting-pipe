@@ -57,7 +57,7 @@ struct PermissionsSectionView: View {
                 SettingsToggleRow(RegulatedMode.title,
                     sublabel: RegulatedMode.sublabel(
                         isOn: store.regulatedMode,
-                        configured: store.summarizationBackend
+                        configured: store.summarizationBackend.rawValue
                     ),
                     isOn: $store.regulatedMode,
                     showsDivider: modelMissingNotice != nil)
@@ -65,7 +65,7 @@ struct PermissionsSectionView: View {
                     localModelDownloadRow(notice)
                 }
             } footer: {
-                Text(RegulatedMode.footer(configured: store.summarizationBackend))
+                Text(RegulatedMode.footer(configured: store.summarizationBackend.rawValue))
             }
             .onAppear { refreshLocalModelMissing() }
             .onChange(of: store.regulatedMode) { _, _ in refreshLocalModelMissing() }
@@ -92,7 +92,7 @@ struct PermissionsSectionView: View {
     private var modelMissingNotice: String? {
         RegulatedMode.modelMissingNotice(
             isOn: store.regulatedMode,
-            configured: store.summarizationBackend,
+            configured: store.summarizationBackend.rawValue,
             modelIsMissing: localModelMissing,
             downloadSize: localModelPreflight?.downloadSizeLabel() ?? "several GB"
         )
@@ -141,7 +141,7 @@ struct PermissionsSectionView: View {
                 .foregroundStyle(Color(MPColors.signal600))
                 .padding(.top, 1)
             Text(PrivacyReach.callout(
-                configuredBackend: store.summarizationBackend,
+                configuredBackend: store.summarizationBackend.rawValue,
                 regulatedMode: store.regulatedMode,
                 sinks: workflows.workflows.flatMap { $0.effectiveSinks }
             ))

@@ -22,7 +22,7 @@ import Foundation
 /// fences that it is named in every register and that this list and
 /// `WorkflowBackend` stay in lockstep, so a seventh backend cannot ship
 /// half-named the way these two did.
-struct SummarizationEngine: Equatable {
+struct SummarizationEngine: Hashable {
 
     /// Where the summarization actually happens. Drives both the parenthetical
     /// qualifier and the present-tense phrase, so a backend cannot be described
@@ -45,23 +45,30 @@ struct SummarizationEngine: Equatable {
 
     let locality: Locality
 
+    /// What this engine needs set up before it can run: `mp.reachability.BACKEND_NEEDS`, which
+    /// `SetupChecklist.backendNeeds` is built from and `SetupReachabilityTests` pins against
+    /// `reachability-golden.json` (ARCH14). The one table: `usesLocalModel` and `requiredSecret`
+    /// read it rather than restating it, so the Finish setup row and every predicate agree.
+    let needs: Set<SetupChecklist.Gap>
+
     // MARK: - The vocabulary
 
-    static let anthropic = SummarizationEngine(id: "anthropic", name: "Anthropic", locality: .cloud)
+    static let anthropic = SummarizationEngine(id: "anthropic", name: "Anthropic", locality: .cloud, needs: [.anthropicKey])
 
-    static let openai = SummarizationEngine(id: "openai", name: "OpenAI", locality: .cloud)
+    static let openai = SummarizationEngine(id: "openai", name: "OpenAI", locality: .cloud, needs: [.openaiKey])
 
     /// The one deliberate exception to the vendor rule: this names the binary it
     /// shells and the subscription it rides, not an API path.
-    static let claudeCLI = SummarizationEngine(id: "claude_cli", name: "Claude CLI", locality: .cloud)
+    static let claudeCLI = SummarizationEngine(id: "claude_cli", name: "Claude CLI", locality: .cloud, needs: [.claudeBinary])
 
     static let appleIntelligence = SummarizationEngine(
-        id: "apple_intelligence", name: "Apple Intelligence", locality: .onDevice
+        id: "apple_intelligence", name: "Apple Intelligence", locality: .onDevice, needs: []
     )
 
-    static let local = SummarizationEngine(id: "local", name: "Local MLX", locality: .onDevice)
+    static let local = SummarizationEngine(id: "local", name: "Local MLX", locality: .onDevice, needs: [.localModel])
 
-    static let auto = SummarizationEngine(id: "auto", name: "Auto", locality: .cloudThenLocal)
+    /// Tries Anthropic and falls back to the on-device model, so it needs both.
+    static let auto = SummarizationEngine(id: "auto", name: "Auto", locality: .cloudThenLocal, needs: [.anthropicKey, .localModel])
 
     /// Every engine the product ships, in the order the backend pickers offer them.
     static let all: [SummarizationEngine] = [
@@ -78,6 +85,17 @@ struct SummarizationEngine: Equatable {
         guard let id = id else { return nil }
         return all.first { $0.id == id }
     }
+
+    // MARK: - What it needs (ARCH14)
+
+    /// May run the MLX model: `local`, and `auto` when the cloud fails. Not the same question as
+    /// `locality == .onDevice`, which is true for Apple Intelligence (no MLX model) and false for
+    /// `auto` (which can need it), so prefetch and the local-model controls read this instead.
+    var usesLocalModel: Bool { needs.contains(.localModel) }
+
+    /// The Keychain account this engine's API key lives under, or nil when it needs none (`local`,
+    /// `apple_intelligence`, and `claude_cli`, which rides the Claude Code login).
+    var requiredSecret: String? { needs.lazy.compactMap(\.keychainAccount).first }
 
     // MARK: - Registers
 
@@ -207,6 +225,40 @@ struct SummarizationEngine: Equatable {
               !name.isEmpty, name.lowercased() != base else { return nil }
         return name.prefix(1).uppercased() + name.dropFirst()
     }
+}
+
+/// The configured `summarization.backend` (ARCH14): the raw id, kept verbatim, with the engine it
+/// names when this build knows it.
+///
+/// `ConfigStore` and its forwarders used to carry this as a bare `String`, so every consumer
+/// restated a predicate over it (`== "local" || == "auto"`) and the fallbacks disagreed. A typed
+/// id rather than `SummarizationEngine` itself because an id this build does not know (a
+/// `config.toml` written by a newer pipeline) has to round-trip on save unchanged, and
+/// `SummarizationEngine.resolve` must keep answering nil for it so no surface invents a name.
+/// An unknown id reads as a cloud engine that needs nothing, which is what every site did with
+/// it before: it keeps every token, clamps under zero egress, and prefetches nothing.
+///
+/// `ExpressibleByStringLiteral` so a test or default can write `"local"`; production code compares
+/// against `SummarizationEngine` values or reads the predicates below, and
+/// `BackendIdComparisonFenceTests` fails on a string comparison against a backend id.
+struct SummarizationBackend: RawRepresentable, Hashable, ExpressibleByStringLiteral {
+    /// The value as written in `config.toml`, and what a `[String: Any]` event attribute or a
+    /// `--backend` argument takes. Never render it.
+    let rawValue: String
+
+    init(rawValue: String) { self.rawValue = rawValue }
+    init(stringLiteral value: String) { self.rawValue = value }
+    init(_ engine: SummarizationEngine) { self.rawValue = engine.id }
+
+    /// The engine this id names, or nil for one this build does not know.
+    var engine: SummarizationEngine? { SummarizationEngine.resolve(rawValue) }
+
+    /// Runs on this Mac: `local` and `apple_intelligence`. `auto` is not, since it tries the cloud.
+    var isOnDevice: Bool { engine?.locality == .onDevice }
+
+    var usesLocalModel: Bool { engine?.usesLocalModel ?? false }
+
+    var requiredSecret: String? { engine?.requiredSecret }
 }
 
 extension WorkflowBackend {
