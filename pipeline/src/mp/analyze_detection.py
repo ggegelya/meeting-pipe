@@ -45,8 +45,8 @@ recordings (a `recording_started` with no `recording_stopped`, recovered at
 the next launch) are out of scope: that session is unterminated, so it is
 not paired and does not appear in the audit.
 
-Pure functions (`iter_events`, `pair_sessions`, `classify_session`,
-`aggregate`, `render_report`) are kept side-effect-free so the same
+Pure functions (`pair_sessions`, `classify_session`, `aggregate`,
+`render_report`) are kept side-effect-free so the same
 pipeline runs against captured fixtures in the test suite. Only `main`
 touches the filesystem.
 """
@@ -54,17 +54,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import statistics
 import sys
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from . import events
-
-DEFAULT_EVENTS_PATH = Path(os.path.expanduser("~/Library/Logs/MeetingPipe/events.jsonl"))
 
 # Pairing window: any `lifecycle.ended` whose timestamp falls within the
 # session's [started, stopped] interval is treated as the trigger.
@@ -198,28 +195,6 @@ def _sort_key(ev: dict) -> datetime:
         return _parse_ts(str(ev["ts"]))
     except (TypeError, ValueError):
         return datetime.min.replace(tzinfo=UTC)
-
-
-def iter_events(path: Path, skipped: events.SkipCounter | None = None) -> Iterator[dict]:
-    """Yield every well-formed JSON event from ``path``.
-
-    Skips torn lines so a live-tailed file does not crash the analyzer
-    mid-workday, counting them into ``skipped`` (PERF13) so ``main`` can say
-    how many rows the report could not see.
-    """
-    if not path.exists():
-        return
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                yield json.loads(line)
-            except json.JSONDecodeError:
-                if skipped is not None:
-                    skipped.count += 1
-                continue
 
 
 def pair_sessions(events: Iterable[dict], *, since: datetime | None = None) -> list[Session]:
@@ -983,18 +958,6 @@ def _render_judgement(sessions: list[Session], judgement: EndJudgement) -> list[
     return lines
 
 
-def _parse_since(s: str) -> datetime:
-    s = s.strip()
-    if s and s[-1] in "smhd" and s[:-1].isdigit():
-        n = int(s[:-1])
-        unit = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}[s[-1]]
-        return datetime.now(UTC) - timedelta(**{unit: n})
-    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt
-
-
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(
         prog="mp analyze-detection",
@@ -1005,8 +968,9 @@ def main(argv: list[str]) -> int:
     )
     p.add_argument(
         "--source",
-        default=str(DEFAULT_EVENTS_PATH),
-        help="Path to events.jsonl (default: ~/Library/Logs/MeetingPipe/events.jsonl).",
+        default=None,
+        help="Path to events.jsonl (default: events.jsonl in MEETINGPIPE_LOGS_DIR, else "
+             "~/Library/Logs/MeetingPipe/events.jsonl).",
     )
     p.add_argument(
         "--since",
@@ -1043,8 +1007,9 @@ def main(argv: list[str]) -> int:
     )
     args = p.parse_args(argv)
 
-    source = Path(args.source)
-    since = _parse_since(args.since) if args.since else None
+    # HYG16: the default is resolved here, not at import, so `MEETINGPIPE_LOGS_DIR` holds.
+    source = Path(args.source) if args.source else events.logs_dir() / "events.jsonl"
+    since = events.parse_since(args.since) if args.since else None
     # PERF7: read the base log plus its rotated generations. pair_sessions sorts
     # by ts, so concatenation order does not matter, only that no session in the
     # recent window is lost across a rotation boundary.
@@ -1056,7 +1021,7 @@ def main(argv: list[str]) -> int:
     # or `mic_busy_*` row in the log. Filtering here would buy nothing and would strip the
     # synthetic sessions this module's own tests feed through main().
     skipped = events.SkipCounter()
-    raw = [ev for p in events.log_generations(source) for ev in iter_events(p, skipped)]
+    raw = [ev for p in events.log_generations(source) for ev in events.iter_jsonl(p, skipped)]
     skipped.report()
     sessions = [classify_session(s) for s in pair_sessions(raw, since=since)]
     stats = aggregate(sessions)

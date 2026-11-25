@@ -409,8 +409,7 @@ def main(argv: list[str]) -> int:
                         "(the scorecard then measures memorization, not quality).")
     args = p.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO,
-                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    entry.configure_logging()
 
     if args.report:
         stats = aggregate(args.runs_dir)

@@ -118,7 +118,7 @@ def test_check_local_stack_runs_when_a_workflow_forces_local(capsys, tmp_path, m
     })
     monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: 64.0)
     monkeypatch.setattr("mp.doctor._free_disk_gb", lambda _p: 500.0)
-    monkeypatch.setattr("mp.prefetch_model._bytes_on_disk", lambda _p: 0)
+    monkeypatch.setattr("mp.storage.bytes_on_disk", lambda _p: 0)
     check_local_stack(cfg, workflows_dir=workflows_dir)
     out = capsys.readouterr().out
     assert "local stack not used" not in out
@@ -134,7 +134,7 @@ def test_check_local_stack_fails_when_ram_below_model(capsys, monkeypatch) -> No
     })
     monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: 4.0)
     monkeypatch.setattr("mp.doctor._free_disk_gb", lambda _p: 500.0)
-    monkeypatch.setattr("mp.prefetch_model._bytes_on_disk", lambda _p: 0)
+    monkeypatch.setattr("mp.storage.bytes_on_disk", lambda _p: 0)
     check_local_stack(cfg)
     out = capsys.readouterr().out
     assert "will not fit" in out
@@ -150,7 +150,7 @@ def test_check_local_stack_ok_when_ram_and_disk_ample(capsys, monkeypatch) -> No
     })
     monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: 64.0)
     monkeypatch.setattr("mp.doctor._free_disk_gb", lambda _p: 500.0)
-    monkeypatch.setattr("mp.prefetch_model._bytes_on_disk", lambda _p: 0)
+    monkeypatch.setattr("mp.storage.bytes_on_disk", lambda _p: 0)
     check_local_stack(cfg)
     out = capsys.readouterr().out
     assert "comfortably fits" in out
@@ -184,7 +184,7 @@ def test_check_local_stack_warns_when_the_cache_is_at_another_revision(
     repo = "mlx-community/Qwen2.5-3B-Instruct-4bit"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: 64.0)
-    monkeypatch.setattr("mp.prefetch_model._bytes_on_disk", lambda _p: 3 * 1024 ** 3)
+    monkeypatch.setattr("mp.storage.bytes_on_disk", lambda _p: 3 * 1024 ** 3)
     snap = local_snapshot.hf_cache_dir(repo, tmp_path) / "snapshots" / ("f" * 40)
     snap.mkdir(parents=True)
     check_local_stack(_doctor_cfg(repo))

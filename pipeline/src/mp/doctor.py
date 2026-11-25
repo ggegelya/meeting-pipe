@@ -24,7 +24,7 @@ from typing import NamedTuple
 
 import httpx
 
-from . import cloudsync, reachability, resource_guard, run_attempt, storage, workflows
+from . import cloudsync, events, reachability, resource_guard, run_attempt, storage, workflows
 from .config import CONFIG_PATH, KEYCHAIN_SERVICE, Config, load_secrets
 from .endpoints import (
     ANTHROPIC_API_BASE,
@@ -487,9 +487,9 @@ def check_local_stack(cfg: Config | None, workflows_dir: Path | None = None) -> 
     need_gb = resource_guard.estimate_model_gb(model_id)
 
     from . import local_snapshot
-    from .prefetch_model import _bytes_on_disk, hf_cache_dir
+    from .prefetch_model import hf_cache_dir
     cache_dir = hf_cache_dir(model_id)
-    cached_gb = round(_bytes_on_disk(cache_dir) / (1024 ** 3), 1)
+    cached_gb = round(storage.bytes_on_disk(cache_dir) / (1024 ** 3), 1)
     # SEC27: the server is started offline on one pinned snapshot, so "some bytes
     # are cached" is no longer the question; "is the pinned snapshot servable" is.
     try:
@@ -1102,16 +1102,21 @@ _TCC_DENIAL_RE = re.compile(
 # denial was resolved on a more recent run: newest-line-wins.
 _TCC_OK_RE = re.compile(r"SCStream start", re.IGNORECASE)
 
-_RECORDER_LOG = Path(os.path.expanduser("~/Library/Logs/MeetingPipe/recorder.log"))
+def _recorder_log() -> Path:
+    """The daemon's recorder.log, resolved per call (HYG16) so `MEETINGPIPE_LOGS_DIR`
+    holds here as it does for the writer, Swift's `Log.resolveLogsDir`."""
+    return events.logs_dir() / "recorder.log"
 
 
-def _scan_recorder_log_for_tcc(log_path: Path = _RECORDER_LOG) -> str | None:
+def _scan_recorder_log_for_tcc(log_path: Path | None = None) -> str | None:
     """Return the most recent TCC-related line from recorder.log.
 
     Walks lines newest-first and stops at the first match. Returns None when
     the log doesn't exist (daemon never ran) or contains no TCC lines.
     Visible for unit testing.
     """
+    if log_path is None:
+        log_path = _recorder_log()
     if not log_path.exists():
         return None
     try:
@@ -1138,7 +1143,7 @@ def check_screen_recording() -> None:
     line = _scan_recorder_log_for_tcc()
     if line is None:
         _warn("recorder.log absent or has no SCStream events yet, cannot verify")
-        _info(f"expected at {_RECORDER_LOG}")
+        _info(f"expected at {_recorder_log()}")
         _info("run a quick test recording (⌃⌥M) and re-run mp doctor")
         return
     if _TCC_DENIAL_RE.search(line):

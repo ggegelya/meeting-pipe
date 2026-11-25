@@ -23,7 +23,6 @@ from mp.analyze_detection import (
     classify_session,
     collect_correlation_markers,
     collect_mic_input_faults,
-    iter_events,
     judge_sessions,
     judgement_rows,
     main,
@@ -43,19 +42,6 @@ def _write_events(path: Path, events: list[dict]) -> Path:
     return path
 
 
-def test_iter_events_skips_blank_and_malformed_lines(tmp_path: Path) -> None:
-    p = tmp_path / "events.jsonl"
-    p.write_text(
-        '{"ts": "2026-05-01T10:00:00Z", "category": "coordinator", "action": "x"}\n'
-        '\n'
-        '{not json\n'
-        '{"ts": "2026-05-01T10:00:01Z", "category": "detector", "action": "y"}\n',
-        encoding="utf-8",
-    )
-    out = list(iter_events(p))
-    assert [e["action"] for e in out] == ["x", "y"]
-
-
 def test_main_reports_one_skipped_torn_line(tmp_path: Path, capsys) -> None:
     """PERF13: a torn row is counted and named on stderr, not skipped in silence."""
     p = tmp_path / "events.jsonl"
@@ -73,10 +59,6 @@ def test_main_says_nothing_when_no_line_was_skipped(tmp_path: Path, capsys) -> N
     p.write_text('{"ts": "2026-05-01T10:00:00Z", "category": "c", "action": "x"}\n', encoding="utf-8")
     assert main(["--source", str(p), "--json"]) == 0
     assert "skipped" not in capsys.readouterr().err
-
-
-def test_iter_events_missing_file_returns_empty(tmp_path: Path) -> None:
-    assert list(iter_events(tmp_path / "absent.jsonl")) == []
 
 
 def test_pair_sessions_classifies_detector_triggered_stop() -> None:

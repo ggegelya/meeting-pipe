@@ -506,7 +506,7 @@ def main(argv: list[str]) -> int:
                         help="build the dataset and print the training command without running it")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    entry.configure_logging()
 
     # Local-only: no secrets, guard armed. Training never egresses.
     cfg = entry.prepare(secrets=False)

@@ -372,10 +372,7 @@ def main(argv: list[str]) -> int:
     if not transcript.exists():
         print(f"No such file: {transcript}", file=sys.stderr)
         return 1
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    entry.configure_logging()
     try:
         result = publish_from_paste(transcript)
     except PasteRefused as e:

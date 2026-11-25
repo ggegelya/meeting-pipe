@@ -87,10 +87,3 @@ class MeetingPublisher(Protocol):
         sidecar_path: Path,
         transcript_text: str | None = None,
     ) -> dict[str, Any]: ...
-
-
-# Back-compat alias: `NotionPublisher` was the original protocol name
-# when the only sink was Notion. Keep the symbol importable so an
-# external caller's `from mp.services import NotionPublisher` does
-# not break across this rename. New code should use `MeetingPublisher`.
-NotionPublisher = MeetingPublisher

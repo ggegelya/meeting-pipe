@@ -1,19 +1,18 @@
 """T3: `mp`'s front door. Every registered command name resolves to a real
 `main`, and the router's own conventions hold.
 
-`__main__.main` is a flat if-ladder of string comparisons with lazy per-branch
-imports (deliberately: `--help` and `--version` should not pay a package's
-import cost). Nothing tested it, so a subcommand could be registered under a
-name whose module had been renamed and the only symptom would be a user typing
-the command and getting `unknown subcommand`.
+`__main__._dispatch` is a lookup in `SUBCOMMANDS` (every accepted spelling to its
+module) with a lazy `importlib` import (deliberately: `--help` and `--version`
+should not pay a package's import cost). Nothing tested it once, so a subcommand
+could be registered under a name whose module had been renamed and the only
+symptom would be a user typing the command and getting `unknown subcommand`.
 
-The command names are AST-extracted from the router rather than transcribed, the
-same idiom `test_entry_contract.py` uses, so this file cannot go stale against a
-newly added subcommand: a new one is picked up and tested automatically.
+The command names are read from that table rather than transcribed (HYG16; they
+were AST-extracted from the old if-ladder before), so this file cannot go stale
+against a newly added subcommand: a new one is picked up and tested automatically.
 """
 from __future__ import annotations
 
-import ast
 import importlib
 import inspect
 import os
@@ -24,65 +23,18 @@ from pathlib import Path
 
 import pytest
 
-SRC = Path(__file__).resolve().parents[1] / "src" / "mp"
-MAIN = SRC / "__main__.py"
+from mp.__main__ import SUBCOMMANDS
 
-# Names handled before the dispatch ladder, so they have no target module.
+# Names handled before dispatch, so they have no target module.
 PRE_DISPATCH = {"", "-h", "--help", "help", "--version"}
 
 
-def _dispatch_table() -> dict[str, str]:
-    """Map every accepted command spelling to the module it dispatches to.
-
-    Walks the `if cmd == "x":` / `if cmd in {"x", "y"}:` branches and pairs each
-    with the `from .<module> import main as run` inside that branch's body.
-    """
-    tree = ast.parse(MAIN.read_text(encoding="utf-8"))
-    table: dict[str, str] = {}
-
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.If):
-            continue
-
-        names: list[str] = []
-        test = node.test
-        if isinstance(test, ast.Compare) and len(test.ops) == 1:
-            left, op, right = test.left, test.ops[0], test.comparators[0]
-            if not (isinstance(left, ast.Name) and left.id == "cmd"):
-                continue
-            if isinstance(op, ast.Eq) and isinstance(right, ast.Constant):
-                names = [right.value]
-            elif isinstance(op, ast.In) and isinstance(right, (ast.Set, ast.Tuple, ast.List)):
-                names = [
-                    e.value for e in right.elts
-                    if isinstance(e, ast.Constant) and isinstance(e.value, str)
-                ]
-        if not names:
-            continue
-
-        module = None
-        for child in ast.walk(node):
-            if (
-                isinstance(child, ast.ImportFrom)
-                and child.level == 1
-                and child.module
-                and any(a.name == "main" for a in child.names)
-            ):
-                module = child.module
-                break
-        if module:
-            for name in names:
-                table[name] = module
-
-    return table
-
-
-TABLE = _dispatch_table()
+TABLE = dict(SUBCOMMANDS)
 
 
 def test_dispatch_table_is_discoverable() -> None:
-    """Guard the guard. An extractor that silently stops matching would make
-    every parametrized test below vacuously green."""
+    """Guard the guard. A table that silently emptied would make every
+    parametrized test below vacuously green."""
     assert len(TABLE) >= 30, f"only found {len(TABLE)} command spellings"
     assert len(set(TABLE.values())) >= 20
 
@@ -126,7 +78,7 @@ def test_multiword_commands_carry_both_spellings() -> None:
 
 def test_no_command_name_collides_with_a_flag() -> None:
     """A subcommand named `--foo` would be swallowed by the pre-dispatch help and
-    version handling before the ladder ever sees it."""
+    version handling before dispatch ever sees it."""
     assert not [n for n in TABLE if n.startswith("-")]
     assert not (set(TABLE) & PRE_DISPATCH)
 
@@ -154,10 +106,18 @@ def _run(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> int:
     return main()
 
 
-def test_unknown_subcommand_exits_two_not_one(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unknown_subcommand_exits_two_not_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     """Usage errors are exit 2, distinct from 1 (any other failure) and 3 (the
-    publish-failed contract), so a caller can tell a typo from a real failure."""
+    publish-failed contract), so a caller can tell a typo from a real failure.
+    The table lookup (HYG16) keeps the ladder's fallthrough: the name, then USAGE."""
+    from mp.__main__ import USAGE
+
     assert _run(["definitely-not-a-command"], monkeypatch) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("unknown subcommand: definitely-not-a-command")
+    assert USAGE in err
 
 
 @pytest.mark.parametrize("argv", [["--help"], ["-h"], ["help"], []])

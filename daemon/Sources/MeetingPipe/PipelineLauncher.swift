@@ -713,9 +713,9 @@ final class PipelineLauncher: PipelineDriver {
     }
 
     /// Log levels the pipeline's formatter can put on a line. Python's standard
-    /// set; `mp` configures `%(asctime)s %(levelname)s %(name)s: %(message)s`
-    /// (a few subcommands drop the timestamp), so the level is one of the
-    /// leading whitespace-separated fields.
+    /// set; every `mp` subcommand logs `%(asctime)s %(levelname)s %(name)s: %(message)s`
+    /// (`entry.LOG_FORMAT`, HYG16), so the level is one of the leading
+    /// whitespace-separated fields.
     private static let stderrLogLevels: Set<String> = [
         "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL",
     ]

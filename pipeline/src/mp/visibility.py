@@ -101,17 +101,6 @@ def withheld_reason(root: Path, stem: str) -> str | None:
     return None
 
 
-def is_visible(root: Path, stem: str) -> bool:
-    """True when `stem` may leave this machine.
-
-    Deliberately does not check that the meeting exists: a stem with no files
-    has no sidecar either, so it is withheld. That is what makes "withheld" and
-    "never existed" the same answer to a caller, which AUTO3 leg 2 requires so
-    the server cannot reveal that a meeting it will not show exists.
-    """
-    return withheld_reason(root, stem) is None
-
-
 @dataclass(frozen=True)
 class LibraryVisibility:
     """The whole library's verdict, computed once so a caller does not re-stat

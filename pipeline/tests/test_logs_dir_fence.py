@@ -19,10 +19,7 @@ _SRC = Path(__file__).resolve().parents[1] / "src" / "mp"
 #: The only places under `src/mp` allowed to spell the logs path, each with why.
 ALLOWED = {
     "events.py::logs_dir": "the one resolver every writer asks",
-    "logs_cmd.py::LOGS_DIR": "read-only: `mp logs` tails the files",
-    "analyze_detection.py::DEFAULT_EVENTS_PATH": "read-only: the audit reads events.jsonl",
     "analyze_detection.py::main": "argparse help naming the default, writes nothing",
-    "doctor.py::_RECORDER_LOG": "read-only: doctor reads recorder.log",
     "local_server.py::marker_path": "only the explicit-`home` branch, which tests pass",
 }
 

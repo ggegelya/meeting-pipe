@@ -527,7 +527,7 @@ def main(argv: list[str]) -> int:
     primary = Path(argv[0]).expanduser().resolve()
     fragments = [Path(a).expanduser().resolve() for a in argv[1:]]
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    entry.configure_logging()
     try:
         result = merge_meetings(primary, fragments)
     except MergeError as e:

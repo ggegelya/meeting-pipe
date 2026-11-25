@@ -690,6 +690,17 @@ def _fake_spawn(monkeypatch: pytest.MonkeyPatch) -> dict:
     return captured
 
 
+def test_spawn_detaches_with_start_new_session_not_preexec_fn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HYG16: the same `setsid`, done in the child without Python. `preexec_fn` runs
+    Python between fork and exec, which Python documents as unsafe with threads."""
+    captured = _fake_spawn(monkeypatch)
+
+    LocalSummaryClient(host="127.0.0.1", port=8765)._spawn()
+
+    assert captured["kwargs"]["start_new_session"] is True
+    assert "preexec_fn" not in captured["kwargs"]
+
+
 def test_spawn_hands_the_child_a_scrubbed_env_when_armed(monkeypatch: pytest.MonkeyPatch) -> None:
     """The guard patches httpx in *this* process; the model server is a separate
     process with its own stack. Under a zero-egress run it must inherit no cloud

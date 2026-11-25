@@ -1184,14 +1184,15 @@ class LocalSummaryClient:
             # token gone (in any mode: it never needs one), huggingface_hub
             # pinned offline, and this spawn's bearer token.
             env=local_server.server_env(token),
-            # Detach into a new process group so a Ctrl-C in the daemon does
-            # not also terminate the model server before we get to clean it up.
-            # None is Popen's default, so a non-POSIX host just skips it.
-            preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+            # Detach into a new session so a Ctrl-C in the daemon does not also
+            # terminate the model server before we get to clean it up. The
+            # `setsid` runs in the child without Python, unlike `preexec_fn`,
+            # which Python documents as unsafe with threads running (HYG16).
+            start_new_session=True,
         )
         self._proc = proc
         self._spawned_token = token
-        # LOCAL10: that same setsid means a SIGKILL of this process (the daemon's
+        # LOCAL10: that same new session means a SIGKILL of this process (the daemon's
         # pipeline watchdog does exactly that to a wedged run) leaves the server
         # running with no one who knows about it. Record who it is, so `mp doctor`
         # can report it and the daemon can reap it.
@@ -1614,10 +1615,7 @@ def main(argv: list[str]) -> int:
     from . import entry
     from .config import parse_local_endpoint
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    entry.configure_logging()
     # SEC13 entry contract: arm the egress guard before we exec. No meeting anchor
     # (a library-wide warm server), and `secrets=False` because a local model
     # server never touches a cloud token. Under a regulated / NDA run this scrubs

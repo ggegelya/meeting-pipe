@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 import anthropic
 import httpcore
@@ -51,20 +52,25 @@ def _has_type_name(links: list[BaseException], name: str) -> bool:
     return any(type(link).__name__ == name for link in links)
 
 
-def describe(error: BaseException, *, operation: str, provider: str | None = None) -> dict:
-    # Follow explicit wrapping only; a stale implicit context can describe a recovered failure.
-    # PIPE44: classify on the first link, outermost first, that matches a known class. The old
-    # walk judged only the root, which for an Anthropic timeout is httpcore.ReadTimeout (the SDK
-    # wraps httpx.ReadTimeout wraps httpcore.ReadTimeout), a class no check named, so the one
-    # field timeout was filed as cause unknown.
-    links = _chain(error)
+class _HttpFacts(NamedTuple):
+    """What a failure's HTTP layer says, read before any cause is judged (HYG16)."""
 
-    def first(kind: type | tuple[type, ...]) -> BaseException | None:
-        return next((link for link in links if isinstance(link, kind)), None)
+    status: object
+    body: object
+    request_id: object
+    provider: str | None
+    code: str | None
+    message: str
 
-    # The status-bearing fields come from the first link that carries a response or a status, so a
-    # wrapped APIStatusError keeps its HTTP status and request id; a chain with none reads the root,
-    # as before.
+
+def _http_facts(links: list[BaseException], provider: str | None) -> _HttpFacts:
+    """The prologue of `describe`: dig the status, body, request id and provider out of the
+    chain, plus the provider's error code and the lowercased message the causes match on.
+
+    The status-bearing fields come from the first link that carries a response or a status, so
+    a wrapped APIStatusError keeps its HTTP status and request id; a chain with none reads the
+    root. An explicit `provider` wins over the response's host, and an Anthropic SDK error in the
+    chain wins over both."""
     carrier = next(
         (link for link in links
          if isinstance(getattr(link, "response", None), httpx.Response)
@@ -88,7 +94,7 @@ def describe(error: BaseException, *, operation: str, provider: str | None = Non
             host = ""
         provider = provider or {"api.anthropic.com": "anthropic", "api.openai.com": "openai",
                                 "api.notion.com": "notion"}.get(host)
-    if first(anthropic.APIError) is not None:
+    if any(isinstance(link, anthropic.APIError) for link in links):
         provider = "anthropic"
     native = body.get("error", body) if isinstance(body, dict) else {}
     code = native.get("code") or native.get("type") if isinstance(native, dict) else None
@@ -97,6 +103,21 @@ def describe(error: BaseException, *, operation: str, provider: str | None = Non
     message = str(carrier).lower()
     if isinstance(native, dict) and isinstance(native.get("message"), str):
         message += " " + native["message"].lower()
+    return _HttpFacts(status, body, request_id, provider, code, message)
+
+
+def describe(error: BaseException, *, operation: str, provider: str | None = None) -> dict:
+    # Follow explicit wrapping only; a stale implicit context can describe a recovered failure.
+    # PIPE44: classify on the first link, outermost first, that matches a known class. The old
+    # walk judged only the root, which for an Anthropic timeout is httpcore.ReadTimeout (the SDK
+    # wraps httpx.ReadTimeout wraps httpcore.ReadTimeout), a class no check named, so the one
+    # field timeout was filed as cause unknown.
+    links = _chain(error)
+
+    def first(kind: type | tuple[type, ...]) -> BaseException | None:
+        return next((link for link in links if isinstance(link, kind)), None)
+
+    status, _body, request_id, provider, code, message = _http_facts(links, provider)
     cause = "unknown"
     if isinstance(secret := first(MissingSecretError), MissingSecretError):
         cause = "missing_key"

@@ -266,7 +266,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--json", action="store_true", dest="as_json", help="print JSON instead of text")
     args = ap.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    entry.configure_logging()
 
     # SEC13: arm, then secrets. Library-wide, so no meeting anchor, which is
     # exactly why the visibility gate below has to exist (AUTO3 leg 0).

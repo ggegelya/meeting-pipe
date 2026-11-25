@@ -97,7 +97,7 @@ def _run_doctor_sections(case: dict, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("importlib.util.find_spec", lambda _name: object())
     monkeypatch.setattr("mp.resource_guard.physical_ram_gb", lambda: 64.0)
     monkeypatch.setattr("mp.doctor._free_disk_gb", lambda _p: 500.0)
-    monkeypatch.setattr("mp.prefetch_model._bytes_on_disk", lambda _p: 0)
+    monkeypatch.setattr("mp.storage.bytes_on_disk", lambda _p: 0)
 
     def resolve(_model: str) -> Path:
         if present["local_model"]:

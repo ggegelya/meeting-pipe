@@ -39,7 +39,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import events, local_snapshot
+from . import entry, events, local_snapshot, storage
 
 log = logging.getLogger("mp.prefetch_model")
 
@@ -70,19 +70,6 @@ def model_is_cached(repo_id: str) -> bool:
     offline will strand the model load."""
     snapshots = hf_cache_dir(repo_id) / "snapshots"
     return snapshots.is_dir() and any(snapshots.iterdir())
-
-
-def _bytes_on_disk(path: Path) -> int:
-    if not path.exists():
-        return 0
-    total = 0
-    for p in path.rglob("*"):
-        try:
-            if p.is_file() and not p.is_symlink():
-                total += p.stat().st_size
-        except OSError:
-            continue
-    return total
 
 
 def _incremental_bytes(path: Path, counted: dict[str, int]) -> int:
@@ -185,7 +172,7 @@ def prefetch(repo_id: str) -> int:
     pinned = local_snapshot.PINNED_REVISIONS.get(repo_id)
     total_bytes, resolved = _repo_metadata(repo_id, revision=pinned)
     revision = pinned or resolved
-    cached_bytes = _bytes_on_disk(cache_dir)
+    cached_bytes = storage.bytes_on_disk(cache_dir)
 
     _emit(
         "started",
@@ -296,7 +283,7 @@ def prefetch(repo_id: str) -> int:
     # directory the download landed in is named by the sha it resolved.
     _record_custom_pin(repo_id, pinned, revision or snapshot_path.name)
 
-    final_bytes = _bytes_on_disk(cache_dir)
+    final_bytes = storage.bytes_on_disk(cache_dir)
     _emit(
         "complete",
         repo_id,
@@ -316,12 +303,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("repo_id", help="HuggingFace repo id, e.g. mlx-community/Qwen2.5-3B-Instruct-4bit")
     args = p.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        # Send logs to stderr so stdout stays a pure JSONL stream.
-        stream=sys.stderr,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    entry.configure_logging()  # stderr, so stdout stays a pure JSONL stream
     return prefetch(args.repo_id)
 
 

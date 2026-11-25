@@ -555,13 +555,6 @@ def effective_backend(cfg: Config) -> str:
 # so adding a backend to the Literal cannot leave the override rejecting it (ARCH5).
 BACKENDS: frozenset[str] = frozenset(get_args(BackendName))
 
-# Backends that reach the cloud by spawning a child process rather than an
-# in-process httpx call (PROV1). They sit OUTSIDE the egress guard's transport
-# patch, so `effective_backend` classes them as cloud (forced local under
-# zero_egress, above) and each such provider also refuses to spawn while the
-# guard is armed, as defense in depth (the SEC10 posture).
-CLI_BACKENDS: frozenset[str] = frozenset({"claude_cli"})
-
 # Decoding temperature every backend samples at, structured summary and free-form
 # alike. Not a config key: it is a property of what this product does with a
 # summary, not a user preference. 0.2 because output here is *compared*, run

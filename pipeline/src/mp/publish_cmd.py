@@ -66,7 +66,7 @@ def main(argv: list[str]) -> int:
     if not summary_json.exists():
         print(f"No such file: {summary_json}", file=sys.stderr)
         return 1
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    entry.configure_logging()
 
     cfg = entry.prepare(anchor=summary_json)  # SEC13: overlay, arm, secrets
 

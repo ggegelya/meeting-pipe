@@ -1,6 +1,6 @@
 """Ownership marker for the detached `mlx_lm.server` child (LOCAL10).
 
-`LocalSummaryClient._spawn` starts the model server with `preexec_fn=os.setsid`,
+`LocalSummaryClient._spawn` starts the model server with `start_new_session=True`,
 putting it in its own session so a signal aimed at `mp`'s process group cannot
 reach it. Every clean exit path calls `close()`, which kills it, and since PIPE22
 so does a SIGTERM (the daemon's Cancel and its watchdog), which `__main__` turns

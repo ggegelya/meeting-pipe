@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from mp import events
@@ -126,7 +127,7 @@ def test_emit_writes_its_row_when_the_base_vanishes_between_check_and_rename(tmp
 def test_logs_cmd_reads_across_generations(tmp_path, monkeypatch):
     from mp import logs_cmd
 
-    monkeypatch.setattr(logs_cmd, "LOGS_DIR", tmp_path)
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(tmp_path))
     base = tmp_path / "events.jsonl"
     base.write_text(
         json.dumps({"ts": "2026-07-11T10:00:00Z", "category": "c", "action": "new"}) + "\n"
@@ -143,7 +144,7 @@ def test_logs_cmd_reads_the_diagnostics_family(tmp_path, monkeypatch):
     """OBS9: the daemon's high-volume rows moved to `diagnostics.jsonl`; `mp logs` shows them."""
     from mp import logs_cmd
 
-    monkeypatch.setattr(logs_cmd, "LOGS_DIR", tmp_path)
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(tmp_path))
     (tmp_path / "diagnostics.jsonl").write_text(
         json.dumps({"ts": "2026-07-11T10:00:00Z", "category": "halbus", "action": "subscribed"}) + "\n"
     )
@@ -156,7 +157,7 @@ def test_logs_cmd_reports_one_skipped_torn_line(tmp_path, monkeypatch, capsys):
     named on stderr rather than skipped in silence."""
     from mp import logs_cmd
 
-    monkeypatch.setattr(logs_cmd, "LOGS_DIR", tmp_path)
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(tmp_path))
     (tmp_path / "events.jsonl").write_text(
         json.dumps({"ts": "2026-10-16T09:46:28.265Z", "category": "lifecycle", "action": "idle"}) + "\n"
         + 'n ","ts":"2026-10-16T09:46:28.265Z"}\n'
@@ -174,6 +175,83 @@ def test_skip_counter_is_silent_at_zero_and_pluralises(capsys):
     counter.count = 3
     counter.report()
     assert capsys.readouterr().err.strip() == "3 unparseable lines skipped"
+
+
+# ------------------------------------------------- the shared readers (HYG16)
+
+
+def test_iter_jsonl_skips_blank_and_malformed_lines_and_counts_them(tmp_path):
+    p = tmp_path / "events.jsonl"
+    p.write_text(
+        '{"ts": "2026-05-01T10:00:00Z", "category": "coordinator", "action": "x"}\n'
+        "\n"
+        "{not json\n"
+        '{"ts": "2026-05-01T10:00:01Z", "category": "detector", "action": "y"}\n',
+        encoding="utf-8",
+    )
+    skipped = events.SkipCounter()
+    assert [e["action"] for e in events.iter_jsonl(p, skipped)] == ["x", "y"]
+    assert skipped.count == 1
+
+
+def test_iter_jsonl_of_a_missing_file_yields_nothing(tmp_path):
+    assert list(events.iter_jsonl(tmp_path / "absent.jsonl")) == []
+
+
+def test_parse_since_reads_a_relative_offset_back_from_now():
+    before = datetime.now(UTC)
+    got = events.parse_since("2h")
+    after = datetime.now(UTC)
+    assert before - timedelta(hours=2) <= got <= after - timedelta(hours=2)
+
+
+def test_parse_since_reads_an_iso_timestamp_with_z():
+    assert events.parse_since("2026-05-01T10:00:00Z") == datetime(2026, 5, 1, 10, tzinfo=UTC)
+
+
+def test_parse_since_reads_a_naive_iso_timestamp_as_utc():
+    assert events.parse_since("2026-05-01T10:00:00") == datetime(2026, 5, 1, 10, tzinfo=UTC)
+
+
+# The three readers used to freeze `~/Library/Logs/MeetingPipe` at import, so under a
+# sandboxed run they read the user's real logs. Each test sets the variable after the
+# module is imported and expects the read to follow it.
+
+
+def test_mp_logs_reads_the_dir_set_after_import(tmp_path, monkeypatch, capsys):
+    from mp import logs_cmd
+
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(tmp_path))
+    (tmp_path / "events.jsonl").write_text(
+        json.dumps({"ts": "2026-07-11T10:00:00Z", "category": "c", "action": "sandboxed"}) + "\n"
+    )
+    assert logs_cmd.main(["--json"]) == 0
+    assert [json.loads(line)["action"] for line in capsys.readouterr().out.splitlines()] == ["sandboxed"]
+
+
+def test_analyze_detection_defaults_to_the_dir_set_after_import(tmp_path, monkeypatch, capsys):
+    from mp import analyze_detection
+
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(tmp_path))
+    rows = [
+        {"ts": "2026-07-11T09:00:00Z", "category": "coordinator", "action": "recording_started",
+         "bundle_id": "us.zoom.xos", "file": "20260711-090000.wav"},
+        {"ts": "2026-07-11T09:05:00Z", "category": "coordinator", "action": "recording_stopped",
+         "file": "20260711-090000.wav"},
+    ]
+    (tmp_path / "events.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert analyze_detection.main(["--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["source"] == str(tmp_path / "events.jsonl")
+    assert payload["total_sessions"] == 1
+
+
+def test_doctor_scans_the_recorder_log_in_the_dir_set_after_import(tmp_path, monkeypatch):
+    from mp import doctor
+
+    monkeypatch.setenv("MEETINGPIPE_LOGS_DIR", str(tmp_path))
+    (tmp_path / "recorder.log").write_text("2026-07-11 09:00:00 SCStream start ok\n")
+    assert doctor._scan_recorder_log_for_tcc() == "2026-07-11 09:00:00 SCStream start ok"
 
 
 # ------------------------------------------------- test isolation (the writer guard)
@@ -294,7 +372,7 @@ def test_analyze_detection_pairs_session_across_rotation(tmp_path):
         )
         + "\n"
     )
-    raw = [ev for p in events.log_generations(base) for ev in ad.iter_events(p)]
+    raw = [ev for p in events.log_generations(base) for ev in events.iter_jsonl(p)]
     sessions = ad.pair_sessions(raw)
     assert len(sessions) == 1
 

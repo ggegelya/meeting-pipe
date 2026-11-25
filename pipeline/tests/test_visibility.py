@@ -52,19 +52,16 @@ def _fixture_library(root: Path) -> None:
 def test_nda_stem_is_withheld(tmp_path: Path) -> None:
     _fixture_library(tmp_path)
     assert visibility.withheld_reason(tmp_path, "20260103-100000") == visibility.WITHHELD_NDA
-    assert not visibility.is_visible(tmp_path, "20260103-100000")
 
 
 def test_stem_with_no_sidecar_is_withheld(tmp_path: Path) -> None:
     _fixture_library(tmp_path)
     assert visibility.withheld_reason(tmp_path, "20260104-100000") == visibility.WITHHELD_NO_SIDECAR
-    assert not visibility.is_visible(tmp_path, "20260104-100000")
 
 
 def test_normal_stem_is_visible(tmp_path: Path) -> None:
     _fixture_library(tmp_path)
     assert visibility.withheld_reason(tmp_path, "20260101-100000") is None
-    assert visibility.is_visible(tmp_path, "20260101-100000")
 
 
 def test_regulated_sidecar_is_withheld(tmp_path: Path) -> None:
@@ -99,7 +96,7 @@ def test_unknown_stem_is_withheld_like_an_nda_one(tmp_path: Path) -> None:
     """Leg 2 needs "withheld" and "never existed" to be one answer, and this is
     where that starts: neither has a sidecar, so neither is visible."""
     _fixture_library(tmp_path)
-    assert not visibility.is_visible(tmp_path, "20991231-235959")
+    assert visibility.withheld_reason(tmp_path, "20991231-235959") == visibility.WITHHELD_NO_SIDECAR
 
 
 # ----- the index -----

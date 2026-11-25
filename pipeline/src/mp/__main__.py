@@ -5,6 +5,7 @@ runnable in isolation (debugging, retries, manual fixes).
 """
 from __future__ import annotations
 
+import importlib
 import os
 import signal
 import sys
@@ -284,95 +285,68 @@ def _start_supervision() -> None:
     ).start()
 
 
+#: Every accepted spelling of every subcommand, to the `mp.<module>` whose
+#: `main(argv) -> int` it runs (HYG16). A multi-word command takes both the dash
+#: form and its snake_case alias. The modules are imported only when dispatched,
+#: so `mp --help` and `mp --version` stay cheap: the summarize / publish stages
+#: pull in anthropic + httpx + pydantic only when actually invoked.
+#: `test_main_dispatch` and `test_entry_contract` read this table directly.
+SUBCOMMANDS: dict[str, str] = {
+    "summarize": "summarize",
+    "serve-local": "summarize_local",
+    "serve_local": "summarize_local",
+    "publish": "publish_cmd",
+    "publish-from-paste": "publish_from_paste",
+    "publish_from_paste": "publish_from_paste",
+    "run-all": "orchestrate",
+    "run_all": "orchestrate",
+    "finalize": "finalize",
+    "merge-meetings": "merge_meetings",
+    "merge_meetings": "merge_meetings",
+    "cleanup-diarization": "diarize_cleanup",
+    "cleanup_diarization": "diarize_cleanup",
+    "doctor": "doctor",
+    "check-model": "model_check",
+    "check_model": "model_check",
+    "logs": "logs_cmd",
+    "dogfood": "dogfood",
+    "prefetch-model": "prefetch_model",
+    "prefetch_model": "prefetch_model",
+    "corrections-stats": "corrections",
+    "corrections_stats": "corrections",
+    "train-adapter": "train_adapter",
+    "train_adapter": "train_adapter",
+    "analyze-detection": "analyze_detection",
+    "analyze_detection": "analyze_detection",
+    "ask": "ask",
+    "actions": "actions",
+    "prep": "prep",
+    "digest": "digest",
+    "mcp-serve": "mcp_serve",
+    "mcp_serve": "mcp_serve",
+    "roster": "roster_cmd",
+    "index-prune": "index_prune",
+    "index_prune": "index_prune",
+    "backup": "backup",
+    "restore": "restore",
+}
+
+
 def _dispatch(cmd: str, rest: list[str]) -> int:
     """Route one subcommand to its module's `main(argv)`.
 
     Split out of `main` so a single `except KeyboardInterrupt` covers every
-    branch: every subcommand is a `main(argv) -> int` reached through here, so
+    command: every subcommand is a `main(argv) -> int` reached through here, so
     one handler serves all of them and none has to learn about interrupts.
+    `main` is looked up on the module at call time, so a test that patches
+    `mp.<module>.main` is the one that runs.
     """
-    # Lazy imports: keep `mp --help` and `mp --version` cheap; the
-    # summarize / publish stages pull in anthropic + httpx + pydantic
-    # only when actually invoked.
-    if cmd == "summarize":
-        from .summarize import main as run
-        return run(rest)
-    if cmd in {"serve-local", "serve_local"}:
-        from .summarize_local import main as run
-        return run(rest)
-    if cmd == "publish":
-        from .publish_cmd import main as run
-        return run(rest)
-    if cmd in {"publish-from-paste", "publish_from_paste"}:
-        from .publish_from_paste import main as run
-        return run(rest)
-    if cmd in {"run-all", "run_all"}:
-        from .orchestrate import main as run
-        return run(rest)
-    if cmd == "finalize":
-        from .finalize import main as run
-        return run(rest)
-    if cmd in {"merge-meetings", "merge_meetings"}:
-        from .merge_meetings import main as run
-        return run(rest)
-    if cmd in {"cleanup-diarization", "cleanup_diarization"}:
-        from .diarize_cleanup import main as run
-        return run(rest)
-    if cmd == "doctor":
-        from .doctor import main as run
-        return run(rest)
-    if cmd in {"check-model", "check_model"}:
-        from .model_check import main as run
-        return run(rest)
-    if cmd == "logs":
-        from .logs_cmd import main as run
-        return run(rest)
-    if cmd == "dogfood":
-        from .dogfood import main as run
-        return run(rest)
-    if cmd in {"prefetch-model", "prefetch_model"}:
-        from .prefetch_model import main as run
-        return run(rest)
-    if cmd in {"corrections-stats", "corrections_stats"}:
-        from .corrections import main as run
-        return run(rest)
-    if cmd in {"train-adapter", "train_adapter"}:
-        from .train_adapter import main as run
-        return run(rest)
-    if cmd in {"analyze-detection", "analyze_detection"}:
-        from .analyze_detection import main as run
-        return run(rest)
-    if cmd == "ask":
-        from .ask import main as run
-        return run(rest)
-    if cmd == "actions":
-        from .actions import main as run
-        return run(rest)
-    if cmd == "prep":
-        from .prep import main as run
-        return run(rest)
-    if cmd == "digest":
-        from .digest import main as run
-        return run(rest)
-    if cmd in {"mcp-serve", "mcp_serve"}:
-        from .mcp_serve import main as run
-        return run(rest)
-    if cmd == "roster":
-        from .roster_cmd import main as run
-        return run(rest)
-    if cmd in {"index-prune", "index_prune"}:
-        from .index_prune import main as run
-        return run(rest)
-    if cmd == "backup":
-        from .backup import main as run
-        return run(rest)
-    if cmd == "restore":
-        from .restore import main as run
-        return run(rest)
-
-    print(f"unknown subcommand: {cmd}\n", file=sys.stderr)
-    print(USAGE, file=sys.stderr)
-    return 2
+    module = SUBCOMMANDS.get(cmd)
+    if module is None:
+        print(f"unknown subcommand: {cmd}\n", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
+        return 2
+    return importlib.import_module(f".{module}", __package__).main(rest)
 
 
 def main() -> int:

@@ -1,9 +1,10 @@
 """`mp logs` — pretty-print filtered events from the JSONL event streams.
 
-Sources:
-  ~/Library/Logs/MeetingPipe/events.jsonl          (Swift daemon)
-  ~/Library/Logs/MeetingPipe/pipeline_events.jsonl (Python pipeline)
-  ~/Library/Logs/MeetingPipe/diagnostics.jsonl     (Swift daemon, high-volume rows, OBS9)
+Sources, in the logs folder (``events.logs_dir()``: ``MEETINGPIPE_LOGS_DIR`` when set,
+else ``~/Library/Logs/MeetingPipe``):
+  events.jsonl          (Swift daemon)
+  pipeline_events.jsonl (Python pipeline)
+  diagnostics.jsonl     (Swift daemon, high-volume rows, OBS9)
 
 Filters: --since, --category, --action. Each event is one JSON object;
 this command applies filters in Python so the user does not have to
@@ -17,56 +18,26 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from collections.abc import Iterable, Iterator
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 
 from . import events as events_mod
 
-LOGS_DIR = Path(os.path.expanduser("~/Library/Logs/MeetingPipe"))
 SOURCES = ("events.jsonl", "pipeline_events.jsonl", "diagnostics.jsonl")
 
 
-def _parse_since(s: str) -> datetime:
-    """Accept either an ISO timestamp or a `Nh` / `Nm` / `Nd` relative offset.
-
-    Relative is the common case (`mp logs --since 1h`). ISO is for
-    pinning a postmortem window. Naive ISO inputs are assumed UTC,
-    matching how the emitters write timestamps.
-    """
-    s = s.strip()
-    if s and s[-1] in "smhd" and s[:-1].isdigit():
-        n = int(s[:-1])
-        unit = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}[s[-1]]
-        return datetime.now(UTC) - timedelta(**{unit: n})
-    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt
-
-
 def _iter_events(skipped: events_mod.SkipCounter | None = None) -> Iterator[dict]:
+    # HYG16: the folder is resolved per call, so `MEETINGPIPE_LOGS_DIR` holds here as it
+    # does for both writers; a module-level path froze the real one at import.
+    logs = events_mod.logs_dir()
     for name in SOURCES:
         # PERF7: read the base log plus its rotated generations, so `mp logs`
-        # keeps working on the recent window after a rotation.
-        for path in events_mod.log_generations(LOGS_DIR / name):
-            with path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        yield json.loads(line)
-                    except json.JSONDecodeError:
-                        # A torn line from a concurrent write. Skip rather than
-                        # abort: the user is debugging, not forensically
-                        # auditing. Counted, though (PERF13), so a lost row
-                        # does not read as an event that never fired.
-                        if skipped is not None:
-                            skipped.count += 1
-                        continue
+        # keeps working on the recent window after a rotation. A torn line from a
+        # concurrent write is skipped, not fatal (the user is debugging, not
+        # forensically auditing), but counted (PERF13).
+        for path in events_mod.log_generations(logs / name):
+            yield from events_mod.iter_jsonl(path, skipped)
 
 
 def _filter(
@@ -115,7 +86,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--json", action="store_true", help="Emit matched events as JSONL on stdout.")
     args = p.parse_args(argv)
 
-    since = _parse_since(args.since) if args.since else None
+    since = events_mod.parse_since(args.since) if args.since else None
     skipped = events_mod.SkipCounter()
     matched = list(_filter(_iter_events(skipped),
                             since=since, category=args.category, action=args.action))

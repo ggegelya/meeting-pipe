@@ -79,7 +79,7 @@ def main(argv: list[str]) -> int:
     if not wav.exists():
         print(f"No such file: {wav}", file=sys.stderr)
         return 1
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    entry.configure_logging()
     try:
         t = finalize(wav)
     except Exception as e:  # noqa: BLE001 - surfaced as a non-zero exit for the daemon

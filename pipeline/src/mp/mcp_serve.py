@@ -502,8 +502,7 @@ def main(argv: list[str]) -> int:
 
     # stderr, always: stdout is the JSON-RPC channel and a stray log line there
     # is a protocol error, not a cosmetic one.
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr,
-                        format="%(levelname)s %(name)s: %(message)s")
+    entry.configure_logging()
 
     # SEC13. `secrets=False`: nothing here reaches an engine or a token, but the
     # guard still arms, because `search_meetings` can load an embedding model and

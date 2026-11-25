@@ -529,7 +529,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--json", action="store_true", dest="as_json", help="emit JSON instead of text")
     args = ap.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    entry.configure_logging()
 
     # STOR10: every run leaves an attempt marker, and a failure an event with its class (SEC38),
     # so a scheduled digest that raised is seen in Preferences rather than only as a traceback

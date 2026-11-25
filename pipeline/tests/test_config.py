@@ -90,15 +90,12 @@ def test_effective_backend_passthrough_when_unrestricted() -> None:
         assert effective_backend(cfg) == configured
 
 
-def test_cli_backends_are_a_subset_of_backends_and_cloud() -> None:
-    # PROV1: claude_cli is a valid backend AND classed as a CLI (cloud) backend,
-    # so effective_backend's non-local force-local rule catches it.
-    from mp.config import BACKENDS, CLI_BACKENDS
+def test_the_prov1_providers_are_valid_backends() -> None:
+    # PROV1: both are accepted backend ids. That they are forced local under zero
+    # egress is `effective_backend`'s every-non-local rule, pinned above.
+    from mp.config import BACKENDS
 
     assert {"claude_cli", "openai"} <= BACKENDS
-    assert "claude_cli" in CLI_BACKENDS
-    assert CLI_BACKENDS <= BACKENDS
-    assert "local" not in CLI_BACKENDS
 
 
 def test_effective_sinks_is_filesystem_only_under_zero_egress() -> None:

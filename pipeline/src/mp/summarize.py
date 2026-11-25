@@ -1054,7 +1054,7 @@ def main(argv: list[str]) -> int:
     if not md.exists():
         print(f"No such file: {md}", file=sys.stderr)
         return 1
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    entry.configure_logging()
     usage.reset()  # PIPE27: this re-summarize's tokens only
     try:
         out = summarize(md, out_suffix="candidate" if candidate else None, backend=backend_override)

@@ -842,7 +842,7 @@ def main(argv: list[str]) -> int:
     if not transcript_json.exists():
         print(f"No such file: {transcript_json}", file=sys.stderr)
         return 1
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    entry.configure_logging()
     result = cleanup_transcript(transcript_json, force=args.force)
     if result.get("skipped"):
         print(f"diarize cleanup: skipped, {transcript_json.name} is already cleaned "

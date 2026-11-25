@@ -19,8 +19,8 @@ import logging
 import os
 import re
 import sys
-from collections.abc import Callable, Iterable
-from datetime import UTC, datetime
+from collections.abc import Callable, Iterable, Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -97,6 +97,41 @@ def log_generations(path: Path) -> list[Path]:
     if path.exists():
         out.append(path)
     return out
+
+
+def iter_jsonl(path: Path, skipped: SkipCounter | None = None) -> Iterator[dict[str, Any]]:
+    """Every well-formed JSON object in ``path``, in file order (HYG16).
+
+    The one JSONL reader `mp logs` and `mp analyze-detection` share. A blank line is
+    skipped; a malformed one (a torn row from a concurrent write) is skipped too and
+    counted into ``skipped`` (PERF13), so a lost row does not read as an event that
+    never fired. A missing file yields nothing."""
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                if skipped is not None:
+                    skipped.count += 1
+
+
+def parse_since(s: str) -> datetime:
+    """A ``--since`` value: a relative ``Ns`` / ``Nm`` / ``Nh`` / ``Nd`` offset back from now,
+    else an ISO timestamp, a naive one read as UTC to match how the emitters write (HYG16)."""
+    s = s.strip()
+    if s and s[-1] in "smhd" and s[:-1].isdigit():
+        n = int(s[:-1])
+        unit = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}[s[-1]]
+        return datetime.now(UTC) - timedelta(**{unit: n})
+    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
 
 
 class SkipCounter:

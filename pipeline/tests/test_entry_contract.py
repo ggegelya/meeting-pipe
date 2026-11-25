@@ -3,7 +3,7 @@
 SEC13 requires every `mp` subcommand that can reach a sink, an engine, or a
 token to arm the egress guard through `mp.entry.prepare` before it does anything
 else. That was enforced by convention (a reviewer noticing). This test walks
-every dispatch target in `__main__.py` and asserts the module either calls
+every dispatch target in `__main__.SUBCOMMANDS` and asserts the module either calls
 `entry.prepare` or sits on a small named allowlist of read-only / diagnostic
 commands, so the next forgotten arm is a red build instead of a silent leak.
 
@@ -236,19 +236,11 @@ def _main_arm_violations(tree: ast.Module, prepares: list[ast.Call], label: str)
 
 
 def _dispatch_targets() -> set[str]:
-    """Every module `__main__.main` dispatches to, read from the `from .<module>
-    import main as run` lines so the set can never drift from the real router."""
-    tree = ast.parse((SRC / "__main__.py").read_text(encoding="utf-8"))
-    targets: set[str] = set()
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.level == 1
-            and node.module
-            and any(alias.name == "main" for alias in node.names)
-        ):
-            targets.add(node.module)
-    return targets
+    """Every module `__main__.main` dispatches to, read from its `SUBCOMMANDS`
+    table (HYG16) so the set can never drift from the real router."""
+    from mp.__main__ import SUBCOMMANDS
+
+    return set(SUBCOMMANDS.values())
 
 
 def test_dispatch_targets_are_discoverable():

@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from mp import local_snapshot, prefetch_model
-from mp.prefetch_model import _bytes_on_disk, _incremental_bytes
+from mp.prefetch_model import _incremental_bytes
+from mp.storage import bytes_on_disk
 
 
 def _write(path: Path, size: int) -> None:
@@ -18,7 +19,7 @@ def test_incremental_matches_full_walk_on_first_pass(tmp_path: Path):
     _write(tmp_path / "blobs" / "a", 100)
     _write(tmp_path / "blobs" / "b", 50)
     counted: dict[str, int] = {}
-    assert _incremental_bytes(tmp_path, counted) == _bytes_on_disk(tmp_path) == 150
+    assert _incremental_bytes(tmp_path, counted) == bytes_on_disk(tmp_path) == 150
 
 
 def test_incremental_picks_up_new_files_across_ticks(tmp_path: Path):

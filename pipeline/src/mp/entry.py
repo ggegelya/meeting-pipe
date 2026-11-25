@@ -18,11 +18,29 @@ forgot. Call `prepare()` instead.
 """
 from __future__ import annotations
 
+import logging
+import sys
 from pathlib import Path
 
 from .config import Config, load_secrets
 from .egress_guard import arm_for_config
 from .workflow import apply_overrides
+
+#: The one stderr format every subcommand logs in (HYG16). The daemon copies a child's
+#: stderr into `pipeline.log` and reads the level off the leading fields
+#: (`PipelineLauncher.stderrLogLevel`), so a change here is a change there.
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+def configure_logging() -> None:
+    """Root logging for one subcommand: INFO, to stderr, in `LOG_FORMAT`.
+
+    Stderr explicitly, so a command whose stdout is a protocol (`mp prefetch-model`'s
+    JSONL, `mp mcp-serve`'s stdio) never has a log line land in it. A no-op when the
+    root logger already has handlers, as `logging.basicConfig` always is.
+    `orchestrate._configure_logging` stays separate: it adds the `pipeline.log` file
+    handler `run-all` owns (T9)."""
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format=LOG_FORMAT)
 
 
 def prepare(
