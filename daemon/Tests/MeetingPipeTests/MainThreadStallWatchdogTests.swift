@@ -31,42 +31,53 @@ final class MainThreadStallWatchdogTests: XCTestCase {
         XCTAssertEqual(StallDetector.decide(waitMs: 50, nowUptime: 101, lastEmitUptime: 100, suppressedSoFar: 2), .none)
     }
 
-    /// OBS7: the row names the last click and how long ago it ran.
+    /// OBS7: the row names the last click and how long ago it ran. Load-proof the same way as the
+    /// test below: a 1 s block against a 300 ms threshold, and the test waits for the row itself.
     func testStallRowCarriesTheLastUIActionWhenOneExists() {
         let lock = NSLock()
         var rows: [[String: Any]] = []
+        let rowSeen = expectation(description: "row")
+        rowSeen.assertForOverFulfill = false
         let wd = MainThreadStallWatchdog(
             interval: 0.05, thresholdMs: 300,
             lastUIAction: { (seq: 7, sinceMs: 412) },
-            emit: { attrs in lock.lock(); rows.append(attrs); lock.unlock() }
+            emit: { attrs in lock.lock(); rows.append(attrs); lock.unlock(); rowSeen.fulfill() }
         )
         wd.start()
         let warm = expectation(description: "warm")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { warm.fulfill() }
         wait(for: [warm], timeout: 2)
         let blocked = expectation(description: "blocked")
-        DispatchQueue.main.async { Thread.sleep(forTimeInterval: 0.4); blocked.fulfill() }
-        wait(for: [blocked], timeout: 3)
-        let after = expectation(description: "after")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { after.fulfill() }
-        wait(for: [after], timeout: 2)
+        DispatchQueue.main.async { Thread.sleep(forTimeInterval: Self.blockSeconds); blocked.fulfill() }
+        wait(for: [blocked], timeout: 5)
+        wait(for: [rowSeen], timeout: 5)
         wd.stop()
         lock.lock(); defer { lock.unlock() }
         XCTAssertEqual(rows.first?["last_ui_seq"] as? Int, 7)
         XCTAssertEqual(rows.first?["since_ui_action_ms"] as? Int, 412)
     }
 
-    /// Blocks the main queue for 400 ms and sees exactly one row.
+    /// How long the two 300 ms-threshold tests block main. It used to be 400 ms, which left the
+    /// utility-QoS ping timer 100 ms of slack: a ping posted more than 100 ms into the block waits
+    /// under the threshold, so a loaded CI runner that ran the timer late saw no row at all and both
+    /// OBS7 assertions read nil (run 45841630605, 2026-11-26). At 1 s the timer can be 700 ms late.
+    static let blockSeconds: TimeInterval = 1.0
+
+    /// Blocks the main queue for `blockSeconds` and sees exactly one row. The test waits for the row
+    /// rather than a fixed delay after the block, and the default 10 s rate limit holds any later
+    /// stall back, so "exactly one" is still checked.
     func testBlockedMainQueueEmitsOneRow() {
         let lock = NSLock()
         var rows: [[String: Any]] = []
+        let rowSeen = expectation(description: "row")
+        rowSeen.assertForOverFulfill = false
         let wd = MainThreadStallWatchdog(
             interval: 0.05,
             // Above the 100 ms default so a loaded runner's spurious wait before the block cannot
             // take the one row and suppress the real stall.
             thresholdMs: 300,
             context: { ["recording": false] },
-            emit: { attrs in lock.lock(); rows.append(attrs); lock.unlock() }
+            emit: { attrs in lock.lock(); rows.append(attrs); lock.unlock(); rowSeen.fulfill() }
         )
         wd.start()
         // Let a couple of healthy pings through, then block main.
@@ -74,8 +85,9 @@ final class MainThreadStallWatchdogTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { warm.fulfill() }
         wait(for: [warm], timeout: 2)
         let blocked = expectation(description: "blocked")
-        DispatchQueue.main.async { Thread.sleep(forTimeInterval: 0.4); blocked.fulfill() }
-        wait(for: [blocked], timeout: 3)
+        DispatchQueue.main.async { Thread.sleep(forTimeInterval: Self.blockSeconds); blocked.fulfill() }
+        wait(for: [blocked], timeout: 5)
+        wait(for: [rowSeen], timeout: 5)
         let after = expectation(description: "after")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { after.fulfill() }
         wait(for: [after], timeout: 2)
