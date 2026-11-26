@@ -57,6 +57,25 @@ final class StatusMenuReadsTests: XCTestCase {
         }
     }
 
+    /// The Suppressed / Detected label's recheck, held rather than timed, so a test fires it when
+    /// it likes. A cancelled recheck is dropped, which is what invalidating the timer does.
+    private final class HeldScheduler {
+        private var pending: [(id: Int, action: () -> Void)] = []
+        private var nextID = 0
+        var armed: Int { pending.count }
+        func schedule(_ delay: TimeInterval, _ action: @escaping () -> Void) -> () -> Void {
+            nextID += 1
+            let id = nextID
+            pending.append((id, action))
+            return { [weak self] in self?.pending.removeAll { $0.id == id } }
+        }
+        func fireAll() {
+            let due = pending
+            pending.removeAll()
+            due.forEach { $0.action() }
+        }
+    }
+
     private func service(_ runner: FakeLaunchctl) -> LaunchAtLoginService {
         LaunchAtLoginService(runner: runner, uid: 501, plistPath: "/tmp/perf24/agent.plist", plistExists: { _ in true })
     }
@@ -70,6 +89,7 @@ final class StatusMenuReadsTests: XCTestCase {
     private var launchctl: FakeLaunchctl!
     private var countQueue: DispatchQueue!
     private var launchAgentQueue: DispatchQueue!
+    private var recheck: HeldScheduler!
 
     override func setUp() {
         super.setUp()
@@ -81,13 +101,16 @@ final class StatusMenuReadsTests: XCTestCase {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let counter = self.counter!
         let recents = self.recents!
+        recheck = HeldScheduler()
+        let recheck = self.recheck!
         controller = StatusBarController(
             item: item,
             launchAtLogin: service(launchctl),
             countFailedMeetings: { counter.count($0) },
             listRecentMeetings: { recents.list($0) },
             countQueue: countQueue,
-            launchAgentQueue: launchAgentQueue
+            launchAgentQueue: launchAgentQueue,
+            suppressedRecheckScheduler: { recheck.schedule($0, $1) }
         )
         // Never resolved through a Coordinator here, and never listed for real.
         controller.recordingsDir = { URL(fileURLWithPath: "/nonexistent/perf24/raw") }
@@ -232,6 +255,45 @@ final class StatusMenuReadsTests: XCTestCase {
         )
         open()
         XCTAssertTrue(titles.contains("MeetingPipe: Stopping…"), "\(titles)")
+    }
+
+    // MARK: - UX106 amendment: a start from the offered or skipped label stays Starting
+
+    private let teams = AppSource(bundleID: "com.microsoft.teams2", displayName: "Teams")
+
+    /// The explicit start clears the skip latch, so a recheck still armed from the label reads it
+    /// lapsed and calls `setIdle()` while the recorder is starting. `setStarting` has to cancel it.
+    private func assertStartingSurvivesTheRecheck(
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        show: (@escaping () -> Bool) -> Void
+    ) throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let library = LibraryWindowModel(recordingsDir: dir, savedSearchesURL: dir.appendingPathComponent("searches.json"))
+        controller.libraryModel = library
+        var latchHolds = true
+        show { latchHolds }
+        XCTAssertEqual(recheck.armed, 1, "the label arms its recheck", file: file, line: line)
+
+        controller.setStarting(source: teams)
+        latchHolds = false
+        XCTAssertEqual(recheck.armed, 0, "setStarting cancels the recheck", file: file, line: line)
+        recheck.fireAll()
+
+        XCTAssertEqual(item.button?.title, " \(StatusBarModel.startingLabel)", file: file, line: line)
+        open()
+        XCTAssertTrue(titles.contains("MeetingPipe: \(StatusBarModel.startingLabel)"), "\(titles)", file: file, line: line)
+        XCTAssertEqual(library.status, .starting(appName: "Teams"), file: file, line: line)
+    }
+
+    func test_a_start_from_the_offered_label_is_not_knocked_back_to_idle_by_its_recheck() throws {
+        try assertStartingSurvivesTheRecheck { controller.setOffered(teams, isStillOffered: $0) }
+    }
+
+    func test_a_start_from_the_skipped_label_is_not_knocked_back_to_idle_by_its_recheck() throws {
+        try assertStartingSurvivesTheRecheck { controller.setSuppressed(teams, isStillSuppressed: $0) }
     }
 
     // MARK: - Item 2: the failed count

@@ -59,11 +59,19 @@ final class StatusBarController {
     /// reads that latch (the single source of truth); the timer re-checks it and
     /// collapses to Idle once it lapses, which is a full `skipLatchGraceSec` after discovery last
     /// saw the meeting and not "shortly after it ends" (DET9).
-    private var suppressedDisplayTimer: Timer?
+    private var cancelSuppressedRecheck: (() -> Void)?
     private var suppressedIsActive: (() -> Bool)?
     /// DET18: the suppressed display is a timeout's offer ("Detected <app>"), not a skip.
     private var suppressedIsOffer = false
     private static let suppressedRecheckInterval: TimeInterval = 5
+    /// Arms the recheck's one-shot and returns its cancel; a held fake in tests (UX106 amendment).
+    typealias Scheduler = (TimeInterval, @escaping () -> Void) -> () -> Void
+    private let suppressedRecheckScheduler: Scheduler
+    /// Default run-loop mode on purpose, the reason `ModalSafeTimerTests.defaultModeTimers` lists.
+    static let defaultModeOnce: Scheduler = { delay, action in
+        let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in action() }
+        return { timer.invalidate() }
+    }
 
     /// Delegate for the "Recent meetings" submenu; populates on its own
     /// `menuNeedsUpdate` so opening the top menu doesn't pay a dir scan for a
@@ -127,6 +135,7 @@ final class StatusBarController {
     /// - Parameters:
     ///   - launchAtLogin: the launch-agent reader; a fake runner in tests.
     ///   - countFailedMeetings: the `raw/` listing, run on `countQueue`.
+    ///   - suppressedRecheckScheduler: arms the Suppressed / Detected label's recheck.
     init(
         item: NSStatusItem,
         launchAtLogin: LaunchAtLoginService = LaunchAtLoginService(),
@@ -136,8 +145,10 @@ final class StatusBarController {
             MeetingLibraryService.recentCorrectableMeetings(in: $0, limit: 10)
         },
         countQueue: DispatchQueue = DispatchQueue(label: "MeetingPipe.StatusMenu.failedCount", qos: .utility),
-        launchAgentQueue: DispatchQueue = DispatchQueue(label: "MeetingPipe.StatusMenu.launchAgent", qos: .utility)
+        launchAgentQueue: DispatchQueue = DispatchQueue(label: "MeetingPipe.StatusMenu.launchAgent", qos: .utility),
+        suppressedRecheckScheduler: @escaping Scheduler = StatusBarController.defaultModeOnce
     ) {
+        self.suppressedRecheckScheduler = suppressedRecheckScheduler
         self.item = item
         self.launchAtLogin = launchAtLogin
         self.countFailedMeetings = countFailedMeetings
@@ -170,7 +181,12 @@ final class StatusBarController {
 
     /// UX106: set synchronously at the click, before the recorder is asked to start, so the press is
     /// answered at once. Every other setter clears it.
+    ///
+    /// It cancels the Suppressed / Detected label's recheck like every other setter: a start from
+    /// that label clears the skip latch, so a recheck left armed reads it lapsed and calls
+    /// `setIdle()` while the recorder is still starting (UX106 amendment, 2026-11-21).
     func setStarting(source: AppSource?) {
+        cancelSuppressedDisplay()
         startingRecording = true
         applyTitle()
         rebuildMenu(state: lastMenuState)
@@ -282,9 +298,7 @@ final class StatusBarController {
     }
 
     private func scheduleSuppressedRecheck() {
-        suppressedDisplayTimer = Timer.scheduledTimer(
-            withTimeInterval: Self.suppressedRecheckInterval, repeats: false
-        ) { [weak self] _ in
+        cancelSuppressedRecheck = suppressedRecheckScheduler(Self.suppressedRecheckInterval) { [weak self] in
             guard let self = self else { return }
             if self.suppressedIsActive?() == true {
                 self.scheduleSuppressedRecheck()
@@ -295,8 +309,8 @@ final class StatusBarController {
     }
 
     private func cancelSuppressedDisplay() {
-        suppressedDisplayTimer?.invalidate()
-        suppressedDisplayTimer = nil
+        cancelSuppressedRecheck?()
+        cancelSuppressedRecheck = nil
         suppressedIsActive = nil
         suppressedIsOffer = false
     }
