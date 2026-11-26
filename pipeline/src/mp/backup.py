@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import os
 import plistlib
 import re
@@ -294,6 +295,22 @@ def _previous_library_files(previous: dict[str, Any], *, include_audio: bool) ->
     return count
 
 
+def _retention_hold(previous: dict[str, Any]) -> tuple[int, bool] | None:
+    """The count and `audio_included` a held shrink is measured against, from the
+    previous marker's `retention_hold`, or None when no hold is recorded.
+
+    A skipped prune carries this forward unchanged rather than letting the marker's
+    own `library_files` (the shrunk count) become the next run's baseline, which
+    released the guard after one night (STOR13 amendment, 2026-11-21)."""
+    hold = previous.get("retention_hold")
+    if not isinstance(hold, dict):
+        return None
+    count, audio = hold.get("library_files"), hold.get("audio_included")
+    if isinstance(count, bool) or not isinstance(count, int) or not isinstance(audio, bool):
+        return None
+    return count, audio
+
+
 def check_destination(destination: Path, *, volumes_root: Path | None = None) -> None:
     """Refuse a destination on an external volume that is not mounted (STOR4).
 
@@ -526,7 +543,8 @@ class BackupResult:
     destination_open_mode: int | None = None
     #: STOR13: the library root's archived file count, recorded in the marker.
     library_files: int = 0
-    #: STOR13: the previous marker's count when comparable, else None.
+    #: STOR13: the count this run was measured against: a held shrink's pre-shrink
+    #: count while the hold lasts, else the previous marker's when comparable, else None.
     previous_library_files: int | None = None
     #: STOR13: retention did not run because the library shrank past the ratio.
     prune_skipped: bool = False
@@ -606,7 +624,9 @@ def run_backup(
     now = now or datetime.now(UTC)
     destination = destination.expanduser()
     check_library(cfg)
-    previous = _previous_library_files(_previous_backup(home), include_audio=include_audio)
+    previous_marker = _previous_backup(home)
+    previous = _previous_library_files(previous_marker, include_audio=include_audio)
+    hold = _retention_hold(previous_marker)
     check_destination(destination)
     check_synced_destination(cfg, destination)
     check_free_space(
@@ -673,27 +693,39 @@ def run_backup(
         partial.unlink(missing_ok=True)
         raise
 
+    # STOR13: a true copy of what exists, so it is written and stamped, but a sharp
+    # shrink keeps every older archive: those may be the only copies left. The hold
+    # lasts until a run counts at least PRUNE_SHRINK_RATIO of the pre-shrink count
+    # again (or the owner deletes the marker), so the baseline is the held count, not
+    # the last run's. A run with the other `audio_included` counts something else, so
+    # it can neither start a hold nor end one: it keeps holding.
+    if hold is not None and hold[1] is not include_audio:
+        baseline: int | None = hold[0]
+        prune_skipped = True
+    else:
+        baseline = hold[0] if hold is not None else previous
+        prune_skipped = baseline is not None and library_files < baseline * PRUNE_SHRINK_RATIO
+        if prune_skipped and hold is None and baseline is not None:
+            hold = (baseline, include_audio)
+
+    stamp: dict[str, Any] = {
+        "at": now.isoformat(),
+        "archive": str(archive),
+        "bytes": archive.stat().st_size,
+        "audio_included": include_audio,
+        "destination_encrypted": encrypted,
+        "library_files": library_files,
+    }
+    if prune_skipped and hold is not None:
+        stamp["retention_hold"] = {"library_files": hold[0], "audio_included": hold[1]}
     marker = storage.backup_marker(home)
     marker.parent.mkdir(parents=True, exist_ok=True)
-    storage.atomic_write_text(
-        marker,
-        json.dumps({
-            "at": now.isoformat(),
-            "archive": str(archive),
-            "bytes": archive.stat().st_size,
-            "audio_included": include_audio,
-            "destination_encrypted": encrypted,
-            "library_files": library_files,
-        }, indent=2),
-    )
+    storage.atomic_write_text(marker, json.dumps(stamp, indent=2))
 
-    # STOR13: a true copy of what exists, so it is written and stamped, but a sharp
-    # shrink keeps every older archive: those may be the only copies left.
-    prune_skipped = previous is not None and library_files < previous * PRUNE_SHRINK_RATIO
     pruned, pruned_bytes = 0, 0
     if prune_skipped:
         events.emit("pipeline", "backup_prune_skipped",
-                    library_files=library_files, previous_library_files=previous)
+                    library_files=library_files, previous_library_files=baseline)
     else:
         try:
             pruned, pruned_bytes = prune_old_backups(destination, written=archive, now=now)
@@ -702,7 +734,7 @@ def run_backup(
         if pruned:
             events.emit("pipeline", "backup_pruned", count=pruned, bytes=pruned_bytes)
     return BackupResult(archive, manifest, pruned, pruned_bytes, encrypted, open_mode,
-                        library_files, previous, prune_skipped)
+                        library_files, baseline, prune_skipped)
 
 
 def create_backup(
@@ -783,7 +815,10 @@ def main(argv: list[str]) -> int:
         print("  recordings were skipped (--no-audio)")
     if result.prune_skipped:
         print(f"  retention skipped: library has {result.library_files} files, "
-              f"last backup had {result.previous_library_files}")
+              f"down from {result.previous_library_files}. Older backups are kept until it "
+              f"holds {math.ceil((result.previous_library_files or 0) * PRUNE_SHRINK_RATIO)} "
+              "again; if the meetings are gone for good, delete "
+              f"{storage.backup_marker()} and back up again.")
     else:
         print(f"  pruned {result.pruned} older backups ({storage.human_bytes(result.pruned_bytes)})")
     print()

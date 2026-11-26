@@ -1295,7 +1295,8 @@ def test_the_summary_says_retention_was_skipped(
 
     assert _backup_main([str(out)], home, monkeypatch) == 0
     stdout = capsys.readouterr().out
-    assert "retention skipped: library has 10 files, last backup had 40" in stdout
+    assert "retention skipped: library has 10 files, down from 40" in stdout
+    assert "holds 20 again" in stdout
     assert "pruned " not in stdout
 
 
@@ -1311,6 +1312,91 @@ def test_a_steady_library_prunes_as_before_and_the_marker_counts_it(tmp_path: Pa
     assert result.pruned == 8  # STOR12's policy over the same 15 nights
     assert not result.prune_skipped
     assert json.loads(storage.backup_marker(home).read_text())["library_files"] == 40
+
+
+def _shrink_library_to(library: Path, count: int) -> None:
+    for extra in sorted(library.iterdir())[count:]:
+        extra.unlink()
+
+
+def test_a_shrink_keeps_holding_retention_on_the_nights_after_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """STOR13 amendment (2026-11-21): the marker was stamped with the shrunk count, so
+    night three compared 10 against 10 and pruned the archives that still held the
+    other 30 meetings. The guard has to hold until the library recovers."""
+    home = _make_home(tmp_path)
+    library = _library_with(home, 40)
+    out = tmp_path / "out"
+    _fifteen_nights(out)
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(backup_mod.events, "emit", lambda c, a, **kw: emitted.append((c, a, kw)))
+
+    first = backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW)
+    assert first.pruned == 8 and not first.prune_skipped
+    _shrink_library_to(library, 10)
+    second = backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW + timedelta(days=1))
+    assert second.prune_skipped
+    kept = {p.name for p in out.iterdir()}
+
+    emitted.clear()
+    assert _backup_main([str(out)], home, monkeypatch) == 0
+
+    stdout = capsys.readouterr().out
+    assert kept <= {p.name for p in out.iterdir()}  # nothing pruned on night three
+    assert "retention skipped: library has 10 files, down from 40" in stdout
+    assert "pruned " not in stdout
+    assert ("pipeline", "backup_prune_skipped",
+            {"library_files": 10, "previous_library_files": 40}) in emitted
+    marker = json.loads(storage.backup_marker(home).read_text())
+    assert marker["library_files"] == 10
+    assert marker["retention_hold"] == {"library_files": 40, "audio_included": True}
+
+
+def test_a_held_shrink_releases_once_the_library_recovers(tmp_path: Path) -> None:
+    home = _make_home(tmp_path)
+    library = _library_with(home, 40)
+    out = tmp_path / "out"
+    _fifteen_nights(out)
+    backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW)
+    _shrink_library_to(library, 10)
+    for night in (1, 2):
+        held = backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW + timedelta(days=night))
+        assert held.prune_skipped
+    _library_with(home, 20)  # back to half of the 40 the hold was measured against
+
+    recovered = backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW + timedelta(days=3))
+
+    assert not recovered.prune_skipped
+    assert recovered.pruned == 2  # STOR12's policy over the 11 archives the hold kept
+    marker = json.loads(storage.backup_marker(home).read_text())
+    assert marker["library_files"] == 20
+    assert "retention_hold" not in marker
+
+
+def test_a_no_audio_run_during_a_hold_keeps_holding(tmp_path: Path) -> None:
+    """A `--no-audio` run counts something else, so it cannot judge a recovery; it
+    neither prunes nor drops the hold the with-audio runs are measured against."""
+    home = _make_home(tmp_path)
+    library = _library_with(home, 40)
+    out = tmp_path / "out"
+    _fifteen_nights(out)
+    backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW)
+    _shrink_library_to(library, 10)
+    backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW + timedelta(days=1))
+    kept = {p.name for p in out.iterdir()}
+
+    no_audio = backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW + timedelta(days=2),
+                                     include_audio=False)
+    assert no_audio.prune_skipped
+    assert kept <= {p.name for p in out.iterdir()}
+    with_audio = backup_mod.run_backup(_cfg(home), out, home=home, now=_NOW + timedelta(days=3))
+
+    assert with_audio.prune_skipped
+    assert with_audio.previous_library_files == 40
+    assert json.loads(storage.backup_marker(home).read_text())["retention_hold"] == {
+        "library_files": 40, "audio_included": True,
+    }
 
 
 def test_a_marker_without_a_count_compares_nothing(tmp_path: Path) -> None:
