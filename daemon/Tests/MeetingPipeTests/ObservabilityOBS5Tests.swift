@@ -109,6 +109,32 @@ final class ObservabilityOBS5Tests: XCTestCase {
         XCTAssertEqual(StopCause.callChanged.name, "call_changed")
     }
 
+    /// 2026-11-21 amendment: a stop that never completes still says why it began. The recorder's
+    /// stop parks (the 2026-08-14 wedge), so `recording_stopped` is never written, and `stop_began`
+    /// is the only row that can carry the cause.
+    func test_a_stop_that_never_completes_still_names_its_cause_on_stop_began() async throws {
+        let host = FakeSessionHost(tempDir: tempDir)
+        host.recorderSpy.stopBehaviourHangs = true
+        let file = tempDir.appendingPathComponent("\(UUID().uuidString).wav")
+        host.recorderSpy.fileToReturn = file
+        let controller = MeetingSessionController(coordinator: host)
+        controller.beginRecording(source: zoom, summaryMode: .auto)
+        await waitUntil({ if case .recording = host.stateMachine.current { return true }; return false }, "the recording")
+        controller.toggleManual(surface: .hud)
+        await waitUntil({ !rows("stop_began").isEmpty }, "stop_began")
+        // Read while parked, then release before anything can throw, so the stop Task never
+        // outlives the host (FakeSessionHost's CI8 note).
+        let began = rows("stop_began").first { $0["file"] as? String == file.lastPathComponent }
+        let stoppedWhileParked = rows("recording_stopped").filter { $0["file"] as? String == file.lastPathComponent }
+        host.recorderSpy.stopBehaviourHangs = false
+        await waitUntil({ host.stateMachine.current == .idle }, "the stop")
+
+        XCTAssertTrue(stoppedWhileParked.isEmpty, "recording_stopped must not exist while the stop is parked")
+        let row = try XCTUnwrap(began)
+        XCTAssertEqual(row["stop_cause"] as? String, "user_stop")
+        XCTAssertEqual(row["stop_surface"] as? String, "hud")
+    }
+
     /// OBS5 remainder: the stop notification is posted with the cause the row carries, so its
     /// title names the route (`StopCause.notificationTitle`).
     func test_the_stop_notification_is_posted_with_the_stops_cause() async throws {

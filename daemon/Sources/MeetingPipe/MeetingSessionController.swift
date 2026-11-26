@@ -1332,11 +1332,12 @@ final class MeetingSessionController: @unchecked Sendable {
             // OBS10: the recorder's stop is called right after this row. In five field recordings it
             // began 5 to 24 s after the decision with the mic still capturing. `sync_ms` is
             // `stopRecording`'s own synchronous work (PERF14 wants it apart from the queue wait).
+            // OBS5: the cause rides here too, so a stop that wedges below still says why it began.
             Log.event(category: "recorder", action: "stop_began", attributes: [
                 "file": file.lastPathComponent,
                 "delay_ms": max(0, (stopClock() - stopDecidedAt) * 1000).rounded(),
                 "sync_ms": max(0, (stopQueuedAt - stopDecidedAt) * 1000).rounded(),
-            ])
+            ].merging(cause.attributes) { own, _ in own })
             let producedUsableFinal = await recorder.stop(limitSeconds: keepsHeldTail ? nil : trimSeconds)
             self?.stopStallWatchdog.disarm()
             guard let self = self else { return }
