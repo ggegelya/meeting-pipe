@@ -146,6 +146,37 @@ final class RecordingStemOwnershipREC23Tests: XCTestCase {
         XCTAssertTrue(input.isOwned("20260101-130000"), "the merge re-asks the recorder, not the snapshot")
     }
 
+    /// T19 amendment (2026-11-21): what the sweep hands the scan, captured by a spy. The test
+    /// above drives the input helper only, so an empty set at the call site stayed green; an
+    /// end-to-end merge would too, since `isOwned` still refuses a claimed stem at merge time.
+    @MainActor
+    func test_theOrphanSweepHandsTheScanTheClaimedStemsAndALiveReask() async {
+        let ownership = RecordingStemOwnership()
+        ownership.claim("20260101-120000")
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("t19-orphan-scan")
+        var seenDir: URL?
+        var seenExcluded: Set<String>?
+        var seenSweep: OrphanRecordingRecovery.Sweep?
+        var seenIsOwned: (@MainActor (String) -> Bool)?
+
+        _ = await Coordinator.runOrphanSweep(in: dir, ownership: ownership, sweep: .afterJob) { d, excluded, sweep, isOwned in
+            seenDir = d
+            seenExcluded = excluded
+            seenSweep = sweep
+            seenIsOwned = isOwned
+            return OrphanRecordingRecovery.Recovered()
+        }
+
+        XCTAssertEqual(seenDir, dir)
+        XCTAssertEqual(seenSweep, .afterJob)
+        XCTAssertEqual(seenExcluded, ["20260101-120000"], "a stem being recorded is never scanned")
+        guard let isOwned = seenIsOwned else { return XCTFail("the scan never ran") }
+        XCTAssertTrue(isOwned("20260101-120000"))
+        XCTAssertFalse(isOwned("20260101-110000"))
+        ownership.claim("20260101-130000")  // a start after the scan snapshot
+        XCTAssertTrue(isOwned("20260101-130000"), "the merge re-asks the recorder, not the snapshot")
+    }
+
     /// STOR18: the Library's delete guard reads the same ownership the sweeps do. The file-wide
     /// `liveRecordingStem` ban above already keeps the UI mirror out of it.
     func test_theDeleteGuardReadsTheRecordersOwnership() throws {

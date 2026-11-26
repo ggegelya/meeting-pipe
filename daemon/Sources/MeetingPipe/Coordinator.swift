@@ -895,13 +895,36 @@ final class Coordinator: NSObject {
         (excludingStems: ownership.stems, isOwned: { ownership.contains($0) })
     }
 
+    /// The orphan scan as `runOrphanSweep` calls it: `OrphanRecordingRecovery.scanAndRecover`
+    /// in production, a spy in a test.
+    typealias OrphanScan = (
+        _ directory: URL,
+        _ excludingStems: Set<String>,
+        _ sweep: OrphanRecordingRecovery.Sweep,
+        _ isOwned: @escaping @MainActor (String) -> Bool
+    ) async -> OrphanRecordingRecovery.Recovered
+
+    /// Hands `orphanSweepInput`'s result to the scan (T19 amendment): the one place that joins
+    /// them, so a test with a spy `scan` goes red when the exclusion or the re-ask is dropped.
+    /// There is no headless Coordinator to drive `recoverOrphanedRecordings` through.
+    @MainActor
+    static func runOrphanSweep(
+        in directory: URL,
+        ownership: RecordingStemOwnership,
+        sweep: OrphanRecordingRecovery.Sweep,
+        scan: OrphanScan = { directory, excludingStems, sweep, isOwned in
+            await OrphanRecordingRecovery.scanAndRecover(
+                in: directory, excludingStems: excludingStems, sweep: sweep, isOwned: isOwned
+            )
+        }
+    ) async -> OrphanRecordingRecovery.Recovered {
+        let input = orphanSweepInput(ownership)
+        return await scan(directory, input.excludingStems, sweep, input.isOwned)
+    }
+
     @MainActor
     private func recoverOrphanedRecordings(sweep: OrphanRecordingRecovery.Sweep) async {
-        let dir = liveOutputDir
-        let input = Self.orphanSweepInput(recorder.stemOwnership)
-        let result = await OrphanRecordingRecovery.scanAndRecover(
-            in: dir, excludingStems: input.excludingStems, sweep: sweep, isOwned: input.isOwned
-        )
+        let result = await Self.runOrphanSweep(in: liveOutputDir, ownership: recorder.stemOwnership, sweep: sweep)
         for rec in result.ready {
             let modeLabel = rec.summaryMode == .byo ? "byo" : "auto"
             Log.writeLine("daemon", "recovered orphaned recording → \(rec.url.lastPathComponent) mode=\(modeLabel)")
