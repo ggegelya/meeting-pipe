@@ -542,14 +542,30 @@ struct OrphanRecoveryLatch: Equatable {
 final class OrphanRecoveryRunner {
     private var latch = OrphanRecoveryLatch()
     private nonisolated let run: @Sendable @MainActor (OrphanRecordingRecovery.Sweep) async -> Void
+    private nonisolated let isHeld: @Sendable @MainActor () -> Bool
 
-    nonisolated init(run: @escaping @Sendable @MainActor (OrphanRecordingRecovery.Sweep) async -> Void) {
+    nonisolated init(
+        // STOR16: true while the library move runs; the Coordinator passes `libraryMoveInProgress`.
+        isHeld: @escaping @Sendable @MainActor () -> Bool = { false },
+        run: @escaping @Sendable @MainActor (OrphanRecordingRecovery.Sweep) async -> Void
+    ) {
+        self.isHeld = isHeld
         self.run = run
     }
 
     var isRunning: Bool { latch.isRunning }
 
+    /// STOR16 amendment: a sweep merges intermediates and deletes them, so the move waits for it.
+    var busyReason: String? { isRunning ? "an interrupted recording is being recovered" : nil }
+
+    /// Declined while the library is being moved, before the latch, like `StorageJanitor.request`.
     func request(_ sweep: OrphanRecordingRecovery.Sweep) {
+        if isHeld() {
+            Log.event(category: "coordinator", action: "sweep_declined", attributes: [
+                "sweep": "orphan_recovery", "reason": "library_move",
+            ])
+            return
+        }
         guard latch.request() == .start else { return }
         start(sweep)
     }

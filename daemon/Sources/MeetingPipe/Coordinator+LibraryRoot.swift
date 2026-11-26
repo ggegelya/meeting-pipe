@@ -26,12 +26,14 @@ extension Coordinator {
     /// STOR16: why the library cannot be moved or re-pointed right now, from the components that
     /// own the work rather than from its files (REC23's rule). The recorder's owned stems cover a
     /// capture from before its engine starts; the lane's depth covers run-all and every Library
-    /// re-run (re-summarize, re-transcribe, merge), which PIPE11 routes through it.
+    /// re-run (re-summarize, re-transcribe, merge), which PIPE11 routes through it. The storage
+    /// janitor and the orphan sweep start right after every settled job, so they are asked too.
     var libraryBusyReason: String? {
         if !MainActor.assumeIsolated({ recorder.ownedStems }).isEmpty { return "a recording is in progress" }
         if jobDispatcher.queueDepth > 0 { return "a meeting is still being processed" }
         // Merge, publish-from-paste and the summary preview spawn outside the lane (STOR16 follow-up).
         if launcher.meetingSpawnsInFlight > 0 { return "a meeting is still being processed" }
+        if let reason = storageSweepBusyReason { return reason }
         return nil
     }
 

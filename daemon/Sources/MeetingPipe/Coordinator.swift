@@ -846,7 +846,7 @@ final class Coordinator: NSObject {
 
     /// The sweep body's snapshot is taken on main each time a run starts (both callers of `reapStorage`
     /// are main: launch, and `onJobSettled` under `SinkDispatcher`'s main-queue invariant).
-    private lazy var storageJanitor = StorageJanitor(snapshot: { [unowned self] in
+    private lazy var storageJanitor = StorageJanitor(isHeld: { [unowned self] in self.libraryMoveInProgress }, snapshot: { [unowned self] in
         StorageJanitor.Snapshot(
             directory: liveOutputDir,
             policies: Dictionary(uniqueKeysWithValues: workflowStore.workflows.map { ($0.id, $0.retention) }),
@@ -874,8 +874,15 @@ final class Coordinator: NSObject {
     /// owns on main as it starts, and the recorder is asked again per stem right before
     /// its merge, since the snapshot can be minutes old by then (REC23); the scan and the
     /// ffmpeg merges run off-main so the menu bar isn't stalled.
-    private lazy var orphanRecovery = OrphanRecoveryRunner { [weak self] sweep in
+    private lazy var orphanRecovery = OrphanRecoveryRunner(isHeld: { [weak self] in self?.libraryMoveInProgress ?? false }) { [weak self] sweep in
         await self?.recoverOrphanedRecordings(sweep: sweep)
+    }
+
+    /// STOR16 amendment (2026-11-21): the library move guard asks both sweeps, since each rewrites
+    /// files under the root a move would copy and then delete. Each sweep also declines to start
+    /// while a move runs (`isHeld` above); both sides are main-queue flags, so there is no window.
+    var storageSweepBusyReason: String? {
+        MainActor.assumeIsolated { storageJanitor.busyReason ?? orphanRecovery.busyReason }
     }
 
     /// What the orphan sweep is told about the live recording (REC23), split out so a test can

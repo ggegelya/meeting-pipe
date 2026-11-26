@@ -58,20 +58,37 @@ final class StorageJanitor {
     private nonisolated let snapshot: @Sendable @MainActor () -> Snapshot
     private nonisolated let steps: Steps
     private nonisolated let queue: DispatchQueue
+    private nonisolated let isHeld: @Sendable @MainActor () -> Bool
 
     nonisolated init(
         queue: DispatchQueue = DispatchQueue(label: "com.meetingpipe.reaper", qos: .utility),
+        // STOR16: true while the library move runs; the Coordinator passes `libraryMoveInProgress`.
+        isHeld: @escaping @Sendable @MainActor () -> Bool = { false },
         snapshot: @escaping @Sendable @MainActor () -> Snapshot,
         steps: Steps = .production
     ) {
         self.queue = queue
+        self.isHeld = isHeld
         self.snapshot = snapshot
         self.steps = steps
     }
 
     var isRunning: Bool { latch.isRunning }
 
+    /// STOR16 amendment: what the library move guard is told while a sweep runs. The retention
+    /// step encodes to `<stem>.flac.writing`, renames it and deletes the WAV, and a cross-volume
+    /// move that copied a stem halfway through that would lose its audio.
+    var busyReason: String? { isRunning ? "recordings are being compressed or tidied up" : nil }
+
+    /// Declined while the library is being moved, before the latch, so a declined request owes no
+    /// rerun and no snapshot of the old root is taken; the next settled job or launch sweeps again.
     func request() {
+        if isHeld() {
+            Log.event(category: "coordinator", action: "sweep_declined", attributes: [
+                "sweep": "storage", "reason": "library_move",
+            ])
+            return
+        }
         guard latch.request() == .start else { return }
         start()
     }
