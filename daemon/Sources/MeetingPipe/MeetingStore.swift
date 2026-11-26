@@ -760,14 +760,23 @@ final class MeetingStore: ObservableObject {
             ?? directory.appendingPathComponent("\(stem).wav")
     }
 
-    /// The diarization clusters that carry a voiceprint in `<stem>.embeddings.json`,
-    /// i.e. the labels `mp roster enroll` can actually enroll. Empty for a missing or
-    /// malformed sidecar. A label absent here (a `speaker_unknown` junk-drawer line, a
-    /// raw id that never clustered) has no voice to remember, so naming it must be a
-    /// per-line overlay label, not a roster enroll (enrolling one hard-failed with
-    /// "pipeline exited 2"). Read by the transcript menu and by `nameSpeaker`'s guard.
+    /// The labels the finalizer keyed a voiceprint under in `<stem>.embeddings.json`: the
+    /// record of what the pipeline resolved (the owner, a roster match, a `THEM-x`). Empty
+    /// for a missing or malformed sidecar. A label absent here (a `speaker_unknown`
+    /// junk-drawer line, a raw id that never clustered) has no voice to remember, so naming
+    /// it must be a per-line overlay label, not a roster enroll (enrolling one hard-failed
+    /// with "pipeline exited 2"). Since SEC22 item 5 a key can outlive its vector, which
+    /// audio retention drops with the audio, so "can enroll" is `enrollableLabels`, not
+    /// this. Read by the transcript menu and by `undoSpeakerNaming`'s guard.
     static func voiceprintLabels(stem: String, in directory: URL) -> Set<String> {
         embeddingsSidecar(stem: stem, in: directory).voiceprintLabels
+    }
+
+    /// The labels `mp roster enroll` can actually enroll: keyed AND still carrying a voice
+    /// vector. A label whose vector audio retention dropped (SEC22 item 5) is named for its
+    /// meeting only, through the overlay. Read by `nameSpeaker`'s and `renameSpeaker`'s guards.
+    static func enrollableLabels(stem: String, in directory: URL) -> Set<String> {
+        embeddingsSidecar(stem: stem, in: directory).enrollableLabels
     }
 
     /// The near misses the pipeline recorded in `<stem>.embeddings.json` (FEAT14),
@@ -790,8 +799,16 @@ final class MeetingStore: ObservableObject {
     /// `TranscriptLoader.load` wants both, and used to read and parse the file twice to get them.
     /// The two keys stay independent: a sidecar missing or mangling one still answers the other.
     struct EmbeddingsSidecar: Equatable {
+        /// Every label key, with or without its vector.
         var voiceprintLabels: Set<String> = []
+        /// The keys whose vector is gone (`null`, or anything but a non-empty array): what
+        /// audio retention leaves when it drops a meeting's audio (SEC22 item 5). Always a
+        /// subset of `voiceprintLabels`, and empty for every file the pipeline writes.
+        var droppedVoiceprints: Set<String> = []
         var nearMisses: [String: String] = [:]
+
+        /// The labels that can still be enrolled: keyed, with a vector.
+        var enrollableLabels: Set<String> { voiceprintLabels.subtracting(droppedVoiceprints) }
     }
 
     static func embeddingsSidecar(stem: String, in directory: URL) -> EmbeddingsSidecar {
@@ -808,12 +825,49 @@ final class MeetingStore: ObservableObject {
         var out = EmbeddingsSidecar()
         if let embeddings = obj["embeddings"] as? [String: Any] {
             out.voiceprintLabels = Set(embeddings.keys)
+            out.droppedVoiceprints = Set(embeddings.filter { !isVoiceVector($0.value) }.keys)
         }
         if let raw = obj["near_misses"] as? [String: Any] {
             out.nearMisses = raw.compactMapValues { $0 as? String }
                 .filter { !$0.key.isEmpty && !$0.value.isEmpty }
         }
         return out
+    }
+
+    /// A usable voice vector is a non-empty array, the rule the Python readers apply too
+    /// (`isinstance(vec, list) and vec`), so the two trees agree on what can be enrolled.
+    private static func isVoiceVector(_ value: Any) -> Bool {
+        (value as? [Any]).map { !$0.isEmpty } ?? false
+    }
+
+    /// What `dropVoiceprints` did to one meeting's `<stem>.embeddings.json`.
+    enum VoiceprintDrop: Equatable {
+        /// At least one vector was nulled and the file rewritten.
+        case dropped
+        /// No file, or no vector left in it; nothing was written.
+        case nothingToDrop
+        /// The file is there but is not a JSON object with an `embeddings` object. Left as
+        /// it is: a file nobody can parse is never replaced (STOR9), and no reader can use it.
+        case unreadable
+    }
+
+    /// SEC22 item 5 (owner's decision, 2026-11-26): when audio retention drops a meeting's
+    /// audio, its voice vectors go too and its labels stay. Every `embeddings` value becomes
+    /// `null`, every key and every other top-level key (`near_misses`, `schema_version`) is
+    /// kept, so owner recognition (`OwnerName.isOwnerKey`) and the roster-match record
+    /// (`VoiceResolution`) still read the keys. Rewritten atomically at 0600. Pinned by
+    /// `embeddings-voiceprints-dropped-golden.json`, which the Python readers are run over.
+    /// Throws only when the rewrite itself fails.
+    static func dropVoiceprints(stem: String, in directory: URL) throws -> VoiceprintDrop {
+        let url = directory.appendingPathComponent("\(stem).embeddings.json")
+        guard let data = try? Data(contentsOf: url) else { return .nothingToDrop }
+        guard var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let embeddings = obj["embeddings"] as? [String: Any] else { return .unreadable }
+        guard embeddings.values.contains(where: isVoiceVector) else { return .nothingToDrop }
+        obj["embeddings"] = embeddings.mapValues { _ in NSNull() }
+        let out = try JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys])
+        try OwnerOnlyFiles.writeAtomically(out, to: url)
+        return .dropped
     }
 
     /// A `.mic.wav` capture intermediate modified within `liveCaptureFreshnessSec`,

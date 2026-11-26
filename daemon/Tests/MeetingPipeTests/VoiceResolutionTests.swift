@@ -318,6 +318,41 @@ final class VoiceResolutionTests: XCTestCase {
         XCTAssertTrue(VoiceResolutionBar.actions(for: out.voices[1]).isEmpty)
     }
 
+    // MARK: - SEC22 item 5: the vectors went with the audio, the labels stayed
+
+    private func deriveDropped(_ cast: [CastMember], keys: Set<String>, nearMisses: [String: String] = [:]) -> VoiceResolution.Outcome {
+        VoiceResolution.derive(
+            cast: cast, voiceprintLabels: keys, droppedVoiceprints: keys,
+            nearMisses: nearMisses, rosterNames: ["Rana"], userLabel: "Heorhii"
+        )
+    }
+
+    func test_a_cluster_whose_voiceprint_was_dropped_is_named_for_this_meeting_only() {
+        let out = deriveDropped([member("Unknown A", key: "THEM-A")], keys: ["THEM-A"], nearMisses: ["THEM-A": "Rana"])
+        let voice = out.voices[0]
+        XCTAssertEqual(voice.origin, .unresolved)
+        XCTAssertFalse(voice.canEnroll, "no vector, so nothing to fold into the roster")
+        XCTAssertTrue(voice.voiceprintDropped)
+        XCTAssertTrue(voice.offersNaming, "naming still works, overlay-only")
+        XCTAssertNil(voice.suggestedName, "a near miss needs a voice to enroll")
+        XCTAssertEqual(VoiceResolutionBar.actions(for: voice), [.name])
+        XCTAssertTrue(VoiceResolutionBar.state(for: voice).contains("this meeting"))
+    }
+
+    func test_a_roster_match_whose_voiceprint_was_dropped_is_still_a_roster_match() {
+        // The keys are the record of what the pipeline decided; a strip must not
+        // re-classify a finalize-time roster match as a name given here.
+        let out = deriveDropped([member("Rana", key: "Rana")], keys: ["Rana"])
+        XCTAssertEqual(out.voices.map(\.origin), [.roster])
+        XCTAssertEqual(VoiceResolutionBar.actions(for: out.voices[0]), [.renameEverywhere])
+    }
+
+    func test_a_pre_ux83_owner_whose_voiceprint_was_dropped_is_still_you() {
+        let out = deriveDropped([member("You", key: "1")], keys: ["1"])
+        XCTAssertEqual(out.voices.map(\.origin), [.you])
+        XCTAssertTrue(out.voices[0].isOwnerKey)
+    }
+
     func test_an_unresolved_voice_with_no_voiceprint_still_offers_nothing() {
         // Enrolling a label with no embedding hard-failed with "pipeline exited 2", which
         // is why the naming gate is the sidecar and not the origin. Per-line assignment

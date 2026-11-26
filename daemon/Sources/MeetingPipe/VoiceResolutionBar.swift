@@ -90,7 +90,9 @@ struct VoiceResolutionBar: View {
                 chipBody(voice)
             }
             .buttonStyle(.plain)
-            .help("This voice was not matched to anyone. Click to name it and remember it for later meetings.")
+            .help(voice.voiceprintDropped
+                ? "This voice was not matched to anyone. Click to name it in this meeting. Its voiceprint was deleted with the audio, so the name is not remembered for later meetings."
+                : "This voice was not matched to anyone. Click to name it and remember it for later meetings.")
             .accessibilityLabel("\(voice.displayName), not named. Name this voice.")
         } else {
             chipBody(voice)
@@ -240,7 +242,9 @@ struct VoiceResolutionBar: View {
         case .roster:
             return [.renameEverywhere]
         case .unresolved:
-            guard voice.canEnroll else { return [] }
+            // SEC22 item 5: a voiceprint deleted with the audio still names, for this
+            // meeting only; `derive` never gives such a voice a suggestion.
+            guard voice.canEnroll || voice.voiceprintDropped else { return [] }
             guard let suggested = voice.suggestedName else { return [.name] }
             return [.name, .suggest(name: suggested)]
         case .you:
@@ -329,6 +333,9 @@ struct VoiceResolutionBar: View {
         case .namedHere:    return "named in this meeting"
         case .unattributed: return "speech the diarizer credited to nobody"
         case .unresolved:
+            if voice.voiceprintDropped {
+                return "not named; its voiceprint was deleted with the audio, so a name stays in this meeting"
+            }
             return voice.canEnroll
                 ? "not named"
                 : "not named, and there is no voiceprint to remember it by"

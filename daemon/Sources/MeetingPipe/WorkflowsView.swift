@@ -737,7 +737,7 @@ struct WorkflowEditor: View {
                 case .compress:
                     Text("Lossless: the recording still plays, still shows a waveform, and can still be reprocessed. Quiet speech roughly halves; a noisy room saves less.")
                 case .drop:
-                    Text("The transcript and summary are kept, the recording is not. This cannot be undone, and a deleted recording cannot be re-transcribed.")
+                    Text("The transcript and summary are kept, the recording is not, and neither are the voiceprints taken from it, so a speaker named afterwards is named in that meeting only. This cannot be undone, and a deleted recording cannot be re-transcribed.")
                 }
                 // REC20: manual recordings carry no workflow and follow the default's policy.
                 if workflow.isDefault {

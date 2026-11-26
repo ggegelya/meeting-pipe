@@ -64,13 +64,18 @@ enum VoiceResolution {
         /// UX83: this is the owner's unnamed voice label (`OwnerName.isOwnerKey`), which is
         /// what licenses the chip's **Set your name…**.
         var isOwnerKey: Bool = false
+        /// SEC22 item 5: the label is keyed in `<stem>.embeddings.json` but its vector was
+        /// deleted with the meeting's audio. It can still be named, for this meeting only
+        /// (the overlay), and never enrolled.
+        var voiceprintDropped: Bool = false
 
         var id: String { assignKey }
 
-        /// Offer the naming flow only for a voice that is still anonymous AND has a
-        /// voiceprint to enroll. Everything else is either already a person or has no
-        /// voice to remember.
-        var offersNaming: Bool { origin == .unresolved && canEnroll }
+        /// Offer the naming flow only for a voice that is still anonymous AND that the
+        /// pipeline clustered: with a voiceprint it enrolls, and with one retention dropped
+        /// it names the voice in this meeting only. Everything else is either already a
+        /// person or was never a voice the diarizer kept.
+        var offersNaming: Bool { origin == .unresolved && (canEnroll || voiceprintDropped) }
     }
 
     /// The meeting's voices plus the counts the summary line reads from.
@@ -135,6 +140,9 @@ enum VoiceResolution {
     ///     slot (UX58), which is what lets a chip and a row draw one person one colour.
     ///   - voiceprintLabels: keys of `<stem>.embeddings.json`, i.e. the labels the
     ///     pipeline itself assigned to a voice it had an embedding for.
+    ///   - droppedVoiceprints: those keys whose vector audio retention deleted with the
+    ///     audio (SEC22 item 5). Still the pipeline's record, so they keep their origin;
+    ///     they just cannot enroll, and so suggest nothing.
     ///   - nearMisses: that sidecar's `near_misses` (FEAT14), keyed the same way: the
     ///     person the roster came closest to on a voice it refused to name.
     ///   - rosterNames: the enrolled people. Only used to tell an empty roster from a
@@ -144,6 +152,7 @@ enum VoiceResolution {
     static func derive(
         cast: [CastMember],
         voiceprintLabels: Set<String>,
+        droppedVoiceprints: Set<String> = [],
         nearMisses: [String: String] = [:],
         rosterNames: [String],
         userLabel: String
@@ -156,7 +165,9 @@ enum VoiceResolution {
 
         for member in cast {
             let key = member.assignKey
-            let canEnroll = voiceprintLabels.contains(key)
+            let keyed = voiceprintLabels.contains(key)
+            let voiceprintDropped = keyed && droppedVoiceprints.contains(key)
+            let canEnroll = keyed && !voiceprintDropped
             let origin: Origin
 
             if member.isUnattributed {
@@ -175,9 +186,10 @@ enum VoiceResolution {
                     : .namedHere
             } else if !owner.isEmpty, key.caseInsensitiveCompare(owner) == .orderedSame {
                 origin = .you
-            } else if canEnroll {
+            } else if keyed {
                 // A real name that the finalizer wrote into the transcript, so the
-                // roster is where it came from.
+                // roster is where it came from. Keyed, not `canEnroll`: a vector dropped
+                // with the audio does not rewrite what the pipeline decided.
                 origin = .roster
             } else {
                 // A name that exists only in the overlay: a per-segment "New person",
@@ -219,7 +231,8 @@ enum VoiceResolution {
                     // this for both surfaces; a second derivation that happens to agree
                     // is the shape that drifts.
                     colorIndex: MeetingCast.colorIndex(displayName: member.displayName, in: cast),
-                    isOwnerKey: OwnerName.isOwnerKey(key, voiceprintLabels: voiceprintLabels)
+                    isOwnerKey: OwnerName.isOwnerKey(key, voiceprintLabels: voiceprintLabels),
+                    voiceprintDropped: voiceprintDropped
                 )
             )
         }

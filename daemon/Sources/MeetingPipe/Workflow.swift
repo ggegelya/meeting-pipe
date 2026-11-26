@@ -70,7 +70,8 @@ enum RetentionPolicy: String, Codable, Equatable, Hashable, CaseIterable {
     /// signal: quiet speech roughly halves, a noisy room barely compresses.
     case compress
     /// Delete the audio, keeping the transcript, summary, and every sidecar. The
-    /// meeting stays in the Library with its audio affordances disabled.
+    /// meeting stays in the Library with its audio affordances disabled. The voice
+    /// vectors in `<stem>.embeddings.json` go with the audio; its labels stay (SEC22 item 5).
     case drop
 }
 

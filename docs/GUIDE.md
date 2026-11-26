@@ -238,7 +238,7 @@ Sometimes an unnamed voice offers a second item that reads **Name as** and then 
 
 ### Naming someone so it sticks
 
-Right-click any line from a voice that has not been named and choose **Name this speaker…**. From then on that voice is recognised automatically in later meetings. It is reversible: right-click a named speaker for **Rename…** or **Undo naming**, which removes the voice sample this meeting added and nothing else. The person stays recognised from their other meetings (they leave your saved voices only if this meeting was their one sample), and renaming here moves this meeting's sample off the old name the same way. To erase a person from every meeting, use **Remove** on their row in Preferences ▸ Pipeline ▸ People, which asks first.
+Right-click any line from a voice that has not been named and choose **Name this speaker…**. From then on that voice is recognised automatically in later meetings. It is reversible: right-click a named speaker for **Rename…** or **Undo naming**, which removes the voice sample this meeting added and nothing else. The person stays recognised from their other meetings (they leave your saved voices only if this meeting was their one sample), and renaming here moves this meeting's sample off the old name the same way. To erase a person from every meeting, use **Remove** on their row in Preferences ▸ Pipeline ▸ People, which asks first. In a meeting whose audio a retention policy deleted, the voice samples went with it, so naming a speaker there names them in that meeting only; the naming window says so.
 
 Your own on-disk transcript is never altered by any of this. Names are kept alongside it, so undo always restores the original.
 
@@ -430,7 +430,7 @@ The policy itself is per workflow, in the workflow editor under **Audio retentio
 | --- | --- |
 | **Keep the audio forever** | The default. Nothing is ever reclaimed. |
 | **Compress it to FLAC** | Same audio, smaller file. Playback, the waveform, and re-transcribing all still work. |
-| **Delete the audio** | The transcript, the summary, and everything else stay. The recording is gone, and a deleted recording cannot be re-transcribed. |
+| **Delete the audio** | The transcript, the summary, and everything else stay. The recording is gone, and a deleted recording cannot be re-transcribed. The voiceprints taken from it go with it, so naming a speaker in that meeting afterwards names them there only; the app will not learn their voice from it. |
 
 A policy only ever touches a meeting that finished and published cleanly. Anything that failed, is waiting for you, or is recording right now is left alone however old it gets, and so is any meeting whose workflow you deleted. A meeting recorded with no workflow, such as one you started by hand, follows the default workflow's policy, so setting a policy on the default covers those too; with the default on **Keep the audio forever**, as it ships, they are kept.
 

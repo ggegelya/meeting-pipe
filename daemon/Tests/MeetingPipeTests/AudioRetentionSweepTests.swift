@@ -149,6 +149,95 @@ final class AudioRetentionSweepTests: XCTestCase {
         ))
     }
 
+    // MARK: SEC22 item 5: the voice vectors go with the audio, the labels stay
+
+    private func firstFixtureCase() throws -> EmbeddingsVoiceprintsDroppedTests.Case {
+        try XCTUnwrap(try EmbeddingsVoiceprintsDroppedTests.cases().first { !$0.enrollableBefore.isEmpty })
+    }
+
+    private func writeEmbeddings(_ obj: [String: Any], stem: String) throws {
+        try JSONSerialization.data(withJSONObject: obj)
+            .write(to: dir.appendingPathComponent("\(stem).embeddings.json"))
+    }
+
+    private func embeddings(stem: String) throws -> NSDictionary {
+        let data = try Data(contentsOf: dir.appendingPathComponent("\(stem).embeddings.json"))
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary)
+    }
+
+    func test_drop_strips_the_voice_vectors_and_keeps_the_labels_SEC22() throws {
+        let stem = "20260101-120000"
+        let c = try firstFixtureCase()
+        try writeSettledMeeting(stem: stem)
+        try write("\(stem).json", "{}")
+        try write("\(stem).md", "# t")
+        try writeEmbeddings(c.before, stem: stem)
+        let logs = dir.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+        defer { unsetenv("MEETINGPIPE_LOGS_DIR") }
+
+        XCTAssertEqual(dropSweep().dropped, 1)
+
+        XCTAssertFalse(audioSurvives(stem))
+        XCTAssertEqual(try embeddings(stem: stem), c.after as NSDictionary, "the fixture's `after`, exactly")
+        let mode = try XCTUnwrap(FileManager.default.attributesOfItem(
+            atPath: dir.appendingPathComponent("\(stem).embeddings.json").path
+        )[.posixPermissions] as? NSNumber).intValue
+        XCTAssertEqual(mode & 0o777, 0o600)
+        for sidecar in ["json", "md", "summary.json", "meta.json", "run.json"] {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(stem).\(sidecar)").path),
+                          "\(sidecar) must survive a drop")
+        }
+        let events = (try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? ""
+        let dropped = events.split(separator: "\n").compactMap { line -> [String: Any]? in
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  object["action"] as? String == "audio_dropped" else { return nil }
+            return object
+        }
+        XCTAssertEqual(dropped.count, 1)
+        XCTAssertEqual(dropped.first?["voiceprints_dropped"] as? Bool, true)
+    }
+
+    func test_drop_with_no_embeddings_sidecar_creates_none_SEC22() throws {
+        let stem = "20260101-120000"
+        try writeSettledMeeting(stem: stem)
+        XCTAssertEqual(dropSweep().dropped, 1)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: dir.appendingPathComponent("\(stem).embeddings.json").path
+        ))
+    }
+
+    func test_drop_leaves_an_unparsable_embeddings_sidecar_as_it_is_and_still_drops_SEC22() throws {
+        let stem = "20260101-120000"
+        try writeSettledMeeting(stem: stem)
+        try write("\(stem).embeddings.json", "{not json")
+        XCTAssertEqual(dropSweep().dropped, 1, "a sidecar nobody can read does not hold the audio back")
+        XCTAssertEqual(
+            try String(contentsOf: dir.appendingPathComponent("\(stem).embeddings.json"), encoding: .utf8),
+            "{not json", "never replaced"
+        )
+    }
+
+    /// `.compress` keeps the audio, so it keeps the vectors too. The sidecar is untouched
+    /// whether the transcode succeeds or not (this WAV is not real audio, so with or
+    /// without ffmpeg on the box it fails, and the WAV stays).
+    func test_compress_leaves_the_embeddings_sidecar_alone_SEC22() throws {
+        let stem = "20260101-120000"
+        let c = try firstFixtureCase()
+        try writeSettledMeeting(stem: stem)
+        try writeEmbeddings(c.before, stem: stem)
+        let url = dir.appendingPathComponent("\(stem).embeddings.json")
+        let bytes = try Data(contentsOf: url)
+        _ = AudioRetentionSweep.sweep(
+            in: dir,
+            policies: [workflow: WorkflowRetention(policy: .compress, afterDays: 1)],
+            defaultWorkflowID: nil,
+            now: past
+        )
+        XCTAssertEqual(try Data(contentsOf: url), bytes)
+    }
+
     // MARK: ARCH20: the sweep reads status through MeetingStatus.decide
 
     private let past = Date(timeIntervalSince1970: 2_000_000_000)

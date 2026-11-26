@@ -998,12 +998,16 @@ final class MeetingLibraryService {
         // clustered) cannot be enrolled, and `mp roster enroll` exits 2 when its
         // embedding is missing. The transcript menu already routes these to per-line
         // assignment, but if one reaches here we record the name in the overlay
-        // (display-only, this meeting) rather than failing.
-        guard MeetingStore.voiceprintLabels(stem: stem, in: dir).contains(label) else {
+        // (display-only, this meeting) rather than failing. SEC22 item 5 adds the other
+        // shape: a label still keyed whose vector audio retention deleted with the audio,
+        // which the transcript and the cast strip do offer to name, for this meeting only.
+        let sidecar = MeetingStore.embeddingsSidecar(stem: stem, in: dir)
+        guard sidecar.enrollableLabels.contains(label) else {
             do {
                 _ = try SpeakerLabelStore.setLabel(label, to: trimmed, stem: stem, in: dir)
                 Log.event(category: "coordinator", action: "speaker_labeled_no_voiceprint", attributes: [
                     "stem": stem, "label": label,
+                    "voiceprint_dropped": sidecar.droppedVoiceprints.contains(label),
                 ])
                 completion(.success(()))
             } catch {
@@ -1068,7 +1072,9 @@ final class MeetingLibraryService {
         // Only un-enroll a name that was actually enrolled. A voiceprint-less label is
         // named overlay-only (no roster entry), so forgetting it would fail and raise a
         // misleading "couldn't remove them from your roster" for a name the roster
-        // never held. Dropping the overlay above is the whole undo in that case.
+        // never held. Dropping the overlay above is the whole undo in that case. Keyed,
+        // not enrollable (SEC22 item 5): a label whose vector was deleted with the audio
+        // may have been enrolled before, and `unenroll` matches by provenance without one.
         guard MeetingStore.voiceprintLabels(stem: stem, in: dir).contains(label) else {
             Log.event(category: "coordinator", action: "roster_undo_overlay_only", attributes: [
                 "stem": stem, "label": label,
@@ -1125,12 +1131,21 @@ final class MeetingLibraryService {
         // enroll and silently left the old name on screen, and only "Undo naming"
         // appeared to do anything, because dropping the overlay exposed the raw label
         // underneath.
-        guard MeetingStore.voiceprintLabels(stem: stem, in: dir).contains(label) else {
+        let sidecar = MeetingStore.embeddingsSidecar(stem: stem, in: dir)
+        guard sidecar.enrollableLabels.contains(label) else {
             do {
                 _ = try SpeakerLabelStore.setLabel(label, to: trimmed, stem: stem, in: dir)
+                let dropped = sidecar.droppedVoiceprints.contains(label)
                 Log.event(category: "coordinator", action: "speaker_labeled_no_voiceprint", attributes: [
-                    "stem": stem, "label": label,
+                    "stem": stem, "label": label, "voiceprint_dropped": dropped,
                 ])
+                // SEC22 item 5: a voiceprint deleted with the audio may have been enrolled
+                // under the old name before the drop. The new name cannot enroll (no
+                // vector), but the old one's sample comes back by provenance, which needs none.
+                if dropped {
+                    unenrollAfterRename(oldName: oldName, label: label, stem: stem,
+                                        anchor: MeetingStore.sidecarAnchorURL(stem: stem, in: dir))
+                }
                 completion(.success(()))
             } catch {
                 self.notifyError("Couldn't record the new name: \(error.localizedDescription)", operation: .people)
@@ -1153,25 +1168,31 @@ final class MeetingLibraryService {
                     }
                     // The rename already took, so a failure here is reported but is not
                     // a failed rename: the old name keeps a sample it should have lost.
-                    self.launcher.rosterUnenroll(name: oldName, label: label, wav: anchor) { [weak self] result in
-                        DispatchQueue.main.async {
-                            switch result {
-                            case .success:
-                                Log.event(category: "coordinator", action: "roster_rename_unenroll_done", attributes: [
-                                    "stem": stem, "label": label,
-                                ])
-                            case .failure(let err):
-                                Log.event(category: "coordinator", action: "roster_rename_unenroll_failed", attributes: [
-                                    "stem": stem, "label": label, "error": err.localizedDescription,
-                                ])
-                                self?.notifyError("Renamed, but couldn't take this meeting's voice sample back from \(oldName): \(err.localizedDescription)", operation: .people)
-                            }
-                        }
-                    }
+                    self.unenrollAfterRename(oldName: oldName, label: label, stem: stem, anchor: anchor)
                     completion(.success(()))
                 case .failure(let err):
                     self.notifyError("Rename failed: \(err.localizedDescription)", operation: .people)
                     completion(.failure(err))
+                }
+            }
+        }
+    }
+
+    /// Take this meeting's voice sample back from the name a rename left (FEAT24). The
+    /// rename has already taken, so a failure is reported but is not a failed rename.
+    private func unenrollAfterRename(oldName: String, label: String, stem: String, anchor: URL) {
+        launcher.rosterUnenroll(name: oldName, label: label, wav: anchor) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success:
+                    Log.event(category: "coordinator", action: "roster_rename_unenroll_done", attributes: [
+                        "stem": stem, "label": label,
+                    ])
+                case .failure(let err):
+                    Log.event(category: "coordinator", action: "roster_rename_unenroll_failed", attributes: [
+                        "stem": stem, "label": label, "error": err.localizedDescription,
+                    ])
+                    self?.notifyError("Renamed, but couldn't take this meeting's voice sample back from \(oldName): \(err.localizedDescription)", operation: .people)
                 }
             }
         }

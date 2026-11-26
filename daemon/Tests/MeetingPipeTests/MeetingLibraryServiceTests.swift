@@ -957,6 +957,53 @@ final class MeetingLibraryServiceTests: XCTestCase {
                        "the rename must actually land in the overlay")
     }
 
+    // MARK: SEC22 item 5: the label stayed, the vector went with the audio
+
+    /// What `AudioRetentionSweep` leaves after a drop: the keys, every vector null.
+    private func writeDroppedEmbeddings(_ labels: [String], stem: String) throws {
+        let embeddings = Dictionary(uniqueKeysWithValues: labels.map { ($0, NSNull() as Any) })
+        let data = try JSONSerialization.data(withJSONObject: ["schema_version": 2, "embeddings": embeddings])
+        try data.write(to: dir.appendingPathComponent("\(stem).embeddings.json"))
+    }
+
+    func test_nameSpeaker_on_a_label_whose_voiceprint_was_dropped_names_it_here_and_never_enrolls() throws {
+        // Without the vector check this ran `mp roster enroll`, which exits 2 on a null
+        // embedding: the old "pipeline exited 2" failure, back for every dropped meeting.
+        try writeDroppedEmbeddings(["THEM-A"], stem: "m")
+        var captured: Result<Void, Error>?
+        service.nameSpeaker(stem: "m", label: "THEM-A", name: "Alice") { captured = $0 }
+        guard case .success? = captured else { return XCTFail("expected overlay-only success") }
+        XCTAssertTrue(driver.enrollInputs.isEmpty, "no vector means no enroll subprocess")
+        XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["THEM-A"], "Alice")
+    }
+
+    func test_renameSpeaker_on_a_dropped_voiceprint_renames_here_and_takes_the_old_sample_back() throws {
+        // Named before the drop, so the old name holds this meeting's sample. The new
+        // name cannot be enrolled (no vector), but the old one can still be taken back by
+        // provenance, which needs no vector.
+        try writeDroppedEmbeddings(["THEM-A"], stem: "m")
+        _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Aditya", stem: "m", in: dir)
+        var captured: Result<Void, Error>?
+        service.renameSpeaker(stem: "m", label: "THEM-A", oldName: "Aditya", newName: "Rana") { captured = $0 }
+        XCTAssertTrue(drainMainSync())
+        guard case .success? = captured else { return XCTFail("expected overlay-only success") }
+        XCTAssertTrue(driver.enrollInputs.isEmpty)
+        XCTAssertEqual(SpeakerLabelStore.read(stem: "m", in: dir).labels["THEM-A"], "Rana")
+        XCTAssertEqual(driver.unenrollInputs.map(\.name), ["Aditya"])
+        XCTAssertEqual(driver.unenrollInputs.map(\.stem), ["m"])
+        XCTAssertTrue(driver.forgetInputs.isEmpty)
+    }
+
+    func test_undoSpeakerNaming_on_a_dropped_voiceprint_still_takes_this_meetings_sample_back() throws {
+        try writeDroppedEmbeddings(["THEM-A"], stem: "m")
+        _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Alice", stem: "m", in: dir)
+        service.undoSpeakerNaming(stem: "m", label: "THEM-A", name: "Alice") { _ in }
+        XCTAssertTrue(drainMainSync())
+        XCTAssertTrue(SpeakerLabelStore.read(stem: "m", in: dir).labels.isEmpty)
+        XCTAssertEqual(driver.unenrollInputs.map(\.name), ["Alice"], "provenance needs no vector")
+        XCTAssertEqual(driver.unenrollInputs.map(\.stem), ["m"])
+    }
+
     func test_renameSpeaker_with_a_voiceprint_still_re_enrolls() throws {
         try writeEmbeddings(["THEM-A": [0.1]], stem: "m")
         _ = try SpeakerLabelStore.setLabel("THEM-A", to: "Aditya", stem: "m", in: dir)

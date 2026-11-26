@@ -416,7 +416,7 @@ An hour of recorded meeting keeps about 230 MB of 16 kHz stereo WAV (64,000 byte
 | --- | --- |
 | **Keep the audio forever** | The default. Nothing is ever reclaimed. |
 | **Compress it to FLAC** | The WAV is transcoded to FLAC in place. Lossless, so playback, the waveform, and any later reprocessing all still work. Quiet speech roughly halves; a noisy room saves less. |
-| **Delete the audio** | The transcript, summary, and every sidecar stay. The recording is gone, and a deleted recording cannot be re-transcribed. |
+| **Delete the audio** | The transcript, summary, and every sidecar stay. The recording is gone, and a deleted recording cannot be re-transcribed. The voiceprints taken from it go too (SEC22): `<stem>.embeddings.json` keeps its speaker labels, so your own voice still reads as "You", but carries no voice vectors, so naming a speaker afterwards names them in that meeting only and teaches the roster nothing. |
 
 A policy only ever acts on a **settled** meeting: one that finished and published, and that isn't sitting in the Library's **Needs you** scope. A failed run, a paste-pending bundle, a no-speech result, and a partially-published meeting are all left alone, however old they get. So is whatever is recording right now. Meetings whose workflow you deleted are never touched. A meeting with no workflow at all (a manual recording) follows the default workflow's policy (REC20), so turning retention on for the default covers it; with the default on keep, as it ships, it is kept.
 

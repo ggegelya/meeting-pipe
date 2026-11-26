@@ -18,7 +18,8 @@ enum AudioRetention {
     enum Action: Equatable {
         /// Transcode the WAV to FLAC, then delete the WAV once the FLAC verifies.
         case compress(URL)
-        /// Delete the recording, keeping every sidecar.
+        /// Delete the recording, keeping every sidecar. `<stem>.embeddings.json` is kept with
+        /// its voice vectors nulled and its labels intact (SEC22 item 5).
         case drop(URL)
     }
 

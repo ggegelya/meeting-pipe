@@ -28,6 +28,34 @@ enum OwnerOnlyFiles {
         (try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)) != nil
     }
 
+    /// Replace `url` with `data` atomically, owner-only from the first byte: the temp is
+    /// created `O_EXCL` at 0600 beside the target and renamed over it, so neither name ever
+    /// exists at the umask mode. `Data.write(options: .atomic)` creates a new inode at the
+    /// umask and leaves a chmod window after the rename; this has none. The `.atomic` write
+    /// plus chmod stays fine for meeting text; this is for biometric data (SEC22 item 5's
+    /// rewrite of `<stem>.embeddings.json`). A failure leaves the previous file as it was.
+    static func writeAtomically(_ data: Data, to url: URL) throws {
+        let tmp = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        let fd = open(tmp.path, O_CREAT | O_EXCL | O_WRONLY, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+        do {
+            try handle.write(contentsOf: data)
+            try handle.synchronize()
+        } catch {
+            close(fd)
+            unlink(tmp.path)
+            throw error
+        }
+        close(fd)
+        guard rename(tmp.path, url.path) == 0 else {
+            let code = errno
+            unlink(tmp.path)
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
+    }
+
     /// Create a library folder and every missing folder above it at 0700. A folder that already
     /// exists is left as it is (`createDirectory`'s attributes apply only to what it creates).
     static func createDirectory(at url: URL) throws {

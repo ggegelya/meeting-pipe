@@ -1,0 +1,48 @@
+{
+  "_comment": "SEC22 item 5, hand-maintained. When audio retention drops a meeting's audio, AudioRetentionSweep rewrites <stem>.embeddings.json from `before` to exactly `after`: every voice vector becomes null, every label key stays (owner recognition and the roster-match record read the keys), and every other key is kept as it was. `labels` is the key set both trees must still see on `after`; `enrollable_before` is the labels carrying a usable vector (a non-empty array) before the strip. Nothing on `after` is enrollable. Swift: MeetingStoreEmbeddingsSEC22Tests and AudioRetentionSweepTests. Python: test_sec22_voiceprints_dropped.py, which runs every Python reader of the file over `after`. Change the writer, run both suites, then edit this file by hand.",
+  "cases": [
+    {
+      "name": "pre_ux83_owner_cluster_roster_match_and_near_miss",
+      "before": {
+        "schema_version": 2,
+        "embeddings": {"1": [0.6, 0.8], "Rana": [1.0, 0.0], "THEM-A": [0.8, 0.6]},
+        "near_misses": {"THEM-A": "Rana"}
+      },
+      "after": {
+        "schema_version": 2,
+        "embeddings": {"1": null, "Rana": null, "THEM-A": null},
+        "near_misses": {"THEM-A": "Rana"}
+      },
+      "labels": ["1", "Rana", "THEM-A"],
+      "enrollable_before": ["1", "Rana", "THEM-A"]
+    },
+    {
+      "name": "unknown_keys_survive_the_strip",
+      "before": {
+        "schema_version": 2,
+        "embeddings": {"speaker_user": [0.1, 0.2, 0.3]},
+        "later_key": {"kept": true}
+      },
+      "after": {
+        "schema_version": 2,
+        "embeddings": {"speaker_user": null},
+        "later_key": {"kept": true}
+      },
+      "labels": ["speaker_user"],
+      "enrollable_before": ["speaker_user"]
+    },
+    {
+      "name": "already_dropped_is_left_as_it_is",
+      "before": {
+        "schema_version": 2,
+        "embeddings": {"THEM-B": null}
+      },
+      "after": {
+        "schema_version": 2,
+        "embeddings": {"THEM-B": null}
+      },
+      "labels": ["THEM-B"],
+      "enrollable_before": []
+    }
+  ]
+}

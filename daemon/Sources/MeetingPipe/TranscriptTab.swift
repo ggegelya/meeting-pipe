@@ -82,6 +82,9 @@ enum TranscriptLoader {
         /// has no voice to remember, so the row offers per-line assignment instead of
         /// cluster enrollment. Enrolling one used to hard-fail with "pipeline exited 2".
         var voiceprintLabels: Set<String> = []
+        /// SEC22 item 5: those labels whose vector audio retention deleted with the audio.
+        /// Still named from the menu, but for this meeting only, never enrolled.
+        var droppedVoiceprints: Set<String> = []
         /// FEAT14: for a cluster the roster declined, the person it came closest to,
         /// from the same sidecar. Offered on the chip menu as a suggestion; nothing
         /// here writes it.
@@ -104,8 +107,11 @@ enum TranscriptLoader {
     /// transcript. An in-app rename or a per-line reassignment writes only the
     /// speaker overlay, so a guard watching `<stem>.json` alone would skip exactly
     /// the refresh it exists to allow. `<stem>.embeddings.json` is left out on
-    /// purpose: its only writer is `mp finalize`, which rewrites the transcript in
-    /// the same pass, so the first entry already moves whenever it does.
+    /// purpose: `mp finalize` rewrites the transcript in the same pass, so the first
+    /// entry already moves whenever it does. Its other writer, audio retention's
+    /// voiceprint drop (SEC22 item 5), moves nothing here; a pane still showing the old
+    /// state at worst opens the enroll sheet's wording, and `nameSpeaker` re-reads the
+    /// sidecar and names the label for this meeting only.
     static func fingerprint(stem: String, in directory: URL) -> [Date?] {
         let paths = [
             path(stem: stem, in: directory),
@@ -136,6 +142,7 @@ enum TranscriptLoader {
             diarizationNote: parsed.diarizationNote,
             speakerOverlay: SpeakerLabelStore.read(stem: stem, in: directory),
             voiceprintLabels: embeddings.voiceprintLabels,
+            droppedVoiceprints: embeddings.droppedVoiceprints,
             nearMisses: embeddings.nearMisses,
             driftedCorrections: overlaid.drifted
         )
@@ -330,6 +337,9 @@ struct TranscriptTab: View {
     /// Diarization clusters with a voiceprint (FEAT3-ROSTER): the labels that can be
     /// enrolled. A label absent here gets per-line assignment, not cluster naming.
     @State private var voiceprintLabels: Set<String> = []
+    /// SEC22 item 5: keyed labels whose voiceprint was deleted with the audio. Naming one
+    /// opens the sheet's this-meeting-only wording.
+    @State private var droppedVoiceprints: Set<String> = []
     /// The meeting's resolved people (FEAT3-SEGMENT), recomputed only when the
     /// segments or the overlay change. Deliberately NOT derived inside the list's
     /// `body`: that rebuilt it on every playback tick, which churned the context
@@ -464,6 +474,7 @@ struct TranscriptTab: View {
             SpeakerNamingSheet(
                 currentDisplay: target.currentName ?? TranscriptDisplay.displayName(for: target.label),
                 mode: target.mode,
+                voiceprintDropped: droppedVoiceprints.contains(target.label),
                 initialName: target.currentName ?? "",
                 onSave: { name in
                     if let old = target.currentName {
@@ -868,10 +879,12 @@ struct TranscriptTab: View {
         driftedCorrections = result?.driftedCorrections ?? 0
         speakerOverlay = result?.speakerOverlay ?? .empty
         voiceprintLabels = result?.voiceprintLabels ?? []
+        droppedVoiceprints = result?.droppedVoiceprints ?? []
         cast = MeetingCast.members(segments: segments, overlay: speakerOverlay, voiceprintLabels: voiceprintLabels)
         voices = VoiceResolution.derive(
             cast: cast,
             voiceprintLabels: voiceprintLabels,
+            droppedVoiceprints: droppedVoiceprints,
             nearMisses: result?.nearMisses ?? [:],
             rosterNames: loaded.roster,
             userLabel: owner
@@ -1356,6 +1369,9 @@ enum SpeakerNamingMode { case enroll, rename, assignNew }
 private struct SpeakerNamingSheet: View {
     let currentDisplay: String
     let mode: SpeakerNamingMode
+    /// SEC22 item 5: the voice's vector was deleted with the meeting's audio, so an enroll
+    /// or rename here names it in this meeting only. The wording says so.
+    let voiceprintDropped: Bool
     let onSave: (String) -> Void
     let onCancel: () -> Void
 
@@ -1364,12 +1380,14 @@ private struct SpeakerNamingSheet: View {
     init(
         currentDisplay: String,
         mode: SpeakerNamingMode = .enroll,
+        voiceprintDropped: Bool = false,
         initialName: String = "",
         onSave: @escaping (String) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.currentDisplay = currentDisplay
         self.mode = mode
+        self.voiceprintDropped = voiceprintDropped
         self.onSave = onSave
         self.onCancel = onCancel
         _name = State(initialValue: initialName)
@@ -1384,7 +1402,15 @@ private struct SpeakerNamingSheet: View {
     }
 
     private var explanation: String {
+        SpeakerNamingSheet.explanation(mode: mode, voiceprintDropped: voiceprintDropped)
+    }
+
+    static func explanation(mode: SpeakerNamingMode, voiceprintDropped: Bool) -> String {
         switch mode {
+        case .enroll where voiceprintDropped, .rename where voiceprintDropped:
+            // SEC22 item 5: the enroll promise would be false; `nameSpeaker` falls back
+            // to the overlay because there is no vector to enroll.
+            return "This meeting's audio was deleted by its workflow's retention policy, and this voice's voiceprint went with it. The name is used in this meeting only and is not learned for future meetings. You can undo it later from the speaker's right-click menu."
         case .enroll, .rename:
             // FEAT3-UNDO name-time honesty: state plainly that this enrolls a
             // persistent voiceprint affecting future meetings, reversibly.

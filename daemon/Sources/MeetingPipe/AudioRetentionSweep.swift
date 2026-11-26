@@ -66,11 +66,14 @@ enum AudioRetentionSweep {
                     try FileManager.default.removeItem(at: audio)
                     // Nothing will ever re-derive the peaks for audio that is gone.
                     try? FileManager.default.removeItem(at: WaveformPeaksLoader.cachePath(stem: stem))
+                    // SEC22 item 5: the voice vectors go with the audio, the labels stay.
+                    let voiceprintsDropped = dropVoiceprints(stem: stem, in: directory)
                     outcome.dropped += 1
                     outcome.bytesFreed += before
                     Log.event(category: "coordinator", action: "audio_dropped", attributes: [
                         "stem": stem,
                         "bytes_freed": before,
+                        "voiceprints_dropped": voiceprintsDropped,
                     ])
                 } catch {
                     outcome.failed += 1
@@ -166,6 +169,29 @@ enum AudioRetentionSweep {
             ))
         }
         return out
+    }
+
+    /// Null every voice vector in `<stem>.embeddings.json` once its audio is gone (SEC22
+    /// item 5, owner's decision 2026-11-26: delete the voice vectors, keep the labels). Runs
+    /// after the audio removal succeeded, so a meeting whose drop failed keeps both. A
+    /// sidecar nobody can parse is left alone and does not hold the drop back. A failed
+    /// rewrite is logged and not retried: the meeting has no audio, so it is no candidate
+    /// on a later sweep (`daemon/docs/gotchas.md` has the trade).
+    private static func dropVoiceprints(stem: String, in directory: URL) -> Bool {
+        do {
+            switch try MeetingStore.dropVoiceprints(stem: stem, in: directory) {
+            case .dropped:
+                return true
+            case .nothingToDrop:
+                return false
+            case .unreadable:
+                Log.writeLine("daemon", "WARN: \(stem).embeddings.json could not be parsed; left as it is")
+                return false
+            }
+        } catch {
+            Log.writeLine("daemon", "WARN: could not drop the voiceprints in \(stem).embeddings.json: \(error)")
+            return false
+        }
     }
 
     private static func readJSON(at url: URL) -> [String: Any]? {

@@ -153,7 +153,14 @@ def _run(args: argparse.Namespace, roster: RosterStore) -> int:
     embeddings = data.get("embeddings")
     embedding = embeddings.get(args.label) if isinstance(embeddings, dict) else None
     if not embedding:
-        print(f"no embedding for label {args.label!r} in {emb_path}")
+        if isinstance(embeddings, dict) and args.label in embeddings:
+            # SEC22 item 5: audio retention keeps the label key and nulls the vector when it
+            # drops a meeting's audio. The app names such a label for this meeting only and
+            # never gets here; a CLI caller is told why rather than "no embedding".
+            print(f"no voice vector for label {args.label!r} in {emb_path}: "
+                  "its audio was deleted by the workflow's retention policy")
+        else:
+            print(f"no embedding for label {args.label!r} in {emb_path}")
         return 2
 
     roster.enroll(args.name, embedding, stem=wav.stem, label=args.label)
