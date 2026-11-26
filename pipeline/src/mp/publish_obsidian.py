@@ -12,8 +12,11 @@ letters and digits of any script), and a sidecar at
 rendered body. Every later publish of the stem reuses the recorded path (PIPE31),
 so a changed summary or title rewrites the same note instead of writing a second
 one, and the first filename is kept for the note's life (Obsidian links by name).
-A second call with identical body, in the same vault, whose note is still on disk,
-returns ``idempotent: True`` without touching disk. The front-matter ``date`` is
+The recorded path is reused only while it sits in the configured folder (symlinks
+and ``..`` resolved) and the note's ``%% meeting-pipe stem: ... %%`` marker, its
+last line, names no other stem. A second call with identical body, at that same
+reusable path, whose note is still on disk, returns ``idempotent: True`` without
+touching disk. The front-matter ``date`` is
 the meeting's own day, from the stem, not the day it was published.
 
 The Notion publisher is the schema reference; this one stays narrower:
@@ -118,11 +121,14 @@ class ObsidianPublisher:
     ) -> dict[str, Any]:
         if transcript_text is None:  # PIPE51: the overlaid view, resolved once
             transcript_text = publish_text(transcript_md)
-        meeting_date = date_from_stem(deeplink_stem(transcript_md)) or _today_iso()
+        stem = deeplink_stem(transcript_md)
+        meeting_date = date_from_stem(stem) or _today_iso()
+        # PIPE31: the stem marker goes on outside the template (a custom one never
+        # carries it) and outside the hash, so adding it rewrites no unchanged note.
         body = self._render_note(
             summary, transcript_md, date=meeting_date, generated=_now_iso(),
             transcript_text=transcript_text,
-        )
+        ) + _stem_marker(stem)
         # Idempotency fingerprint: hash a canonical render with the
         # volatile date/generated values pinned. Without this every
         # re-publish rewrites the file, and a next-day re-run produces a
@@ -136,9 +142,10 @@ class ObsidianPublisher:
         body_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
         existing = _load_sidecar(sidecar_path)
-        # PIPE31: the note this stem was already published to, when it is inside the
-        # vault in use now (a moved vault setting makes the record stale: start fresh).
-        recorded = self._recorded_note(existing)
+        # PIPE31: the note this stem was already published to, when it is still in
+        # the folder in use and still this stem's (otherwise the record is stale:
+        # start fresh). Both branches below go through it, the skip included.
+        recorded = self._recorded_note(existing, stem)
         if recorded is not None and existing and existing.get("body_sha256") == body_hash \
                 and recorded.exists():
             log.info("Obsidian note unchanged, skipping write (sha=%s...)", body_hash[:8])
@@ -180,13 +187,41 @@ class ObsidianPublisher:
 
     # ----- Path layout -----
 
-    def _recorded_note(self, existing: dict[str, Any] | None) -> Path | None:
-        """The `note_path` the sidecar recorded, if it lies inside the vault in use."""
+    def _recorded_note(self, existing: dict[str, Any] | None, stem: str | None) -> Path | None:
+        """The `note_path` the sidecar recorded, if it is still this stem's note
+        in the folder in use, else None (the caller computes a fresh path).
+
+        The resolved path's parent must be the configured folder, resolved too:
+        that one comparison refuses a changed vault or folder setting, a `..`
+        segment and a symlink out of the folder, and notes are only ever written
+        directly in it. The sidecar does not record the folder, so comparing the
+        path is the only check an existing sidecar can pass.
+
+        A note that carries another stem's marker is refused (the old
+        `<date> <slug>` naming let two same-titled meetings share one note). A
+        note with no marker is trusted: every note written before the marker
+        lacks one, and refusing them would orphan each on its next republish.
+        """
         raw = existing.get("note_path") if existing else None
-        if not isinstance(raw, str) or not raw:
+        if not isinstance(raw, str) or not raw or not Path(raw).is_absolute():
             return None
-        path = Path(raw)
-        return path if path.is_absolute() and path.is_relative_to(self._vault) else None
+        resolved = Path(raw).resolve()
+        folder = self._vault / self._folder
+        if resolved.parent != folder.resolve():
+            log.info("recorded Obsidian note is outside the configured folder; writing a fresh one")
+            return None
+        # The lexical spelling, so `relative_to(self._vault)` still holds when
+        # the folder itself is a symlink.
+        note = folder / resolved.name
+        if stem is not None and note.exists():
+            try:
+                owner = _marker_stem(note.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError):
+                owner = ""  # cannot be checked, so never overwritten
+            if owner is not None and owner != stem:
+                log.info("recorded Obsidian note belongs to another meeting; writing a fresh one")
+                return None
+        return note
 
     def _compute_note_path(self, summary: MeetingSummary, transcript_md: Path | None) -> Path:
         # `deeplink_stem` strips the speaker-segmented `.summary` suffix so two
@@ -368,6 +403,22 @@ def _slugify(s: str) -> str:
     while len(slug.encode("utf-8")) > _SLUG_MAX_BYTES:
         slug = slug[:-1]
     return slug.strip("-")
+
+
+# PIPE31: the last line of every note names the recording it was published
+# from, as an Obsidian comment (hidden in reading view). It is what lets a
+# republish tell its own note from another meeting's at a reused path.
+_MARKER_RE = re.compile(r"^%% meeting-pipe stem: (.+) %%$", re.MULTILINE)
+
+
+def _stem_marker(stem: str | None) -> str:
+    return f"\n%% meeting-pipe stem: {stem} %%\n" if stem else ""
+
+
+def _marker_stem(text: str) -> str | None:
+    """The stem the note's last marker names, or None for an unmarked note."""
+    found = _MARKER_RE.findall(text)
+    return found[-1] if found else None
 
 
 def _today_iso() -> str:

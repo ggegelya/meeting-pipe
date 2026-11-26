@@ -2,9 +2,10 @@
 id: PIPE31
 title: Republishing an Obsidian note with a changed body on a later day writes a second note and orphans the first, and file_url mis-encodes #, % and ?
 category: Pipeline
-status: partial
+status: done
 priority: P2
-comment: Shipped 2026-11-18 (reuse recorded note_path, stem-led Unicode slug, date from the stem, one as_uri helper, target-and-exists skip on all three local sinks); owner removes the orphan notes the old naming already left in the vault; PIPE23 can reuse date_from_stem 2026-11-21 second fix review: a changed Obsidian folder is not part of the same-target check, and a reused note path is trusted without checking the note is still this stem's; see the amendment.
+closed: 2026-11-26
+comment: Shipped 2026-11-18 (reuse recorded note_path, stem-led Unicode slug, date from the stem, one as_uri helper, target-and-exists skip on all three local sinks); 2026-11-26 second fix review closed: a reused note path must resolve into the configured folder (folder change, .. and symlinks refused) and every note ends with a stem marker, so a note naming another stem is not rewritten; 5 new obsidian tests (7 cases), ci-local green; owner removes the orphan notes the old naming already left in the vault
 ---
 
 # PIPE31: Republishing an Obsidian note with a changed body on a later day writes a second note and orphans the first, and file_url mis-encodes #, % and ?
@@ -82,3 +83,5 @@ Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (
 2. The reused path is not checked against the stem. Under the old naming two same-titled meetings on one day share a path and both sidecars record it, so republishing either now rewrites the other's note. `is_relative_to` is also lexical, so a recorded path with `..` segments passes (hardening only: the sidecar is pipeline-written). Scope: write a stem marker into every note and check it before overwriting a reused path, falling back to the computed path when it names another stem.
 
 Acceptance: one test per case (folder changed, legacy collision, a `..` path). Pipeline suite green, 3 new tests.
+
+**Progress (2026-11-26): amendment 2026-11-21 shipped.** `_recorded_note` resolves the recorded path and requires its parent to be the configured folder, resolved (one check for a changed vault or folder, `..` and a symlinked directory), and returns the lexical `<vault>/<folder>/<name>`. Every note now ends with `%% meeting-pipe stem: <stem> %%`, appended outside the template and outside the idempotency hash; a reused note whose last marker names another stem falls back to the computed path. A note with no marker (every note written before this) is trusted, since refusing it would orphan it; the residual is a legacy collision nobody republished since, where the first stem to republish claims the shared note once. Tests: escape (`..` and symlinked dir), folder changed, legacy collision (unchanged and changed), unmarked note still reused, marker present under a custom template.

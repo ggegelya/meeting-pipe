@@ -313,3 +313,103 @@ def test_a_long_cjk_title_stays_within_the_filename_limit(tmp_path: Path) -> Non
     s = _summary().model_copy(update={"title": "会" * 300})
     res = _obs(tmp_path).upsert(summary=s, transcript_md=md, sidecar_path=sidecar)
     assert len(Path(res["page_id"]).name.encode("utf-8")) <= 255
+
+
+# --- PIPE31 amendment 2026-11-21: a reused note must be in this folder and this stem's
+
+@pytest.mark.parametrize("shape", ["dotdot", "symlinked-dir"])
+def test_a_recorded_path_that_escapes_the_folder_is_not_reused(tmp_path: Path, shape: str) -> None:
+    md, sidecar = _stem_md(tmp_path)
+    pub = _obs(tmp_path)
+    first = pub.upsert(summary=_summary(), transcript_md=md, sidecar_path=sidecar)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    folder = tmp_path / "vault" / "Meetings"
+    if shape == "dotdot":
+        escaped = folder / ".." / ".." / "outside" / "x.md"
+    else:
+        (folder / "link").symlink_to(outside, target_is_directory=True)
+        escaped = folder / "link" / "x.md"
+    sc = json.loads(sidecar.read_text(encoding="utf-8"))
+    sidecar.write_text(json.dumps({**sc, "note_path": str(escaped)}), encoding="utf-8")
+
+    changed = _summary().model_copy(update={"summary": ["A new bullet."]})
+    res = pub.upsert(summary=changed, transcript_md=md, sidecar_path=sidecar)
+
+    assert list(outside.iterdir()) == []
+    assert res["page_id"] == first["page_id"]
+    assert "A new bullet." in Path(res["page_id"]).read_text(encoding="utf-8")
+
+
+def test_a_changed_folder_setting_writes_the_note_in_the_new_folder(tmp_path: Path) -> None:
+    md, sidecar = _stem_md(tmp_path)
+    vault = tmp_path / "vault"
+    first = ObsidianPublisher(vault_path=vault, folder="Meetings", attach_audio=False).upsert(
+        summary=_summary(), transcript_md=md, sidecar_path=sidecar)
+    old_bytes = Path(first["page_id"]).read_bytes()
+    res = ObsidianPublisher(vault_path=vault, folder="Notes", attach_audio=False).upsert(
+        summary=_summary(), transcript_md=md, sidecar_path=sidecar)
+    assert res["idempotent"] is False
+    assert Path(res["page_id"]).parent == (vault / "Notes").resolve()
+    assert Path(res["page_id"]).exists()
+    assert Path(first["page_id"]).read_bytes() == old_bytes
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_a_legacy_shared_note_marked_for_another_stem_is_not_rewritten(
+    tmp_path: Path, changed: bool,
+) -> None:
+    # Under the old `<date> <slug>.md` naming two same-titled meetings on one day
+    # shared a note and both sidecars recorded it. Once the note names stem B,
+    # republishing A must leave it alone and land on A's own computed path.
+    pub = _obs(tmp_path)
+    md_a, sc_a = _stem_md(tmp_path, "20261001-090000")
+    md_b, sc_b = _stem_md(tmp_path, "20261001-150000")
+    a = pub.upsert(summary=_summary(), transcript_md=md_a, sidecar_path=sc_a)
+    b = pub.upsert(summary=_summary(), transcript_md=md_b, sidecar_path=sc_b)
+    shared = tmp_path / "vault" / "Meetings" / "2026-10-01 sprint-planning.md"
+    Path(b["page_id"]).rename(shared)
+    Path(a["page_id"]).unlink()
+    for sc in (sc_a, sc_b):
+        data = json.loads(sc.read_text(encoding="utf-8"))
+        sc.write_text(json.dumps({**data, "note_path": str(shared.resolve())}), encoding="utf-8")
+    b_bytes = shared.read_bytes()
+
+    summary = _summary().model_copy(update={"summary": ["A new bullet."]}) if changed else _summary()
+    res = pub.upsert(summary=summary, transcript_md=md_a, sidecar_path=sc_a)
+
+    assert res["idempotent"] is False
+    assert res["page_id"] == a["page_id"]
+    assert Path(a["page_id"]).exists()
+    assert shared.read_bytes() == b_bytes
+
+
+def test_a_recorded_note_written_before_the_stem_marker_is_still_reused(tmp_path: Path) -> None:
+    # Notes written before the marker existed carry none; they keep their names
+    # (nothing is renamed), so an unmarked note is trusted, not orphaned.
+    md, sidecar = _stem_md(tmp_path)
+    pub = _obs(tmp_path)
+    first = pub.upsert(summary=_summary(), transcript_md=md, sidecar_path=sidecar)
+    note = Path(first["page_id"])
+    legacy = note.with_name("2026-10-01 sprint-planning.md")
+    lines = note.read_text(encoding="utf-8").splitlines(keepends=True)
+    legacy.write_text("".join(ln for ln in lines if "meeting-pipe stem" not in ln), encoding="utf-8")
+    note.unlink()
+    sc = json.loads(sidecar.read_text(encoding="utf-8"))
+    sidecar.write_text(json.dumps({**sc, "note_path": str(legacy)}), encoding="utf-8")
+
+    changed = _summary().model_copy(update={"summary": ["A new bullet."]})
+    res = pub.upsert(summary=changed, transcript_md=md, sidecar_path=sidecar)
+    assert res["page_id"] == str(legacy)
+    assert [p.name for p in legacy.parent.glob("*.md")] == [legacy.name]
+
+
+def test_every_note_carries_its_stem_marker_whatever_the_template(tmp_path: Path) -> None:
+    template = tmp_path / "tpl.md"
+    template.write_text("# {title}\n", encoding="utf-8")
+    md, sidecar = _stem_md(tmp_path)
+    for pub in (_obs(tmp_path),
+                ObsidianPublisher(vault_path=tmp_path / "v2", attach_audio=False, template_path=template)):
+        res = pub.upsert(summary=_summary(), transcript_md=md, sidecar_path=sidecar)
+        assert Path(res["page_id"]).read_text(encoding="utf-8").rstrip().endswith(
+            "%% meeting-pipe stem: 20261001-003000 %%")
