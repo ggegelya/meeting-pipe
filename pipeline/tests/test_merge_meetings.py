@@ -641,6 +641,51 @@ def test_carrying_sidecars_twice_adds_nothing(monkeypatch, tmp_path: Path):
     assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == first
 
 
+@pytest.mark.parametrize("stale", ["vector", "name", "both"])
+def test_a_fragment_speaker_never_takes_a_label_the_primary_still_holds(monkeypatch, tmp_path: Path, stale: str):
+    """PIPE47 amendment: the primary's segments use THEM-A and THEM-B, but its
+    embeddings or names sidecar still holds THEM-C (a cleanup merge left the vector,
+    a re-cleanup left the name). The fragment's speaker must get THEM-D with its own
+    voiceprint and no name, not inherit the stale THEM-C."""
+    from mp import speaker_overlay
+
+    _install_wav_fakes(monkeypatch)
+    primary = _meeting_with(tmp_path, "20260101-0900", 10.0,
+                            _seg(0, 2, "a", "THEM-A"), _seg(2, 4, "b", "THEM-B"))
+    frag = _meeting_with(tmp_path, "20260101-0930", 20.0, _seg(0, 2, "c", "THEM-A"))
+    primary_vectors = {"THEM-A": [1.0], "THEM-B": [2.0]}
+    if stale in ("vector", "both"):
+        primary_vectors["THEM-C"] = [3.0]
+    _jw(primary.with_suffix(".embeddings.json"), {"schema_version": 2, "embeddings": primary_vectors})
+    if stale in ("name", "both"):
+        _jw(primary.with_suffix(".speaker_labels.json"), {"labels": {"THEM-C": "Pat"}})
+    _jw(frag.with_suffix(".embeddings.json"), {"schema_version": 2, "embeddings": {"THEM-A": [7.0]}})
+
+    merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    merged = _merged_json(primary)
+    speakers = [s["speaker"] for s in merged["segments"] if s.get("kind") != "gap"]
+    assert speakers == ["THEM-A", "THEM-B", "THEM-D"]
+    got = json.loads(primary.with_suffix(".embeddings.json").read_text(encoding="utf-8"))["embeddings"]
+    assert got["THEM-D"] == [7.0]
+    assert got.get("THEM-C") == primary_vectors.get("THEM-C")  # the stale vector is not touched
+    speaker_overlay.apply_overlay(merged["segments"], speaker_overlay.read_overlay(primary.with_suffix(".md")))
+    assert merged["segments"][-1]["speaker"] == "THEM-D"  # no inherited name
+
+
+def test_merge_refuses_before_writing_when_the_primarys_names_cannot_be_read(monkeypatch, tmp_path: Path):
+    """The primary's name overlay seeds the label numbering, so an unreadable one
+    refuses up front (as a fragment's does) instead of being read as empty."""
+    _install_wav_fakes(monkeypatch)
+    primary = _meeting_with(tmp_path, "20260101-0900", 10.0, _seg(0, 2, "start", "THEM-A"))
+    frag = _meeting_with(tmp_path, "20260101-0930", 20.0, _seg(0, 2, "back", "THEM-A"))
+    primary.with_suffix(".speaker_labels.json").write_text("{not json", encoding="utf-8")
+    before = {p: p.read_bytes() for p in tmp_path.iterdir()}
+
+    with pytest.raises(Exception, match="speaker names"):
+        merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=_FakeClient())
+    assert {p: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
 def _read_json(wav: Path) -> dict:
     return json.loads(wav.with_suffix(".json").read_text(encoding="utf-8"))
 

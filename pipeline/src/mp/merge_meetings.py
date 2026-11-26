@@ -19,8 +19,9 @@ audio a second time.
 
 PIPE47: a fragment's labels, edits and sidecars are carried, not concatenated.
 THEM-x and raw ``speaker_N`` ids are numbered per recording, so a fragment's are
-renumbered to never collide with the primary's (`fragment_label_maps`); its
-speaker names and text corrections are baked into the segments it contributes
+renumbered to never collide with any label the primary holds in its segments,
+names or voiceprints (`fragment_label_maps`); its speaker names and text
+corrections are baked into the segments it contributes
 (`transcript_corrections.overlaid_structured`), and its flagged moments and
 voiceprints ride into the primary's ``.markers.json`` / ``.embeddings.json``.
 
@@ -37,6 +38,7 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 from . import entry, events, markers, speaker_overlay, storage, transcript_corrections
@@ -101,16 +103,27 @@ def _speakers_in_order(segments: list[dict]) -> list[str]:
     return list(seen)
 
 
-def fragment_label_maps(fragments: list[dict]) -> list[dict[str, str]]:
+def fragment_label_maps(
+    fragments: list[dict], reserved: Iterable[str] = ()
+) -> list[dict[str, str]]:
     """PIPE47: per fragment, the map from its own per-recording labels to labels
     that cannot collide with any earlier recording's. Pure. The primary (index 0)
     keeps every label. A later fragment's THEM-x labels continue after the highest
     THEM index used so far (`diarize.them_label`, in order of first speech), and a
     raw `speaker_N` gets a per-fragment suffix. Everything else maps to itself, so
-    the owner and named people stay one label across recordings."""
+    the owner and named people stay one label across recordings.
+
+    `reserved` is the labels the primary's sidecars hold, even with no segment left
+    (`_primary_reserved_labels`): its name overlay's keys and its voiceprint keys.
+    The numbering starts past those too, or a fragment's speaker would inherit a
+    stale vector or name the primary kept for a label no segment carries."""
     from .diarize import them_label
 
     next_them = 0
+    for label in reserved:
+        idx = _them_index(label)
+        if idx is not None:
+            next_them = max(next_them, idx + 1)
     maps: list[dict[str, str]] = []
     for i, frag in enumerate(fragments):
         mapping: dict[str, str] = {}
@@ -131,7 +144,9 @@ def fragment_label_maps(fragments: list[dict]) -> list[dict[str, str]]:
     return maps
 
 
-def merge_transcripts(fragments: list[dict], durations: list[float]) -> dict:
+def merge_transcripts(
+    fragments: list[dict], durations: list[float], *, reserved: Iterable[str] = ()
+) -> dict:
     """Concatenate the fragments' transcripts onto one continuous timeline.
 
     Pure: no IO. `fragments` are the structured `<stem>.json` dicts, primary
@@ -139,14 +154,15 @@ def merge_transcripts(fragments: list[dict], durations: list[float]) -> dict:
     segment's timestamps stay aligned with the concatenated audio, not the
     transcript's last-segment end, which trails off into silence). A gap marker
     is inserted at every fragment boundary. Later fragments' per-recording speaker
-    labels are renumbered so they never collide with the primary's (PIPE47).
+    labels are renumbered so they never collide with the primary's (PIPE47),
+    including the labels in `reserved` (see `fragment_label_maps`).
     """
     if not fragments:
         raise MergeError("no fragments to merge")
     if len(fragments) != len(durations):
         raise MergeError("fragment / duration count mismatch")
 
-    label_maps = fragment_label_maps(fragments)
+    label_maps = fragment_label_maps(fragments, reserved)
     merged_segments: list[dict] = []
     offset = 0.0
     for i, (frag, dur) in enumerate(zip(fragments, durations, strict=False)):
@@ -359,6 +375,22 @@ def _read_sidecar(path: Path) -> dict | None:
     return read.data
 
 
+def _primary_reserved_labels(primary_audio: Path) -> set[str]:
+    """PIPE47 amendment: the labels the primary's names overlay and voiceprint file
+    hold, which can outlive every segment carrying them (a cleanup merge keeps the
+    merged-away label's vector, a re-cleanup after a naming keeps the name). Both
+    refuse when present but unreadable, as a fragment's overlay does: read as empty,
+    they would let a fragment's speaker take the label and inherit what it holds."""
+    primary_md = primary_audio.with_suffix(".md")
+    refuse_unreadable_overlays(primary_md, stores=("speaker_labels",))
+    reserved = set(speaker_overlay.read_overlay(primary_md).get("labels") or {})
+    emb_file = _read_sidecar(primary_audio.with_suffix(".embeddings.json"))
+    vectors = emb_file.get("embeddings") if emb_file else None
+    if isinstance(vectors, dict):
+        reserved.update(k for k in vectors if isinstance(k, str))
+    return reserved
+
+
 def _marker_entries(obj: dict | None) -> list[dict]:
     raw = obj.get("markers") if obj else None
     return [m for m in raw if isinstance(m, dict)] if isinstance(raw, list) else []
@@ -369,17 +401,22 @@ def _carry_sidecars(
     fragment_audios: list[Path],
     fragments: list[dict],
     durations: list[float],
+    reserved: Iterable[str] = (),
 ) -> None:
     """PIPE47: fold each later fragment's flagged moments and voiceprints into the
     primary's `.markers.json` / `.embeddings.json`. `fragments` is primary-first,
     like `durations`. Every read happens before any write (an unreadable sidecar
     refuses with nothing touched), and both writes are idempotent (a marker already
     present at the same offset, an embedding label already present, is not added
-    again), because a crash before the transcript commit re-runs the whole merge.
+    again) for the same `reserved`, because a crash before the transcript commit
+    re-runs the whole merge. That re-run reads `reserved` afresh, so it finds the
+    voiceprints the first run carried and numbers past them: the fragment's speaker
+    gets the next label and its vector again, and the first copy stays behind under
+    a label no segment carries. Orphaned, never misattributed.
     The primary's own entries are never moved: its segment indices do not change,
     so its overlays stay valid."""
     primary_md = primary_audio.with_suffix(".md")
-    label_maps = fragment_label_maps(fragments)
+    label_maps = fragment_label_maps(fragments, reserved)
     marker_file = _read_sidecar(markers.markers_path(primary_md))
     emb_file = _read_sidecar(primary_audio.with_suffix(".embeddings.json"))
 
@@ -477,18 +514,19 @@ def merge_meetings(
                         fragments=frag_stems, segments=len(existing.get("segments") or []),
                         resumed=True)
     else:
+        reserved = _primary_reserved_labels(primary_audio)
         structured = [existing, *(_read_fragment(a) for a in fragment_audios)]
         _check_free_space(inputs, primary_audio)
         tmp = primary_audio.with_name(primary_audio.name + ".merging.tmp")
         try:
             durations = concat_audio(inputs, tmp)
             _verify_concat(tmp, durations)
-            merged = merge_transcripts(structured, durations)
+            merged = merge_transcripts(structured, durations, reserved=reserved)
             merged["audio_path"] = str(primary_audio)
             merged["merged_from"] = sorted(already | set(frag_stems))
             # PIPE47: the carried sidecars land BEFORE the transcript commit, so a
             # resume (PIPE48) never meets a merge with its markers half carried.
-            _carry_sidecars(primary_audio, fragment_audios, structured, durations)
+            _carry_sidecars(primary_audio, fragment_audios, structured, durations, reserved)
 
             # PIPE8 (FEAT9 follow-up): commit the transcript that carries
             # `merged_from` BEFORE swapping in the merged audio, so a crash between
