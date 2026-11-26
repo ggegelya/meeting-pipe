@@ -24,8 +24,8 @@ enum FailureNoticeAction: Equatable {
         var canReSummarizeLocal = false
         /// Whether the configured local model is on disk; a re-summarize before it is would fail.
         var localModelCached = true
-        /// Whether the meeting still resolves to Apple Intelligence, where a plain retry is the
-        /// refusal again.
+        /// Whether the meeting still resolves to Apple Intelligence, where a plain retry ends on
+        /// the same local fallback the lead button runs (PIPE25's shared `summarizeOnDevice`).
         var resolvesToApple = true
     }
 
@@ -33,7 +33,7 @@ enum FailureNoticeAction: Equatable {
         if i.cause == .unsupportedLanguage, i.canReSummarizeLocal {
             // PIPE25: lead with the fix. Download first when the model is not there yet, since the
             // re-summarize would fail on it (item 4's honest failure), and no plain Retry while
-            // the meeting would only reach Apple Intelligence again.
+            // the meeting resolves to Apple Intelligence, since it would only repeat that button.
             var out: [FailureNoticeAction] = []
             if !i.localModelCached, i.canDownloadModel { out.append(.downloadModel) }
             out.append(.reSummarizeLocal)

@@ -100,7 +100,7 @@ protocol PipelineDriver: AnyObject {
     func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// As `summarize`, but with a one-shot backend override for a re-summarize on a chosen engine (PIPE6): `mp summarize --backend <backend>`. `nil` uses the configured backend. Defaulted to ignore the override so fakes need only implement the plain form.
     func summarize(transcriptMD: URL, backend: String?, completion: @escaping (Result<Void, Error>) -> Void)
-    /// PIPE52: re-summarize an existing meeting on-device with Apple Intelligence, the Swift summarizer run-all hands off to, writing `<stem>.summary.json` and `<stem>.run.json` and publishing nothing (the Library's regenerate chain publishes after it). Driven by the transcript, so a meeting whose audio retention removed is still served. Cancellable like `summarize`. Defaulted to failure so a fake that does not implement it cannot pass by skipping it.
+    /// PIPE52: re-summarize an existing meeting on-device with Apple Intelligence, the Swift summarizer run-all hands off to, writing `<stem>.summary.json` and `<stem>.run.json` and publishing nothing (the Library's regenerate chain publishes after it). A language Apple does not support is summarized on the local model instead, as on run-all (PIPE25), and that `mp summarize` writes the two files itself. Driven by the transcript, so a meeting whose audio retention removed is still served. Cancellable like `summarize`. Defaulted to failure so a fake that does not implement it cannot pass by skipping it.
     func summarizeViaAppleIntelligence(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void)
     /// Re-run only the finalize stage over the daemon's `<stem>.json` (ASR3): `mp finalize <wav>` re-derives speaker labels, the voiceprint + roster match, the embeddings sidecar, and the glossary normalization. No summarize, no publish, no egress. Defaulted no-op.
     func finalize(wav: URL, completion: @escaping (Result<Void, Error>) -> Void)
@@ -567,9 +567,10 @@ final class PipelineLauncher: PipelineDriver {
     private let appleSummarize: AppleSummarize
 
     /// PIPE25: the meeting's language (pinned or ASR-detected, nil when unknown) and the
-    /// languages the system model supports (nil where it cannot say), read for a run-all's Apple
-    /// hand-off. `onDeviceLanguage` in production; a test injects both, so the CI runner, which
-    /// has no `FoundationModels`, and a test that must not read this Mac's config can drive it.
+    /// languages the system model supports (nil where it cannot say), read before every Apple
+    /// summary (`summarizeOnDevice`), run-all's hand-off and the Library's alike.
+    /// `onDeviceLanguage` in production; a test injects both, so the CI runner, which has no
+    /// `FoundationModels`, and a test that must not read this Mac's config can drive it.
     typealias AppleLanguage = @Sendable (_ wav: URL) -> (language: String?, supported: Set<String>?)
     private let appleLanguage: AppleLanguage
 
@@ -1457,29 +1458,43 @@ final class PipelineLauncher: PipelineDriver {
         completion: @escaping (Result<URL?, Error>) -> Void
     ) {
         let dir = wav.deletingLastPathComponent()
-        let stem = wav.deletingPathExtension().lastPathComponent
+        let stem = MeetingStore.stem(of: wav)
         let summaryJSON = dir.appendingPathComponent("\(stem).summary.json")
-        let read = appleLanguage(wav)
-        // PIPE25 item 2: a language the system model reports unsupported never reaches it.
-        if case .skipToLocal(let language) = AppleLanguageRoute.decide(language: read.language, supported: read.supported) {
-            substituteLocal(wav: wav, language: language, trigger: "precheck",
-                            onProgress: onProgress, completion: completion)
-            return
-        }
-        runAppleSummarize(anchor: wav, onProgress: onProgress) { result in
+        summarizeOnDevice(anchor: wav, onProgress: onProgress) { result in
             if case .failure(let error) = result {
-                // PIPE25 item 1: the typed refusal re-runs on the local model instead of failing
-                // the job. Any other Apple error fails as before (`unavailable` has its own fix, a
-                // parse failure is not deterministic), and a cancel arrives as `CancellationError`.
-                if case AppleIntelligenceError.unsupportedLanguage? = error as? AppleIntelligenceError {
-                    self.substituteLocal(wav: wav, language: AppleLanguageRoute.code(read.language),
-                                         trigger: "refused", onProgress: onProgress, completion: completion)
-                } else {
-                    completion(.failure(error))
-                }
+                completion(.failure(error))
                 return
             }
             self.publishAppleSummary(summaryJSON: summaryJSON, stem: stem, dir: dir, completion: completion)
+        }
+    }
+
+    /// PIPE25: the one point every Apple Intelligence summary passes through, run-all's and a
+    /// merge's hand-off and the Library's regenerate and Retry (PIPE52) alike, so the language
+    /// fallback cannot cover one route and miss the other (2026-11-21 amendment). A language the
+    /// system model reports unsupported never reaches it (item 2), and the typed refusal re-runs
+    /// on the local model instead of failing the job (item 1). Any other Apple error fails as
+    /// before (`unavailable` has its own fix, a parse failure is not deterministic), and a cancel
+    /// arrives as `CancellationError`. Summarizes only: each caller publishes in its own way.
+    private func summarizeOnDevice(
+        anchor: URL,
+        onProgress: ((PipelineProgress) -> Void)?,
+        then: @escaping (Result<Void, Error>) -> Void
+    ) {
+        let read = appleLanguage(anchor)
+        if case .skipToLocal(let language) = AppleLanguageRoute.decide(language: read.language, supported: read.supported) {
+            substituteLocal(anchor: anchor, language: language, trigger: "precheck",
+                            onProgress: onProgress, then: then)
+            return
+        }
+        runAppleSummarize(anchor: anchor, onProgress: onProgress) { result in
+            if case .failure(let error) = result,
+               case AppleIntelligenceError.unsupportedLanguage? = error as? AppleIntelligenceError {
+                self.substituteLocal(anchor: anchor, language: AppleLanguageRoute.code(read.language),
+                                     trigger: "refused", onProgress: onProgress, then: then)
+                return
+            }
+            then(result)
         }
     }
 
@@ -1505,51 +1520,48 @@ final class PipelineLauncher: PipelineDriver {
         }
     }
 
-    /// PIPE25: summarize on the local model instead of Apple Intelligence, then publish. The same
-    /// one-shot `--backend local` the Library's Re-summarize with the local model spawns, so
-    /// `cloudSecretPolicy` treats it as on-device and regulated or NDA cannot widen it, plus
-    /// `--fallback-from` so `<stem>.run.json` says why (the provenance line names it). A local
-    /// model that is missing or does not fit fails with the local run's own cause and remedy.
+    /// PIPE25: summarize on the local model instead of Apple Intelligence. The same one-shot
+    /// `--backend local` (timeout and `.run` slot too) the Library's Re-summarize with the local
+    /// model spawns, so `cloudSecretPolicy` treats it as on-device, regulated or NDA cannot widen
+    /// it, and the Library's Cancel reaches it; plus `--fallback-from` so `<stem>.run.json` says
+    /// why (the provenance line names it). A local model that is missing or does not fit fails
+    /// with the local run's own cause and remedy. No publish: the caller owns that.
     private func substituteLocal(
-        wav: URL, language: String?, trigger: String,
+        anchor: URL, language: String?, trigger: String,
         onProgress: ((PipelineProgress) -> Void)?,
-        completion: @escaping (Result<URL?, Error>) -> Void
+        then: @escaping (Result<Void, Error>) -> Void
     ) {
-        let dir = wav.deletingLastPathComponent()
-        let stem = wav.deletingPathExtension().lastPathComponent
-        let transcriptMD = dir.appendingPathComponent("\(stem).md")
-        let summaryJSON = dir.appendingPathComponent("\(stem).summary.json")
+        let stem = MeetingStore.stem(of: anchor)
+        let transcriptMD = anchor.deletingLastPathComponent().appendingPathComponent("\(stem).md")
+        let local = SummarizationEngine.local.id
         var attributes: [String: Any] = [
-            "stem": stem, "requested": "apple_intelligence", "used": "local",
+            "stem": stem, "requested": SummarizationEngine.appleIntelligence.id, "used": local,
             "reason": "unsupported_language", "trigger": trigger,
         ]
         if let language { attributes["language"] = language }
         Log.event(category: "coordinator", action: "summary_backend_substituted", attributes: attributes)
-        var args = ["summarize", transcriptMD.path, "--backend", "local",
-                    "--fallback-from", "apple_intelligence:unsupported_language"]
+        var args = ["summarize", transcriptMD.path, "--backend", local,
+                    "--fallback-from", "\(SummarizationEngine.appleIntelligence.id):unsupported_language"]
         if let language { args += ["--fallback-language", language] }
         runMP(args, timeout: 20 * 60, meeting: transcriptMD, onProgress: onProgress,
-              retain: .run, backendOverride: "local") { result in
-            if case .failure(let error) = result {
-                completion(.failure(error))
-                return
-            }
-            self.publishAppleSummary(summaryJSON: summaryJSON, stem: stem, dir: dir, completion: completion)
-        }
+              retain: .run, backendOverride: local, completion: then)
+        // Reached from inside the Apple Task on a refusal: a Cancel that landed before the retain
+        // above is honoured here, as `publishAppleSummary` does.
         if Task.isCancelled {
             terminate(slots.markCancelled(.run)?.process, what: "pipeline run")
         }
     }
 
     /// PIPE52: the Library's Apple re-summarize. The same Task, beats, cancel and run sidecar as
-    /// run-all's hand-off, without the publish: `regenerateMeeting` chains `performRepublish`
+    /// run-all's hand-off, and since the PIPE25 amendment the same language fallback
+    /// (`summarizeOnDevice`), without the publish: `regenerateMeeting` chains `performRepublish`
     /// itself, inside the lane slot, after its NDA re-check.
     func summarizeViaAppleIntelligence(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
         let anchor = MeetingStore.sidecarAnchorURL(
             stem: transcriptMD.deletingPathExtension().lastPathComponent,
             in: transcriptMD.deletingLastPathComponent()
         )
-        runAppleSummarize(anchor: anchor, onProgress: nil, then: completion)
+        summarizeOnDevice(anchor: anchor, onProgress: nil, then: completion)
     }
 
     /// The shared Apple phase (TECH-SUM1-APPLE, PIPE36, PIPE52): summarize `<stem>.md` on-device,

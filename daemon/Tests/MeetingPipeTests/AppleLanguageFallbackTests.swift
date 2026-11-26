@@ -1,11 +1,34 @@
 import os
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// PIPE25: Apple Intelligence's language refusal falls back to the local model instead of failing
 /// the job, a language the system model reports unsupported skips Apple outright, and the
 /// Library's notice for an old refusal leads with the local re-summarize.
 final class AppleLanguageFallbackTests: XCTestCase {
+
+    private var logs: URL!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        logs = FileManager.default.temporaryDirectory.appendingPathComponent("pipe25-logs-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        setenv("MEETINGPIPE_LOGS_DIR", logs.path, 1)
+    }
+
+    override func tearDownWithError() throws {
+        unsetenv("MEETINGPIPE_LOGS_DIR")
+        try? FileManager.default.removeItem(at: logs)
+        try super.tearDownWithError()
+    }
+
+    private func substitutions() -> [[String: Any]] {
+        let text = (try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? ""
+        return text.split(separator: "\n").compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }.filter { $0["action"] as? String == "summary_backend_substituted" }
+    }
 
     // MARK: - The launcher's fallback
 
@@ -58,7 +81,7 @@ final class AppleLanguageFallbackTests: XCTestCase {
         case "$0" in
           run-all) : > "${1%.wav}.apple_pending.json"; exit 0 ;;
           summarize) printf '%s\\n' "$@" > '\(summarized.path)'; env > '\(summarizeEnv.path)'; exit 0 ;;
-          publish) : > '\(published.path)'; exit 0 ;;
+          publish) echo "$1" >> '\(published.path)'; exit 0 ;;
         esac
         exit 2
         """
@@ -146,6 +169,98 @@ final class AppleLanguageFallbackTests: XCTestCase {
         let env = try String(contentsOf: rig.summarizeEnv, encoding: .utf8)
         XCTAssertFalse(env.contains("ANTHROPIC_API_KEY="), "the local fallback never carries the Anthropic key")
         XCTAssertFalse(env.contains("NOTION_TOKEN="), "regulated strips Notion too")
+    }
+
+    // MARK: - The regenerate route (2026-11-21 amendment)
+
+    /// PIPE52's Library re-summarize used to call the Apple summarizer with neither the pre-check
+    /// nor the substitution, so a Retry of a Ukrainian Apple meeting was refused again. It now ends
+    /// on the local model exactly as run-all does, and publishes nothing itself: the regenerate
+    /// chain publishes after its NDA re-check.
+    func test_the_regenerate_route_falls_back_to_local_on_the_refusal_and_publishes_nothing() throws {
+        let rig = try rig(throwing: AppleIntelligenceError.unsupportedLanguage("uk"), language: "uk")
+        defer { try? FileManager.default.removeItem(at: rig.dir) }
+        let md = rig.dir.appendingPathComponent("20260101-090000.md")
+        try "transcript".write(to: md, atomically: true, encoding: .utf8)
+
+        let done = expectation(description: "summarized")
+        var outcome: Result<Void, Error>?
+        rig.launcher.summarizeViaAppleIntelligence(transcriptMD: md) { outcome = $0; done.fulfill() }
+        wait(for: [done], timeout: 15)
+
+        if case .failure(let error)? = outcome { XCTFail("the fallback should succeed: \(error)") }
+        XCTAssertEqual(rig.appleCalls.withLock { $0 }, 1)
+        XCTAssertEqual(Array(rig.summarizeArgs.dropFirst()), [
+            "--backend", "local",
+            "--fallback-from", "apple_intelligence:unsupported_language",
+            "--fallback-language", "uk",
+        ])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rig.published.path), "the regenerate chain publishes, not the launcher")
+        let rows = substitutions()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?["trigger"] as? String, "refused")
+        XCTAssertEqual(rows.first?["stem"] as? String, "20260101-090000")
+    }
+
+    /// PIPE41's one automatic re-run of an Apple-pinned meeting in a language the system model
+    /// does not list goes through the Library's retry, which used to send it straight back to
+    /// Apple. It now never reaches the Apple summarizer, summarizes once on local, and publishes once.
+    func test_an_auto_retry_of_an_unsupported_language_apple_meeting_never_calls_apple() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("pipe25-retry-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try "# Transcript\n\nSpeaker: A synthetic sentence.".write(
+            to: dir.appendingPathComponent("m.md"), atomically: true, encoding: .utf8)
+        try #"{"segments":[{"start":0,"end":2,"text":"A synthetic sentence.","speaker":"ME"}],"finalized":true,"language":"uk"}"#
+            .write(to: dir.appendingPathComponent("m.json"), atomically: true, encoding: .utf8)
+        try #"{"schema_version": 1, "workflow_backend": "apple_intelligence"}"#
+            .write(to: dir.appendingPathComponent("m.meta.json"), atomically: true, encoding: .utf8)
+        // Run-all's local substitute failed transiently, so PIPE41 spends its automatic re-run.
+        PipelineFailureSidecar.write(stem: "m", in: dir, stage: .pipeline, reason: "local server exited")
+
+        let summarized = dir.appendingPathComponent("summarized")
+        let published = dir.appendingPathComponent("published")
+        let script = """
+        case "$0" in
+          summarize) printf '%s\\n' "$@" >> '\(summarized.path)'; printf '{"title":"t"}' > "${1%.md}.summary.json"; exit 0 ;;
+          publish) echo "$1" >> '\(published.path)'; exit 0 ;;
+        esac
+        exit 2
+        """
+        let appleCalls = OSAllocatedUnfairLock(initialState: 0)
+        let launcher = PipelineLauncher(
+            invocation: { .init(shell: "/bin/sh", args: ["-c", script]) },
+            environment: ["PATH": "/usr/bin:/bin"],
+            tokenSource: { [:] },
+            reapOrphanedServer: {},
+            appleSummarize: { _, _, _ in appleCalls.withLock { $0 += 1 } },
+            appleLanguage: { _ in ("uk", ["en", "de"]) }
+        )
+        var errors: [String] = []
+        let service = MeetingLibraryService(
+            outputDir: { dir },
+            launcher: launcher,
+            notifyError: { message, _, _ in errors.append(message) },
+            enqueue: { _, _, _ in XCTFail("a reusable transcript never re-transcribes") },
+            summarizationBackend: { SummarizationBackend(rawValue: "anthropic") }
+        )
+
+        XCTAssertNoThrow(try service.retryMeeting(stem: "m", trigger: .auto).get())
+        let landed = expectation(for: NSPredicate { _, _ in
+            FileManager.default.fileExists(atPath: published.path)
+                && PipelineFailureSidecar.read(stem: "m", in: dir) == nil
+        }, evaluatedWith: nil)
+        wait(for: [landed], timeout: 15)
+        XCTAssertTrue(drainMainSync())
+
+        XCTAssertEqual(appleCalls.withLock { $0 }, 0, "the Apple summarizer is never called")
+        let args = ((try? String(contentsOf: summarized, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+        XCTAssertEqual(args.filter { $0 == "--fallback-from" }.count, 1, "one local summarize")
+        XCTAssertTrue(args.contains("apple_intelligence:unsupported_language"))
+        let publishes = ((try? String(contentsOf: published, encoding: .utf8)) ?? "").split(separator: "\n")
+        XCTAssertEqual(publishes.count, 1, "published once, by the regenerate chain")
+        XCTAssertEqual(substitutions().first?["trigger"] as? String, "precheck")
+        XCTAssertTrue(errors.isEmpty, "\(errors)")
     }
 
     // MARK: - The pre-check, pure

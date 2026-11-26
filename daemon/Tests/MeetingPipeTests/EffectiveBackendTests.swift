@@ -97,7 +97,8 @@ final class EffectiveBackendTests: XCTestCase {
             environment: ["PATH": "/usr/bin:/bin"],
             appleSummarize: { anchor, transcript, _ in
                 seen.withLock { $0 = [MeetingStore.stem(of: anchor), transcript.lastPathComponent] }
-            }
+            },
+            appleLanguage: { _ in (nil, nil) }
         )
         let done = expectation(description: "summarized")
         var outcome: Result<Void, Error>?
@@ -121,7 +122,8 @@ final class EffectiveBackendTests: XCTestCase {
         try "transcript".write(to: md, atomically: true, encoding: .utf8)
         let launcher = PipelineLauncher(
             invocation: { nil },
-            appleSummarize: { _, _, _ in throw AppleIntelligenceError.unavailable("model not ready") }
+            appleSummarize: { _, _, _ in throw AppleIntelligenceError.unavailable("model not ready") },
+            appleLanguage: { _ in (nil, nil) }
         )
         let done = expectation(description: "failed")
         var outcome: Result<Void, Error>?
