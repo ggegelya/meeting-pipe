@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import XCTest
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 final class FailureLayoutTests: XCTestCase {
     private static let longDiagnostic = String(repeating: "Synthetic traceback frame /Users/private sk-fake transcript-secret\n", count: 2000)
@@ -255,7 +256,7 @@ final class FailureLayoutTests: XCTestCase {
         let runner = FailingAsk()
         let ask = AskModel(runner: runner)
         XCTAssertTrue(ask.ask("Synthetic question"))
-        while ask.isAsking { await Task.yield() }
+        guard await waitUntil({ !ask.isAsking }) else { return XCTFail("the synthetic ask never finished") }
         let surfaces: [(String, AnyView, NSSize)] = [
             ("digest", AnyView(DigestsView(model: digest, libraryModel: model)), NSSize(width: 320, height: 480)),
             ("people", AnyView(PeopleView(store: model.meetingStore, projection: model.projections.people, commitments: [], aging: .empty, onOpenMeeting: { _ in },
@@ -322,7 +323,7 @@ final class FailureLayoutTests: XCTestCase {
                                      session: session, isRegulated: { false },
                                      tokenSource: { ["NOTION_TOKEN": "synthetic-token"] })
         list.refresh()
-        while list.state == .loading { await Task.yield() }
+        guard await waitUntil({ list.state != .loading }) else { return XCTFail("the synthetic Notion fetch never finished") }
         guard case .failed(let diagnostic) = list.state else { return XCTFail("Expected the synthetic failure") }
         XCTAssertGreaterThan(diagnostic.count, 4096)
         let window = host(NotionDatabasePicker(databaseID: .constant(""), list: list).padding(), size: NSSize(width: 520, height: 300))

@@ -1,4 +1,5 @@
 import Foundation
+import XCTest
 @testable import MeetingPipe
 
 /// T13: the one `PipelineDriver` double, replacing three `FakeDriver`s, three `NoopDriver`s and a
@@ -25,9 +26,14 @@ final class FakePipelineDriver: PipelineDriver, @unchecked Sendable {
     private func park<R>(_ queue: Parked<R>, _ completion: @escaping (R) -> Void) {
         locked { queue.completions.append(completion) }
     }
-    private func resolve<R>(_ queue: Parked<R>, _ result: R) {
+    private func resolve<R>(_ queue: Parked<R>, _ result: R, _ method: String, _ file: StaticString, _ line: UInt) {
         let head: ((R) -> Void)? = locked { queue.completions.isEmpty ? nil : queue.completions.removeFirst() }
-        head?(result)
+        guard let head else { return Self.nothingParked(method, file, line) }
+        head(result)
+    }
+
+    private static func nothingParked(_ method: String, _ file: StaticString, _ line: UInt) {
+        XCTFail("FakePipelineDriver.\(method) has nothing to resolve: the production code has not made that call yet (or it was already resolved)", file: file, line: line)
     }
 
     // MARK: - run-all, cancel, supervise
@@ -58,7 +64,9 @@ final class FakePipelineDriver: PipelineDriver, @unchecked Sendable {
     }
 
     /// Resolve the oldest in-flight run-all.
-    func finish(_ result: Result<URL?, Error>) { resolve(runAllQueue, result) }
+    func finish(_ result: Result<URL?, Error>, file: StaticString = #filePath, line: UInt = #line) {
+        resolve(runAllQueue, result, "finish", file, line)
+    }
 
     /// Fire a progress heartbeat as if the subprocess emitted one.
     func emitProgress(_ progress: PipelineProgress) {
@@ -79,7 +87,9 @@ final class FakePipelineDriver: PipelineDriver, @unchecked Sendable {
         park(finalizeQueue, completion)
     }
 
-    func finishFinalize(_ result: Result<Void, Error>) { resolve(finalizeQueue, result) }
+    func finishFinalize(_ result: Result<Void, Error>, file: StaticString = #filePath, line: UInt = #line) {
+        resolve(finalizeQueue, result, "finishFinalize", file, line)
+    }
 
     // MARK: - summarize, preview, publish
 
@@ -118,7 +128,9 @@ final class FakePipelineDriver: PipelineDriver, @unchecked Sendable {
         park(previewQueue, completion)
     }
 
-    func finishPreview(_ result: Result<Void, Error>) { resolve(previewQueue, result) }
+    func finishPreview(_ result: Result<Void, Error>, file: StaticString = #filePath, line: UInt = #line) {
+        resolve(previewQueue, result, "finishPreview", file, line)
+    }
 
     func summarize(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
         summarize(transcriptMD: transcriptMD, backend: nil, completion: completion)
@@ -132,7 +144,9 @@ final class FakePipelineDriver: PipelineDriver, @unchecked Sendable {
         park(summarizeQueue, completion)
     }
 
-    func finishSummarize(_ result: Result<Void, Error>) { resolve(summarizeQueue, result) }
+    func finishSummarize(_ result: Result<Void, Error>, file: StaticString = #filePath, line: UInt = #line) {
+        resolve(summarizeQueue, result, "finishSummarize", file, line)
+    }
 
     private let appleSummarizeQueue = Parked<Result<Void, Error>>()
 
@@ -142,21 +156,27 @@ final class FakePipelineDriver: PipelineDriver, @unchecked Sendable {
     }
 
     /// Resolve the oldest in-flight Apple re-summarize (PIPE52).
-    func finishAppleSummarize(_ result: Result<Void, Error>) { resolve(appleSummarizeQueue, result) }
+    func finishAppleSummarize(_ result: Result<Void, Error>, file: StaticString = #filePath, line: UInt = #line) {
+        resolve(appleSummarizeQueue, result, "finishAppleSummarize", file, line)
+    }
 
     func publish(summaryJSON: URL, completion: @escaping (Result<URL?, Error>) -> Void) {
         locked { publishInputs.append(summaryJSON) }
         park(publishQueue, completion)
     }
 
-    func finishPublish(_ result: Result<URL?, Error>) { resolve(publishQueue, result) }
+    func finishPublish(_ result: Result<URL?, Error>, file: StaticString = #filePath, line: UInt = #line) {
+        resolve(publishQueue, result, "finishPublish", file, line)
+    }
 
     func publishFromPaste(transcriptMD: URL, completion: @escaping (Result<Void, Error>) -> Void) {
         locked { publishFromPasteInputs.append(transcriptMD) }
         park(publishFromPasteQueue, completion)
     }
 
-    func finishPublishFromPaste(_ result: Result<Void, Error>) { resolve(publishFromPasteQueue, result) }
+    func finishPublishFromPaste(_ result: Result<Void, Error>, file: StaticString = #filePath, line: UInt = #line) {
+        resolve(publishFromPasteQueue, result, "finishPublishFromPaste", file, line)
+    }
 
     // MARK: - merge (FEAT9)
 
@@ -168,7 +188,9 @@ final class FakePipelineDriver: PipelineDriver, @unchecked Sendable {
         park(mergeQueue, completion)
     }
 
-    func finishMerge(_ result: Result<URL?, Error>) { resolve(mergeQueue, result) }
+    func finishMerge(_ result: Result<URL?, Error>, file: StaticString = #filePath, line: UInt = #line) {
+        resolve(mergeQueue, result, "finishMerge", file, line)
+    }
 
     // MARK: - ask (UX37)
 
@@ -184,7 +206,9 @@ final class FakePipelineDriver: PipelineDriver, @unchecked Sendable {
 
     func cancelAsk() { locked { cancelAskCalls += 1 } }
 
-    func finishAsk(_ result: Result<AskAnswer, Error>) { resolve(askQueue, result) }
+    func finishAsk(_ result: Result<AskAnswer, Error>, file: StaticString = #filePath, line: UInt = #line) {
+        resolve(askQueue, result, "finishAsk", file, line)
+    }
 
     // MARK: - roster (FEAT3-UNDO, FEAT24)
 
@@ -213,7 +237,9 @@ final class FakePipelineDriver: PipelineDriver, @unchecked Sendable {
         completion(.success(()))
     }
 
-    func finishEnroll(_ result: Result<Void, Error>) { resolve(enrollQueue, result) }
+    func finishEnroll(_ result: Result<Void, Error>, file: StaticString = #filePath, line: UInt = #line) {
+        resolve(enrollQueue, result, "finishEnroll", file, line)
+    }
 
     // MARK: - restore (STOR5): the latest completion only
 
@@ -236,10 +262,23 @@ final class FakePipelineDriver: PipelineDriver, @unchecked Sendable {
         }
     }
 
-    func landPreview(_ plan: RestorePlan) { locked { restorePreviewCompletion }?(.success(plan)) }
-    func failPreview(_ message: String) { locked { restorePreviewCompletion }?(.failure(Self.error(message))) }
-    func landRestore() { locked { restoreCompletion }?(.success(())) }
-    func failRestore(_ message: String) { locked { restoreCompletion }?(.failure(Self.error(message))) }
+    func landPreview(_ plan: RestorePlan, file: StaticString = #filePath, line: UInt = #line) {
+        resolveLatest(locked { restorePreviewCompletion }, .success(plan), "landPreview", file, line)
+    }
+    func failPreview(_ message: String, file: StaticString = #filePath, line: UInt = #line) {
+        resolveLatest(locked { restorePreviewCompletion }, .failure(Self.error(message)), "failPreview", file, line)
+    }
+    func landRestore(file: StaticString = #filePath, line: UInt = #line) {
+        resolveLatest(locked { restoreCompletion }, .success(()), "landRestore", file, line)
+    }
+    func failRestore(_ message: String, file: StaticString = #filePath, line: UInt = #line) {
+        resolveLatest(locked { restoreCompletion }, .failure(Self.error(message)), "failRestore", file, line)
+    }
+
+    private func resolveLatest<R>(_ completion: ((R) -> Void)?, _ result: R, _ method: String, _ file: StaticString, _ line: UInt) {
+        guard let completion else { return Self.nothingParked(method, file, line) }
+        completion(result)
+    }
 
     private static func error(_ message: String) -> NSError {
         NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: message])

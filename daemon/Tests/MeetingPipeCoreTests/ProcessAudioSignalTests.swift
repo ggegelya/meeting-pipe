@@ -616,7 +616,11 @@ final class ProcessAudioSignalTests: XCTestCase {
         // Spin main's run loop while the burst lands. Before CONC9 the poll was a main-run-loop
         // `Timer`, so this is what put it beside the bus handlers; after, it is simply idle time.
         let spinUntil = Date().addingTimeInterval(0.3)
+        let giveUp = Date().addingTimeInterval(30)
         while Date() < spinUntil || burst.wait(timeout: .now()) == .timedOut {
+            guard Date() < giveUp else {
+                return XCTFail("the bus burst never finished landing: a handler is wedged against the poll")
+            }
             RunLoop.current.run(until: Date().addingTimeInterval(0.005))
         }
         // Let the burst finish landing before stopping, so the handlers really ran against the poll.

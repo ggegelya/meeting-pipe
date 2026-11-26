@@ -1,6 +1,7 @@
 import XCTest
 import os
 @testable import MeetingPipe
+import MeetingPipeTestSupport
 
 /// PERF13 item 8: planning a library move walked the whole library on main
 /// (`LibraryMover.plan` from `@MainActor` `StorageStatsStore.planMove`, straight after the
@@ -46,7 +47,11 @@ final class StorageMovePlanPERF13Tests: XCTestCase {
         )
 
         let first = Task { await store.planMove(to: destination) }
-        while !store.isPlanningMove { await Task.yield() }
+        guard await waitUntil({ store.isPlanningMove }) else {
+            release.signal()
+            _ = await first.value
+            return XCTFail("the first pick never started measuring")
+        }
 
         let second = await store.planMove(to: destination)
         XCTAssertNil(second, "a pick while a plan is measuring must not start a second walk")

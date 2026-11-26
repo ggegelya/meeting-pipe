@@ -1711,7 +1711,9 @@ final class RetranscribeEditLockTests: XCTestCase {
 
         XCTAssertFalse(model.overlayEditsLocked(stem: stem))
         let run = Task { await model.retranscribeMeeting(stem: stem) }
-        while pending.isEmpty { await Task.yield() }
+        guard await waitUntil({ !pending.isEmpty }) else {
+            return XCTFail("the re-transcribe never reached the enqueue seam")
+        }
 
         XCTAssertTrue(model.overlayEditsLocked(stem: stem), "queued or running locks the stem")
         XCTAssertFalse(model.overlayEditsLocked(stem: "20260101-1200"), "only that stem")
