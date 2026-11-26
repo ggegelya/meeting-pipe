@@ -2,9 +2,10 @@
 id: PIPE52
 title: Regenerate, Retry and the local preview dispatch on the global backend instead of the meeting's effective one, so Apple Intelligence meetings can never be re-summarized and the on-device preview can run on a cloud backend
 category: Pipeline
-status: partial
+status: owner-verify
 priority: P2
-comment: All five scopes shipped (merge leg 2026-11-26: merge_meetings writes run-all's apple_pending sentinel through orchestrate.write_apple_pending on both branches and clears a stale one, PipelineLauncher.mergeMeetings completes through completeViaAppleIntelligence; pytest + launcher tests, ci-local). Remainder: the owner walkthrough (one Regenerate on an Apple-pinned meeting, one local preview), not yet offered for owner-verify.
+verification: simple
+comment: All five scopes shipped (merge leg 2026-11-26: merge_meetings writes run-all's apple_pending sentinel through orchestrate.write_apple_pending on both branches and clears a stale one, PipelineLauncher.mergeMeetings completes through completeViaAppleIntelligence; pytest + launcher tests, ci-local). Remainder: the owner walkthrough (one Regenerate on an Apple-pinned meeting, one local preview). Owner approved owner-verify on 2026-11-26.
 ---
 
 # PIPE52: Regenerate, Retry and the local preview dispatch on the global backend instead of the meeting's effective one, so Apple Intelligence meetings can never be re-summarized and the on-device preview can run on a cloud backend
@@ -75,5 +76,12 @@ Related: [ARCH14](./ARCH14.md) (types the backend string; it lists `canPreviewLo
 
 **Progress (2026-11-26): scope 3, the merge leg, shipped.** `merge_meetings` hands off at its one summarize site, so the fresh and the resume branch both do: when `effective_backend(cfg)` (after the primary's workflow overlay and the zero-egress clamp) is `apple_intelligence`, it writes `<stem>.apple_pending.json` through `orchestrate.write_apple_pending`, the writer `_check_apple_handoff` now calls too, emits `pipeline` / `meetings_merge_handed_off` (not `run_skipped`, which would close a `run_started` a merge never emits) and returns `skipped: apple_pending` with no summary and no publish; `mp merge-meetings` exits 0 on it. It clears a stale sentinel at start (`orchestrate.clear_stale_apple_sentinel`, PIPE34's rule), because the launcher now diverts any merge that leaves one. `PipelineLauncher.mergeMeetings` completes through run-all's own `completeViaAppleIntelligence` (PIPE25's language fallback, the run sidecar, `mp publish`) via a shared `consumeApplePending`, so a failed or cancelled on-device summary fails the merge, the fragments stay, and Retry re-enters the resume branch, which hands off again. Known edge, not fixed here: merge runs outside PIPE11's lane, so its Apple phase shares the launcher's single `appleTask` and `.run` slot with a run-all that may be running at the same time, and a Cancel aimed at one can reach the other; a cancelled merge recovers through the resume branch.
 
-**Owner walkthrough (not yet offered for owner-verify).** With a workflow pinned to Apple Intelligence on a meeting that has a transcript: Regenerate from the row, and see the summary land and publish with no "summarization.backend='apple_intelligence' runs in the daemon" failure. With the global backend Local MLX and a meeting whose workflow pins Anthropic: the Summary tab offers Re-run locally (preview), and `pipeline.log` shows `--candidate --backend local` for that run. Optionally, merge two Apple-pinned fragments and see one summary land and publish under the primary.
+## Owner walkthrough
+
+1. [session] Confirm the installed build is newer than the landing commit (`./scripts/rebuild.sh` if not).
+2. [owner] On a meeting that has a transcript and whose workflow is pinned to Apple Intelligence, press Regenerate on its row. Pass: the summary lands and publishes, with no "summarization.backend='apple_intelligence' runs in the daemon" failure.
+3. [owner] With the global backend Local MLX, open a meeting whose workflow pins Anthropic. Pass: its Summary tab offers Re-run locally (preview), and `pipeline.log` shows `--candidate --backend local` for that run. Put the backend and the pins back afterwards.
+4. [owner] Optionally, merge two Apple-pinned fragments and see one summary land and publish under the primary.
+
+Cost: about ten minutes and a couple of settings changes put back afterwards; no recording, no live call. Why not a harness: the dispatch is pinned with the fake driver and the launcher tests; only the real Apple model and the real local model show the summary landing and the preview really running on this Mac.
 

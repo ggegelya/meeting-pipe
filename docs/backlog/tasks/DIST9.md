@@ -2,9 +2,10 @@
 id: DIST9
 title: rebuild.sh overwrites the running daemon's executable in place long before it stops the daemon, and never checks for a live recording
 category: Distribution
-status: partial
+status: owner-verify
 priority: P2
-comment: Shipped 2026-11-18: scripts/lib/live-recording.sh (running daemon plus a recovery manifest is live; y/N on a TTY, exit 2 without one unless --force) in rebuild.sh and install.sh, rebuild stops before writing and renames the binary, scripts/test-rebuild-guard.sh in ci-local, README updated. 2026-11-26: the 2026-11-21 amendment shipped, a recordings folder that cannot be listed (or may sit behind a parent that cannot be) is cannot tell and asks or refuses, red-first cases in test-rebuild-guard.sh. Owed: the owner's two-step walkthrough (rebuild during a manual recording, answer n; rebuild idle).
+verification: simple
+comment: Shipped 2026-11-18: scripts/lib/live-recording.sh (running daemon plus a recovery manifest is live; y/N on a TTY, exit 2 without one unless --force) in rebuild.sh and install.sh, rebuild stops before writing and renames the binary, scripts/test-rebuild-guard.sh in ci-local, README updated. 2026-11-26: the 2026-11-21 amendment shipped, a recordings folder that cannot be listed (or may sit behind a parent that cannot be) is cannot tell and asks or refuses, red-first cases in test-rebuild-guard.sh. Owed: the owner's two-step walkthrough (rebuild during a manual recording, answer n; rebuild idle). Owner approved owner-verify on 2026-11-26.
 ---
 
 # DIST9: rebuild.sh overwrites the running daemon's executable in place long before it stops the daemon, and never checks for a live recording
@@ -58,6 +59,10 @@ Related: [DIST5](./DIST5.md) item 1 (one shared relaunch helper in `scripts/lib/
 
 1. [owner] Start a manual recording, run `./scripts/rebuild.sh`, and see it stop to ask before building into the app; answer `n` and see the recording still running in the HUD; stop the recording.
 2. [owner] With nothing recording, run `./scripts/rebuild.sh` and see it complete and relaunch without asking.
+
+If step 2 instead says it cannot tell whether a recording is live and names the recordings folder, that is the 2026-11-26 amendment's cannot-tell path (Terminal could not list the folder): report it rather than counting a pass.
+
+Cost: two rebuilds of a few minutes each and one throwaway manual recording; no meeting, no live call, schedulable at will. Why not a harness: `scripts/test-rebuild-guard.sh` runs a scratch copy of `rebuild.sh` with launchctl, pgrep, pkill, open and codesign stubbed; only the real script against the installed app and a live recorder shows the real stop, rename and relaunch, which the implementing session did not run, per the batch rules.
 
 **Progress (2026-11-18):** DIST5's `scripts/lib/relaunch.sh` has not landed, so the check is its own sourced helper, `scripts/lib/live-recording.sh`, for DIST5 to fold in. Its three predicates are text-in, verdict-out (`live_recording_output_dir` parses `[recording] output_dir` with awk rather than running the venv's `mp`, so a broken venv or config cannot make the guard fail open; `live_recording_manifests`; `live_recording_verdict`), and `guard_live_recording` acts on them, reading the answer from `/dev/tty`. In `rebuild.sh` the check runs after the build (so it answers about now) and before the venv sync; the stop moved ahead of the first app write with a wait for the process to exit (a `bootout` on both branches, since the UX42 toggle only disables the label and a daemon launchd started is still a loaded KeepAlive job whose SIGTERM exit asks for a respawn; `pkill` too when launch at login is off), an EXIT trap names the stopped daemon and how to start it if anything fails before the relaunch is verified, the plist check moved ahead of the stop so a missing plist no longer leaves the daemon down, and the binary lands as `Contents/MacOS/.MeetingPipe.new.<pid>` renamed over `MeetingPipe`. `install.sh` gains `--force` and the check before `rm -rf "$APP"`; its own order (write, then relaunch) is DIST5's. `scripts/test-rebuild-guard.sh` (12 predicate cases, 6 stubbed runs of a scratch copy of the real `rebuild.sh`, one with a failing re-sign) failed 7 cases against the pre-fix script and passes now; it runs in `ci-local.sh`'s daemon job. `test-login-agent-guard.sh` stays green. Not run here, per the batch rules: the real `rebuild.sh` or `install.sh`.
 

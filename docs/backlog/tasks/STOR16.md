@@ -2,9 +2,10 @@
 id: STOR16
 title: The library move checks for in-flight work only at plan time and only from file heuristics, then executes unguarded after its confirm
 category: Storage
-status: partial
+status: done
 priority: P2
-comment: Shipped 2026-11-18 - LibraryMoveGuard asks the recorder's owned stems, the lane's queue depth and meeting spawns at plan, switch and execute, claims the move in the same main-actor turn, recording starts are deferred and replayed (option b, the owner's decision of 2026-11-18), busy gate gains moveRunning, file fallback tests every mic.wav and counts from the newest write. 2026-11-26 the 2026-11-21 amendment shipped - the guard also reports busy while StorageJanitor or the orphan sweep runs, and both decline (`sweep_declined`) while a move runs; 4 new tests, ci-local green. Owner owes closing it. [Spec](./STOR16.md)
+closed: 2026-11-26
+comment: Shipped in 87213466 (LibraryMoveGuard asks the recorder, the lane and meeting spawns at plan, switch and execute, and holds recording starts), 3338fa07 (option b, the owner's choice, and the held start's wait logged) and 20a1a59a (the 2026-11-21 amendment: the guard sees StorageJanitor and the orphan sweep, and both decline during a move). Closed by the owner's OK on 2026-11-26 after ci-local green. [Spec](./STOR16.md)
 ---
 
 # STOR16: The library move checks for in-flight work only at plan time and only from file heuristics, then executes unguarded after its confirm

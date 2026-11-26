@@ -2,9 +2,10 @@
 id: AUTO7
 title: Any app or clicked link can start or stop a recording, run a digest, or auto-run an Ask through the unauthenticated `meetingpipe://` scheme
 category: Automation
-status: partial
+status: owner-verify
 priority: P2
-comment: Shipped 2026-11-18 (URL confirm for toggle/record/record_byo/stop/digest, URL ask prefills, askArgs `--`); the 2026-11-21 amendment shipped 2026-11-26 (a URL toggle is decided as start or stop at arrival and does nothing, logging automation / command_stale, if that no longer holds at accept; AutomationGateTests red then green). Owner still owes the check that `open meetingpipe://stop` during a recording shows the confirm and the recording continues until it is accepted.
+verification: simple
+comment: Shipped 2026-11-18 (URL confirm for toggle/record/record_byo/stop/digest, URL ask prefills, askArgs `--`); the 2026-11-21 amendment shipped 2026-11-26 (a URL toggle is decided as start or stop at arrival and does nothing, logging automation / command_stale, if that no longer holds at accept; AutomationGateTests red then green). Owner still owes the check that `open meetingpipe://stop` during a recording shows the confirm and the recording continues until it is accepted. Owner approved owner-verify on 2026-11-26.
 ---
 
 # AUTO7: any app or clicked link can start or stop a recording, run a digest, or auto-run an Ask through the unauthenticated `meetingpipe://` scheme
@@ -61,3 +62,10 @@ Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (
 Scope: resolve a toggle to start or stop at arrival, and perform nothing (with a logged row) when the state no longer matches at accept. Acceptance: a router test that changes state between present and accept in both directions. `swift test` green, 2 new tests.
 
 **Progress (2026-11-26): amendment shipped.** `AutomationRouter.route` takes a live `isRecording` read instead of a value, read once when the link arrives and again at accept. `AutomationConfirmation.expectsRecording` carries a `toggle`'s arrival decision; on a mismatch at accept the router performs nothing and writes `automation` / `command_stale` (`verb`, `source`, `decided`) in place of `command_confirmed`. The read is `AutomationGate.toggleStops(state, startInFlight:)`, what `toggleManual` would do, rather than idle-or-not: idle-or-not had also titled a toggle from a prompt or a skipped meeting "Stop Recording" when it starts one, and missed a start in flight, which the toggle cancels. Tests: the two race directions (red on assertions first, then green) plus one for `toggleStops`. Not covered: a recording that ended and a new one that began while the panel was open both read as recording, so a stale Stop accepted then stops the new one (noted in `daemon/docs/gotchas.md`). The owner check above is still owed.
+
+## Owner walkthrough
+
+1. [session] Confirm the installed build is newer than the landing commit (`./scripts/rebuild.sh` if not).
+2. [owner] Start a manual recording, then run `open meetingpipe://stop` in Terminal. Pass: the confirm appears and names a link as the origin, and the recording continues until you accept it; accepting stops it.
+
+Cost: a minute and one throwaway manual recording; no meeting, no live call. Why not a harness: the router tests drive a fake confirm presenter; only the installed app shows macOS handing it the URL and the real panel holding a real recording until it is accepted.

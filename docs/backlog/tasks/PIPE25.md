@@ -2,9 +2,10 @@
 id: PIPE25
 title: Apple Intelligence fails every Ukrainian meeting and the only recovery is a manual local re-summarize; fall back to local automatically on the typed unsupported-language error
 category: Pipeline
-status: partial
+status: owner-verify
 priority: P2
-comment: All built scope shipped. Batch 10 (2026-11-19) shipped run-all's fallback, the pre-check, the event, the run.json provenance and the notice that leads with Re-summarize; the 2026-11-21 amendment (2026-11-26) moved the pre-check and the refusal substitution into `PipelineLauncher.summarizeOnDevice`, which run-all, merge and the Library's regenerate and Retry (PIPE41's automatic re-run included) all call. 2 new tests, swift test green. Remaining: the owner's live checks only, a short Ukrainian meeting on Apple Intelligence publishing with a local summary and the reason, and meeting 20261016-095827's notice leading with Re-summarize and no Retry. [Spec](./PIPE25.md)
+verification: complex
+comment: All built scope shipped. Batch 10 (2026-11-19) shipped run-all's fallback, the pre-check, the event, the run.json provenance and the notice that leads with Re-summarize; the 2026-11-21 amendment (2026-11-26) moved the pre-check and the refusal substitution into `PipelineLauncher.summarizeOnDevice`, which run-all, merge and the Library's regenerate and Retry (PIPE41's automatic re-run included) all call. 2 new tests, swift test green. Remaining: the owner's live checks only, a short Ukrainian meeting on Apple Intelligence publishing with a local summary and the reason, and meeting 20261016-095827's notice leading with Re-summarize and no Retry. Owner approved owner-verify on 2026-11-26. [Spec](./PIPE25.md)
 ---
 
 # PIPE25: Apple Intelligence fails every Ukrainian meeting and the only recovery is a manual local re-summarize; fall back to local automatically on the typed unsupported-language error
@@ -77,3 +78,11 @@ Failure: a meeting in an unsupported language on an Apple-pinned workflow. Run-a
 Scope: move the pre-check and the refusal substitution to where both routes share them (the caller side of `runAppleSummarize`, or the Apple branch of `regenerateMeeting`). Acceptance: a launcher test where the regenerate route meets `.unsupportedLanguage` and ends on the local model with the `refused` trigger, and a library-service test where an auto retry of such a meeting never calls the Apple summarizer. `swift test` green, 2 new tests.
 
 **Progress (2026-11-26): the amendment.** The pre-check, the Apple call and the `.unsupportedLanguage` substitution now live in one private `PipelineLauncher.summarizeOnDevice(anchor:onProgress:then:)`, which summarizes only. `completeViaAppleIntelligence` (run-all and PIPE52's merge) publishes after it; `summarizeViaAppleIntelligence` (the Library's regenerate, so every Retry with a reusable transcript and PIPE41's automatic re-run) hands its result to `regenerateMeeting`, which keeps its NDA re-check and `performRepublish`. `substituteLocal` lost its own publish for that reason. `MeetingLibraryService` and the fakes are unchanged. Pinned by `AppleLanguageFallbackTests`: the regenerate route meeting the refusal ends on `--backend local --fallback-from apple_intelligence:unsupported_language` with trigger `refused` and no launcher publish, and an auto retry of an Apple-pinned Ukrainian meeting, through a real `MeetingLibraryService` over a real launcher, never calls the Apple summarizer and publishes exactly once. Not covered, deliberately: the candidate preview (`summarizePreviewViaApple`), which writes a candidate file the local substitute does not (`daemon/docs/gotchas.md`, "Every Apple summary goes through summarizeOnDevice").
+
+## Owner walkthrough
+
+1. [session] Confirm the installed build is newer than the landing commit (`./scripts/rebuild.sh` if not).
+2. [owner] Open meeting `20261016-095827` in the Library. Pass: its failure notice leads with **Re-summarize with <local>** and offers no Retry. Cost: one click, no setup.
+3. [owner] With the Apple Intelligence backend, record a short Ukrainian meeting. Pass: it publishes with a local-model summary, and the provenance line names the reason (Apple Intelligence does not support the language). Cost: one short real meeting in Ukrainian, with the backend switched to Apple Intelligence for it and back afterwards.
+
+Step 3 is what makes this `complex`; step 2 alone would be `simple`. Why not a harness: the fallback, the pre-check and the notice ordering are pinned with an injected summarizer seam and a pure `FailureNotice` decision test; only the real system model shows that it refuses Ukrainian and that the pre-check reads the real language, and only the owner's library holds the 2026-10-16 meeting.

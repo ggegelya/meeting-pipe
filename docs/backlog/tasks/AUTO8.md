@@ -2,9 +2,10 @@
 id: AUTO8
 title: The MCP server's `list_actions` returns model-written task text unfenced and uncapped while its own description tells the client returned text is fenced, and meeting titles are unfenced in every tool
 category: Automation
-status: partial
+status: done
 priority: P2
-comment: Shipped 2026-11-17 (awaiting owner close): every model-written title, task and owner fenced field by field in every MCP tool, task capped at 300 chars, UNTRUSTED_NOTE on list_meetings and true for every tool, actions.discover runs clean_person on owner, list_actions ranks before the cut (dated soonest, then undated newest first) and returns total/truncated; table-driven fence test over the registered tools. 2026-11-26: the 2026-11-21 amendment shipped, a due is bare only when the whole string is an ISO date or datetime. Remainder: owner close. [Spec](./AUTO8.md)
+closed: 2026-11-26
+comment: Shipped in 7bd4315a (every model-written MCP title, task and owner fenced per field, task capped at 300 chars, list_actions ranked before the cut with total and truncated) and e5eb6dec (the 2026-11-21 amendment: a due is bare only when the whole string is an ISO date or datetime). Closed by the owner's OK on 2026-11-26 after ci-local green. [Spec](./AUTO8.md)
 ---
 
 # AUTO8: the MCP server's `list_actions` returns model-written task text unfenced and uncapped while its own description tells the client returned text is fenced, and meeting titles are unfenced in every tool

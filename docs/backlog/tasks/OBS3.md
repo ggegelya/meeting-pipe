@@ -2,9 +2,10 @@
 id: OBS3
 title: Failure events carry only a caption, a signal death is read as an exit code, and three pipeline commands fail with no event at all
 category: Observability
-status: partial
+status: owner-verify
 priority: P2
-comment: Shipped 2026-11-19 (structured daemon failure rows, signal vs exit, command_failed from every subcommand, run-all missing secret exits 2, emit never raises, typed transcript reads, SW-19) and 2026-11-26 (the second fix review's amendment - command_failed, both run_failed rows, stage_failed, finalize_failed and sink_failed carry the error class and typed cause, never the exception text). Owed - the owner reads one real failure row in events.jsonl after the next pipeline failure. [Spec](./OBS3.md)
+verification: complex
+comment: Shipped 2026-11-19 (structured daemon failure rows, signal vs exit, command_failed from every subcommand, run-all missing secret exits 2, emit never raises, typed transcript reads, SW-19) and 2026-11-26 (the second fix review's amendment - command_failed, both run_failed rows, stage_failed, finalize_failed and sink_failed carry the error class and typed cause, never the exception text). Owed - the owner reads one real failure row in events.jsonl after the next pipeline failure. Owner approved owner-verify on 2026-11-26. [Spec](./OBS3.md)
 ---
 
 # OBS3: failure events carry only a caption, a signal death is read as an exit code, and three pipeline commands fail with no event at all
@@ -96,3 +97,11 @@ Found by the [second fix review](../../audits/2026-11-21-second-fix-review.md) (
 `failure_details.fail_command` emits `message=str(error)[:COMMAND_MESSAGE_CAP]` on the `command_failed` row. The daemon side of this task deliberately keeps error text out of its rows (SEC38). For a pydantic `ValidationError`, `str(error)` includes `input_value=` snippets, so a failed summarize, merge, paste-publish or finalize can write a fragment of a summary or transcript into `pipeline_events.jsonl`, which `mp logs` and Diagnostics show and which travels in field packs. `run_failed` already writes `error=str(e)`, so this is not new in kind. Scope: emit the classified cause and error type only, or a message built from a fixed vocabulary; apply the same to `run_failed`. Acceptance: a test that a validation error whose input contains a marker string leaves no marker in the emitted rows. Pipeline suite green, 1 new test.
 
 **Progress (2026-11-26):** the amendment shipped. `fail_command` drops `message` (and `COMMAND_MESSAGE_CAP`); run-all's `run_failed` writes `cause` from `emit_failure`'s payload in place of `error`; the publish-stage `run_failed` drops the joined sink error text for `cause: publish` (the failed sink names were already on the publish `stage_completed`'s `failures`). Beyond the amendment's two sites, the same leak was closed in `stage_failed` (diarize cleanup, whose `message` could quote the model's reply), `finalize_failed` (`error`) and `publisher` / `sink_failed` (`error`, now `cause`). The text still reaches the log lines (stderr, plus `pipeline.log` for run-all) and, for a sink, `<stem>.publish.json`; neither is the event log. `prefetch_model`'s `error` is a stdout sentinel `ModelDownloadSupervisor` reads, not an event row, and was left. One new test (`test_no_failure_row_copies_the_error_text_into_the_event_log`, a `ValidationError` whose input carries a marker through all five row kinds).
+
+## Owner walkthrough
+
+1. [session] Confirm the installed build is newer than the landing commit (`./scripts/rebuild.sh` if not).
+2. [owner] After the next real pipeline failure (any meeting that lands in Needs you), tell the session which meeting it was. Nothing to set up and nothing to provoke.
+3. [session] Read that meeting's rows and report them against the pass line. Pass: the `coordinator` / `pipeline_failed` row in `events.jsonl` carries `stage` and `error_type` and no error caption; when `mp` was what failed, it also carries `termination_reason` with `exit_code` (or `signal`), plus `cause` when the pipeline reported one, and the matching `run_failed` or `command_failed` row in `pipeline_events.jsonl` carries `error_type` and `cause` and none of the exception text. A daemon-side failure (the Apple summarizer, the daemon's own transcription pass) has no exit fields and no `pipeline_events.jsonl` row, and that is not a fail.
+
+Cost: a minute of the owner's time, but it waits on a failure the owner cannot schedule, which is why it is `complex`. Why not a harness: every row shape is already pinned (the Swift outcome and attribute tests, `test_no_failure_row_copies_the_error_text_into_the_event_log`); what only the field can show is that a real failure, from whatever cause it really has, reaches those builders rather than a path the tests do not drive. The field evidence that filed this task was exactly such a row.

@@ -2,9 +2,10 @@
 id: PIPE51
 title: All four publishers send the raw transcript, so speaker names and text corrections made in the Library never reach Notion, Obsidian, the filesystem or LAN
 category: Pipeline
-status: partial
+status: owner-verify
 priority: P2
-comment: Shipped 2026-11-18 (all four sinks, fanout, publish_notion.publish); 2026-11-26 amendment shipped: a publish now refuses an unreadable speaker-label or correction overlay before any sink (exit 3, publish.json records it), tested. Remaining: the owner's one real rename + Republish to Notion/Obsidian to see the names land.
+verification: simple
+comment: Shipped 2026-11-18 (all four sinks, fanout, publish_notion.publish); 2026-11-26 amendment shipped: a publish now refuses an unreadable speaker-label or correction overlay before any sink (exit 3, publish.json records it), tested. Remaining: the owner's one real rename + Republish to Notion/Obsidian to see the names land. Owner approved owner-verify on 2026-11-26.
 ---
 
 # PIPE51: All four publishers send the raw transcript, so speaker names and text corrections made in the Library never reach Notion, Obsidian, the filesystem or LAN
@@ -63,3 +64,10 @@ Failure: the owner corrects a line to take a remark out, then `<stem>.transcript
 Scope: `publish_text` (or `publish_router.fanout` before any sink) calls `refuse_unreadable_overlays` and the publish fails with the same named reason. Acceptance: the pinning test is rewritten to expect the refusal, a new test shows no sink is called and `<stem>.publish.json` records the reason, and the summarize and publish messages name the same file. Pipeline suite green, 2 tests changed or added.
 
 **Progress (2026-11-26): amendment shipped.** `publish_text` calls `summarize.refuse_unreadable_overlays(outcome="published", stores=PUBLISH_OVERLAYS)`, so a present but unreadable `<stem>.speaker_labels.json` or `<stem>.transcript_corrections.json` raises `OverlayUnreadable` with summarize's sentence ("Nothing was published" in place of "Nothing was summarized", same file named). `fanout` catches it before any sink: one `log.error` line with the sentence, one failure metadata write (`cause: overlay_unreadable`, `operation: publish`), every resolved sink recorded failed in `<stem>.publish.json` (`state: none`) with a `sink_failed` row carrying `error_type` and `cause` only (OBS3), so every caller exits 3 and Retry republishes. Deliberate narrowing: an unreadable `<stem>.markers.json` does not stop a publish, since flagged moments feed the summary that already exists and no sink reads the file. The pinning test is rewritten to expect the refusal; new tests cover the fanout (no sink called, publish.json, events), `mp publish` (exit 3, the line names the file), the shared wording with summarize, and the markers exclusion; a Swift test pins that `overlayRefusal` reads the clean first line. The owner's live rename + Republish from the original acceptance is still owed.
+
+## Owner walkthrough
+
+1. [session] Confirm the installed build is newer than the landing commit (`./scripts/rebuild.sh` if not).
+2. [owner] In the Library, open a meeting already published to Notion or Obsidian, name one speaker on its Transcript tab (and, optionally, correct one line), then Republish. Pass: the Notion page's or Obsidian note's transcript shows the new name (and the corrected line) in place of the raw label. Undo the rename and Republish again if wanted.
+
+Cost: about five minutes, no recording, no live call. Why not a harness: each sink's test runs against a fake publisher or a temp directory; only the real Notion page and the real vault show the names landing as they render there.
