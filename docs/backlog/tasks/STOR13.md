@@ -2,9 +2,10 @@
 id: STOR13
 title: A backup of a missing or unreadable library succeeds, stamps the last-backup marker, and lets retention prune the archives that held recordings
 category: Storage
-status: partial
+status: done
 priority: P2
-comment: Shipped 2026-11-17 (missing or unreadable library refused, library_files in the marker, a collapse to 0 refused, a shrink below half skips retention). 2026-11-26 amendment shipped: a skipped prune stamps retention_hold with the pre-shrink count and later runs compare against it, so the hold lasts until the library is back to half or the marker is deleted (3 new tests). Owner still owes the close.
+closed: 2026-11-26
+comment: Shipped 2026-11-17 (missing or unreadable library refused, library_files in the marker, a collapse to 0 refused, a shrink below half skips retention) and 70b5b276 (the 2026-11-26 amendment: a skipped prune stamps retention_hold, so pruning stays held until the library is back to half or the marker is deleted). Closed by the owner's OK on 2026-11-26. [Spec](./STOR13.md)
 ---
 
 # STOR13: A backup of a missing or unreadable library succeeds, stamps the last-backup marker, and lets retention prune the archives that held recordings
