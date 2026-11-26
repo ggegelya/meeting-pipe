@@ -330,7 +330,7 @@ def run_all(
     # shell-invoked `mp run-all` against wavs that have no sidecar.
     cfg = entry.prepare(cfg, wav)
     storage.sweep_stale_temps(wav.parent, wav.stem)  # PIPE30: a killed writer's leftovers
-    _clear_stale_apple_sentinel(wav)
+    clear_stale_apple_sentinel(wav)
     if backend is not None:
         cfg = with_backend_override(cfg, backend)
         log.info("run-all: one-shot backend override -> %s", backend)
@@ -506,19 +506,43 @@ def _check_too_long(wav: Path, t: dict[str, Path], md_text: str, cfg: Config) ->
     return _skip_result(t, "too_long", manual_bundle=str(bundle))
 
 
-def _clear_stale_apple_sentinel(wav: Path) -> None:
+def apple_pending_path(wav: Path) -> Path:
+    """`<stem>.apple_pending.json` beside the meeting's recording: the hand-off sentinel."""
+    return wav.parent / f"{wav.stem}.apple_pending.json"
+
+
+def clear_stale_apple_sentinel(wav: Path) -> None:
     """PIPE34 (F054): remove a `<stem>.apple_pending.json` an earlier run left.
 
     Only the daemon consumes the sentinel, so a hand-run `mp run-all` on the Apple backend,
-    or a run killed after writing it, leaves one behind; a later run-all that succeeds on
-    another backend then exits 0 and the daemon diverts it into an on-device re-summarize.
-    Cleared at start, the only sentinel left after this run is one this run wrote.
+    or a run killed after writing it, leaves one behind; a later run-all (or, since PIPE52,
+    `mp merge-meetings`) that succeeds on another backend then exits 0 and the daemon
+    diverts it into an on-device re-summarize. Cleared at start, the only sentinel left
+    after this run is one this run wrote. Public because `merge_meetings` hands off too.
     """
-    sentinel = wav.parent / f"{wav.stem}.apple_pending.json"
+    sentinel = apple_pending_path(wav)
     try:
         sentinel.unlink(missing_ok=True)
     except OSError as e:
         log.warning("stale apple_pending sentinel could not be removed: %s", e)
+
+
+def write_apple_pending(wav: Path, transcript_md: Path, transcript_json: Path) -> Path:
+    """Write the Apple Intelligence hand-off sentinel and return its path.
+
+    The one writer of `<stem>.apple_pending.json` (schema in CONVENTIONS, `schema_version`
+    1), shared by run-all's `_check_apple_handoff` and, since PIPE52, `mp merge-meetings`:
+    the daemon sees it after a zero exit, summarizes `transcript_md` on-device, and runs
+    `mp publish`. Atomic and 0600, like every other sidecar."""
+    sentinel = apple_pending_path(wav)
+    storage.atomic_write_text(sentinel, json.dumps({
+        "schema_version": 1,
+        "transcript_md": str(transcript_md),
+        "transcript_json": str(transcript_json),
+    }))
+    log.info("Apple Intelligence backend: handing summary off to the daemon.")
+    log.info("Apple-pending sentinel written: %s", sentinel)
+    return sentinel
 
 
 def _check_apple_handoff(wav: Path, t: dict[str, Path], md_text: str, cfg: Config) -> dict | None:
@@ -532,14 +556,7 @@ def _check_apple_handoff(wav: Path, t: dict[str, Path], md_text: str, cfg: Confi
     to have already rewritten it."""
     if effective_backend(cfg) != "apple_intelligence":
         return None
-    sentinel = wav.parent / f"{wav.stem}.apple_pending.json"
-    storage.atomic_write_text(sentinel, json.dumps({
-        "schema_version": 1,
-        "transcript_md": str(t["md"]),
-        "transcript_json": str(t["json"]),
-    }))
-    log.info("Apple Intelligence backend: handing summary off to the daemon.")
-    log.info("Apple-pending sentinel written: %s", sentinel)
+    sentinel = write_apple_pending(wav, t["md"], t["json"])
     events.emit("pipeline", "run_skipped", wav=str(wav), reason="apple_pending",
                 transcript_chars=len(md_text), sentinel=str(sentinel))
     return _skip_result(t, "apple_pending", apple_pending=str(sentinel))

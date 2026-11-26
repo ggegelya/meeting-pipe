@@ -727,3 +727,115 @@ def test_a_merge_writes_the_summed_audio_length_and_the_last_word_end_ASR10():
 
     assert merged["audio_seconds"] == 30.0, "the fragments laid end to end, not the first fragment's value"
     assert merged["last_speech_sec"] == 10.0 + 7.5
+
+
+# --- PIPE52 scope 3: a merge whose effective backend is Apple hands off --------------
+# Apple Intelligence summarizes in the daemon (Swift), so the Python summarizer raises
+# on it. A merge used to call it after the irreversible audio swap, so every merge of
+# Apple meetings failed there and its resume branch re-raised. It now leaves run-all's
+# `<stem>.apple_pending.json` and stops, and the launcher completes it on-device.
+
+def _apple_pin(primary: Path, **extra) -> None:
+    meta = {"schema_version": 1, "workflow_backend": "apple_intelligence", **extra}
+    primary.with_suffix(".meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+def _apple_global(tmp_path: Path) -> Config:
+    cfg = _local_cfg(tmp_path)
+    cfg.summarization.backend = "apple_intelligence"
+    return cfg
+
+
+def _assert_handed_off(result: dict, primary: Path, client: _FakeClient) -> None:
+    sentinel = primary.with_name(f"{primary.stem}.apple_pending.json")
+    assert client.calls == 0, "the Python summarizer never runs on an Apple merge"
+    assert result["skipped"] == "apple_pending"
+    assert result["apple_pending"] == str(sentinel)
+    assert json.loads(sentinel.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "transcript_md": str(primary.with_suffix(".md")),
+        "transcript_json": str(primary.with_suffix(".json")),
+    }
+    # Nothing published: the daemon's `mp publish` follows its own summary.
+    assert not primary.with_name(f"{primary.stem}.summary.json").exists()
+    assert not primary.with_name(f"{primary.stem}.publish.json").exists()
+
+
+@pytest.mark.parametrize("route", ["workflow_pin", "global"])
+def test_an_apple_merge_writes_the_sentinel_and_summarizes_nothing(monkeypatch, tmp_path: Path, route):
+    _install_wav_fakes(monkeypatch)
+    primary, frag = _two_meetings(tmp_path)
+    if route == "workflow_pin":
+        _apple_pin(primary)  # global stays the default (not Apple)
+        cfg = _local_cfg(tmp_path)
+    else:
+        cfg = _apple_global(tmp_path)
+
+    client = _FakeClient()
+    result = merge_meetings(primary, [frag], cfg=cfg, client=client)
+
+    _assert_handed_off(result, primary, client)
+    # The merge itself still landed: the hand-off is after the swap, not instead of it.
+    assert primary.read_bytes() == b"WAV30.0"
+    assert GAP_TEXT in primary.with_suffix(".md").read_text(encoding="utf-8")
+
+
+def test_an_apple_merge_resume_hands_off_again_without_a_second_concat(monkeypatch, tmp_path: Path):
+    """A failed or cancelled on-device summary leaves the fragments in place, so Retry
+    re-enters the resume branch, which must hand off again rather than raise."""
+    counter: dict = {}
+    _install_wav_fakes(monkeypatch, counter)
+    primary, frag = _two_meetings(tmp_path)
+    _commit_merged_transcript(primary)
+    _put_wav(primary, 30.0)
+    _apple_pin(primary)
+
+    client = _FakeClient()
+    result = merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=client)
+
+    _assert_handed_off(result, primary, client)
+    assert counter.get("n", 0) == 0
+
+
+def test_an_nda_merge_pinned_to_apple_summarizes_locally_and_never_hands_off(monkeypatch, tmp_path: Path):
+    _install_wav_fakes(monkeypatch)
+    primary, frag = _two_meetings(tmp_path)
+    _apple_pin(primary, workflow_nda_mode=True)
+
+    client = _FakeClient()
+    result = merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=client)
+
+    assert client.calls == 1
+    assert "skipped" not in result
+    assert not primary.with_name(f"{primary.stem}.apple_pending.json").exists()
+
+
+def test_a_merge_clears_a_stale_apple_sentinel_before_it_runs(monkeypatch, tmp_path: Path):
+    """PIPE34's rule on the merge path: the launcher diverts any merge that leaves a
+    sentinel into an on-device summary, so one a killed run left behind must not
+    survive a merge that summarized on another backend."""
+    _install_wav_fakes(monkeypatch)
+    primary, frag = _two_meetings(tmp_path)
+    stale = primary.with_name(f"{primary.stem}.apple_pending.json")
+    stale.write_text("{}", encoding="utf-8")
+
+    client = _FakeClient()
+    merge_meetings(primary, [frag], cfg=_local_cfg(tmp_path), client=client)
+
+    assert client.calls == 1
+    assert not stale.exists()
+
+
+def test_main_reports_an_apple_hand_off_as_success(monkeypatch, tmp_path: Path, capsys):
+    import mp.merge_meetings as mm
+
+    primary = tmp_path / "20260101-0900.wav"
+    sentinel = tmp_path / "20260101-0900.apple_pending.json"
+    monkeypatch.setattr(mm, "merge_meetings", lambda *a, **k: {
+        "primary": str(primary), "skipped": "apple_pending", "apple_pending": str(sentinel),
+    })
+
+    assert mm.main([str(primary), str(tmp_path / "20260101-0930.wav")]) == 0
+    out = capsys.readouterr().out
+    assert "Apple Intelligence" in out
+    assert "local only" not in out

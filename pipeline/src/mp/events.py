@@ -164,8 +164,9 @@ _REAL_STEM = re.compile(r"^\d{8}-\d{6}$")
 #: Keys naming the meeting a row belongs to. Deliberately excludes ``path``: on a
 #: ``prefetch`` row that is a model-cache path, and treating it as a stem would drop a
 #: real event.
-#: ``primary`` and ``fragments`` are the merge rows' keys (T9): ``meetings_merged`` and
-#: ``meetings_merge_resumed`` name no other meeting, and ``fragments`` is a list of stems.
+#: ``primary`` and ``fragments`` are the merge rows' keys (T9): ``meetings_merged``,
+#: ``meetings_merge_resumed`` and ``meetings_merge_handed_off`` (PIPE52) name no other
+#: meeting, and ``fragments`` is a list of stems.
 _MEETING_KEYS = ("file", "stem", "wav", "meeting", "primary", "fragments")
 
 

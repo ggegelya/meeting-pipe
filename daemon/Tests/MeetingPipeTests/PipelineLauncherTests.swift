@@ -1187,6 +1187,82 @@ final class PipelineLauncherTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: rig.published.path), "the publish followed")
     }
 
+    // MARK: - PIPE52: a merge that hands off to Apple Intelligence completes on-device
+
+    /// `mp merge-meetings` that exits 0, leaving the Apple sentinel when `handsOff`, and a
+    /// publish that records it ran. The Apple summarize is injected and only counts, so
+    /// nothing reaches the on-device model, and the language read is injected so the test
+    /// never reads this Mac's config.
+    private func runMerge(
+        primaryExtension ext: String, handsOff: Bool
+    ) throws -> (outcome: Result<URL?, Error>?, summarized: [String], published: Bool, sentinelLeft: Bool) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("merge-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let primary = dir.appendingPathComponent("p.\(ext)")
+        let fragment = dir.appendingPathComponent("f.wav")
+        try Data().write(to: primary)
+        try Data().write(to: fragment)
+        let published = dir.appendingPathComponent("published")
+        let sentinel = dir.appendingPathComponent("p.apple_pending.json")
+        let leave = handsOff ? ": > \"${1%.*}.apple_pending.json\"; " : ""
+        let script = """
+        case "$0" in
+          merge-meetings) \(leave)exit 0 ;;
+          publish) : > '\(published.path)'; exit 0 ;;
+        esac
+        exit 2
+        """
+        let summarized = OSAllocatedUnfairLock(initialState: [String]())
+        let launcher = PipelineLauncher(
+            invocation: { .init(shell: "/bin/sh", args: ["-c", script]) },
+            environment: ["PATH": "/usr/bin:/bin"],
+            reapOrphanedServer: {},
+            appleSummarize: { anchor, transcriptMD, _ in
+                summarized.withLock { $0.append("\(MeetingStore.stem(of: anchor)):\(transcriptMD.lastPathComponent)") }
+            },
+            appleLanguage: { _ in (nil, nil) }
+        )
+        let done = expectation(description: "merge completed")
+        var outcome: Result<URL?, Error>?
+        launcher.mergeMeetings(primary: primary, fragments: [fragment]) { result in
+            outcome = result
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 10)
+        return (outcome, summarized.withLock { $0 },
+                FileManager.default.fileExists(atPath: published.path),
+                FileManager.default.fileExists(atPath: sentinel.path))
+    }
+
+    /// Before PIPE52 a merge of Apple meetings ran the Python summarizer, which raises on
+    /// Apple after the irreversible audio swap. The merge now leaves run-all's sentinel, and
+    /// the launcher completes it the way `runAll` does: on-device summary, then publish.
+    func test_a_merge_that_leaves_the_apple_sentinel_summarizes_on_device_then_publishes() throws {
+        let run = try runMerge(primaryExtension: "wav", handsOff: true)
+        if case .failure(let error)? = run.outcome { XCTFail("\(error)") }
+        XCTAssertEqual(run.summarized, ["p:p.md"], "the merged primary's transcript, summarized once")
+        XCTAssertTrue(run.published, "mp publish followed the on-device summary")
+        XCTAssertFalse(run.sentinelLeft, "the sentinel is consumed")
+    }
+
+    /// Retention may have compressed the primary: the hand-off resolves by stem, not `.wav`.
+    func test_a_flac_primary_merge_hands_off_the_same_way() throws {
+        let run = try runMerge(primaryExtension: "flac", handsOff: true)
+        if case .failure(let error)? = run.outcome { XCTFail("\(error)") }
+        XCTAssertEqual(run.summarized, ["p:p.md"])
+        XCTAssertTrue(run.published)
+        XCTAssertFalse(run.sentinelLeft)
+    }
+
+    /// A merge the pipeline summarized and published itself spawns nothing more.
+    func test_a_merge_without_the_sentinel_runs_no_apple_summarize_and_no_second_publish() throws {
+        let run = try runMerge(primaryExtension: "wav", handsOff: false)
+        if case .failure(let error)? = run.outcome { XCTFail("\(error)") }
+        XCTAssertEqual(run.summarized, [])
+        XCTAssertFalse(run.published)
+    }
+
     // MARK: - STOR14: a refusal's reason, printed to stderr, reaches the failure text
 
     /// `mp backup` and `mp restore` printed their `[FAIL]` line to stdout, and `runMP`

@@ -30,6 +30,10 @@ it may be looking at a merge that never reached the swap. The resume branch
 therefore decides from the audio's actual state (see `_resume_audio`), always
 re-renders the markdown from the committed JSON, and refuses (`MergeError`, so
 the daemon keeps the fragments) when the primary is still short.
+
+PIPE52: Apple Intelligence summarizes in the daemon only, so a merge whose effective
+backend is Apple writes run-all's ``<stem>.apple_pending.json`` after the commit and
+stops; ``PipelineLauncher.mergeMeetings`` completes it on-device, as it does run-all.
 """
 from __future__ import annotations
 
@@ -42,8 +46,9 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from . import entry, events, markers, speaker_overlay, storage, transcript_corrections
-from .config import Config
+from .config import Config, effective_backend
 from .markdown import render_markdown
+from .orchestrate import clear_stale_apple_sentinel, write_apple_pending
 from .publish_router import (
     EXIT_PUBLISH_FAILED,
     publish_failed,
@@ -479,7 +484,13 @@ def merge_meetings(
 ) -> dict:
     """Merge `fragment_audios` into `primary_audio`, re-summarize, and republish
     under the primary stem. Returns the publish result; sets ``publish_failed``
-    when every configured sink failed (the caller maps that to exit 3)."""
+    when every configured sink failed (the caller maps that to exit 3).
+
+    PIPE52: when the primary's effective backend is Apple Intelligence, which only the
+    daemon can run, the merge stops after the transcript and audio are committed and
+    writes run-all's `<stem>.apple_pending.json` instead of summarizing; the result then
+    carries ``skipped: "apple_pending"`` and the launcher summarizes on-device and runs
+    `mp publish`. Both branches reach that one site, so a resume hands off again."""
     if not fragment_audios:
         raise MergeError("merge needs a primary and at least one fragment")
 
@@ -492,6 +503,9 @@ def merge_meetings(
     # guarantees every fragment shares the primary's workflow (and so its NDA /
     # regulated posture), so arming on the primary clamps the whole merge.
     cfg = entry.prepare(cfg, primary_audio)
+    # PIPE34's rule on this path: the launcher diverts any merge that leaves a sentinel,
+    # so one a killed run left must not outlive a merge summarized on another backend.
+    clear_stale_apple_sentinel(primary_audio)
 
     json_path = primary_audio.with_suffix(".json")
     md_path = primary_audio.with_suffix(".md")
@@ -549,6 +563,13 @@ def merge_meetings(
         log.info("merged %d fragment(s) into %s (%d segments)",
                  len(fragment_audios), primary_audio.stem, len(merged["segments"]))
 
+    if effective_backend(cfg) == "apple_intelligence":
+        sentinel = write_apple_pending(primary_audio, md_path, json_path)
+        events.emit("pipeline", "meetings_merge_handed_off", primary=primary_audio.stem,
+                    fragments=frag_stems, reason="apple_pending")
+        return {"primary": str(primary_audio), "summary_json": None,
+                "skipped": "apple_pending", "apple_pending": str(sentinel)}
+
     s = summarize(md_path, cfg=cfg, client=client)
     pub = publish_fanout(summary_json=s["json"], cfg=cfg, transcript_md=md_path)
     result = {"primary": str(primary_audio), "summary_json": str(s["json"]), **pub}
@@ -579,6 +600,9 @@ def main(argv: list[str]) -> int:
         return 1
     if result.get("publish_failed"):
         return EXIT_PUBLISH_FAILED
+    if result.get("skipped") == "apple_pending":
+        print(f"merged into {primary.stem}: summary handed to Apple Intelligence in the app")
+        return 0
     print(f"merged into {primary.stem}: {result.get('page_url') or 'local only'}")
     return 0
 

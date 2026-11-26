@@ -998,9 +998,7 @@ final class PipelineLauncher: PipelineDriver {
                 // on-device in Swift, then fan out via `mp publish`.
                 let appleDir = wav.deletingLastPathComponent()
                 let appleStem = wav.deletingPathExtension().lastPathComponent
-                let sentinel = appleDir.appendingPathComponent("\(appleStem).apple_pending.json")
-                if FileManager.default.fileExists(atPath: sentinel.path) {
-                    try? FileManager.default.removeItem(at: sentinel)
+                if Self.consumeApplePending(for: wav) {
                     self.completeViaAppleIntelligence(wav: wav, onProgress: onProgress, completion: completion)
                     return
                 }
@@ -1010,6 +1008,17 @@ final class PipelineLauncher: PipelineDriver {
                 completion(.success(PublishResult.load(stem: appleStem, in: appleDir)?.pageURL))
             }
         }
+    }
+
+    /// The Apple Intelligence hand-off (TECH-SUM1-APPLE): true when the `mp` run that just exited 0
+    /// left `<stem>.apple_pending.json` beside `recording`, which it removes. `orchestrate.write_apple_pending`
+    /// is its one writer, for run-all and, since PIPE52, merge-meetings. By stem, so a `.flac` primary resolves.
+    private static func consumeApplePending(for recording: URL) -> Bool {
+        let sentinel = recording.deletingLastPathComponent()
+            .appendingPathComponent("\(MeetingStore.stem(of: recording)).apple_pending.json")
+        guard FileManager.default.fileExists(atPath: sentinel.path) else { return false }
+        try? FileManager.default.removeItem(at: sentinel)
+        return true
     }
 
     /// Spawn `mp publish <summary.json>` (the fanout) and return the resulting page URL (from this run's `<stem>.publish.json`).
@@ -1046,6 +1055,8 @@ final class PipelineLauncher: PipelineDriver {
     /// matching the pipeline arming its egress guard on the primary. An all-sinks-failed
     /// publish exits `publishFailedExitCode` and surfaces here as a failure, like `publish`.
     /// Re-summarize + publish over a possibly-long merged transcript, so the same 20 min cap as summarize.
+    /// PIPE52: a merge whose effective backend is Apple Intelligence leaves run-all's sentinel
+    /// instead of summarizing, and completes here exactly as `runAll` does.
     func mergeMeetings(
         primary: URL,
         fragments: [URL],
@@ -1057,6 +1068,10 @@ final class PipelineLauncher: PipelineDriver {
             case .failure(let error):
                 completion(.failure(error))
             case .success:
+                if Self.consumeApplePending(for: primary) {
+                    self.completeViaAppleIntelligence(wav: primary, onProgress: nil, completion: completion)
+                    return
+                }
                 let stem = primary.deletingPathExtension().lastPathComponent
                 let dir = primary.deletingLastPathComponent()
                 completion(.success(PublishResult.load(stem: stem, in: dir)?.pageURL))
