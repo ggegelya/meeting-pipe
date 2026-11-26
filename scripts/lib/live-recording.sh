@@ -66,23 +66,37 @@ live_recording_output_dir() {
 
 # live_recording_manifests <recordings dir>
 #   The `<stem>.recovery.json` names in that directory, one per line, sorted.
-#   Prints nothing when there are none or the directory is absent.
+#   Prints nothing when there are none or the directory is absent. Returns 2,
+#   printing nothing, when it cannot tell: the directory is there and cannot be
+#   listed, or a folder above it cannot be, so it may be there unseen (a Files
+#   and Folders denial on ~/Documents, wrong permissions, an evicted iCloud
+#   folder). A glob over such a folder matches nothing, which read as "no live
+#   recording" until the 2026-11-21 amendment. The listing is attempted rather
+#   than inferred from the mode bits, because a TCC denial does not show in them.
 live_recording_manifests() {
-    local dir="$1" f
-    [[ -d "$dir" ]] || return 0
-    for f in "$dir"/*.recovery.json; do
-        [[ -e "$f" ]] || continue
-        basename "$f"
-    done | LC_ALL=C sort
+    local dir="$1" up listing
+    if [[ ! -d "$dir" ]]; then
+        # Absent only if the nearest folder above it that can be seen lists and
+        # searches; otherwise it may be there behind that folder.
+        up="$dir"
+        while up="$(dirname "$up")"; [[ ! -d "$up" ]]; do :; done
+        if [[ -x "$up" ]] && ls -A "$up" >/dev/null 2>&1; then
+            return 0
+        fi
+        return 2
+    fi
+    listing="$(ls -A "$dir" 2>/dev/null)" || return 2
+    printf '%s\n' "$listing" | { grep '\.recovery\.json$' || true; } | LC_ALL=C sort
 }
 
-# live_recording_verdict <daemon running: 0|1> <manifests, newline-separated> <tty: 0|1> <force: 0|1>
+# live_recording_verdict <daemon running: 0|1> <manifests, newline-separated> <tty: 0|1> <force: 0|1> [<cannot tell: 0|1>]
 #   proceed  nothing may be live, or --force was given
 #   ask      something may be live and there is a terminal to ask on
 #   refuse   something may be live, no terminal, no --force (the caller exits 2)
+#   "Cannot tell" (the folder could not be listed) counts as something may be live.
 live_recording_verdict() {
-    local running="$1" manifests="$2" tty="$3" force="$4"
-    if [[ "$running" != 1 || -z "$manifests" ]]; then
+    local running="$1" manifests="$2" tty="$3" force="$4" unknown="${5:-0}"
+    if [[ "$running" != 1 || ( -z "$manifests" && "$unknown" != 1 ) ]]; then
         echo proceed
     elif [[ "$force" == 1 ]]; then
         echo proceed
@@ -99,19 +113,25 @@ live_recording_verdict() {
 #   touched. Reads the answer from /dev/tty so a piped stdin cannot answer it.
 guard_live_recording() {
     local app="$1" config="$2" force="$3" what="$4"
-    local running=0 dir manifests tty=0 verdict answer
+    local running=0 dir manifests="" unknown=0 tty=0 verdict answer
     pgrep -f "$app/Contents/MacOS/MeetingPipe" >/dev/null 2>&1 && running=1
     dir="$(live_recording_output_dir "$config" "$HOME")"
-    manifests="$(live_recording_manifests "$dir")"
+    manifests="$(live_recording_manifests "$dir")" || unknown=1
     [[ -t 0 && -r /dev/tty ]] && tty=1
-    verdict="$(live_recording_verdict "$running" "$manifests" "$tty" "$force")"
-    [[ "$verdict" == proceed && -n "$manifests" && "$running" == 1 ]] \
+    verdict="$(live_recording_verdict "$running" "$manifests" "$tty" "$force" "$unknown")"
+    [[ "$verdict" == proceed && "$running" == 1 && ( -n "$manifests" || "$unknown" == 1 ) ]] \
         && printf '\033[1;33m!!\033[0m %s\n' "--force: going on although a recording may be in progress." >&2
     [[ "$verdict" == proceed ]] && return 0
 
-    printf '\033[1;33m!!\033[0m %s\n' "MeetingPipe is running and a recording may be in progress:" >&2
-    printf '     %s\n' $manifests >&2
-    printf '     %s\n' "(in $dir; a manifest is removed when a recording finishes cleanly, so a leftover one from an unrecovered recording shows here too)" >&2
+    if [[ "$unknown" == 1 ]]; then
+        printf '\033[1;33m!!\033[0m %s\n' "MeetingPipe is running and the recordings folder could not be read, so a recording may be in progress:" >&2
+        printf '     %s\n' "$dir" >&2
+        printf '     %s\n' "(this terminal may lack access to that location in System Settings > Privacy & Security > Files and Folders, or the folder's permissions or volume are off)" >&2
+    else
+        printf '\033[1;33m!!\033[0m %s\n' "MeetingPipe is running and a recording may be in progress:" >&2
+        printf '     %s\n' $manifests >&2
+        printf '     %s\n' "(in $dir; a manifest is removed when a recording finishes cleanly, so a leftover one from an unrecovered recording shows here too)" >&2
+    fi
     printf '     %s\n' "A $what relaunches the daemon, which ends that recording. What was captured is kept and recovered at the next launch; the rest of the meeting is not recorded." >&2
     if [[ "$verdict" == refuse ]]; then
         printf '\033[1;31mxx\033[0m %s\n' "No terminal to ask on, so nothing was changed. Stop the recording first, or pass --force." >&2

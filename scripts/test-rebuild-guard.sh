@@ -24,7 +24,8 @@ fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures + 1)); }
 expect_eq() { if [[ "$2" == "$3" ]]; then ok "$1"; else fail "$1 (got '$2', want '$3')"; fi; }
 
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/mp-rebuild-guard.XXXXXX")"
-trap 'rm -rf "$SCRATCH"' EXIT
+# The unreadable-folder cases chmod folders to 000; give them back so rm can clear the tree.
+trap 'chmod -R u+rwx "$SCRATCH" 2>/dev/null; rm -rf "$SCRATCH"' EXIT
 
 # ---------------------------------------------------------------------------
 # Half 1: the predicates, on canned input
@@ -77,12 +78,38 @@ touch "$REC/20261117-162938.recovery.json" "$REC/20261117-162938.mic.wav" "$REC/
 expect_eq "manifests are listed, sorted, and nothing else" \
     "$(live_recording_manifests "$REC" | tr '\n' ' ')" "20261116-090000.recovery.json 20261117-162938.recovery.json "
 
+# DIST9 amendment (2026-11-21): a folder that is there but cannot be listed (a
+# Files and Folders denial on ~/Documents, wrong permissions, an evicted iCloud
+# folder) is "cannot tell", never "no manifests". chmod 000 stands in for the denial.
+expect_eq "an absent directory under a listable parent can tell" \
+    "$(live_recording_manifests "$SCRATCH/nope" >/dev/null; echo $?)" 0
+UNR="$SCRATCH/unreadable"
+mkdir -p "$UNR"
+touch "$UNR/20261121-100000.recovery.json"
+chmod 000 "$UNR"
+if ls "$UNR" >/dev/null 2>&1; then
+    fail "chmod 000 makes the folder unlistable here (running as root?), so the next cases would pass vacuously"
+fi
+expect_eq "a folder that cannot be listed cannot tell" \
+    "$(live_recording_manifests "$UNR" >/dev/null; echo $?)" 2
+chmod 700 "$UNR"
+HIDDEN="$SCRATCH/locked/raw"
+mkdir -p "$HIDDEN"
+chmod 000 "$SCRATCH/locked"
+expect_eq "a folder behind a parent that cannot be searched cannot tell" \
+    "$(live_recording_manifests "$HIDDEN" >/dev/null; echo $?)" 2
+chmod 700 "$SCRATCH/locked"
+
 M="x.recovery.json"
 expect_eq "not running: proceed"                 "$(live_recording_verdict 0 "$M" 0 0)" proceed
 expect_eq "running, no manifest: proceed"        "$(live_recording_verdict 1 "" 0 0)" proceed
 expect_eq "running + manifest, terminal: ask"     "$(live_recording_verdict 1 "$M" 1 0)" ask
 expect_eq "running + manifest, no terminal: refuse" "$(live_recording_verdict 1 "$M" 0 0)" refuse
 expect_eq "running + manifest, --force: proceed"  "$(live_recording_verdict 1 "$M" 0 1)" proceed
+expect_eq "running, cannot tell, terminal: ask"      "$(live_recording_verdict 1 "" 1 0 1)" ask
+expect_eq "running, cannot tell, no terminal: refuse" "$(live_recording_verdict 1 "" 0 0 1)" refuse
+expect_eq "running, cannot tell, --force: proceed"   "$(live_recording_verdict 1 "" 0 1 1)" proceed
+expect_eq "not running, cannot tell: proceed"        "$(live_recording_verdict 0 "" 0 0 1)" proceed
 
 # ---------------------------------------------------------------------------
 # Half 2: the real rebuild.sh in a scratch tree, every external command stubbed
@@ -212,6 +239,29 @@ run_rebuild "$T"; code=$?
 [[ "$code" -ne 0 ]] && ok "the script fails" || fail "the script fails"
 grep -q "stopped and not restarted" "$T/out.log" && ok "it says the daemon is down and how to start it" \
     || fail "it says the daemon is down and how to start it"
+
+echo "rebuild.sh, recordings folder cannot be listed, no terminal, no --force"
+T="$SCRATCH/t7"; make_tree "$T" 0
+mkdir -p "$T/home/.config/meeting-pipe"
+printf '[recording]\noutput_dir = "~/Documents/Meetings/raw"\n' >"$T/home/.config/meeting-pipe/config.toml"
+chmod 000 "$T/home/Documents/Meetings/raw"
+before="$(cat "$(app_bin "$T")")"
+run_rebuild "$T"; code=$?
+expect_eq "exits 2" "$code" 2
+expect_eq "the installed binary is untouched" "$(cat "$(app_bin "$T")")" "$before"
+if grep -qE '^(launchctl (bootout|bootstrap)|pkill|uv )' "$T/calls.log"; then
+    fail "nothing was stopped, synced or relaunched"
+else
+    ok "nothing was stopped, synced or relaunched"
+fi
+grep -q "Documents/Meetings/raw" "$T/out.log" && grep -q "could not be read" "$T/out.log" \
+    && ok "names the folder it could not read" || fail "names the folder it could not read"
+
+echo "rebuild.sh, recordings folder cannot be listed, --force"
+run_rebuild "$T" --force; code=$?
+expect_eq "exits 0" "$code" 0
+expect_eq "the new binary is installed" "$(cat "$(app_bin "$T")")" "new build"
+chmod 700 "$T/home/Documents/Meetings/raw"
 
 echo "rebuild.sh, daemon not running, stale manifest"
 T="$SCRATCH/t5"; make_tree "$T" 0
