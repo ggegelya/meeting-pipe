@@ -67,6 +67,8 @@ enum AudioTranscoder {
             throw TranscodeError.outputMissing
         }
 
+        // SEC22: owner-only before it takes the WAV's place; ffmpeg wrote it at the umask.
+        OwnerOnlyFiles.restrict(temp)
         try? fm.removeItem(at: flac)
         do {
             try fm.moveItem(at: temp, to: flac)

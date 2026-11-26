@@ -328,6 +328,8 @@ enum MuteRedactor {
             try? FileManager.default.removeItem(at: temp)
             return fail(.moveAsideFailed, wav: wav, mutedSpans: timeline.spans.count)
         }
+        // SEC22: the redacted file replaces the canonical recording, so it is owner-only first.
+        OwnerOnlyFiles.restrict(temp)
         do {
             try move(temp, wav)
         } catch {

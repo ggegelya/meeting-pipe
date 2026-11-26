@@ -1308,11 +1308,16 @@ final class MeetingStoreTests: XCTestCase {
         )
     }
 
-    func test_tighten_artifact_permissions_selfheals_transcripts_and_summaries() throws {
+    func test_tighten_artifact_permissions_selfheals_transcripts_summaries_audio_and_the_folder() throws {
         // SEC14: pre-existing 0644 transcript/summary artifacts are tightened to 0600
-        // at launch; a non-text artifact (the recording) is left untouched.
+        // at launch. SEC22 flipped this test's last assertion: SEC14 pinned the recording
+        // at 0644 on purpose, but the audio is the most sensitive file in the library
+        // (every voice in the meeting) and the recorder created it at the umask, so the
+        // sweep now self-heals `wav` and `flac` too, and the library folder itself to 0700.
+        // A file of another kind (here a `.txt`) is still left alone.
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
 
         func write0644(_ name: String) -> URL {
             let url = dir.appendingPathComponent(name)
@@ -1325,6 +1330,9 @@ final class MeetingStoreTests: XCTestCase {
         let json = write0644("m.summary.json")
         let md = write0644("m.summary.md")
         let wav = write0644("m.wav")
+        let flac = write0644("n.flac")
+        let mic = write0644("o.mic.wav")
+        let other = write0644("notes.txt")
 
         MeetingStore.tightenArtifactPermissions(in: dir)
 
@@ -1333,7 +1341,11 @@ final class MeetingStoreTests: XCTestCase {
         }
         XCTAssertEqual(try mode(json), 0o600)
         XCTAssertEqual(try mode(md), 0o600)
-        XCTAssertEqual(try mode(wav), 0o644)
+        XCTAssertEqual(try mode(wav), 0o600)
+        XCTAssertEqual(try mode(flac), 0o600)
+        XCTAssertEqual(try mode(mic), 0o600, "a capture intermediate is the owner's voice too")
+        XCTAssertEqual(try mode(other), 0o644)
+        XCTAssertEqual(try mode(dir), 0o700, "the library folder itself, measured drwxr-xr-x on 2026-11-12")
     }
 
     // MARK: - UX21 failed-row model-download remedy

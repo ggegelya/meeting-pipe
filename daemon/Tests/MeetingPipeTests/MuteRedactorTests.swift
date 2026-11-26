@@ -382,6 +382,8 @@ final class MuteRedactorTests: XCTestCase {
                              "mic must be audible after the muted span")
         XCTAssertGreaterThan(peak(data[1], from: 0, to: Int(0.4 * rate)), 0.1,
                              "system (right) channel must be untouched by mic redaction")
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: wav.path)[.posixPermissions] as? Int, 0o600,
+                       "SEC22: the redacted recording that replaces the canonical path is owner-only")
     }
 
     func test_redactIfNeeded_is_idempotent_and_keeps_the_original_across_reruns() async throws {

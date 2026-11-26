@@ -59,6 +59,8 @@ final class AudioTranscoderTests: XCTestCase {
         XCTAssertLessThan(flacBytes, wavBytes, "FLAC must actually reclaim bytes")
         XCTAssertEqual(try AudioTranscoder.duration(of: flac), wavSeconds, accuracy: 0.01,
                        "lossless: not one frame lost")
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: flac.path)[.posixPermissions] as? Int, 0o600,
+                       "SEC22: ffmpeg writes at the umask; the FLAC is owner-only before it takes the WAV's place")
     }
 
     func test_the_waveform_re_derives_from_the_compressed_file() throws {

@@ -155,9 +155,8 @@ enum LibraryMover {
     /// callers only.
     static func execute(_ plan: Plan) throws {
         let fm = FileManager.default
-        try fm.createDirectory(
-            at: plan.destination.deletingLastPathComponent(), withIntermediateDirectories: true
-        )
+        // SEC22: a parent created for the new location is 0700, like every library folder.
+        try OwnerOnlyFiles.createDirectory(at: plan.destination.deletingLastPathComponent())
         try fm.moveItem(at: plan.source, to: plan.destination)
         if let digestsSource = plan.digestsSource, let digestsDestination = plan.digestsDestination {
             do {

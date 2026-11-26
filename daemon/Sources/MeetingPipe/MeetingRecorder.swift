@@ -438,7 +438,7 @@ final class MeetingRecorder {
     @MainActor
     func start(outputDir: URL, captureMode: CaptureMode, voiceProcessing: Bool = false) async throws -> URL {
         if isRecording { throw RecorderError.alreadyRecording }
-        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        try OwnerOnlyFiles.createDirectory(at: outputDir)  // SEC22: 0700, with any folder above it
         // REC20 item 1: read the volume's free space before any file of this recording exists.
         // Never a refusal; the notice is emitted and armed only once the start has succeeded.
         lowSpaceAtStart = nil

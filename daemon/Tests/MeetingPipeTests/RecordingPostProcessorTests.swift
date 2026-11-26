@@ -170,6 +170,8 @@ final class RecordingPostProcessorTests: XCTestCase {
         XCTAssertEqual(duration, 10, accuracy: 0.05, "the final must not end at the shorter channel")
         XCTAssertGreaterThan(try peak(final, channel: 0, from: 8.5, to: 9.5), 4000, "the mic tail survived")
         XCTAssertLessThan(try peak(final, channel: 1, from: 8.5, to: 9.5), 100, "the system channel is padded silent")
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: final.path)[.posixPermissions] as? Int, 0o600,
+                       "SEC22: the merged final is owner-only; ffmpeg alone writes it at the umask")
     }
 
     /// Acceptance: a system channel that started late lands at its offset rather
@@ -614,6 +616,8 @@ extension RecordingPostProcessorTests {
 
         let ok = await RecordingPostProcessor.produceFinal(mic: mic, system: system, final: final, hasMic: true, hasSystem: false)
         XCTAssertTrue(ok)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: final.path)[.posixPermissions] as? Int, 0o600,
+                       "SEC22: a single-source convert's final is owner-only too")
         let rows = ((try? String(contentsOf: logs.appendingPathComponent("events.jsonl"), encoding: .utf8)) ?? "")
             .split(separator: "\n")
             .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }

@@ -515,10 +515,7 @@ final class MeetingStore: ObservableObject {
             root: recordingsDir, creatableRoot: creatableRoot, departed: departedRoots,
             exists: FileManager.default.fileExists(atPath: recordingsDir.path)
         ) {
-            try? FileManager.default.createDirectory(
-                at: recordingsDir,
-                withIntermediateDirectories: true
-            )
+            try? OwnerOnlyFiles.createDirectory(at: recordingsDir)  // SEC22: 0700
         }
         let fd = open(recordingsDir.path, O_EVTONLY)
         guard fd >= 0 else {
@@ -730,16 +727,23 @@ final class MeetingStore: ObservableObject {
         return nil
     }
 
-    /// Best-effort one-time tightening of the library's text artifacts to 0600 (SEC14).
-    /// New transcript writes are already 0600 (`TranscriptSidecar.write`) and the pipeline
-    /// chmods its summaries, so this only self-heals files that predate those changes
-    /// (transcripts and summaries were created 0644, unlike `originals/` and the logs).
-    /// Call once at startup; runs off-main since the library can hold many files.
+    /// Extensions `tightenArtifactPermissions` self-heals: the text artifacts (SEC14) and the
+    /// audio (SEC22; `wav` also covers the `.mic.wav` / `.system.wav` intermediates).
+    static let ownerOnlyArtifactExtensions: Set<String> = ["json", "md", "wav", "flac"]
+
+    /// Best-effort tightening of the library's artifacts to 0600 and of the library folder
+    /// itself to 0700, on every launch (SEC14, SEC22). New writes are already owner-only
+    /// (`TranscriptSidecar.write`, the pipeline's `atomic_write_text`, `OwnerOnlyFiles` for the
+    /// audio), so this only self-heals files that predate those changes. The folder's parent is
+    /// never touched: the owner may have pointed the library anywhere. Chmod on a capture file a
+    /// live recording holds open is harmless; the open handle keeps writing. Runs off-main since
+    /// the library can hold many files.
     static func tightenArtifactPermissions(in directory: URL) {
         guard let items = try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil
         ) else { return }
-        for url in items where url.pathExtension == "json" || url.pathExtension == "md" {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        for url in items where ownerOnlyArtifactExtensions.contains(url.pathExtension) {
             try? FileManager.default.setAttributes(
                 [.posixPermissions: 0o600], ofItemAtPath: url.path
             )

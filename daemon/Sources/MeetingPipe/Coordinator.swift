@@ -713,8 +713,9 @@ final class Coordinator: NSObject {
         // before the reapers start, and since REC24 both run off main side by side;
         // retention touches only settled meetings, so never an orphan it is merging.
         reapStorage(orphanSweep: .launch)
-        // SEC14: one-time self-heal of any pre-existing 0644 transcript/summary
-        // artifacts to 0600 (new writes are already 0600). Mirrors the SEC11 log sweep.
+        // SEC14 + SEC22: self-heal of any pre-existing 0644 transcript, summary or audio
+        // artifact to 0600 and the library folder to 0700 (new writes are already owner-only).
+        // Mirrors the SEC11 log sweep.
         let artifactsDir = liveOutputDir
         Task.detached(priority: .background) {
             MeetingStore.tightenArtifactPermissions(in: artifactsDir)

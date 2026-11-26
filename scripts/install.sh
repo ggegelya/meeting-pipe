@@ -487,6 +487,10 @@ fi
 # 5. Config staging --------------------------------------------------------
 
 mkdir -p "$CONFIG_DIR" "$LOG_DIR"
+# SEC22: the config folder holds the owner's voiceprint and every enrolled person's (roster.json),
+# so it is owner-only. `mkdir -p` makes it at the umask (0755), and a folder made by an older
+# install is tightened here too. The pipeline applies the same 0700 when it creates the folder.
+chmod 700 "$CONFIG_DIR"
 if [[ ! -f "$CONFIG_DIR/config.toml" ]]; then
     cp "$REPO_ROOT/config.example.toml" "$CONFIG_DIR/config.toml"
     say "Staged $CONFIG_DIR/config.toml (defaults; set it up in-app, no editing needed to start)"

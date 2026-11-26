@@ -578,8 +578,9 @@ final class SystemAudioChannel {
         // each PCM buffer as-is.
         let systemFile: AVAudioFile?
         do {
-            systemFile = try AVAudioFile(
-                forWriting: systemURL,
+            // SEC22: 0600 at creation, the same call as the mic file.
+            systemFile = try OwnerOnlyFiles.openAudioForWriting(
+                at: systemURL,
                 settings: SystemAudioCapture.captureFormat.settings
             )
         } catch {

@@ -152,6 +152,7 @@ enum RecordStartFileWrite {
         guard let format = MeetingRecorder.monoCaptureFormat(sampleRate: sampleRate) else {
             throw MicFileError.noMonoFormat(sampleRate)
         }
-        return try AVAudioFile(forWriting: url, settings: format.settings)
+        // SEC22: the owner's voice, so 0600 at creation, not the umask's 0644.
+        return try OwnerOnlyFiles.openAudioForWriting(at: url, settings: format.settings)
     }
 }

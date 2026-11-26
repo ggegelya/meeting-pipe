@@ -49,7 +49,7 @@ extension Coordinator {
 
     @objc func menuOpenRecordings() {
         let dir = liveOutputDir
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? OwnerOnlyFiles.createDirectory(at: dir)  // SEC22: 0700
         NSWorkspace.shared.open(dir)
     }
 

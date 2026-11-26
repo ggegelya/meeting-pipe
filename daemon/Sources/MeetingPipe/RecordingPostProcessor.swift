@@ -519,6 +519,9 @@ enum RecordingPostProcessor {
             }
             return false
         }
+        // SEC22: ffmpeg (or the no-ffmpeg copy) wrote the temp at the umask; tighten it before
+        // the rename so the canonical final never exists at 0644. A rename keeps the mode.
+        OwnerOnlyFiles.restrict(tmp)
         try? FileManager.default.removeItem(at: final)
         do {
             try FileManager.default.moveItem(at: tmp, to: final)
