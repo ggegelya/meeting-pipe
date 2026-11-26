@@ -209,4 +209,12 @@ extension FailurePresentationTests {
         XCTAssertNil(FailurePresentation.overlayRefusal("some other failure"))
         XCTAssertEqual(FailureMetadata.Cause(rawValue: "overlay_unreadable"), .overlayUnreadable)
     }
+
+    /// PIPE51: `fanout` logs the refusal once before any sink, ahead of the caller's joined
+    /// per-sink reason line, so the first matching line is the clean sentence.
+    func test_pipe51_publish_refusal_reads_the_first_line_not_the_per_sink_join() {
+        let sentence = "This meeting's transcript corrections file can't be read: unparseable. Nothing was published; fix or remove 20260101-120000.transcript_corrections.json and try again."
+        let tail = "ERROR mp.publish_router: publish refused before any sink: \(sentence)\nERROR mp.publish: publish failed: notion: \(sentence); filesystem: \(sentence)\n"
+        XCTAssertEqual(FailurePresentation.overlayRefusal(tail), sentence)
+    }
 }

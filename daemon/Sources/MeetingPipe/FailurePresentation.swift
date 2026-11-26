@@ -169,11 +169,11 @@ struct FailurePresentation: Equatable {
             heading = "The publish folder is synced"
             explanation = "Regulated mode or an NDA workflow keeps this meeting on your Mac, and a sync client would upload it from this folder. Choose a folder outside the synced tree in Preferences > Integrations, then retry."
         case .overlayUnreadable:
-            // STOR9: summarize refused rather than drop the owner's names and corrections. The file
+            // STOR9 (summarize) and PIPE51 (publish) refused rather than drop the owner's edits. The file
             // is named in the diagnostics line `mp` wrote, never in the metadata.
             heading = "This meeting's edits can't be read"
             explanation = Self.overlayRefusal(diagnostics)
-                ?? "A speaker names, transcript corrections or flagged moments file for this meeting is there but can't be read, so nothing was summarized. Fix or remove it, then retry."
+                ?? "A speaker names, transcript corrections or flagged moments file for this meeting is there but can't be read, so nothing was summarized or published. Fix or remove it, then retry."
         case .config:
             // UX94: the line or the key comes from the pipeline's own message in the stderr tail
             // (`config.toml does not parse at line 2, column 1.`); the sidecar carries neither.

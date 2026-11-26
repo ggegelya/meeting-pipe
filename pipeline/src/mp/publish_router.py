@@ -277,12 +277,30 @@ def fanout(
     summary = apply_meeting_title(summary, summary_json)
     stem = summary_json.name.removesuffix(".summary.json")
     base = summary_json.parent
-    # PIPE51: one publish view of the transcript (the Library's speaker names and
-    # line edits applied), resolved once and handed to every sink.
-    transcript_text = publish_text(transcript_md)
-
     per_sink: dict[str, Any] = {}
     failures: list[tuple[str, str]] = []
+    # PIPE51: one publish view of the transcript (the Library's speaker names and
+    # line edits applied), resolved once and handed to every sink. An overlay that
+    # cannot be read refuses the whole publish before any sink, recorded as every
+    # sink failing, so each caller's exit-3 path applies and Retry republishes.
+    from .summarize import OverlayUnreadable
+    try:
+        transcript_text = publish_text(transcript_md)
+    except OverlayUnreadable as e:
+        # One line naming the file, first, so the Library's notice reads it (STOR9).
+        log.error("publish refused before any sink: %s", e)
+        from .failure_details import emit_failure
+        failure = emit_failure(e, operation="publish")
+        for p in pubs:
+            per_sink[p.name] = {"error": str(e), "error_type": type(e).__name__, "failure": failure}
+            failures.append((p.name, str(e)))
+            # OBS3: the class and the typed cause, never the text.
+            events.emit("publisher", "sink_failed", sink=p.name, file=stem,
+                        error_type=type(e).__name__, cause=failure["cause"])
+        out: dict[str, Any] = {"page_id": None, "page_url": None, "sinks": per_sink, "failures": failures}
+        if not _write_publish_sidecar(summary_json, out):
+            out["sidecar_write_failed"] = True
+        return out
     for p in pubs:
         sidecar = base / f"{stem}.{p.name}.json"
         events.emit("publisher", "sink_started", sink=p.name, file=stem)

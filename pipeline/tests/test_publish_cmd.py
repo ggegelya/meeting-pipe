@@ -191,3 +191,23 @@ def test_a_valid_summary_still_publishes(tmp_path: Path) -> None:
     with patch("mp.publish_cmd.build_publishers", return_value=[sink]):
         assert main([str(summary)]) == 0
     assert sink.calls == 1
+
+
+def test_an_unreadable_overlay_exits_3_names_the_file_and_runs_no_sink(tmp_path: Path, caplog) -> None:
+    # PIPE51 amendment: `mp publish` (Republish, a publish-stage Retry) refuses the way summarize
+    # does, as a publish-stage outcome so Retry republishes rather than re-summarizes.
+    summary = tmp_path / "20260516-0900.summary.json"
+    summary.write_text(_SUMMARY, encoding="utf-8")
+    (tmp_path / "20260516-0900.md").write_text("# Transcript\n", encoding="utf-8")
+    (tmp_path / "20260516-0900.speaker_labels.json").write_text("{not json", encoding="utf-8")
+    sink = _RecordingSink()
+
+    with patch("mp.publish_cmd.build_publishers", return_value=[sink]):
+        assert main([str(summary)]) == EXIT_PUBLISH_FAILED
+
+    assert sink.calls == 0
+    lines = [r.getMessage() for r in caplog.records if "file can't be read" in r.getMessage()]
+    assert lines and "This meeting's speaker names file can't be read" in lines[0]
+    assert "fix or remove 20260516-0900.speaker_labels.json" in lines[0]
+    sidecar = json.loads((tmp_path / "20260516-0900.publish.json").read_text(encoding="utf-8"))
+    assert sidecar["state"] == "none"

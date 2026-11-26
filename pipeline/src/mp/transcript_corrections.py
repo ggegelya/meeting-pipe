@@ -149,15 +149,29 @@ def overlaid_structured(transcript_md: Path) -> tuple[dict, bool] | None:
     return data, changed
 
 
+#: The overlays the publish view composes. The markers file is not one: flagged moments
+#: feed the summary, which already exists by publish time, and no sink reads it.
+PUBLISH_OVERLAYS = ("speaker_labels", "transcript_corrections")
+
+
 def publish_text(transcript_md: Path | None) -> str:
     """The transcript every publisher sends (PIPE51): the overlaid view when an
     overlay changes anything, else `<stem>.md` as it is, else empty. The sinks used
     to read `<stem>.md` raw, so a Library rename or line edit never reached a
-    destination and a filesystem correction read as "unchanged". Fail-open exactly
-    as `summarize` is: an overlay that cannot be read falls back to the raw text
-    (STOR9 owns making that visible)."""
+    destination and a filesystem correction read as "unchanged".
+
+    Refuses exactly as `summarize` does (STOR9): a speaker-label or correction
+    sidecar that is present but cannot be read raises `summarize.OverlayUnreadable`.
+    It used to fall back to the raw text, so a publish-only run (Republish, a
+    publish-stage Retry, `mp publish`) sent lines the owner had corrected in their
+    uncorrected form (PIPE51 amendment 2026-11-21). `publish_router.fanout` turns
+    the raise into a failed publish before any sink runs."""
     if transcript_md is None or not transcript_md.exists():
         return ""
+    # Function-local: `summarize` imports this module at load time.
+    from .summarize import refuse_unreadable_overlays
+
+    refuse_unreadable_overlays(transcript_md, outcome="published", stores=PUBLISH_OVERLAYS)
     overlaid = overlaid_markdown(transcript_md)
     return overlaid if overlaid is not None else transcript_md.read_text(encoding="utf-8")
 

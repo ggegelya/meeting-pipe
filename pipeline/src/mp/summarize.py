@@ -591,22 +591,30 @@ _OVERLAYS = (
 )
 
 
-def refuse_unreadable_overlays(transcript_md: Path) -> None:
+def refuse_unreadable_overlays(
+    transcript_md: Path, *, outcome: str = "summarized", stores: tuple[str, ...] | None = None
+) -> None:
     """Fail the run rather than summarize without the owner's edits.
 
     The overlay readers return their empty value for a file they cannot read, so a
     re-summarize used to ship raw diarizer labels and misheard terms the owner had
     already fixed, then publish them. A missing overlay is the normal case (a fresh
     recording has none); only a present one that cannot be read refuses.
+
+    PIPE51's publish view refuses through here too, with ``outcome="published"`` and
+    ``stores`` narrowed to the overlays a sink actually sends, so both messages name
+    the same file in the same words.
     """
     for label, store, path_of in _OVERLAYS:
+        if stores is not None and store not in stores:
+            continue
         path = path_of(transcript_md)
         read = storage.load_json_object(path)
         if read.state != "unreadable":
             continue
         storage.report_unreadable(store, storage.StoreUnreadable(path, read), "refused", path_kind="library")
         raise OverlayUnreadable(
-            f"This meeting's {label} file can't be read: {read.reason}. Nothing was summarized; "
+            f"This meeting's {label} file can't be read: {read.reason}. Nothing was {outcome}; "
             f"fix or remove {path.name} and try again."
         )
 

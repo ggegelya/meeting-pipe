@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 
 from mp import transcript_corrections as tc
 from mp.config import Config
@@ -21,8 +22,9 @@ from mp.publish_fs import FilesystemPublisher
 from mp.publish_lan import LanPublisher
 from mp.publish_notion import NotionRestPublisher, publish
 from mp.publish_obsidian import ObsidianPublisher
-from mp.publish_router import fanout
+from mp.publish_router import fanout, publish_failed
 from mp.schemas import ActionItem, MeetingSummary
+from mp.summarize import OverlayUnreadable, refuse_unreadable_overlays
 
 FIXTURES = Path(__file__).resolve().parents[2] / "daemon" / "Tests" / "MeetingPipeTests" / "Fixtures"
 STEM = "20260506-1500"
@@ -91,10 +93,36 @@ def test_publish_text_missing_file_is_empty(tmp_path: Path) -> None:
     assert tc.publish_text(None) == ""
 
 
-def test_publish_text_falls_back_to_raw_when_an_overlay_cannot_be_read(tmp_path: Path) -> None:
+@pytest.mark.parametrize("suffix", [".speaker_labels.json", ".transcript_corrections.json"])
+def test_publish_text_refuses_an_overlay_that_cannot_be_read(tmp_path: Path, suffix: str) -> None:
+    # Amendment 2026-11-21: the raw fallback sent lines the owner had corrected in their
+    # uncorrected form, while summarize has refused the same file since STOR9.
     md = _meeting(tmp_path, overlays=False)
-    (tmp_path / f"{STEM}.speaker_labels.json").write_text("{not json", encoding="utf-8")
-    assert tc.publish_text(md) == md.read_text(encoding="utf-8")  # as summarize does (STOR9)
+    (tmp_path / f"{STEM}{suffix}").write_text("{not json", encoding="utf-8")
+    with pytest.raises(OverlayUnreadable, match="Nothing was published") as refused:
+        tc.publish_text(md)
+    assert f"{STEM}{suffix}" in str(refused.value)
+
+
+def test_an_unreadable_markers_file_does_not_stop_a_publish(tmp_path: Path) -> None:
+    # Flagged moments feed the summary, which already exists; no sink reads the markers file.
+    md = _meeting(tmp_path, overlays=False)
+    (tmp_path / f"{STEM}.markers.json").write_text("{not json", encoding="utf-8")
+    assert tc.publish_text(md) == md.read_text(encoding="utf-8")
+
+
+def test_summarize_and_publish_name_the_same_file(tmp_path: Path) -> None:
+    md = _meeting(tmp_path, overlays=False)
+    (tmp_path / f"{STEM}.transcript_corrections.json").write_text("[1]", encoding="utf-8")
+    with pytest.raises(OverlayUnreadable) as published:
+        tc.publish_text(md)
+    with pytest.raises(OverlayUnreadable) as summarized:
+        refuse_unreadable_overlays(md)
+    head = "This meeting's transcript corrections file can't be read"
+    for message in (str(published.value), str(summarized.value)):
+        assert message.startswith(head)
+        assert f"fix or remove {STEM}.transcript_corrections.json" in message
+    assert "Nothing was summarized" in str(summarized.value)
 
 
 # ----- each sink ------------------------------------------------------------
@@ -240,3 +268,35 @@ def test_fanout_resolves_the_overlays_once_and_hands_every_sink_the_same_text(
 def test_notion_publisher_class_accepts_the_new_keyword() -> None:
     import inspect
     assert "transcript_text" in inspect.signature(NotionRestPublisher.upsert).parameters
+
+
+def test_fanout_refuses_an_unreadable_overlay_before_any_sink(tmp_path: Path, monkeypatch) -> None:
+    # Amendment 2026-11-21: a publish-only run (Republish, a publish-stage Retry, `mp publish`)
+    # never reaches summarize, so the refusal has to happen here, and it is recorded as a failed
+    # publish (exit 3, Retry republishes) rather than escaping as a crash.
+    from mp import events
+
+    rows: list[tuple[str, str, dict[str, Any]]] = []
+    monkeypatch.setattr(events, "emit", lambda cat, action, **attrs: rows.append((cat, action, attrs)))
+    md = _meeting(tmp_path, overlays=True)
+    (tmp_path / f"{STEM}.transcript_corrections.json").write_text("{not json", encoding="utf-8")
+    summary_json = _write_summary(tmp_path)
+    a, b = _Spy("a"), _Spy("b")
+
+    result = fanout(summary_json=summary_json, cfg=Config(), transcript_md=md, publishers=[a, b])
+
+    assert a.texts == [] and b.texts == []
+    assert publish_failed(result)
+    sidecar = json.loads((tmp_path / f"{STEM}.publish.json").read_text(encoding="utf-8"))
+    assert sidecar["state"] == "none"
+    for name in ("a", "b"):
+        sink = sidecar["sinks"][name]
+        assert sink["ok"] is False
+        assert f"{STEM}.transcript_corrections.json" in sink["error"]
+        assert sink["failure"]["cause"] == "overlay_unreadable"
+        assert sink["failure"]["operation"] == "publish"
+    failed = [attrs for _, action, attrs in rows if action == "sink_failed"]
+    assert [r["sink"] for r in failed] == ["a", "b"]
+    assert all(r["error_type"] == "OverlayUnreadable" and r["cause"] == "overlay_unreadable" for r in failed)
+    # OBS3: no row carries the refusal's text.
+    assert not any("can't be read" in json.dumps(attrs) for _, _, attrs in rows)
