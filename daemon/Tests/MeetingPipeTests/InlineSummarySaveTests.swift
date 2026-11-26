@@ -110,6 +110,74 @@ final class InlineSummarySaveTests: XCTestCase {
         XCTAssertEqual(MeetingSummary.load(from: summaryURL)?.summary, ["old bullet"])
     }
 
+    // MARK: A failed save leaves nothing behind (UX99 amendment, 2026-11-21)
+
+    private var metaURL: URL { MeetingMetaRead.url(stem: "m", in: dir) }
+
+    /// The record and the rename go first and the summary write is the commit point, so a summary
+    /// write that fails takes both back: the archive must not claim an edit, or a title, that never
+    /// landed, and a second Save after the cause is fixed must not stack on a phantom record.
+    func test_a_failed_summary_write_leaves_no_record_and_no_rename() throws {
+        let model = try openEditor()
+        model.title = "Quarterly planning"
+        model.summary = ["edited bullet"]
+        let before = try Data(contentsOf: summaryURL)
+        struct Refused: Error {}
+        let outcome = save(model, writer: { _, _ in throw Refused() })
+        guard case .failed(let message) = outcome else { return XCTFail("expected failure, got \(outcome)") }
+        XCTAssertTrue(message.contains("nothing was saved"), message)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recordURL.path), "no correction record for an edit that never landed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: metaURL.path), "no rename, and no sidecar conjured to hold one")
+        XCTAssertEqual(try Data(contentsOf: summaryURL), before)
+    }
+
+    /// Undo means the state before this Save, not absence: an earlier correction's record and a
+    /// `meta.json` carrying other keys and an older rename come back byte for byte.
+    func test_a_failed_summary_write_restores_an_earlier_record_and_rename() throws {
+        let model = try openEditor()
+        let priorRecord = Data(#"{"verdict":"edited","original_summary":{"title":"Generated"}}"#.utf8)
+        let priorMeta = Data(#"{"regulated_mode":true,"user_title":"Older rename"}"#.utf8)
+        try priorRecord.write(to: recordURL)
+        try priorMeta.write(to: metaURL)
+        model.title = "Quarterly planning"
+        model.summary = ["edited bullet"]
+        struct Refused: Error {}
+        guard case .failed = save(model, writer: { _, _ in throw Refused() }) else { return XCTFail("expected failure") }
+        XCTAssertEqual(try Data(contentsOf: recordURL), priorRecord)
+        XCTAssertEqual(try Data(contentsOf: metaURL), priorMeta)
+    }
+
+    /// An undo that cannot land is said, not hidden behind "nothing was saved".
+    func test_an_undo_that_cannot_land_says_so() throws {
+        let model = try openEditor()
+        model.summary = ["edited bullet"]
+        addTeardownBlock { [corrections] in
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: corrections!.path)
+        }
+        struct Refused: Error {}
+        let outcome = save(model, writer: { [corrections] _, _ in
+            // The record is in; a read-only corrections folder stops the undo from removing it.
+            try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: corrections!.path)
+            throw Refused()
+        })
+        guard case .failed(let message) = outcome else { return XCTFail("expected failure, got \(outcome)") }
+        XCTAssertFalse(message.contains("nothing was saved"), message)
+        XCTAssertTrue(message.contains("could not be taken back"), message)
+    }
+
+    /// The rename step failing is the same defect one step earlier: the record it follows is taken back.
+    func test_a_failed_rename_leaves_no_record() throws {
+        let model = try openEditor()
+        try Data("not json".utf8).write(to: metaURL)
+        model.title = "Quarterly planning"
+        model.summary = ["edited bullet"]
+        let before = try Data(contentsOf: summaryURL)
+        guard case .failed(let message) = save(model) else { return XCTFail("expected failure") }
+        XCTAssertTrue(message.contains("nothing was saved"), message)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recordURL.path))
+        XCTAssertEqual(try Data(contentsOf: summaryURL), before)
+    }
+
     /// Fields the editor normalizes (a padded bullet, an action's `group`, an empty row) but the
     /// owner never touched must not read as edited, or "Keep my edits" would put the stale
     /// snapshot back over the regenerated section.

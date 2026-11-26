@@ -57,30 +57,79 @@ enum InlineSummarySave {
         // so a stale Keep never invents a title change.
         var recorded = live
         if let rename = split.rename { recorded.title = rename }
+        // The summary write is the commit point, and it goes last: the record and the rename land
+        // first and are taken back if anything after them fails, so a failed Save leaves no record
+        // and no rename behind (UX99 amendment, 2026-11-21). Not summary-first: `performSave`
+        // re-reads the summary's identity, would see this save's own write as a regenerate, and
+        // record the edit as its own `original_summary`; and the record is the one copy of the
+        // pre-edit summary a Revert needs, so it must exist before the summary is overwritten.
+        let priorRecord = CorrectionStore.readData(stem: model.stem, directoryOverride: correctionsDirectoryOverride)
+        var undo: [PriorFile] = []
         do {
             // UX65's record, against what is on disk now when the owner kept the edits.
-            _ = try CorrectionWindow.performSave(
+            switch try CorrectionWindow.performSave(
                 model: model, verdict: .edited, corrected: recorded.jsonObject(),
                 resolveStale: { _ in staleChoice ?? .keep },
                 correctionsDirectoryOverride: correctionsDirectoryOverride
-            )
+            ) {
+            case .written(let url): undo.append(PriorFile(url: url, bytes: priorRecord))
+            case .reopened: return .reopen
+            }
         } catch {
             Log.failure(category: "library", action: "summary_correction_write_failed", error: error, attributes: ["stem": model.stem])
-            return .failed("Could not save the correction. Check the file permissions and try again.")
+            return .failed("Could not save the correction, so nothing was saved. Check the file permissions and try again.")
         }
-        if let rename = split.rename,
-           case .failure = UserTitleStore.write(title: rename, stem: model.stem, in: model.recordingsDir) {
-            return .failed("Could not save the new title. Your edits are still here; check the file permissions and try again.")
+        if let rename = split.rename {
+            let metaURL = MeetingMetaRead.url(stem: model.stem, in: model.recordingsDir)
+            let priorMeta = try? Data(contentsOf: metaURL)
+            // A refused or failed rename leaves `meta.json` as it was (the write is atomic).
+            if case .failure(let error) = UserTitleStore.write(title: rename, stem: model.stem, in: model.recordingsDir) {
+                Log.failure(category: "library", action: "summary_title_write_failed", error: error, attributes: ["stem": model.stem])
+                return rollBack(undo, stem: model.stem, failed: "the new title")
+            }
+            undo.append(PriorFile(url: metaURL, bytes: priorMeta))
         }
         do {
             let data = try JSONSerialization.data(withJSONObject: live.jsonObject(), options: [.prettyPrinted, .sortedKeys])
             try writeSummary(data, summaryURL)
         } catch {
             Log.failure(category: "library", action: "summary_write_failed", error: error, attributes: ["stem": model.stem])
-            return .failed("Could not save the summary. Your edits are still here; check the file permissions and try again.")
+            return rollBack(undo, stem: model.stem, failed: "the summary")
         }
         Log.event(category: "library", action: "summary_edited", attributes: ["stem": model.stem])
         return .saved
+    }
+
+    /// A file as it was before this Save touched it. `bytes` nil: it did not exist (or could not be
+    /// read, in which case the write that replaced it already lost it), so undoing removes it.
+    private struct PriorFile {
+        let url: URL
+        let bytes: Data?
+
+        func restore() -> Bool {
+            do {
+                if let bytes {
+                    try bytes.write(to: url, options: .atomic)
+                } else if FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+                return true
+            } catch {
+                return false
+            }
+        }
+    }
+
+    /// Takes back what this Save already wrote, newest first, and says what the footer can truthfully
+    /// say: "nothing was saved" only when every undo landed.
+    private static func rollBack(_ undo: [PriorFile], stem: String, failed what: String) -> Outcome {
+        let stranded = undo.reversed().filter { !$0.restore() }
+        guard stranded.isEmpty else {
+            Log.failure(category: "library", action: "summary_save_rollback_failed", reason: "could not restore",
+                        attributes: ["stem": stem, "targets": stranded.map(\.url.lastPathComponent).joined(separator: ",")])
+            return .failed("Could not save \(what), and the correction record or title saved just before it could not be taken back. Your edits are still here; check the file permissions and try again.")
+        }
+        return .failed("Could not save \(what), so nothing was saved. Your edits are still here; check the file permissions and try again.")
     }
 }
 
