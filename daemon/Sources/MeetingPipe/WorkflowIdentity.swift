@@ -14,7 +14,7 @@ import Foundation
 /// id that names no live workflow falls back to the name, unlike `PrepCardStore.matches`,
 /// where a mismatched id is a definite "not this one".
 ///
-/// Pure. `mp.workflows.workflow_name_for_id` + `mp.glossary.meeting_workflow_name` are the
+/// Pure. `mp.workflows.workflow_name_for_id` + `mp.glossary.meeting_workflow_names` are the
 /// Python mirror for the glossary half, pinned by the CI4 `glossary-golden.json` fixture.
 enum WorkflowIdentity {
 
@@ -56,6 +56,32 @@ enum WorkflowIdentity {
 
     static func currentName(workflowID: String?, recordedName: String?, workflows: [Workflow]) -> String? {
         currentName(
+            workflowID: workflowID, recordedName: recordedName,
+            live: workflows.map { (id: $0.id.uuidString, name: $0.name) }
+        )
+    }
+
+    /// The names a meeting's glossary table may be keyed by, in the order they are tried: the
+    /// current name of the workflow its id points at, then the name it recorded. The recorded
+    /// name stays a candidate after a known id because a workflow renamed before WF11 moved
+    /// tables still has its table under the old name (the 2026-11-21 amendment);
+    /// `GlossaryStore.resolvedTerms(at:workflowNames:)` takes the first that has a usable term.
+    /// `currentName` stays the one name a new term is written under. Mirror:
+    /// `mp.glossary.meeting_workflow_names`.
+    static func glossaryNames(workflowID: String?, recordedName: String?, live: [(id: String, name: String)]) -> [String] {
+        var names: [String] = []
+        if let id = workflowID, !id.isEmpty,
+           let match = live.first(where: { idKey($0.id) == idKey(id) }) {
+            names.append(match.name)
+        }
+        if let recorded = recordedName, !recorded.isEmpty, !names.contains(recorded) {
+            names.append(recorded)
+        }
+        return names
+    }
+
+    static func glossaryNames(workflowID: String?, recordedName: String?, workflows: [Workflow]) -> [String] {
+        glossaryNames(
             workflowID: workflowID, recordedName: recordedName,
             live: workflows.map { (id: $0.id.uuidString, name: $0.name) }
         )

@@ -587,7 +587,7 @@ def test_contract_fixture_user_title_is_informational_to_the_overlay() -> None:
 # reading each `read_meta` / `_load_meta_sidecar` caller on 2026-11-19; a new reader adds a
 # key here.
 #
-#   workflow_name            read_meta: actions, mcp_tools, glossary.meeting_workflow_name,
+#   workflow_name            read_meta: actions, mcp_tools, glossary.meeting_workflow_names,
 #                            summarize's previous-meeting copy; publish_notion's Workflow property
 #   workflow_id              read_meta: summarize's previous-meeting lookup, glossary
 #   meeting_title/user_title publish_notion.apply_meeting_title (user_title wins)

@@ -733,7 +733,7 @@ final class MeetingLibraryService {
             // `mp finalize` resolves them, global table under the workflow's.
             terms: GlossaryStore.resolvedTerms(
                 at: GlossaryStore.defaultURL,
-                workflowName: Self.workflowName(stem: stem, in: dir, workflows: liveWorkflows())
+                workflowNames: Self.glossaryNames(stem: stem, in: dir, workflows: liveWorkflows())
             )
         )
         let writesOverlay = carry.speakerOverlay != overlay
@@ -761,19 +761,20 @@ final class MeetingLibraryService {
         )
     }
 
-    /// The name the meeting's glossary table is keyed by, from `<stem>.meta.json`, or nil
-    /// when the meeting matched no workflow. Read from the sidecar rather than from a
-    /// `Meeting` row so the carry does not depend on the library having been scanned.
-    /// WF11: the sidecar's `workflow_id` resolves to the workflow's current name first, so a
-    /// meeting recorded before a rename still finds the table the rename moved; the recorded
-    /// `workflow_name` is the fallback (`mp.glossary.meeting_workflow_name` is the mirror).
-    static func workflowName(stem: String, in dir: URL, workflows: [Workflow]) -> String? {
+    /// The names the meeting's glossary table may be keyed by, from `<stem>.meta.json`, in the
+    /// order they are tried, or empty when the meeting matched no workflow. Read from the
+    /// sidecar rather than from a `Meeting` row so the carry does not depend on the library
+    /// having been scanned. WF11: the sidecar's `workflow_id` resolves to the workflow's
+    /// current name first, so a meeting recorded before a rename still finds the table the
+    /// rename moved; the recorded `workflow_name` follows, for a table an earlier rename left
+    /// stranded (`mp.glossary.meeting_workflow_names` is the mirror).
+    static func glossaryNames(stem: String, in dir: URL, workflows: [Workflow]) -> [String] {
         let url = dir.appendingPathComponent("\(stem).meta.json")
         guard let data = try? Data(contentsOf: url),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
+            return []
         }
-        return WorkflowIdentity.currentName(
+        return WorkflowIdentity.glossaryNames(
             workflowID: obj["workflow_id"] as? String,
             recordedName: obj["workflow_name"] as? String,
             workflows: workflows

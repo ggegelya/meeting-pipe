@@ -555,10 +555,11 @@ GLOSSARY_CASES: list[tuple[str, str, str | None]] = [
 
 
 # WF11: a meeting resolves its glossary table through its sidecar's `workflow_id`
-# to the workflow's *current* name, falling back to the recorded `workflow_name`
-# when the id is absent or names no workflow on this Mac. `workflows` is the
-# live (id, name) set; `meta` is the meeting's sidecar. Swift's
-# `WorkflowIdentity.currentName` must pick the same table.
+# to the workflow's *current* name, then the recorded `workflow_name`: the first of
+# the two whose table yields a usable term wins alone. `workflows` is the live
+# (id, name) set; `meta` is the meeting's sidecar. Swift's
+# `GlossaryStore.resolvedTerms(at:workflowNames:)` over
+# `WorkflowIdentity.glossaryNames` must pick the same table.
 GLOSSARY_RENAME_CASES: list[tuple[str, str, dict[str, str], list[tuple[str, str]]]] = [
     (
         "renamed_workflow_resolves_by_id",
@@ -570,6 +571,30 @@ GLOSSARY_RENAME_CASES: list[tuple[str, str, dict[str, str], list[tuple[str, str]
         "unknown_id_falls_back_to_the_recorded_name",
         '[terms]\n"acme" = "ACME"\n\n[workflow."Weekly Sync".terms]\n"standup" = "Stand-up"\n',
         {"workflow_id": "00000000-0000-0000-0000-000000000000", "workflow_name": "Weekly Sync"},
+        [("6F1C2B9A-0D3E-4F5A-9B8C-7D6E5F4A3B2C", "Team Sync")],
+    ),
+    # The 2026-11-21 amendment: renamed before WF11 moved tables, so the current name has
+    # no table and the recorded name's table still applies.
+    (
+        "table_stranded_by_an_earlier_rename_falls_back_to_the_recorded_name",
+        '[terms]\n"acme" = "ACME"\n\n[workflow."Weekly Sync".terms]\n"standup" = "Stand-up"\n',
+        {"workflow_id": "6f1c2b9a-0d3e-4f5a-9b8c-7d6e5f4a3b2c", "workflow_name": "Weekly Sync"},
+        [("6F1C2B9A-0D3E-4F5A-9B8C-7D6E5F4A3B2C", "Team Sync")],
+    ),
+    # An empty table under the current name (the editor leaves one when its last term is
+    # deleted) is as good as none.
+    (
+        "empty_current_table_falls_back_to_the_recorded_name",
+        '[workflow."Team Sync".terms]\n\n[workflow."Weekly Sync".terms]\n"standup" = "Stand-up"\n',
+        {"workflow_id": "6f1c2b9a-0d3e-4f5a-9b8c-7d6e5f4a3b2c", "workflow_name": "Weekly Sync"},
+        [("6F1C2B9A-0D3E-4F5A-9B8C-7D6E5F4A3B2C", "Team Sync")],
+    ),
+    # Both tables have terms: the current name's wins alone, nothing merged from the other.
+    (
+        "current_table_with_terms_wins_alone",
+        '[workflow."Team Sync".terms]\n"standup" = "Daily"\n\n'
+        '[workflow."Weekly Sync".terms]\n"standup" = "Stand-up"\n"retro" = "Retro"\n',
+        {"workflow_id": "6f1c2b9a-0d3e-4f5a-9b8c-7d6e5f4a3b2c", "workflow_name": "Weekly Sync"},
         [("6F1C2B9A-0D3E-4F5A-9B8C-7D6E5F4A3B2C", "Team Sync")],
     ),
 ]
@@ -630,7 +655,9 @@ def gen_glossary(tmp: Path) -> str:
         "produce the same map, including the skip rules, so the Vocabulary editor "
         "cannot promise a substitution the pipeline will not make. A case with "
         "`meta` and `workflows` resolves its workflow through the sidecar's id "
-        "(WF11, Swift WorkflowIdentity.currentName) instead of `workflow`. `fuzzy_*` is "
+        "to the current name, then the recorded name, the first whose table has a "
+        "usable term winning alone (WF11, Swift WorkflowIdentity.glossaryNames) "
+        "instead of `workflow`. `fuzzy_*` is "
         "pinned because the editor must leave that section untouched on a write.",
         cases,
     )

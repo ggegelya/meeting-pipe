@@ -333,11 +333,23 @@ final class GlossaryStore: ObservableObject {
     /// toml++'s key order here, so a hand-written file carrying both spellings is
     /// ambiguous. The editor never writes one (`liveTerms` dedupes by lower-cased key).
     static func resolvedTerms(in document: TOMLTable, workflowName: String?) -> [String: String] {
+        resolvedTerms(in: document, workflowNames: workflowName.map { [$0] } ?? [])
+    }
+
+    /// `resolvedTerms` for a meeting whose table may sit under one of several names
+    /// (`WorkflowIdentity.glossaryNames`, WF11): the first name whose table yields a usable
+    /// term wins alone, never merged with the next. A table that is absent, or present and
+    /// empty (the editor leaves one when its last term is deleted), falls through.
+    static func resolvedTerms(in document: TOMLTable, workflowNames: [String]) -> [String: String] {
         var out: [String: String] = [:]
         merge(&out, document["terms"]?.table)
-        if let name = workflowName, !name.isEmpty,
-           let workflow = workflowTable(named: name, in: document) {
-            merge(&out, workflow["terms"]?.table)
+        for name in workflowNames where !name.isEmpty {
+            var workflow: [String: String] = [:]
+            merge(&workflow, workflowTable(named: name, in: document)?["terms"]?.table)
+            if !workflow.isEmpty {
+                out.merge(workflow) { _, new in new }
+                break
+            }
         }
         return out
     }
@@ -353,9 +365,15 @@ final class GlossaryStore: ObservableObject {
     /// caller (and the CI4 fixture test) never has to hold a `TOMLTable` itself. A
     /// missing or malformed file yields no terms, exactly as `load_glossary` does.
     static func resolvedTerms(at url: URL, workflowName: String?) -> [String: String] {
+        resolvedTerms(at: url, workflowNames: workflowName.map { [$0] } ?? [])
+    }
+
+    /// The several-names form a meeting's re-transcribe carry calls (WF11, see
+    /// `resolvedTerms(in:workflowNames:)`); the CI4 glossary fixture drives this one too.
+    static func resolvedTerms(at url: URL, workflowNames: [String]) -> [String: String] {
         let raw = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         let doc = (try? TOMLTable(string: raw)) ?? TOMLTable()
-        return resolvedTerms(in: doc, workflowName: workflowName)
+        return resolvedTerms(in: doc, workflowNames: workflowNames)
     }
 
     private static func merge(_ dst: inout [String: String], _ table: TOMLTable?) {

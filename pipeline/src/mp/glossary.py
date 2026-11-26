@@ -163,17 +163,40 @@ def _merge_terms(dst: dict[str, str], section: object) -> None:
             dst[key.lower()] = value
 
 
-def meeting_workflow_name(meta: dict) -> str | None:
-    """The workflow name a meeting's glossary table is keyed by: the current name of
-    the workflow its `workflow_id` points at, else the `workflow_name` it recorded
-    (WF11). Renaming a workflow moves its `[workflow."<name>"]` table, so a meeting
-    recorded under the old name has to find it by id; an absent or unknown id falls
-    back to the recorded name, so a library on another Mac still resolves."""
+def meeting_workflow_names(meta: dict) -> list[str]:
+    """The workflow names a meeting's glossary table may be keyed by, in the order they
+    are tried: the current name of the workflow its `workflow_id` points at, then the
+    `workflow_name` it recorded (WF11). Renaming a workflow moves its `[workflow."<name>"]`
+    table, so a meeting recorded under the old name has to find it by id; an absent or
+    unknown id leaves the recorded name alone, so a library on another Mac still resolves.
+    The recorded name stays a candidate after a known id because a workflow renamed before
+    WF11 moved tables still has its table under the old name (the 2026-11-21 amendment)."""
+    names: list[str] = []
     current = workflow_name_for_id(meta.get("workflow_id"))
     if current:
-        return current
+        names.append(current)
     recorded = meta.get("workflow_name")
-    return recorded if isinstance(recorded, str) and recorded else None
+    if isinstance(recorded, str) and recorded and recorded not in names:
+        names.append(recorded)
+    return names
+
+
+def _workflow_terms(raw: dict, names: list[str]) -> dict[str, str]:
+    """The terms of the first of ``names`` whose table yields any usable term. A table that
+    is absent, or present with nothing usable in it (the Vocabulary editor leaves an empty
+    one behind when its last term is deleted), falls through to the next name; a table
+    with terms wins alone, never merged with the next one."""
+    workflows = raw.get("workflow")
+    if not isinstance(workflows, dict):
+        return {}
+    for name in names:
+        wf = workflows.get(name)
+        terms: dict[str, str] = {}
+        if isinstance(wf, dict):
+            _merge_terms(terms, wf.get("terms"))
+        if terms:
+            return terms
+    return {}
 
 
 def load_glossary(
@@ -185,9 +208,10 @@ def load_glossary(
     """Load the glossary, merging global terms with the meeting's workflow.
 
     ``meeting_path`` is any file belonging to the meeting (its `<stem>.meta.json`
-    is read for the workflow name); pass ``workflow_name`` directly to bypass
-    that. ``path`` overrides the glossary file location (tests). A missing or
-    malformed file yields an empty glossary (a clean no-op), never an error.
+    is read for the workflow name, see :func:`meeting_workflow_names`); pass
+    ``workflow_name`` directly to bypass that and look up that one name only.
+    ``path`` overrides the glossary file location (tests). A missing or malformed
+    file yields an empty glossary (a clean no-op), never an error.
     """
     gpath = path or GLOSSARY_PATH
     if not gpath.exists():
@@ -202,12 +226,13 @@ def load_glossary(
     terms: dict[str, str] = {}
     _merge_terms(terms, raw.get("terms"))
 
-    if workflow_name is None and meeting_path is not None:
-        workflow_name = meeting_workflow_name(read_meta(meeting_path))
-    if workflow_name:
-        wf = (raw.get("workflow") or {}).get(workflow_name)
-        if isinstance(wf, dict):
-            _merge_terms(terms, wf.get("terms"))
+    if workflow_name is not None:
+        names = [workflow_name] if workflow_name else []
+    elif meeting_path is not None:
+        names = meeting_workflow_names(read_meta(meeting_path))
+    else:
+        names = []
+    terms.update(_workflow_terms(raw, names))
 
     fuzzy = raw.get("fuzzy")
     fuzzy = fuzzy if isinstance(fuzzy, dict) else {}

@@ -210,7 +210,42 @@ final class WorkflowRenameWF11Tests: XCTestCase {
         let wf = Workflow(name: "Team Sync", isDefault: false, order: 0)
         let meta: [String: Any] = ["workflow_id": wf.id.uuidString.lowercased(), "workflow_name": "Weekly Sync"]
         try JSONSerialization.data(withJSONObject: meta).write(to: dir.appendingPathComponent("s.meta.json"))
-        XCTAssertEqual(MeetingLibraryService.workflowName(stem: "s", in: dir, workflows: [wf]), "Team Sync")
-        XCTAssertEqual(MeetingLibraryService.workflowName(stem: "s", in: dir, workflows: []), "Weekly Sync")
+        XCTAssertEqual(MeetingLibraryService.glossaryNames(stem: "s", in: dir, workflows: [wf]), ["Team Sync", "Weekly Sync"])
+        XCTAssertEqual(MeetingLibraryService.glossaryNames(stem: "s", in: dir, workflows: []), ["Weekly Sync"])
+    }
+
+    /// The 2026-11-21 amendment: a workflow renamed before WF11 moved tables still has its
+    /// table under the old name, so the meeting's id resolves to a name with no terms and the
+    /// recorded name's table has to apply; `mp.glossary.load_glossary` does the same.
+    func test_a_table_stranded_by_an_earlier_rename_is_found_under_the_recorded_name() throws {
+        let wf = Workflow(name: "Team Sync", isDefault: false, order: 0)
+        let names = WorkflowIdentity.glossaryNames(
+            workflowID: wf.id.uuidString.lowercased(), recordedName: "Weekly Sync", workflows: [wf]
+        )
+        let stranded = try glossary("""
+        [workflow."Weekly Sync".terms]
+        "standup" = "Stand-up"
+        """)
+        XCTAssertEqual(GlossaryStore.resolvedTerms(at: stranded, workflowNames: names), ["standup": "Stand-up"])
+
+        // An empty table under the current name is as good as none.
+        let emptyCurrent = try glossary("""
+        [workflow."Team Sync".terms]
+
+        [workflow."Weekly Sync".terms]
+        "standup" = "Stand-up"
+        """)
+        XCTAssertEqual(GlossaryStore.resolvedTerms(at: emptyCurrent, workflowNames: names), ["standup": "Stand-up"])
+
+        // A current table with terms wins alone, nothing merged from the recorded name's.
+        let both = try glossary("""
+        [workflow."Team Sync".terms]
+        "standup" = "Daily"
+
+        [workflow."Weekly Sync".terms]
+        "standup" = "Stand-up"
+        "retro" = "Retro"
+        """)
+        XCTAssertEqual(GlossaryStore.resolvedTerms(at: both, workflowNames: names), ["standup": "Daily"])
     }
 }

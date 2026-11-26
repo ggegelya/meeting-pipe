@@ -155,6 +155,33 @@ def test_wf11_an_unknown_or_absent_id_falls_back_to_the_recorded_name(tmp_path: 
     assert load_glossary(absent, path=p).apply("standup")[0] == "Stand-up"
 
 
+def test_wf11_a_table_stranded_by_an_earlier_rename_is_found_under_the_recorded_name(
+    tmp_path: Path, monkeypatch
+):
+    """Renamed before WF11 moved tables: the id resolves to "Team Sync", which has no table
+    (or only an empty one the editor left), so the recorded name's table still applies."""
+    _workflow_dir(tmp_path, monkeypatch, "Team Sync")
+    p = _write_glossary(tmp_path, '[workflow."Weekly Sync".terms]\n"standup" = "Stand-up"\n')
+    wav = _meeting(tmp_path, {"workflow_id": WF11_ID, "workflow_name": "Weekly Sync"})
+    assert load_glossary(wav, path=p).apply("standup")[0] == "Stand-up"
+    p = _write_glossary(
+        tmp_path,
+        '[workflow."Team Sync".terms]\n\n[workflow."Weekly Sync".terms]\n"standup" = "Stand-up"\n',
+    )
+    assert load_glossary(wav, path=p).apply("standup")[0] == "Stand-up"
+
+
+def test_wf11_the_current_names_table_wins_alone_over_the_recorded_names(tmp_path: Path, monkeypatch):
+    _workflow_dir(tmp_path, monkeypatch, "Team Sync")
+    p = _write_glossary(
+        tmp_path,
+        '[workflow."Team Sync".terms]\n"standup" = "Daily"\n\n'
+        '[workflow."Weekly Sync".terms]\n"standup" = "Stand-up"\n"retro" = "Retro"\n',
+    )
+    wav = _meeting(tmp_path, {"workflow_id": WF11_ID, "workflow_name": "Weekly Sync"})
+    assert load_glossary(wav, path=p).terms == {"standup": "Daily"}
+
+
 def test_fuzzy_settings_load(tmp_path: Path):
     p = _write_glossary(
         tmp_path,

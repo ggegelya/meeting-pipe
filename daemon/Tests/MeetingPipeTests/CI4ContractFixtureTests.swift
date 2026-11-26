@@ -247,12 +247,14 @@ final class CI4ContractFixtureTests: XCTestCase {
         for c in all {
             let name = c["name"] as? String ?? "?"
             let toml = try XCTUnwrap(c["toml"] as? String, name)
-            var workflow = c["workflow"] as? String
-            // WF11: a case with `meta` resolves its workflow through the sidecar's id to the
-            // live workflow's current name, as `mp.glossary.meeting_workflow_name` does.
+            // A plain case looks up its one `workflow`. WF11: a case with `meta` resolves through
+            // the sidecar's id to the live workflow's current name, then the recorded name, the
+            // first with a usable term winning, as `mp.glossary.meeting_workflow_names` does. Both
+            // go through the entry point the re-transcribe carry calls.
+            var workflowNames = (c["workflow"] as? String).map { [$0] } ?? []
             if let meta = c["meta"] as? [String: String] {
                 let live = (c["workflows"] as? [[String: String]] ?? []).map { (id: $0["id"] ?? "", name: $0["name"] ?? "") }
-                workflow = WorkflowIdentity.currentName(
+                workflowNames = WorkflowIdentity.glossaryNames(
                     workflowID: meta["workflow_id"], recordedName: meta["workflow_name"], live: live
                 )
             }
@@ -262,7 +264,7 @@ final class CI4ContractFixtureTests: XCTestCase {
             let url = dir.appendingPathComponent("glossary.toml")
             try toml.write(to: url, atomically: true, encoding: .utf8)
 
-            let resolved = GlossaryStore.resolvedTerms(at: url, workflowName: workflow)
+            let resolved = GlossaryStore.resolvedTerms(at: url, workflowNames: workflowNames)
             XCTAssertEqual(resolved, expected, "\(name): resolved terms")
 
             // UX44 gave `[fuzzy].enabled` a toggle, so the editor now claims to know
