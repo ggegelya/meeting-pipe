@@ -15,6 +15,12 @@ struct AutomationConfirmation: Equatable {
     let message: String
     /// The default button's title.
     let actionTitle: String
+    /// `toggle` only: whether it was decided as a stop (true) or a start (false) when the link
+    /// arrived. The panel has no timeout, so the router re-reads the state at accept and performs
+    /// nothing if a toggle would now do the other thing (the 2026-11-21 amendment). Nil for verbs
+    /// whose perform re-checks the state itself: `record` refuses anything but idle, `stop` is
+    /// stop-only, `digest` does not depend on it.
+    var expectsRecording: Bool? = nil
 }
 
 enum AutomationGate {
@@ -30,8 +36,10 @@ enum AutomationGate {
         switch command {
         case .toggle:
             return isRecording
-                ? .init(verb: verb, message: "A link asked MeetingPipe to stop the current recording.", actionTitle: "Stop Recording")
-                : .init(verb: verb, message: "A link asked MeetingPipe to start recording.", actionTitle: "Start Recording")
+                ? .init(verb: verb, message: "A link asked MeetingPipe to stop the current recording.",
+                        actionTitle: "Stop Recording", expectsRecording: true)
+                : .init(verb: verb, message: "A link asked MeetingPipe to start recording.",
+                        actionTitle: "Start Recording", expectsRecording: false)
         case .record(let byo):
             return .init(
                 verb: verb,
@@ -53,6 +61,19 @@ enum AutomationGate {
         }
     }
 
+    /// What `MeetingSessionController.toggleManual` would do right now: true when it stops (a
+    /// recording, a stop already flushing, or a start in flight, which the toggle cancels), false
+    /// when it starts (idle, or a prompt or skipped meeting, which it records attached). The
+    /// router's `isRecording` read, at arrival and again at accept. Idle-or-not used to stand in
+    /// for this, which titled a toggle that would start from a prompt "Stop Recording".
+    static func toggleStops(_ state: AppState, startInFlight: Bool) -> Bool {
+        if startInFlight { return true }
+        switch state {
+        case .recording, .stopping: return true
+        case .idle, .prompting, .suppressed: return false
+        }
+    }
+
     /// Whether a URL `ask` runs its question or only prefills it. Only an in-app source runs.
     static func asksRun(source: String) -> Bool { source != urlSource }
 }
@@ -70,8 +91,11 @@ final class AutomationRouter {
         self.confirm = confirm
     }
 
-    func route(_ command: AutomationCommand, source: String, isRecording: Bool, perform: @escaping () -> Void) {
-        guard let request = AutomationGate.confirmation(for: command, source: source, isRecording: isRecording) else {
+    /// `isRecording` is a live read (`AutomationGate.toggleStops`), taken when the link arrives and
+    /// again when the confirm is accepted, since the panel can sit open across a meeting starting
+    /// or ending.
+    func route(_ command: AutomationCommand, source: String, isRecording: @escaping () -> Bool, perform: @escaping () -> Void) {
+        guard let request = AutomationGate.confirmation(for: command, source: source, isRecording: isRecording()) else {
             perform()
             return
         }
@@ -83,6 +107,11 @@ final class AutomationRouter {
         isConfirming = true
         confirm(request) { [weak self] accepted in
             self?.isConfirming = false
+            if accepted, let expected = request.expectsRecording, isRecording() != expected {
+                Log.event(category: "automation", action: "command_stale",
+                          attributes: ["verb": request.verb, "source": source, "decided": expected ? "stop" : "start"])
+                return
+            }
             Log.event(category: "automation", action: accepted ? "command_confirmed" : "command_declined",
                       attributes: ["verb": request.verb, "source": source])
             if accepted { perform() }

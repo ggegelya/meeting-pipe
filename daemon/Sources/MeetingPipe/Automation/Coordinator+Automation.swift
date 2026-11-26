@@ -15,9 +15,10 @@ extension Coordinator {
     /// `ask` prefills without running. macOS gives a URL open no caller identity to check.
     func handleAutomation(_ command: AutomationCommand, source: String = AutomationGate.urlSource) {
         Log.event(category: "automation", action: "command", attributes: ["verb": command.verb, "source": source])
-        let isRecording: Bool
-        if case .idle = stateMachine.current { isRecording = false } else { isRecording = true }
-        automationRouter.route(command, source: source, isRecording: isRecording) { [weak self] in
+        automationRouter.route(command, source: source, isRecording: { [weak self] in
+            guard let self else { return false }
+            return AutomationGate.toggleStops(self.stateMachine.current, startInFlight: self.session.startLatch.isInFlight)
+        }) { [weak self] in
             self?.performAutomation(command, source: source)
         }
     }

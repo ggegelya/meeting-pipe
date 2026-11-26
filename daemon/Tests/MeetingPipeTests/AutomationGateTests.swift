@@ -45,7 +45,7 @@ final class AutomationGateTests: XCTestCase {
             let presenter = FakePresenter()
             let router = AutomationRouter(confirm: presenter.confirm)
             var performed = 0
-            router.route(command, source: AutomationGate.urlSource, isRecording: false) { performed += 1 }
+            router.route(command, source: AutomationGate.urlSource, isRecording: { false }) { performed += 1 }
             XCTAssertEqual(presenter.requests.map(\.verb), [command.verb], "\(command)")
             XCTAssertEqual(performed, 0, "\(command) must not act before the confirm")
             presenter.pending?(true)
@@ -59,7 +59,7 @@ final class AutomationGateTests: XCTestCase {
             let presenter = FakePresenter()
             let router = AutomationRouter(confirm: presenter.confirm)
             var performed = 0
-            router.route(command, source: AutomationGate.urlSource, isRecording: true) { performed += 1 }
+            router.route(command, source: AutomationGate.urlSource, isRecording: { true }) { performed += 1 }
             presenter.pending?(false)
             XCTAssertEqual(performed, 0, "\(command)")
         }
@@ -72,7 +72,7 @@ final class AutomationGateTests: XCTestCase {
             let presenter = FakePresenter()
             let router = AutomationRouter(confirm: presenter.confirm)
             var performed = 0
-            router.route(command, source: "quick_find", isRecording: false) { performed += 1 }
+            router.route(command, source: "quick_find", isRecording: { false }) { performed += 1 }
             XCTAssertTrue(presenter.requests.isEmpty, "\(command)")
             XCTAssertEqual(performed, 1, "\(command)")
         }
@@ -83,7 +83,7 @@ final class AutomationGateTests: XCTestCase {
             let presenter = FakePresenter()
             let router = AutomationRouter(confirm: presenter.confirm)
             var performed = 0
-            router.route(command, source: AutomationGate.urlSource, isRecording: false) { performed += 1 }
+            router.route(command, source: AutomationGate.urlSource, isRecording: { false }) { performed += 1 }
             XCTAssertTrue(presenter.requests.isEmpty, "\(command)")
             XCTAssertEqual(performed, 1, "\(command)")
         }
@@ -94,12 +94,59 @@ final class AutomationGateTests: XCTestCase {
         let presenter = FakePresenter()
         let router = AutomationRouter(confirm: presenter.confirm)
         var performed: [String] = []
-        router.route(.stop, source: AutomationGate.urlSource, isRecording: true) { performed.append("stop") }
-        router.route(.toggle, source: AutomationGate.urlSource, isRecording: true) { performed.append("toggle") }
+        router.route(.stop, source: AutomationGate.urlSource, isRecording: { true }) { performed.append("stop") }
+        router.route(.toggle, source: AutomationGate.urlSource, isRecording: { true }) { performed.append("toggle") }
         XCTAssertEqual(presenter.requests.count, 1)
         XCTAssertEqual(rows("command_dropped").first?["verb"] as? String, "toggle")
         presenter.pending?(true)
         XCTAssertEqual(performed, ["stop"])
+    }
+
+    /// AUTO7 amendment (2026-11-21, M2): a toggle link that arrived while idle asks to start; a
+    /// recording that began while the panel waited must not be stopped by accepting it.
+    func test_a_toggle_decided_as_start_does_nothing_if_a_recording_began_before_accept() {
+        let presenter = FakePresenter()
+        let router = AutomationRouter(confirm: presenter.confirm)
+        var recording = false
+        var performed = 0
+        router.route(.toggle, source: AutomationGate.urlSource, isRecording: { recording }) { performed += 1 }
+        XCTAssertEqual(presenter.requests.first?.actionTitle, "Start Recording")
+        recording = true
+        presenter.pending?(true)
+        XCTAssertEqual(performed, 0, "accepting a stale Start must not stop the live recording")
+        XCTAssertFalse(router.isConfirming)
+        XCTAssertEqual(rows("command_stale").map { $0["decided"] as? String }, ["start"])
+        XCTAssertTrue(rows("command_confirmed").isEmpty, "the stale row is the one terminal row")
+    }
+
+    /// The reverse: a stop decided at arrival must not start a new recording after the meeting ended.
+    func test_a_toggle_decided_as_stop_does_nothing_if_the_recording_ended_before_accept() {
+        let presenter = FakePresenter()
+        let router = AutomationRouter(confirm: presenter.confirm)
+        var recording = true
+        var performed = 0
+        router.route(.toggle, source: AutomationGate.urlSource, isRecording: { recording }) { performed += 1 }
+        XCTAssertEqual(presenter.requests.first?.actionTitle, "Stop Recording")
+        recording = false
+        presenter.pending?(true)
+        XCTAssertEqual(performed, 0, "accepting a stale Stop must not start a recording")
+        XCTAssertFalse(router.isConfirming)
+        XCTAssertEqual(rows("command_stale").map { $0["decided"] as? String }, ["stop"])
+        XCTAssertTrue(rows("command_confirmed").isEmpty, "the stale row is the one terminal row")
+    }
+
+    /// The arrival decision is what `toggleManual` would do, not idle-or-not: a prompt starts
+    /// (attached), and a start in flight is cancelled, which is a stop.
+    func test_toggle_stops_matches_what_toggleManual_would_do() {
+        let teams = AppSource(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams")
+        let file = URL(fileURLWithPath: "/tmp/x.wav")
+        XCTAssertFalse(AutomationGate.toggleStops(.idle, startInFlight: false))
+        XCTAssertFalse(AutomationGate.toggleStops(.prompting(source: teams), startInFlight: false))
+        XCTAssertFalse(AutomationGate.toggleStops(.suppressed(source: teams), startInFlight: false))
+        XCTAssertTrue(AutomationGate.toggleStops(.recording(file: file, source: nil, summaryMode: .auto), startInFlight: false))
+        XCTAssertTrue(AutomationGate.toggleStops(.stopping(file: file, source: nil, summaryMode: .auto), startInFlight: false))
+        XCTAssertTrue(AutomationGate.toggleStops(.idle, startInFlight: true))
+        XCTAssertTrue(AutomationGate.toggleStops(.prompting(source: teams), startInFlight: true))
     }
 
     func test_the_toggle_confirm_names_what_it_will_do() {
